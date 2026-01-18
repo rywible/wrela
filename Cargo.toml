@@ -1,0 +1,17 @@
+[package]
+name = "spite"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "The Spite programming language compiler"
+repository = "https://github.com/ryanwible/spite"
+
+[[bin]]
+name = "spite"
+path = "src/bin/spite.rs"
+
+[dependencies]
+strum = "0.26"
+strum_macros = "0.26"
+# LLVM codegen
+# inkwell = { version = "0.8", features = ["llvm21-1"] }

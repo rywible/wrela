@@ -1,0 +1,8 @@
+# Clippy configuration for Spite compiler
+# https://doc.rust-lang.org/clippy/configuration.html
+
+# Allow up to 7 arguments in functions (compiler functions can be complex)
+too-many-arguments-threshold = 7
+
+# Allow slightly more complex types
+type-complexity-threshold = 300
