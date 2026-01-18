@@ -1,5 +1,5 @@
-   0.006012500s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint: fingerprint error for spite v0.1.0 (/Users/ryanwible/projects/spite)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("spite", ["lib"], "/Users/ryanwible/projects/spite/src/lib.rs", Edition2024) }
-   0.006032083s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/ryanwible/projects/spite/target/debug/.fingerprint/spite-170729084e59d4ea/lib-spite`
+   0.006366500s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint: fingerprint error for spite v0.1.0 (/Users/ryanwible/projects/spite)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("spite", ["lib"], "/Users/ryanwible/projects/spite/src/lib.rs", Edition2024) }
+   0.006385667s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/ryanwible/projects/spite/target/debug/.fingerprint/spite-170729084e59d4ea/lib-spite`
 
 Caused by:
     No such file or directory (os error 2)
@@ -23,8 +23,8 @@ Stack backtrace:
   15: std::rt::lang_start::<()>::{closure#0}
   16: std::rt::lang_start_internal
   17: _main
-   0.008604791s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint: fingerprint error for spite v0.1.0 (/Users/ryanwible/projects/spite)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("spite", ["lib"], "/Users/ryanwible/projects/spite/src/lib.rs", Edition2024) }
-   0.008609791s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/ryanwible/projects/spite/target/debug/.fingerprint/spite-7a79994954db469f/test-lib-spite`
+   0.008977625s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint: fingerprint error for spite v0.1.0 (/Users/ryanwible/projects/spite)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("spite", ["lib"], "/Users/ryanwible/projects/spite/src/lib.rs", Edition2024) }
+   0.008982958s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/ryanwible/projects/spite/target/debug/.fingerprint/spite-7a79994954db469f/test-lib-spite`
 
 Caused by:
     No such file or directory (os error 2)
@@ -48,8 +48,8 @@ Stack backtrace:
   15: std::rt::lang_start::<()>::{closure#0}
   16: std::rt::lang_start_internal
   17: _main
-   0.008775375s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint: fingerprint error for spite v0.1.0 (/Users/ryanwible/projects/spite)/Check { test: false }/TargetInner { name: "spite", doc: true, ..: with_path("/Users/ryanwible/projects/spite/src/bin/spite.rs", Edition2024) }
-   0.008778583s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/ryanwible/projects/spite/target/debug/.fingerprint/spite-30af6044b1135b40/bin-spite`
+   0.009147667s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint: fingerprint error for spite v0.1.0 (/Users/ryanwible/projects/spite)/Check { test: false }/TargetInner { name: "spite", doc: true, ..: with_path("/Users/ryanwible/projects/spite/src/bin/spite.rs", Edition2024) }
+   0.009151042s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/ryanwible/projects/spite/target/debug/.fingerprint/spite-30af6044b1135b40/bin-spite`
 
 Caused by:
     No such file or directory (os error 2)
@@ -73,8 +73,8 @@ Stack backtrace:
   15: std::rt::lang_start::<()>::{closure#0}
   16: std::rt::lang_start_internal
   17: _main
-   0.008910166s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint: fingerprint error for spite v0.1.0 (/Users/ryanwible/projects/spite)/Check { test: true }/TargetInner { name: "spite", doc: true, ..: with_path("/Users/ryanwible/projects/spite/src/bin/spite.rs", Edition2024) }
-   0.008912875s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/ryanwible/projects/spite/target/debug/.fingerprint/spite-542781036a0adba3/test-bin-spite`
+   0.009277708s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint: fingerprint error for spite v0.1.0 (/Users/ryanwible/projects/spite)/Check { test: true }/TargetInner { name: "spite", doc: true, ..: with_path("/Users/ryanwible/projects/spite/src/bin/spite.rs", Edition2024) }
+   0.009280500s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/ryanwible/projects/spite/target/debug/.fingerprint/spite-542781036a0adba3/test-bin-spite`
 
 Caused by:
     No such file or directory (os error 2)
@@ -99,6 +99,6 @@ Stack backtrace:
   16: std::rt::lang_start_internal
   17: _main
     Checking spite v0.1.0 (/Users/ryanwible/projects/spite)
-error: could not compile `spite` (lib test) due to 3 previous errors; 1 warning emitted
-warning: build failed, waiting for other jobs to finish...
 error: could not compile `spite` (lib) due to 3 previous errors; 1 warning emitted
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `spite` (lib test) due to 3 previous errors; 1 warning emitted
