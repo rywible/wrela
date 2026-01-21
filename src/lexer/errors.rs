@@ -3,7 +3,7 @@
 use miette::{Diagnostic, SourceSpan};
 use thiserror::Error;
 
-#[derive(Debug, Error, Diagnostic)]
+#[derive(Debug, Error, Diagnostic, Clone)]
 pub enum LexError {
     #[error("unexpected indentation at top level")]
     #[diagnostic(
@@ -75,5 +75,17 @@ pub enum LexError {
         #[label("invalid escape")]
         span: SourceSpan,
         char: char,
+    },
+
+    #[error("invalid multiline indent")]
+    #[diagnostic(
+        code(lang::lex::invalid_multiline_indent),
+        help(
+            "Content inside parentheses/brackets must be indented deeper than the enclosing block."
+        )
+    )]
+    InvalidMultilineIndent {
+        #[label("incorrect indentation here")]
+        span: SourceSpan,
     },
 }

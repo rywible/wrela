@@ -8,6 +8,8 @@ pub enum Token {
     // Keywords
     #[strum(serialize = "A")]
     Class,
+    #[strum(serialize = "An")]
+    An,
     #[strum(serialize = "has")]
     Has,
     #[strum(serialize = "can")]
@@ -26,6 +28,14 @@ pub enum Token {
     In,
     #[strum(serialize = "return")]
     Return,
+    #[strum(serialize = "break")]
+    Break,
+    #[strum(serialize = "continue")]
+    Continue,
+    #[strum(serialize = "match")]
+    Match,
+    #[strum(serialize = "otherwise")]
+    Otherwise,
     #[strum(serialize = "true")]
     True,
     #[strum(serialize = "false")]
@@ -42,6 +52,18 @@ pub enum Token {
     Await,
     #[strum(serialize = "spawn")]
     Spawn,
+    #[strum(serialize = "use")]
+    Use,
+    #[strum(serialize = "from")]
+    From,
+    #[strum(serialize = "public")]
+    Public,
+    #[strum(serialize = "private")]
+    Private,
+    #[strum(serialize = "its")]
+    Its,
+    #[strum(serialize = "changing")]
+    Changing,
 
     // Literals
     #[strum(serialize = "Identifier")]
@@ -54,8 +76,10 @@ pub enum Token {
     StringPart(String),
     #[strum(serialize = "StringEnd")]
     StringEnd(String),
-    #[strum(serialize = "Number")]
-    Number(f64),
+    #[strum(serialize = "Integer")]
+    Integer(i64),
+    #[strum(serialize = "Float")]
+    Float(f64),
 
     // Symbols
     #[strum(serialize = ":")]
@@ -64,6 +88,10 @@ pub enum Token {
     LParen,
     #[strum(serialize = ")")]
     RParen,
+    #[strum(serialize = "[")]
+    LBracket,
+    #[strum(serialize = "]")]
+    RBracket,
     #[strum(serialize = "{")]
     LBrace,
     #[strum(serialize = "}")]
@@ -74,6 +102,8 @@ pub enum Token {
     Range,
     #[strum(serialize = ",")]
     Comma,
+    #[strum(serialize = "@")]
+    At,
 
     // Operators
     #[strum(serialize = "=")]
@@ -118,6 +148,8 @@ pub enum Token {
     Pipe,
     #[strum(serialize = "^")]
     Caret,
+    #[strum(serialize = "~")]
+    BitwiseNot,
     #[strum(serialize = "<<")]
     ShiftLeft,
     #[strum(serialize = ">>")]
