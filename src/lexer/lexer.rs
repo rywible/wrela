@@ -42,7 +42,6 @@ impl<'a> Lexer<'a> {
         self.bytes.get(self.byte_index + 1).copied()
     }
 
-    #[allow(dead_code)]
     fn peek_n_bytes(&self, n: usize) -> Option<u8> {
         self.bytes.get(self.byte_index + n).copied()
     }
@@ -264,38 +263,80 @@ impl<'a> Lexer<'a> {
                 self.byte_index += 1;
                 Some(Token::RParen)
             }
-            b'.' => {
-                self.byte_index += 1;
-                Some(Token::Dot)
-            }
             b',' => {
                 self.byte_index += 1;
                 Some(Token::Comma)
             }
 
-            // Math
+            // Dot and Range
+            b'.' => {
+                // Check for ...
+                if self.peek_n_bytes(1) == Some(b'.') && self.peek_n_bytes(2) == Some(b'.') {
+                    self.byte_index += 3;
+                    Some(Token::Range)
+                } else {
+                    self.byte_index += 1;
+                    Some(Token::Dot)
+                }
+            }
+
+            // Math & Augmented Assignment
             b'+' => {
-                self.byte_index += 1;
-                Some(Token::Plus)
+                if matches!(self.peek_next_byte(), Some(b'=')) {
+                    self.byte_index += 2;
+                    Some(Token::PlusEq)
+                } else {
+                    self.byte_index += 1;
+                    Some(Token::Plus)
+                }
             }
             b'-' => {
-                self.byte_index += 1;
-                Some(Token::Minus)
+                if matches!(self.peek_next_byte(), Some(b'=')) {
+                    self.byte_index += 2;
+                    Some(Token::MinusEq)
+                } else {
+                    self.byte_index += 1;
+                    Some(Token::Minus)
+                }
             }
             b'*' => {
-                self.byte_index += 1;
-                Some(Token::Star)
+                if matches!(self.peek_next_byte(), Some(b'=')) {
+                    self.byte_index += 2;
+                    Some(Token::StarEq)
+                } else {
+                    self.byte_index += 1;
+                    Some(Token::Star)
+                }
             }
             b'/' => {
-                self.byte_index += 1;
-                Some(Token::Slash)
+                if matches!(self.peek_next_byte(), Some(b'=')) {
+                    self.byte_index += 2;
+                    Some(Token::SlashEq)
+                } else {
+                    self.byte_index += 1;
+                    Some(Token::Slash)
+                }
             }
             b'%' => {
                 self.byte_index += 1;
                 Some(Token::Percent)
             }
 
-            // Multi-char operators
+            // Bitwise
+            b'&' => {
+                self.byte_index += 1;
+                Some(Token::Ampersand)
+            }
+            b'|' => {
+                self.byte_index += 1;
+                Some(Token::Pipe)
+            }
+            b'^' => {
+                self.byte_index += 1;
+                Some(Token::Caret)
+            }
+
+            // Comparisons & Shift
             b'=' => {
                 if matches!(self.peek_next_byte(), Some(b'=')) {
                     self.byte_index += 2;
@@ -315,18 +356,26 @@ impl<'a> Lexer<'a> {
                 }
             }
             b'<' => {
-                if matches!(self.peek_next_byte(), Some(b'=')) {
+                let next = self.peek_next_byte();
+                if next == Some(b'=') {
                     self.byte_index += 2;
                     Some(Token::LessEq)
+                } else if next == Some(b'<') {
+                    self.byte_index += 2;
+                    Some(Token::ShiftLeft)
                 } else {
                     self.byte_index += 1;
                     Some(Token::Less)
                 }
             }
             b'>' => {
-                if matches!(self.peek_next_byte(), Some(b'=')) {
+                let next = self.peek_next_byte();
+                if next == Some(b'=') {
                     self.byte_index += 2;
                     Some(Token::GreaterEq)
+                } else if next == Some(b'>') {
+                    self.byte_index += 2;
+                    Some(Token::ShiftRight)
                 } else {
                     self.byte_index += 1;
                     Some(Token::Greater)
@@ -378,6 +427,7 @@ impl<'a> Lexer<'a> {
             "else" => Ok(Some(Token::Else)),
             "while" => Ok(Some(Token::While)),
             "for" => Ok(Some(Token::For)),
+            "in" => Ok(Some(Token::In)),
             "return" => Ok(Some(Token::Return)),
             "true" => Ok(Some(Token::True)),
             "false" => Ok(Some(Token::False)),
@@ -402,14 +452,47 @@ impl<'a> Lexer<'a> {
     fn consume_string(&mut self) -> Result<Option<Token>> {
         self.byte_index += 1; // Skip opening quote
         let start = self.byte_index;
+        let mut string_content = String::new();
 
         while let Some(b) = self.current_byte() {
-            if b == b'"' {
-                let text = &self.src[start..self.byte_index];
-                self.byte_index += 1; // Skip closing quote
-                return Ok(Some(Token::StringLiteral(text.to_string())));
+            match b {
+                b'"' => {
+                    self.byte_index += 1; // Skip closing quote
+                    return Ok(Some(Token::StringLiteral(string_content)));
+                }
+                b'\\' => {
+                    self.byte_index += 1; // Consume backslash
+                    if let Some(next_byte) = self.current_byte() {
+                        match next_byte {
+                            b'n' => string_content.push('\n'),
+                            b'r' => string_content.push('\r'),
+                            b't' => string_content.push('\t'),
+                            b'"' => string_content.push('"'),
+                            b'\\' => string_content.push('\\'),
+                            _ => {
+                                let span = SourceSpan::new(
+                                    (self.byte_index - 1).into(), // Point to backslash
+                                    2usize.into(),                // Cover both chars
+                                );
+                                bail!(LexError::InvalidEscapeSequence {
+                                    span,
+                                    char: next_byte as char
+                                });
+                            }
+                        }
+                        self.byte_index += 1; // Consume escaped char
+                    } else {
+                        // Backslash at EOF
+                        bail!(LexError::UnterminatedString {
+                            span: SourceSpan::new(start.into(), (self.byte_index - start).into())
+                        });
+                    }
+                }
+                _ => {
+                    string_content.push(b as char);
+                    self.byte_index += 1;
+                }
             }
-            self.byte_index += 1;
         }
 
         // If loop finishes, we hit EOF without closing quote
@@ -433,6 +516,17 @@ impl<'a> Lexer<'a> {
         // Check for fractional part
         if matches!(self.current_byte(), Some(b'.')) {
             // Need to peek ahead to ensure it's a number, not a method call (e.g. 1.toString())
+            // Also need to ensure it's NOT a range operator (...)
+            // Range check: if we see .. or ..., we should stop consuming number.
+            // But here we consumed the integer part.
+            // Case 1: "1..10" -> Number(1), Range, Number(10)
+            // Case 2: "1.2" -> Number(1.2)
+            // Case 3: "1.toString()" -> Number(1), Dot, Identifier
+            // Logic:
+            // If next is digit -> float.
+            // If next is '.' -> Range (so stop here, return integer).
+            // If next is anything else -> Dot access (stop here, return integer).
+
             if let Some(next) = self.peek_next_byte() {
                 if next.is_ascii_digit() {
                     self.byte_index += 1; // Consume dot
@@ -685,5 +779,81 @@ to async_ops():
         assert_eq!(tokens[2].0, Token::Number(42.0));
         assert_eq!(tokens[2].1.offset(), 4);
         assert_eq!(tokens[2].1.len(), 2);
+    }
+
+    #[test]
+    fn test_string_escapes() {
+        let input = r#"print("Line1\nLine2\t\"Quoted\"\\")"#;
+        let mut lexer = Lexer::new(input);
+        let tokens = strip_spans(lexer.lex().unwrap());
+
+        // 0: Identifier(print)
+        assert_eq!(tokens[0], Token::Identifier("print".to_string()));
+
+        // 1: LParen
+        assert_eq!(tokens[1], Token::LParen);
+
+        // 2: StringLiteral
+        // Expected value: Line1
+        //                 Line2	"Quoted"\
+        let expected = "Line1\nLine2\t\"Quoted\"\\";
+        assert_eq!(tokens[2], Token::StringLiteral(expected.to_string()));
+    }
+
+    #[test]
+    fn test_new_operators() {
+        let input = r#"
+x += 1
+y -= 2
+z = a & b | c ^ d
+val = i << 2 >> 1
+for i in 0...10:
+    pass
+"#;
+        let mut lexer = Lexer::new(input);
+        let tokens = strip_spans(lexer.lex().unwrap());
+        let valid_tokens: Vec<Token> = tokens
+            .into_iter()
+            .filter(|t| {
+                !matches!(
+                    t,
+                    Token::Newline | Token::Indent | Token::Dedent | Token::Eof
+                )
+            })
+            .collect();
+
+        // x += 1
+        assert_eq!(valid_tokens[0], Token::Identifier("x".to_string()));
+        assert_eq!(valid_tokens[1], Token::PlusEq);
+        assert_eq!(valid_tokens[2], Token::Number(1.0));
+
+        // y -= 2
+        assert_eq!(valid_tokens[3], Token::Identifier("y".to_string()));
+        assert_eq!(valid_tokens[4], Token::MinusEq);
+        assert_eq!(valid_tokens[5], Token::Number(2.0));
+
+        // z = a & b | c ^ d
+        assert_eq!(valid_tokens[6], Token::Identifier("z".to_string()));
+        assert_eq!(valid_tokens[7], Token::Equals);
+        assert_eq!(valid_tokens[8], Token::Identifier("a".to_string()));
+        assert_eq!(valid_tokens[9], Token::Ampersand);
+        assert_eq!(valid_tokens[10], Token::Identifier("b".to_string()));
+        assert_eq!(valid_tokens[11], Token::Pipe);
+        assert_eq!(valid_tokens[12], Token::Identifier("c".to_string()));
+        assert_eq!(valid_tokens[13], Token::Caret);
+        assert_eq!(valid_tokens[14], Token::Identifier("d".to_string()));
+
+        // val = i << 2 >> 1
+        // Skip valid_tokens[15]..[17] (val = i)
+        assert_eq!(valid_tokens[18], Token::ShiftLeft);
+        // ...
+        assert_eq!(valid_tokens[20], Token::ShiftRight);
+
+        // for i in 0...10
+        // ...
+        // Index is getting tricky, let's just find the Range token
+        assert!(valid_tokens.contains(&Token::Range));
+        assert!(valid_tokens.contains(&Token::In));
+        assert!(valid_tokens.contains(&Token::For));
     }
 }

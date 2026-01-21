@@ -22,6 +22,8 @@ pub enum Token {
     While,
     #[strum(serialize = "for")]
     For,
+    #[strum(serialize = "in")]
+    In,
     #[strum(serialize = "return")]
     Return,
     #[strum(serialize = "true")]
@@ -56,6 +58,8 @@ pub enum Token {
     RParen,
     #[strum(serialize = ".")]
     Dot,
+    #[strum(serialize = "...")]
+    Range,
     #[strum(serialize = ",")]
     Comma,
 
@@ -84,6 +88,28 @@ pub enum Token {
     Slash,
     #[strum(serialize = "%")]
     Percent,
+
+    // Augmented Assignment
+    #[strum(serialize = "+=")]
+    PlusEq,
+    #[strum(serialize = "-=")]
+    MinusEq,
+    #[strum(serialize = "*=")]
+    StarEq,
+    #[strum(serialize = "/=")]
+    SlashEq,
+
+    // Bitwise
+    #[strum(serialize = "&")]
+    Ampersand,
+    #[strum(serialize = "|")]
+    Pipe,
+    #[strum(serialize = "^")]
+    Caret,
+    #[strum(serialize = "<<")]
+    ShiftLeft,
+    #[strum(serialize = ">>")]
+    ShiftRight,
 
     // Structural
     #[strum(serialize = "Indent")]

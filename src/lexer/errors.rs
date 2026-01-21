@@ -65,4 +65,15 @@ pub enum LexError {
         #[label("string starts here")]
         span: SourceSpan,
     },
+
+    #[error("invalid escape sequence '\\{char}'")]
+    #[diagnostic(
+        code(lang::lex::invalid_escape),
+        help("Supported escapes are \\n, \\r, \\t, \\\", and \\\\")
+    )]
+    InvalidEscapeSequence {
+        #[label("invalid escape")]
+        span: SourceSpan,
+        char: char,
+    },
 }
