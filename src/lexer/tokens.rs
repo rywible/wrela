@@ -40,12 +40,20 @@ pub enum Token {
     Not,
     #[strum(serialize = "await")]
     Await,
+    #[strum(serialize = "spawn")]
+    Spawn,
 
     // Literals
     #[strum(serialize = "Identifier")]
     Identifier(String),
     #[strum(serialize = "String")]
     StringLiteral(String),
+    #[strum(serialize = "StringStart")]
+    StringStart(String),
+    #[strum(serialize = "StringPart")]
+    StringPart(String),
+    #[strum(serialize = "StringEnd")]
+    StringEnd(String),
     #[strum(serialize = "Number")]
     Number(f64),
 
@@ -56,6 +64,10 @@ pub enum Token {
     LParen,
     #[strum(serialize = ")")]
     RParen,
+    #[strum(serialize = "{")]
+    LBrace,
+    #[strum(serialize = "}")]
+    RBrace,
     #[strum(serialize = ".")]
     Dot,
     #[strum(serialize = "...")]

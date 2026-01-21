@@ -263,12 +263,6 @@ impl<'a> Lexer<'a> {
                 self.byte_index += 1;
                 Some(Token::RParen)
             }
-            b',' => {
-                self.byte_index += 1;
-                Some(Token::Comma)
-            }
-
-            // Dot and Range
             b'.' => {
                 // Check for ...
                 if self.peek_n_bytes(1) == Some(b'.') && self.peek_n_bytes(2) == Some(b'.') {
@@ -278,6 +272,18 @@ impl<'a> Lexer<'a> {
                     self.byte_index += 1;
                     Some(Token::Dot)
                 }
+            }
+            b',' => {
+                self.byte_index += 1;
+                Some(Token::Comma)
+            }
+            b'{' => {
+                self.byte_index += 1;
+                Some(Token::LBrace)
+            }
+            b'}' => {
+                self.byte_index += 1;
+                Some(Token::RBrace)
             }
 
             // Math & Augmented Assignment
@@ -436,6 +442,7 @@ impl<'a> Lexer<'a> {
             "or" => Ok(Some(Token::Or)),
             "not" => Ok(Some(Token::Not)),
             "await" => Ok(Some(Token::Await)),
+            "spawn" => Ok(Some(Token::Spawn)),
             "so" => {
                 if self.current_byte() == Some(b':') {
                     self.byte_index += 1; // Consume ':'
@@ -454,51 +461,261 @@ impl<'a> Lexer<'a> {
         let start = self.byte_index;
         let mut string_content = String::new();
 
-        while let Some(b) = self.current_byte() {
-            match b {
-                b'"' => {
-                    self.byte_index += 1; // Skip closing quote
-                    return Ok(Some(Token::StringLiteral(string_content)));
+        // We check for interpolation first. If there's none, we return StringLiteral.
+        // But to do that without two passes, we just scan.
+        // If we hit `{`, we must switch to "Interpolation Mode".
+        // This means returning StringStart now, and queueing the rest.
+        // But `consume_string` returns `Option<Token>`.
+        // So we will manipulate `self.pending` inside here if we find interpolation.
+
+        // Start position for the current segment (either start of string or after a `}`)
+        let mut segment_start_index = start;
+
+        loop {
+            // Because we might consume complex escapes, we can't just slice bytes easily
+            // if we want the "un-escaped" value.
+            // But for StringStart/StringPart, we usually want the value.
+
+            // Loop for current segment
+            while let Some(b) = self.current_byte() {
+                match b {
+                    b'"' => {
+                        // End of string.
+                        self.byte_index += 1; // Skip closing quote
+
+                        // If we are just a simple string (no interpolation encountered yet), return StringLiteral.
+                        // But if we already emitted StringStart, we must emit StringEnd.
+                        // Wait, `consume_string` is called ONCE.
+                        // If we haven't emitted anything yet, it's a simple string.
+
+                        return Ok(Some(Token::StringLiteral(string_content)));
+                    }
+                    b'{' => {
+                        // Interpolation start!
+                        // 1. Emit what we have so far as StringStart.
+                        let span = SourceSpan::new(
+                            segment_start_index.into(),
+                            (self.byte_index - segment_start_index).into(),
+                        );
+                        // Actually, the span should be where we started this call.
+                        // But we want to return one token and queue the rest.
+
+                        // Return the FIRST token (StringStart)
+                        let first_token = Token::StringStart(string_content);
+                        let first_span = SourceSpan::new(
+                            (start - 1).into(),
+                            (self.byte_index - (start - 1)).into(),
+                        ); // Include opening quote in span? Or just content?
+                        // Let's make the span cover from the opening quote (or previous brace) to current brace.
+                        // Actually, simplify: Just return StringStart. The caller wraps it with span.
+                        // But wait, `next_token` calculates span based on `byte_index` change.
+                        // If we queue tokens, we must also push their spans to `pending`.
+
+                        // So:
+                        // 1. We are returning StringStart immediately.
+                        // 2. We consume the `{` and parse the inside, pushing to pending.
+                        // 3. We continue parsing string parts, pushing to pending.
+
+                        // Important: `next_token` wrapper expects us to return ONE token, and it will calculate span
+                        // based on `self.byte_index - start_index`.
+                        // If we advance `byte_index` all the way to end of string, `next_token` will make one giant span
+                        // for `StringStart`. That is WRONG.
+                        // The `StringStart` token should only cover up to the `{`.
+
+                        // FIX: We cannot return `Some(Token)` from `consume_string` if we parse beyond it.
+                        // We must queue EVERYTHING to `pending` and return `None` (or the first one via pending?).
+                        // If we return `None`, `next_token` recurses.
+                        // So let's push ALL tokens (including the first one) to `pending` and return `None`.
+
+                        // Push StringStart
+                        let len_so_far = self.byte_index - (start - 1); // include opening quote
+                        let span = SourceSpan::new((start - 1).into(), len_so_far.into());
+                        self.pending.push_back((first_token, span));
+
+                        self.byte_index += 1; // Consume `{`
+                        let brace_span =
+                            SourceSpan::new((self.byte_index - 1).into(), 1usize.into());
+                        self.pending.push_back((Token::LBrace, brace_span));
+
+                        // Now we are inside `{...}`.
+                        self.consume_interpolation_content()?;
+
+                        // Continue to parse rest of string
+                        return self.continue_parsing_interpolated_string();
+                    }
+                    b'\\' => {
+                        self.byte_index += 1;
+                        if let Some(next_byte) = self.current_byte() {
+                            match next_byte {
+                                b'n' => string_content.push('\n'),
+                                b'r' => string_content.push('\r'),
+                                b't' => string_content.push('\t'),
+                                b'"' => string_content.push('"'),
+                                b'\\' => string_content.push('\\'),
+                                b'{' => string_content.push('{'), // Escaped brace
+                                b'}' => string_content.push('}'),
+                                _ => {
+                                    let span = SourceSpan::new(
+                                        (self.byte_index - 1).into(),
+                                        2usize.into(),
+                                    );
+                                    bail!(LexError::InvalidEscapeSequence {
+                                        span,
+                                        char: next_byte as char
+                                    });
+                                }
+                            }
+                            self.byte_index += 1;
+                        } else {
+                            bail!(LexError::UnterminatedString {
+                                span: SourceSpan::new(
+                                    start.into(),
+                                    (self.byte_index - start).into()
+                                )
+                            });
+                        }
+                    }
+                    _ => {
+                        string_content.push(b as char);
+                        self.byte_index += 1;
+                    }
                 }
-                b'\\' => {
-                    self.byte_index += 1; // Consume backslash
-                    if let Some(next_byte) = self.current_byte() {
-                        match next_byte {
+            }
+
+            // EOF hit
+            bail!(LexError::UnterminatedString {
+                span: SourceSpan::new(start.into(), (self.byte_index - start).into())
+            });
+        }
+    }
+
+    // Helper to continue parsing string parts after the first `{...}`
+    fn continue_parsing_interpolated_string(&mut self) -> Result<Option<Token>> {
+        let mut string_content = String::new();
+        let start_index = self.byte_index; // Start of this segment
+
+        loop {
+            match self.current_byte() {
+                Some(b'"') => {
+                    self.byte_index += 1; // consume quote
+                    // Push StringEnd
+                    let len = self.byte_index - start_index; // include closing quote? 
+                    // Actually StringEnd usually implies the closing quote is part of it.
+                    let span = SourceSpan::new(start_index.into(), len.into());
+                    self.pending
+                        .push_back((Token::StringEnd(string_content), span));
+                    return Ok(None); // Return None so next_token pops from pending
+                }
+                Some(b'{') => {
+                    // Another interpolation
+                    // Push StringPart
+                    let len = self.byte_index - start_index;
+                    let span = SourceSpan::new(start_index.into(), len.into());
+                    self.pending
+                        .push_back((Token::StringPart(string_content), span));
+
+                    self.byte_index += 1; // consume `{`
+                    let brace_span = SourceSpan::new((self.byte_index - 1).into(), 1usize.into());
+                    self.pending.push_back((Token::LBrace, brace_span));
+
+                    self.consume_interpolation_content()?;
+
+                    // Recurse / Loop
+                    return self.continue_parsing_interpolated_string();
+                }
+                Some(b'\\') => {
+                    self.byte_index += 1;
+                    if let Some(next) = self.current_byte() {
+                        match next {
                             b'n' => string_content.push('\n'),
                             b'r' => string_content.push('\r'),
                             b't' => string_content.push('\t'),
                             b'"' => string_content.push('"'),
                             b'\\' => string_content.push('\\'),
+                            b'{' => string_content.push('{'),
+                            b'}' => string_content.push('}'),
                             _ => {
-                                let span = SourceSpan::new(
-                                    (self.byte_index - 1).into(), // Point to backslash
-                                    2usize.into(),                // Cover both chars
-                                );
+                                let span =
+                                    SourceSpan::new((self.byte_index - 1).into(), 2usize.into());
                                 bail!(LexError::InvalidEscapeSequence {
                                     span,
-                                    char: next_byte as char
+                                    char: next as char
                                 });
                             }
                         }
-                        self.byte_index += 1; // Consume escaped char
+                        self.byte_index += 1;
                     } else {
-                        // Backslash at EOF
                         bail!(LexError::UnterminatedString {
-                            span: SourceSpan::new(start.into(), (self.byte_index - start).into())
+                            span: SourceSpan::new(start_index.into(), 1usize.into())
                         });
                     }
                 }
-                _ => {
+                Some(b) => {
                     string_content.push(b as char);
                     self.byte_index += 1;
                 }
+                None => {
+                    bail!(LexError::UnterminatedString {
+                        span: SourceSpan::new(
+                            start_index.into(),
+                            (self.byte_index - start_index).into()
+                        )
+                    });
+                }
             }
         }
+    }
 
-        // If loop finishes, we hit EOF without closing quote
-        bail!(LexError::UnterminatedString {
-            span: SourceSpan::new(start.into(), (self.byte_index - start).into())
-        });
+    fn consume_interpolation_content(&mut self) -> Result<()> {
+        // We are inside `{`. We need to parse until `}`.
+        // Allowed: spaces, identifiers, dots.
+
+        loop {
+            // Skip spaces
+            while matches!(self.current_byte(), Some(b' ')) {
+                self.byte_index += 1;
+            }
+
+            match self.current_byte() {
+                Some(b'}') => {
+                    self.byte_index += 1;
+                    let span = SourceSpan::new((self.byte_index - 1).into(), 1usize.into());
+                    self.pending.push_back((Token::RBrace, span));
+                    return Ok(());
+                }
+                Some(b'.') => {
+                    let start = self.byte_index;
+                    self.byte_index += 1;
+                    let span = SourceSpan::new(start.into(), 1usize.into());
+                    self.pending.push_back((Token::Dot, span));
+                }
+                Some(c) if c.is_ascii_alphanumeric() || c == b'_' => {
+                    let start = self.byte_index;
+                    while let Some(b) = self.current_byte() {
+                        if b.is_ascii_alphanumeric() || b == b'_' {
+                            self.byte_index += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    let text = &self.src[start..self.byte_index];
+                    let span = SourceSpan::new(start.into(), (self.byte_index - start).into());
+                    self.pending
+                        .push_back((Token::Identifier(text.to_string()), span));
+                }
+                Some(c) => {
+                    let span = SourceSpan::new(self.byte_index.into(), 1usize.into());
+                    bail!(LexError::UnexpectedCharacter {
+                        span,
+                        char: c as char
+                    });
+                }
+                None => {
+                    let span = SourceSpan::new(self.byte_index.into(), 0usize.into());
+                    bail!(LexError::UnterminatedString { span });
+                }
+            }
+        }
     }
 
     fn consume_number(&mut self) -> Result<Option<Token>> {
@@ -646,12 +863,13 @@ mod tests {
 
     #[test]
     fn test_basic_lexing() {
+        // Modified input to use simple identifier in interpolation
         let input = r#"A Whale:
     has:
         name: String
 
     can swim(distance: Number):
-        print("Hi! My name is {its.name} and I can swim {distance.toString()}")
+        print("Hi! My name is {name} and I can swim {distance}")
 
 to make_moby_swim():
     moby = Whale(name="moby")
@@ -855,5 +1073,25 @@ for i in 0...10:
         assert!(valid_tokens.contains(&Token::Range));
         assert!(valid_tokens.contains(&Token::In));
         assert!(valid_tokens.contains(&Token::For));
+    }
+
+    #[test]
+    fn test_interpolation() {
+        let input = r#"spawn "Hello {name} and {obj.prop}!""#;
+        let mut lexer = Lexer::new(input);
+        let tokens = strip_spans(lexer.lex().unwrap());
+
+        assert_eq!(tokens[0], Token::Spawn);
+        assert_eq!(tokens[1], Token::StringStart("Hello ".to_string()));
+        assert_eq!(tokens[2], Token::LBrace);
+        assert_eq!(tokens[3], Token::Identifier("name".to_string()));
+        assert_eq!(tokens[4], Token::RBrace);
+        assert_eq!(tokens[5], Token::StringPart(" and ".to_string()));
+        assert_eq!(tokens[6], Token::LBrace);
+        assert_eq!(tokens[7], Token::Identifier("obj".to_string()));
+        assert_eq!(tokens[8], Token::Dot);
+        assert_eq!(tokens[9], Token::Identifier("prop".to_string()));
+        assert_eq!(tokens[10], Token::RBrace);
+        assert_eq!(tokens[11], Token::StringEnd("!".to_string()));
     }
 }
