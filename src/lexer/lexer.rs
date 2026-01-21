@@ -42,15 +42,17 @@ impl<'a> Lexer<'a> {
         self.bytes.get(self.byte_index + 1).copied()
     }
 
-    fn peek_n_bytes(&self, n: usize) -> Option<u8> {
-        self.bytes.get(self.byte_index + n).copied()
-    }
+    // #[allow(dead_code)]
+    // fn peek_n_bytes(&self, n: usize) -> Option<u8> {
+    //     self.bytes.get(self.byte_index + n).copied()
+    // }
 
-    fn next_byte(&mut self) -> Option<u8> {
-        let b = self.current_byte()?;
-        self.byte_index += 1;
-        Some(b)
-    }
+    // #[allow(dead_code)]
+    // fn next_byte(&mut self) -> Option<u8> {
+    //     let b = self.current_byte()?;
+    //     self.byte_index += 1;
+    //     Some(b)
+    // }
 
     fn consume_newline(&mut self) -> bool {
         match (self.current_byte(), self.peek_next_byte()) {
@@ -113,13 +115,122 @@ impl<'a> Lexer<'a> {
         // 5) Skip mid-line spaces (indentation rules only apply at BOL).
         if matches!(self.current_byte(), Some(b' ')) {
             self.byte_index += 1;
-            return self.next_token(); // bounded recursion; you can turn this into a while loop later
+            return self.next_token();
         }
 
-        // 6) “Real” tokenization: placeholder.
-        // Replace this with identifiers/numbers/operators/etc.
-        let b = self.next_byte().unwrap();
-        Ok(Some(Token::OtherByte(b)))
+        // 6) Real tokenization
+        let c = self.current_byte().unwrap(); // Safe because is_eof checked above
+
+        match c {
+            // Identifiers and Keywords (start with letter)
+            b'a'..=b'z' | b'A'..=b'Z' | b'_' => self.consume_identifier_or_keyword(),
+
+            // Numbers (start with digit)
+            b'0'..=b'9' => self.consume_number(),
+
+            // Strings (start with quote)
+            b'"' => self.consume_string(),
+
+            // Simple Symbols
+            b':' => {
+                self.byte_index += 1;
+                Ok(Some(Token::Colon))
+            }
+            b'(' => {
+                self.byte_index += 1;
+                Ok(Some(Token::LParen))
+            }
+            b')' => {
+                self.byte_index += 1;
+                Ok(Some(Token::RParen))
+            }
+            b'.' => {
+                self.byte_index += 1;
+                Ok(Some(Token::Dot))
+            }
+            b'=' => {
+                self.byte_index += 1;
+                Ok(Some(Token::Equals))
+            }
+            b',' => {
+                self.byte_index += 1;
+                Ok(Some(Token::Comma))
+            }
+
+            // Unknown
+            _ => {
+                let span = SourceSpan::new(self.byte_index.into(), 1usize.into());
+                bail!(LexError::UnexpectedCharacter {
+                    span,
+                    char: c as char
+                });
+            }
+        }
+    }
+
+    fn consume_identifier_or_keyword(&mut self) -> Result<Option<Token>> {
+        let start = self.byte_index;
+
+        // Advance while char is alphanumeric or _
+        while let Some(b) = self.current_byte() {
+            if b.is_ascii_alphanumeric() || b == b'_' {
+                self.byte_index += 1;
+            } else {
+                break;
+            }
+        }
+
+        let text = &self.src[start..self.byte_index];
+
+        // Check keywords
+        let token = match text {
+            "A" => Token::Class,
+            "has" => Token::Has,
+            "can" => Token::Can,
+            "to" => Token::To,
+            _ => Token::Identifier(text.to_string()),
+        };
+
+        Ok(Some(token))
+    }
+
+    fn consume_string(&mut self) -> Result<Option<Token>> {
+        self.byte_index += 1; // Skip opening quote
+        let start = self.byte_index;
+
+        while let Some(b) = self.current_byte() {
+            if b == b'"' {
+                let text = &self.src[start..self.byte_index];
+                self.byte_index += 1; // Skip closing quote
+                return Ok(Some(Token::StringLiteral(text.to_string())));
+            }
+            self.byte_index += 1;
+        }
+
+        // If loop finishes, we hit EOF without closing quote
+        bail!(LexError::UnterminatedString {
+            span: SourceSpan::new(start.into(), (self.byte_index - start).into())
+        });
+    }
+
+    fn consume_number(&mut self) -> Result<Option<Token>> {
+        let start = self.byte_index;
+
+        while let Some(b) = self.current_byte() {
+            if b.is_ascii_digit() {
+                self.byte_index += 1;
+            } else {
+                break;
+            }
+        }
+
+        // Parse the slice
+        let text = &self.src[start..self.byte_index];
+        // For now, we only handle integers, but storing as f64 per your previous token def
+        // If we want to support decimals, we'd need to peek for '.' and more digits.
+        // Assuming integer-only for simplicity in this first pass unless you want full float support.
+        let num: f64 = text.parse().unwrap();
+        Ok(Some(Token::Number(num)))
     }
 
     fn handle_bol_indentation(&mut self) -> Result<()> {
@@ -191,5 +302,38 @@ impl<'a> Lexer<'a> {
             out.push(tok);
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lexer::tokens::Token;
+
+    #[test]
+    fn test_basic_lexing() {
+        let input = r#"A Whale:
+    has:
+        name: String
+
+    can swim(distance: Number):
+        print("Hi! My name is {its.name} and I can swim {distance.toString()}")
+
+to make_moby_swim():
+    moby = Whale(name="moby")
+    moby.swim(500)
+
+make_moby_swim()
+"#;
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.lex().unwrap();
+
+        // simple sanity check of the first few tokens
+        assert_eq!(tokens[0], Token::Class); // A
+        assert_eq!(tokens[1], Token::Identifier("Whale".to_string()));
+        assert_eq!(tokens[2], Token::Colon);
+        assert_eq!(tokens[3], Token::Newline);
+        assert_eq!(tokens[4], Token::Indent);
+        assert_eq!(tokens[5], Token::Has);
     }
 }

@@ -1,64 +1,16 @@
-   0.014838375s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint: stale: changed "/Users/ryanwible/projects/spite/src/lexer/lexer.rs"
-   0.014849834s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint:           (vs) "/Users/ryanwible/projects/spite/target/debug/.fingerprint/spite-d4072c1582ea83d3/dep-lib-spite"
-   0.014851834s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint:                FileTime { seconds: 1768967100, nanos: 711489785 } < FileTime { seconds: 1768968097, nanos: 578362451 }
-   0.014902542s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint: fingerprint dirty for spite v0.1.0 (/Users/ryanwible/projects/spite)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("spite", ["lib"], "/Users/ryanwible/projects/spite/src/lib.rs", Edition2024) }
-   0.014910250s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleItem(ChangedFile { reference: "/Users/ryanwible/projects/spite/target/debug/.fingerprint/spite-d4072c1582ea83d3/dep-lib-spite", reference_mtime: FileTime { seconds: 1768967100, nanos: 711489785 }, stale: "/Users/ryanwible/projects/spite/src/lexer/lexer.rs", stale_mtime: FileTime { seconds: 1768968097, nanos: 578362451 } }))
-   0.016460125s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint: stale: changed "/Users/ryanwible/projects/spite/src/lexer/lexer.rs"
-   0.016462500s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint:           (vs) "/Users/ryanwible/projects/spite/target/debug/.fingerprint/spite-e81aef26bc0ce571/dep-test-lib-spite"
-   0.016463917s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint:                FileTime { seconds: 1768967100, nanos: 711470077 } < FileTime { seconds: 1768968097, nanos: 578362451 }
-   0.016492209s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint: fingerprint dirty for spite v0.1.0 (/Users/ryanwible/projects/spite)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("spite", ["lib"], "/Users/ryanwible/projects/spite/src/lib.rs", Edition2024) }
-   0.016496125s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleItem(ChangedFile { reference: "/Users/ryanwible/projects/spite/target/debug/.fingerprint/spite-e81aef26bc0ce571/dep-test-lib-spite", reference_mtime: FileTime { seconds: 1768967100, nanos: 711470077 }, stale: "/Users/ryanwible/projects/spite/src/lexer/lexer.rs", stale_mtime: FileTime { seconds: 1768968097, nanos: 578362451 } }))
-   0.016702917s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint: fingerprint error for spite v0.1.0 (/Users/ryanwible/projects/spite)/Check { test: false }/TargetInner { name: "spite", doc: true, ..: with_path("/Users/ryanwible/projects/spite/src/bin/spite.rs", Edition2024) }
-   0.016706125s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/ryanwible/projects/spite/target/debug/.fingerprint/spite-1d2fedac7ede0de6/bin-spite`
-
-Caused by:
-    No such file or directory (os error 2)
-
-Stack backtrace:
-   0: std::backtrace::Backtrace::create
-   1: std::backtrace::Backtrace::capture
-   2: cargo_util::paths::read_bytes
-   3: cargo_util::paths::read
-   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
-   5: cargo::core::compiler::fingerprint::prepare_target
-   6: cargo::core::compiler::compile
-   7: <cargo::core::compiler::build_runner::BuildRunner>::compile
-   8: cargo::ops::cargo_compile::compile_ws
-   9: cargo::ops::cargo_compile::compile_with_exec
-  10: cargo::ops::cargo_compile::compile
-  11: cargo::commands::check::exec
-  12: <cargo::cli::Exec>::exec
-  13: cargo::main
-  14: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
-  15: std::rt::lang_start::<()>::{closure#0}
-  16: std::rt::lang_start_internal
-  17: _main
-   0.018805375s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint: fingerprint error for spite v0.1.0 (/Users/ryanwible/projects/spite)/Check { test: true }/TargetInner { name: "spite", doc: true, ..: with_path("/Users/ryanwible/projects/spite/src/bin/spite.rs", Edition2024) }
-   0.018808542s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/ryanwible/projects/spite/target/debug/.fingerprint/spite-76504cc6d31de6d2/test-bin-spite`
-
-Caused by:
-    No such file or directory (os error 2)
-
-Stack backtrace:
-   0: std::backtrace::Backtrace::create
-   1: std::backtrace::Backtrace::capture
-   2: cargo_util::paths::read_bytes
-   3: cargo_util::paths::read
-   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
-   5: cargo::core::compiler::fingerprint::prepare_target
-   6: cargo::core::compiler::compile
-   7: <cargo::core::compiler::build_runner::BuildRunner>::compile
-   8: cargo::ops::cargo_compile::compile_ws
-   9: cargo::ops::cargo_compile::compile_with_exec
-  10: cargo::ops::cargo_compile::compile
-  11: cargo::commands::check::exec
-  12: <cargo::cli::Exec>::exec
-  13: cargo::main
-  14: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
-  15: std::rt::lang_start::<()>::{closure#0}
-  16: std::rt::lang_start_internal
-  17: _main
+   0.048599166s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint: stale: changed "/Users/ryanwible/projects/spite/src/lexer/lexer.rs"
+   0.048608958s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint:           (vs) "/Users/ryanwible/projects/spite/target/debug/.fingerprint/spite-d4072c1582ea83d3/dep-lib-spite"
+   0.048610958s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint:                FileTime { seconds: 1768968513, nanos: 625113695 } < FileTime { seconds: 1768968588, nanos: 19445545 }
+   0.048664458s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint: fingerprint dirty for spite v0.1.0 (/Users/ryanwible/projects/spite)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("spite", ["lib"], "/Users/ryanwible/projects/spite/src/lib.rs", Edition2024) }
+   0.048672583s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleItem(ChangedFile { reference: "/Users/ryanwible/projects/spite/target/debug/.fingerprint/spite-d4072c1582ea83d3/dep-lib-spite", reference_mtime: FileTime { seconds: 1768968513, nanos: 625113695 }, stale: "/Users/ryanwible/projects/spite/src/lexer/lexer.rs", stale_mtime: FileTime { seconds: 1768968588, nanos: 19445545 } }))
+   0.050057041s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint: stale: changed "/Users/ryanwible/projects/spite/src/lexer/lexer.rs"
+   0.050059583s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint:           (vs) "/Users/ryanwible/projects/spite/target/debug/.fingerprint/spite-e81aef26bc0ce571/dep-test-lib-spite"
+   0.050060833s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint:                FileTime { seconds: 1768968513, nanos: 625130736 } < FileTime { seconds: 1768968588, nanos: 19445545 }
+   0.050088958s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint: fingerprint dirty for spite v0.1.0 (/Users/ryanwible/projects/spite)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("spite", ["lib"], "/Users/ryanwible/projects/spite/src/lib.rs", Edition2024) }
+   0.050092125s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleItem(ChangedFile { reference: "/Users/ryanwible/projects/spite/target/debug/.fingerprint/spite-e81aef26bc0ce571/dep-test-lib-spite", reference_mtime: FileTime { seconds: 1768968513, nanos: 625130736 }, stale: "/Users/ryanwible/projects/spite/src/lexer/lexer.rs", stale_mtime: FileTime { seconds: 1768968588, nanos: 19445545 } }))
+   0.050247416s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint: fingerprint dirty for spite v0.1.0 (/Users/ryanwible/projects/spite)/Check { test: false }/TargetInner { name: "spite", doc: true, ..: with_path("/Users/ryanwible/projects/spite/src/bin/spite.rs", Edition2024) }
+   0.050250125s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleDepFingerprint { name: "spite" })
+   0.050416958s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint: fingerprint dirty for spite v0.1.0 (/Users/ryanwible/projects/spite)/Check { test: true }/TargetInner { name: "spite", doc: true, ..: with_path("/Users/ryanwible/projects/spite/src/bin/spite.rs", Edition2024) }
+   0.050419333s  INFO prepare_target{force=false package_id=spite v0.1.0 (/Users/ryanwible/projects/spite) target="spite"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleDepFingerprint { name: "spite" })
     Checking spite v0.1.0 (/Users/ryanwible/projects/spite)
-error: could not compile `spite` (bin "spite" test) due to 1 previous error
-warning: build failed, waiting for other jobs to finish...
-error: could not compile `spite` (bin "spite") due to 1 previous error
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.11s

@@ -27,11 +27,11 @@ pub enum LexError {
 
     #[error(r"indent not multiple of four")]
     #[diagnostic(
-        code(lang::lex::unexpected_tab),
+        code(lang::lex::indent_error),
         help("Make sure your indents are exactly four spaces each")
     )]
     IndentNotMultipleOfFour {
-        #[label("tab character found here")]
+        #[label("indentation here")]
         span: SourceSpan,
     },
 
@@ -42,6 +42,27 @@ pub enum LexError {
     )]
     InconsistentIndent {
         #[label("indentation here")]
+        span: SourceSpan,
+    },
+
+    #[error("unexpected character '{char}'")]
+    #[diagnostic(
+        code(lang::lex::unexpected_char),
+        help("This character is not valid in this position.")
+    )]
+    UnexpectedCharacter {
+        #[label("unexpected character")]
+        span: SourceSpan,
+        char: char,
+    },
+
+    #[error("unterminated string literal")]
+    #[diagnostic(
+        code(lang::lex::unterminated_string),
+        help("Add a closing quote (\") to the end of the string.")
+    )]
+    UnterminatedString {
+        #[label("string starts here")]
         span: SourceSpan,
     },
 }

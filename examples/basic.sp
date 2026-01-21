@@ -3,7 +3,7 @@ A Whale:
         name: String
 
     can swim(distance: Number):
-        print("Hi! My name is {its.name} and I can swim {distance.toString()})
+        print("Hi! My name is {its.name} and I can swim {distance.toString()}")
 
 to make_moby_swim():
     moby = Whale(name="moby")
