@@ -1,4 +1,7 @@
+use miette::SourceSpan;
 use strum_macros::AsRefStr;
+
+pub type SpannedToken = (Token, SourceSpan);
 
 #[derive(AsRefStr, Debug, Clone, PartialEq)]
 pub enum Token {

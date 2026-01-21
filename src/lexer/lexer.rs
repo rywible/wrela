@@ -1,5 +1,5 @@
 use super::errors::LexError;
-use super::tokens::Token;
+use super::tokens::{SpannedToken, Token};
 use miette::{Result, SourceSpan, bail};
 use std::collections::VecDeque;
 
@@ -11,7 +11,7 @@ pub struct Lexer<'a> {
     at_beginning_of_line: bool,
     no_data_consumed: bool,
     indent_stack: Vec<usize>,
-    pending: VecDeque<Token>,
+    pending: VecDeque<SpannedToken>,
     eof_emitted: bool,
 }
 
@@ -40,6 +40,18 @@ impl<'a> Lexer<'a> {
 
     fn peek_next_byte(&self) -> Option<u8> {
         self.bytes.get(self.byte_index + 1).copied()
+    }
+
+    #[allow(dead_code)]
+    fn peek_n_bytes(&self, n: usize) -> Option<u8> {
+        self.bytes.get(self.byte_index + n).copied()
+    }
+
+    #[allow(dead_code)]
+    fn next_byte(&mut self) -> Option<u8> {
+        let b = self.current_byte()?;
+        self.byte_index += 1;
+        Some(b)
     }
 
     fn consume_newline(&mut self) -> bool {
@@ -174,7 +186,7 @@ impl<'a> Lexer<'a> {
         Ok(())
     }
 
-    pub fn next_token(&mut self) -> Result<Option<Token>> {
+    pub fn next_token(&mut self) -> Result<Option<SpannedToken>> {
         // 1) If we already have queued tokens, return those first.
         if let Some(tok) = self.pending.pop_front() {
             return Ok(Some(tok));
@@ -186,9 +198,11 @@ impl<'a> Lexer<'a> {
                 // Dedent back to 0
                 while self.indent_stack.len() > 1 {
                     self.indent_stack.pop();
-                    self.pending.push_back(Token::Dedent);
+                    let span = SourceSpan::new(self.byte_index.into(), 0usize.into());
+                    self.pending.push_back((Token::Dedent, span));
                 }
-                self.pending.push_back(Token::Eof);
+                let span = SourceSpan::new(self.byte_index.into(), 0usize.into());
+                self.pending.push_back((Token::Eof, span));
                 self.eof_emitted = true;
 
                 return Ok(self.pending.pop_front());
@@ -204,10 +218,15 @@ impl<'a> Lexer<'a> {
             }
         }
 
+        // Capture start for newline or next token
+        let start_index = self.byte_index;
+
         // 4) Newlines produce a token and put us back at BOL.
         if self.consume_newline() {
             self.at_beginning_of_line = true;
-            return Ok(Some(Token::Newline));
+            let len = self.byte_index - start_index;
+            let span = SourceSpan::new(start_index.into(), len.into());
+            return Ok(Some((Token::Newline, span)));
         }
 
         // 5) Skip mid-line spaces (indentation rules only apply at BOL).
@@ -217,76 +236,79 @@ impl<'a> Lexer<'a> {
         }
 
         // 6) Real tokenization
+        // We reset start_index here because we might have skipped spaces above
+        let start_index = self.byte_index;
+
         let c = self.current_byte().unwrap(); // Safe because is_eof checked above
 
-        match c {
+        let token = match c {
             // Identifiers and Keywords (start with letter)
-            b'a'..=b'z' | b'A'..=b'Z' | b'_' => self.consume_identifier_or_keyword(),
+            b'a'..=b'z' | b'A'..=b'Z' | b'_' => self.consume_identifier_or_keyword()?,
 
             // Numbers (start with digit)
-            b'0'..=b'9' => self.consume_number(),
+            b'0'..=b'9' => self.consume_number()?,
 
             // Strings (start with quote)
-            b'"' => self.consume_string(),
+            b'"' => self.consume_string()?,
 
             // Simple Symbols
             b':' => {
                 self.byte_index += 1;
-                Ok(Some(Token::Colon))
+                Some(Token::Colon)
             }
             b'(' => {
                 self.byte_index += 1;
-                Ok(Some(Token::LParen))
+                Some(Token::LParen)
             }
             b')' => {
                 self.byte_index += 1;
-                Ok(Some(Token::RParen))
+                Some(Token::RParen)
             }
             b'.' => {
                 self.byte_index += 1;
-                Ok(Some(Token::Dot))
+                Some(Token::Dot)
             }
             b',' => {
                 self.byte_index += 1;
-                Ok(Some(Token::Comma))
+                Some(Token::Comma)
             }
 
             // Math
             b'+' => {
                 self.byte_index += 1;
-                Ok(Some(Token::Plus))
+                Some(Token::Plus)
             }
             b'-' => {
                 self.byte_index += 1;
-                Ok(Some(Token::Minus))
+                Some(Token::Minus)
             }
             b'*' => {
                 self.byte_index += 1;
-                Ok(Some(Token::Star))
+                Some(Token::Star)
             }
             b'/' => {
                 self.byte_index += 1;
-                Ok(Some(Token::Slash))
+                Some(Token::Slash)
             }
             b'%' => {
                 self.byte_index += 1;
-                Ok(Some(Token::Percent))
+                Some(Token::Percent)
             }
 
             // Multi-char operators
             b'=' => {
                 if matches!(self.peek_next_byte(), Some(b'=')) {
                     self.byte_index += 2;
-                    Ok(Some(Token::EqEq))
+                    Some(Token::EqEq)
                 } else {
                     self.byte_index += 1;
-                    Ok(Some(Token::Equals))
+                    Some(Token::Equals)
                 }
             }
             b'!' => {
                 if matches!(self.peek_next_byte(), Some(b'=')) {
                     self.byte_index += 2;
-                    Ok(Some(Token::BangEq))
+                    Some(Token::BangEq)
                 } else {
                     let span = SourceSpan::new(self.byte_index.into(), 1usize.into());
                     bail!(LexError::UnexpectedCharacter { span, char: '!' });
@@ -295,19 +317,19 @@ impl<'a> Lexer<'a> {
             b'<' => {
                 if matches!(self.peek_next_byte(), Some(b'=')) {
                     self.byte_index += 2;
-                    Ok(Some(Token::LessEq))
+                    Some(Token::LessEq)
                 } else {
                     self.byte_index += 1;
-                    Ok(Some(Token::Less))
+                    Some(Token::Less)
                 }
             }
             b'>' => {
                 if matches!(self.peek_next_byte(), Some(b'=')) {
                     self.byte_index += 2;
-                    Ok(Some(Token::GreaterEq))
+                    Some(Token::GreaterEq)
                 } else {
                     self.byte_index += 1;
-                    Ok(Some(Token::Greater))
+                    Some(Token::Greater)
                 }
             }
 
@@ -319,6 +341,16 @@ impl<'a> Lexer<'a> {
                     char: c as char
                 });
             }
+        };
+
+        if let Some(tok) = token {
+            let len = self.byte_index - start_index;
+            let span = SourceSpan::new(start_index.into(), len.into());
+            Ok(Some((tok, span)))
+        } else {
+            // This happens if consume_identifier_or_keyword consumed a comment block
+            // In that case, we recurse to get the next real token
+            self.next_token()
         }
     }
 
@@ -358,7 +390,7 @@ impl<'a> Lexer<'a> {
                 if self.current_byte() == Some(b':') {
                     self.byte_index += 1; // Consume ':'
                     self.consume_so_comment_block()?;
-                    self.next_token()
+                    Ok(None) // Return None to signal "no token here, keep looking"
                 } else {
                     Ok(Some(Token::Identifier(text.to_string())))
                 }
@@ -469,16 +501,25 @@ impl<'a> Lexer<'a> {
 
         // Emit INDENT/DEDENT tokens based on indent stack
         let current = *self.indent_stack.last().unwrap();
+
+        // Helper to make span for indentation
+        let make_span =
+            |len: usize| -> SourceSpan { SourceSpan::new(indent_start.into(), len.into()) };
+
         if spaces > current {
             self.indent_stack.push(spaces);
-            self.pending.push_back(Token::Indent);
+            // Indent span covers all spaces
+            self.pending.push_back((Token::Indent, make_span(spaces)));
         } else if spaces < current {
             while let Some(&top) = self.indent_stack.last() {
                 if top == spaces {
                     break;
                 }
                 self.indent_stack.pop();
-                self.pending.push_back(Token::Dedent);
+                // Dedent span is technically zero-width at current point,
+                // OR we could say it "matches" the indentation of this line.
+                // Let's use the whitespace on this line for the span.
+                self.pending.push_back((Token::Dedent, make_span(spaces)));
             }
             if *self.indent_stack.last().unwrap() != spaces {
                 let span = SourceSpan::new(indent_start.into(), spaces.into());
@@ -491,7 +532,7 @@ impl<'a> Lexer<'a> {
         Ok(())
     }
 
-    pub fn lex(&mut self) -> Result<Vec<Token>> {
+    pub fn lex(&mut self) -> Result<Vec<SpannedToken>> {
         let mut out = Vec::new();
         while let Some(tok) = self.next_token()? {
             out.push(tok);
@@ -504,6 +545,10 @@ impl<'a> Lexer<'a> {
 mod tests {
     use super::*;
     use crate::lexer::tokens::Token;
+
+    fn strip_spans(tokens: Vec<SpannedToken>) -> Vec<Token> {
+        tokens.into_iter().map(|(t, _)| t).collect()
+    }
 
     #[test]
     fn test_basic_lexing() {
@@ -521,7 +566,7 @@ to make_moby_swim():
 make_moby_swim()
 "#;
         let mut lexer = Lexer::new(input);
-        let tokens = lexer.lex().unwrap();
+        let tokens = strip_spans(lexer.lex().unwrap());
 
         // simple sanity check of the first few tokens
         assert_eq!(tokens[0], Token::Class); // A
@@ -542,7 +587,7 @@ else:
     val = true and false
 "#;
         let mut lexer = Lexer::new(input);
-        let tokens = lexer.lex().unwrap();
+        let tokens = strip_spans(lexer.lex().unwrap());
 
         let valid_tokens: Vec<Token> = tokens
             .into_iter()
@@ -580,25 +625,13 @@ to async_ops():
     so:
         This is a multiline comment block
         It spans multiple lines
-
+        
         And has blank lines
-
+    
     return x
 "#;
         let mut lexer = Lexer::new(input);
-        let tokens = lexer.lex().unwrap();
-
-        // Trace:
-        // Newline
-        // to async_ops(): -> To, Identifier, LParen, RParen, Colon, Newline
-        // Indent
-        // await some_task() -> Await, Identifier, LParen, RParen, Newline
-        // so: ... -> (Consumed)
-        // x = 1 -> Identifier, Equals, Number, Newline
-        // so: ... -> (Consumed block)
-        // return x -> Return, Identifier, Newline
-        // Dedent
-        // Eof
+        let tokens = strip_spans(lexer.lex().unwrap());
 
         let valid_tokens: Vec<Token> = tokens
             .into_iter()
@@ -630,5 +663,27 @@ to async_ops():
         // return x
         assert_eq!(valid_tokens[12], Token::Return);
         assert_eq!(valid_tokens[13], Token::Identifier("x".to_string()));
+    }
+
+    #[test]
+    fn test_spans() {
+        let input = "x = 42";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.lex().unwrap();
+
+        // 0: Identifier(x) at 0..1
+        assert_eq!(tokens[0].0, Token::Identifier("x".to_string()));
+        assert_eq!(tokens[0].1.offset(), 0);
+        assert_eq!(tokens[0].1.len(), 1);
+
+        // 1: Equals at 2..3 (skipped space at 1)
+        assert_eq!(tokens[1].0, Token::Equals);
+        assert_eq!(tokens[1].1.offset(), 2);
+        assert_eq!(tokens[1].1.len(), 1);
+
+        // 2: Number(42) at 4..6
+        assert_eq!(tokens[2].0, Token::Number(42.0));
+        assert_eq!(tokens[2].1.offset(), 4);
+        assert_eq!(tokens[2].1.len(), 2);
     }
 }
