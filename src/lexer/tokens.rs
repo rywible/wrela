@@ -11,6 +11,30 @@ pub enum Token {
     Can,
     #[strum(serialize = "to")]
     To,
+    #[strum(serialize = "if")]
+    If,
+    #[strum(serialize = "else")]
+    Else,
+    #[strum(serialize = "while")]
+    While,
+    #[strum(serialize = "for")]
+    For,
+    #[strum(serialize = "return")]
+    Return,
+    #[strum(serialize = "true")]
+    True,
+    #[strum(serialize = "false")]
+    False,
+    #[strum(serialize = "nothing")]
+    Nothing,
+    #[strum(serialize = "and")]
+    And,
+    #[strum(serialize = "or")]
+    Or,
+    #[strum(serialize = "not")]
+    Not,
+    #[strum(serialize = "await")]
+    Await,
 
     // Literals
     #[strum(serialize = "Identifier")]
@@ -29,10 +53,34 @@ pub enum Token {
     RParen,
     #[strum(serialize = ".")]
     Dot,
-    #[strum(serialize = "=")]
-    Equals,
     #[strum(serialize = ",")]
     Comma,
+
+    // Operators
+    #[strum(serialize = "=")]
+    Equals,
+    #[strum(serialize = "==")]
+    EqEq,
+    #[strum(serialize = "!=")]
+    BangEq,
+    #[strum(serialize = "<")]
+    Less,
+    #[strum(serialize = "<=")]
+    LessEq,
+    #[strum(serialize = ">")]
+    Greater,
+    #[strum(serialize = ">=")]
+    GreaterEq,
+    #[strum(serialize = "+")]
+    Plus,
+    #[strum(serialize = "-")]
+    Minus,
+    #[strum(serialize = "*")]
+    Star,
+    #[strum(serialize = "/")]
+    Slash,
+    #[strum(serialize = "%")]
+    Percent,
 
     // Structural
     #[strum(serialize = "Indent")]
