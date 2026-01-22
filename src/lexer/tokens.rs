@@ -106,6 +106,8 @@ pub enum Token {
     Comma,
     #[strum(serialize = "@")]
     At,
+    #[strum(serialize = "->")]
+    Arrow,
 
     // Operators
     #[strum(serialize = "=")]
@@ -226,6 +228,7 @@ impl Token {
                 | Token::Range
                 | Token::Comma
                 | Token::At
+                | Token::Arrow
                 | Token::Equals
                 | Token::EqEq
                 | Token::BangEq

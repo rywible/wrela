@@ -117,9 +117,9 @@ to async_ops():
     so:
         This is a multiline comment block
         It spans multiple lines
-        
+
         And has blank lines
-    
+
     return x
 "#;
     let mut lexer = Lexer::new(input);
@@ -510,6 +510,41 @@ An Apple
     assert_eq!(valid_tokens[17], Token::An);
     // "Apple" is an identifier. It is not the keyword "A" (Class).
     assert_eq!(valid_tokens[18], Token::Identifier(SmolStr::new("Apple")));
+}
+
+#[test]
+fn test_unicode_and_bitwise() {
+    let input = "🚀 = ~0b1010";
+    let mut lexer = Lexer::new(input);
+    let (tokens, errors) = lexer.lex();
+    assert!(errors.is_empty(), "Lexing failed: {:?}", errors);
+    let tokens = strip_spans(tokens);
+
+    // 0: Identifier("🚀")
+    assert_eq!(tokens[0], Token::Identifier(SmolStr::new("🚀")));
+    // 1: Equals
+    assert_eq!(tokens[1], Token::Equals);
+    // 2: BitwiseNot
+    assert_eq!(tokens[2], Token::BitwiseNot);
+    // 3: Integer(10)
+    assert_eq!(tokens[3], Token::Integer(10, SmolStr::new("0b1010")));
+}
+
+#[test]
+fn test_arrow_token() {
+    let input = "to main() -> nothing:";
+    let mut lexer = Lexer::new(input);
+    let (tokens, errors) = lexer.lex();
+    assert!(errors.is_empty(), "{:?}", errors);
+    let tokens = strip_spans(tokens);
+
+    assert_eq!(tokens[0], Token::To);
+    assert_eq!(tokens[1], Token::Identifier(SmolStr::new("main")));
+    assert_eq!(tokens[2], Token::LParen);
+    assert_eq!(tokens[3], Token::RParen);
+    assert_eq!(tokens[4], Token::Arrow);
+    assert_eq!(tokens[5], Token::Nothing);
+    assert_eq!(tokens[6], Token::Colon);
 }
 
 #[test]
