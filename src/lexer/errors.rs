@@ -33,6 +33,8 @@ pub enum LexError {
     IndentNotMultipleOfFour {
         #[label("indentation here")]
         span: SourceSpan,
+        #[label("previous valid level here")]
+        reference: Option<SourceSpan>,
     },
 
     #[error("inconsistent indentation level")]
@@ -43,6 +45,8 @@ pub enum LexError {
     InconsistentIndent {
         #[label("indentation here")]
         span: SourceSpan,
+        #[label("matching level here")]
+        reference: Option<SourceSpan>,
     },
 
     #[error("unexpected character '{char}'")]
@@ -86,6 +90,15 @@ pub enum LexError {
     )]
     InvalidMultilineIndent {
         #[label("incorrect indentation here")]
+        span: SourceSpan,
+    },
+    #[error("invalid numeric literal")]
+    #[diagnostic(
+        code(lang::lex::invalid_literal),
+        help("Check the format of this number.")
+    )]
+    InvalidLiteral {
+        #[label("invalid literal")]
         span: SourceSpan,
     },
 }

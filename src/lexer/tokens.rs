@@ -1,9 +1,11 @@
 use miette::SourceSpan;
-use strum_macros::AsRefStr;
+use smol_str::SmolStr;
+use std::fmt;
+use strum_macros::{AsRefStr, EnumIter};
 
 pub type SpannedToken = (Token, SourceSpan);
 
-#[derive(AsRefStr, Debug, Clone, PartialEq)]
+#[derive(AsRefStr, EnumIter, Debug, Clone, PartialEq)]
 pub enum Token {
     // Keywords
     #[strum(serialize = "A")]
@@ -67,19 +69,19 @@ pub enum Token {
 
     // Literals
     #[strum(serialize = "Identifier")]
-    Identifier(String),
+    Identifier(SmolStr),
     #[strum(serialize = "String")]
-    StringLiteral(String),
+    StringLiteral(SmolStr),
     #[strum(serialize = "StringStart")]
-    StringStart(String),
+    StringStart(SmolStr),
     #[strum(serialize = "StringPart")]
-    StringPart(String),
+    StringPart(SmolStr),
     #[strum(serialize = "StringEnd")]
-    StringEnd(String),
+    StringEnd(SmolStr),
     #[strum(serialize = "Integer")]
-    Integer(i64),
+    Integer(i64, SmolStr), // (Value, RawText)
     #[strum(serialize = "Float")]
-    Float(f64),
+    Float(f64, SmolStr), // (Value, RawText)
 
     // Symbols
     #[strum(serialize = ":")]
@@ -155,7 +157,7 @@ pub enum Token {
     #[strum(serialize = ">>")]
     ShiftRight,
 
-    // Structural
+    // Structural / Trivia
     #[strum(serialize = "Indent")]
     Indent,
     #[strum(serialize = "Dedent")]
@@ -163,5 +165,122 @@ pub enum Token {
     #[strum(serialize = "End of file")]
     Eof,
     #[strum(serialize = "Newline")]
-    Newline,
+    Newline(SmolStr),
+    #[strum(serialize = "Whitespace")]
+    Whitespace(SmolStr),
+    #[strum(serialize = "Comment")]
+    Comment(SmolStr),
+    #[strum(serialize = "DocComment")]
+    DocComment(SmolStr),
+    #[strum(serialize = "InvalidLiteral")]
+    InvalidLiteral(SmolStr),
+}
+
+impl Token {
+    pub fn is_keyword(&self) -> bool {
+        matches!(
+            self,
+            Token::Class
+                | Token::An
+                | Token::Has
+                | Token::Can
+                | Token::To
+                | Token::If
+                | Token::Else
+                | Token::While
+                | Token::For
+                | Token::In
+                | Token::Return
+                | Token::Break
+                | Token::Continue
+                | Token::Match
+                | Token::Otherwise
+                | Token::True
+                | Token::False
+                | Token::Nothing
+                | Token::And
+                | Token::Or
+                | Token::Not
+                | Token::Await
+                | Token::Spawn
+                | Token::Use
+                | Token::From
+                | Token::Public
+                | Token::Private
+                | Token::Its
+                | Token::Changing
+        )
+    }
+
+    pub fn is_symbol(&self) -> bool {
+        matches!(
+            self,
+            Token::Colon
+                | Token::LParen
+                | Token::RParen
+                | Token::LBracket
+                | Token::RBracket
+                | Token::LBrace
+                | Token::RBrace
+                | Token::Dot
+                | Token::Range
+                | Token::Comma
+                | Token::At
+                | Token::Equals
+                | Token::EqEq
+                | Token::BangEq
+                | Token::Less
+                | Token::LessEq
+                | Token::Greater
+                | Token::GreaterEq
+                | Token::Plus
+                | Token::Minus
+                | Token::Star
+                | Token::Slash
+                | Token::Percent
+                | Token::PlusEq
+                | Token::MinusEq
+                | Token::StarEq
+                | Token::SlashEq
+                | Token::Ampersand
+                | Token::Pipe
+                | Token::Caret
+                | Token::BitwiseNot
+                | Token::ShiftLeft
+                | Token::ShiftRight
+        )
+    }
+
+    pub fn is_trivia(&self) -> bool {
+        matches!(
+            self,
+            Token::Whitespace(_) | Token::Comment(_) | Token::Newline(_) | Token::DocComment(_)
+        )
+    }
+}
+
+impl fmt::Display for Token {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Token::Identifier(s) => write!(f, "{}", s),
+            Token::StringLiteral(s) => write!(f, "\"{}\"", s),
+            Token::StringStart(s) => {
+                write!(f, "\"")?;
+                write!(f, "{}", s)
+            }
+            Token::StringPart(s) => write!(f, "{}", s),
+            Token::StringEnd(s) => {
+                write!(f, "{}", s)?;
+                write!(f, "\"")
+            }
+            Token::Integer(_, raw) => write!(f, "{}", raw),
+            Token::Float(_, raw) => write!(f, "{}", raw),
+            Token::Newline(s) => write!(f, "{}", s),
+            Token::Whitespace(s) => write!(f, "{}", s),
+            Token::Comment(s) => write!(f, "so:{}", s),
+            Token::DocComment(s) => write!(f, "so:{}", s),
+            Token::Indent | Token::Dedent | Token::Eof => Ok(()),
+            _ => write!(f, "{}", self.as_ref()),
+        }
+    }
 }

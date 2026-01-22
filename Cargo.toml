@@ -15,5 +15,9 @@ strum = "0.26"
 strum_macros = "0.26"
 miette = { version = "7", features = ["fancy"] }
 thiserror = "1"
+smol_str = "0.3.5"
+
+[dev-dependencies]
+proptest = "1.9.0"
 # LLVM codegen
 # inkwell = { version = "0.8", features = ["llvm21-1"] }
