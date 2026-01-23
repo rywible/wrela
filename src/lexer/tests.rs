@@ -413,7 +413,7 @@ fn test_numeric_literals() {
 
 #[test]
 fn test_modularity() {
-    let input = "use std from core @test";
+    let input = "use std, io from core";
     let mut lexer = Lexer::new(input);
     let (tokens, errors) = lexer.lex();
     assert!(errors.is_empty());
@@ -421,10 +421,10 @@ fn test_modularity() {
 
     assert_eq!(tokens[0], Token::Use);
     assert_eq!(tokens[1], Token::Identifier(SmolStr::new("std")));
-    assert_eq!(tokens[2], Token::From);
-    assert_eq!(tokens[3], Token::Identifier(SmolStr::new("core")));
-    assert_eq!(tokens[4], Token::At);
-    assert_eq!(tokens[5], Token::Identifier(SmolStr::new("test")));
+    assert_eq!(tokens[2], Token::Comma);
+    assert_eq!(tokens[3], Token::Identifier(SmolStr::new("io")));
+    assert_eq!(tokens[4], Token::From);
+    assert_eq!(tokens[5], Token::Identifier(SmolStr::new("core")));
 }
 
 #[test]
@@ -458,6 +458,7 @@ match x:
     1: break
     otherwise: continue
 its.name
+it
 An Apple
 "#;
     let mut lexer = Lexer::new(input);
@@ -506,10 +507,13 @@ An Apple
     assert_eq!(valid_tokens[15], Token::Dot);
     assert_eq!(valid_tokens[16], Token::Identifier(SmolStr::new("name")));
 
+    // it
+    assert_eq!(valid_tokens[17], Token::It);
+
     // An Apple
-    assert_eq!(valid_tokens[17], Token::An);
+    assert_eq!(valid_tokens[18], Token::An);
     // "Apple" is an identifier. It is not the keyword "A" (Class).
-    assert_eq!(valid_tokens[18], Token::Identifier(SmolStr::new("Apple")));
+    assert_eq!(valid_tokens[19], Token::Identifier(SmolStr::new("Apple")));
 }
 
 #[test]

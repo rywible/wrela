@@ -64,6 +64,8 @@ pub enum Token {
     Private,
     #[strum(serialize = "its")]
     Its,
+    #[strum(serialize = "it")]
+    It,
     #[strum(serialize = "changing")]
     Changing,
 
@@ -210,6 +212,7 @@ impl Token {
                 | Token::Public
                 | Token::Private
                 | Token::Its
+                | Token::It
                 | Token::Changing
         )
     }

@@ -397,3 +397,11 @@ impl<'a> Lexer<'a> {
         None
     }
 }
+
+impl<'a> Iterator for Lexer<'a> {
+    type Item = SpannedToken;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.next_token().ok().flatten()
+    }
+}
