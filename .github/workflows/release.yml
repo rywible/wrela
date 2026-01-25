@@ -5,6 +5,10 @@ on:
     tags:
       - "v*"
   workflow_dispatch: {}
+  workflow_run:
+    workflows: ["alpha-tag"]
+    types:
+      - completed
 
 jobs:
   build:
@@ -22,8 +26,29 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
     runs-on: ${{ matrix.os }}
+    outputs:
+      tag: ${{ steps.resolve_tag.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tag
+        id: resolve_tag
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            tag="${GITHUB_REF_NAME}"
+          else
+            git fetch --tags
+            tag="$(git tag -l 'v*' | sort -V | tail -n 1)"
+          fi
+          if [ -z "${tag}" ]; then
+            echo "No tag found" >&2
+            exit 1
+          fi
+          git checkout "${tag}"
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -61,4 +86,5 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.build.outputs.tag }}
           files: dist/*/*.tar.gz
