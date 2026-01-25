@@ -27,7 +27,7 @@ case "${os}" in
     ;;
 esac
 
-url="https://github.com/ryanwible/wrela/releases/latest/download/wrela-${target}.tar.gz"
+url="https://github.com/rywible/wrela/releases/latest/download/wrela-${target}.tar.gz"
 
 mkdir -p "${PREFIX}"
 curl -fsSL "${url}" | tar -xz -C "${PREFIX}"
