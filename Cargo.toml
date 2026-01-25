@@ -1,24 +1,12 @@
-[package]
-name = "spite"
-version = "0.1.0"
-edition = "2024"
-license = "MIT"
-description = "The Spite programming language compiler"
-repository = "https://github.com/ryanwible/spite"
+[workspace]
+resolver = "3"
+members = [
+    "crates/compiler",
+    "crates/runtime",
+]
 
-[[bin]]
-name = "spite"
-path = "src/bin/spite.rs"
-
-[dependencies]
-strum = "0.26"
-strum_macros = "0.26"
-miette = { version = "7", features = ["fancy"] }
-thiserror = "1"
-smol_str = "0.3.5"
-rowan = "0.16.1"
-
-[dev-dependencies]
-proptest = "1.9.0"
-# LLVM codegen
-# inkwell = { version = "0.8", features = ["llvm21-1"] }
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+panic = "abort"
