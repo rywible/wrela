@@ -3,13 +3,13 @@ Wrela Install
 Quick install (macOS/Linux, x86_64 + arm64):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ryanwible/wrela/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/rywible/wrela/main/scripts/install.sh | bash
 ```
 
 To customize the install location:
 
 ```sh
-PREFIX="$HOME/.local/wrela" curl -fsSL https://raw.githubusercontent.com/ryanwible/wrela/main/scripts/install.sh | bash
+PREFIX="$HOME/.local/wrela" curl -fsSL https://raw.githubusercontent.com/rywible/wrela/main/scripts/install.sh | bash
 ```
 
 Add to your PATH (default):
@@ -30,3 +30,9 @@ Targets:
 - macOS x86_64: `x86_64-apple-darwin`
 - Linux arm64: `aarch64-unknown-linux-gnu`
 - Linux x86_64: `x86_64-unknown-linux-gnu`
+
+To install a specific release:
+
+```sh
+WRELA_TAG=v0.1.0-alpha.1 curl -fsSL https://raw.githubusercontent.com/rywible/wrela/main/scripts/install.sh | bash
+```

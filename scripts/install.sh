@@ -27,7 +27,21 @@ case "${os}" in
     ;;
 esac
 
-url="https://github.com/rywible/wrela/releases/latest/download/wrela-${target}.tar.gz"
+tag="${WRELA_TAG:-}"
+if [ -z "${tag}" ]; then
+  api="https://api.github.com/repos/rywible/wrela/releases"
+  if command -v jq >/dev/null 2>&1; then
+    tag="$(curl -fsSL "${api}" | jq -r '.[0].tag_name')"
+  else
+    tag="$(curl -fsSL "${api}" | sed -n 's/.*"tag_name": *"\\([^"]*\\)".*/\\1/p' | head -n 1)"
+  fi
+  if [ -z "${tag}" ] || [ "${tag}" = "null" ]; then
+    echo "Failed to resolve a release tag. Set WRELA_TAG to install a specific release." >&2
+    exit 1
+  fi
+fi
+
+url="https://github.com/rywible/wrela/releases/download/${tag}/wrela-${target}.tar.gz"
 
 mkdir -p "${PREFIX}"
 curl -fsSL "${url}" | tar -xz -C "${PREFIX}"
