@@ -11,8 +11,16 @@ pub struct ValidationError {
 pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
     let mut errors = Vec::new();
     for element in root.descendants_with_tokens() {
-        if let Some(token) = element.into_token()
-            && (token.kind() == SyntaxKind::PublicKw || token.kind() == SyntaxKind::PrivateKw)
+        let Some(token) = element.into_token() else {
+            continue;
+        };
+        if token.kind() == SyntaxKind::InvalidLiteral {
+            errors.push(ValidationError {
+                message: "invalid numeric literal".to_string(),
+                span: span_for_token(&token),
+            });
+        }
+        if (token.kind() == SyntaxKind::PublicKw || token.kind() == SyntaxKind::PrivateKw)
             && let Some(parent) = token.parent()
             && !is_allowed_visibility_parent(parent.kind())
         {
@@ -24,6 +32,54 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
     }
     for node in root.descendants() {
         match node.kind() {
+            SyntaxKind::FuncDef => {
+                if !has_token(&node, SyntaxKind::Ident) {
+                    errors.push(ValidationError {
+                        message: "function definition requires a name".to_string(),
+                        span: span_for_node(&node),
+                    });
+                }
+            }
+            SyntaxKind::ClassDef => {
+                if !has_token(&node, SyntaxKind::Ident) {
+                    errors.push(ValidationError {
+                        message: "class definition requires a name".to_string(),
+                        span: span_for_node(&node),
+                    });
+                }
+            }
+            SyntaxKind::MethodDef => {
+                if !has_token(&node, SyntaxKind::Ident) {
+                    errors.push(ValidationError {
+                        message: "method definition requires a name".to_string(),
+                        span: span_for_node(&node),
+                    });
+                }
+            }
+            SyntaxKind::Param => {
+                if !has_token(&node, SyntaxKind::Ident) {
+                    errors.push(ValidationError {
+                        message: "parameter requires a name".to_string(),
+                        span: span_for_node(&node),
+                    });
+                }
+            }
+            SyntaxKind::FieldDef => {
+                if !has_token(&node, SyntaxKind::Ident) {
+                    errors.push(ValidationError {
+                        message: "field definition requires a name".to_string(),
+                        span: span_for_node(&node),
+                    });
+                }
+            }
+            SyntaxKind::TypeRef => {
+                if !has_token(&node, SyntaxKind::Ident) {
+                    errors.push(ValidationError {
+                        message: "type reference requires a name".to_string(),
+                        span: span_for_node(&node),
+                    });
+                }
+            }
             SyntaxKind::ItExpr => {
                 if !is_in_return(&node) {
                     errors.push(ValidationError {
@@ -302,5 +358,27 @@ public if true:
                 .iter()
                 .any(|e| e.message == "use requires at least one name or '*'")
         );
+    }
+
+    #[test]
+    fn test_missing_function_name() {
+        let text = "\
+to () -> Int:
+    return 1
+";
+        let root = parse(text);
+        let errors = validate(&root);
+        assert!(errors.iter().any(|e| e.message == "function definition requires a name"));
+    }
+
+    #[test]
+    fn test_invalid_numeric_literal() {
+        let text = "\
+to f():
+    return 1e
+";
+        let root = parse(text);
+        let errors = validate(&root);
+        assert!(errors.iter().any(|e| e.message == "invalid numeric literal"));
     }
 }

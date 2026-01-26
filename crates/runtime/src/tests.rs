@@ -211,6 +211,54 @@ fn pending_await_multiple_times() {
 }
 
 #[test]
+fn actor_missing_method_returns_nil() {
+    let actor = wr_actor_spawn(10, Value::nil());
+    let pending = wr_actor_send(actor, 99, 0, std::ptr::null());
+    let val = wr_pending_await(pending);
+    let ok = wr_result_is_ok(val);
+    assert!(ok.as_bool());
+    let unwrapped = wr_result_unwrap(val);
+    assert!(unwrapped.is_nil());
+    unsafe {
+        wr_rc_dec(pending);
+        wr_rc_dec(actor);
+        wr_rc_dec(val);
+        wr_rc_dec(unwrapped);
+    }
+}
+
+#[test]
+fn actor_invalid_args_returns_nil() {
+    extern "C" fn add_one(argc: usize, argv: *const Value) -> Value {
+        if argc < 2 {
+            return Value::nil();
+        }
+        let args = unsafe { std::slice::from_raw_parts(argv, argc) };
+        let v = args[1];
+        if v.is_int() {
+            Value::from_int(v.as_int() + 1)
+        } else {
+            Value::nil()
+        }
+    }
+
+    wr_register_method(11, 0, add_one);
+    let actor = wr_actor_spawn(11, Value::nil());
+    let pending = wr_actor_send(actor, 0, 0, std::ptr::null());
+    let val = wr_pending_await(pending);
+    let ok = wr_result_is_ok(val);
+    assert!(ok.as_bool());
+    let unwrapped = wr_result_unwrap(val);
+    assert!(unwrapped.is_nil());
+    unsafe {
+        wr_rc_dec(pending);
+        wr_rc_dec(actor);
+        wr_rc_dec(val);
+        wr_rc_dec(unwrapped);
+    }
+}
+
+#[test]
 fn actor_fire_executes() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -275,4 +323,47 @@ fn metrics_counts_basic() {
     let rc_dec = wr_metrics_get(crate::metrics::METRIC_RC_DEC);
     assert!(rc_inc >= 1);
     assert!(rc_dec >= 1);
+}
+
+#[test]
+fn refcount_invariants_common_flows() {
+    extern "C" fn noop(_argc: usize, _argv: *const Value) -> Value {
+        Value::nil()
+    }
+
+    wr_metrics_reset();
+    let list = wr_list_new(0);
+    let map = wr_map_new();
+    let name_ptrs = [b"x".as_ptr()];
+    let name_lens = [1usize];
+    let class = wr_class_new(TypeId::UserBase as u32, name_ptrs.as_ptr(), name_lens.as_ptr(), 1);
+
+    let key = wr_str_from_utf8(b"k".as_ptr(), 1);
+    let val = wr_str_from_utf8(b"v".as_ptr(), 1);
+
+    wr_list_push(list, key);
+    wr_map_set(map, key, val);
+    wr_class_set(class, b"x".as_ptr(), 1, val);
+
+    wr_register_method(12, 0, noop);
+    let actor = wr_actor_spawn(12, Value::nil());
+    let arg = wr_str_from_utf8(b"a".as_ptr(), 1);
+    let pending = wr_actor_send(actor, 0, 1, &arg as *const Value);
+    let result = wr_pending_await(pending);
+
+    unsafe {
+        wr_rc_dec(key);
+        wr_rc_dec(val);
+        wr_rc_dec(list);
+        wr_rc_dec(map);
+        wr_rc_dec(class);
+        wr_rc_dec(arg);
+        wr_rc_dec(actor);
+        wr_rc_dec(pending);
+        wr_rc_dec(result);
+    }
+
+    let rc_inc = wr_metrics_get(crate::metrics::METRIC_RC_INC);
+    let rc_dec = wr_metrics_get(crate::metrics::METRIC_RC_DEC);
+    assert_eq!(rc_dec, rc_inc + 9);
 }

@@ -327,3 +327,168 @@ to run() -> Int:
     let expected = ((3 << 3) | 1) & 0xFF;
     assert_eq!(status.code().unwrap_or(-1), expected);
 }
+
+#[test]
+fn native_class_method_call_smoke() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = r#"
+A Counter:
+    has:
+        value: Int
+
+    can inc() -> Int:
+        return its.value + 1
+
+to run() -> Int:
+    c = Counter(value=1)
+    return c.inc()
+"#;
+
+    let module = load_module_from_source(source);
+    let semantic = hir::semantic::check_module(&module);
+    assert!(
+        semantic.errors.is_empty(),
+        "semantic errors: {:?}",
+        semantic.errors
+    );
+    let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+    assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
+
+    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    for func in &mut mir_module.functions {
+        mir::opt::run_function_passes(func);
+    }
+    let mir_errors = mir::validate::validate_module(&mir_module);
+    assert!(mir_errors.is_empty(), "mir errors: {mir_errors:?}");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = dir.path().join("wr_class_method_smoke");
+    wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
+
+    let status = Command::new(&out).status().expect("run failed");
+    let expected = ((2 << 3) | 1) & 0xFF;
+    assert_eq!(status.code().unwrap_or(-1), expected);
+}
+
+#[test]
+fn native_actor_fire_smoke() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = r#"
+A Counter:
+    can add(x: Int) -> Int:
+        return x + 1
+
+to run() -> Int:
+    c = spawn Counter()
+    fire c.add(1)
+    v = await c.add(41) otherwise 0
+    return v
+"#;
+
+    let module = load_module_from_source(source);
+    let semantic = hir::semantic::check_module(&module);
+    assert!(
+        semantic.errors.is_empty(),
+        "semantic errors: {:?}",
+        semantic.errors
+    );
+    let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+    assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
+
+    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    for func in &mut mir_module.functions {
+        mir::opt::run_function_passes(func);
+    }
+    let mir_errors = mir::validate::validate_module(&mir_module);
+    assert!(mir_errors.is_empty(), "mir errors: {mir_errors:?}");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = dir.path().join("wr_actor_fire_smoke");
+    wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
+
+    let status = Command::new(&out).status().expect("run failed");
+    let expected = ((42 << 3) | 1) & 0xFF;
+    assert_eq!(status.code().unwrap_or(-1), expected);
+}
+
+#[test]
+fn native_result_otherwise_smoke() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = r#"
+to fail(flag: Bool) -> Result[Int, String]:
+    if flag:
+        return err "nope"
+    return 7
+
+to run() -> Int:
+    v = fail(true) otherwise 5
+    return v
+"#;
+
+    let module = load_module_from_source(source);
+    let semantic = hir::semantic::check_module(&module);
+    assert!(
+        semantic.errors.is_empty(),
+        "semantic errors: {:?}",
+        semantic.errors
+    );
+    let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+    assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
+
+    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    for func in &mut mir_module.functions {
+        mir::opt::run_function_passes(func);
+    }
+    let mir_errors = mir::validate::validate_module(&mir_module);
+    assert!(mir_errors.is_empty(), "mir errors: {mir_errors:?}");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = dir.path().join("wr_result_otherwise_smoke");
+    wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
+
+    let status = Command::new(&out).status().expect("run failed");
+    let expected = ((5 << 3) | 1) & 0xFF;
+    assert_eq!(status.code().unwrap_or(-1), expected);
+}
+
+#[test]
+fn native_crash_exits() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = r#"
+to run() -> Int:
+    crash("boom")
+    return 0
+"#;
+
+    let module = load_module_from_source(source);
+    let semantic = hir::semantic::check_module(&module);
+    assert!(
+        semantic.errors.is_empty(),
+        "semantic errors: {:?}",
+        semantic.errors
+    );
+    let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+    assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
+
+    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    for func in &mut mir_module.functions {
+        mir::opt::run_function_passes(func);
+    }
+    let mir_errors = mir::validate::validate_module(&mir_module);
+    assert!(mir_errors.is_empty(), "mir errors: {mir_errors:?}");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = dir.path().join("wr_crash");
+    wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
+
+    let status = Command::new(&out).status().expect("run failed");
+    assert!(!status.success(), "expected crash to exit non-zero");
+}

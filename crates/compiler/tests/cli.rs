@@ -80,3 +80,18 @@ fn cli_exit_code_type_error() {
         .expect("run wrela");
     assert_eq!(output.status.code(), Some(3));
 }
+
+#[test]
+fn cli_check_success() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("src").join("main.wr");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "to run() -> Int:\n    return 1\n").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("check")
+        .arg(&path)
+        .output()
+        .expect("run wrela");
+    assert!(output.status.success());
+}

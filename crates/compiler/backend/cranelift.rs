@@ -12,8 +12,10 @@ use smol_str::SmolStr;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::SystemTime;
 use target_lexicon::Triple;
 
 #[derive(Debug)]
@@ -219,7 +221,8 @@ pub fn compile_to_executable(mir: &MirModule, output: &Path) -> Result<(), Codeg
     let obj_path = temp_object_path(output);
     fs::write(&obj_path, obj).map_err(|err| CodegenError(format!("write obj failed: {err}")))?;
 
-    let mut cmd = linker_command()?;
+    let mut linker = linker_command()?;
+    let cmd = &mut linker.cmd;
     cmd.arg(&obj_path).arg("-o").arg(output);
     let runtime_lib = ensure_runtime_built()?;
     cmd.arg(runtime_lib);
@@ -230,12 +233,18 @@ pub fn compile_to_executable(mir: &MirModule, output: &Path) -> Result<(), Codeg
         cmd.env("MACOSX_DEPLOYMENT_TARGET", "11.0");
         cmd.arg("-Wl,-w");
     }
-    let status = cmd
-        .status()
-        .map_err(|err| CodegenError(format!("link failed: {err}")))?;
+    let output = cmd
+        .output()
+        .map_err(|err| linker_io_error(&linker.name, err))?;
 
-    if !status.success() {
-        return Err(CodegenError("linker failed".to_string()));
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let message = if stderr.trim().is_empty() {
+            "linker failed".to_string()
+        } else {
+            format!("linker failed: {}", stderr.trim())
+        };
+        return Err(CodegenError(message));
     }
 
     Ok(())
@@ -274,27 +283,10 @@ fn ensure_runtime_built() -> Result<PathBuf, CodegenError> {
     let workspace_root = manifest_dir.join("..").join("..");
     let profile = env::var("WRELA_RUNTIME_PROFILE").unwrap_or_else(|_| "debug".to_string());
     let lib_path = workspace_root.join("target").join(&profile).join(lib_name);
-    if lib_path.exists() {
-        let runtime_src = workspace_root.join("crates").join("runtime").join("src");
-        if let (Ok(lib_meta), Ok(entries)) = (fs::metadata(&lib_path), fs::read_dir(&runtime_src)) {
-            if let Ok(lib_time) = lib_meta.modified() {
-                let mut newest_src = lib_time;
-                for entry in entries.flatten() {
-                    if let Ok(meta) = entry.metadata() {
-                        if let Ok(modified) = meta.modified() {
-                            if modified > newest_src {
-                                newest_src = modified;
-                            }
-                        }
-                    }
-                }
-                if newest_src <= lib_time {
-                    return Ok(lib_path);
-                }
-            }
-        } else {
-            return Ok(lib_path);
-        }
+    if lib_path.exists()
+        && !runtime_needs_rebuild(&lib_path, &workspace_root.join("crates").join("runtime"))
+    {
+        return Ok(lib_path);
     }
 
     let mut cmd = Command::new("cargo");
@@ -302,12 +294,18 @@ fn ensure_runtime_built() -> Result<PathBuf, CodegenError> {
     if profile == "release" {
         cmd.arg("--release");
     }
-    let status = cmd
+    let output = cmd
         .current_dir(&workspace_root)
-        .status()
-        .map_err(|err| CodegenError(format!("runtime build failed: {err}")))?;
-    if !status.success() {
-        return Err(CodegenError("runtime build failed".to_string()));
+        .output()
+        .map_err(|err| tool_io_error("cargo", err))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let message = if stderr.trim().is_empty() {
+            "runtime build failed".to_string()
+        } else {
+            format!("runtime build failed: {}", stderr.trim())
+        };
+        return Err(CodegenError(message));
     }
     if lib_path.exists() {
         Ok(lib_path)
@@ -318,13 +316,24 @@ fn ensure_runtime_built() -> Result<PathBuf, CodegenError> {
     }
 }
 
-fn linker_command() -> Result<Command, CodegenError> {
+struct LinkerCommand {
+    cmd: Command,
+    name: String,
+}
+
+fn linker_command() -> Result<LinkerCommand, CodegenError> {
     if cfg!(target_os = "macos") {
         if let Some(path) = macos_clang_path()? {
-            return Ok(Command::new(path));
+            return Ok(LinkerCommand {
+                cmd: Command::new(&path),
+                name: path,
+            });
         }
     }
-    Ok(Command::new("cc"))
+    Ok(LinkerCommand {
+        cmd: Command::new("cc"),
+        name: "cc".to_string(),
+    })
 }
 
 fn macos_clang_path() -> Result<Option<String>, CodegenError> {
@@ -369,6 +378,66 @@ fn temp_object_path(output: &Path) -> PathBuf {
         .unwrap_or("wr_obj");
     path.push(format!("{}.o", name));
     path
+}
+
+fn runtime_needs_rebuild(lib_path: &Path, runtime_root: &Path) -> bool {
+    let lib_time = match fs::metadata(lib_path).and_then(|meta| meta.modified()) {
+        Ok(time) => time,
+        Err(_) => return true,
+    };
+    let src_dir = runtime_root.join("src");
+    if newest_mtime_in_tree(&src_dir).map_or(true, |time| time > lib_time) {
+        return true;
+    }
+    let manifest = runtime_root.join("Cargo.toml");
+    if let Some(time) = mtime(&manifest) {
+        if time > lib_time {
+            return true;
+        }
+    }
+    false
+}
+
+fn newest_mtime_in_tree(root: &Path) -> Option<SystemTime> {
+    let mut newest = None;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(path) = stack.pop() {
+        let entries = fs::read_dir(&path).ok()?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if let Some(time) = mtime(&path) {
+                newest = Some(match newest {
+                    Some(current) if current > time => current,
+                    _ => time,
+                });
+            }
+        }
+    }
+    newest
+}
+
+fn mtime(path: &Path) -> Option<SystemTime> {
+    fs::metadata(path).ok().and_then(|meta| meta.modified().ok())
+}
+
+fn tool_io_error(tool: &str, err: io::Error) -> CodegenError {
+    if err.kind() == io::ErrorKind::NotFound {
+        return CodegenError(format!(
+            "failed to run '{tool}': not found (install the Rust toolchain)"
+        ));
+    }
+    CodegenError(format!("failed to run '{tool}': {err}"))
+}
+
+fn linker_io_error(name: &str, err: io::Error) -> CodegenError {
+    if err.kind() == io::ErrorKind::NotFound {
+        return CodegenError(format!(
+            "linker '{name}' not found (install a C toolchain such as Xcode/clang or build-essential)"
+        ));
+    }
+    CodegenError(format!("link failed: {err}"))
 }
 
 fn create_object_module() -> Result<ObjectModule, CodegenError> {

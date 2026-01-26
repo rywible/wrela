@@ -46,8 +46,26 @@ url="https://github.com/rywible/wrela/releases/download/${tag}/wrela-${target}.t
 mkdir -p "${PREFIX}"
 curl -fsSL "${url}" | tar -xz -C "${PREFIX}"
 
+path_line="export PATH=\"${PREFIX}/bin:\$PATH\""
+shell_name="$(basename "${SHELL:-}")"
+case "${shell_name}" in
+  zsh) rc_file="${HOME}/.zshrc" ;;
+  bash) rc_file="${HOME}/.bashrc" ;;
+  *) rc_file="${HOME}/.profile" ;;
+esac
+
+if [ -f "${rc_file}" ]; then
+  if ! grep -Fq "${path_line}" "${rc_file}"; then
+    printf "\n%s\n" "${path_line}" >> "${rc_file}"
+  fi
+else
+  printf "%s\n" "${path_line}" > "${rc_file}"
+fi
+
 cat <<EOF
 Installed Wrela to: ${PREFIX}
 Add this to your PATH:
-  export PATH="${PREFIX}/bin:\$PATH"
+  ${path_line}
+Run this to activate in your current shell:
+  source "${rc_file}"
 EOF
