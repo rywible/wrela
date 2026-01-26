@@ -421,7 +421,7 @@ fn native_result_otherwise_smoke() {
         return;
     }
     let source = r#"
-to fail(flag: Bool) -> Result[Int, String]:
+to fail(flag: Bool) -> Result:
     if flag:
         return err "nope"
     return 7

@@ -308,12 +308,14 @@ fn ensure_runtime_built() -> Result<PathBuf, CodegenError> {
         return Err(CodegenError(message));
     }
     if lib_path.exists() {
-        Ok(lib_path)
-    } else {
-        Err(CodegenError(
-            "runtime library not found after build".to_string(),
-        ))
+        return Ok(lib_path);
     }
+    if let Some(fallback) = find_runtime_archive(&workspace_root.join("target").join(&profile)) {
+        return Ok(fallback);
+    }
+    Err(CodegenError(
+        "runtime library not found after build".to_string(),
+    ))
 }
 
 struct LinkerCommand {
@@ -378,6 +380,20 @@ fn temp_object_path(output: &Path) -> PathBuf {
         .unwrap_or("wr_obj");
     path.push(format!("{}.o", name));
     path
+}
+
+fn find_runtime_archive(target_dir: &Path) -> Option<PathBuf> {
+    let deps = target_dir.join("deps");
+    if let Ok(entries) = fs::read_dir(&deps) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = path.file_name()?.to_string_lossy();
+            if name.starts_with("libwrela_runtime") && name.ends_with(".a") {
+                return Some(path);
+            }
+        }
+    }
+    None
 }
 
 fn runtime_needs_rebuild(lib_path: &Path, runtime_root: &Path) -> bool {

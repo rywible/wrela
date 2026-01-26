@@ -442,25 +442,7 @@ impl BodyLoweringContext {
                 Expr::StringInterp(parts)
             }
             ast::Expr::It(_i) => Expr::Variable(SmolStr::new("it")),
-            ast::Expr::Its(i) => {
-                // 'its property' is desugared to 'it.property'
-                let it = self.alloc_expr(
-                    Expr::Variable(SmolStr::new("it")),
-                    self.empty_span(),
-                );
-                let member = i
-                    .syntax()
-                    .children_with_tokens()
-                    .filter_map(|it| it.into_token())
-                    .find(|it| it.kind() == SyntaxKind::Ident)
-                    .map(|t| (SmolStr::new(t.text()), t.text_range()));
-                let (member, member_span) = member.unwrap_or_else(|| (SmolStr::new(""), self.empty_span()));
-                Expr::Member {
-                    object: it,
-                    member,
-                    member_span,
-                }
-            }
+            ast::Expr::Its(_i) => Expr::Variable(SmolStr::new("it")),
             // All expression variants are handled above.
         };
         Some(self.alloc_expr(hir_expr, expr_span))
