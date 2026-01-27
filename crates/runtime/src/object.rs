@@ -1,4 +1,4 @@
-use crate::actor::{drop_actor, drop_pending};
+use crate::actor::{drop_actor, drop_pending, drop_pool};
 use crate::float_box::drop_float_box;
 use crate::class::drop_class;
 use crate::iter::drop_iter;
@@ -29,6 +29,7 @@ pub unsafe fn drop_object(ptr: *mut ObjHeader) {
         x if x == TypeId::Pending as u32 => unsafe { drop_pending(ptr) },
         x if x == TypeId::Iterator as u32 => unsafe { drop_iter(ptr) },
         x if x == TypeId::Result as u32 => unsafe { drop_result(ptr) },
+        x if x == TypeId::Pool as u32 => unsafe { drop_pool(ptr) },
         _ => {
             if type_id >= TypeId::UserBase as u32 {
                 unsafe { drop_class(ptr) };

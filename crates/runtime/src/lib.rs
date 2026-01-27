@@ -13,6 +13,7 @@ mod metrics;
 mod result;
 mod number;
 mod range;
+mod config;
 
 pub use value::{TypeId, Value};
 
@@ -293,8 +294,93 @@ pub extern "C" fn wr_crash(val: Value) -> Value {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn wr_actor_spawn(class_id: u32, instance: Value) -> Value {
-    actor::actor_spawn(class_id, instance)
+pub extern "C" fn wr_actor_spawn(
+    class_id: u64,
+    instance: Value,
+    pool_size: i64,
+    objective: i64,
+    mailbox_cap: i64,
+    enqueue_timeout_ms: i64,
+    batch_limit: i64,
+) -> Value {
+    actor::actor_spawn(
+        class_id,
+        instance,
+        pool_size,
+        objective,
+        mailbox_cap,
+        enqueue_timeout_ms,
+        batch_limit,
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_pool_new(handles: Value, objective: i64) -> Value {
+    actor::pool_new(handles, objective)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_pool_auto_size(objective: i64) -> Value {
+    Value::from_int(config::pool_auto_size(config::normalize_objective(objective)) as i64)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_pool_size(handle: Value) -> Value {
+    actor::pool_size(handle)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_pool_rr(handle: Value) -> Value {
+    actor::pool_rr(handle)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_actor_mailbox_len(handle: Value) -> Value {
+    actor::actor_mailbox_len(handle)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_actor_pause(handle: Value) -> Value {
+    actor::actor_pause(handle);
+    Value::nil()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_actor_resume(handle: Value) -> Value {
+    actor::actor_resume(handle);
+    Value::nil()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_actor_pause_wait(handle: Value) -> Value {
+    actor::actor_pause_wait(handle);
+    Value::nil()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_metrics_get(id_val: Value) -> Value {
+    let id = if id_val.is_int() {
+        id_val.as_int() as u32
+    } else {
+        0
+    };
+    Value::from_int(metrics::get(id) as i64)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_metrics_dropped_paused_id() -> Value {
+    Value::from_int(metrics::METRIC_MESSAGES_DROPPED_PAUSED as i64)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_metrics_messages_dropped_id() -> Value {
+    Value::from_int(metrics::METRIC_MESSAGES_DROPPED as i64)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_list_push_val(list_val: Value, val: Value) -> Value {
+    list::list_push(list_val, val);
+    Value::nil()
 }
 
 #[unsafe(no_mangle)]
@@ -345,11 +431,6 @@ pub extern "C" fn wr_class_set(obj: Value, name_ptr: *const u8, len: usize, val:
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_range_new(start: Value, end: Value) -> Value {
     range::range_new(start, end)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn wr_metrics_get(id: u32) -> u64 {
-    metrics::get(id)
 }
 
 #[unsafe(no_mangle)]

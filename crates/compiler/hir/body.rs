@@ -43,6 +43,10 @@ pub enum Stmt {
         mutable: bool,
         visibility: Option<crate::hir::Visibility>,
     },
+    Optimize {
+        objective: Objective,
+        body: Vec<Idx<Stmt>>,
+    },
     If {
         condition: Idx<Expr>,
         then_branch: Vec<Idx<Stmt>>,
@@ -81,6 +85,11 @@ pub struct MatchCase {
 pub enum Expr {
     Literal(Literal),
     Variable(SmolStr),
+    Detach {
+        target: Idx<Expr>,
+        size: PoolSize,
+        objective: Option<Objective>,
+    },
     Binary {
         lhs: Idx<Expr>,
         op: BinaryOp,
@@ -116,6 +125,32 @@ pub enum Literal {
     String(SmolStr),
     Bool(bool),
     Nil,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PoolSize {
+    Fixed(i64),
+    Auto,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Objective {
+    Latency,
+    Throughput,
+    Conservation,
+    Balance,
+}
+
+impl Objective {
+    pub fn from_str(name: &str) -> Option<Self> {
+        match name {
+            "latency" => Some(Objective::Latency),
+            "throughput" => Some(Objective::Throughput),
+            "conservation" => Some(Objective::Conservation),
+            "balance" => Some(Objective::Balance),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

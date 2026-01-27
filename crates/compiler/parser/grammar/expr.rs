@@ -44,7 +44,7 @@ fn lhs(p: &mut Parser) -> Option<crate::parser::CompletedMarker> {
             Some(m.complete(p, SyntaxKind::PrefixExpr))
         }
         SyntaxKind::CrashKw => parse_crash(p, m),
-        SyntaxKind::SpawnKw => parse_spawn(p, m),
+        SyntaxKind::DetachKw | SyntaxKind::SpawnKw => parse_detach(p, m),
         SyntaxKind::Ident => {
             p.bump();
             Some(m.complete(p, SyntaxKind::IdentExpr))
@@ -153,18 +153,37 @@ fn parse_postfixes(
     lhs
 }
 
-fn parse_spawn(p: &mut Parser, m: crate::parser::Marker) -> Option<crate::parser::CompletedMarker> {
-    p.expect(SyntaxKind::SpawnKw);
+fn parse_detach(p: &mut Parser, m: crate::parser::Marker) -> Option<crate::parser::CompletedMarker> {
+    if p.at(SyntaxKind::DetachKw) {
+        p.bump();
+    } else {
+        p.expect(SyntaxKind::SpawnKw);
+    }
     if !p.at(SyntaxKind::Ident) {
         p.error();
         return Some(m.complete(p, SyntaxKind::PrefixExpr));
     }
     let ident_m = p.start();
     p.expect(SyntaxKind::Ident);
-    let mut lhs = ident_m.complete(p, SyntaxKind::IdentExpr);
-    if p.at(SyntaxKind::LParen) {
-        lhs = parse_call(p, lhs);
-        let _ = lhs;
+    let lhs = ident_m.complete(p, SyntaxKind::IdentExpr);
+    let _ = parse_postfixes(p, lhs);
+    if p.at(SyntaxKind::Star) {
+        p.bump();
+        if p.at(SyntaxKind::IntNumber) || p.at(SyntaxKind::Ident) {
+            p.bump();
+        } else {
+            p.error_with_message_no_bump("expected pool size after '*'");
+        }
+    } else {
+        p.error_with_message_no_bump("expected '*' after detach");
+    }
+    if p.at(SyntaxKind::OptimizeKw) {
+        p.bump();
+        if p.at(SyntaxKind::Ident) {
+            p.bump();
+        } else {
+            p.error_with_message_no_bump("expected objective after optimize");
+        }
     }
     Some(m.complete(p, SyntaxKind::PrefixExpr))
 }

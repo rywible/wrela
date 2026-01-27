@@ -292,13 +292,13 @@ for i in 0...10:
 
 #[test]
 fn test_interpolation() {
-    let input = r#"spawn "Hello {name} and {obj.prop}!""#;
+    let input = r#"detach "Hello {name} and {obj.prop}!""#;
     let mut lexer = Lexer::new(input);
     let (tokens, errors) = lexer.lex();
     assert!(errors.is_empty());
     let tokens = strip_spans(tokens);
 
-    assert_eq!(tokens[0], Token::Spawn);
+    assert_eq!(tokens[0], Token::Detach);
     assert_eq!(tokens[1], Token::StringStart(SmolStr::new("Hello ")));
     assert_eq!(tokens[2], Token::LBrace);
     assert_eq!(tokens[3], Token::Identifier(SmolStr::new("name")));

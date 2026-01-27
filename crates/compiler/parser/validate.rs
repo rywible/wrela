@@ -10,6 +10,7 @@ pub struct ValidationError {
 
 pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
     let mut errors = Vec::new();
+    let objectives = ["latency", "throughput", "conservation", "balance"];
     for element in root.descendants_with_tokens() {
         let Some(token) = element.into_token() else {
             continue;
@@ -109,6 +110,20 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                     });
                 }
             }
+            SyntaxKind::OptimizeStmt => {
+                let obj_token = node
+                    .children_with_tokens()
+                    .filter_map(|it| it.into_token())
+                    .find(|it| it.kind() == SyntaxKind::Ident);
+                if let Some(token) = obj_token {
+                    if !objectives.contains(&token.text()) {
+                        errors.push(ValidationError {
+                            message: "invalid optimize objective".to_string(),
+                            span: span_for_token(&token),
+                        });
+                    }
+                }
+            }
             SyntaxKind::ReturnStmt => {
                 if !is_in_function(&node) {
                     errors.push(ValidationError {
@@ -185,9 +200,92 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
             }
             _ => {}
         }
+
+        if node.kind() == SyntaxKind::PrefixExpr
+            && (has_token(&node, SyntaxKind::DetachKw) || has_token(&node, SyntaxKind::SpawnKw))
+        {
+            validate_detach_tail(&node, &objectives, &mut errors);
+        }
     }
     errors
 }
+
+fn validate_detach_tail(
+    node: &SyntaxNode,
+    objectives: &[&str],
+    errors: &mut Vec<ValidationError>,
+) {
+    let mut iter = node.children_with_tokens().peekable();
+
+    while let Some(child) = iter.next() {
+        match child {
+            rowan::NodeOrToken::Node(_) => {}
+            rowan::NodeOrToken::Token(t) => {
+                match t.kind() {
+                    SyntaxKind::Star => {
+                        let mut size_token = None;
+                        while let Some(next) = iter.next() {
+                            if let Some(tok) = next.into_token() {
+                                if tok.kind().is_trivia() {
+                                    continue;
+                                }
+                                size_token = Some(tok);
+                                break;
+                            }
+                        }
+                        if let Some(tok) = size_token {
+                            match tok.kind() {
+                                SyntaxKind::IntNumber => {}
+                                SyntaxKind::Ident => {
+                                    if tok.text() != "n" {
+                                        errors.push(ValidationError {
+                                            message:
+                                                "pool size must be an integer literal or 'n'"
+                                                    .to_string(),
+                                            span: span_for_token(&tok),
+                                        });
+                                    }
+                                }
+                                _ => {
+                                    errors.push(ValidationError {
+                                        message:
+                                            "pool size must be an integer literal or 'n'"
+                                                .to_string(),
+                                        span: span_for_token(&tok),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    SyntaxKind::OptimizeKw => {
+                        let mut obj_token = None;
+                        while let Some(next) = iter.next() {
+                            if let Some(tok) = next.into_token() {
+                                if tok.kind().is_trivia() {
+                                    continue;
+                                }
+                                obj_token = Some(tok);
+                                break;
+                            }
+                        }
+                        if let Some(tok) = obj_token {
+                            if tok.kind() == SyntaxKind::Ident
+                                && !objectives.contains(&tok.text())
+                            {
+                                errors.push(ValidationError {
+                                    message: "invalid optimize objective".to_string(),
+                                    span: span_for_token(&tok),
+                                });
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
 
 fn is_in_return(node: &SyntaxNode) -> bool {
     node.ancestors()

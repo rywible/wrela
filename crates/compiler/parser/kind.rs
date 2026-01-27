@@ -28,8 +28,10 @@ pub enum SyntaxKind {
     OrKw,        // or
     NotKw,       // not
     AwaitKw,     // await
+    DetachKw,    // detach
     SpawnKw,     // spawn
     FireKw,      // fire
+    OptimizeKw,  // optimize
     UseKw,       // use
     FromKw,      // from
     PublicKw,    // public
@@ -125,6 +127,7 @@ pub enum SyntaxKind {
     MatchCase,
     OtherwiseCase,
     UseStmt,
+    OptimizeStmt,
 
     // Expressions
     BinExpr,
@@ -172,8 +175,10 @@ impl From<Token> for SyntaxKind {
             Token::Or => SyntaxKind::OrKw,
             Token::Not => SyntaxKind::NotKw,
             Token::Await => SyntaxKind::AwaitKw,
+            Token::Detach => SyntaxKind::DetachKw,
             Token::Spawn => SyntaxKind::SpawnKw,
             Token::Fire => SyntaxKind::FireKw,
+            Token::Optimize => SyntaxKind::OptimizeKw,
             Token::Use => SyntaxKind::UseKw,
             Token::From => SyntaxKind::FromKw,
             Token::Public => SyntaxKind::PublicKw,

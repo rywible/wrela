@@ -8,3 +8,4 @@ license = "MIT"
 crate-type = ["staticlib", "rlib"]
 
 [dependencies]
+tokio = { version = "1.48", features = ["rt-multi-thread", "sync", "time"] }

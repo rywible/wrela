@@ -1,4 +1,4 @@
-use crate::hir::{BinaryOp, Literal, UnaryOp};
+use crate::hir::{BinaryOp, Literal, Objective, PoolSize, UnaryOp};
 use rowan::TextRange;
 use smol_str::SmolStr;
 
@@ -171,6 +171,13 @@ pub enum Rvalue {
     Spawn {
         target: Value,
         instance: Value,
+        size: PoolSize,
+        objective: Objective,
+        config: SpawnConfig,
+    },
+    PoolNew {
+        handles: Value,
+        objective: Objective,
     },
     BuildList {
         items: Vec<Value>,
@@ -181,6 +188,13 @@ pub enum Rvalue {
     StringInterp {
         parts: Vec<StringPartValue>,
     },
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SpawnConfig {
+    pub mailbox_cap: Option<i64>,
+    pub enqueue_timeout_ms: Option<i64>,
+    pub batch_limit: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

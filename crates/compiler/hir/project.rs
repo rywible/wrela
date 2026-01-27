@@ -941,7 +941,26 @@ fn record_used(used: &mut HashMap<SmolStr, TextRange>, name: SmolStr, span: Text
 fn is_builtin_value_name(name: &SmolStr) -> bool {
     matches!(
         name.as_str(),
-        "print" | "parse_int" | "parse_float" | "read_file" | "write_file" | "nil"
+        "print"
+            | "parse_int"
+            | "parse_float"
+            | "read_file"
+            | "write_file"
+            | "list_push"
+            | "pool_auto_size"
+            | "pool_size"
+            | "pool_rr"
+            | "actor_mailbox_len"
+            | "actor_pause"
+            | "actor_resume"
+            | "actor_pause_wait"
+            | "metrics_get"
+            | "metrics_dropped_paused_id"
+            | "metrics_messages_dropped_id"
+            | "Pool"
+            | "nil"
+            | "queue"
+            | "drop"
     )
 }
 
@@ -994,6 +1013,11 @@ fn collect_used_in_block(
                     record_used(used, name.clone(), body.stmt_span(*stmt_id));
                 }
                 collect_used_in_expr(body, *value, scope, used);
+            }
+            Stmt::Optimize { body: opt_body, .. } => {
+                scope.enter();
+                collect_used_in_block(body, opt_body, scope, used);
+                scope.exit();
             }
             Stmt::If {
                 condition,
@@ -1076,6 +1100,9 @@ fn collect_used_in_expr(
         Expr::Binary { lhs, rhs, .. } => {
             collect_used_in_expr(body, *lhs, scope, used);
             collect_used_in_expr(body, *rhs, scope, used);
+        }
+        Expr::Detach { target, .. } => {
+            collect_used_in_expr(body, *target, scope, used);
         }
         Expr::Unary { expr, .. } => {
             collect_used_in_expr(body, *expr, scope, used);

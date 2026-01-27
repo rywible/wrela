@@ -335,6 +335,14 @@ impl BodyLoweringContext {
                     otherwise,
                 }
             }
+            ast::Stmt::OptimizeStmt(o) => {
+                let objective = o
+                    .objective()
+                    .and_then(|t| Objective::from_str(t.text()))
+                    .unwrap_or(Objective::Balance);
+                let body = self.lower_block(o.block());
+                Stmt::Optimize { objective, body }
+            }
             ast::Stmt::UseStmt(u) => {
                 let (names, module, _module_span) = parse_use_stmt(&u);
                 Stmt::Use { names, module }
@@ -396,9 +404,26 @@ impl BodyLoweringContext {
                 }
             }
             ast::Expr::Prefix(p) => {
-                let expr = self.lower_expr(p.expr()?)?;
+                let target = self.lower_expr(p.expr()?)?;
                 let (op, op_span) = self.lower_unary_op(p.syntax())?;
-                Expr::Unary { op, expr, op_span }
+                if matches!(op, UnaryOp::Spawn) {
+                    let target_span = p
+                        .expr()
+                        .map(|e| e.syntax().text_range())
+                        .unwrap_or(expr_span);
+                    let (size, objective) = self.parse_detach_tail(p.syntax(), target_span);
+                    Expr::Detach {
+                        target,
+                        size,
+                        objective,
+                    }
+                } else {
+                    Expr::Unary {
+                        op,
+                        expr: target,
+                        op_span,
+                    }
+                }
             }
             ast::Expr::Crash(c) => {
                 let expr = self.lower_expr(c.expr()?)?;
@@ -558,6 +583,7 @@ impl BodyLoweringContext {
                         | SyntaxKind::NotKw
                         | SyntaxKind::BitwiseNot
                         | SyntaxKind::AwaitKw
+                        | SyntaxKind::DetachKw
                         | SyntaxKind::SpawnKw
                         | SyntaxKind::FireKw
                         | SyntaxKind::ErrKw
@@ -569,6 +595,7 @@ impl BodyLoweringContext {
             SyntaxKind::NotKw => UnaryOp::Not,
             SyntaxKind::BitwiseNot => UnaryOp::BitNot,
             SyntaxKind::AwaitKw => UnaryOp::Await,
+            SyntaxKind::DetachKw => UnaryOp::Spawn,
             SyntaxKind::SpawnKw => UnaryOp::Spawn,
             SyntaxKind::FireKw => UnaryOp::Fire,
             SyntaxKind::ErrKw => UnaryOp::Err,
@@ -606,6 +633,73 @@ impl BodyLoweringContext {
             }
         }
         parts
+    }
+
+    fn parse_detach_tail(
+        &self,
+        node: &crate::parser::SyntaxNode,
+        target_span: TextRange,
+    ) -> (PoolSize, Option<Objective>) {
+        let mut after_target = false;
+        let mut size = PoolSize::Fixed(1);
+        let mut objective = None;
+        let mut iter = node.children_with_tokens().peekable();
+
+        while let Some(child) = iter.next() {
+            match child {
+                rowan::NodeOrToken::Node(n) => {
+                    if n.text_range() == target_span {
+                        after_target = true;
+                    }
+                }
+                rowan::NodeOrToken::Token(t) => {
+                    if !after_target {
+                        continue;
+                    }
+                    match t.kind() {
+                        SyntaxKind::Star => {
+                            while let Some(next) = iter.next() {
+                                if let Some(tok) = next.into_token() {
+                                    if tok.kind().is_trivia() {
+                                        continue;
+                                    }
+                                    match tok.kind() {
+                                        SyntaxKind::IntNumber => {
+                                            let parsed =
+                                                tok.text().parse::<i64>().unwrap_or(1);
+                                            size = PoolSize::Fixed(parsed);
+                                        }
+                                        SyntaxKind::Ident => {
+                                            if tok.text() == "n" {
+                                                size = PoolSize::Auto;
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                        SyntaxKind::OptimizeKw => {
+                            while let Some(next) = iter.next() {
+                                if let Some(tok) = next.into_token() {
+                                    if tok.kind().is_trivia() {
+                                        continue;
+                                    }
+                                    if tok.kind() == SyntaxKind::Ident {
+                                        objective = Objective::from_str(tok.text());
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        (size, objective)
     }
 }
 
@@ -831,7 +925,7 @@ to f():
     fn test_lower_unary_and_binary_ops() {
         let input = "\
 to f():
-    return await spawn Whale(name=\"moby\")
+    return await detach Whale(name=\"moby\") * 1
 ";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();

@@ -152,7 +152,7 @@ fn actor_stub_pending() {
     }
 
     wr_register_method(1, 0, add_one);
-    let actor = wr_actor_spawn(1, Value::nil());
+    let actor = wr_actor_spawn(1, Value::nil(), 1, 3, -1, -1, -1);
     let arg = Value::from_int(41);
     let pending = wr_actor_send(actor, 0, 1, &arg as *const Value);
     let val = wr_pending_await(pending);
@@ -185,7 +185,7 @@ fn pending_await_multiple_times() {
     }
 
     wr_register_method(3, 0, add_two);
-    let actor = wr_actor_spawn(3, Value::nil());
+    let actor = wr_actor_spawn(3, Value::nil(), 1, 3, -1, -1, -1);
     let arg = Value::from_int(40);
     let pending = wr_actor_send(actor, 0, 1, &arg as *const Value);
     let val1 = wr_pending_await(pending);
@@ -212,7 +212,7 @@ fn pending_await_multiple_times() {
 
 #[test]
 fn actor_missing_method_returns_nil() {
-    let actor = wr_actor_spawn(10, Value::nil());
+    let actor = wr_actor_spawn(10, Value::nil(), 1, 3, -1, -1, -1);
     let pending = wr_actor_send(actor, 99, 0, std::ptr::null());
     let val = wr_pending_await(pending);
     let ok = wr_result_is_ok(val);
@@ -243,7 +243,7 @@ fn actor_invalid_args_returns_nil() {
     }
 
     wr_register_method(11, 0, add_one);
-    let actor = wr_actor_spawn(11, Value::nil());
+    let actor = wr_actor_spawn(11, Value::nil(), 1, 3, -1, -1, -1);
     let pending = wr_actor_send(actor, 0, 0, std::ptr::null());
     let val = wr_pending_await(pending);
     let ok = wr_result_is_ok(val);
@@ -278,7 +278,7 @@ fn actor_fire_executes() {
     let _ = COUNTER_PTR.set(counter.clone());
 
     wr_register_method(2, 0, bump);
-    let actor = wr_actor_spawn(2, Value::nil());
+    let actor = wr_actor_spawn(2, Value::nil(), 1, 3, -1, -1, -1);
     wr_actor_fire(actor, 0, 0, std::ptr::null());
 
     // Wait briefly for the actor thread to process the message.
@@ -319,8 +319,10 @@ fn metrics_counts_basic() {
     wr_list_push(list, s);
     unsafe { wr_rc_dec(list) };
 
-    let rc_inc = wr_metrics_get(crate::metrics::METRIC_RC_INC);
-    let rc_dec = wr_metrics_get(crate::metrics::METRIC_RC_DEC);
+    let rc_inc =
+        wr_metrics_get(Value::from_int(crate::metrics::METRIC_RC_INC as i64)).as_int();
+    let rc_dec =
+        wr_metrics_get(Value::from_int(crate::metrics::METRIC_RC_DEC as i64)).as_int();
     assert!(rc_inc >= 1);
     assert!(rc_dec >= 1);
 }
@@ -346,7 +348,7 @@ fn refcount_invariants_common_flows() {
     wr_class_set(class, b"x".as_ptr(), 1, val);
 
     wr_register_method(12, 0, noop);
-    let actor = wr_actor_spawn(12, Value::nil());
+    let actor = wr_actor_spawn(12, Value::nil(), 1, 3, -1, -1, -1);
     let arg = wr_str_from_utf8(b"a".as_ptr(), 1);
     let pending = wr_actor_send(actor, 0, 1, &arg as *const Value);
     let result = wr_pending_await(pending);
@@ -363,8 +365,10 @@ fn refcount_invariants_common_flows() {
         wr_rc_dec(result);
     }
 
-    let rc_inc = wr_metrics_get(crate::metrics::METRIC_RC_INC);
-    let rc_dec = wr_metrics_get(crate::metrics::METRIC_RC_DEC);
+    let rc_inc =
+        wr_metrics_get(Value::from_int(crate::metrics::METRIC_RC_INC as i64)).as_int();
+    let rc_dec =
+        wr_metrics_get(Value::from_int(crate::metrics::METRIC_RC_DEC as i64)).as_int();
     let released = rc_dec.saturating_sub(rc_inc);
     assert!(rc_dec >= rc_inc);
     assert!(released >= 9);

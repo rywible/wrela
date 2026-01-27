@@ -56,10 +56,14 @@ pub enum Token {
     Not,
     #[strum(serialize = "await")]
     Await,
+    #[strum(serialize = "detach")]
+    Detach,
     #[strum(serialize = "spawn")]
     Spawn,
     #[strum(serialize = "fire")]
     Fire,
+    #[strum(serialize = "optimize")]
+    Optimize,
     #[strum(serialize = "use")]
     Use,
     #[strum(serialize = "from")]
@@ -214,8 +218,10 @@ impl Token {
                 | Token::Or
                 | Token::Not
                 | Token::Await
+                | Token::Detach
                 | Token::Spawn
                 | Token::Fire
+                | Token::Optimize
                 | Token::Use
                 | Token::From
                 | Token::Public

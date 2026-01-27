@@ -1,6 +1,8 @@
 #![allow(unused_assignments)]
 
-use crate::hir::{Arg, Body, Class, Expr, Function, Idx, MatchCase, Module, Stmt, UnaryOp};
+use crate::hir::{
+    Arg, Body, Class, Expr, Function, Idx, Literal, MatchCase, Module, Objective, Stmt, UnaryOp,
+};
 use miette::{Diagnostic, SourceSpan};
 use rowan::TextRange;
 use smol_str::SmolStr;
@@ -164,6 +166,69 @@ pub enum SemanticError {
         #[label("match here")]
         span: SourceSpan,
     },
+    #[error("detached pools require an optimization objective")]
+    #[diagnostic(
+        code(lang::sem::missing_objective),
+        help("Add `optimize <objective>:` in scope or inline `optimize <objective>` on the detach.")
+    )]
+    MissingObjective {
+        #[label("detach here")]
+        span: SourceSpan,
+    },
+    #[error("only one optimize declaration is allowed per scope")]
+    #[diagnostic(
+        code(lang::sem::duplicate_optimize),
+        help("Remove the extra optimize block or move it into a nested scope.")
+    )]
+    DuplicateOptimize {
+        #[label("optimize here")]
+        span: SourceSpan,
+    },
+    #[error("invalid pool objective")]
+    #[diagnostic(
+        code(lang::sem::invalid_pool_objective),
+        help("Use one of: latency, throughput, conservation, balance.")
+    )]
+    InvalidPoolObjective {
+        #[label("objective here")]
+        span: SourceSpan,
+    },
+    #[error("invalid pool size")]
+    #[diagnostic(
+        code(lang::sem::invalid_pool_size),
+        help("Pool size must be an integer literal or `n`.")
+    )]
+    InvalidPoolSize {
+        #[label("size here")]
+        span: SourceSpan,
+    },
+    #[error("invalid pool batch limit")]
+    #[diagnostic(
+        code(lang::sem::invalid_pool_batch),
+        help("Batch must be an integer literal.")
+    )]
+    InvalidPoolBatch {
+        #[label("batch here")]
+        span: SourceSpan,
+    },
+    #[error("invalid pool backpressure")]
+    #[diagnostic(
+        code(lang::sem::invalid_pool_backpressure),
+        help("Backpressure must be `drop` or `queue(<int>)`.")
+    )]
+    InvalidPoolBackpressure {
+        #[label("backpressure here")]
+        span: SourceSpan,
+    },
+    #[error("pool size greater than 1 requires a class constructor")]
+    #[diagnostic(
+        code(lang::sem::invalid_pool_target),
+        help("Use a class name or class constructor call as the detach target.")
+    )]
+    InvalidPoolTarget {
+        #[label("detach here")]
+        span: SourceSpan,
+    },
 }
 
 #[derive(Debug, Error, Diagnostic, Clone)]
@@ -219,6 +284,13 @@ impl SemanticError {
             SemanticError::DuplicateNamedArg { span, .. } => *span,
             SemanticError::PositionalAfterNamed { span } => *span,
             SemanticError::MatchMissingOtherwise { span } => *span,
+            SemanticError::MissingObjective { span } => *span,
+            SemanticError::DuplicateOptimize { span } => *span,
+            SemanticError::InvalidPoolObjective { span } => *span,
+            SemanticError::InvalidPoolSize { span } => *span,
+            SemanticError::InvalidPoolBatch { span } => *span,
+            SemanticError::InvalidPoolBackpressure { span } => *span,
+            SemanticError::InvalidPoolTarget { span } => *span,
         }
     }
 }
@@ -255,9 +327,18 @@ struct Binding {
     used: bool,
 }
 
-#[derive(Default)]
 struct Scope {
     bindings: HashMap<SmolStr, Binding>,
+    optimize_seen: bool,
+}
+
+impl Default for Scope {
+    fn default() -> Self {
+        Self {
+            bindings: HashMap::new(),
+            optimize_seen: false,
+        }
+    }
 }
 
 struct Checker<'a> {
@@ -265,8 +346,12 @@ struct Checker<'a> {
     errors: Vec<SemanticError>,
     warnings: Vec<SemanticWarning>,
     scopes: Vec<Scope>,
+    objective_stack: Vec<Objective>,
+    objective_required_by_fn: HashMap<usize, bool>,
+    current_objective_required: bool,
     loop_depth: usize,
     method_ids: HashSet<usize>,
+    class_names: HashSet<SmolStr>,
     in_method: bool,
 }
 
@@ -287,19 +372,26 @@ pub fn check_module(module: &Module) -> SemanticDiagnostics {
 impl<'a> Checker<'a> {
     fn new(module: &'a Module) -> Self {
         let mut method_ids = HashSet::new();
+        let mut class_names = HashSet::new();
         for class in module.classes.iter().map(|(_, c)| c) {
+            class_names.insert(class.name.clone());
             for method in &class.methods {
                 method_ids.insert(method.into_raw());
             }
         }
+        let objective_required_by_fn = compute_objective_requirements(module, &method_ids);
 
         Self {
             module,
             errors: Vec::new(),
             warnings: Vec::new(),
             scopes: vec![Scope::default()],
+            objective_stack: Vec::new(),
+            objective_required_by_fn,
+            current_objective_required: false,
             loop_depth: 0,
             method_ids,
+            class_names,
             in_method: false,
         }
     }
@@ -352,7 +444,7 @@ impl<'a> Checker<'a> {
             if self.method_ids.contains(&idx.into_raw()) {
                 continue;
             }
-            self.check_function(func, false);
+            self.check_function(idx, func, false);
         }
     }
 
@@ -386,12 +478,18 @@ impl<'a> Checker<'a> {
                     span: span_from_option(method.name_span),
                 });
             }
-            self.check_function(method, true);
+            self.check_function(*method_id, method, true);
         }
     }
 
-    fn check_function(&mut self, func: &Function, is_method: bool) {
+    fn check_function(&mut self, func_id: Idx<Function>, func: &Function, is_method: bool) {
         let prev_method = self.in_method;
+        let prev_require_objective = self.current_objective_required;
+        self.current_objective_required = self
+            .objective_required_by_fn
+            .get(&func_id.into_raw())
+            .copied()
+            .unwrap_or(false);
         self.in_method = is_method;
         self.enter_scope();
         for param in &func.params {
@@ -410,6 +508,7 @@ impl<'a> Checker<'a> {
         }
         self.exit_scope();
         self.in_method = prev_method;
+        self.current_objective_required = prev_require_objective;
     }
 
     fn check_stmt(&mut self, body: &Body, stmt_id: Idx<Stmt>) {
@@ -492,6 +591,22 @@ impl<'a> Checker<'a> {
                         });
                     }
                 }
+            }
+            Stmt::Optimize { objective, body: opt_body } => {
+                if let Some(scope) = self.scopes.last_mut() {
+                    if scope.optimize_seen {
+                        self.errors.push(SemanticError::DuplicateOptimize {
+                            span: span_from_range(body.stmt_span(stmt_id)),
+                        });
+                    } else {
+                        scope.optimize_seen = true;
+                    }
+                }
+                self.enter_scope();
+                self.objective_stack.push(*objective);
+                self.check_block(body, opt_body);
+                self.objective_stack.pop();
+                self.exit_scope();
             }
             Stmt::If {
                 condition,
@@ -642,6 +757,32 @@ impl<'a> Checker<'a> {
                 self.check_expr_with_ctx(body, *lhs, allow_it, false);
                 self.check_expr_with_ctx(body, *rhs, allow_it, false);
             }
+            Expr::Detach {
+                target,
+                objective,
+                size,
+            } => {
+                self.check_expr_with_ctx(body, *target, allow_it, false);
+                let pool_objective = self.pool_of_objective(body, *target);
+                if self.current_objective_required
+                    && objective.is_none()
+                    && pool_objective.is_none()
+                    && self.objective_stack.is_empty()
+                {
+                    self.errors.push(SemanticError::MissingObjective {
+                        span: span_from_range(body.expr_span(expr_id)),
+                    });
+                }
+                if (matches!(size, crate::hir::PoolSize::Fixed(count) if *count > 1)
+                    || matches!(size, crate::hir::PoolSize::Auto))
+                    && !self.is_class_constructor_target(body, *target)
+                    && !self.pool_of_target(body, *target)
+                {
+                    self.errors.push(SemanticError::InvalidPoolTarget {
+                        span: span_from_range(body.expr_span(expr_id)),
+                    });
+                }
+            }
             Expr::Unary { op, expr, .. } => {
                 if matches!(op, UnaryOp::Fire) && !allow_fire {
                     self.errors.push(SemanticError::FireInExpression {
@@ -651,6 +792,10 @@ impl<'a> Checker<'a> {
                 self.check_expr_with_ctx(body, *expr, allow_it, false);
             }
             Expr::Call { callee, args } => {
+                let is_pool_of = self.is_pool_of_call(body, *callee);
+                if is_pool_of {
+                    self.validate_pool_of_args(body, args);
+                }
                 self.check_expr_with_ctx(body, *callee, allow_it, false);
                 let mut seen_named = false;
                 let mut named_args = HashSet::new();
@@ -677,7 +822,9 @@ impl<'a> Checker<'a> {
                                 });
                             }
                             seen_named = true;
-                            self.check_expr_with_ctx(body, *value, allow_it, false);
+                            if !is_pool_of {
+                                self.check_expr_with_ctx(body, *value, allow_it, false);
+                            }
                         }
                     }
                 }
@@ -801,6 +948,124 @@ impl<'a> Checker<'a> {
             }
         }
     }
+
+    fn is_pool_of_call(&self, body: &Body, callee: Idx<Expr>) -> bool {
+        match &body.exprs[callee] {
+            Expr::Member { object, member, .. } => {
+                if member.as_str() != "of" {
+                    return false;
+                }
+                matches!(&body.exprs[*object], Expr::Variable(name) if name.as_str() == "Pool")
+            }
+            _ => false,
+        }
+    }
+
+    fn validate_pool_of_args(&mut self, body: &Body, args: &[Arg]) {
+        for arg in args {
+            if let Arg::Named { name, value, .. } = arg {
+                match name.as_str() {
+                    "size" => {
+                        let ok = match &body.exprs[*value] {
+                            Expr::Literal(Literal::Int(_)) => true,
+                            Expr::Variable(var) => var.as_str() == "n",
+                            _ => false,
+                        };
+                        if !ok {
+                            self.errors.push(SemanticError::InvalidPoolSize {
+                                span: span_from_range(body.expr_span(*value)),
+                            });
+                        }
+                    }
+                    "objective" => {
+                        let ok = match &body.exprs[*value] {
+                            Expr::Variable(name) => Objective::from_str(name.as_str()).is_some(),
+                            _ => false,
+                        };
+                        if !ok {
+                            self.errors.push(SemanticError::InvalidPoolObjective {
+                                span: span_from_range(body.expr_span(*value)),
+                            });
+                        }
+                    }
+                    "batch" => {
+                        let ok = matches!(&body.exprs[*value], Expr::Literal(Literal::Int(_)));
+                        if !ok {
+                            self.errors.push(SemanticError::InvalidPoolBatch {
+                                span: span_from_range(body.expr_span(*value)),
+                            });
+                        }
+                    }
+                    "backpressure" => {
+                        let ok = match &body.exprs[*value] {
+                            Expr::Variable(name) => name.as_str() == "drop",
+                            Expr::Call { callee, args } => {
+                                if let Expr::Variable(name) = &body.exprs[*callee] {
+                                    if name.as_str() != "queue" || args.len() != 1 {
+                                        false
+                                    } else {
+                                        let arg = match &args[0] {
+                                            Arg::Positional { value, .. } => *value,
+                                            Arg::Named { value, .. } => *value,
+                                        };
+                                        matches!(&body.exprs[arg], Expr::Literal(Literal::Int(_)))
+                                    }
+                                } else {
+                                    false
+                                }
+                            }
+                            _ => false,
+                        };
+                        if !ok {
+                            self.errors.push(SemanticError::InvalidPoolBackpressure {
+                                span: span_from_range(body.expr_span(*value)),
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn pool_of_objective(&self, body: &Body, expr_id: Idx<Expr>) -> Option<Objective> {
+        let Expr::Call { callee, args } = &body.exprs[expr_id] else {
+            return None;
+        };
+        if !self.is_pool_of_call(body, *callee) {
+            return None;
+        }
+        for arg in args {
+            if let Arg::Named { name, value, .. } = arg {
+                if name.as_str() == "objective" {
+                    if let Expr::Variable(id) = &body.exprs[*value] {
+                        if let Some(obj) = Objective::from_str(id.as_str()) {
+                            return Some(obj);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn is_class_constructor_target(&self, body: &Body, expr_id: Idx<Expr>) -> bool {
+        match &body.exprs[expr_id] {
+            Expr::Variable(name) => self.class_names.contains(name),
+            Expr::Call { callee, .. } => match &body.exprs[*callee] {
+                Expr::Variable(name) => self.class_names.contains(name),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    fn pool_of_target(&self, body: &Body, expr_id: Idx<Expr>) -> bool {
+        let Expr::Call { callee, .. } = &body.exprs[expr_id] else {
+            return false;
+        };
+        self.is_pool_of_call(body, *callee)
+    }
 }
 
 fn span_from_option(range: Option<TextRange>) -> SourceSpan {
@@ -843,6 +1108,445 @@ fn unused_kind_label(kind: BindingKind) -> &'static str {
     }
 }
 
+fn compute_objective_requirements(
+    module: &Module,
+    method_ids: &HashSet<usize>,
+) -> HashMap<usize, bool> {
+    let mut function_ids = HashMap::new();
+    let mut method_name_ids: HashMap<SmolStr, Vec<Idx<Function>>> = HashMap::new();
+    for (idx, func) in module.functions.iter() {
+        if method_ids.contains(&idx.into_raw()) {
+            method_name_ids
+                .entry(func.name.clone())
+                .or_default()
+                .push(idx);
+        } else {
+            function_ids.insert(func.name.clone(), idx);
+        }
+    }
+
+    let mut direct_await: HashMap<usize, bool> = HashMap::new();
+    let mut graph: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (idx, func) in module.functions.iter() {
+        let mut has_await = false;
+        let mut callees = HashSet::new();
+        if let Some(body) = &func.body {
+            collect_calls_and_awaits(
+                body,
+                &body.root_stmts,
+                &function_ids,
+                &method_name_ids,
+                &mut has_await,
+                &mut callees,
+            );
+        }
+        direct_await.insert(idx.into_raw(), has_await);
+        graph.insert(
+            idx.into_raw(),
+            callees.into_iter().map(|callee| callee.into_raw()).collect(),
+        );
+    }
+
+    let mut memo = HashMap::new();
+    let mut visiting = HashSet::new();
+    for (idx, _func) in module.functions.iter() {
+        let id = idx.into_raw();
+        let _ = await_in_transitive_call_graph(id, &graph, &direct_await, &mut visiting, &mut memo);
+    }
+    memo
+}
+
+fn await_in_transitive_call_graph(
+    func_id: usize,
+    graph: &HashMap<usize, Vec<usize>>,
+    direct_await: &HashMap<usize, bool>,
+    visiting: &mut HashSet<usize>,
+    memo: &mut HashMap<usize, bool>,
+) -> bool {
+    if let Some(val) = memo.get(&func_id) {
+        return *val;
+    }
+    if visiting.contains(&func_id) {
+        return *direct_await.get(&func_id).unwrap_or(&false);
+    }
+    visiting.insert(func_id);
+    let mut has_await = *direct_await.get(&func_id).unwrap_or(&false);
+    if !has_await {
+        if let Some(callees) = graph.get(&func_id) {
+            for callee in callees {
+                if await_in_transitive_call_graph(
+                    *callee,
+                    graph,
+                    direct_await,
+                    visiting,
+                    memo,
+                ) {
+                    has_await = true;
+                    break;
+                }
+            }
+        }
+    }
+    visiting.remove(&func_id);
+    memo.insert(func_id, has_await);
+    has_await
+}
+
+fn collect_calls_and_awaits(
+    body: &Body,
+    root_stmts: &[Idx<Stmt>],
+    function_ids: &HashMap<SmolStr, Idx<Function>>,
+    method_name_ids: &HashMap<SmolStr, Vec<Idx<Function>>>,
+    has_await: &mut bool,
+    callees: &mut HashSet<Idx<Function>>,
+) {
+    for stmt in root_stmts {
+        collect_stmt_calls_and_awaits(
+            body,
+            *stmt,
+            function_ids,
+            method_name_ids,
+            has_await,
+            callees,
+        );
+    }
+}
+
+fn collect_stmt_calls_and_awaits(
+    body: &Body,
+    stmt_id: Idx<Stmt>,
+    function_ids: &HashMap<SmolStr, Idx<Function>>,
+    method_name_ids: &HashMap<SmolStr, Vec<Idx<Function>>>,
+    has_await: &mut bool,
+    callees: &mut HashSet<Idx<Function>>,
+) {
+    match &body.stmts[stmt_id] {
+        Stmt::Expr(expr) => collect_expr_calls_and_awaits(
+            body,
+            *expr,
+            function_ids,
+            method_name_ids,
+            has_await,
+            callees,
+        ),
+        Stmt::Let { value, .. } | Stmt::Assign { value, .. } => collect_expr_calls_and_awaits(
+            body,
+            *value,
+            function_ids,
+            method_name_ids,
+            has_await,
+            callees,
+        ),
+        Stmt::Optimize { body: inner, .. } => {
+            for stmt in inner {
+                collect_stmt_calls_and_awaits(
+                    body,
+                    *stmt,
+                    function_ids,
+                    method_name_ids,
+                    has_await,
+                    callees,
+                );
+            }
+        }
+        Stmt::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            collect_expr_calls_and_awaits(
+                body,
+                *condition,
+                function_ids,
+                method_name_ids,
+                has_await,
+                callees,
+            );
+            for stmt in then_branch {
+                collect_stmt_calls_and_awaits(
+                    body,
+                    *stmt,
+                    function_ids,
+                    method_name_ids,
+                    has_await,
+                    callees,
+                );
+            }
+            if let Some(branch) = else_branch {
+                for stmt in branch {
+                    collect_stmt_calls_and_awaits(
+                        body,
+                        *stmt,
+                        function_ids,
+                        method_name_ids,
+                        has_await,
+                        callees,
+                    );
+                }
+            }
+        }
+        Stmt::For { iterable, body: inner, .. } => {
+            collect_expr_calls_and_awaits(
+                body,
+                *iterable,
+                function_ids,
+                method_name_ids,
+                has_await,
+                callees,
+            );
+            for stmt in inner {
+                collect_stmt_calls_and_awaits(
+                    body,
+                    *stmt,
+                    function_ids,
+                    method_name_ids,
+                    has_await,
+                    callees,
+                );
+            }
+        }
+        Stmt::Match {
+            subject,
+            cases,
+            otherwise,
+        } => {
+            collect_expr_calls_and_awaits(
+                body,
+                *subject,
+                function_ids,
+                method_name_ids,
+                has_await,
+                callees,
+            );
+            for case in cases {
+                for label in &case.labels {
+                    collect_expr_calls_and_awaits(
+                        body,
+                        *label,
+                        function_ids,
+                        method_name_ids,
+                        has_await,
+                        callees,
+                    );
+                }
+                for stmt in &case.body {
+                    collect_stmt_calls_and_awaits(
+                        body,
+                        *stmt,
+                        function_ids,
+                        method_name_ids,
+                        has_await,
+                        callees,
+                    );
+                }
+            }
+            if let Some(otherwise) = otherwise {
+                for stmt in otherwise {
+                    collect_stmt_calls_and_awaits(
+                        body,
+                        *stmt,
+                        function_ids,
+                        method_name_ids,
+                        has_await,
+                        callees,
+                    );
+                }
+            }
+        }
+        Stmt::While { condition, body: inner } => {
+            collect_expr_calls_and_awaits(
+                body,
+                *condition,
+                function_ids,
+                method_name_ids,
+                has_await,
+                callees,
+            );
+            for stmt in inner {
+                collect_stmt_calls_and_awaits(
+                    body,
+                    *stmt,
+                    function_ids,
+                    method_name_ids,
+                    has_await,
+                    callees,
+                );
+            }
+        }
+        Stmt::Return(expr) => {
+            if let Some(expr) = expr {
+                collect_expr_calls_and_awaits(
+                    body,
+                    *expr,
+                    function_ids,
+                    method_name_ids,
+                    has_await,
+                    callees,
+                );
+            }
+        }
+        Stmt::Use { .. } | Stmt::Break | Stmt::Continue => {}
+    }
+}
+
+fn collect_expr_calls_and_awaits(
+    body: &Body,
+    expr_id: Idx<Expr>,
+    function_ids: &HashMap<SmolStr, Idx<Function>>,
+    method_name_ids: &HashMap<SmolStr, Vec<Idx<Function>>>,
+    has_await: &mut bool,
+    callees: &mut HashSet<Idx<Function>>,
+) {
+    match &body.exprs[expr_id] {
+        Expr::Literal(_) | Expr::Variable(_) => {}
+        Expr::Detach { target, .. } => collect_expr_calls_and_awaits(
+            body,
+            *target,
+            function_ids,
+            method_name_ids,
+            has_await,
+            callees,
+        ),
+        Expr::Binary { lhs, rhs, .. } => {
+            collect_expr_calls_and_awaits(
+                body,
+                *lhs,
+                function_ids,
+                method_name_ids,
+                has_await,
+                callees,
+            );
+            collect_expr_calls_and_awaits(
+                body,
+                *rhs,
+                function_ids,
+                method_name_ids,
+                has_await,
+                callees,
+            );
+        }
+        Expr::Unary { op, expr, .. } => {
+            if matches!(op, UnaryOp::Await) {
+                *has_await = true;
+            }
+            collect_expr_calls_and_awaits(
+                body,
+                *expr,
+                function_ids,
+                method_name_ids,
+                has_await,
+                callees,
+            );
+        }
+        Expr::Crash { expr } => collect_expr_calls_and_awaits(
+            body,
+            *expr,
+            function_ids,
+            method_name_ids,
+            has_await,
+            callees,
+        ),
+        Expr::Call { callee, args } => {
+            match &body.exprs[*callee] {
+                Expr::Variable(name) => {
+                    if let Some(id) = function_ids.get(name) {
+                        callees.insert(*id);
+                    }
+                }
+                Expr::Member { member, .. } => {
+                    if !matches!(&body.exprs[*callee], Expr::Member { object, member, .. }
+                        if member.as_str() == "of"
+                            && matches!(&body.exprs[*object], Expr::Variable(name) if name.as_str() == "Pool"))
+                    {
+                        if let Some(methods) = method_name_ids.get(member) {
+                            for method in methods {
+                                callees.insert(*method);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+            collect_expr_calls_and_awaits(
+                body,
+                *callee,
+                function_ids,
+                method_name_ids,
+                has_await,
+                callees,
+            );
+            for arg in args {
+                let value = match arg {
+                    Arg::Positional { value, .. } => value,
+                    Arg::Named { value, .. } => value,
+                };
+                collect_expr_calls_and_awaits(
+                    body,
+                    *value,
+                    function_ids,
+                    method_name_ids,
+                    has_await,
+                    callees,
+                );
+            }
+        }
+        Expr::Member { object, .. } => collect_expr_calls_and_awaits(
+            body,
+            *object,
+            function_ids,
+            method_name_ids,
+            has_await,
+            callees,
+        ),
+        Expr::List(items) => {
+            for item in items {
+                collect_expr_calls_and_awaits(
+                    body,
+                    *item,
+                    function_ids,
+                    method_name_ids,
+                    has_await,
+                    callees,
+                );
+            }
+        }
+        Expr::Map(items) => {
+            for (key, value) in items {
+                collect_expr_calls_and_awaits(
+                    body,
+                    *key,
+                    function_ids,
+                    method_name_ids,
+                    has_await,
+                    callees,
+                );
+                collect_expr_calls_and_awaits(
+                    body,
+                    *value,
+                    function_ids,
+                    method_name_ids,
+                    has_await,
+                    callees,
+                );
+            }
+        }
+        Expr::StringInterp(parts) => {
+            for part in parts {
+                if let crate::hir::StringPart::Expr(expr) = part {
+                    collect_expr_calls_and_awaits(
+                        body,
+                        *expr,
+                        function_ids,
+                        method_name_ids,
+                        has_await,
+                        callees,
+                    );
+                }
+            }
+        }
+    }
+}
+
 fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
     vec![
         (SmolStr::new("print"), BindingKind::Function),
@@ -850,7 +1554,25 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
         (SmolStr::new("parse_float"), BindingKind::Function),
         (SmolStr::new("read_file"), BindingKind::Function),
         (SmolStr::new("write_file"), BindingKind::Function),
+        (SmolStr::new("list_push"), BindingKind::Function),
+        (SmolStr::new("pool_auto_size"), BindingKind::Function),
+        (SmolStr::new("pool_size"), BindingKind::Function),
+        (SmolStr::new("pool_rr"), BindingKind::Function),
+        (SmolStr::new("actor_mailbox_len"), BindingKind::Function),
+        (SmolStr::new("actor_pause"), BindingKind::Function),
+        (SmolStr::new("actor_resume"), BindingKind::Function),
+        (SmolStr::new("actor_pause_wait"), BindingKind::Function),
+        (SmolStr::new("metrics_get"), BindingKind::Function),
+        (
+            SmolStr::new("metrics_dropped_paused_id"),
+            BindingKind::Function,
+        ),
+        (
+            SmolStr::new("metrics_messages_dropped_id"),
+            BindingKind::Function,
+        ),
         (SmolStr::new("nil"), BindingKind::Implicit),
+        (SmolStr::new("Pool"), BindingKind::Implicit),
     ]
 }
 
@@ -1070,5 +1792,214 @@ A Whale:\n    has:\n        name: String\n    can name() -> String:\n        ret
         assert!(diagnostics.warnings
             .iter()
             .any(|err| matches!(err, SemanticWarning::UnusedBinding { name, .. } if name == "x")));
+    }
+
+    #[test]
+    fn test_missing_objective_ignored_without_await() {
+        let input = r#"
+A Whale:
+    has:
+        value: Int
+
+to run() -> Int:
+    whale = detach Whale() * 1
+    return 1
+"#;
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let diagnostics = check_module(&module);
+        assert!(
+            !diagnostics
+                .errors
+                .iter()
+                .any(|err| matches!(err, SemanticError::MissingObjective { .. }))
+        );
+    }
+
+    #[test]
+    fn test_missing_objective_with_await_in_call_graph() {
+        let input = r#"
+A Whale:
+    has:
+        value: Int
+
+to run() -> Int:
+    return f()
+
+to f() -> Int:
+    await 1
+    whale = detach Whale() * 1
+    return 1
+"#;
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let diagnostics = check_module(&module);
+        assert!(
+            diagnostics
+                .errors
+                .iter()
+                .any(|err| matches!(err, SemanticError::MissingObjective { .. }))
+        );
+    }
+
+    #[test]
+    fn test_duplicate_optimize_in_scope() {
+        let input = r#"
+to run() -> Int:
+    optimize balance:
+        x = 1
+    optimize latency:
+        y = 2
+    return 0
+"#;
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let diagnostics = check_module(&module);
+        assert!(
+            diagnostics
+                .errors
+                .iter()
+                .any(|err| matches!(err, SemanticError::DuplicateOptimize { .. }))
+        );
+    }
+
+    #[test]
+    fn test_pool_of_objective_satisfies_requirement() {
+        let input = r#"
+A Whale:
+    has:
+        value: Int
+
+to run() -> Int:
+    return f()
+
+to f() -> Int:
+    await 1
+    whale = detach Pool.of(Whale, objective=latency) * 1
+    return 1
+"#;
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let diagnostics = check_module(&module);
+        assert!(
+            !diagnostics
+                .errors
+                .iter()
+                .any(|err| matches!(err, SemanticError::MissingObjective { .. }))
+        );
+    }
+
+    #[test]
+    fn test_pool_of_invalid_size() {
+        let input = r#"
+A Whale:
+    has:
+        value: Int
+
+to run() -> Int:
+    optimize balance:
+        pool = Pool.of(Whale, size=foo)
+    return 0
+"#;
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let diagnostics = check_module(&module);
+        assert!(
+            diagnostics
+                .errors
+                .iter()
+                .any(|err| matches!(err, SemanticError::InvalidPoolSize { .. }))
+        );
+    }
+
+    #[test]
+    fn test_pool_of_batch_and_backpressure_valid() {
+        let input = r#"
+A Whale:
+    has:
+        value: Int
+
+to run() -> Int:
+    optimize balance:
+        pool = Pool.of(Whale, size=1, objective=balance, batch=8, backpressure=queue(4))
+        pool2 = Pool.of(Whale, size=1, backpressure=drop)
+    return 0
+"#;
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let diagnostics = check_module(&module);
+        assert!(diagnostics.errors.is_empty(), "errors: {:?}", diagnostics.errors);
+    }
+
+    #[test]
+    fn test_pool_of_invalid_backpressure() {
+        let input = r#"
+A Whale:
+    has:
+        value: Int
+
+to run() -> Int:
+    optimize balance:
+        pool = Pool.of(Whale, backpressure=queue(foo))
+    return 0
+"#;
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let diagnostics = check_module(&module);
+        assert!(
+            diagnostics
+                .errors
+                .iter()
+                .any(|err| matches!(err, SemanticError::InvalidPoolBackpressure { .. }))
+        );
+    }
+
+    #[test]
+    fn test_invalid_pool_target_for_fixed_size() {
+        let input = r#"
+to run() -> Int:
+    optimize balance:
+        x = 1
+        worker = detach x * 2
+    return 0
+"#;
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let diagnostics = check_module(&module);
+        assert!(
+            diagnostics
+                .errors
+                .iter()
+                .any(|err| matches!(err, SemanticError::InvalidPoolTarget { .. }))
+        );
+    }
+
+    #[test]
+    fn test_invalid_pool_target_for_auto_size() {
+        let input = r#"
+to run() -> Int:
+    optimize balance:
+        x = 1
+        worker = detach x * n
+    return 0
+"#;
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let diagnostics = check_module(&module);
+        assert!(
+            diagnostics
+                .errors
+                .iter()
+                .any(|err| matches!(err, SemanticError::InvalidPoolTarget { .. }))
+        );
     }
 }

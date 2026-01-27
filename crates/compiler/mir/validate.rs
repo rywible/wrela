@@ -322,9 +322,16 @@ fn check_rvalue_uses(
                 check_value_use(func, block_idx, arg, defined, errors);
             }
         }
-        Rvalue::Spawn { target, instance } => {
+        Rvalue::Spawn {
+            target,
+            instance,
+            ..
+        } => {
             check_value_use(func, block_idx, target, defined, errors);
             check_value_use(func, block_idx, instance, defined, errors);
+        }
+        Rvalue::PoolNew { handles, .. } => {
+            check_value_use(func, block_idx, handles, defined, errors);
         }
         Rvalue::BuildList { items } => {
             for item in items {

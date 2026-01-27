@@ -46,6 +46,7 @@ pub enum Stmt {
     ContinueStmt(ContinueStmt),
     MatchStmt(MatchStmt),
     UseStmt(UseStmt),
+    OptimizeStmt(OptimizeStmt),
 }
 
 impl AstNode for Stmt {
@@ -64,6 +65,7 @@ impl AstNode for Stmt {
                 | SyntaxKind::ContinueStmt
                 | SyntaxKind::MatchStmt
                 | SyntaxKind::UseStmt
+                | SyntaxKind::OptimizeStmt
         )
     }
     fn cast(node: SyntaxNode) -> Option<Self> {
@@ -80,6 +82,7 @@ impl AstNode for Stmt {
             SyntaxKind::ContinueStmt => ContinueStmt::cast(node).map(Stmt::ContinueStmt),
             SyntaxKind::MatchStmt => MatchStmt::cast(node).map(Stmt::MatchStmt),
             SyntaxKind::UseStmt => UseStmt::cast(node).map(Stmt::UseStmt),
+            SyntaxKind::OptimizeStmt => OptimizeStmt::cast(node).map(Stmt::OptimizeStmt),
             _ => None,
         }
     }
@@ -97,7 +100,38 @@ impl AstNode for Stmt {
             Stmt::ContinueStmt(it) => it.syntax(),
             Stmt::MatchStmt(it) => it.syntax(),
             Stmt::UseStmt(it) => it.syntax(),
+            Stmt::OptimizeStmt(it) => it.syntax(),
         }
+    }
+}
+
+pub struct OptimizeStmt(SyntaxNode);
+impl AstNode for OptimizeStmt {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::OptimizeStmt
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(OptimizeStmt(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl OptimizeStmt {
+    pub fn objective(&self) -> Option<SyntaxToken> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .find(|it| it.kind() == SyntaxKind::Ident)
+    }
+
+    pub fn block(&self) -> Option<Block> {
+        self.0.children().find_map(Block::cast)
     }
 }
 

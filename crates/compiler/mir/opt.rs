@@ -204,9 +204,16 @@ fn collect_rvalue(value: &Rvalue, used: &mut HashSet<usize>) {
                 collect_value(arg, used);
             }
         }
-        Rvalue::Spawn { target, instance } => {
+        Rvalue::Spawn {
+            target,
+            instance,
+            ..
+        } => {
             collect_value(target, used);
             collect_value(instance, used);
+        }
+        Rvalue::PoolNew { handles, .. } => {
+            collect_value(handles, used);
         }
         Rvalue::BuildList { items } => {
             for item in items {
@@ -703,11 +710,20 @@ fn collect_rvalue_uses(value: &Rvalue, locals_len: usize, out: &mut Vec<usize>) 
                 }
             }
         }
-        Rvalue::Spawn { target, instance } => {
+        Rvalue::Spawn {
+            target,
+            instance,
+            ..
+        } => {
             if let Some(idx) = value_idx(target, locals_len) {
                 out.push(idx);
             }
             if let Some(idx) = value_idx(instance, locals_len) {
+                out.push(idx);
+            }
+        }
+        Rvalue::PoolNew { handles, .. } => {
+            if let Some(idx) = value_idx(handles, locals_len) {
                 out.push(idx);
             }
         }

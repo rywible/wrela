@@ -34,6 +34,7 @@ pub(crate) fn parse_statement(p: &mut Parser) {
         SyntaxKind::ReturnKw => parse_return(p),
         SyntaxKind::BreakKw => parse_break(p),
         SyntaxKind::ContinueKw => parse_continue(p),
+        SyntaxKind::OptimizeKw => parse_optimize(p),
         SyntaxKind::MatchKw => parse_match(p),
         SyntaxKind::UseKw => parse_use(p),
         SyntaxKind::Eof => (),
@@ -151,6 +152,15 @@ fn parse_match(p: &mut Parser) {
         p.error_expected_indented_block();
     }
     m.complete(p, SyntaxKind::MatchStmt);
+}
+
+fn parse_optimize(p: &mut Parser) {
+    let m = p.start();
+    p.expect(SyntaxKind::OptimizeKw);
+    p.expect(SyntaxKind::Ident);
+    p.expect(SyntaxKind::Colon);
+    parse_block(p);
+    m.complete(p, SyntaxKind::OptimizeStmt);
 }
 
 fn parse_match_case(p: &mut Parser) {

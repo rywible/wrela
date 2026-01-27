@@ -87,6 +87,7 @@ pub enum TypeId {
     Pending = 9,
     Iterator = 10,
     Result = 11,
+    Pool = 12,
     UserBase = 100,
 }
 

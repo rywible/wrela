@@ -7,6 +7,7 @@ pub const METRIC_PENDING_DROPPED: u32 = 3;
 pub const METRIC_MAILBOX_HIGH_WATER: u32 = 4;
 pub const METRIC_RC_INC: u32 = 5;
 pub const METRIC_RC_DEC: u32 = 6;
+pub const METRIC_MESSAGES_DROPPED_PAUSED: u32 = 7;
 
 struct Metrics {
     messages_sent: AtomicU64,
@@ -16,6 +17,7 @@ struct Metrics {
     mailbox_high_water: AtomicU64,
     rc_inc: AtomicU64,
     rc_dec: AtomicU64,
+    messages_dropped_paused: AtomicU64,
 }
 
 static METRICS: Metrics = Metrics {
@@ -26,6 +28,7 @@ static METRICS: Metrics = Metrics {
     mailbox_high_water: AtomicU64::new(0),
     rc_inc: AtomicU64::new(0),
     rc_dec: AtomicU64::new(0),
+    messages_dropped_paused: AtomicU64::new(0),
 };
 
 pub fn inc_messages_sent() {
@@ -50,6 +53,12 @@ pub fn inc_rc_inc() {
 
 pub fn inc_rc_dec() {
     METRICS.rc_dec.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn inc_messages_dropped_paused() {
+    METRICS
+        .messages_dropped_paused
+        .fetch_add(1, Ordering::Relaxed);
 }
 
 pub fn update_mailbox_high_water(len: usize) {
@@ -77,6 +86,9 @@ pub fn get(id: u32) -> u64 {
         METRIC_MAILBOX_HIGH_WATER => METRICS.mailbox_high_water.load(Ordering::Relaxed),
         METRIC_RC_INC => METRICS.rc_inc.load(Ordering::Relaxed),
         METRIC_RC_DEC => METRICS.rc_dec.load(Ordering::Relaxed),
+        METRIC_MESSAGES_DROPPED_PAUSED => {
+            METRICS.messages_dropped_paused.load(Ordering::Relaxed)
+        }
         _ => 0,
     }
 }
@@ -89,4 +101,5 @@ pub fn reset() {
     METRICS.mailbox_high_water.store(0, Ordering::Relaxed);
     METRICS.rc_inc.store(0, Ordering::Relaxed);
     METRICS.rc_dec.store(0, Ordering::Relaxed);
+    METRICS.messages_dropped_paused.store(0, Ordering::Relaxed);
 }

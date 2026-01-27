@@ -449,7 +449,119 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                 ret: Type::Result(Box::new(Type::Nil), Box::new(err)),
             },
         ),
+        (
+            SmolStr::new("list_push"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("list"), Type::List(Box::new(Type::Unknown))),
+                    (SmolStr::new("value"), Type::Unknown),
+                ],
+                ret: Type::Nil,
+            },
+        ),
+        (
+            SmolStr::new("pool_auto_size"),
+            FunctionSig {
+                params: vec![(SmolStr::new("objective"), Type::Int)],
+                ret: Type::Int,
+            },
+        ),
+        (
+            SmolStr::new("pool_size"),
+            FunctionSig {
+                params: vec![(SmolStr::new("handle"), Type::Unknown)],
+                ret: Type::Int,
+            },
+        ),
+        (
+            SmolStr::new("pool_rr"),
+            FunctionSig {
+                params: vec![(SmolStr::new("handle"), Type::Unknown)],
+                ret: Type::Int,
+            },
+        ),
+        (
+            SmolStr::new("actor_mailbox_len"),
+            FunctionSig {
+                params: vec![(SmolStr::new("handle"), Type::Unknown)],
+                ret: Type::Int,
+            },
+        ),
+        (
+            SmolStr::new("actor_pause"),
+            FunctionSig {
+                params: vec![(SmolStr::new("handle"), Type::Unknown)],
+                ret: Type::Nil,
+            },
+        ),
+        (
+            SmolStr::new("actor_resume"),
+            FunctionSig {
+                params: vec![(SmolStr::new("handle"), Type::Unknown)],
+                ret: Type::Nil,
+            },
+        ),
+        (
+            SmolStr::new("actor_pause_wait"),
+            FunctionSig {
+                params: vec![(SmolStr::new("handle"), Type::Unknown)],
+                ret: Type::Nil,
+            },
+        ),
+        (
+            SmolStr::new("metrics_get"),
+            FunctionSig {
+                params: vec![(SmolStr::new("id"), Type::Int)],
+                ret: Type::Int,
+            },
+        ),
+        (
+            SmolStr::new("metrics_dropped_paused_id"),
+            FunctionSig {
+                params: vec![],
+                ret: Type::Int,
+            },
+        ),
+        (
+            SmolStr::new("metrics_messages_dropped_id"),
+            FunctionSig {
+                params: vec![],
+                ret: Type::Int,
+            },
+        ),
     ]
+}
+
+fn is_pool_of_call(body: &Body, callee: Idx<Expr>) -> bool {
+    match &body.exprs[callee] {
+        Expr::Member { object, member, .. } => is_pool_of_member(body, *object, member),
+        _ => false,
+    }
+}
+
+fn is_pool_of_member(body: &Body, object: Idx<Expr>, member: &SmolStr) -> bool {
+    if member.as_str() != "of" {
+        return false;
+    }
+    matches!(&body.exprs[object], Expr::Variable(name) if name.as_str() == "Pool")
+}
+
+fn pool_of_class_name(
+    body: &Body,
+    args: &[crate::hir::Arg],
+    classes: &ClassIndex,
+) -> Option<SmolStr> {
+    for arg in args {
+        if let crate::hir::Arg::Positional { value, .. } = arg {
+            if let Expr::Variable(name) = &body.exprs[*value] {
+                if classes.is_class(name) {
+                    return Some(name.clone());
+                }
+            }
+            break;
+        }
+    }
+    None
 }
 
 struct TypeContext {
@@ -592,6 +704,23 @@ fn check_stmt(
                 }
             }
             ctx.assign(name, value_ty);
+        }
+        Stmt::Optimize { body: opt_body, .. } => {
+            ctx.enter_scope();
+            for stmt in opt_body {
+                check_stmt(
+                    body,
+                    *stmt,
+                    ctx,
+                    classes,
+                    functions,
+                    errors,
+                    ret_type,
+                    returns_result,
+                    func_span,
+                );
+            }
+            ctx.exit_scope();
         }
         Stmt::If {
             condition,
@@ -814,6 +943,7 @@ fn infer_expr(
     let ty = match &body.exprs[expr_id] {
         Expr::Literal(lit) => literal_type(lit),
         Expr::Variable(name) => ctx.resolve(name).unwrap_or(Type::Unknown),
+        Expr::Detach { target, .. } => actor_type_for_detach_target(body, *target, classes),
         Expr::Unary { op, expr, op_span } => {
             let allow_pending_operand = matches!(op, UnaryOp::Await | UnaryOp::Fire);
             let operand = infer_expr(
@@ -839,27 +969,7 @@ fn infer_expr(
                 });
                 Type::Unknown
             } else if matches!(op, UnaryOp::Spawn) {
-                match &body.exprs[*expr] {
-                    Expr::Variable(name) => {
-                        if classes.is_class(name) {
-                            Type::Actor(Box::new(Type::Named(name.clone())))
-                        } else {
-                            Type::Unknown
-                        }
-                    }
-                    Expr::Call { callee, .. } => {
-                        if let Expr::Variable(name) = &body.exprs[*callee] {
-                            if classes.is_class(name) {
-                                Type::Actor(Box::new(Type::Named(name.clone())))
-                            } else {
-                                Type::Unknown
-                            }
-                        } else {
-                            Type::Unknown
-                        }
-                    }
-                    _ => Type::Unknown,
-                }
+                actor_type_for_detach_target(body, *expr, classes)
             } else if matches!(op, UnaryOp::Await) {
                 match operand {
                     Type::Pending(inner) => match *inner {
@@ -1016,6 +1126,10 @@ fn infer_expr(
             }
             let mut ret_ty = None;
             let mut valid_callee = false;
+            if is_pool_of_call(body, *callee) {
+                ret_ty = Some(Type::Unknown);
+                valid_callee = true;
+            }
             if let Expr::Variable(name) = &body.exprs[*callee] {
                 if classes.is_class(name) {
                     if let Some(class) = classes.get(name) {
@@ -1066,6 +1180,10 @@ fn infer_expr(
                 } = &body.exprs[*callee]
                 {
                     handled_member = true;
+                    if is_pool_of_member(body, *object, member) {
+                        ret_ty = Some(Type::Unknown);
+                        valid_callee = true;
+                    }
                     let object_ty = infer_expr(
                         body,
                         *object,
@@ -1819,6 +1937,35 @@ fn span_from_range(range: rowan::TextRange) -> SourceSpan {
     SourceSpan::from((start, len))
 }
 
+fn actor_type_for_detach_target(body: &Body, target: Idx<Expr>, classes: &ClassIndex) -> Type {
+    match &body.exprs[target] {
+        Expr::Variable(name) => {
+            if classes.is_class(name) {
+                Type::Actor(Box::new(Type::Named(name.clone())))
+            } else {
+                Type::Unknown
+            }
+        }
+        Expr::Call { callee, args } => {
+            if is_pool_of_call(body, *callee) {
+                if let Some(class_name) = pool_of_class_name(body, args, classes) {
+                    return Type::Actor(Box::new(Type::Named(class_name)));
+                }
+            }
+            if let Expr::Variable(name) = &body.exprs[*callee] {
+                if classes.is_class(name) {
+                    Type::Actor(Box::new(Type::Named(name.clone())))
+                } else {
+                    Type::Unknown
+                }
+            } else {
+                Type::Unknown
+            }
+        }
+        _ => Type::Unknown,
+    }
+}
+
 fn callee_error_span(body: &Body, callee: Idx<Expr>) -> SourceSpan {
     match &body.exprs[callee] {
         Expr::Binary { op_span, .. } => span_from_range(*op_span),
@@ -1992,7 +2139,7 @@ A Ocean:\n    has:\n        depth: Int\n\nA Whale:\n    can ocean() -> Ocean:\n 
     #[test]
     fn test_actor_call_requires_await_or_fire() {
         let input = "\
-A Whale:\n    can swim() -> Bool:\n        return true\n\nto f():\n    w = spawn Whale()\n    w.swim()\n";
+A Whale:\n    can swim() -> Bool:\n        return true\n\nto f():\n    w = detach Whale() * 1\n    w.swim()\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -2094,7 +2241,7 @@ A Foo:\n    has:\n        x: Int\n\nto f():\n    foo = Foo(x=1)\n    foo.bar\n";
     #[test]
     fn test_actor_call_with_await_ok() {
         let input = "\
-A Whale:\n    can swim() -> Bool:\n        return true\n\nto f() -> Result:\n    w = spawn Whale()\n    return await w.swim()\n";
+A Whale:\n    can swim() -> Bool:\n        return true\n\nto f() -> Result:\n    w = detach Whale() * 1\n    return await w.swim()\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -2140,7 +2287,7 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f(w: Whale):\n    r
     #[test]
     fn test_fire_actor_call_ok() {
         let input = "\
-A Whale:\n    can swim() -> Bool:\n        return true\n\nto f():\n    w = spawn Whale()\n    fire w.swim()\n";
+A Whale:\n    can swim() -> Bool:\n        return true\n\nto f():\n    w = detach Whale() * 1\n    fire w.swim()\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -2192,7 +2339,7 @@ to f():\n    Whale(age=\"old\")\n";
     #[test]
     fn test_await_on_actor_value_errors() {
         let input = "\
-A Whale:\n    can swim() -> Bool:\n        return true\n\nto f():\n    w = spawn Whale()\n    return await w\n";
+A Whale:\n    can swim() -> Bool:\n        return true\n\nto f():\n    w = detach Whale() * 1\n    return await w\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -2205,7 +2352,7 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f():\n    w = spawn
     #[test]
     fn test_fire_on_actor_value_errors() {
         let input = "\
-A Whale:\n    can swim() -> Bool:\n        return true\n\nto f():\n    w = spawn Whale()\n    fire w\n";
+A Whale:\n    can swim() -> Bool:\n        return true\n\nto f():\n    w = detach Whale() * 1\n    fire w\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);

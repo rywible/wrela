@@ -1,3 +1,4 @@
+use crate::hir::{Objective, PoolSize};
 use crate::mir::ir::{
     CallKind, CallTarget, MirFunction, MirModule, MirType, Place, Rvalue, Stmt, Terminator, Value,
 };
@@ -1141,6 +1142,28 @@ fn lower_rvalue(
                                     "parse_float" => Some(runtime_fn_parse_float(module, runtime)?),
                                     "read_file" => Some(runtime_fn_read_file(module, runtime)?),
                                     "write_file" => Some(runtime_fn_write_file(module, runtime)?),
+                                    "list_push" => Some(runtime_fn_list_push(module, runtime)?),
+                                    "pool_auto_size" => Some(runtime_fn_pool_auto_size(module, runtime)?),
+                                    "pool_size" => Some(runtime_fn_pool_size(module, runtime)?),
+                                    "pool_rr" => Some(runtime_fn_pool_rr(module, runtime)?),
+                                    "actor_mailbox_len" => {
+                                        Some(runtime_fn_actor_mailbox_len(module, runtime)?)
+                                    }
+                                    "actor_pause" => Some(runtime_fn_actor_pause(module, runtime)?),
+                                    "actor_resume" => Some(runtime_fn_actor_resume(module, runtime)?),
+                                    "actor_pause_wait" => {
+                                        Some(runtime_fn_actor_pause_wait(module, runtime)?)
+                                    }
+                                    "metrics_get" => Some(runtime_fn_metrics_get(module, runtime)?),
+                                    "metrics_dropped_paused_id" => {
+                                        Some(runtime_fn_metrics_dropped_paused_id(module, runtime)?)
+                                    }
+                                    "metrics_messages_dropped_id" => {
+                                        Some(runtime_fn_metrics_messages_dropped_id(
+                                            module,
+                                            runtime,
+                                        )?)
+                                    }
                                     _ => None,
                                 }
                             }
@@ -1190,13 +1213,64 @@ fn lower_rvalue(
                 }
             }
         }
-        Rvalue::Spawn { target, instance } => {
+        Rvalue::Spawn {
+            target,
+            instance,
+            size,
+            objective,
+            config,
+        } => {
             let class_val = lower_value(target, builder, locals, temps, module, runtime)?;
             let class_id = untag_int(builder, class_val);
             let instance_val = lower_value(instance, builder, locals, temps, module, runtime)?;
+            let pool_size = match size {
+                PoolSize::Fixed(value) => *value,
+                PoolSize::Auto => -1,
+            };
+            let objective = match objective {
+                Objective::Latency => 0,
+                Objective::Throughput => 1,
+                Objective::Conservation => 2,
+                Objective::Balance => 3,
+            };
             let func_id = runtime_fn_actor_spawn(module, runtime)?;
             let callee = module.declare_func_in_func(func_id, builder.func);
-            let call = builder.ins().call(callee, &[class_id, instance_val]);
+            let pool_size_val = builder.ins().iconst(types::I64, pool_size);
+            let objective_val = builder.ins().iconst(types::I64, objective);
+            let mailbox_cap = config.mailbox_cap.unwrap_or(-1);
+            let enqueue_timeout_ms = config.enqueue_timeout_ms.unwrap_or(-1);
+            let batch_limit = config.batch_limit.unwrap_or(-1);
+            let mailbox_cap_val = builder.ins().iconst(types::I64, mailbox_cap);
+            let enqueue_timeout_val = builder.ins().iconst(types::I64, enqueue_timeout_ms);
+            let batch_limit_val = builder.ins().iconst(types::I64, batch_limit);
+            let call = builder
+                .ins()
+                .call(
+                    callee,
+                    &[
+                        class_id,
+                        instance_val,
+                        pool_size_val,
+                        objective_val,
+                        mailbox_cap_val,
+                        enqueue_timeout_val,
+                        batch_limit_val,
+                    ],
+                );
+            Ok(builder.inst_results(call)[0])
+        }
+        Rvalue::PoolNew { handles, objective } => {
+            let handles_val = lower_value(handles, builder, locals, temps, module, runtime)?;
+            let objective = match objective {
+                Objective::Latency => 0,
+                Objective::Throughput => 1,
+                Objective::Conservation => 2,
+                Objective::Balance => 3,
+            };
+            let func_id = runtime_fn_pool_new(module, runtime)?;
+            let callee = module.declare_func_in_func(func_id, builder.func);
+            let objective_val = builder.ins().iconst(types::I64, objective);
+            let call = builder.ins().call(callee, &[handles_val, objective_val]);
             Ok(builder.inst_results(call)[0])
         }
         Rvalue::ClassInit { class_id, fields } => {
@@ -1636,6 +1710,94 @@ fn runtime_fn_list_set(
     runtime.get_func(module, "wr_list_set", sig)
 }
 
+fn runtime_fn_list_push(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_list_push_val", sig)
+}
+
+fn runtime_fn_pool_auto_size(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_pool_auto_size", sig)
+}
+
+fn runtime_fn_pool_size(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_pool_size", sig)
+}
+
+fn runtime_fn_pool_rr(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_pool_rr", sig)
+}
+
+fn runtime_fn_actor_mailbox_len(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_actor_mailbox_len", sig)
+}
+
+fn runtime_fn_actor_pause(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_actor_pause", sig)
+}
+
+fn runtime_fn_actor_resume(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_actor_resume", sig)
+}
+
+fn runtime_fn_actor_pause_wait(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_actor_pause_wait", sig)
+}
+
+fn runtime_fn_metrics_get(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_metrics_get", sig)
+}
+
+fn runtime_fn_metrics_dropped_paused_id(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(module, "wr_metrics_dropped_paused_id", sig)
+}
+
+fn runtime_fn_metrics_messages_dropped_id(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(module, "wr_metrics_messages_dropped_id", sig)
+}
+
 fn runtime_fn_map_new(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
@@ -1734,8 +1896,28 @@ fn runtime_fn_actor_spawn(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
 ) -> Result<cranelift_module::FuncId, CodegenError> {
-    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    let sig = RuntimeRegistry::runtime_sig(
+        module,
+        &[
+            types::I64,
+            types::I64,
+            types::I64,
+            types::I64,
+            types::I64,
+            types::I64,
+            types::I64,
+        ],
+        &[types::I64],
+    );
     runtime.get_func(module, "wr_actor_spawn", sig)
+}
+
+fn runtime_fn_pool_new(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_pool_new", sig)
 }
 
 fn runtime_fn_class_new(

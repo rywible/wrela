@@ -368,7 +368,7 @@ fire foo()
     }
 
     #[test]
-    fn test_match_use_spawn_it() {
+    fn test_match_use_detach_it() {
         let text = "\
 use:
     std,
@@ -381,7 +381,7 @@ match x:
     3: continue
     otherwise: return it
 
-spawn Whale(name=\"moby\")
+detach Whale(name=\"moby\") * 1
 its.name
 ";
         let (_node, errors) = parse_with_errors(text);

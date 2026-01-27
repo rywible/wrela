@@ -24,12 +24,13 @@ A Counter:
         return x + 1
 
 to run() -> Int:
-    c = spawn Counter()
-    v = await c.add(41) otherwise 0
-    return v
+    optimize balance:
+        c = detach Counter() * 1
+        v = await c.add(41) otherwise 0
+        return v
 "#;
 
-    let module = load_module_from_source(source);
+    let module = load_module_from_source(&source);
     let semantic = hir::semantic::check_module(&module);
     assert!(
         semantic.errors.is_empty(),
@@ -72,7 +73,7 @@ to run() -> Int:
     return total
 "#;
 
-    let module = load_module_from_source(source);
+    let module = load_module_from_source(&source);
     let semantic = hir::semantic::check_module(&module);
     assert!(
         semantic.errors.is_empty(),
@@ -113,7 +114,7 @@ to run() -> Int:
     return 0
 "#;
 
-    let module = load_module_from_source(source);
+    let module = load_module_from_source(&source);
     let semantic = hir::semantic::check_module(&module);
     assert!(
         semantic.errors.is_empty(),
@@ -150,18 +151,19 @@ A Counter:
         return x + 1
 
 to run() -> Int:
-    c = spawn Counter()
-    changing total = 0
-    if true:
-        total += await c.add(1) otherwise 0
-    else:
-        total += await c.add(2) otherwise 0
-    for i in 1...2:
-        total += await c.add(i) otherwise 0
-    return total
+    optimize balance:
+        c = detach Counter() * 1
+        changing total = 0
+        if true:
+            total += await c.add(1) otherwise 0
+        else:
+            total += await c.add(2) otherwise 0
+        for i in 1...2:
+            total += await c.add(i) otherwise 0
+        return total
 "#;
 
-    let module = load_module_from_source(source);
+    let module = load_module_from_source(&source);
     let semantic = hir::semantic::check_module(&module);
     assert!(
         semantic.errors.is_empty(),
@@ -206,7 +208,7 @@ to run() -> Int:
     return 0
 "#;
 
-    let module = load_module_from_source(source);
+    let module = load_module_from_source(&source);
     let semantic = hir::semantic::check_module(&module);
     assert!(
         semantic.errors.is_empty(),
@@ -290,19 +292,20 @@ A Counter:
         return x + 1
 
 to run() -> Int:
-    c = spawn Counter()
-    changing total = 0
-    match 2:
-        1:
-            total += await c.add(1) otherwise 0
-        2:
-            total += await c.add(2) otherwise 0
-        otherwise:
-            total += 0
-    return total
+    optimize balance:
+        c = detach Counter() * 1
+        changing total = 0
+        match 2:
+            1:
+                total += await c.add(1) otherwise 0
+            2:
+                total += await c.add(2) otherwise 0
+            otherwise:
+                total += 0
+        return total
 "#;
 
-    let module = load_module_from_source(source);
+    let module = load_module_from_source(&source);
     let semantic = hir::semantic::check_module(&module);
     assert!(
         semantic.errors.is_empty(),
@@ -373,6 +376,412 @@ to run() -> Int:
 }
 
 #[test]
+fn native_pool_round_robin_smoke() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = r#"
+A Counter:
+    can ping(x: Int) -> Int:
+        return x
+
+to run() -> Int:
+    optimize balance:
+        c = detach Counter() * 2
+        v1 = await c.ping(1) otherwise 0
+        v2 = await c.ping(1) otherwise 0
+        v3 = await c.ping(1) otherwise 0
+        v4 = await c.ping(1) otherwise 0
+        size = pool_size(c)
+        rr = pool_rr(c)
+        return size * 10 + rr
+"#;
+
+    let module = load_module_from_source(source);
+    let semantic = hir::semantic::check_module(&module);
+    assert!(
+        semantic.errors.is_empty(),
+        "semantic errors: {:?}",
+        semantic.errors
+    );
+    let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+    assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
+
+    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    for func in &mut mir_module.functions {
+        mir::opt::run_function_passes(func);
+    }
+    let mir_errors = mir::validate::validate_module(&mir_module);
+    assert!(mir_errors.is_empty(), "mir errors: {mir_errors:?}");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = dir.path().join("wr_pool_rr_smoke");
+    wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
+
+    let output = Command::new(&out).output().expect("run failed");
+    let expected = ((24 << 3) | 1) & 0xFF;
+    match output.status.code() {
+        Some(code) => assert_eq!(code, expected),
+        None => {
+            use std::os::unix::process::ExitStatusExt;
+            panic!(
+                "process terminated by signal {:?}: {}",
+                output.status.signal(),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+}
+
+#[test]
+fn native_pool_auto_size_smoke() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = r#"
+A Counter:
+    can ping(x: Int) -> Int:
+        return x
+
+to run() -> Int:
+    optimize balance:
+        c = detach Counter() * n
+        return pool_size(c)
+"#;
+
+    let module = load_module_from_source(source);
+    let semantic = hir::semantic::check_module(&module);
+    assert!(
+        semantic.errors.is_empty(),
+        "semantic errors: {:?}",
+        semantic.errors
+    );
+    let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+    assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
+
+    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    for func in &mut mir_module.functions {
+        mir::opt::run_function_passes(func);
+    }
+    let mir_errors = mir::validate::validate_module(&mir_module);
+    assert!(mir_errors.is_empty(), "mir errors: {mir_errors:?}");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = dir.path().join("wr_pool_auto_smoke");
+    wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
+
+    let output = Command::new(&out)
+        .env("WRELA_POOL_AUTO_MIN", "3")
+        .env("WRELA_POOL_AUTO_MAX", "3")
+        .output()
+        .expect("run failed");
+    let expected = ((3 << 3) | 1) & 0xFF;
+    match output.status.code() {
+        Some(code) => assert_eq!(code, expected),
+        None => {
+            use std::os::unix::process::ExitStatusExt;
+            panic!(
+                "process terminated by signal {:?}: {}",
+                output.status.signal(),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+}
+
+#[test]
+fn native_pool_mailbox_len_smoke() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = r#"
+A Counter:
+    can ping(x: Int) -> Int:
+        return x
+
+to run() -> Int:
+    optimize balance:
+        c = detach Counter() * 2
+        actor_pause(c)
+        actor_pause_wait(c)
+        fire c.ping(1)
+        len = actor_mailbox_len(c)
+        actor_resume(c)
+        expected = pool_size(c) + 1
+        if len == expected:
+            return 1
+        return 0
+"#;
+
+    let module = load_module_from_source(source);
+    let semantic = hir::semantic::check_module(&module);
+    assert!(
+        semantic.errors.is_empty(),
+        "semantic errors: {:?}",
+        semantic.errors
+    );
+    let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+    assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
+
+    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    for func in &mut mir_module.functions {
+        mir::opt::run_function_passes(func);
+    }
+    let mir_errors = mir::validate::validate_module(&mir_module);
+    assert!(mir_errors.is_empty(), "mir errors: {mir_errors:?}");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = dir.path().join("wr_pool_mailbox_len_smoke");
+    wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
+
+    let output = Command::new(&out).output().expect("run failed");
+    let expected = ((1 << 3) | 1) & 0xFF;
+    match output.status.code() {
+        Some(code) => assert_eq!(code, expected),
+        None => {
+            use std::os::unix::process::ExitStatusExt;
+            panic!(
+                "process terminated by signal {:?}: {}",
+                output.status.signal(),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+}
+
+#[test]
+fn native_pool_pause_drop_metrics_smoke() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = r#"
+A Counter:
+    can ping(x: Int) -> Int:
+        return x
+
+to run() -> Int:
+    optimize balance:
+        c = detach Counter() * 2
+        actor_pause(c)
+        actor_pause_wait(c)
+        for i in 1...4:
+            fire c.ping(i)
+        dropped = metrics_get(metrics_dropped_paused_id())
+        actor_resume(c)
+        if dropped > 0:
+            return 1
+        return 0
+"#;
+
+    let module = load_module_from_source(source);
+    let semantic = hir::semantic::check_module(&module);
+    assert!(
+        semantic.errors.is_empty(),
+        "semantic errors: {:?}",
+        semantic.errors
+    );
+    let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+    assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
+
+    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    for func in &mut mir_module.functions {
+        mir::opt::run_function_passes(func);
+    }
+    let mir_errors = mir::validate::validate_module(&mir_module);
+    assert!(mir_errors.is_empty(), "mir errors: {mir_errors:?}");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = dir.path().join("wr_pool_pause_drop_smoke");
+    wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
+
+    let output = Command::new(&out)
+        .env("WRELA_PAUSE_QUEUE_CAP", "1")
+        .output()
+        .expect("run failed");
+    let expected = ((1 << 3) | 1) & 0xFF;
+    match output.status.code() {
+        Some(code) => assert_eq!(code, expected),
+        None => {
+            use std::os::unix::process::ExitStatusExt;
+            panic!(
+                "process terminated by signal {:?}: {}",
+                output.status.signal(),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+}
+
+#[test]
+fn native_pool_backpressure_config_smoke() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = format!(
+        r#"
+A Counter:
+    can ping(x: Int) -> Int:
+        return x
+
+to run() -> Int:
+    optimize balance:
+        c = detach Pool.of(Counter, size=1, backpressure=queue(1)) * 1
+        return pool_size(c)
+"#
+    );
+
+    let module = load_module_from_source(&source);
+    let semantic = hir::semantic::check_module(&module);
+    assert!(
+        semantic.errors.is_empty(),
+        "semantic errors: {:?}",
+        semantic.errors
+    );
+    let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+    assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
+
+    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    for func in &mut mir_module.functions {
+        mir::opt::run_function_passes(func);
+    }
+    let mir_errors = mir::validate::validate_module(&mir_module);
+    assert!(mir_errors.is_empty(), "mir errors: {mir_errors:?}");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = dir.path().join("wr_pool_backpressure_drop_smoke");
+    wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
+
+    let output = Command::new(&out).output().expect("run failed");
+    let expected = ((1 << 3) | 1) & 0xFF;
+    match output.status.code() {
+        Some(code) => assert_eq!(code, expected),
+        None => {
+            use std::os::unix::process::ExitStatusExt;
+            panic!(
+                "process terminated by signal {:?}: {}",
+                output.status.signal(),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+}
+
+#[test]
+fn native_pool_backpressure_stress() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    if std::env::var("WR_STRESS_POOL_BP").is_err() {
+        return;
+    }
+    let source = r#"
+A Counter:
+    can ping(x: Int) -> Int:
+        return x
+
+to run() -> Int:
+    optimize balance:
+        c = detach Pool.of(Counter, size=1, backpressure=queue(1)) * 1
+        actor_pause(c)
+        actor_pause_wait(c)
+        for i in 1...400:
+            fire c.ping(i)
+        dropped = metrics_get(metrics_messages_dropped_id())
+        actor_resume(c)
+        if dropped > 0:
+            return 1
+        return 0
+"#;
+
+    let module = load_module_from_source(source);
+    let semantic = hir::semantic::check_module(&module);
+    assert!(
+        semantic.errors.is_empty(),
+        "semantic errors: {:?}",
+        semantic.errors
+    );
+    let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+    assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
+
+    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    for func in &mut mir_module.functions {
+        mir::opt::run_function_passes(func);
+    }
+    let mir_errors = mir::validate::validate_module(&mir_module);
+    assert!(mir_errors.is_empty(), "mir errors: {mir_errors:?}");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = dir.path().join("wr_pool_backpressure_stress");
+    wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
+
+    let output = Command::new(&out).output().expect("run failed");
+    let expected = ((1 << 3) | 1) & 0xFF;
+    match output.status.code() {
+        Some(code) => assert_eq!(code, expected),
+        None => {
+            use std::os::unix::process::ExitStatusExt;
+            panic!(
+                "process terminated by signal {:?}: {}",
+                output.status.signal(),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+}
+
+#[test]
+fn native_pool_of_overrides_tail_smoke() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = r#"
+A Counter:
+    can ping(x: Int) -> Int:
+        return x
+
+to run() -> Int:
+    optimize balance:
+        c = detach Pool.of(Counter, size=3) * 1
+        return pool_size(c)
+"#;
+
+    let module = load_module_from_source(source);
+    let semantic = hir::semantic::check_module(&module);
+    assert!(
+        semantic.errors.is_empty(),
+        "semantic errors: {:?}",
+        semantic.errors
+    );
+    let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+    assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
+
+    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    for func in &mut mir_module.functions {
+        mir::opt::run_function_passes(func);
+    }
+    let mir_errors = mir::validate::validate_module(&mir_module);
+    assert!(mir_errors.is_empty(), "mir errors: {mir_errors:?}");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = dir.path().join("wr_pool_of_override_smoke");
+    wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
+
+    let output = Command::new(&out).output().expect("run failed");
+    let expected = ((3 << 3) | 1) & 0xFF;
+    match output.status.code() {
+        Some(code) => assert_eq!(code, expected),
+        None => {
+            use std::os::unix::process::ExitStatusExt;
+            panic!(
+                "process terminated by signal {:?}: {}",
+                output.status.signal(),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+}
+
+#[test]
 fn native_actor_fire_smoke() {
     if std::env::var("WR_SKIP_NATIVE").is_ok() {
         return;
@@ -383,10 +792,11 @@ A Counter:
         return x + 1
 
 to run() -> Int:
-    c = spawn Counter()
-    fire c.add(1)
-    v = await c.add(41) otherwise 0
-    return v
+    optimize balance:
+        c = detach Counter() * 1
+        fire c.add(1)
+        v = await c.add(41) otherwise 0
+        return v
 "#;
 
     let module = load_module_from_source(source);

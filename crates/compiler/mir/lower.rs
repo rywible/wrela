@@ -176,7 +176,7 @@ mod tests {
     #[test]
     fn test_lower_marks_suspendable() {
         let input = "\
-A Whale:\n    can swim() -> Bool:\n        return true\n\nto f():\n    w = spawn Whale()\n    return await w.swim()\n";
+A Whale:\n    can swim() -> Bool:\n        return true\n\nto f():\n    w = detach Whale() * 1\n    return await w.swim()\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = hir_lower::lower(root);
@@ -458,6 +458,11 @@ impl FunctionLowerer {
                     }
                 }
             }
+            HirStmt::Optimize { body: optimize_body, .. } => {
+                self.enter_scope();
+                self.lower_stmt_block(body, optimize_body);
+                self.exit_scope();
+            }
             HirStmt::If {
                 condition,
                 then_branch,
@@ -736,6 +741,11 @@ impl FunctionLowerer {
                 .resolve_local(name)
                 .map(Value::Local)
                 .unwrap_or_else(|| Value::Const(Literal::Nil)),
+            Expr::Detach {
+                target,
+                size,
+                objective,
+            } => self.lower_detach_expr(body, *target, *size, *objective, expr_id, span),
             Expr::Unary { op, expr, .. } => {
                 if matches!(op, UnaryOp::Await) {
                     self.suspendable = true;
@@ -748,58 +758,14 @@ impl FunctionLowerer {
                         self.push_stmt(MirStmt::Fire { pending, span });
                         Value::Const(Literal::Nil)
                     }
-                    UnaryOp::Spawn => {
-                        let mut target = None;
-                        let mut instance = None;
-                        let mut lowered = None;
-                        match &body.exprs[*expr] {
-                            Expr::Variable(name) => {
-                                if let Some(id) = self.type_tags.get(name).copied() {
-                                    target = Some(Value::Const(Literal::Int(id.0 as i64)));
-                                    let fields =
-                                        self.class_fields.get(name).cloned().unwrap_or_default();
-                                    let temp = self.new_temp_for_expr(*expr);
-                                    self.push_stmt(MirStmt::Assign {
-                                        place: Place::Temp(temp),
-                                        value: Rvalue::ClassInit {
-                                            class_id: id.0 as u32,
-                                            fields,
-                                        },
-                                        span,
-                                    });
-                                    instance = Some(Value::Temp(temp));
-                                }
-                            }
-                            Expr::Call { callee, .. } => {
-                                if let Expr::Variable(name) = &body.exprs[*callee] {
-                                    if let Some(id) = self.type_tags.get(name).copied() {
-                                        target = Some(Value::Const(Literal::Int(id.0 as i64)));
-                                    }
-                                }
-                                let value = self.lower_expr(body, *expr);
-                                instance = Some(value.clone());
-                                lowered = Some(value);
-                            }
-                            _ => {
-                                let value = self.lower_expr(body, *expr);
-                                lowered = Some(value.clone());
-                                instance = Some(value);
-                            }
-                        }
-                        let target = target.unwrap_or_else(|| {
-                            lowered
-                                .clone()
-                                .unwrap_or_else(|| self.lower_expr(body, *expr))
-                        });
-                        let instance = instance.unwrap_or(Value::Const(Literal::Nil));
-                        let temp = self.new_temp_for_expr(expr_id);
-                        self.push_stmt(MirStmt::Assign {
-                            place: Place::Temp(temp),
-                            value: Rvalue::Spawn { target, instance },
-                            span,
-                        });
-                        Value::Temp(temp)
-                    }
+                    UnaryOp::Spawn => self.lower_detach_expr(
+                        body,
+                        *expr,
+                        hir::PoolSize::Fixed(1),
+                        None,
+                        expr_id,
+                        span,
+                    ),
                     UnaryOp::Err => {
                         let operand = self.lower_expr(body, *expr);
                         let temp = self.new_temp_for_expr(expr_id);
@@ -1080,6 +1046,429 @@ impl FunctionLowerer {
         }
     }
 
+    fn lower_detach_expr(
+        &mut self,
+        body: &hir::Body,
+        target_expr: hir::Idx<Expr>,
+        size: hir::PoolSize,
+        objective: Option<hir::Objective>,
+        result_expr: hir::Idx<Expr>,
+        span: TextRange,
+    ) -> Value {
+        let mut target_expr = target_expr;
+        let mut size = size;
+        let mut objective = objective;
+        let mut config = SpawnConfig::default();
+        if let Some(spec) = self.parse_pool_of(body, target_expr) {
+            target_expr = spec.class_expr;
+            if let Some(pool_size) = spec.size {
+                size = pool_size;
+            }
+            if let Some(pool_objective) = spec.objective {
+                objective = Some(pool_objective);
+            }
+            config = spec.config;
+        }
+        match size {
+            hir::PoolSize::Fixed(count) => {
+                if count > 1 {
+                    if let Some(value) = self.lower_detach_pool_fixed(
+                        body,
+                        target_expr,
+                        count as usize,
+                        objective,
+                        config,
+                        result_expr,
+                        span,
+                    ) {
+                        return value;
+                    }
+                }
+            }
+            hir::PoolSize::Auto => {
+                if let Some(value) = self.lower_detach_pool_auto(
+                    body,
+                    target_expr,
+                    objective,
+                    config,
+                    result_expr,
+                    span,
+                ) {
+                    return value;
+                }
+            }
+        }
+        let mut target = None;
+        let mut instance = None;
+        let mut lowered = None;
+        match &body.exprs[target_expr] {
+            Expr::Variable(name) => {
+                if let Some(id) = self.type_tags.get(name).copied() {
+                    target = Some(Value::Const(Literal::Int(id.0 as i64)));
+                    let fields = self.class_fields.get(name).cloned().unwrap_or_default();
+                    let temp = self.new_temp_for_expr(target_expr);
+                    self.push_stmt(MirStmt::Assign {
+                        place: Place::Temp(temp),
+                        value: Rvalue::ClassInit {
+                            class_id: id.0 as u32,
+                            fields,
+                        },
+                        span,
+                    });
+                    instance = Some(Value::Temp(temp));
+                }
+            }
+            Expr::Call { callee, .. } => {
+                if let Expr::Variable(name) = &body.exprs[*callee] {
+                    if let Some(id) = self.type_tags.get(name).copied() {
+                        target = Some(Value::Const(Literal::Int(id.0 as i64)));
+                    }
+                }
+                let value = self.lower_expr(body, target_expr);
+                instance = Some(value.clone());
+                lowered = Some(value);
+            }
+            _ => {
+                let value = self.lower_expr(body, target_expr);
+                lowered = Some(value.clone());
+                instance = Some(value);
+            }
+        }
+        let target = target.unwrap_or_else(|| {
+            lowered
+                .clone()
+                .unwrap_or_else(|| self.lower_expr(body, target_expr))
+        });
+        let instance = instance.unwrap_or(Value::Const(Literal::Nil));
+        let objective = objective.unwrap_or(hir::Objective::Balance);
+        let temp = self.new_temp_for_expr(result_expr);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(temp),
+            value: Rvalue::Spawn {
+                target,
+                instance,
+                size,
+                objective,
+                config,
+            },
+            span,
+        });
+        Value::Temp(temp)
+    }
+
+    fn lower_detach_pool_fixed(
+        &mut self,
+        body: &hir::Body,
+        target_expr: hir::Idx<Expr>,
+        count: usize,
+        objective: Option<hir::Objective>,
+        config: SpawnConfig,
+        result_expr: hir::Idx<Expr>,
+        span: TextRange,
+    ) -> Option<Value> {
+        let class = self.class_target_info(body, target_expr)?;
+        let objective = objective.unwrap_or(hir::Objective::Balance);
+        let mut handles = Vec::with_capacity(count);
+        for _ in 0..count {
+            let instance = self.build_class_instance(&class, span);
+            let target = Value::Const(Literal::Int(class.class_id.0 as i64));
+            let temp = self.new_temp_for_expr(result_expr);
+            self.push_stmt(MirStmt::Assign {
+                place: Place::Temp(temp),
+                value: Rvalue::Spawn {
+                    target,
+                    instance,
+                    size: hir::PoolSize::Fixed(1),
+                    objective,
+                    config,
+                },
+                span,
+            });
+            handles.push(Value::Temp(temp));
+        }
+        let list_temp = self.new_temp_for_expr(result_expr);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(list_temp),
+            value: Rvalue::BuildList { items: handles },
+            span,
+        });
+        let pool_temp = self.new_temp_for_expr(result_expr);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(pool_temp),
+            value: Rvalue::PoolNew {
+                handles: Value::Temp(list_temp),
+                objective,
+            },
+            span,
+        });
+        Some(Value::Temp(pool_temp))
+    }
+
+    fn lower_detach_pool_auto(
+        &mut self,
+        body: &hir::Body,
+        target_expr: hir::Idx<Expr>,
+        objective: Option<hir::Objective>,
+        config: SpawnConfig,
+        result_expr: hir::Idx<Expr>,
+        span: TextRange,
+    ) -> Option<Value> {
+        let class = self.class_target_info(body, target_expr)?;
+        let objective = objective.unwrap_or(hir::Objective::Balance);
+        let obj_code = objective_code(objective);
+
+        let size_temp = self.new_temp(MirType::Int);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(size_temp),
+            value: Rvalue::Call {
+                kind: CallKind::Sync,
+                target: CallTarget::Function(SmolStr::new("pool_auto_size")),
+                args: vec![Value::Const(Literal::Int(obj_code))],
+            },
+            span,
+        });
+
+        let list_temp = self.new_temp(MirType::Unknown);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(list_temp),
+            value: Rvalue::BuildList { items: Vec::new() },
+            span,
+        });
+
+        let idx_local = self.new_temp_local();
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Local(idx_local),
+            value: Rvalue::Use(Value::Const(Literal::Int(0))),
+            span,
+        });
+
+        let head_block = self.new_block();
+        let body_block = self.new_block();
+        let exit_block = self.new_block();
+
+        self.set_terminator(Terminator::Jump {
+            target: head_block,
+            span,
+        });
+
+        self.current_block = head_block;
+        let cond_temp = self.new_temp(MirType::Bool);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(cond_temp),
+            value: Rvalue::Binary {
+                op: BinaryOp::Lt,
+                lhs: Value::Local(idx_local),
+                rhs: Value::Temp(size_temp),
+            },
+            span,
+        });
+        self.set_terminator(Terminator::Branch {
+            cond: Value::Temp(cond_temp),
+            then_target: body_block,
+            else_target: exit_block,
+            span,
+        });
+
+        self.current_block = body_block;
+        let instance = self.build_class_instance(&class, span);
+        let target = Value::Const(Literal::Int(class.class_id.0 as i64));
+        let handle_temp = self.new_temp_for_expr(result_expr);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(handle_temp),
+            value: Rvalue::Spawn {
+                target,
+                instance,
+                size: hir::PoolSize::Fixed(1),
+                objective,
+                config,
+            },
+            span,
+        });
+        let push_temp = self.new_temp(MirType::Unknown);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(push_temp),
+            value: Rvalue::Call {
+                kind: CallKind::Sync,
+                target: CallTarget::Function(SmolStr::new("list_push")),
+                args: vec![Value::Temp(list_temp), Value::Temp(handle_temp)],
+            },
+            span,
+        });
+
+        let next_temp = self.new_temp(MirType::Int);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(next_temp),
+            value: Rvalue::Binary {
+                op: BinaryOp::Add,
+                lhs: Value::Local(idx_local),
+                rhs: Value::Const(Literal::Int(1)),
+            },
+            span,
+        });
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Local(idx_local),
+            value: Rvalue::Use(Value::Temp(next_temp)),
+            span,
+        });
+        if self.block_is_open(self.current_block) {
+            self.set_terminator(Terminator::Jump {
+                target: head_block,
+                span,
+            });
+        }
+
+        self.current_block = exit_block;
+        let pool_temp = self.new_temp_for_expr(result_expr);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(pool_temp),
+            value: Rvalue::PoolNew {
+                handles: Value::Temp(list_temp),
+                objective,
+            },
+            span,
+        });
+        Some(Value::Temp(pool_temp))
+    }
+
+    fn class_target_info(
+        &mut self,
+        body: &hir::Body,
+        target_expr: hir::Idx<Expr>,
+    ) -> Option<ClassTargetInfo> {
+        match &body.exprs[target_expr] {
+            Expr::Variable(name) => {
+                let class_id = self.type_tags.get(name).copied()?;
+                let fields = self.class_fields.get(name).cloned().unwrap_or_default();
+                Some(ClassTargetInfo {
+                    class_id,
+                    fields,
+                    field_values: Vec::new(),
+                })
+            }
+            Expr::Call { callee, args } => {
+                let Expr::Variable(name) = &body.exprs[*callee] else {
+                    return None;
+                };
+                let class_id = self.type_tags.get(name).copied()?;
+                let fields = self.class_fields.get(name).cloned().unwrap_or_default();
+                let mut field_values: Vec<Option<Value>> = vec![None; fields.len()];
+                let mut positional_index = 0usize;
+                for arg in args {
+                    match arg {
+                        hir::Arg::Positional { value, .. } => {
+                            let lowered = self.lower_expr(body, *value);
+                            if positional_index < field_values.len() {
+                                field_values[positional_index] = Some(lowered);
+                            }
+                            positional_index += 1;
+                        }
+                        hir::Arg::Named { name, value, .. } => {
+                            let lowered = self.lower_expr(body, *value);
+                            if let Some(idx) = fields.iter().position(|f| f == name) {
+                                field_values[idx] = Some(lowered);
+                            }
+                        }
+                    }
+                }
+                Some(ClassTargetInfo {
+                    class_id,
+                    fields,
+                    field_values,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    fn build_class_instance(&mut self, class: &ClassTargetInfo, span: TextRange) -> Value {
+        let temp = self.new_temp(MirType::Unknown);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(temp),
+            value: Rvalue::ClassInit {
+                class_id: class.class_id.0 as u32,
+                fields: class.fields.clone(),
+            },
+            span,
+        });
+        for (idx, value) in class.field_values.iter().enumerate() {
+            if let Some(value) = value {
+                self.push_stmt(MirStmt::SetField {
+                    base: Value::Temp(temp),
+                    field: class
+                        .fields
+                        .get(idx)
+                        .cloned()
+                        .unwrap_or_default(),
+                    value: value.clone(),
+                    span,
+                });
+            }
+        }
+        Value::Temp(temp)
+    }
+
+    fn parse_pool_of(
+        &self,
+        body: &hir::Body,
+        expr_id: hir::Idx<Expr>,
+    ) -> Option<PoolOfSpec> {
+        let Expr::Call { callee, args } = &body.exprs[expr_id] else {
+            return None;
+        };
+        let Expr::Member { object, member, .. } = &body.exprs[*callee] else {
+            return None;
+        };
+        if member.as_str() != "of" {
+            return None;
+        }
+        if !matches!(&body.exprs[*object], Expr::Variable(name) if name.as_str() == "Pool") {
+            return None;
+        }
+        let mut class_expr = None;
+        let mut size = None;
+        let mut objective = None;
+        let mut config = SpawnConfig::default();
+        for arg in args {
+            match arg {
+                hir::Arg::Positional { value, .. } => {
+                    if class_expr.is_none() {
+                        class_expr = Some(*value);
+                    }
+                }
+                hir::Arg::Named { name, value, .. } => match name.as_str() {
+                    "size" => {
+                        if let Some(pool_size) = pool_size_from_expr(body, *value) {
+                            size = Some(pool_size);
+                        }
+                    }
+                    "objective" => {
+                        if let Some(obj) = objective_from_expr(body, *value) {
+                            objective = Some(obj);
+                        }
+                    }
+                    "batch" => {
+                        if let Some(limit) = batch_limit_from_expr(body, *value) {
+                            config.batch_limit = Some(limit);
+                        }
+                    }
+                    "backpressure" => {
+                        if let Some(bp) = backpressure_from_expr(body, *value) {
+                            config.mailbox_cap = bp.mailbox_cap;
+                            config.enqueue_timeout_ms = bp.enqueue_timeout_ms;
+                        }
+                    }
+                    _ => {}
+                },
+            }
+        }
+        class_expr.map(|expr| PoolOfSpec {
+            class_expr: expr,
+            size,
+            objective,
+            config,
+        })
+    }
+
     fn lower_await(&mut self, body: &hir::Body, expr_id: hir::Idx<Expr>, span: TextRange) -> Value {
         let pending = self.lower_actor_call_or_value(body, expr_id, span, CallKind::Actor);
         let temp = self.new_temp_for_expr(expr_id);
@@ -1170,6 +1559,84 @@ impl FunctionLowerer {
     }
 }
 
+struct PoolOfSpec {
+    class_expr: hir::Idx<Expr>,
+    size: Option<hir::PoolSize>,
+    objective: Option<hir::Objective>,
+    config: SpawnConfig,
+}
+
+struct ClassTargetInfo {
+    class_id: TypeTagId,
+    fields: Vec<SmolStr>,
+    field_values: Vec<Option<Value>>,
+}
+
+fn pool_size_from_expr(body: &hir::Body, expr_id: hir::Idx<Expr>) -> Option<hir::PoolSize> {
+    match &body.exprs[expr_id] {
+        Expr::Literal(hir::Literal::Int(value)) => Some(hir::PoolSize::Fixed(*value)),
+        Expr::Variable(name) if name.as_str() == "n" => Some(hir::PoolSize::Auto),
+        _ => None,
+    }
+}
+
+fn objective_from_expr(body: &hir::Body, expr_id: hir::Idx<Expr>) -> Option<hir::Objective> {
+    match &body.exprs[expr_id] {
+        Expr::Variable(name) => hir::Objective::from_str(name.as_str()),
+        _ => None,
+    }
+}
+
+struct BackpressureSpec {
+    mailbox_cap: Option<i64>,
+    enqueue_timeout_ms: Option<i64>,
+}
+
+fn batch_limit_from_expr(body: &hir::Body, expr_id: hir::Idx<Expr>) -> Option<i64> {
+    match &body.exprs[expr_id] {
+        Expr::Literal(hir::Literal::Int(value)) => Some(*value),
+        _ => None,
+    }
+}
+
+fn backpressure_from_expr(body: &hir::Body, expr_id: hir::Idx<Expr>) -> Option<BackpressureSpec> {
+    match &body.exprs[expr_id] {
+        Expr::Variable(name) if name.as_str() == "drop" => Some(BackpressureSpec {
+            mailbox_cap: None,
+            enqueue_timeout_ms: Some(0),
+        }),
+        Expr::Call { callee, args } => {
+            let Expr::Variable(name) = &body.exprs[*callee] else {
+                return None;
+            };
+            if name.as_str() != "queue" || args.len() != 1 {
+                return None;
+            }
+            let arg = match &args[0] {
+                hir::Arg::Positional { value, .. } => *value,
+                hir::Arg::Named { value, .. } => *value,
+            };
+            match &body.exprs[arg] {
+                Expr::Literal(hir::Literal::Int(value)) => Some(BackpressureSpec {
+                    mailbox_cap: Some(*value),
+                    enqueue_timeout_ms: None,
+                }),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn objective_code(objective: hir::Objective) -> i64 {
+    match objective {
+        hir::Objective::Latency => 0,
+        hir::Objective::Throughput => 1,
+        hir::Objective::Conservation => 2,
+        hir::Objective::Balance => 3,
+    }
+}
+
 fn mir_type_from_type(ty: &Type) -> MirType {
     match ty {
         Type::Unknown => MirType::Unknown,
@@ -1196,5 +1663,16 @@ fn builtin_function_names() -> Vec<SmolStr> {
         SmolStr::new("parse_float"),
         SmolStr::new("read_file"),
         SmolStr::new("write_file"),
+        SmolStr::new("list_push"),
+        SmolStr::new("pool_auto_size"),
+        SmolStr::new("pool_size"),
+        SmolStr::new("pool_rr"),
+        SmolStr::new("actor_mailbox_len"),
+        SmolStr::new("actor_pause"),
+        SmolStr::new("actor_resume"),
+        SmolStr::new("actor_pause_wait"),
+        SmolStr::new("metrics_get"),
+        SmolStr::new("metrics_dropped_paused_id"),
+        SmolStr::new("metrics_messages_dropped_id"),
     ]
 }
