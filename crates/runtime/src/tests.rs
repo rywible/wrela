@@ -1,4 +1,5 @@
 use super::*;
+use crate::value::value_eq;
 
 #[test]
 fn value_tags_roundtrip() {
@@ -18,11 +19,39 @@ fn value_tags_roundtrip() {
 }
 
 #[test]
-fn boxed_float_roundtrip() {
+fn nanbox_float_roundtrip() {
     let v = wr_box_float(3.5);
-    assert!(v.is_ptr());
+    assert!(v.is_float());
     let f = wr_unbox_float(v);
     assert!((f - 3.5).abs() < f64::EPSILON);
+    assert_eq!(wr_type_id(v), TypeId::Float as u32);
+}
+
+#[test]
+fn nanbox_float_nan_behavior() {
+    let v = wr_box_float(f64::NAN);
+    assert!(v.is_float());
+    let f = wr_unbox_float(v);
+    assert!(f.is_nan());
+    assert!(!value_eq(v, v));
+}
+
+#[test]
+fn nanbox_int_float_eq() {
+    let i = Value::from_int(42);
+    let f = Value::from_float(42.0);
+    assert!(value_eq(i, f));
+    assert!(value_eq(f, i));
+}
+
+#[test]
+fn boxed_int_roundtrip() {
+    let big = (1i64 << 48) + 5;
+    let v = Value::from_int(big);
+    assert!(!v.is_int());
+    assert!(v.is_ptr());
+    assert_eq!(crate::value::int_value(v), Some(big));
+    assert_eq!(wr_type_id(v), TypeId::Int as u32);
     unsafe { wr_rc_dec(v) };
 }
 

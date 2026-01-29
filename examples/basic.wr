@@ -11,6 +11,7 @@ to make_moby_swim():
 
 make_moby_swim()
 
-whale = detach Whale() * n(optimize="latency")
+whale = detach Whale() * n
 
 whale = detach Whale() * 1 optimize latency
+whale = Whale(name=23)

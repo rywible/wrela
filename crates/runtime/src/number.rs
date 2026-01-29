@@ -1,6 +1,5 @@
-use crate::float_box;
 use crate::string;
-use crate::value::{TypeId, Value};
+use crate::value::{int_value, TypeId, Value};
 
 pub fn num_add(a: Value, b: Value) -> Value {
     if is_string(a) && is_string(b) {
@@ -29,7 +28,7 @@ pub fn num_div(a: Value, b: Value) -> Value {
         (Some(x), Some(y)) => {
             let xf = num_to_f64(x);
             let yf = num_to_f64(y);
-            float_box::box_float(xf / yf)
+            Value::from_float(xf / yf)
         }
         _ => Value::nil(),
     }
@@ -46,7 +45,7 @@ pub fn num_mod(a: Value, b: Value) -> Value {
         (Some(x), Some(y)) => {
             let xf = num_to_f64(x);
             let yf = num_to_f64(y);
-            float_box::box_float(xf % yf)
+            Value::from_float(xf % yf)
         }
         _ => Value::nil(),
     }
@@ -55,7 +54,7 @@ pub fn num_mod(a: Value, b: Value) -> Value {
 pub fn num_neg(a: Value) -> Value {
     match num_kind(a) {
         Some(NumKind::Int(x)) => Value::from_int(-x),
-        Some(NumKind::Float(x)) => float_box::box_float(-x),
+        Some(NumKind::Float(x)) => Value::from_float(-x),
         None => Value::nil(),
     }
 }
@@ -87,7 +86,7 @@ fn numeric_binary(
         (Some(x), Some(y)) => {
             let xf = num_to_f64(x);
             let yf = num_to_f64(y);
-            float_box::box_float(float_op(xf, yf))
+            Value::from_float(float_op(xf, yf))
         }
         _ => Value::nil(),
     }
@@ -118,20 +117,17 @@ fn num_to_f64(kind: NumKind) -> f64 {
 }
 
 fn num_kind(val: Value) -> Option<NumKind> {
-    if val.is_int() {
-        return Some(NumKind::Int(val.as_int()));
+    if let Some(i) = int_value(val) {
+        return Some(NumKind::Int(i));
     }
     if is_float(val) {
-        return Some(NumKind::Float(float_box::unbox_float(val)));
+        return Some(NumKind::Float(val.as_float()));
     }
     None
 }
 
 fn is_float(val: Value) -> bool {
-    if !val.is_ptr() {
-        return false;
-    }
-    unsafe { (*val.as_ptr()).type_id == TypeId::Float as u32 }
+    val.is_float()
 }
 
 fn is_string(val: Value) -> bool {

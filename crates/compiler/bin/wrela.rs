@@ -7,7 +7,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use wrela::hir;
 use wrela::mir;
@@ -21,6 +21,10 @@ struct ProjectDiag {
 }
 
 fn main() {
+    let trace = std::env::var("WRELA_BUILD_TRACE").is_ok();
+    if trace {
+        eprintln!("build: cli start");
+    }
     let args: Vec<String> = env::args().skip(1).collect();
     let mut output_format = OutputFormat::Pretty;
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
@@ -123,6 +127,9 @@ fn main() {
 
     match command {
         "init" => {
+            if trace {
+                eprintln!("build: command init");
+            }
             let target = path_arg.as_deref().unwrap_or(".");
             if let Err(err) = init_project(target) {
                 eprintln!("init error: {err}");
@@ -130,6 +137,9 @@ fn main() {
             }
         }
         "update" => {
+            if trace {
+                eprintln!("build: command update");
+            }
             if path_arg.is_some() {
                 eprintln!("error: update does not take a path");
                 std::process::exit(EXIT_USAGE);
@@ -144,6 +154,9 @@ fn main() {
             }
         }
         "check" => {
+            if trace {
+                eprintln!("build: command check");
+            }
             if !program_args.is_empty() {
                 eprintln!("error: unexpected extra arguments");
                 std::process::exit(EXIT_USAGE);
@@ -167,6 +180,9 @@ fn main() {
             }
         }
         "build" | "compile" => {
+            if trace {
+                eprintln!("build: command build");
+            }
             if !program_args.is_empty() {
                 eprintln!("error: unexpected extra arguments");
                 std::process::exit(EXIT_USAGE);
@@ -211,6 +227,9 @@ fn main() {
             }
         }
         "run" => {
+            if trace {
+                eprintln!("build: command run");
+            }
             let entry_path = resolve_entry_path(path_arg.as_deref());
             let entry_path = match entry_path {
                 Ok(path) => path,
@@ -240,6 +259,9 @@ fn main() {
             std::process::exit(status.code().unwrap_or(EXIT_CODEGEN));
         }
         "dev" => {
+            if trace {
+                eprintln!("build: command dev");
+            }
             let entry_path = resolve_entry_path(path_arg.as_deref());
             let entry_path = match entry_path {
                 Ok(path) => path,
@@ -392,6 +414,16 @@ fn compile_to_mir(
     emit_mir: bool,
     emit_mir_opt: bool,
 ) -> Result<mir::ir::MirModule, i32> {
+    let trace = std::env::var("WRELA_BUILD_TRACE").is_ok();
+    let stage = |name: &str, start: &Instant| {
+        if trace {
+            eprintln!("build: {} ({:.2?})", name, start.elapsed());
+        }
+    };
+    let start = Instant::now();
+    if trace {
+        eprintln!("build: start {:?}", entry_path);
+    }
     let (module, source, source_name) = match hir::project::load_project(entry_path) {
         Ok(project) => {
             for warn in project.warnings {
@@ -431,9 +463,11 @@ fn compile_to_mir(
             return Err(EXIT_PARSE);
         }
     };
+    stage("load_project", &start);
 
     let mut had_errors = false;
     let semantic = hir::semantic::check_module(&module);
+    stage("semantic", &start);
     for err in semantic.errors {
         match output_format {
             OutputFormat::Pretty => {
@@ -471,6 +505,7 @@ fn compile_to_mir(
     }
 
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+    stage("typeck", &start);
     for err in type_errors {
         match output_format {
             OutputFormat::Pretty => {
@@ -495,12 +530,14 @@ fn compile_to_mir(
     }
 
     let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    stage("mir_lower", &start);
     if emit_mir {
         println!("{:#?}", mir_module);
     }
     for func in &mut mir_module.functions {
         mir::opt::run_function_passes(func);
     }
+    stage("mir_opt", &start);
     if emit_mir_opt {
         println!("{:#?}", mir_module);
     }

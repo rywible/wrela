@@ -161,3 +161,4 @@ Success Metrics:
 - Add microbenchmarks for actor send/await loops.
 - Track `METRIC_RC_INC/DEC`, enqueue latency, and mailbox high-water.
 - Run stress tests with fixed and bursty loads.
+ - New: `scripts/bench_pool.sh` runs `bench/pool_bench.wr` for baseline throughput.

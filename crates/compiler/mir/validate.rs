@@ -225,15 +225,15 @@ fn check_stmt_uses(
         Stmt::RcInc { value, .. } | Stmt::RcDec { value, .. } => {
             check_value_use(func, block_idx, value, defined, errors);
             if let Some(kind) = value_type(func, value) {
-                if matches!(kind, MirType::Int | MirType::Bool | MirType::Nil) {
+                if !kind.is_ref() {
                     errors.push(MirValidationError {
                         message: format!("rc op on non-ref value in block {block_idx}"),
                     });
                 }
             } else if matches!(value, Value::Const(_)) {
-                if matches!(value, Value::Const(crate::hir::Literal::Int(_)))
-                    || matches!(value, Value::Const(crate::hir::Literal::Bool(_)))
+                if matches!(value, Value::Const(crate::hir::Literal::Bool(_)))
                     || matches!(value, Value::Const(crate::hir::Literal::Nil))
+                    || matches!(value, Value::Const(crate::hir::Literal::Float(_)))
                 {
                     errors.push(MirValidationError {
                         message: format!("rc op on non-ref literal in block {block_idx}"),

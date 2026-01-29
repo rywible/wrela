@@ -86,7 +86,8 @@ pub enum MirType {
 impl MirType {
     pub fn is_ref(&self) -> bool {
         match self {
-            MirType::Int | MirType::Float | MirType::Bool | MirType::Nil => false,
+            MirType::Float | MirType::Bool | MirType::Nil => false,
+            MirType::Int => true,
             _ => true,
         }
     }
@@ -178,6 +179,10 @@ pub enum Rvalue {
     PoolNew {
         handles: Value,
         objective: Objective,
+        min_size: i64,
+        max_size: i64,
+        weight: i64,
+        queue_cap: i64,
     },
     BuildList {
         items: Vec<Value>,

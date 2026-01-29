@@ -1,5 +1,5 @@
 use crate::object::ObjHeader;
-use crate::value::{header, value_eq, value_hash as hash_value, TypeId, Value};
+use crate::value::{header, int_value, value_eq, value_hash as hash_value, TypeId, Value};
 use crate::{wr_rc_dec, wr_rc_inc};
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -100,7 +100,7 @@ pub(crate) fn as_map_ref(val: Value) -> Option<*mut MapObj> {
 }
 
 fn is_valid_key(val: Value) -> bool {
-    if val.is_int() || val.is_bool() || val.is_nil() {
+    if int_value(val).is_some() || val.is_bool() || val.is_nil() {
         return true;
     }
     if val.is_ptr() {

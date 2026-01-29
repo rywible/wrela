@@ -753,8 +753,7 @@ impl FunctionLowerer {
                 match op {
                     UnaryOp::Await => self.lower_await(body, *expr, span),
                     UnaryOp::Fire => {
-                        let pending =
-                            self.lower_actor_call_or_value(body, *expr, span, CallKind::Actor);
+                        let pending = self.lower_pending_call_or_value(body, *expr, span);
                         self.push_stmt(MirStmt::Fire { pending, span });
                         Value::Const(Literal::Nil)
                     }
@@ -1059,6 +1058,10 @@ impl FunctionLowerer {
         let mut size = size;
         let mut objective = objective;
         let mut config = SpawnConfig::default();
+        let mut min_size = None;
+        let mut max_size = None;
+        let mut weight = None;
+        let mut queue_cap: Option<i64> = None;
         if let Some(spec) = self.parse_pool_of(body, target_expr) {
             target_expr = spec.class_expr;
             if let Some(pool_size) = spec.size {
@@ -1068,6 +1071,10 @@ impl FunctionLowerer {
                 objective = Some(pool_objective);
             }
             config = spec.config;
+            min_size = spec.min_size;
+            max_size = spec.max_size;
+            weight = spec.weight;
+            queue_cap = spec.queue_cap;
         }
         match size {
             hir::PoolSize::Fixed(count) => {
@@ -1078,6 +1085,10 @@ impl FunctionLowerer {
                         count as usize,
                         objective,
                         config,
+                        min_size,
+                        max_size,
+                        weight,
+                        queue_cap,
                         result_expr,
                         span,
                     ) {
@@ -1091,6 +1102,10 @@ impl FunctionLowerer {
                     target_expr,
                     objective,
                     config,
+                    min_size,
+                    max_size,
+                    weight,
+                    queue_cap,
                     result_expr,
                     span,
                 ) {
@@ -1163,6 +1178,10 @@ impl FunctionLowerer {
         count: usize,
         objective: Option<hir::Objective>,
         config: SpawnConfig,
+        min_size: Option<i64>,
+        max_size: Option<i64>,
+        weight: Option<i64>,
+        queue_cap: Option<i64>,
         result_expr: hir::Idx<Expr>,
         span: TextRange,
     ) -> Option<Value> {
@@ -1198,6 +1217,10 @@ impl FunctionLowerer {
             value: Rvalue::PoolNew {
                 handles: Value::Temp(list_temp),
                 objective,
+                min_size: min_size.unwrap_or(0),
+                max_size: max_size.unwrap_or(0),
+                weight: weight.unwrap_or(0),
+                queue_cap: queue_cap.unwrap_or(0),
             },
             span,
         });
@@ -1210,6 +1233,10 @@ impl FunctionLowerer {
         target_expr: hir::Idx<Expr>,
         objective: Option<hir::Objective>,
         config: SpawnConfig,
+        min_size: Option<i64>,
+        max_size: Option<i64>,
+        weight: Option<i64>,
+        queue_cap: Option<i64>,
         result_expr: hir::Idx<Expr>,
         span: TextRange,
     ) -> Option<Value> {
@@ -1223,7 +1250,12 @@ impl FunctionLowerer {
             value: Rvalue::Call {
                 kind: CallKind::Sync,
                 target: CallTarget::Function(SmolStr::new("pool_auto_size")),
-                args: vec![Value::Const(Literal::Int(obj_code))],
+                args: vec![
+                    Value::Const(Literal::Int(obj_code)),
+                    Value::Const(Literal::Int(min_size.unwrap_or(0))),
+                    Value::Const(Literal::Int(max_size.unwrap_or(0))),
+                    Value::Const(Literal::Int(weight.unwrap_or(0))),
+                ],
             },
             span,
         });
@@ -1324,6 +1356,10 @@ impl FunctionLowerer {
             value: Rvalue::PoolNew {
                 handles: Value::Temp(list_temp),
                 objective,
+                min_size: min_size.unwrap_or(0),
+                max_size: max_size.unwrap_or(0),
+                weight: weight.unwrap_or(0),
+                queue_cap: queue_cap.unwrap_or(0),
             },
             span,
         });
@@ -1428,6 +1464,10 @@ impl FunctionLowerer {
         let mut size = None;
         let mut objective = None;
         let mut config = SpawnConfig::default();
+        let mut min_size = None;
+        let mut max_size = None;
+        let mut weight = None;
+        let mut queue_cap: Option<i64> = None;
         for arg in args {
             match arg {
                 hir::Arg::Positional { value, .. } => {
@@ -1446,6 +1486,15 @@ impl FunctionLowerer {
                             objective = Some(obj);
                         }
                     }
+                    "min" => {
+                        min_size = int_literal_from_expr(body, *value);
+                    }
+                    "max" => {
+                        max_size = int_literal_from_expr(body, *value);
+                    }
+                    "weight" => {
+                        weight = int_literal_from_expr(body, *value);
+                    }
                     "batch" => {
                         if let Some(limit) = batch_limit_from_expr(body, *value) {
                             config.batch_limit = Some(limit);
@@ -1455,6 +1504,7 @@ impl FunctionLowerer {
                         if let Some(bp) = backpressure_from_expr(body, *value) {
                             config.mailbox_cap = bp.mailbox_cap;
                             config.enqueue_timeout_ms = bp.enqueue_timeout_ms;
+                            queue_cap = bp.queue_cap;
                         }
                     }
                     _ => {}
@@ -1466,11 +1516,15 @@ impl FunctionLowerer {
             size,
             objective,
             config,
+            min_size,
+            max_size,
+            weight,
+            queue_cap,
         })
     }
 
     fn lower_await(&mut self, body: &hir::Body, expr_id: hir::Idx<Expr>, span: TextRange) -> Value {
-        let pending = self.lower_actor_call_or_value(body, expr_id, span, CallKind::Actor);
+        let pending = self.lower_pending_call_or_value(body, expr_id, span);
         let temp = self.new_temp_for_expr(expr_id);
         self.push_stmt(MirStmt::Await {
             dst: Place::Temp(temp),
@@ -1480,14 +1534,18 @@ impl FunctionLowerer {
         Value::Temp(temp)
     }
 
-    fn lower_actor_call_or_value(
+    fn lower_pending_call_or_value(
         &mut self,
         body: &hir::Body,
         expr_id: hir::Idx<Expr>,
         span: TextRange,
-        kind: CallKind,
     ) -> Value {
         if let Expr::Call { callee, args } = &body.exprs[expr_id] {
+            let kind = if self.is_actor_call(body, *callee) {
+                CallKind::Actor
+            } else {
+                CallKind::Sync
+            };
             let (target, args) = self.lower_call_target(body, *callee, args);
             let temp = self.new_temp_for_expr(expr_id);
             self.push_stmt(MirStmt::Assign {
@@ -1498,6 +1556,14 @@ impl FunctionLowerer {
             Value::Temp(temp)
         } else {
             self.lower_expr(body, expr_id)
+        }
+    }
+
+    fn is_actor_call(&self, body: &hir::Body, callee: hir::Idx<Expr>) -> bool {
+        if let Expr::Member { object, .. } = &body.exprs[callee] {
+            matches!(self.expr_type(*object), MirType::Actor(_))
+        } else {
+            false
         }
     }
 
@@ -1564,6 +1630,10 @@ struct PoolOfSpec {
     size: Option<hir::PoolSize>,
     objective: Option<hir::Objective>,
     config: SpawnConfig,
+    min_size: Option<i64>,
+    max_size: Option<i64>,
+    weight: Option<i64>,
+    queue_cap: Option<i64>,
 }
 
 struct ClassTargetInfo {
@@ -1587,16 +1657,21 @@ fn objective_from_expr(body: &hir::Body, expr_id: hir::Idx<Expr>) -> Option<hir:
     }
 }
 
-struct BackpressureSpec {
-    mailbox_cap: Option<i64>,
-    enqueue_timeout_ms: Option<i64>,
-}
-
-fn batch_limit_from_expr(body: &hir::Body, expr_id: hir::Idx<Expr>) -> Option<i64> {
+fn int_literal_from_expr(body: &hir::Body, expr_id: hir::Idx<Expr>) -> Option<i64> {
     match &body.exprs[expr_id] {
         Expr::Literal(hir::Literal::Int(value)) => Some(*value),
         _ => None,
     }
+}
+
+struct BackpressureSpec {
+    mailbox_cap: Option<i64>,
+    enqueue_timeout_ms: Option<i64>,
+    queue_cap: Option<i64>,
+}
+
+fn batch_limit_from_expr(body: &hir::Body, expr_id: hir::Idx<Expr>) -> Option<i64> {
+    int_literal_from_expr(body, expr_id)
 }
 
 fn backpressure_from_expr(body: &hir::Body, expr_id: hir::Idx<Expr>) -> Option<BackpressureSpec> {
@@ -1604,6 +1679,7 @@ fn backpressure_from_expr(body: &hir::Body, expr_id: hir::Idx<Expr>) -> Option<B
         Expr::Variable(name) if name.as_str() == "drop" => Some(BackpressureSpec {
             mailbox_cap: None,
             enqueue_timeout_ms: Some(0),
+            queue_cap: Some(0),
         }),
         Expr::Call { callee, args } => {
             let Expr::Variable(name) = &body.exprs[*callee] else {
@@ -1620,6 +1696,7 @@ fn backpressure_from_expr(body: &hir::Body, expr_id: hir::Idx<Expr>) -> Option<B
                 Expr::Literal(hir::Literal::Int(value)) => Some(BackpressureSpec {
                     mailbox_cap: Some(*value),
                     enqueue_timeout_ms: None,
+                    queue_cap: Some(*value),
                 }),
                 _ => None,
             }
@@ -1667,6 +1744,7 @@ fn builtin_function_names() -> Vec<SmolStr> {
         SmolStr::new("pool_auto_size"),
         SmolStr::new("pool_size"),
         SmolStr::new("pool_rr"),
+        SmolStr::new("pool_queue_len"),
         SmolStr::new("actor_mailbox_len"),
         SmolStr::new("actor_pause"),
         SmolStr::new("actor_resume"),
@@ -1674,5 +1752,10 @@ fn builtin_function_names() -> Vec<SmolStr> {
         SmolStr::new("metrics_get"),
         SmolStr::new("metrics_dropped_paused_id"),
         SmolStr::new("metrics_messages_dropped_id"),
+        SmolStr::new("clock_ns"),
+        SmolStr::new("sleep_ms"),
+        SmolStr::new("storage_get"),
+        SmolStr::new("storage_set"),
+        SmolStr::new("storage_delete"),
     ]
 }

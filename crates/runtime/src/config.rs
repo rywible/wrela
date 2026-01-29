@@ -48,16 +48,98 @@ pub fn actor_config_for_objective(objective: u8) -> ActorConfig {
     }
 }
 
+pub fn sched_shards() -> usize {
+    if std::env::var("WRELA_DETERMINISTIC")
+        .ok()
+        .map(|v| !matches!(v.as_str(), "0" | "false" | "off"))
+        .unwrap_or(false)
+    {
+        return 1;
+    }
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    read_env_usize("WRELA_SCHED_SHARDS", cores).max(1)
+}
+
+pub fn sched_tick_ms() -> u64 {
+    if std::env::var("WRELA_DETERMINISTIC")
+        .ok()
+        .map(|v| !matches!(v.as_str(), "0" | "false" | "off"))
+        .unwrap_or(false)
+    {
+        return 1;
+    }
+    read_env_u64("WRELA_SCHED_TICK_MS", 1).max(1)
+}
+
+pub fn sched_ready_cap() -> usize {
+    read_env_usize("WRELA_SCHED_READY_CAP", 1024).max(2)
+}
+
+pub fn sched_batch_limit() -> i64 {
+    read_env_u64("WRELA_SCHED_BATCH", 64).max(1) as i64
+}
+
+pub fn pool_min_share_default() -> u32 {
+    read_env_usize("WRELA_POOL_MIN_SHARE", 1).max(1) as u32
+}
+
+pub fn pool_max_share_default() -> u32 {
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    read_env_usize("WRELA_POOL_MAX_SHARE", cores * 2).max(1) as u32
+}
+
+pub fn pool_queue_cap_default() -> usize {
+    read_env_usize("WRELA_POOL_QUEUE_CAP", 256).max(1)
+}
+
+pub fn pool_queue_cap_for_objective(objective: u8) -> usize {
+    let base = pool_queue_cap_default();
+    match objective {
+        // latency
+        0 => base.max(32),
+        // throughput
+        1 => base.saturating_mul(2).max(64),
+        // conservation
+        2 => (base / 2).max(16),
+        // balance
+        _ => base.max(32),
+    }
+}
+
+pub fn sched_batch_limit_for_objective(objective: u8) -> i64 {
+    let base = sched_batch_limit();
+    match objective {
+        0 => (base / 2).max(1),
+        1 => base.saturating_mul(2).max(1),
+        2 => base.max(1),
+        _ => base.max(1),
+    }
+}
+
+pub fn pool_queue_cap_for_policy(objective: u8, queue_cap: isize) -> usize {
+    if queue_cap == 0 {
+        1
+    } else if queue_cap > 0 {
+        queue_cap as usize
+    } else {
+        pool_queue_cap_for_objective(objective)
+    }
+}
+
 pub fn normalize_pool_size(size: i64, objective: u8) -> i64 {
     if size >= 1 {
         size
     } else {
-        auto_pool_size(objective)
+        auto_pool_size(objective, 0, 0, 0)
     }
 }
 
-pub fn pool_auto_size(objective: u8) -> i64 {
-    auto_pool_size(objective)
+pub fn pool_auto_size(objective: u8, min: i64, max: i64, weight: i64) -> i64 {
+    auto_pool_size(objective, min, max, weight)
 }
 
 pub fn normalize_objective(objective: i64) -> u8 {
@@ -95,7 +177,7 @@ fn scale_duration(value: Duration, num: u64, den: u64) -> Duration {
     Duration::from_millis(scaled.max(1))
 }
 
-fn auto_pool_size(objective: u8) -> i64 {
+fn auto_pool_size(objective: u8, min: i64, max: i64, weight: i64) -> i64 {
     let cores = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1) as i64;
@@ -109,7 +191,11 @@ fn auto_pool_size(objective: u8) -> i64 {
         // balance
         _ => cores,
     };
-    let min = read_env_usize("WRELA_POOL_AUTO_MIN", 1).max(1) as i64;
-    let max = read_env_usize("WRELA_POOL_AUTO_MAX", cores as usize).max(1) as i64;
-    base.clamp(min, max)
+    let min_default = read_env_usize("WRELA_POOL_AUTO_MIN", 1).max(1) as i64;
+    let max_default = read_env_usize("WRELA_POOL_AUTO_MAX", cores as usize).max(1) as i64;
+    let min = if min > 0 { min } else { min_default };
+    let max = if max > 0 { max } else { max_default };
+    let weight = if weight > 0 { weight } else { 1 };
+    let weighted = base.saturating_mul(weight);
+    weighted.clamp(min, max.max(min))
 }

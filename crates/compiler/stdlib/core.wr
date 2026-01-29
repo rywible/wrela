@@ -1,0 +1,12 @@
+public A StorageClient:
+    public can get(key: String) -> Result:
+        return await storage_get(key)
+
+    public can set(key: String, value: String) -> Result:
+        return await storage_set(key, value)
+
+    public can delete(key: String) -> Result:
+        return await storage_delete(key)
+
+public to storage_open():
+    return detach StorageClient() * 1

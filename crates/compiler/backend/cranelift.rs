@@ -16,11 +16,41 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::SystemTime;
+use std::io::Read;
+use std::process::Stdio;
+use std::time::{Duration, Instant, SystemTime};
 use target_lexicon::Triple;
+
+const NANBOX_QNAN: u64 = 0x7ff8_0000_0000_0000;
+const NANBOX_TAG_SHIFT: u64 = 49;
+const NANBOX_PAYLOAD_MASK: u64 = (1u64 << NANBOX_TAG_SHIFT) - 1;
+const NANBOX_TAG_MASK: u64 = 0x3 << NANBOX_TAG_SHIFT;
+const NANBOX_TAG_INT: u64 = 2;
+const NANBOX_TAG_IMM: u64 = 3;
+const NANBOX_IMM_NIL: u64 = 0;
+const NANBOX_IMM_FALSE: u64 = 1;
+const NANBOX_IMM_TRUE: u64 = 2;
+const NANBOX_INT_MIN: i64 = -(1i64 << (NANBOX_TAG_SHIFT - 1));
+const NANBOX_INT_MAX: i64 = (1i64 << (NANBOX_TAG_SHIFT - 1)) - 1;
+const RUNTIME_ABI_VERSION: i64 = 1;
 
 #[derive(Debug)]
 pub struct CodegenError(pub String);
+
+fn nanbox_const(tag: u64, payload: u64) -> i64 {
+    (NANBOX_QNAN | (tag << NANBOX_TAG_SHIFT) | (payload & NANBOX_PAYLOAD_MASK)) as i64
+}
+
+fn nanbox_nil_const() -> i64 {
+    nanbox_const(NANBOX_TAG_IMM, NANBOX_IMM_NIL)
+}
+
+fn nanbox_bool_const(value: bool) -> i64 {
+    nanbox_const(
+        NANBOX_TAG_IMM,
+        if value { NANBOX_IMM_TRUE } else { NANBOX_IMM_FALSE },
+    )
+}
 
 fn declare_method_wrappers(
     module: &mut ObjectModule,
@@ -70,7 +100,7 @@ fn declare_method_wrappers(
 
                 builder.switch_to_block(shifted_block);
                 let mut call_args = Vec::with_capacity(method.arity);
-                let nil = builder.ins().iconst(types::I64, 3);
+                let nil = builder.ins().iconst(types::I64, nanbox_nil_const());
                 call_args.push(nil);
                 let flags = MemFlags::new();
                 for idx in 0..method.arity.saturating_sub(1) {
@@ -179,6 +209,9 @@ impl RuntimeRegistry {
 }
 
 pub fn compile_to_object(mir: &MirModule) -> Result<Vec<u8>, CodegenError> {
+    if std::env::var("WRELA_CODEGEN_DEBUG").is_ok() {
+        eprintln!("codegen: start");
+    }
     let mut module = create_object_module()?;
     let func_ids = declare_functions(&mut module, mir)?;
     let method_wrappers = declare_method_wrappers(&mut module, mir, &func_ids)?;
@@ -210,15 +243,32 @@ pub fn compile_to_object(mir: &MirModule) -> Result<Vec<u8>, CodegenError> {
             .map_err(|err| CodegenError(format!("define_function failed: {err}")))?;
     }
 
+    if std::env::var("WRELA_CODEGEN_DEBUG").is_ok() {
+        eprintln!("codegen: finish module");
+    }
     let product = module.finish();
+    if std::env::var("WRELA_CODEGEN_DEBUG").is_ok() {
+        eprintln!("codegen: emit object");
+    }
     let obj = product
         .emit()
         .map_err(|err| CodegenError(format!("emit failed: {err}")))?;
+    if std::env::var("WRELA_CODEGEN_DEBUG").is_ok() {
+        eprintln!("codegen: done");
+    }
     Ok(obj)
 }
 
 pub fn compile_to_executable(mir: &MirModule, output: &Path) -> Result<(), CodegenError> {
     let obj = compile_to_object(mir)?;
+    if std::env::var("WRELA_SKIP_LINK").is_ok() {
+        fs::write(output, obj)
+            .map_err(|err| CodegenError(format!("write obj failed: {err}")))?;
+        if std::env::var("WRELA_CODEGEN_DEBUG").is_ok() {
+            eprintln!("linker: skipped (WRELA_SKIP_LINK=1)");
+        }
+        return Ok(());
+    }
     let obj_path = temp_object_path(output);
     fs::write(&obj_path, obj).map_err(|err| CodegenError(format!("write obj failed: {err}")))?;
 
@@ -234,9 +284,19 @@ pub fn compile_to_executable(mir: &MirModule, output: &Path) -> Result<(), Codeg
         cmd.env("MACOSX_DEPLOYMENT_TARGET", "11.0");
         cmd.arg("-Wl,-w");
     }
-    let output = cmd
-        .output()
-        .map_err(|err| linker_io_error(&linker.name, err))?;
+    if std::env::var("WRELA_LINKER_DEBUG").is_ok() {
+        eprintln!("linker: {:?}", cmd);
+    }
+    let output = if let Ok(timeout_ms) = std::env::var("WRELA_LINK_TIMEOUT_MS") {
+        let timeout_ms: u64 = timeout_ms.parse().unwrap_or(0);
+        if timeout_ms == 0 {
+            cmd.output().map_err(|err| linker_io_error(&linker.name, err))?
+        } else {
+            run_linker_with_timeout(cmd, Duration::from_millis(timeout_ms), &linker.name)?
+        }
+    } else {
+        cmd.output().map_err(|err| linker_io_error(&linker.name, err))?
+    };
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -249,6 +309,47 @@ pub fn compile_to_executable(mir: &MirModule, output: &Path) -> Result<(), Codeg
     }
 
     Ok(())
+}
+
+fn run_linker_with_timeout(
+    cmd: &mut Command,
+    timeout: Duration,
+    name: &str,
+) -> Result<std::process::Output, CodegenError> {
+    let mut child = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| linker_io_error(name, err))?;
+    let start = Instant::now();
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|err| linker_io_error(name, err))?
+        {
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+            if let Some(mut out) = child.stdout.take() {
+                let _ = out.read_to_end(&mut stdout);
+            }
+            if let Some(mut err) = child.stderr.take() {
+                let _ = err.read_to_end(&mut stderr);
+            }
+            return Ok(std::process::Output {
+                status,
+                stdout,
+                stderr,
+            });
+        }
+        if start.elapsed() >= timeout {
+            let _ = child.kill();
+            return Err(CodegenError(format!(
+                "linker timed out after {} ms",
+                timeout.as_millis()
+            )));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 fn ensure_runtime_built() -> Result<PathBuf, CodegenError> {
@@ -273,7 +374,14 @@ fn ensure_runtime_built() -> Result<PathBuf, CodegenError> {
             let lib_path = exe_dir.parent().map(|p| p.join("lib").join(lib_name));
             if let Some(path) = lib_path {
                 if path.exists() {
-                    return Ok(path);
+                    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+                    let workspace_root = manifest_dir.join("..").join("..");
+                    let runtime_root = workspace_root.join("crates").join("runtime");
+                    if runtime_root.exists() && runtime_needs_rebuild(&path, &runtime_root) {
+                        // Fall through to rebuild in dev contexts.
+                    } else {
+                        return Ok(path);
+                    }
                 }
             }
         }
@@ -294,6 +402,13 @@ fn ensure_runtime_built() -> Result<PathBuf, CodegenError> {
     cmd.args(["build", "-p", "wrela_runtime"]);
     if profile == "release" {
         cmd.arg("--release");
+        let metrics_env = env::var("WRELA_RUNTIME_METRICS")
+            .ok()
+            .map(|v| !matches!(v.as_str(), "0" | "false" | "off"))
+            .unwrap_or(false);
+        if !metrics_env {
+            cmd.arg("--no-default-features");
+        }
     }
     let output = cmd
         .current_dir(&workspace_root)
@@ -545,6 +660,7 @@ fn lower_function(
         let block_id = block_map[block_idx];
         builder.switch_to_block(block_id);
         if block_idx == func.entry.0 && func.name == "main" {
+            emit_runtime_init_and_check(&mut builder, module, runtime)?;
             emit_method_registrations(&mut builder, module, runtime, method_wrappers, classes)?;
         }
         for stmt in &block.stmts {
@@ -705,9 +821,9 @@ fn lower_rvalue(
                     let ty = mir_type_of_value(operand, locals_tys, temps_tys);
                     match ty {
                         MirType::Int => {
-                            let unboxed = untag_int(builder, v);
+                            let unboxed = untag_int(builder, module, runtime, v)?;
                             let neg = builder.ins().ineg(unboxed);
-                            Ok(tag_int(builder, neg))
+                            tag_int(builder, module, runtime, neg)
                         }
                         MirType::Float => {
                             let unbox_id = runtime_fn_unbox_float(module, runtime)?;
@@ -729,9 +845,9 @@ fn lower_rvalue(
                     }
                 }
                 crate::hir::UnaryOp::BitNot => {
-                    let unboxed = untag_int(builder, v);
+                    let unboxed = untag_int(builder, module, runtime, v)?;
                     let res = builder.ins().bnot(unboxed);
-                    Ok(tag_int(builder, res))
+                    tag_int(builder, module, runtime, res)
                 }
                 crate::hir::UnaryOp::Not => {
                     let unboxed = untag_bool(builder, v);
@@ -750,10 +866,10 @@ fn lower_rvalue(
                     let lty = mir_type_of_value(lhs, locals_tys, temps_tys);
                     let rty = mir_type_of_value(rhs, locals_tys, temps_tys);
                     if matches!(lty, MirType::Int) && matches!(rty, MirType::Int) {
-                        let l = untag_int(builder, lhs_val);
-                        let r = untag_int(builder, rhs_val);
+                        let l = untag_int(builder, module, runtime, lhs_val)?;
+                        let r = untag_int(builder, module, runtime, rhs_val)?;
                         let res = builder.ins().iadd(l, r);
-                        tag_int(builder, res)
+                        tag_int(builder, module, runtime, res)?
                     } else if matches!(lty, MirType::Float) && matches!(rty, MirType::Float) {
                         let unbox_id = runtime_fn_unbox_float(module, runtime)?;
                         let unbox_callee = module.declare_func_in_func(unbox_id, builder.func);
@@ -785,10 +901,10 @@ fn lower_rvalue(
                     let lty = mir_type_of_value(lhs, locals_tys, temps_tys);
                     let rty = mir_type_of_value(rhs, locals_tys, temps_tys);
                     if matches!(lty, MirType::Int) && matches!(rty, MirType::Int) {
-                        let l = untag_int(builder, lhs_val);
-                        let r = untag_int(builder, rhs_val);
+                        let l = untag_int(builder, module, runtime, lhs_val)?;
+                        let r = untag_int(builder, module, runtime, rhs_val)?;
                         let res = builder.ins().isub(l, r);
-                        tag_int(builder, res)
+                        tag_int(builder, module, runtime, res)?
                     } else if matches!(lty, MirType::Float) && matches!(rty, MirType::Float) {
                         let unbox_id = runtime_fn_unbox_float(module, runtime)?;
                         let unbox_callee = module.declare_func_in_func(unbox_id, builder.func);
@@ -812,10 +928,10 @@ fn lower_rvalue(
                     let lty = mir_type_of_value(lhs, locals_tys, temps_tys);
                     let rty = mir_type_of_value(rhs, locals_tys, temps_tys);
                     if matches!(lty, MirType::Int) && matches!(rty, MirType::Int) {
-                        let l = untag_int(builder, lhs_val);
-                        let r = untag_int(builder, rhs_val);
+                        let l = untag_int(builder, module, runtime, lhs_val)?;
+                        let r = untag_int(builder, module, runtime, rhs_val)?;
                         let res = builder.ins().imul(l, r);
-                        tag_int(builder, res)
+                        tag_int(builder, module, runtime, res)?
                     } else if matches!(lty, MirType::Float) && matches!(rty, MirType::Float) {
                         let unbox_id = runtime_fn_unbox_float(module, runtime)?;
                         let unbox_callee = module.declare_func_in_func(unbox_id, builder.func);
@@ -839,8 +955,8 @@ fn lower_rvalue(
                     let lty = mir_type_of_value(lhs, locals_tys, temps_tys);
                     let rty = mir_type_of_value(rhs, locals_tys, temps_tys);
                     if matches!(lty, MirType::Int) && matches!(rty, MirType::Int) {
-                        let l = untag_int(builder, lhs_val);
-                        let r = untag_int(builder, rhs_val);
+                        let l = untag_int(builder, module, runtime, lhs_val)?;
+                        let r = untag_int(builder, module, runtime, rhs_val)?;
                         let zero = builder.ins().iconst(types::I64, 0);
                         let is_zero = builder.ins().icmp(
                             cranelift_codegen::ir::condcodes::IntCC::Equal,
@@ -858,7 +974,7 @@ fn lower_rvalue(
                             .trap(cranelift_codegen::ir::TrapCode::INTEGER_DIVISION_BY_ZERO);
                         builder.switch_to_block(cont_block);
                         let res = builder.ins().sdiv(l, r);
-                        tag_int(builder, res)
+                        tag_int(builder, module, runtime, res)?
                     } else if matches!(lty, MirType::Float) && matches!(rty, MirType::Float) {
                         let unbox_id = runtime_fn_unbox_float(module, runtime)?;
                         let unbox_callee = module.declare_func_in_func(unbox_id, builder.func);
@@ -882,10 +998,10 @@ fn lower_rvalue(
                     let lty = mir_type_of_value(lhs, locals_tys, temps_tys);
                     let rty = mir_type_of_value(rhs, locals_tys, temps_tys);
                     if matches!(lty, MirType::Int) && matches!(rty, MirType::Int) {
-                        let l = untag_int(builder, lhs_val);
-                        let r = untag_int(builder, rhs_val);
+                        let l = untag_int(builder, module, runtime, lhs_val)?;
+                        let r = untag_int(builder, module, runtime, rhs_val)?;
                         let res = builder.ins().srem(l, r);
-                        tag_int(builder, res)
+                        tag_int(builder, module, runtime, res)?
                     } else {
                         let func_id = runtime_fn_num_mod(module, runtime)?;
                         let callee = module.declare_func_in_func(func_id, builder.func);
@@ -894,34 +1010,34 @@ fn lower_rvalue(
                     }
                 }
                 crate::hir::BinaryOp::BitAnd => {
-                    let l = untag_int(builder, lhs_val);
-                    let r = untag_int(builder, rhs_val);
+                    let l = untag_int(builder, module, runtime, lhs_val)?;
+                    let r = untag_int(builder, module, runtime, rhs_val)?;
                     let res = builder.ins().band(l, r);
-                    tag_int(builder, res)
+                    tag_int(builder, module, runtime, res)?
                 }
                 crate::hir::BinaryOp::BitOr => {
-                    let l = untag_int(builder, lhs_val);
-                    let r = untag_int(builder, rhs_val);
+                    let l = untag_int(builder, module, runtime, lhs_val)?;
+                    let r = untag_int(builder, module, runtime, rhs_val)?;
                     let res = builder.ins().bor(l, r);
-                    tag_int(builder, res)
+                    tag_int(builder, module, runtime, res)?
                 }
                 crate::hir::BinaryOp::BitXor => {
-                    let l = untag_int(builder, lhs_val);
-                    let r = untag_int(builder, rhs_val);
+                    let l = untag_int(builder, module, runtime, lhs_val)?;
+                    let r = untag_int(builder, module, runtime, rhs_val)?;
                     let res = builder.ins().bxor(l, r);
-                    tag_int(builder, res)
+                    tag_int(builder, module, runtime, res)?
                 }
                 crate::hir::BinaryOp::Shl => {
-                    let l = untag_int(builder, lhs_val);
-                    let r = untag_int(builder, rhs_val);
+                    let l = untag_int(builder, module, runtime, lhs_val)?;
+                    let r = untag_int(builder, module, runtime, rhs_val)?;
                     let res = builder.ins().ishl(l, r);
-                    tag_int(builder, res)
+                    tag_int(builder, module, runtime, res)?
                 }
                 crate::hir::BinaryOp::Shr => {
-                    let l = untag_int(builder, lhs_val);
-                    let r = untag_int(builder, rhs_val);
+                    let l = untag_int(builder, module, runtime, lhs_val)?;
+                    let r = untag_int(builder, module, runtime, rhs_val)?;
                     let res = builder.ins().sshr(l, r);
-                    tag_int(builder, res)
+                    tag_int(builder, module, runtime, res)?
                 }
                 crate::hir::BinaryOp::Eq => runtime_eq(builder, lhs_val, rhs_val, module, runtime)?,
                 crate::hir::BinaryOp::Ne => {
@@ -935,8 +1051,8 @@ fn lower_rvalue(
                     let lty = mir_type_of_value(lhs, locals_tys, temps_tys);
                     let rty = mir_type_of_value(rhs, locals_tys, temps_tys);
                     if matches!(lty, MirType::Int) && matches!(rty, MirType::Int) {
-                        let l = untag_int(builder, lhs_val);
-                        let r = untag_int(builder, rhs_val);
+                        let l = untag_int(builder, module, runtime, lhs_val)?;
+                        let r = untag_int(builder, module, runtime, rhs_val)?;
                         let cmp = builder.ins().icmp(
                             cranelift_codegen::ir::condcodes::IntCC::SignedLessThan,
                             l,
@@ -969,8 +1085,8 @@ fn lower_rvalue(
                     let lty = mir_type_of_value(lhs, locals_tys, temps_tys);
                     let rty = mir_type_of_value(rhs, locals_tys, temps_tys);
                     if matches!(lty, MirType::Int) && matches!(rty, MirType::Int) {
-                        let l = untag_int(builder, lhs_val);
-                        let r = untag_int(builder, rhs_val);
+                        let l = untag_int(builder, module, runtime, lhs_val)?;
+                        let r = untag_int(builder, module, runtime, rhs_val)?;
                         let cmp = builder.ins().icmp(
                             cranelift_codegen::ir::condcodes::IntCC::SignedGreaterThan,
                             l,
@@ -1003,8 +1119,8 @@ fn lower_rvalue(
                     let lty = mir_type_of_value(lhs, locals_tys, temps_tys);
                     let rty = mir_type_of_value(rhs, locals_tys, temps_tys);
                     if matches!(lty, MirType::Int) && matches!(rty, MirType::Int) {
-                        let l = untag_int(builder, lhs_val);
-                        let r = untag_int(builder, rhs_val);
+                        let l = untag_int(builder, module, runtime, lhs_val)?;
+                        let r = untag_int(builder, module, runtime, rhs_val)?;
                         let cmp = builder.ins().icmp(
                             cranelift_codegen::ir::condcodes::IntCC::SignedLessThanOrEqual,
                             l,
@@ -1037,8 +1153,8 @@ fn lower_rvalue(
                     let lty = mir_type_of_value(lhs, locals_tys, temps_tys);
                     let rty = mir_type_of_value(rhs, locals_tys, temps_tys);
                     if matches!(lty, MirType::Int) && matches!(rty, MirType::Int) {
-                        let l = untag_int(builder, lhs_val);
-                        let r = untag_int(builder, rhs_val);
+                        let l = untag_int(builder, module, runtime, lhs_val)?;
+                        let r = untag_int(builder, module, runtime, rhs_val)?;
                         let cmp = builder.ins().icmp(
                             cranelift_codegen::ir::condcodes::IntCC::SignedGreaterThanOrEqual,
                             l,
@@ -1131,6 +1247,11 @@ fn lower_rvalue(
             }
             match kind {
                 CallKind::Sync => {
+                    let target_name = match &target {
+                        CallTarget::Function(name) => name.as_str().to_string(),
+                        CallTarget::Method { method, .. } => method.as_str().to_string(),
+                        CallTarget::Indirect(_) => "<indirect>".to_string(),
+                    };
                     let func_id = match target {
                         CallTarget::Function(name) => {
                             if let Some(id) = func_ids.get(name).copied() {
@@ -1138,6 +1259,7 @@ fn lower_rvalue(
                             } else {
                                 match name.as_str() {
                                     "print" => Some(runtime_fn_print(module, runtime)?),
+                                    "assert" => Some(runtime_fn_assert(module, runtime)?),
                                     "parse_int" => Some(runtime_fn_parse_int(module, runtime)?),
                                     "parse_float" => Some(runtime_fn_parse_float(module, runtime)?),
                                     "read_file" => Some(runtime_fn_read_file(module, runtime)?),
@@ -1146,6 +1268,9 @@ fn lower_rvalue(
                                     "pool_auto_size" => Some(runtime_fn_pool_auto_size(module, runtime)?),
                                     "pool_size" => Some(runtime_fn_pool_size(module, runtime)?),
                                     "pool_rr" => Some(runtime_fn_pool_rr(module, runtime)?),
+                                    "pool_queue_len" => {
+                                        Some(runtime_fn_pool_queue_len(module, runtime)?)
+                                    }
                                     "actor_mailbox_len" => {
                                         Some(runtime_fn_actor_mailbox_len(module, runtime)?)
                                     }
@@ -1164,6 +1289,13 @@ fn lower_rvalue(
                                             runtime,
                                         )?)
                                     }
+                                    "clock_ns" => Some(runtime_fn_clock_ns(module, runtime)?),
+                                    "sleep_ms" => Some(runtime_fn_sleep_ms(module, runtime)?),
+                                    "storage_get" => Some(runtime_fn_storage_get(module, runtime)?),
+                                    "storage_set" => Some(runtime_fn_storage_set(module, runtime)?),
+                                    "storage_delete" => {
+                                        Some(runtime_fn_storage_delete(module, runtime)?)
+                                    }
                                     _ => None,
                                 }
                             }
@@ -1178,7 +1310,9 @@ fn lower_rvalue(
                         }
                         CallTarget::Indirect(_) => None,
                     }
-                    .ok_or_else(|| CodegenError("unsupported call target".to_string()))?;
+                    .ok_or_else(|| {
+                        CodegenError(format!("unsupported call target: {}", target_name))
+                    })?;
                     let callee = module.declare_func_in_func(func_id, builder.func);
                     let call_inst = builder.ins().call(callee, &call_args);
                     let results = builder.inst_results(call_inst);
@@ -1221,7 +1355,7 @@ fn lower_rvalue(
             config,
         } => {
             let class_val = lower_value(target, builder, locals, temps, module, runtime)?;
-            let class_id = untag_int(builder, class_val);
+            let class_id = untag_int(builder, module, runtime, class_val)?;
             let instance_val = lower_value(instance, builder, locals, temps, module, runtime)?;
             let pool_size = match size {
                 PoolSize::Fixed(value) => *value,
@@ -1259,7 +1393,14 @@ fn lower_rvalue(
                 );
             Ok(builder.inst_results(call)[0])
         }
-        Rvalue::PoolNew { handles, objective } => {
+        Rvalue::PoolNew {
+            handles,
+            objective,
+            min_size,
+            max_size,
+            weight,
+            queue_cap,
+        } => {
             let handles_val = lower_value(handles, builder, locals, temps, module, runtime)?;
             let objective = match objective {
                 Objective::Latency => 0,
@@ -1270,7 +1411,21 @@ fn lower_rvalue(
             let func_id = runtime_fn_pool_new(module, runtime)?;
             let callee = module.declare_func_in_func(func_id, builder.func);
             let objective_val = builder.ins().iconst(types::I64, objective);
-            let call = builder.ins().call(callee, &[handles_val, objective_val]);
+            let min_val = builder.ins().iconst(types::I64, *min_size);
+            let max_val = builder.ins().iconst(types::I64, *max_size);
+            let weight_val = builder.ins().iconst(types::I64, *weight);
+            let queue_cap_val = builder.ins().iconst(types::I64, *queue_cap);
+            let call = builder.ins().call(
+                callee,
+                &[
+                    handles_val,
+                    objective_val,
+                    min_val,
+                    max_val,
+                    weight_val,
+                    queue_cap_val,
+                ],
+            );
             Ok(builder.inst_results(call)[0])
         }
         Rvalue::ClassInit { class_id, fields } => {
@@ -1389,7 +1544,7 @@ fn lower_terminator(
                 .as_ref()
                 .map(|value| lower_value(value, builder, locals, temps, _module, runtime))
                 .transpose()?
-                .unwrap_or_else(|| builder.ins().iconst(types::I64, 3));
+                .unwrap_or_else(|| builder.ins().iconst(types::I64, nanbox_nil_const()));
             builder.ins().return_(&[ret]);
         }
         Terminator::Jump { target, .. } => {
@@ -1497,10 +1652,10 @@ fn lower_value(
         Value::Local(local) => Ok(locals
             .get(&local.0)
             .map(|var| builder.use_var(*var))
-            .unwrap_or_else(|| builder.ins().iconst(types::I64, 3))),
+            .unwrap_or_else(|| builder.ins().iconst(types::I64, nanbox_nil_const()))),
         Value::Temp(temp) => Ok(*temps
             .get(&temp.0)
-            .unwrap_or(&builder.ins().iconst(types::I64, 3))),
+            .unwrap_or(&builder.ins().iconst(types::I64, nanbox_nil_const()))),
     }
 }
 
@@ -1511,11 +1666,14 @@ fn lower_literal(
     runtime: &mut RuntimeRegistry,
 ) -> Result<cranelift_codegen::ir::Value, CodegenError> {
     match lit {
-        crate::hir::Literal::Int(v) => Ok(builder.ins().iconst(types::I64, ((*v as i64) << 3) | 1)),
+        crate::hir::Literal::Int(v) => {
+            let val = builder.ins().iconst(types::I64, *v as i64);
+            tag_int(builder, module, runtime, val)
+        }
         crate::hir::Literal::Bool(v) => Ok(builder
             .ins()
-            .iconst(types::I64, ((if *v { 1 } else { 0 }) << 3) | 2)),
-        crate::hir::Literal::Nil => Ok(builder.ins().iconst(types::I64, 3)),
+            .iconst(types::I64, nanbox_bool_const(*v))),
+        crate::hir::Literal::Nil => Ok(builder.ins().iconst(types::I64, nanbox_nil_const())),
         crate::hir::Literal::Float(v) => {
             let func_id = runtime_fn_box_float(module, runtime)?;
             let callee = module.declare_func_in_func(func_id, builder.func);
@@ -1650,6 +1808,14 @@ fn runtime_fn_box_float(
     runtime.get_func(module, "wr_box_float", sig)
 }
 
+fn runtime_fn_box_int(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_box_int", sig)
+}
+
 fn runtime_fn_unbox_float(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
@@ -1722,7 +1888,11 @@ fn runtime_fn_pool_auto_size(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
 ) -> Result<cranelift_module::FuncId, CodegenError> {
-    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    let sig = RuntimeRegistry::runtime_sig(
+        module,
+        &[types::I64, types::I64, types::I64, types::I64],
+        &[types::I64],
+    );
     runtime.get_func(module, "wr_pool_auto_size", sig)
 }
 
@@ -1740,6 +1910,14 @@ fn runtime_fn_pool_rr(
 ) -> Result<cranelift_module::FuncId, CodegenError> {
     let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
     runtime.get_func(module, "wr_pool_rr", sig)
+}
+
+fn runtime_fn_pool_queue_len(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_pool_queue_len", sig)
 }
 
 fn runtime_fn_actor_mailbox_len(
@@ -1796,6 +1974,46 @@ fn runtime_fn_metrics_messages_dropped_id(
 ) -> Result<cranelift_module::FuncId, CodegenError> {
     let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
     runtime.get_func(module, "wr_metrics_messages_dropped_id", sig)
+}
+
+fn runtime_fn_clock_ns(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(module, "wr_clock_ns", sig)
+}
+
+fn runtime_fn_sleep_ms(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_sleep_ms", sig)
+}
+
+fn runtime_fn_storage_get(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_storage_get", sig)
+}
+
+fn runtime_fn_storage_set(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_storage_set", sig)
+}
+
+fn runtime_fn_storage_delete(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_storage_delete", sig)
 }
 
 fn runtime_fn_map_new(
@@ -1916,7 +2134,18 @@ fn runtime_fn_pool_new(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
 ) -> Result<cranelift_module::FuncId, CodegenError> {
-    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    let sig = RuntimeRegistry::runtime_sig(
+        module,
+        &[
+            types::I64,
+            types::I64,
+            types::I64,
+            types::I64,
+            types::I64,
+            types::I64,
+        ],
+        &[types::I64],
+    );
     runtime.get_func(module, "wr_pool_new", sig)
 }
 
@@ -1954,6 +2183,14 @@ fn runtime_fn_print(
 ) -> Result<cranelift_module::FuncId, CodegenError> {
     let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
     runtime.get_func(module, "wr_print", sig)
+}
+
+fn runtime_fn_assert(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_assert", sig)
 }
 
 fn runtime_fn_parse_int(
@@ -2005,42 +2242,185 @@ fn runtime_fn_register_method(
     runtime.get_func(module, "wr_register_method", sig)
 }
 
+fn runtime_fn_runtime_init(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[]);
+    runtime.get_func(module, "wr_runtime_init", sig)
+}
+
+fn runtime_fn_runtime_abi(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(module, "wr_runtime_abi", sig)
+}
+
+fn emit_runtime_init_and_check(
+    builder: &mut FunctionBuilder,
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<(), CodegenError> {
+    let init_id = runtime_fn_runtime_init(module, runtime)?;
+    let init_callee = module.declare_func_in_func(init_id, builder.func);
+    builder.ins().call(init_callee, &[]);
+
+    let abi_id = runtime_fn_runtime_abi(module, runtime)?;
+    let abi_callee = module.declare_func_in_func(abi_id, builder.func);
+    let call = builder.ins().call(abi_callee, &[]);
+    let runtime_abi = builder.inst_results(call)[0];
+    let expected = builder.ins().iconst(types::I64, RUNTIME_ABI_VERSION);
+    let ok = builder.ins().icmp(
+        cranelift_codegen::ir::condcodes::IntCC::Equal,
+        runtime_abi,
+        expected,
+    );
+    let trap_block = builder.create_block();
+    let cont_block = builder.create_block();
+    builder.ins().brif(ok, cont_block, &[], trap_block, &[]);
+    builder.switch_to_block(trap_block);
+    builder
+        .ins()
+        .trap(cranelift_codegen::ir::TrapCode::unwrap_user(1));
+    builder.switch_to_block(cont_block);
+    Ok(())
+}
+
 fn tag_int(
     builder: &mut FunctionBuilder,
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
     value: cranelift_codegen::ir::Value,
-) -> cranelift_codegen::ir::Value {
-    let shift = builder.ins().iconst(types::I64, 3);
-    let shifted = builder.ins().ishl(value, shift);
-    let tag = builder.ins().iconst(types::I64, 1);
-    builder.ins().bor(shifted, tag)
+) -> Result<cranelift_codegen::ir::Value, CodegenError> {
+    let min = builder.ins().iconst(types::I64, NANBOX_INT_MIN);
+    let max = builder.ins().iconst(types::I64, NANBOX_INT_MAX);
+    let ge_min = builder.ins().icmp(
+        cranelift_codegen::ir::condcodes::IntCC::SignedGreaterThanOrEqual,
+        value,
+        min,
+    );
+    let le_max = builder.ins().icmp(
+        cranelift_codegen::ir::condcodes::IntCC::SignedLessThanOrEqual,
+        value,
+        max,
+    );
+    let in_range = builder.ins().band(ge_min, le_max);
+
+    let fast_block = builder.create_block();
+    let slow_block = builder.create_block();
+    let done_block = builder.create_block();
+    builder.append_block_param(done_block, types::I64);
+    let done_param = builder.block_params(done_block)[0];
+
+    builder
+        .ins()
+        .brif(in_range, fast_block, &[], slow_block, &[]);
+
+    builder.switch_to_block(fast_block);
+    let payload_mask = builder.ins().iconst(types::I64, NANBOX_PAYLOAD_MASK as i64);
+    let payload = builder.ins().band(value, payload_mask);
+    let base = builder.ins().iconst(
+        types::I64,
+        (NANBOX_QNAN | (NANBOX_TAG_INT << NANBOX_TAG_SHIFT)) as i64,
+    );
+    let boxed = builder.ins().bor(base, payload);
+    builder.ins().jump(done_block, &[boxed]);
+
+    builder.switch_to_block(slow_block);
+    let func_id = runtime_fn_box_int(module, runtime)?;
+    let callee = module.declare_func_in_func(func_id, builder.func);
+    let call = builder.ins().call(callee, &[value]);
+    let boxed = builder.inst_results(call)[0];
+    builder.ins().jump(done_block, &[boxed]);
+
+    builder.switch_to_block(done_block);
+    Ok(done_param)
 }
 
 fn untag_int(
     builder: &mut FunctionBuilder,
+    _module: &mut ObjectModule,
+    _runtime: &mut RuntimeRegistry,
     value: cranelift_codegen::ir::Value,
-) -> cranelift_codegen::ir::Value {
-    let shift = builder.ins().iconst(types::I64, 3);
-    builder.ins().sshr(value, shift)
+) -> Result<cranelift_codegen::ir::Value, CodegenError> {
+    let tag_mask = builder.ins().iconst(types::I64, NANBOX_TAG_MASK as i64);
+    let tag_shift = builder.ins().iconst(types::I64, NANBOX_TAG_SHIFT as i64);
+    let tag = builder.ins().band(value, tag_mask);
+    let tag = builder.ins().ushr(tag, tag_shift);
+    let tag_int = builder.ins().iconst(types::I64, NANBOX_TAG_INT as i64);
+    let is_int = builder.ins().icmp(
+        cranelift_codegen::ir::condcodes::IntCC::Equal,
+        tag,
+        tag_int,
+    );
+    let payload_mask = builder.ins().iconst(types::I64, NANBOX_PAYLOAD_MASK as i64);
+
+    let imm_block = builder.create_block();
+    let ptr_block = builder.create_block();
+    let done_block = builder.create_block();
+    builder.append_block_param(done_block, types::I64);
+    let done_param = builder.block_params(done_block)[0];
+
+    builder
+        .ins()
+        .brif(is_int, imm_block, &[], ptr_block, &[]);
+
+    builder.switch_to_block(imm_block);
+    let payload = builder.ins().band(value, payload_mask);
+    let sign_bit = builder.ins().iconst(types::I64, 1i64 << (NANBOX_TAG_SHIFT - 1));
+    let sign_set = builder.ins().band(payload, sign_bit);
+    let has_sign = builder.ins().icmp_imm(
+        cranelift_codegen::ir::condcodes::IntCC::NotEqual,
+        sign_set,
+        0,
+    );
+    let sign_mask = builder.ins().iconst(types::I64, !NANBOX_PAYLOAD_MASK as i64);
+    let signed = builder.ins().bor(payload, sign_mask);
+    let unboxed = builder.ins().select(has_sign, signed, payload);
+    builder.ins().jump(done_block, &[unboxed]);
+
+    builder.switch_to_block(ptr_block);
+    let ptr_payload = builder.ins().band(value, payload_mask);
+    let boxed_val = builder.ins().load(types::I64, MemFlags::new(), ptr_payload, 8);
+    builder.ins().jump(done_block, &[boxed_val]);
+
+    builder.switch_to_block(done_block);
+    Ok(done_param)
 }
 
 fn tag_bool(
     builder: &mut FunctionBuilder,
     value: cranelift_codegen::ir::Value,
 ) -> cranelift_codegen::ir::Value {
-    let shift = builder.ins().iconst(types::I64, 3);
-    let shifted = builder.ins().ishl(value, shift);
-    let tag = builder.ins().iconst(types::I64, 2);
-    builder.ins().bor(shifted, tag)
+    let qnan = builder.ins().iconst(types::I64, NANBOX_QNAN as i64);
+    let tag = builder
+        .ins()
+        .iconst(types::I64, (NANBOX_TAG_IMM << NANBOX_TAG_SHIFT) as i64);
+    let base = builder.ins().bor(qnan, tag);
+    let true_payload = builder.ins().iconst(types::I64, NANBOX_IMM_TRUE as i64);
+    let false_payload = builder.ins().iconst(types::I64, NANBOX_IMM_FALSE as i64);
+    let is_true = builder.ins().icmp_imm(
+        cranelift_codegen::ir::condcodes::IntCC::NotEqual,
+        value,
+        0,
+    );
+    let payload = builder.ins().select(is_true, true_payload, false_payload);
+    builder.ins().bor(base, payload)
 }
 
 fn untag_bool(
     builder: &mut FunctionBuilder,
     value: cranelift_codegen::ir::Value,
 ) -> cranelift_codegen::ir::Value {
-    let shift = builder.ins().iconst(types::I64, 3);
-    let shifted = builder.ins().sshr(value, shift);
-    let mask = builder.ins().iconst(types::I64, 1);
-    builder.ins().band(shifted, mask)
+    let true_val = builder.ins().iconst(types::I64, nanbox_bool_const(true));
+    let is_true = builder.ins().icmp(
+        cranelift_codegen::ir::condcodes::IntCC::Equal,
+        value,
+        true_val,
+    );
+    bool_to_int(builder, is_true)
 }
 
 fn assign_place(

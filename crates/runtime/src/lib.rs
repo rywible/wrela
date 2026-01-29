@@ -14,10 +14,16 @@ mod result;
 mod number;
 mod range;
 mod config;
+mod scheduler;
+mod diagnostics;
+pub mod storage;
 
 pub use value::{TypeId, Value};
+use value::int_value;
 
 use object::drop_object;
+use std::sync::OnceLock;
+use std::time::Instant;
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wr_rc_inc(value: Value) {
@@ -50,12 +56,37 @@ pub unsafe extern "C" fn wr_rc_dec(value: Value) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_box_float(val: f64) -> Value {
-    float_box::box_float(val)
+    Value::from_float(val)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_unbox_float(val: Value) -> f64 {
-    float_box::unbox_float(val)
+    if val.is_float() {
+        val.as_float()
+    } else {
+        0.0
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_box_int(val: i64) -> Value {
+    Value::from_int(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_unbox_int(val: Value) -> i64 {
+    int_value(val).unwrap_or(0)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_runtime_init() {
+    diagnostics::runtime_init();
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_runtime_abi() -> u32 {
+    diagnostics::runtime_init();
+    diagnostics::RUNTIME_ABI_VERSION
 }
 
 #[unsafe(no_mangle)]
@@ -190,6 +221,29 @@ pub extern "C" fn wr_print(val: Value) -> Value {
     Value::nil()
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_assert(cond: Value, msg: Value) -> Value {
+    let ok = if cond.is_bool() { cond.as_bool() } else { false };
+    if ok {
+        return Value::nil();
+    }
+    if msg.is_ptr() {
+        unsafe {
+            let header = &*msg.as_ptr();
+            if header.type_id == TypeId::String as u32 {
+                let _ = string::with_string_bytes(msg, |bytes| {
+                    eprintln!("assert: {}", String::from_utf8_lossy(bytes));
+                });
+                diagnostics::dump_diagnostics();
+                std::process::abort();
+            }
+        }
+    }
+    eprintln!("assert failed");
+    diagnostics::dump_diagnostics();
+    std::process::abort();
+}
+
 fn builtin_error(message: &str) -> Value {
     string::str_from_utf8(message.as_ptr(), message.len())
 }
@@ -221,7 +275,7 @@ pub extern "C" fn wr_parse_float(val: Value) -> Value {
         .ok()
         .and_then(|s| s.trim().parse::<f64>().ok());
     match parsed {
-        Some(num) => result::result_ok(float_box::box_float(num)),
+        Some(num) => result::result_ok(Value::from_float(num)),
         None => result::result_err(builtin_error("parse_float: invalid float")),
     }
 }
@@ -285,11 +339,14 @@ pub extern "C" fn wr_crash(val: Value) -> Value {
                 let _ = string::with_string_bytes(val, |bytes| {
                     eprintln!("crash: {}", String::from_utf8_lossy(bytes));
                 });
+                diagnostics::dump_diagnostics();
                 std::process::abort();
             }
         }
     }
-    eprintln!("crash");
+    let tid = wr_type_id(val);
+    eprintln!("crash (type_id={tid})");
+    diagnostics::dump_diagnostics();
     std::process::abort();
 }
 
@@ -315,13 +372,36 @@ pub extern "C" fn wr_actor_spawn(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn wr_pool_new(handles: Value, objective: i64) -> Value {
-    actor::pool_new(handles, objective)
+pub extern "C" fn wr_pool_new(
+    handles: Value,
+    objective: i64,
+    min_size: i64,
+    max_size: i64,
+    weight: i64,
+    queue_cap: i64,
+) -> Value {
+    actor::pool_new(handles, objective, min_size, max_size, weight, queue_cap)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn wr_pool_auto_size(objective: i64) -> Value {
-    Value::from_int(config::pool_auto_size(config::normalize_objective(objective)) as i64)
+pub extern "C" fn wr_pool_auto_size(
+    objective: Value,
+    min: Value,
+    max: Value,
+    weight: Value,
+) -> Value {
+    let obj = int_value(objective).unwrap_or(0);
+    let min = int_value(min).unwrap_or(0);
+    let max = int_value(max).unwrap_or(0);
+    let weight = int_value(weight).unwrap_or(0);
+    Value::from_int(
+        config::pool_auto_size(
+            config::normalize_objective(obj),
+            min,
+            max,
+            weight,
+        ) as i64,
+    )
 }
 
 #[unsafe(no_mangle)]
@@ -332,6 +412,11 @@ pub extern "C" fn wr_pool_size(handle: Value) -> Value {
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_pool_rr(handle: Value) -> Value {
     actor::pool_rr(handle)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_pool_queue_len(handle: Value) -> Value {
+    actor::pool_queue_len(handle)
 }
 
 #[unsafe(no_mangle)]
@@ -358,12 +443,14 @@ pub extern "C" fn wr_actor_pause_wait(handle: Value) -> Value {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn wr_sleep_ms(ms_val: Value) -> Value {
+    let ms = int_value(ms_val).unwrap_or(0);
+    actor::sleep_ms(ms)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn wr_metrics_get(id_val: Value) -> Value {
-    let id = if id_val.is_int() {
-        id_val.as_int() as u32
-    } else {
-        0
-    };
+    let id = int_value(id_val).unwrap_or(0) as u32;
     Value::from_int(metrics::get(id) as i64)
 }
 
@@ -375,6 +462,14 @@ pub extern "C" fn wr_metrics_dropped_paused_id() -> Value {
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_metrics_messages_dropped_id() -> Value {
     Value::from_int(metrics::METRIC_MESSAGES_DROPPED as i64)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_clock_ns() -> Value {
+    static START: OnceLock<Instant> = OnceLock::new();
+    let start = START.get_or_init(Instant::now);
+    let ns = start.elapsed().as_nanos() as i64;
+    Value::from_int(ns)
 }
 
 #[unsafe(no_mangle)]
@@ -436,6 +531,21 @@ pub extern "C" fn wr_range_new(start: Value, end: Value) -> Value {
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_metrics_reset() {
     metrics::reset()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_storage_get(key: Value) -> Value {
+    storage::storage_get(key)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_storage_set(key: Value, value: Value) -> Value {
+    storage::storage_set(key, value)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_storage_delete(key: Value) -> Value {
+    storage::storage_delete(key)
 }
 
 #[cfg(test)]

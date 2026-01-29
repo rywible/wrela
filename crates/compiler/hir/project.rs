@@ -60,17 +60,27 @@ struct ProjectLoader {
     warnings: Vec<ProjectWarning>,
 }
 
+fn build_trace() -> bool {
+    std::env::var("WRELA_BUILD_TRACE").is_ok()
+}
+
 pub fn load_project(entry_path: &Path) -> Result<LoadedProject, Vec<ProjectError>> {
+    if build_trace() {
+        eprintln!("project: load_project {}", entry_path.display());
+    }
     let root_dir = match find_src_root(entry_path) {
         Some(dir) => dir,
-        None => {
-            return Err(vec![ProjectError {
-                path: entry_path.to_path_buf(),
-                source: String::new(),
-                message: "entry file must be inside a 'src' directory".to_string(),
-                span: SourceSpan::from((0usize, 0usize)),
-            }]);
-        }
+        None => match entry_path.parent() {
+            Some(parent) => parent.to_path_buf(),
+            None => {
+                return Err(vec![ProjectError {
+                    path: entry_path.to_path_buf(),
+                    source: String::new(),
+                    message: "entry file must have a parent directory".to_string(),
+                    span: SourceSpan::from((0usize, 0usize)),
+                }]);
+            }
+        },
     };
     let mut loader = ProjectLoader {
         root_dir,
@@ -92,6 +102,9 @@ pub fn load_project(entry_path: &Path) -> Result<LoadedProject, Vec<ProjectError
     };
 
     loader.load_module(entry_name.clone(), entry_path.to_path_buf());
+    if build_trace() {
+        eprintln!("project: load_module done");
+    }
     loader.enforce_entrypoint(&entry_name);
     loader.validate_uses();
     loader.detect_cycles();
@@ -226,6 +239,9 @@ impl ProjectLoader {
         if self.modules.contains_key(&name) {
             return;
         }
+        if build_trace() {
+            eprintln!("project: reading {} ({})", name, path.display());
+        }
         let source = match std::fs::read_to_string(&path) {
             Ok(src) => src,
             Err(err) => {
@@ -239,7 +255,13 @@ impl ProjectLoader {
             }
         };
 
+        if build_trace() {
+            eprintln!("project: parse start {}", name);
+        }
         let (node, parse_errors) = parser::parse_with_errors(&source);
+        if build_trace() {
+            eprintln!("project: parse done {}", name);
+        }
         if !parse_errors.is_empty() {
             for err in parse_errors {
                 self.errors.push(ProjectError {
@@ -252,7 +274,13 @@ impl ProjectLoader {
             return;
         }
 
+        if build_trace() {
+            eprintln!("project: validate start {}", name);
+        }
         let validation_errors = parser::validate::validate(&node);
+        if build_trace() {
+            eprintln!("project: validate done {}", name);
+        }
         if !validation_errors.is_empty() {
             for err in validation_errors {
                 self.errors.push(ProjectError {
@@ -681,6 +709,14 @@ impl ProjectLoader {
     }
 
     fn resolve_module_path(&self, name: &SmolStr) -> Option<PathBuf> {
+        if name.as_str() == "core" {
+            let stdlib = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("stdlib")
+                .join("core.wr");
+            if stdlib.is_file() {
+                return Some(stdlib);
+            }
+        }
         let mut rel = PathBuf::from(name.as_str());
         let candidate_wr = self.root_dir.join(rel.with_extension("wr"));
         if candidate_wr.is_file() {
@@ -950,6 +986,7 @@ fn is_builtin_value_name(name: &SmolStr) -> bool {
             | "pool_auto_size"
             | "pool_size"
             | "pool_rr"
+            | "pool_queue_len"
             | "actor_mailbox_len"
             | "actor_pause"
             | "actor_resume"
@@ -957,10 +994,13 @@ fn is_builtin_value_name(name: &SmolStr) -> bool {
             | "metrics_get"
             | "metrics_dropped_paused_id"
             | "metrics_messages_dropped_id"
+            | "clock_ns"
+            | "sleep_ms"
             | "Pool"
             | "nil"
             | "queue"
             | "drop"
+            | "n"
     )
 }
 
@@ -1185,6 +1225,29 @@ mod tests {
             }
         }
         assert!(found);
+    }
+
+    #[test]
+    fn test_load_project_outside_src() {
+        let base = std::env::temp_dir().join(format!(
+            "wrela_project_outside_src_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let entry_path = base.join("bench").join("main.wr");
+        let mod_path = base.join("bench").join("bar.wr");
+
+        write_temp(
+            &entry_path,
+            "use foo from bar\n\nto run():\n    return foo()\n",
+        );
+        write_temp(&mod_path, "public to foo() -> Int:\n    return 1\n");
+
+        let project = load_project(&entry_path);
+        assert!(project.is_ok());
     }
 
     #[test]

@@ -1,7 +1,5 @@
-use crate::float_box;
 use crate::list;
-use crate::value::{TypeId, Value};
-use crate::{wr_rc_dec};
+use crate::value::{int_value, Value};
 
 pub fn range_new(start: Value, end: Value) -> Value {
     match (num_kind(start), num_kind(end)) {
@@ -33,9 +31,7 @@ fn range_float(start: f64, end: f64) -> Value {
     let step = if start <= end { 1.0 } else { -1.0 };
     let mut current = start;
     loop {
-        let boxed = float_box::box_float(current);
-        list::list_push(list_val, boxed);
-        unsafe { wr_rc_dec(boxed) };
+        list::list_push(list_val, Value::from_float(current));
         if (step > 0.0 && current >= end) || (step < 0.0 && current <= end) {
             break;
         }
@@ -55,20 +51,17 @@ fn num_to_f64(kind: NumKind) -> f64 {
 }
 
 fn num_kind(val: Value) -> Option<NumKind> {
-    if val.is_int() {
-        return Some(NumKind::Int(val.as_int()));
+    if let Some(i) = int_value(val) {
+        return Some(NumKind::Int(i));
     }
     if is_float(val) {
-        return Some(NumKind::Float(float_box::unbox_float(val)));
+        return Some(NumKind::Float(val.as_float()));
     }
     None
 }
 
 fn is_float(val: Value) -> bool {
-    if !val.is_ptr() {
-        return false;
-    }
-    unsafe { (*val.as_ptr()).type_id == TypeId::Float as u32 }
+    val.is_float()
 }
 
 enum NumKind {

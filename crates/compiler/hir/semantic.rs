@@ -220,6 +220,24 @@ pub enum SemanticError {
         #[label("backpressure here")]
         span: SourceSpan,
     },
+    #[error("invalid pool bound")]
+    #[diagnostic(
+        code(lang::sem::invalid_pool_bound),
+        help("Pool bounds must be integer literals.")
+    )]
+    InvalidPoolBound {
+        #[label("bound here")]
+        span: SourceSpan,
+    },
+    #[error("invalid pool weight")]
+    #[diagnostic(
+        code(lang::sem::invalid_pool_weight),
+        help("Pool weight must be an integer literal.")
+    )]
+    InvalidPoolWeight {
+        #[label("weight here")]
+        span: SourceSpan,
+    },
     #[error("pool size greater than 1 requires a class constructor")]
     #[diagnostic(
         code(lang::sem::invalid_pool_target),
@@ -290,6 +308,8 @@ impl SemanticError {
             SemanticError::InvalidPoolSize { span } => *span,
             SemanticError::InvalidPoolBatch { span } => *span,
             SemanticError::InvalidPoolBackpressure { span } => *span,
+            SemanticError::InvalidPoolBound { span } => *span,
+            SemanticError::InvalidPoolWeight { span } => *span,
             SemanticError::InvalidPoolTarget { span } => *span,
         }
     }
@@ -996,6 +1016,22 @@ impl<'a> Checker<'a> {
                             });
                         }
                     }
+                    "min" | "max" => {
+                        let ok = matches!(&body.exprs[*value], Expr::Literal(Literal::Int(_)));
+                        if !ok {
+                            self.errors.push(SemanticError::InvalidPoolBound {
+                                span: span_from_range(body.expr_span(*value)),
+                            });
+                        }
+                    }
+                    "weight" => {
+                        let ok = matches!(&body.exprs[*value], Expr::Literal(Literal::Int(_)));
+                        if !ok {
+                            self.errors.push(SemanticError::InvalidPoolWeight {
+                                span: span_from_range(body.expr_span(*value)),
+                            });
+                        }
+                    }
                     "backpressure" => {
                         let ok = match &body.exprs[*value] {
                             Expr::Variable(name) => name.as_str() == "drop",
@@ -1558,6 +1594,7 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
         (SmolStr::new("pool_auto_size"), BindingKind::Function),
         (SmolStr::new("pool_size"), BindingKind::Function),
         (SmolStr::new("pool_rr"), BindingKind::Function),
+        (SmolStr::new("pool_queue_len"), BindingKind::Function),
         (SmolStr::new("actor_mailbox_len"), BindingKind::Function),
         (SmolStr::new("actor_pause"), BindingKind::Function),
         (SmolStr::new("actor_resume"), BindingKind::Function),
@@ -1571,6 +1608,8 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
             SmolStr::new("metrics_messages_dropped_id"),
             BindingKind::Function,
         ),
+        (SmolStr::new("clock_ns"), BindingKind::Function),
+        (SmolStr::new("sleep_ms"), BindingKind::Function),
         (SmolStr::new("nil"), BindingKind::Implicit),
         (SmolStr::new("Pool"), BindingKind::Implicit),
     ]
@@ -1958,6 +1997,36 @@ to run() -> Int:
                 .errors
                 .iter()
                 .any(|err| matches!(err, SemanticError::InvalidPoolBackpressure { .. }))
+        );
+    }
+
+    #[test]
+    fn test_pool_of_invalid_bounds_and_weight() {
+        let input = r#"
+A Whale:
+    has:
+        value: Int
+
+to run() -> Int:
+    optimize balance:
+        pool = Pool.of(Whale, min=foo, max=bar, weight=baz)
+    return 0
+"#;
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let diagnostics = check_module(&module);
+        assert!(
+            diagnostics
+                .errors
+                .iter()
+                .any(|err| matches!(err, SemanticError::InvalidPoolBound { .. }))
+        );
+        assert!(
+            diagnostics
+                .errors
+                .iter()
+                .any(|err| matches!(err, SemanticError::InvalidPoolWeight { .. }))
         );
     }
 

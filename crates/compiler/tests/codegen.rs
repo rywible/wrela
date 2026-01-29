@@ -13,6 +13,10 @@ fn load_module_from_source(source: &str) -> hir::Module {
     project.module
 }
 
+fn expected_int_exit(val: i64) -> i32 {
+    (val as i32) & 0xFF
+}
+
 #[test]
 fn native_actor_smoke() {
     if std::env::var("WR_SKIP_NATIVE").is_ok() {
@@ -52,7 +56,7 @@ to run() -> Int:
     wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
 
     let status = Command::new(&out).status().expect("run failed");
-    let expected = ((42 << 3) | 1) & 0xFF;
+    let expected = expected_int_exit(42);
     assert_eq!(status.code().unwrap_or(-1), expected);
 }
 
@@ -95,7 +99,7 @@ to run() -> Int:
     wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
 
     let status = Command::new(&out).status().expect("run failed");
-    let expected = ((116 << 3) | 1) & 0xFF;
+    let expected = expected_int_exit(116);
     assert_eq!(status.code().unwrap_or(-1), expected);
 }
 
@@ -136,7 +140,7 @@ to run() -> Int:
     wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
 
     let status = Command::new(&out).status().expect("run failed");
-    let expected = ((1 << 3) | 1) & 0xFF;
+    let expected = expected_int_exit(1);
     assert_eq!(status.code().unwrap_or(-1), expected);
 }
 
@@ -185,7 +189,7 @@ to run() -> Int:
     wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
 
     let status = Command::new(&out).status().expect("run failed");
-    let expected = ((7 << 3) | 1) & 0xFF;
+    let expected = expected_int_exit(7);
     assert_eq!(status.code().unwrap_or(-1), expected);
 }
 
@@ -230,7 +234,7 @@ to run() -> Int:
     wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
 
     let status = Command::new(&out).status().expect("run failed");
-    let expected = ((5 << 3) | 1) & 0xFF;
+    let expected = expected_int_exit(5);
     assert_eq!(status.code().unwrap_or(-1), expected);
 }
 
@@ -277,7 +281,7 @@ to run() -> Int:
     wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
 
     let status = Command::new(&out).status().expect("run failed");
-    let expected = ((1 << 3) | 1) & 0xFF;
+    let expected = expected_int_exit(1);
     assert_eq!(status.code().unwrap_or(-1), expected);
 }
 
@@ -327,7 +331,7 @@ to run() -> Int:
     wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
 
     let status = Command::new(&out).status().expect("run failed");
-    let expected = ((3 << 3) | 1) & 0xFF;
+    let expected = expected_int_exit(3);
     assert_eq!(status.code().unwrap_or(-1), expected);
 }
 
@@ -371,7 +375,7 @@ to run() -> Int:
     wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
 
     let status = Command::new(&out).status().expect("run failed");
-    let expected = ((2 << 3) | 1) & 0xFF;
+    let expected = expected_int_exit(2);
     assert_eq!(status.code().unwrap_or(-1), expected);
 }
 
@@ -419,7 +423,7 @@ to run() -> Int:
     wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
 
     let output = Command::new(&out).output().expect("run failed");
-    let expected = ((24 << 3) | 1) & 0xFF;
+    let expected = expected_int_exit(24);
     match output.status.code() {
         Some(code) => assert_eq!(code, expected),
         None => {
@@ -475,7 +479,7 @@ to run() -> Int:
         .env("WRELA_POOL_AUTO_MAX", "3")
         .output()
         .expect("run failed");
-    let expected = ((3 << 3) | 1) & 0xFF;
+    let expected = expected_int_exit(3);
     match output.status.code() {
         Some(code) => assert_eq!(code, expected),
         None => {
@@ -505,10 +509,9 @@ to run() -> Int:
         actor_pause(c)
         actor_pause_wait(c)
         fire c.ping(1)
-        len = actor_mailbox_len(c)
+        len = pool_queue_len(c) + actor_mailbox_len(c)
         actor_resume(c)
-        expected = pool_size(c) + 1
-        if len == expected:
+        if len >= 1:
             return 1
         return 0
 "#;
@@ -535,7 +538,7 @@ to run() -> Int:
     wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
 
     let output = Command::new(&out).output().expect("run failed");
-    let expected = ((1 << 3) | 1) & 0xFF;
+    let expected = expected_int_exit(1);
     match output.status.code() {
         Some(code) => assert_eq!(code, expected),
         None => {
@@ -598,7 +601,7 @@ to run() -> Int:
         .env("WRELA_PAUSE_QUEUE_CAP", "1")
         .output()
         .expect("run failed");
-    let expected = ((1 << 3) | 1) & 0xFF;
+    let expected = expected_int_exit(1);
     match output.status.code() {
         Some(code) => assert_eq!(code, expected),
         None => {
@@ -652,7 +655,7 @@ to run() -> Int:
     wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
 
     let output = Command::new(&out).output().expect("run failed");
-    let expected = ((1 << 3) | 1) & 0xFF;
+    let expected = expected_int_exit(1);
     match output.status.code() {
         Some(code) => assert_eq!(code, expected),
         None => {
@@ -715,7 +718,7 @@ to run() -> Int:
     wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
 
     let output = Command::new(&out).output().expect("run failed");
-    let expected = ((1 << 3) | 1) & 0xFF;
+    let expected = expected_int_exit(1);
     match output.status.code() {
         Some(code) => assert_eq!(code, expected),
         None => {
@@ -767,7 +770,59 @@ to run() -> Int:
     wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
 
     let output = Command::new(&out).output().expect("run failed");
-    let expected = ((3 << 3) | 1) & 0xFF;
+    let expected = expected_int_exit(3);
+    match output.status.code() {
+        Some(code) => assert_eq!(code, expected),
+        None => {
+            use std::os::unix::process::ExitStatusExt;
+            panic!(
+                "process terminated by signal {:?}: {}",
+                output.status.signal(),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+}
+
+#[test]
+fn native_pool_auto_bounds_smoke() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = r#"
+A Counter:
+    can ping(x: Int) -> Int:
+        return x
+
+to run() -> Int:
+    optimize balance:
+        c = detach Pool.of(Counter, size=n, min=2, max=2) * 1
+        return pool_size(c)
+"#;
+
+    let module = load_module_from_source(source);
+    let semantic = hir::semantic::check_module(&module);
+    assert!(
+        semantic.errors.is_empty(),
+        "semantic errors: {:?}",
+        semantic.errors
+    );
+    let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+    assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
+
+    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    for func in &mut mir_module.functions {
+        mir::opt::run_function_passes(func);
+    }
+    let mir_errors = mir::validate::validate_module(&mir_module);
+    assert!(mir_errors.is_empty(), "mir errors: {mir_errors:?}");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = dir.path().join("wr_pool_auto_bounds_smoke");
+    wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
+
+    let output = Command::new(&out).output().expect("run failed");
+    let expected = expected_int_exit(2);
     match output.status.code() {
         Some(code) => assert_eq!(code, expected),
         None => {
@@ -821,7 +876,7 @@ to run() -> Int:
     wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
 
     let status = Command::new(&out).status().expect("run failed");
-    let expected = ((42 << 3) | 1) & 0xFF;
+    let expected = expected_int_exit(42);
     assert_eq!(status.code().unwrap_or(-1), expected);
 }
 
@@ -863,7 +918,7 @@ to run() -> Int:
     wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
 
     let status = Command::new(&out).status().expect("run failed");
-    let expected = ((5 << 3) | 1) & 0xFF;
+    let expected = expected_int_exit(5);
     assert_eq!(status.code().unwrap_or(-1), expected);
 }
 

@@ -1,5 +1,5 @@
 use crate::object::ObjHeader;
-use crate::value::{header, TypeId, Value};
+use crate::value::{header, int_value, TypeId, Value};
 use crate::{wr_rc_dec, wr_rc_inc};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -24,6 +24,14 @@ pub fn str_from_utf8(ptr: *const u8, len: usize) -> Value {
     if std::str::from_utf8(bytes).is_err() {
         return Value::nil();
     }
+    let s = Box::new(StrObj {
+        header: header(TypeId::String),
+        bytes: bytes.to_vec(),
+    });
+    Value::from_ptr(Box::into_raw(s) as *mut ObjHeader)
+}
+
+pub fn str_from_bytes(bytes: &[u8]) -> Value {
     let s = Box::new(StrObj {
         header: header(TypeId::String),
         bytes: bytes.to_vec(),
@@ -109,8 +117,8 @@ fn value_to_bytes(val: Value) -> Vec<u8> {
             }
         }
     }
-    if val.is_int() {
-        return val.as_int().to_string().into_bytes();
+    if let Some(i) = int_value(val) {
+        return i.to_string().into_bytes();
     }
     if val.is_bool() {
         return if val.as_bool() { b"true".to_vec() } else { b"false".to_vec() };

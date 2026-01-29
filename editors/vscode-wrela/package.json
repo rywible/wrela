@@ -1,0 +1,60 @@
+{
+  "name": "wrela",
+  "displayName": "Wrela",
+  "publisher": "local",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onLanguage:wrela"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "wrela",
+        "aliases": [
+          "Wrela",
+          "wrela"
+        ],
+        "extensions": [
+          ".wr"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "wrela",
+        "scopeName": "source.wrela",
+        "path": "./syntaxes/wrela.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "Wrela",
+      "properties": {
+        "wrela.languageServer.command": {
+          "type": "string",
+          "default": "",
+          "description": "Command to launch the Wrela language server."
+        },
+        "wrela.languageServer.args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Arguments passed to the Wrela language server."
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  }
+}
