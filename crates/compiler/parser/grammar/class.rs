@@ -8,11 +8,11 @@ pub fn class_def(p: &mut Parser) {
     if p.at(SyntaxKind::ClassKw) || p.at(SyntaxKind::AnKw) {
         p.bump(); // A | An
     } else {
-        p.error();
+        p.error_with_message("expected 'A' or 'An' to start a class definition", true);
     }
 
-    p.expect(SyntaxKind::Ident);
-    p.expect(SyntaxKind::Colon);
+    p.expect_with_message(SyntaxKind::Ident, "expected class name after 'A' or 'An'");
+    p.expect_with_message(SyntaxKind::Colon, "expected ':' after class name");
 
     if p.at(SyntaxKind::Indent) {
         p.bump();
@@ -44,7 +44,7 @@ fn parse_has(p: &mut Parser) {
     if p.at(SyntaxKind::HasKw) {
         p.bump();
     } else {
-        p.error();
+        p.error_with_message("expected 'has' to start field definitions", true);
     }
     if p.at(SyntaxKind::Colon) {
         let m = p.start();
@@ -73,8 +73,8 @@ fn field_item(p: &mut Parser) {
 
 fn field_def(p: &mut Parser) {
     let m = p.start();
-    p.expect(SyntaxKind::Ident);
-    p.expect(SyntaxKind::Colon);
+    p.expect_with_message(SyntaxKind::Ident, "expected field name");
+    p.expect_with_message(SyntaxKind::Colon, "expected ':' after field name");
     types::parse_type(p);
     m.complete(p, SyntaxKind::FieldDef);
 }
@@ -82,19 +82,18 @@ fn field_def(p: &mut Parser) {
 fn method_def(p: &mut Parser) {
     let m = p.start();
     parse_visibility(p);
-    p.expect(SyntaxKind::CanKw);
-
-    p.expect(SyntaxKind::Ident);
-    p.expect(SyntaxKind::LParen);
+    p.expect_with_message(SyntaxKind::CanKw, "expected 'can' to start a method definition");
+    p.expect_with_message(SyntaxKind::Ident, "expected method name after 'can'");
+    p.expect_with_message(SyntaxKind::LParen, "expected '(' after method name");
     parse_param_list(p);
-    p.expect(SyntaxKind::RParen);
+    p.expect_with_message(SyntaxKind::RParen, "expected ')' after method parameters");
 
     if p.at(SyntaxKind::Arrow) {
         p.bump();
         types::parse_type(p);
     }
 
-    p.expect(SyntaxKind::Colon);
+    p.expect_with_message(SyntaxKind::Colon, "expected ':' after method signature");
 
     parse_block(p);
 

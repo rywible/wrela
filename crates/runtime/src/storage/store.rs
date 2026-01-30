@@ -37,6 +37,10 @@ use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::RwLock;
 
+use super::backup::{snapshot_meta_from_bytes, BackupSink};
+use super::blob::BlobBackend;
+use super::value::{BlobRef, StoredValue};
+
 pub type NodeId = u64;
 
 openraft::declare_raft_types!(
@@ -52,7 +56,7 @@ openraft::declare_raft_types!(
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum KvCommand {
-    Put { key: Vec<u8>, value: Vec<u8> },
+    Put { key: Vec<u8>, value: StoredValue },
     Delete { key: Vec<u8> },
 }
 
@@ -76,7 +80,7 @@ pub struct KvSnapshot {
 pub struct SerializableKvStateMachine {
     pub last_applied_log: Option<LogId<NodeId>>,
     pub last_membership: StoredMembership<NodeId, BasicNode>,
-    pub data: Vec<(Vec<u8>, Vec<u8>)>,
+    pub data: Vec<(Vec<u8>, StoredValue)>,
 }
 
 impl From<&KvStateMachine> for SerializableKvStateMachine {
@@ -86,7 +90,9 @@ impl From<&KvStateMachine> for SerializableKvStateMachine {
         let it = state.db.iterator_cf(state.cf_sm_data(), rocksdb::IteratorMode::Start);
         for item in it {
             let (key, value) = item.expect("invalid kv record");
-            data.push((key.to_vec(), value.to_vec()));
+            let stored =
+                decode_stored_value(&value).expect("invalid stored value");
+            data.push((key.to_vec(), stored));
         }
 
         Self {
@@ -119,10 +125,12 @@ impl KvStateMachine {
         self.db.cf_handle("sm_data").unwrap()
     }
 
-    pub fn get_value(&self, key: &[u8]) -> StorageResult<Option<Vec<u8>>> {
-        self.db
-            .get_cf(self.cf_sm_data(), key)
-            .map_err(sm_r_err)
+    pub fn get_value(&self, key: &[u8]) -> StorageResult<Option<StoredValue>> {
+        let value = self.db.get_cf(self.cf_sm_data(), key).map_err(sm_r_err)?;
+        match value {
+            None => Ok(None),
+            Some(bytes) => Ok(Some(decode_stored_value(&bytes)?)),
+        }
     }
 
     fn get_last_membership(&self) -> StorageResult<StoredMembership<NodeId, BasicNode>> {
@@ -148,8 +156,9 @@ impl KvStateMachine {
         log_id: LogId<NodeId>,
         membership: Option<StoredMembership<NodeId, BasicNode>>,
         ops: Option<&[KvCommand]>,
-    ) -> StorageResult<()> {
+    ) -> StorageResult<Vec<BlobRef>> {
         let mut batch = WriteBatch::default();
+        let mut blobs_to_delete = Vec::new();
         batch.put_cf(
             self.cf_sm_meta(),
             "last_applied_log".as_bytes(),
@@ -165,26 +174,47 @@ impl KvStateMachine {
         }
 
         if let Some(ops) = ops {
+            let mut seen: std::collections::HashMap<Vec<u8>, Option<StoredValue>> =
+                std::collections::HashMap::new();
             for op in ops {
                 match op {
                     KvCommand::Put { key, value } => {
-                        batch.put_cf(self.cf_sm_data(), key, value);
+                        let current = match seen.get(key) {
+                            Some(val) => val.clone(),
+                            None => self.get_value(key)?,
+                        };
+                        if let Some(StoredValue::Blob(blob)) = current {
+                            blobs_to_delete.push(blob);
+                        }
+                        seen.insert(key.clone(), Some(value.clone()));
+                        let encoded = encode_stored_value(value)?;
+                        batch.put_cf(self.cf_sm_data(), key, encoded);
                     }
                     KvCommand::Delete { key } => {
+                        let current = match seen.get(key) {
+                            Some(val) => val.clone(),
+                            None => self.get_value(key)?,
+                        };
+                        if let Some(StoredValue::Blob(blob)) = current {
+                            blobs_to_delete.push(blob);
+                        }
+                        seen.insert(key.clone(), None);
                         batch.delete_cf(self.cf_sm_data(), key);
                     }
                 }
             }
         }
 
-        self.db.write(batch).map_err(sm_w_err)
+        self.db.write(batch).map_err(sm_w_err)?;
+        Ok(blobs_to_delete)
     }
 
     fn from_serializable(sm: SerializableKvStateMachine, db: Arc<DB>) -> StorageResult<Self> {
         let r = Self { db };
 
         for (key, value) in sm.data {
-            r.db.put_cf(r.cf_sm_data(), key, value).map_err(sm_w_err)?;
+            let encoded = encode_stored_value(&value)?;
+            r.db.put_cf(r.cf_sm_data(), key, encoded).map_err(sm_w_err)?;
         }
 
         if let Some(log_id) = sm.last_applied_log {
@@ -213,6 +243,8 @@ impl KvStateMachine {
 pub struct KvStore {
     db: Arc<DB>,
     pub state_machine: RwLock<KvStateMachine>,
+    pub blob: BlobBackend,
+    backup: Option<Arc<BackupSink>>,
 }
 
 type StorageResult<T> = Result<T, StorageError<NodeId>>;
@@ -383,6 +415,10 @@ impl RaftSnapshotBuilder<TypeConfig> for Arc<KvStore> {
 
         self.put_meta::<meta::Snapshot>(&snapshot)?;
 
+        if let Some(backup) = self.backup.as_ref() {
+            backup.on_snapshot(meta.clone(), data.clone());
+        }
+
         Ok(Snapshot {
             meta,
             snapshot: Box::new(Cursor::new(data)),
@@ -478,29 +514,35 @@ impl RaftStorage<TypeConfig> for Arc<KvStore> {
         entries: &[Entry<TypeConfig>],
     ) -> Result<Vec<KvResponse>, StorageError<NodeId>> {
         let mut res = Vec::with_capacity(entries.len());
-        let sm = self.state_machine.write().await;
+        let mut blobs_to_delete: Vec<BlobRef> = Vec::new();
 
-        for entry in entries {
-            match &entry.payload {
-                EntryPayload::Blank => {
-                    sm.apply_entry(entry.log_id, None, None)?;
-                    res.push(KvResponse::Applied);
-                }
-                EntryPayload::Normal(req) => match req {
-                    KvRequest::Batch { ops } => {
-                        sm.apply_entry(entry.log_id, None, Some(ops))?;
+        {
+            let sm = self.state_machine.write().await;
+            for entry in entries {
+                match &entry.payload {
+                    EntryPayload::Blank => {
+                        blobs_to_delete.extend(sm.apply_entry(entry.log_id, None, None)?);
                         res.push(KvResponse::Applied);
                     }
-                },
-                EntryPayload::Membership(mem) => {
-                    let stored = StoredMembership::new(Some(entry.log_id), mem.clone());
-                    sm.apply_entry(entry.log_id, Some(stored), None)?;
-                    res.push(KvResponse::Applied);
+                    EntryPayload::Normal(req) => match req {
+                        KvRequest::Batch { ops } => {
+                            blobs_to_delete.extend(sm.apply_entry(entry.log_id, None, Some(ops))?);
+                            res.push(KvResponse::Applied);
+                        }
+                    },
+                    EntryPayload::Membership(mem) => {
+                        let stored = StoredMembership::new(Some(entry.log_id), mem.clone());
+                        blobs_to_delete.extend(sm.apply_entry(entry.log_id, Some(stored), None)?);
+                        res.push(KvResponse::Applied);
+                    }
                 }
             }
         }
 
         self.db.flush_wal(true).map_err(|e| StorageIOError::write_logs(&e))?;
+        for blob in blobs_to_delete {
+            let _ = self.blob.delete(&blob).await;
+        }
         Ok(res)
     }
 
@@ -515,21 +557,8 @@ impl RaftStorage<TypeConfig> for Arc<KvStore> {
         meta: &SnapshotMeta<NodeId, BasicNode>,
         snapshot: Box<<TypeConfig as RaftTypeConfig>::SnapshotData>,
     ) -> Result<(), StorageError<NodeId>> {
-        let new_snapshot = KvSnapshot {
-            meta: meta.clone(),
-            data: snapshot.into_inner(),
-        };
-
-        {
-            let updated_state_machine: SerializableKvStateMachine =
-                serde_json::from_slice(&new_snapshot.data)
-                    .map_err(|e| StorageIOError::read_snapshot(Some(new_snapshot.meta.signature()), &e))?;
-            let mut state_machine = self.state_machine.write().await;
-            *state_machine = KvStateMachine::from_serializable(updated_state_machine, self.db.clone())?;
-        }
-
-        self.put_meta::<meta::Snapshot>(&new_snapshot)?;
-        Ok(())
+        let data = snapshot.into_inner();
+        self.apply_snapshot_data(meta.clone(), data).await
     }
 
     async fn get_current_snapshot(&mut self) -> Result<Option<Snapshot<TypeConfig>>, StorageError<NodeId>> {
@@ -556,7 +585,11 @@ impl RaftStorage<TypeConfig> for Arc<KvStore> {
 }
 
 impl KvStore {
-    pub async fn new<P: AsRef<Path>>(db_path: P) -> Arc<KvStore> {
+    pub async fn new<P: AsRef<Path>>(
+        db_path: P,
+        blob: BlobBackend,
+        backup: Option<Arc<BackupSink>>,
+    ) -> Arc<KvStore> {
         let mut db_opts = Options::default();
         db_opts.create_missing_column_families(true);
         db_opts.create_if_missing(true);
@@ -605,15 +638,65 @@ impl KvStore {
 
         let db = Arc::new(db);
         let state_machine = RwLock::new(KvStateMachine { db: db.clone() });
-        Arc::new(KvStore { db, state_machine })
+        Arc::new(KvStore {
+            db,
+            state_machine,
+            blob,
+            backup,
+        })
     }
 
-    #[cfg(any(test, feature = "test-utils"))]
     pub fn log_len(&self) -> usize {
         self.db
             .iterator_cf(self.cf_logs(), rocksdb::IteratorMode::Start)
             .count()
     }
+
+    pub fn has_state(&self) -> Result<bool, StorageError<NodeId>> {
+        if self.log_len() > 0 {
+            return Ok(true);
+        }
+        let snapshot = self.get_meta::<meta::Snapshot>()?;
+        Ok(snapshot.is_some())
+    }
+
+    pub async fn apply_snapshot_data(
+        &self,
+        meta: SnapshotMeta<NodeId, BasicNode>,
+        data: Vec<u8>,
+    ) -> Result<(), StorageError<NodeId>> {
+        {
+            let updated_state_machine: SerializableKvStateMachine =
+                serde_json::from_slice(&data)
+                    .map_err(|e| StorageIOError::read_snapshot(Some(meta.signature()), &e))?;
+            let mut state_machine = self.state_machine.write().await;
+            *state_machine =
+                KvStateMachine::from_serializable(updated_state_machine, self.db.clone())?;
+        }
+        let snapshot = KvSnapshot { meta, data };
+        self.put_meta::<meta::Snapshot>(&snapshot)?;
+        Ok(())
+    }
+
+    pub async fn restore_from_backup(
+        &self,
+        snapshot_id: String,
+        data: Vec<u8>,
+    ) -> Result<(), StorageError<NodeId>> {
+        let meta = snapshot_meta_from_bytes(snapshot_id, &data).map_err(|err| {
+            let io_err = std::io::Error::new(std::io::ErrorKind::Other, err);
+            StorageIOError::read_snapshot(None, &io_err)
+        })?;
+        self.apply_snapshot_data(meta, data).await
+    }
+}
+
+fn encode_stored_value(value: &StoredValue) -> StorageResult<Vec<u8>> {
+    bincode::serialize(value).map_err(sm_w_err)
+}
+
+fn decode_stored_value(bytes: &[u8]) -> StorageResult<StoredValue> {
+    bincode::deserialize(bytes).map_err(sm_r_err)
 }
 
 fn read_logs_err(e: impl Error + 'static) -> StorageError<NodeId> {

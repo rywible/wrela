@@ -1,18 +1,24 @@
 use std::collections::HashMap;
 
-use crate::storage::config::StorageConfig;
+use crate::storage::config::{BackupConfig, BlobConfig, RestoreMode, StorageConfig};
+use crate::storage::service::StorageError;
+use crate::metrics;
+use crate::storage::backup::{backup_prefix, verify_checksum};
+use crate::storage::blob::BlobBackend;
 use crate::storage::service::{StorageRequest, StorageResponse, StorageService};
-use crate::storage::store::TypeConfig;
+use crate::storage::store::{SerializableKvStateMachine, TypeConfig};
 use crate::storage::transport::set_drop_replication;
 use crate::string;
 use crate::value::Value;
 use openraft::BasicNode;
 use openraft::Raft;
+use sha2::Digest;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration};
 
 fn config_for_dir(path: String, snapshot_interval: u64) -> StorageConfig {
+    let blob_path = format!("{path}.blobs");
     StorageConfig {
         enabled: true,
         path,
@@ -25,7 +31,50 @@ fn config_for_dir(path: String, snapshot_interval: u64) -> StorageConfig {
         batch_max_ops: 2,
         batch_max_ms: 1,
         queue_cap: 32,
+        blob: BlobConfig {
+            threshold_bytes: 256 * 1024,
+            file_path: blob_path,
+            s3: None,
+        },
+        backup: BackupConfig {
+            enabled: false,
+            max_age_secs: 3600,
+            max_logs: 100_000,
+            retention_days: 7,
+            max_keep: 0,
+            prefix: "backups".to_string(),
+            only_leader: true,
+            restore_mode: RestoreMode::Single,
+            restore_id: None,
+        },
     }
+}
+
+fn config_for_dir_with_threshold(
+    path: String,
+    snapshot_interval: u64,
+    threshold_bytes: usize,
+) -> StorageConfig {
+    let mut config = config_for_dir(path, snapshot_interval);
+    config.blob.threshold_bytes = threshold_bytes;
+    config
+}
+
+fn count_blob_files(path: &std::path::Path) -> usize {
+    fn walk(dir: &std::path::Path, count: &mut usize) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, count);
+            } else {
+                *count += 1;
+            }
+        }
+    }
+    let mut count = 0;
+    walk(path, &mut count);
+    count
 }
 
 fn config_for_node(
@@ -291,6 +340,574 @@ async fn storage_snapshot_recovery_restart() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn storage_backup_restore_from_blob() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("db").to_string_lossy().to_string();
+    let blob_path = format!("{path}.blobs");
+
+    let mut config = config_for_dir(path.clone(), 1);
+    config.blob.file_path = blob_path.clone();
+    config.backup.enabled = true;
+    config.backup.max_logs = 1_000_000;
+    config.backup.max_age_secs = 3600;
+    config.backup.restore_mode = RestoreMode::Single;
+    config.backup.only_leader = false;
+
+    let service = StorageService::start_for_test(config.clone())
+        .await
+        .expect("start service");
+
+    wait_for_leader(&[&service], &[1]).await;
+
+    let resp = service
+        .dispatch_to(StorageRequest::Put {
+            key: b"k1".to_vec(),
+            value: b"v1".to_vec(),
+        })
+        .await
+        .expect("put");
+    matches_ok(resp);
+    wait_for_value(&service, b"k1", b"v1".to_vec()).await;
+    let _ = service.raft_ref().trigger().snapshot().await;
+
+    let blob = BlobBackend::from_config(&config.blob)
+        .await
+        .expect("blob backend");
+    let prefix = backup_prefix(&config.backup, config.node_id);
+    service.shutdown().await;
+
+    let mut restore_id = None;
+    for _ in 0..200 {
+        let list = blob.list_prefix(&prefix).await.expect("list");
+        for entry in list.into_iter().filter(|b| b.key.ends_with(".snap")) {
+            if let Ok(snapshot_bytes) = blob.get_named(&entry.key).await {
+                if verify_checksum(&blob, &entry.key, &snapshot_bytes, true)
+                    .await
+                    .is_err()
+                {
+                    continue;
+                }
+                if let Ok(snapshot) =
+                    serde_json::from_slice::<SerializableKvStateMachine>(&snapshot_bytes)
+                {
+                    let saw_key = snapshot
+                        .data
+                        .iter()
+                        .any(|(key, _)| key.as_slice() == b"k1");
+                    if saw_key {
+                        restore_id = Some(entry.key);
+                        break;
+                    }
+                }
+            }
+        }
+        if restore_id.is_some() {
+            break;
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+    let restore_id = restore_id.expect("backup key");
+
+    let new_dir = tempfile::tempdir().expect("temp dir");
+    let new_path = new_dir.path().join("db").to_string_lossy().to_string();
+    let mut restore_config = config_for_dir(new_path, 1);
+    restore_config.blob.file_path = blob_path;
+    restore_config.backup.enabled = true;
+    restore_config.backup.restore_mode = RestoreMode::Single;
+    restore_config.backup.max_logs = 1;
+    restore_config.backup.restore_id = Some(restore_id);
+
+    let restore_service = StorageService::start_for_test(restore_config)
+        .await
+        .expect("restore service");
+    wait_for_leader(&[&restore_service], &[1]).await;
+    let resp = restore_service
+        .dispatch_to(StorageRequest::Get { key: b"k1".to_vec() })
+        .await
+        .expect("get");
+    let bytes = expect_ok_bytes(resp);
+    assert_eq!(bytes, b"v1".to_vec());
+
+    restore_service.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn storage_backup_restore_corrupt_id_errors() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("db").to_string_lossy().to_string();
+    let blob_path = format!("{path}.blobs");
+
+    let mut config = config_for_dir(path.clone(), 1);
+    config.blob.file_path = blob_path.clone();
+    config.backup.enabled = true;
+    config.backup.max_logs = 1;
+    config.backup.max_age_secs = 1;
+    config.backup.restore_mode = RestoreMode::Single;
+    config.backup.only_leader = false;
+
+    let service = StorageService::start_for_test(config.clone())
+        .await
+        .expect("start service");
+    wait_for_leader(&[&service], &[1]).await;
+
+    let resp = service
+        .dispatch_to(StorageRequest::Put {
+            key: b"k1".to_vec(),
+            value: b"v1".to_vec(),
+        })
+        .await
+        .expect("put");
+    matches_ok(resp);
+    wait_for_value(&service, b"k1", b"v1".to_vec()).await;
+
+    let blob = BlobBackend::from_config(&config.blob)
+        .await
+        .expect("blob backend");
+    let prefix = backup_prefix(&config.backup, config.node_id);
+    let corrupt_key = format!("{}/0000000000001-0-0.snap", prefix);
+    blob.put_named(&corrupt_key, b"corrupt")
+        .await
+        .expect("put corrupt");
+
+    service.shutdown().await;
+
+    let new_dir = tempfile::tempdir().expect("temp dir");
+    let new_path = new_dir.path().join("db").to_string_lossy().to_string();
+    let mut restore_config = config_for_dir(new_path, 1);
+    restore_config.blob.file_path = blob_path;
+    restore_config.backup.enabled = true;
+    restore_config.backup.restore_mode = RestoreMode::Single;
+    restore_config.backup.restore_id = Some(corrupt_key);
+
+    let err = match StorageService::start_for_test(restore_config).await {
+        Ok(_) => panic!("expected restore error"),
+        Err(err) => err,
+    };
+    match err {
+        StorageError::Internal(_) => {}
+        other => panic!("unexpected error: {other:?}"),
+    }
+
+    assert!(metrics::get(metrics::METRIC_STORAGE_BACKUP_RESTORE_FAILURE) > 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn storage_backup_restore_specific_id() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("db").to_string_lossy().to_string();
+    let blob_path = format!("{path}.blobs");
+
+    let blob = BlobBackend::from_config(&BlobConfig {
+        threshold_bytes: 256 * 1024,
+        file_path: blob_path.clone(),
+        s3: None,
+    })
+    .await
+    .expect("blob backend");
+
+    let mut config = config_for_dir(path.clone(), 1);
+    config.blob.file_path = blob_path.clone();
+    config.backup.enabled = true;
+    config.backup.restore_mode = RestoreMode::Single;
+
+    let prefix = backup_prefix(&config.backup, config.node_id);
+    let key_a = format!("{}/{}-0-0.snap", prefix, 1111u64);
+    let key_b = format!("{}/{}-0-0.snap", prefix, 2222u64);
+
+    let snap_a = SerializableKvStateMachine {
+        last_applied_log: None,
+        last_membership: Default::default(),
+        data: vec![(b"k1".to_vec(), crate::storage::value::StoredValue::Inline(b"v1".to_vec()))],
+    };
+    let snap_b = SerializableKvStateMachine {
+        last_applied_log: None,
+        last_membership: Default::default(),
+        data: vec![(b"k1".to_vec(), crate::storage::value::StoredValue::Inline(b"v2".to_vec()))],
+    };
+    blob.put_named(&key_a, &serde_json::to_vec(&snap_a).unwrap())
+        .await
+        .expect("put a");
+    blob.put_named(&key_b, &serde_json::to_vec(&snap_b).unwrap())
+        .await
+        .expect("put b");
+    let checksum_a = format!("{key_a}.sha256");
+    let checksum_b = format!("{key_b}.sha256");
+    let hash_a = format!("{:x}", sha2::Sha256::digest(serde_json::to_vec(&snap_a).unwrap()));
+    let hash_b = format!("{:x}", sha2::Sha256::digest(serde_json::to_vec(&snap_b).unwrap()));
+    blob.put_named(&checksum_a, hash_a.as_bytes())
+        .await
+        .expect("put a checksum");
+    blob.put_named(&checksum_b, hash_b.as_bytes())
+        .await
+        .expect("put b checksum");
+
+    config.backup.restore_id = Some(key_a.clone());
+
+    let service = StorageService::start_for_test(config)
+        .await
+        .expect("restore service");
+    wait_for_leader(&[&service], &[1]).await;
+
+    let resp = service
+        .dispatch_to(StorageRequest::Get { key: b"k1".to_vec() })
+        .await
+        .expect("get");
+    let bytes = expect_ok_bytes(resp);
+    assert_eq!(bytes, b"v1".to_vec());
+
+    service.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn storage_backup_restore_missing_meta() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("db").to_string_lossy().to_string();
+    let blob_path = format!("{path}.blobs");
+
+    let blob = BlobBackend::from_config(&BlobConfig {
+        threshold_bytes: 256 * 1024,
+        file_path: blob_path.clone(),
+        s3: None,
+    })
+    .await
+    .expect("blob backend");
+
+    let mut config = config_for_dir(path.clone(), 1);
+    config.blob.file_path = blob_path.clone();
+    config.backup.enabled = true;
+    config.backup.restore_mode = RestoreMode::Single;
+
+    let prefix = backup_prefix(&config.backup, config.node_id);
+    let key = format!("{}/{}-0-0.snap", prefix, 3333u64);
+    let snap = SerializableKvStateMachine {
+        last_applied_log: None,
+        last_membership: Default::default(),
+        data: vec![(b"k1".to_vec(), crate::storage::value::StoredValue::Inline(b"v1".to_vec()))],
+    };
+    blob.put_named(&key, &serde_json::to_vec(&snap).unwrap())
+        .await
+        .expect("put");
+    let checksum = format!("{key}.sha256");
+    let hash = format!("{:x}", sha2::Sha256::digest(serde_json::to_vec(&snap).unwrap()));
+    blob.put_named(&checksum, hash.as_bytes())
+        .await
+        .expect("put checksum");
+
+    config.backup.restore_id = Some(key);
+
+    let service = StorageService::start_for_test(config)
+        .await
+        .expect("restore service");
+    wait_for_leader(&[&service], &[1]).await;
+    let resp = service
+        .dispatch_to(StorageRequest::Get { key: b"k1".to_vec() })
+        .await
+        .expect("get");
+    let bytes = expect_ok_bytes(resp);
+    assert_eq!(bytes, b"v1".to_vec());
+
+    service.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn storage_backup_retention_prunes() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("db").to_string_lossy().to_string();
+    let blob_path = format!("{path}.blobs");
+
+    let mut config = config_for_dir(path.clone(), 1);
+    config.blob.file_path = blob_path.clone();
+    config.backup.enabled = true;
+    config.backup.max_logs = 1;
+    config.backup.max_age_secs = 3600;
+    config.backup.retention_days = 0;
+    config.backup.max_keep = 2;
+
+    let service = StorageService::start_for_test(config.clone())
+        .await
+        .expect("start service");
+    wait_for_leader(&[&service], &[1]).await;
+
+    for idx in 0..4u8 {
+        let resp = service
+            .dispatch_to(StorageRequest::Put {
+                key: vec![b'k', idx],
+                value: vec![b'v', idx],
+            })
+            .await
+            .expect("put");
+        matches_ok(resp);
+        wait_for_value(&service, &[b'k', idx], vec![b'v', idx]).await;
+        sleep(Duration::from_millis(30)).await;
+    }
+
+    let blob = BlobBackend::from_config(&config.blob)
+        .await
+        .expect("blob backend");
+    let prefix = backup_prefix(&config.backup, config.node_id);
+    for _ in 0..100 {
+        let list = blob.list_prefix(&prefix).await.expect("list");
+        if list.len() <= 2 {
+            break;
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+    let list = blob.list_prefix(&prefix).await.expect("list");
+    assert!(list.len() <= 2, "expected retention to prune");
+
+    service.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn storage_backup_restore_skips_when_state_exists() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("db").to_string_lossy().to_string();
+    let blob_path = format!("{path}.blobs");
+
+    let mut config = config_for_dir(path.clone(), 1);
+    config.blob.file_path = blob_path.clone();
+    config.backup.enabled = true;
+    config.backup.max_logs = 1;
+    config.backup.max_age_secs = 1;
+    config.backup.restore_mode = RestoreMode::Single;
+
+    let service = StorageService::start_for_test(config.clone())
+        .await
+        .expect("start service");
+    wait_for_leader(&[&service], &[1]).await;
+
+    let resp = service
+        .dispatch_to(StorageRequest::Put {
+            key: b"k1".to_vec(),
+            value: b"v1".to_vec(),
+        })
+        .await
+        .expect("put");
+    matches_ok(resp);
+    wait_for_value(&service, b"k1", b"v1".to_vec()).await;
+    let blob = BlobBackend::from_config(&config.blob)
+        .await
+        .expect("blob backend");
+    let prefix = backup_prefix(&config.backup, config.node_id);
+    for _ in 0..100 {
+        let list = blob.list_prefix(&prefix).await.expect("list");
+        if !list.is_empty() {
+            break;
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+
+    let resp = service
+        .dispatch_to(StorageRequest::Put {
+            key: b"k2".to_vec(),
+            value: b"v2".to_vec(),
+        })
+        .await
+        .expect("put");
+    matches_ok(resp);
+    wait_for_value(&service, b"k2", b"v2".to_vec()).await;
+
+    let resp = service
+        .dispatch_to(StorageRequest::Get { key: b"k2".to_vec() })
+        .await
+        .expect("get");
+    let bytes = expect_ok_bytes(resp);
+    assert_eq!(bytes, b"v2".to_vec());
+
+    service.shutdown().await;
+
+    let mut restore_config = config_for_dir(path, 1);
+    restore_config.blob.file_path = blob_path;
+    restore_config.backup.enabled = true;
+    restore_config.backup.restore_mode = RestoreMode::Single;
+
+    let restore_service = StorageService::start_for_test(restore_config)
+        .await
+        .expect("restore service");
+    wait_for_leader(&[&restore_service], &[1]).await;
+    let resp = restore_service
+        .dispatch_to(StorageRequest::Get { key: b"k2".to_vec() })
+        .await
+        .expect("get");
+    let bytes = expect_ok_bytes(resp);
+    assert_eq!(bytes, b"v2".to_vec());
+
+    restore_service.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn storage_backup_time_trigger() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("db").to_string_lossy().to_string();
+    let blob_path = format!("{path}.blobs");
+
+    let mut config = config_for_dir(path.clone(), 10_000);
+    config.blob.file_path = blob_path;
+    config.backup.enabled = true;
+    config.backup.max_logs = 10_000;
+    config.backup.max_age_secs = 1;
+
+    let service = StorageService::start_for_test(config.clone())
+        .await
+        .expect("start service");
+    wait_for_leader(&[&service], &[1]).await;
+
+    let resp = service
+        .dispatch_to(StorageRequest::Put {
+            key: b"k1".to_vec(),
+            value: b"v1".to_vec(),
+        })
+        .await
+        .expect("put");
+    matches_ok(resp);
+    wait_for_value(&service, b"k1", b"v1".to_vec()).await;
+
+    let blob = BlobBackend::from_config(&config.blob)
+        .await
+        .expect("blob backend");
+    let prefix = backup_prefix(&config.backup, config.node_id);
+    let mut saw_backup = false;
+    for _ in 0..50 {
+        let list = blob.list_prefix(&prefix).await.expect("list");
+        if !list.is_empty() {
+            saw_backup = true;
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+    assert!(saw_backup, "expected time-based backup");
+
+    service.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn storage_backup_leader_only() {
+    let _lock = acquire_cluster_lock().await;
+    let _guard = DropReplicationGuard::new();
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let base = dir.path().to_string_lossy().to_string();
+    let node1_path = format!("{base}/node1");
+    let node2_path = format!("{base}/node2");
+    let blob_path = format!("{base}/blobs");
+
+    let Some((listener1, addr1)) = try_bind("127.0.0.1:0").await else {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    };
+    let Some((listener2, addr2)) = try_bind("127.0.0.1:0").await else {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    };
+
+    let mut peers = HashMap::new();
+    peers.insert(1, addr1.clone());
+    peers.insert(2, addr2.clone());
+
+    let mut cfg1 = config_for_node(
+        node1_path,
+        1,
+        addr1.clone(),
+        peers_for(1, &peers),
+        true,
+        1,
+    );
+    cfg1.blob.file_path = blob_path.clone();
+    cfg1.backup.enabled = true;
+    cfg1.backup.only_leader = true;
+    cfg1.backup.max_logs = 1;
+    cfg1.backup.max_age_secs = 1;
+
+    let mut cfg2 = config_for_node(
+        node2_path,
+        2,
+        addr2.clone(),
+        peers_for(2, &peers),
+        false,
+        1,
+    );
+    cfg2.blob.file_path = blob_path.clone();
+    cfg2.backup.enabled = true;
+    cfg2.backup.only_leader = true;
+    cfg2.backup.max_logs = 1;
+    cfg2.backup.max_age_secs = 1;
+
+    let service1 = StorageService::start_for_test_with_listener(cfg1.clone(), listener1)
+        .await
+        .expect("start service1");
+    let service2 = StorageService::start_for_test_with_listener(cfg2.clone(), listener2)
+        .await
+        .expect("start service2");
+
+    let leader_id = wait_for_leader(&[&service1, &service2], &[1, 2]).await;
+    let leader = if leader_id == 1 { &service1 } else { &service2 };
+    let mut leaders_seen = std::collections::HashSet::new();
+    for _ in 0..50 {
+        if let Some(id) = service1.raft_ref().metrics().borrow().current_leader {
+            leaders_seen.insert(id);
+        }
+        if let Some(id) = service2.raft_ref().metrics().borrow().current_leader {
+            leaders_seen.insert(id);
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+
+    let resp = leader
+        .dispatch_to(StorageRequest::Put {
+            key: b"k1".to_vec(),
+            value: b"v1".to_vec(),
+        })
+        .await
+        .expect("put");
+    matches_ok(resp);
+    wait_for_value(leader, b"k1", b"v1".to_vec()).await;
+    let blob = BlobBackend::from_config(&cfg1.blob)
+        .await
+        .expect("blob backend");
+    let prefix_leader = if leader_id == 1 {
+        backup_prefix(&cfg1.backup, 1)
+    } else {
+        backup_prefix(&cfg2.backup, 2)
+    };
+    let prefix_follower = if leader_id == 1 {
+        backup_prefix(&cfg2.backup, 2)
+    } else {
+        backup_prefix(&cfg1.backup, 1)
+    };
+
+    for _ in 0..50 {
+        let list = blob.list_prefix(&prefix_leader).await.expect("list");
+        if !list.is_empty() {
+            break;
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+
+    let leader_list = blob.list_prefix(&prefix_leader).await.expect("list");
+    let follower_list = blob.list_prefix(&prefix_follower).await.expect("list");
+    assert!(
+        !(leader_list.is_empty() && follower_list.is_empty()),
+        "expected backups for some leader"
+    );
+    if !leader_list.is_empty() {
+        assert!(
+            leaders_seen.contains(&leader_id),
+            "expected leader backups only for observed leaders"
+        );
+    }
+    if !follower_list.is_empty() {
+        let other = if leader_id == 1 { 2 } else { 1 };
+        assert!(
+            leaders_seen.contains(&other),
+            "expected follower backups only if follower became leader"
+        );
+    }
+
+    service1.shutdown().await;
+    service2.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn storage_log_compaction_reduces_log_len() {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("db").to_string_lossy().to_string();
@@ -456,6 +1073,112 @@ async fn storage_large_values_many_keys() {
         .expect("get");
     let bytes = expect_ok_bytes(resp);
     assert_eq!(bytes.len(), big_value.len());
+
+    service.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn storage_blob_roundtrip() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("db").to_string_lossy().to_string();
+    let blob_path = format!("{path}.blobs");
+    let config = config_for_dir_with_threshold(path, 10, 32);
+
+    let service = StorageService::start_for_test(config)
+        .await
+        .expect("start service");
+
+    let value = vec![b'x'; 1024];
+    let resp = service
+        .dispatch_to(StorageRequest::Put {
+            key: b"blob-key".to_vec(),
+            value: value.clone(),
+        })
+        .await
+        .expect("put");
+    matches_ok(resp);
+
+    let resp = service
+        .dispatch_to(StorageRequest::Get {
+            key: b"blob-key".to_vec(),
+        })
+        .await
+        .expect("get");
+    let bytes = expect_ok_bytes(resp);
+    assert_eq!(bytes, value);
+
+    let files = count_blob_files(std::path::Path::new(&blob_path));
+    assert!(files >= 1, "expected blob file to be created");
+
+    service.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn storage_blob_delete_removes_object() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("db").to_string_lossy().to_string();
+    let blob_path = format!("{path}.blobs");
+    let config = config_for_dir_with_threshold(path, 10, 32);
+
+    let service = StorageService::start_for_test(config)
+        .await
+        .expect("start service");
+
+    let value = vec![b'y'; 1024];
+    let resp = service
+        .dispatch_to(StorageRequest::Put {
+            key: b"delete-key".to_vec(),
+            value: value.clone(),
+        })
+        .await
+        .expect("put");
+    matches_ok(resp);
+
+    let resp = service
+        .dispatch_to(StorageRequest::Delete {
+            key: b"delete-key".to_vec(),
+        })
+        .await
+        .expect("delete");
+    matches_ok(resp);
+
+    let files = count_blob_files(std::path::Path::new(&blob_path));
+    assert_eq!(files, 0, "expected blob file to be deleted");
+
+    service.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn storage_blob_overwrite_deletes_prior_object() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("db").to_string_lossy().to_string();
+    let blob_path = format!("{path}.blobs");
+    let config = config_for_dir_with_threshold(path, 10, 32);
+
+    let service = StorageService::start_for_test(config)
+        .await
+        .expect("start service");
+
+    let resp = service
+        .dispatch_to(StorageRequest::Put {
+            key: b"overwrite-key".to_vec(),
+            value: vec![b'a'; 1024],
+        })
+        .await
+        .expect("put");
+    matches_ok(resp);
+
+    let resp = service
+        .dispatch_to(StorageRequest::Put {
+            key: b"overwrite-key".to_vec(),
+            value: vec![b'b'; 1024],
+        })
+        .await
+        .expect("put2");
+    matches_ok(resp);
+
+    let files = count_blob_files(std::path::Path::new(&blob_path));
+    assert_eq!(files, 1, "expected only one blob after overwrite");
 
     service.shutdown().await;
 }

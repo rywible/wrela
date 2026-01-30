@@ -3,6 +3,7 @@
 mod value;
 mod object;
 mod string;
+mod bytes;
 mod list;
 mod map;
 mod float_box;
@@ -16,6 +17,7 @@ mod range;
 mod config;
 mod scheduler;
 mod diagnostics;
+mod http;
 pub mod storage;
 
 pub use value::{TypeId, Value};
@@ -115,6 +117,21 @@ pub extern "C" fn wr_str_concat(parts_ptr: *const Value, parts_len: usize) -> Va
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn wr_bytes_from_string(val: Value) -> Value {
+    bytes::bytes_from_string(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_bytes_to_string(val: Value) -> Value {
+    bytes::bytes_to_string(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_bytes_len(val: Value) -> Value {
+    bytes::bytes_len(val)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn wr_list_new(len: usize) -> Value {
     list::list_new(len)
 }
@@ -200,8 +217,9 @@ pub extern "C" fn wr_map_get(map_val: Value, key: Value) -> Value {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn wr_map_set(map_val: Value, key: Value, val: Value) {
-    map::map_set(map_val, key, val)
+pub extern "C" fn wr_map_set(map_val: Value, key: Value, val: Value) -> Value {
+    map::map_set(map_val, key, val);
+    Value::nil()
 }
 
 #[unsafe(no_mangle)]
@@ -499,6 +517,21 @@ pub extern "C" fn wr_register_method(class_id: u32, method_id: u32, func: actor:
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn wr_register_class(name_ptr: *const u8, len: usize, class_id: u32) {
+    http::register_class(name_ptr, len, class_id)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_register_method_name(
+    name_ptr: *const u8,
+    len: usize,
+    class_id: u32,
+    method_id: u32,
+) {
+    http::register_method_name(name_ptr, len, class_id, method_id)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn wr_iter_init(iterable: Value) -> Value {
     iter::iter_init(iterable)
 }
@@ -539,6 +572,11 @@ pub extern "C" fn wr_storage_get(key: Value) -> Value {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn wr_storage_configure(config: Value) -> Value {
+    storage::storage_configure(config)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn wr_storage_set(key: Value, value: Value) -> Value {
     storage::storage_set(key, value)
 }
@@ -546,6 +584,31 @@ pub extern "C" fn wr_storage_set(key: Value, value: Value) -> Value {
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_storage_delete(key: Value) -> Value {
     storage::storage_delete(key)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_http_server_serve_get_requests(path: Value, handler: Value) -> Value {
+    http::serve_get_requests(path, handler)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_http_server_serve_post_requests(path: Value, handler: Value) -> Value {
+    http::serve_post_requests(path, handler)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_http_server_serve_requests(method: Value, path: Value, handler: Value) -> Value {
+    http::serve_requests(method, path, handler)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_http_server_serve_on(addr: Value) -> Value {
+    http::serve_on(addr)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_http_server_stop() -> Value {
+    http::stop()
 }
 
 #[cfg(test)]

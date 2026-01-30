@@ -36,6 +36,7 @@ function resolveServerCommand() {
 }
 
 function activate(context) {
+  ensureWrelaTokenColors();
   const { command, args, cwd } = resolveServerCommand();
   const serverOptions = {
     command,
@@ -48,6 +49,112 @@ function activate(context) {
 
   client = new LanguageClient('wrela', 'Wrela LSP', serverOptions, clientOptions);
   context.subscriptions.push(client.start());
+  context.subscriptions.push(
+    vscode.commands.registerCommand('wrela.codeLens.showReferences', () => {
+      vscode.window.showInformationMessage('Use "Find All References" for details.');
+    })
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand('wrela.goToTypeDefinitionClient', () => {
+      requestTypeDefinition('wrela.goToTypeDefinition');
+    })
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand('wrela.peekTypeDefinitionClient', () => {
+      requestTypeDefinition('wrela.peekTypeDefinition');
+    })
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand('wrela.smokeTest.openGuide', async () => {
+      const guide = vscode.Uri.joinPath(context.extensionUri, 'SMOKE_TEST.md');
+      await vscode.commands.executeCommand('markdown.showPreview', guide);
+    })
+  );
+}
+
+async function requestTypeDefinition(command) {
+  if (!client) {
+    return;
+  }
+  await client.onReady();
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) {
+    return;
+  }
+  const uri = editor.document.uri.toString();
+  const pos = editor.selection.active;
+  const result = await client.sendRequest('workspace/executeCommand', {
+    command,
+    arguments: [uri, pos.line, pos.character],
+  });
+  if (!Array.isArray(result) || result.length === 0) {
+    vscode.window.showInformationMessage('Type definition not found.');
+    return;
+  }
+  const locations = result.map((loc) => {
+    const locUri = vscode.Uri.parse(loc.uri);
+    const range = new vscode.Range(
+      loc.range.start.line,
+      loc.range.start.character,
+      loc.range.end.line,
+      loc.range.end.character
+    );
+    return new vscode.Location(locUri, range);
+  });
+  if (command === 'wrela.peekTypeDefinition') {
+    await vscode.commands.executeCommand(
+      'editor.action.peekLocations',
+      editor.document.uri,
+      pos,
+      locations,
+      'peek'
+    );
+  } else {
+    await vscode.commands.executeCommand(
+      'editor.action.goToLocations',
+      editor.document.uri,
+      pos,
+      locations,
+      'goto'
+    );
+  }
+}
+
+function ensureWrelaTokenColors() {
+  const config = vscode.workspace.getConfiguration();
+  const existing = config.get('editor.tokenColorCustomizations') || {};
+  const rules = Array.isArray(existing.textMateRules) ? existing.textMateRules.slice() : [];
+  const desired = [
+    {
+      scope: 'punctuation.separator.wrela',
+      settings: { foreground: '#D4D4D4' },
+    },
+  ];
+  let changed = false;
+  const byScope = new Map(rules.map((rule) => [rule.scope, rule]));
+  for (const rule of desired) {
+    const existingRule = byScope.get(rule.scope);
+    if (!existingRule) {
+      rules.push(rule);
+      byScope.set(rule.scope, rule);
+      changed = true;
+      continue;
+    }
+    const existingSettings = existingRule.settings || {};
+    if (existingSettings.foreground !== rule.settings.foreground) {
+      existingRule.settings = { ...existingSettings, foreground: rule.settings.foreground };
+      changed = true;
+    }
+  }
+  if (!changed) {
+    return;
+  }
+  const updated = { ...existing, textMateRules: rules };
+  config.update(
+    'editor.tokenColorCustomizations',
+    updated,
+    vscode.ConfigurationTarget.Workspace
+  );
 }
 
 function deactivate() {

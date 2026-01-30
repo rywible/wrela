@@ -6,11 +6,10 @@ mod common;
 #[test]
 fn test_unused_variable_diagnostic() {
     let code = r#"
-    fn main() {
-        let unused = 1
-        let used = 2
+    to main():
+        unused = 1
+        used = 2
         print(used)
-    }
     "#;
     let fixture = TestFixture::new(code);
     let diagnostics = wrela_lsp::check_unused_variables(&fixture.state);

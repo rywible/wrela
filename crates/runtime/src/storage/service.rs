@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use openraft::BasicNode;
 use openraft::Config;
 use openraft::Raft;
@@ -9,6 +9,7 @@ use openraft::RaftTypeConfig;
 use openraft::SnapshotPolicy;
 use openraft::storage::Adaptor;
 use tokio::net::TcpListener;
+use tokio::time::sleep;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::diagnostics;
@@ -16,12 +17,15 @@ use crate::metrics;
 use crate::string;
 use crate::value::Value;
 
+use super::backup::{latest_backup_key, should_restore, verify_checksum, BackupSink, BackupState};
+use super::blob::BlobBackend;
 use super::config::{batch_max_delay, storage_config, StorageConfig};
 use super::store::{KvCommand, KvRequest, KvStore, NodeId, TypeConfig};
 use super::transport::{
     start_http_server, HttpNetworkFactory, NullNetworkFactory, RpcEnvelope, StorageReadRequest,
     StorageReadResponse,
 };
+use super::value::StoredValue;
 
 #[derive(Debug)]
 pub enum StorageError {
@@ -68,8 +72,13 @@ struct WriteItem {
 pub struct StorageService {
     sender: mpsc::Sender<Envelope>,
     raft: Raft<TypeConfig>,
+    #[cfg_attr(not(any(test, feature = "test-utils")), allow(dead_code))]
     store: Arc<KvStore>,
+    #[cfg_attr(not(any(test, feature = "test-utils")), allow(dead_code))]
+    blob: BlobBackend,
     http_handle: tokio::task::JoinHandle<()>,
+    backup_handle: tokio::task::JoinHandle<()>,
+    #[cfg_attr(not(any(test, feature = "test-utils")), allow(dead_code))]
     peers: std::collections::HashMap<NodeId, String>,
 }
 
@@ -93,6 +102,7 @@ impl StorageService {
 
     pub async fn shutdown(self) {
         let _ = self.http_handle.abort();
+        let _ = self.backup_handle.abort();
         let _ = self.raft.shutdown().await;
     }
 
@@ -103,8 +113,7 @@ impl StorageService {
 
     #[cfg(any(test, feature = "test-utils"))]
     pub async fn local_get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        let guard = self.store.state_machine.read().await;
-        guard.get_value(key).ok().flatten()
+        read_local(&self.store, &self.blob, key).await.ok().flatten()
     }
 
     #[cfg(any(test, feature = "test-utils"))]
@@ -114,7 +123,8 @@ impl StorageService {
 
     #[cfg(any(test, feature = "test-utils"))]
     pub async fn forward_read_for_test(&self, key: Vec<u8>) -> StorageResponse {
-        let resp = read_linearizable(&self.raft, &self.store, key, Some(&self.peers)).await;
+        let resp =
+            read_linearizable(&self.raft, &self.store, &self.blob, key, Some(&self.peers)).await;
         match resp {
             Ok(Some(bytes)) => StorageResponse::Ok(string::str_from_bytes(&bytes)),
             Ok(None) => StorageResponse::Ok(Value::nil()),
@@ -178,7 +188,25 @@ impl StorageService {
             config.bind_addr = addr;
         }
 
-        let store = KvStore::new(&config.path).await;
+        let blob = BlobBackend::from_config(&config.blob)
+            .await
+            .map_err(|err| StorageError::Internal(err.to_string()))?;
+        let backup_state = Arc::new(BackupState::new());
+        let backup_sink = if config.backup.enabled {
+            Some(Arc::new(BackupSink::new(
+                blob.clone(),
+                config.backup.clone(),
+                backup_state.clone(),
+                config.node_id,
+            )))
+        } else {
+            None
+        };
+        let store = KvStore::new(&config.path, blob.clone(), backup_sink).await;
+
+        maybe_restore_from_backup(&store, &blob, &config)
+            .await
+            .map_err(|err| StorageError::Internal(err.to_string()))?;
 
         let mut peers = config.peers.clone();
         peers.remove(&config.node_id);
@@ -210,26 +238,165 @@ impl StorageService {
         };
 
         let http_handle = if let Some(listener) = listener {
-            let (_addr, handle) = start_http_server(listener, raft.clone(), store.clone()).await?;
+            let (_addr, handle) =
+                start_http_server(listener, raft.clone(), store.clone(), blob.clone()).await?;
             handle
         } else {
             tokio::spawn(async {})
         };
 
+        let backup_handle =
+            start_backup_task(raft.clone(), store.clone(), backup_state, config.clone());
+
         bootstrap_or_join(&raft, &config).await?;
 
         let (sender, receiver) = mpsc::channel(config.queue_cap);
         let service_peers = config.peers.clone();
-        crate::actor::runtime_spawn(run_loop(raft.clone(), store.clone(), receiver, config));
+        crate::actor::runtime_spawn(run_loop(
+            raft.clone(),
+            store.clone(),
+            blob.clone(),
+            receiver,
+            config,
+        ));
         diagnostics::log_event("storage: raft service started");
         Ok(StorageService {
             sender,
             raft,
             store,
+            blob,
             http_handle,
+            backup_handle,
             peers: service_peers,
         })
     }
+}
+
+async fn maybe_restore_from_backup(
+    store: &Arc<KvStore>,
+    blob: &BlobBackend,
+    config: &StorageConfig,
+) -> Result<(), String> {
+    if !should_restore(&config.backup) {
+        return Ok(());
+    }
+    let has_state = store.has_state().map_err(|err| err.to_string())?;
+    if has_state {
+        diagnostics::log_event("storage: restore skipped; state exists");
+        return Ok(());
+    }
+    let key = if let Some(id) = config.backup.restore_id.clone() {
+        id
+    } else {
+        let Some(key) = latest_backup_key(blob, &config.backup, config.node_id).await else {
+            diagnostics::log_event("storage: restore skipped; no backups found");
+            return Ok(());
+        };
+        key
+    };
+    let bytes = match blob.get_named(&key).await {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            if config.backup.restore_id.is_some() {
+                crate::metrics::inc_storage_backup_restore_failure();
+                return Err(err.to_string());
+            }
+            diagnostics::log_event("storage: restore skipped; failed to load backup");
+            return Ok(());
+        }
+    };
+    if let Err(err) = verify_checksum(
+        blob,
+        &key,
+        &bytes,
+        config.backup.restore_id.is_some(),
+    )
+    .await
+    {
+        if config.backup.restore_id.is_some() {
+            crate::metrics::inc_storage_backup_restore_failure();
+            return Err(err);
+        }
+        diagnostics::log_event("storage: restore skipped; checksum mismatch");
+        return Ok(());
+    }
+    if let Err(err) = store.restore_from_backup(key, bytes).await {
+        if config.backup.restore_id.is_some() {
+            crate::metrics::inc_storage_backup_restore_failure();
+            return Err(err.to_string());
+        }
+        diagnostics::log_event("storage: restore skipped; failed to apply backup");
+        return Ok(());
+    }
+    diagnostics::log_event("storage: restored from backup");
+    Ok(())
+}
+
+fn start_backup_task(
+    raft: Raft<TypeConfig>,
+    store: Arc<KvStore>,
+    backup_state: Arc<BackupState>,
+    config: StorageConfig,
+) -> tokio::task::JoinHandle<()> {
+    if !config.backup.enabled {
+        return tokio::spawn(async {});
+    }
+    let node_id = config.node_id;
+    let max_age_secs = config.backup.max_age_secs;
+    let max_logs = config.backup.max_logs;
+    let only_leader = config.backup.only_leader;
+    tokio::spawn(async move {
+        let tick = Duration::from_secs(max_age_secs.clamp(1, 30));
+        loop {
+            sleep(tick).await;
+            if only_leader {
+                let leader = raft.current_leader().await;
+                backup_state.set_leader_id(leader);
+                if leader != Some(node_id) {
+                    continue;
+                }
+            } else {
+                backup_state.set_leader_id(raft.current_leader().await);
+            }
+            if backup_state.snapshot_inflight() {
+                continue;
+            }
+            let metrics = raft.data_metrics();
+            let (snapshot_index, last_applied) = {
+                let data = metrics.borrow();
+                let snap = data.snapshot.map(|id| id.index).unwrap_or(0);
+                let last = data.last_applied.map(|id| id.index).unwrap_or(0);
+                (snap, last)
+            };
+            if backup_state.last_snapshot_index() == 0 && snapshot_index > 0 {
+                backup_state.set_last_snapshot_index(snapshot_index);
+            }
+            if last_applied <= snapshot_index {
+                continue;
+            }
+            let progressed = last_applied > backup_state.last_snapshot_index();
+            if !progressed {
+                continue;
+            }
+            let last = backup_state.last_backup_at();
+            let age = now_secs().saturating_sub(last);
+            let age_trigger = age >= max_age_secs;
+            let log_trigger = store.log_len() >= max_logs;
+            if age_trigger || log_trigger {
+                backup_state.set_snapshot_inflight(true);
+                if raft.trigger().snapshot().await.is_err() {
+                    backup_state.set_snapshot_inflight(false);
+                }
+            }
+        }
+    })
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::from_secs(0))
+        .as_secs()
 }
 
 async fn bootstrap_or_join(
@@ -275,6 +442,7 @@ async fn bootstrap_or_join(
 async fn run_loop(
     raft: Raft<TypeConfig>,
     store: Arc<KvStore>,
+    blob: BlobBackend,
     mut rx: mpsc::Receiver<Envelope>,
     config: StorageConfig,
 ) {
@@ -283,7 +451,18 @@ async fn run_loop(
     loop {
         if batch.is_empty() {
             match rx.recv().await {
-                Some(msg) => handle_envelope(msg, &raft, &store, &mut batch, &mut batch_start, &config).await,
+                Some(msg) => {
+                    handle_envelope(
+                        msg,
+                        &raft,
+                        &store,
+                        &blob,
+                        &mut batch,
+                        &mut batch_start,
+                        &config,
+                    )
+                    .await
+                }
                 None => break,
             }
         } else {
@@ -293,7 +472,18 @@ async fn run_loop(
             tokio::select! {
                 maybe_msg = rx.recv() => {
                     match maybe_msg {
-                        Some(msg) => handle_envelope(msg, &raft, &store, &mut batch, &mut batch_start, &config).await,
+                        Some(msg) => {
+                            handle_envelope(
+                                msg,
+                                &raft,
+                                &store,
+                                &blob,
+                                &mut batch,
+                                &mut batch_start,
+                                &config,
+                            )
+                            .await
+                        }
                         None => break,
                     }
                 }
@@ -315,6 +505,7 @@ async fn handle_envelope(
     env: Envelope,
     raft: &Raft<TypeConfig>,
     store: &Arc<KvStore>,
+    blob: &BlobBackend,
     batch: &mut Vec<WriteItem>,
     batch_start: &mut Option<Instant>,
     config: &StorageConfig,
@@ -322,7 +513,7 @@ async fn handle_envelope(
     match env.req {
         StorageRequest::Get { key } => {
             let start = Instant::now();
-            let resp = read_linearizable(raft, store, key, Some(&config.peers)).await;
+            let resp = read_linearizable(raft, store, blob, key, Some(&config.peers)).await;
             let resp = match resp {
                 Ok(Some(bytes)) => StorageResponse::Ok(string::str_from_bytes(&bytes)),
                 Ok(None) => StorageResponse::Ok(Value::nil()),
@@ -333,8 +524,22 @@ async fn handle_envelope(
             metrics::record_storage_read_latency(start.elapsed());
         }
         StorageRequest::Put { key, value } => {
+            let stored = if value.len() > config.blob.threshold_bytes {
+                match blob.put(&value).await {
+                    Ok(blob_ref) => StoredValue::Blob(blob_ref),
+                    Err(err) => {
+                        let _ = env.resp.send(StorageResponse::Err(err.to_string()));
+                        return;
+                    }
+                }
+            } else {
+                StoredValue::Inline(value)
+            };
             batch.push(WriteItem {
-                cmd: KvCommand::Put { key, value },
+                cmd: KvCommand::Put {
+                    key,
+                    value: stored,
+                },
                 resp: env.resp,
             });
             if batch_start.is_none() {
@@ -391,22 +596,39 @@ async fn flush_batch(
     }
 }
 
-async fn read_local(store: &Arc<KvStore>, key: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
-    let guard = store.state_machine.read().await;
-    let value = guard
-        .get_value(key)
-        .map_err(|err| StorageError::Internal(format!("state machine get: {err}")))?;
-    Ok(value)
+async fn read_local(
+    store: &Arc<KvStore>,
+    blob: &BlobBackend,
+    key: &[u8],
+) -> Result<Option<Vec<u8>>, StorageError> {
+    let value = {
+        let guard = store.state_machine.read().await;
+        guard
+            .get_value(key)
+            .map_err(|err| StorageError::Internal(format!("state machine get: {err}")))?
+    };
+    Ok(match value {
+        None => None,
+        Some(StoredValue::Inline(bytes)) => Some(bytes),
+        Some(StoredValue::Blob(blob_ref)) => {
+            let bytes = blob
+                .get(&blob_ref)
+                .await
+                .map_err(|err| StorageError::Internal(err.to_string()))?;
+            Some(bytes)
+        }
+    })
 }
 
 async fn read_linearizable(
     raft: &Raft<TypeConfig>,
     store: &Arc<KvStore>,
+    blob: &BlobBackend,
     key: Vec<u8>,
     peers: Option<&std::collections::HashMap<NodeId, String>>,
 ) -> Result<Option<Vec<u8>>, StorageError> {
     match raft.ensure_linearizable().await {
-        Ok(_) => read_local(store, &key).await,
+        Ok(_) => read_local(store, blob, &key).await,
         Err(err) => {
             if let Some(fwd) = err.forward_to_leader::<BasicNode>() {
                 if let Some(node) = fwd.leader_node.as_ref() {

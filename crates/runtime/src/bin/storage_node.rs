@@ -8,7 +8,7 @@ mod test_utils {
 
     use tokio::time::sleep;
 
-    use wrela_runtime::storage::config::StorageConfig;
+    use wrela_runtime::storage::config::{BackupConfig, BlobConfig, RestoreMode, StorageConfig};
     use wrela_runtime::storage::service::{StorageRequest, StorageService};
     use wrela_runtime::storage::set_drop_replication;
     use wrela_runtime::storage::store::NodeId;
@@ -31,6 +31,22 @@ mod test_utils {
             batch_max_ops: 2,
             batch_max_ms: 1,
             queue_cap: 64,
+            blob: BlobConfig {
+                threshold_bytes: 256 * 1024,
+                file_path: format!("{}.blobs", args.path),
+                s3: None,
+            },
+            backup: BackupConfig {
+                enabled: false,
+                max_age_secs: 3600,
+                max_logs: 100_000,
+                retention_days: 7,
+                max_keep: 0,
+                prefix: "backups".to_string(),
+                only_leader: true,
+                restore_mode: RestoreMode::Single,
+                restore_id: None,
+            },
         };
 
         let service = StorageService::start_for_test(config)

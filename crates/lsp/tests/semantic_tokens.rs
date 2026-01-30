@@ -1,7 +1,5 @@
 use crate::common::TestFixture;
 use insta::assert_debug_snapshot;
-use tower_lsp::lsp_types::SemanticToken;
-
 mod common;
 
 #[test]

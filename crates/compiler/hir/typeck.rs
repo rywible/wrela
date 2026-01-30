@@ -464,6 +464,27 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
+            SmolStr::new("bytes_from_string"),
+            FunctionSig {
+                params: vec![(SmolStr::new("value"), Type::String)],
+                ret: Type::Named(SmolStr::new("Bytes")),
+            },
+        ),
+        (
+            SmolStr::new("bytes_to_string"),
+            FunctionSig {
+                params: vec![(SmolStr::new("value"), Type::Named(SmolStr::new("Bytes")))],
+                ret: Type::String,
+            },
+        ),
+        (
+            SmolStr::new("bytes_len"),
+            FunctionSig {
+                params: vec![(SmolStr::new("value"), Type::Named(SmolStr::new("Bytes")))],
+                ret: Type::Int,
+            },
+        ),
+        (
             SmolStr::new("write_file"),
             FunctionSig {
                 params: vec![
@@ -478,6 +499,27 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![
                     (SmolStr::new("list"), Type::List(Box::new(Type::Unknown))),
+                    (SmolStr::new("value"), Type::Unknown),
+                ],
+                ret: Type::Nil,
+            },
+        ),
+        (
+            SmolStr::new("map_get"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("map"), Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown))),
+                    (SmolStr::new("key"), Type::Unknown),
+                ],
+                ret: Type::Unknown,
+            },
+        ),
+        (
+            SmolStr::new("map_set"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("map"), Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown))),
+                    (SmolStr::new("key"), Type::Unknown),
                     (SmolStr::new("value"), Type::Unknown),
                 ],
                 ret: Type::Nil,
@@ -590,6 +632,13 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
+            SmolStr::new("storage_configure"),
+            FunctionSig {
+                params: vec![(SmolStr::new("config"), Type::Named(SmolStr::new("StorageConfig")))],
+                ret: Type::Result(Box::new(Type::Nil), Box::new(err.clone())),
+            },
+        ),
+        (
             SmolStr::new("storage_set"),
             FunctionSig {
                 params: vec![
@@ -610,6 +659,51 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     Box::new(Type::Nil),
                     Box::new(err),
                 ))),
+            },
+        ),
+        (
+            SmolStr::new("http_server_serve_get_requests"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("path"), Type::String),
+                    (SmolStr::new("handler"), Type::Unknown),
+                ],
+                ret: Type::Nil,
+            },
+        ),
+        (
+            SmolStr::new("http_server_serve_post_requests"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("path"), Type::String),
+                    (SmolStr::new("handler"), Type::Unknown),
+                ],
+                ret: Type::Nil,
+            },
+        ),
+        (
+            SmolStr::new("http_server_serve_requests"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("method"), Type::String),
+                    (SmolStr::new("path"), Type::String),
+                    (SmolStr::new("handler"), Type::Unknown),
+                ],
+                ret: Type::Nil,
+            },
+        ),
+        (
+            SmolStr::new("http_server_serve_on"),
+            FunctionSig {
+                params: vec![(SmolStr::new("addr"), Type::String)],
+                ret: Type::Nil,
+            },
+        ),
+        (
+            SmolStr::new("http_server_stop"),
+            FunctionSig {
+                params: vec![],
+                ret: Type::Nil,
             },
         ),
     ]

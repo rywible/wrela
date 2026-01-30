@@ -6,10 +6,10 @@ mod common;
 #[test]
 fn test_inlay_hints_params() {
     let code = r#"
-    fn add(a: Int, b: Int) -> Int { a + b }
-    fn main() {
+    to add(a: Int, b: Int) -> Int:
+        return a + b
+    to main():
         add(1, 2)
-    }
     "#;
     let fixture = TestFixture::new(code);
     let hints = wrela_lsp::inlay_hints(&fixture.state);
@@ -19,9 +19,8 @@ fn test_inlay_hints_params() {
 #[test]
 fn test_inlay_hints_return_type() {
     let code = r#"
-    fn simple() {
+    to simple():
         return 42
-    }
     "#;
     let fixture = TestFixture::new(code);
     let hints = wrela_lsp::inlay_hints(&fixture.state);

@@ -9,6 +9,9 @@
       "include": "#definitions"
     },
     {
+      "include": "#has_statement"
+    },
+    {
       "include": "#field_definitions"
     },
     {
@@ -36,6 +39,9 @@
       "include": "#operators"
     },
     {
+      "include": "#named_argument"
+    },
+    {
       "include": "#identifiers"
     }
   ],
@@ -60,10 +66,21 @@
           "name": "storage.modifier.wrela"
         },
         "2": {
-          "name": "keyword.declaration.wrela"
+          "name": "storage.type.wrela"
         },
         "3": {
           "name": "entity.name.type.wrela"
+        }
+      }
+    },
+    "has_statement": {
+      "match": "\\b(?:(public|private)\\s+)?(has)\\b",
+      "captures": {
+        "1": {
+          "name": "storage.modifier.wrela"
+        },
+        "2": {
+          "name": "storage.type.wrela"
         }
       }
     },
@@ -74,7 +91,7 @@
           "name": "storage.modifier.wrela"
         },
         "2": {
-          "name": "keyword.declaration.wrela"
+          "name": "storage.type.wrela"
         },
         "3": {
           "name": "entity.name.function.wrela"
@@ -114,7 +131,7 @@
           "name": "storage.modifier.wrela"
         },
         "2": {
-          "name": "keyword.declaration.wrela"
+          "name": "storage.type.wrela"
         },
         "3": {
           "name": "entity.name.function.method.wrela"
@@ -226,7 +243,7 @@
                   "name": "keyword.operator.arithmetic.wrela"
                 },
                 "3": {
-                  "name": "keyword.other.wrela"
+                  "name": "keyword.control.wrela"
                 }
               }
             },
@@ -255,6 +272,14 @@
     "function_calls": {
       "patterns": [
         {
+          "match": "\\b([A-Z][_\\p{L}\\p{N}]*)\\b(?=\\s*\\()",
+          "captures": {
+            "1": {
+              "name": "entity.name.type.wrela"
+            }
+          }
+        },
+        {
           "match": "(\\.)\\s*([_\\p{L}][_\\p{L}\\p{N}]*)\\b(?=\\s*\\()",
           "captures": {
             "1": {
@@ -266,7 +291,7 @@
           }
         },
         {
-          "match": "\\b(?!A\\b|An\\b|has\\b|can\\b|to\\b|public\\b|private\\b|changing\\b|if\\b|else\\b|while\\b|for\\b|in\\b|return\\b|break\\b|continue\\b|match\\b|otherwise\\b|use\\b|from\\b|optimize\\b|and\\b|or\\b|not\\b|await\\b|detach\\b|spawn\\b|fire\\b|err\\b|crash\\b|true\\b|false\\b|nothing\\b|it\\b|its\\b)([_\\p{L}][_\\p{L}\\p{N}]*)\\b(?=\\s*\\()",
+          "match": "\\b(?!A\\b|An\\b|has\\b|can\\b|to\\b|public\\b|private\\b|changing\\b|if\\b|else\\b|while\\b|for\\b|in\\b|return\\b|break\\b|continue\\b|match\\b|otherwise\\b|use\\b|from\\b|optimize\\b|and\\b|or\\b|not\\b|await\\b|detach\\b|spawn\\b|fire\\b|err\\b|crash\\b|true\\b|false\\b|nothing\\b|nil\\b|it\\b|its\\b|n\\b)([_\\p{L}][_\\p{L}\\p{N}]*)\\b(?=\\s*\\()",
           "captures": {
             "1": {
               "name": "entity.name.function.wrela"
@@ -275,9 +300,60 @@
         }
       ]
     },
+    "function_calls_in_interpolation": {
+      "patterns": [
+        {
+          "match": "\\b([A-Z][_\\p{L}\\p{N}]*)\\b(?=\\s*\\()",
+          "captures": {
+            "1": {
+              "name": "entity.name.type.wrela"
+            }
+          }
+        },
+        {
+          "match": "(\\.)\\s*([_\\p{L}][_\\p{L}\\p{N}]*)\\b(?=\\s*\\()",
+          "captures": {
+            "1": {
+              "name": "punctuation.separator.wrela"
+            },
+            "2": {
+              "name": "entity.name.function.method.wrela"
+            }
+          }
+        },
+        {
+          "match": "\\b(?!A\\b|An\\b|has\\b|can\\b|to\\b|public\\b|private\\b|changing\\b|if\\b|else\\b|while\\b|for\\b|in\\b|return\\b|break\\b|continue\\b|match\\b|otherwise\\b|use\\b|from\\b|optimize\\b|and\\b|or\\b|not\\b|await\\b|detach\\b|spawn\\b|fire\\b|err\\b|crash\\b|true\\b|false\\b|nothing\\b|nil\\b|it\\b|its\\b|n\\b)([_\\p{L}][_\\p{L}\\p{N}]*)\\b(?=\\s*\\()",
+          "captures": {
+            "1": {
+              "name": "entity.name.function.wrela"
+            }
+          }
+        }
+      ]
+    },
+    "interpolation_punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.separator.wrela",
+          "match": "\\."
+        },
+        {
+          "name": "punctuation.brackets.wrela",
+          "match": "[()]"
+        },
+        {
+          "name": "punctuation.separator.comma.wrela",
+          "match": ","
+        }
+      ]
+    },
+    "named_argument": {
+      "name": "variable.parameter.wrela",
+      "match": "\\b([_\\p{L}][_\\p{L}\\p{N}]*)\\b(?=\\s*=)"
+    },
     "identifiers": {
       "name": "variable.other.wrela",
-      "match": "\\b(?!A\\b|An\\b|has\\b|can\\b|to\\b|public\\b|private\\b|changing\\b|if\\b|else\\b|while\\b|for\\b|in\\b|return\\b|break\\b|continue\\b|match\\b|otherwise\\b|use\\b|from\\b|optimize\\b|and\\b|or\\b|not\\b|await\\b|detach\\b|spawn\\b|fire\\b|err\\b|crash\\b|true\\b|false\\b|nothing\\b|it\\b|its\\b)[_\\p{L}][_\\p{L}\\p{N}]*\\b"
+      "match": "\\b(?!A\\b|An\\b|has\\b|can\\b|to\\b|public\\b|private\\b|changing\\b|if\\b|else\\b|while\\b|for\\b|in\\b|return\\b|break\\b|continue\\b|match\\b|otherwise\\b|use\\b|from\\b|optimize\\b|and\\b|or\\b|not\\b|await\\b|detach\\b|spawn\\b|fire\\b|err\\b|crash\\b|true\\b|false\\b|nothing\\b|nil\\b|it\\b|its\\b|n\\b)[_\\p{L}][_\\p{L}\\p{N}]*\\b"
     },
     "type": {
       "patterns": [
@@ -353,16 +429,17 @@
       "patterns": [
         {
           "name": "meta.interpolation.wrela",
+          "contentName": "source.wrela.interpolated",
           "begin": "\\{",
           "end": "\\}",
           "beginCaptures": {
             "0": {
-              "name": "punctuation.section.interpolation.begin.wrela"
+              "name": "punctuation.brackets.wrela"
             }
           },
           "endCaptures": {
             "0": {
-              "name": "punctuation.section.interpolation.end.wrela"
+              "name": "punctuation.brackets.wrela"
             }
           },
           "patterns": [
@@ -382,10 +459,10 @@
           "include": "#keywords"
         },
         {
-          "include": "#operators"
+          "include": "#interpolation_punctuation"
         },
         {
-          "include": "#function_calls"
+          "include": "#function_calls_in_interpolation"
         },
         {
           "include": "#strings"
@@ -427,11 +504,11 @@
       "patterns": [
         {
           "name": "keyword.control.wrela",
-          "match": "\\b(?:if|else|while|for|in|return|break|continue|match|otherwise|use|from|optimize|await|detach|spawn|fire|err|crash)\\b"
+          "match": "\\b(?:public|private|changing|if|else|while|for|in|return|break|continue|match|otherwise|use|from|optimize|await|detach|spawn|fire|err|crash)\\b"
         },
         {
-          "name": "keyword.declaration.wrela",
-          "match": "\\b(?:A|An|has|can|to|public|private|changing)\\b"
+          "name": "keyword.control.wrela",
+          "match": "\\b(?:its|it|n)\\b"
         },
         {
           "name": "keyword.operator.wrela",
@@ -439,7 +516,7 @@
         },
         {
           "name": "constant.language.wrela",
-          "match": "\\b(?:true|false|nothing|it|its)\\b"
+          "match": "\\b(?:true|false|nothing|nil)\\b"
         }
       ]
     },

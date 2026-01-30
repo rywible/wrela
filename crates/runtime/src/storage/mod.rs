@@ -1,15 +1,23 @@
 pub mod config;
+pub mod blob;
+mod backup;
 pub mod service;
 pub mod store;
+pub mod value;
 mod transport;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod backup_tests;
 
 use crate::actor::{pending_new, resolve_pending, runtime_spawn};
+use crate::class;
 use crate::result;
 use crate::string;
 use crate::value::Value;
+use crate::wr_rc_dec;
+use config::StorageUserConfig;
 use service::{StorageError, StorageRequest, StorageResponse, StorageService};
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -110,4 +118,35 @@ pub fn storage_delete(key: Value) -> Value {
         resolve_pending(state, resolved);
     });
     pending
+}
+
+pub fn storage_configure(config: Value) -> Value {
+    let user = StorageUserConfig {
+        file_path: config_field_string(config, "file_path"),
+        s3_bucket: config_field_string(config, "s3_bucket"),
+        s3_region: config_field_string(config, "s3_region"),
+        s3_access_key: config_field_string(config, "s3_access_key"),
+        s3_secret_key: config_field_string(config, "s3_secret_key"),
+        s3_endpoint: config_field_string(config, "s3_endpoint"),
+        s3_prefix: config_field_string(config, "s3_prefix"),
+    };
+    config::set_storage_user_config(user);
+    ok_value(Value::nil())
+}
+
+fn config_field_string(config: Value, field: &str) -> Option<String> {
+    let val = class::class_get(config, field.as_ptr(), field.len());
+    if val.is_nil() {
+        return None;
+    }
+    let bytes = string::with_string_bytes(val, |bytes| bytes.to_vec());
+    unsafe { wr_rc_dec(val) };
+    bytes.and_then(|bytes| {
+        let value = String::from_utf8_lossy(&bytes).to_string();
+        if value.trim().is_empty() {
+            None
+        } else {
+            Some(value)
+        }
+    })
 }

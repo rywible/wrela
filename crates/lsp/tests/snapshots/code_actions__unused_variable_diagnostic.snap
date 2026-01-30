@@ -1,0 +1,38 @@
+---
+source: crates/lsp/tests/code_actions.rs
+expression: diagnostics
+---
+[
+    Diagnostic {
+        range: Range {
+            start: Position {
+                line: 2,
+                character: 8,
+            },
+            end: Position {
+                line: 2,
+                character: 18,
+            },
+        },
+        severity: Some(
+            Hint,
+        ),
+        code: Some(
+            String(
+                "unused_variable",
+            ),
+        ),
+        code_description: None,
+        source: Some(
+            "wrela",
+        ),
+        message: "Unused variable: unused",
+        related_information: None,
+        tags: Some(
+            [
+                Unnecessary,
+            ],
+        ),
+        data: None,
+    },
+]

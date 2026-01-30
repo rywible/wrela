@@ -1,17 +1,14 @@
 A Whale:
     has:
         name: String
+        type: String
 
-    can swim(distance: Number) -> Nothing:
+    can swim(distance: Number, new_parameter: String) -> Nothing:
         print("Hi! My name is {its.name} and I can swim {distance.toString()}")
 
-to make_moby_swim():
+to make_moby_swim(fake_param: String):
     moby = Whale(name="moby")
-    moby.swim(500)
+    moby.swim(distance=500)
 
-make_moby_swim()
-
-whale = detach Whale() * n
-
-whale = detach Whale() * 1 optimize latency
-whale = Whale(name=23)
+to test():
+    return "test"

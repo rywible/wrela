@@ -1265,6 +1265,8 @@ fn lower_rvalue(
                                     "read_file" => Some(runtime_fn_read_file(module, runtime)?),
                                     "write_file" => Some(runtime_fn_write_file(module, runtime)?),
                                     "list_push" => Some(runtime_fn_list_push(module, runtime)?),
+                                    "map_get" => Some(runtime_fn_map_get(module, runtime)?),
+                                    "map_set" => Some(runtime_fn_map_set(module, runtime)?),
                                     "pool_auto_size" => Some(runtime_fn_pool_auto_size(module, runtime)?),
                                     "pool_size" => Some(runtime_fn_pool_size(module, runtime)?),
                                     "pool_rr" => Some(runtime_fn_pool_rr(module, runtime)?),
@@ -1292,9 +1294,34 @@ fn lower_rvalue(
                                     "clock_ns" => Some(runtime_fn_clock_ns(module, runtime)?),
                                     "sleep_ms" => Some(runtime_fn_sleep_ms(module, runtime)?),
                                     "storage_get" => Some(runtime_fn_storage_get(module, runtime)?),
+                                    "storage_configure" => {
+                                        Some(runtime_fn_storage_configure(module, runtime)?)
+                                    }
                                     "storage_set" => Some(runtime_fn_storage_set(module, runtime)?),
                                     "storage_delete" => {
                                         Some(runtime_fn_storage_delete(module, runtime)?)
+                                    }
+                                    "bytes_from_string" => {
+                                        Some(runtime_fn_bytes_from_string(module, runtime)?)
+                                    }
+                                    "bytes_to_string" => {
+                                        Some(runtime_fn_bytes_to_string(module, runtime)?)
+                                    }
+                                    "bytes_len" => Some(runtime_fn_bytes_len(module, runtime)?),
+                                    "http_server_serve_get_requests" => {
+                                        Some(runtime_fn_http_server_serve_get_requests(module, runtime)?)
+                                    }
+                                    "http_server_serve_post_requests" => {
+                                        Some(runtime_fn_http_server_serve_post_requests(module, runtime)?)
+                                    }
+                                    "http_server_serve_requests" => {
+                                        Some(runtime_fn_http_server_serve_requests(module, runtime)?)
+                                    }
+                                    "http_server_serve_on" => {
+                                        Some(runtime_fn_http_server_serve_on(module, runtime)?)
+                                    }
+                                    "http_server_stop" => {
+                                        Some(runtime_fn_http_server_stop(module, runtime)?)
                                     }
                                     _ => None,
                                 }
@@ -1849,6 +1876,30 @@ fn runtime_fn_str_intern(
     runtime.get_func(module, "wr_str_intern", sig)
 }
 
+fn runtime_fn_bytes_from_string(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_bytes_from_string", sig)
+}
+
+fn runtime_fn_bytes_to_string(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_bytes_to_string", sig)
+}
+
+fn runtime_fn_bytes_len(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_bytes_len", sig)
+}
+
 fn runtime_fn_str_concat(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
@@ -1882,6 +1933,22 @@ fn runtime_fn_list_push(
 ) -> Result<cranelift_module::FuncId, CodegenError> {
     let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
     runtime.get_func(module, "wr_list_push_val", sig)
+}
+
+fn runtime_fn_map_get(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_map_get", sig)
+}
+
+fn runtime_fn_map_set(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_map_set", sig)
 }
 
 fn runtime_fn_pool_auto_size(
@@ -2000,6 +2067,14 @@ fn runtime_fn_storage_get(
     runtime.get_func(module, "wr_storage_get", sig)
 }
 
+fn runtime_fn_storage_configure(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_storage_configure", sig)
+}
+
 fn runtime_fn_storage_set(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
@@ -2016,20 +2091,56 @@ fn runtime_fn_storage_delete(
     runtime.get_func(module, "wr_storage_delete", sig)
 }
 
+fn runtime_fn_http_server_serve_get_requests(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_http_server_serve_get_requests", sig)
+}
+
+fn runtime_fn_http_server_serve_post_requests(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_http_server_serve_post_requests", sig)
+}
+
+fn runtime_fn_http_server_serve_requests(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(
+        module,
+        &[types::I64, types::I64, types::I64],
+        &[types::I64],
+    );
+    runtime.get_func(module, "wr_http_server_serve_requests", sig)
+}
+
+fn runtime_fn_http_server_serve_on(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_http_server_serve_on", sig)
+}
+
+fn runtime_fn_http_server_stop(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(module, "wr_http_server_stop", sig)
+}
+
 fn runtime_fn_map_new(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
 ) -> Result<cranelift_module::FuncId, CodegenError> {
     let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
     runtime.get_func(module, "wr_map_new", sig)
-}
-
-fn runtime_fn_map_set(
-    module: &mut ObjectModule,
-    runtime: &mut RuntimeRegistry,
-) -> Result<cranelift_module::FuncId, CodegenError> {
-    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[]);
-    runtime.get_func(module, "wr_map_set", sig)
 }
 
 fn runtime_fn_result_ok(
@@ -2240,6 +2351,28 @@ fn runtime_fn_register_method(
     let ptr_ty = module.target_config().pointer_type();
     let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, ptr_ty], &[]);
     runtime.get_func(module, "wr_register_method", sig)
+}
+
+fn runtime_fn_register_class(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let ptr_ty = module.target_config().pointer_type();
+    let sig = RuntimeRegistry::runtime_sig(module, &[ptr_ty, ptr_ty, types::I64], &[]);
+    runtime.get_func(module, "wr_register_class", sig)
+}
+
+fn runtime_fn_register_method_name(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let ptr_ty = module.target_config().pointer_type();
+    let sig = RuntimeRegistry::runtime_sig(
+        module,
+        &[ptr_ty, ptr_ty, types::I64, types::I64],
+        &[],
+    );
+    runtime.get_func(module, "wr_register_method_name", sig)
 }
 
 fn runtime_fn_runtime_init(
@@ -2487,7 +2620,16 @@ fn emit_method_registrations(
     let ptr_ty = module.target_config().pointer_type();
     let func_id = runtime_fn_register_method(module, runtime)?;
     let callee = module.declare_func_in_func(func_id, builder.func);
+    let register_class_id = runtime_fn_register_class(module, runtime)?;
+    let register_class = module.declare_func_in_func(register_class_id, builder.func);
+    let register_method_name_id = runtime_fn_register_method_name(module, runtime)?;
+    let register_method_name = module.declare_func_in_func(register_method_name_id, builder.func);
     for class in classes {
+        let (name_ptr, name_len) = lower_bytes_literal(builder, module, runtime, class.name.as_str())?;
+        let class_id = builder.ins().iconst(types::I64, class.id.0 as i64);
+        builder
+            .ins()
+            .call(register_class, &[name_ptr, name_len, class_id]);
         for method in &class.methods {
             let key = (class.name.clone(), method.name.clone());
             let wrapper_id = wrappers.get(&key).ok_or_else(|| {
@@ -2496,13 +2638,18 @@ fn emit_method_registrations(
                     class.name, method.name
                 ))
             })?;
-            let class_id = builder.ins().iconst(types::I64, class.id.0 as i64);
             let method_id_val = builder.ins().iconst(types::I64, method.id as i64);
             let func_ref = module.declare_func_in_func(*wrapper_id, builder.func);
             let func_ptr = builder.ins().func_addr(ptr_ty, func_ref);
             builder
                 .ins()
                 .call(callee, &[class_id, method_id_val, func_ptr]);
+            let (method_name_ptr, method_name_len) =
+                lower_bytes_literal(builder, module, runtime, method.name.as_str())?;
+            builder.ins().call(
+                register_method_name,
+                &[method_name_ptr, method_name_len, class_id, method_id_val],
+            );
         }
     }
     Ok(())

@@ -9,7 +9,12 @@ use crate::parser::kind::SyntaxKind;
 pub fn root(p: &mut Parser) {
     let m = p.start();
     while !p.is_at_eof() {
+        let cursor = p.cursor_pos();
         parse_statement(p);
+        if p.cursor_pos() == cursor {
+            // Ensure forward progress to avoid infinite loops on unexpected tokens.
+            p.error();
+        }
     }
     m.complete(p, SyntaxKind::Root);
 }
@@ -107,11 +112,11 @@ fn parse_if(p: &mut Parser) {
     let m = p.start();
     p.expect(SyntaxKind::IfKw);
     expr::expr(p);
-    p.expect(SyntaxKind::Colon);
+    p.expect_with_message(SyntaxKind::Colon, "expected ':' after if condition");
     parse_block(p);
     if p.at(SyntaxKind::ElseKw) {
         p.bump();
-        p.expect(SyntaxKind::Colon);
+        p.expect_with_message(SyntaxKind::Colon, "expected ':' after else");
         parse_block(p);
     }
     m.complete(p, SyntaxKind::IfStmt);
@@ -121,7 +126,7 @@ fn parse_while(p: &mut Parser) {
     let m = p.start();
     p.expect(SyntaxKind::WhileKw);
     expr::expr(p);
-    p.expect(SyntaxKind::Colon);
+    p.expect_with_message(SyntaxKind::Colon, "expected ':' after while condition");
     parse_block(p);
     m.complete(p, SyntaxKind::WhileStmt);
 }
@@ -129,10 +134,10 @@ fn parse_while(p: &mut Parser) {
 fn parse_for(p: &mut Parser) {
     let m = p.start();
     p.expect(SyntaxKind::ForKw);
-    p.expect(SyntaxKind::Ident);
-    p.expect(SyntaxKind::InKw);
+    p.expect_with_message(SyntaxKind::Ident, "expected loop variable after 'for'");
+    p.expect_with_message(SyntaxKind::InKw, "expected 'in' after loop variable");
     expr::expr(p);
-    p.expect(SyntaxKind::Colon);
+    p.expect_with_message(SyntaxKind::Colon, "expected ':' after for loop header");
     parse_block(p);
     m.complete(p, SyntaxKind::ForStmt);
 }
@@ -141,7 +146,7 @@ fn parse_match(p: &mut Parser) {
     let m = p.start();
     p.expect(SyntaxKind::MatchKw);
     expr::expr(p);
-    p.expect(SyntaxKind::Colon);
+    p.expect_with_message(SyntaxKind::Colon, "expected ':' after match expression");
     if p.at(SyntaxKind::Indent) {
         p.bump();
         while !p.at(SyntaxKind::Dedent) && !p.is_at_eof() {
@@ -157,8 +162,8 @@ fn parse_match(p: &mut Parser) {
 fn parse_optimize(p: &mut Parser) {
     let m = p.start();
     p.expect(SyntaxKind::OptimizeKw);
-    p.expect(SyntaxKind::Ident);
-    p.expect(SyntaxKind::Colon);
+    p.expect_with_message(SyntaxKind::Ident, "expected optimization objective after 'optimize'");
+    p.expect_with_message(SyntaxKind::Colon, "expected ':' after optimize header");
     parse_block(p);
     m.complete(p, SyntaxKind::OptimizeStmt);
 }
@@ -167,7 +172,7 @@ fn parse_match_case(p: &mut Parser) {
     if p.at(SyntaxKind::OtherwiseKw) {
         let m = p.start();
         p.bump();
-        p.expect(SyntaxKind::Colon);
+        p.expect_with_message(SyntaxKind::Colon, "expected ':' after otherwise");
         parse_case_body(p);
         m.complete(p, SyntaxKind::OtherwiseCase);
         return;
@@ -179,7 +184,7 @@ fn parse_match_case(p: &mut Parser) {
         p.bump();
         parse_case_label(p);
     }
-    p.expect(SyntaxKind::Colon);
+    p.expect_with_message(SyntaxKind::Colon, "expected ':' after match case");
     parse_case_body(p);
     m.complete(p, SyntaxKind::MatchCase);
 }
@@ -211,7 +216,7 @@ fn parse_use(p: &mut Parser) {
     } else {
         parse_use_list_inline(p);
     }
-    p.expect(SyntaxKind::FromKw);
+    p.expect_with_message(SyntaxKind::FromKw, "expected 'from' after use list");
     parse_module_path(p);
     m.complete(p, SyntaxKind::UseStmt);
     p.expect_stmt_boundary();

@@ -218,11 +218,13 @@ fn runtime() -> &'static Runtime {
         let rt = if deterministic {
             tokio::runtime::Builder::new_current_thread()
                 .enable_time()
+                .enable_io()
                 .build()
                 .expect("wrela tokio runtime")
         } else {
             tokio::runtime::Builder::new_multi_thread()
                 .enable_time()
+                .enable_io()
                 .thread_name("wrela-rt")
                 .build()
                 .expect("wrela tokio runtime")
@@ -434,6 +436,18 @@ pub fn actor_mailbox_len(handle: Value) -> Value {
     Value::nil()
 }
 
+pub(crate) fn actor_class_id(handle: Value) -> Option<u32> {
+    if let Some(pool) = as_pool_ref(handle) {
+        unsafe {
+            let first = (*pool).handles.first().copied()?;
+            let actor = as_actor(first)?;
+            return Some((*actor).class_id);
+        }
+    }
+    let actor = as_actor(handle)?;
+    unsafe { Some((*actor).class_id) }
+}
+
 pub fn actor_pause(handle: Value) {
     if let Some(pool) = as_pool_ref(handle) {
         unsafe {
@@ -568,6 +582,31 @@ pub fn pending_await(pending: Value) -> Value {
         }
     }
 }
+
+pub async fn pending_await_async(pending: Value) -> Value {
+    if !pending.is_ptr() {
+        return Value::nil();
+    }
+    let state = unsafe {
+        let header = &*pending.as_ptr();
+        if header.type_id != TypeId::Pending as u32 {
+            return Value::nil();
+        }
+        let p = &*(pending.as_ptr() as *const PendingObj);
+        p.state.clone()
+    };
+    loop {
+        let val = {
+            let guard = state.lock.lock().expect("pending lock");
+            *guard
+        };
+        if let Some(val) = val {
+            return result::result_ok(val);
+        }
+        state.notify.notified().await;
+    }
+}
+
 
 pub unsafe fn drop_actor(ptr: *mut ObjHeader) {
     let actor = ptr as *mut ActorHandle;

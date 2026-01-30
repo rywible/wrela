@@ -1,3 +1,13 @@
+public A StorageConfig:
+    has:
+        s3_bucket: String
+        s3_region: String
+        s3_access_key: String
+        s3_secret_key: String
+        s3_endpoint: String
+        s3_prefix: String
+        file_path: String
+
 public A StorageClient:
     public can get(key: String) -> Result:
         return await storage_get(key)
@@ -8,5 +18,95 @@ public A StorageClient:
     public can delete(key: String) -> Result:
         return await storage_delete(key)
 
-public to storage_open():
+public to storage_open(config: StorageConfig):
+    storage_configure(config)
     return detach StorageClient() * 1
+
+public A HttpRequest:
+    has:
+        method: String
+        path: String
+        headers: Map
+        query: Map
+        params: Map
+        body: Bytes
+
+    public can header(name: String) -> String:
+        return map_get(its.headers, name)
+
+    public can query_param(name: String) -> String:
+        return map_get(its.query, name)
+
+    public can path_param(name: String) -> String:
+        return map_get(its.params, name)
+
+    public can text() -> String:
+        return bytes_to_string(its.body)
+
+    public can json() -> String:
+        return bytes_to_string(its.body)
+
+public A HttpResponse:
+    has:
+        status: Number
+        headers: Map
+        body: Bytes
+
+    public can header(name: String, value: String) -> HttpResponse:
+        if its.headers == nil:
+            its.headers = {}
+        map_set(its.headers, name, value)
+        return its
+
+    public can ok(text: String) -> HttpResponse:
+        its.status = 200
+        its.body = bytes_from_string(text)
+        if its.headers == nil:
+            its.headers = {}
+        map_set(its.headers, "content-type", "text/plain; charset=utf-8")
+        return its
+
+    public can json(text: String) -> HttpResponse:
+        its.status = 200
+        its.body = bytes_from_string(text)
+        if its.headers == nil:
+            its.headers = {}
+        map_set(its.headers, "content-type", "application/json")
+        return its
+
+    public can text(text: String) -> HttpResponse:
+        return its.ok(text)
+
+    public can text_with_status(text: String, status: Number) -> HttpResponse:
+        its.status = status
+        its.body = bytes_from_string(text)
+        if its.headers == nil:
+            its.headers = {}
+        map_set(its.headers, "content-type", "text/plain; charset=utf-8")
+        return its
+
+    public can empty() -> HttpResponse:
+        its.status = 204
+        its.body = bytes_from_string("")
+        return its
+
+    public can empty_with_status(status: Number) -> HttpResponse:
+        its.status = status
+        its.body = bytes_from_string("")
+        return its
+
+public A HttpServer:
+    public can serve_get_requests(path: String, handler) -> Nothing:
+        http_server_serve_get_requests(path, handler)
+
+    public can serve_post_requests(path: String, handler) -> Nothing:
+        http_server_serve_post_requests(path, handler)
+
+    public can serve_requests(method: String, path: String, handler) -> Nothing:
+        http_server_serve_requests(method, path, handler)
+
+    public can serve_on(addr: String) -> Nothing:
+        http_server_serve_on(addr)
+
+    public can stop() -> Nothing:
+        http_server_stop()

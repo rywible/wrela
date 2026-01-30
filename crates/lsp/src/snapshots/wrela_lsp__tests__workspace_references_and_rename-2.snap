@@ -1,0 +1,44 @@
+---
+source: crates/lsp/src/lib.rs
+expression: edits
+---
+{
+    Url {
+        scheme: "file",
+        cannot_be_a_base: false,
+        username: "",
+        password: None,
+        host: None,
+        port: None,
+        path: "/b.wr",
+        query: None,
+        fragment: None,
+    }: [
+        TextEdit {
+            range: Range {
+                start: Position {
+                    line: 2,
+                    character: 8,
+                },
+                end: Position {
+                    line: 2,
+                    character: 9,
+                },
+            },
+            new_text: "total",
+        },
+        TextEdit {
+            range: Range {
+                start: Position {
+                    line: 2,
+                    character: 12,
+                },
+                end: Position {
+                    line: 2,
+                    character: 13,
+                },
+            },
+            new_text: "total",
+        },
+    ],
+}

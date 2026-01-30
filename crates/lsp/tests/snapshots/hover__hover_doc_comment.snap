@@ -1,0 +1,26 @@
+---
+source: crates/lsp/tests/hover.rs
+expression: hover
+---
+Some(
+    Hover {
+        contents: Markup(
+            MarkupContent {
+                kind: Markdown,
+                value: "```wrela\nfoo()\n```",
+            },
+        ),
+        range: Some(
+            Range {
+                start: Position {
+                    line: 3,
+                    character: 7,
+                },
+                end: Position {
+                    line: 3,
+                    character: 10,
+                },
+            },
+        ),
+    },
+)

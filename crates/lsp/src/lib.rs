@@ -1,33 +1,72 @@
 use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::Path;
 
-use rowan::{TextRange, TextSize};
+use rowan::{GreenNode, TextRange, TextSize};
 use tokio::sync::RwLock;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams,
-    CodeActionProviderCapability, CodeActionResponse, CompletionItem, CompletionItemKind,
-    CompletionOptions, CompletionResponse, Diagnostic, DiagnosticSeverity, DocumentHighlight,
-    DocumentHighlightParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
-    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
-    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, InlayHint,
-    InlayHintKind, InlayHintLabel, InlayHintOptions, InlayHintParams, InlayHintServerCapabilities,
-    Location, MarkupContent, MarkupKind, OneOf, ParameterInformation, Position,
-    PrepareRenameResponse, Range, ReferenceParams, RenameOptions, RenameParams, SemanticToken,
-    SemanticTokenType, SemanticTokens, SemanticTokensFullOptions, SemanticTokensLegend,
-    SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
-    SemanticTokensServerCapabilities, ServerCapabilities, SignatureHelp, SignatureHelpOptions,
+    CodeActionProviderCapability, CodeActionResponse, CodeLens, CodeLensOptions, Command,
+    CompletionItem, CompletionItemKind, CompletionOptions, CompletionResponse, Diagnostic,
+    DiagnosticSeverity, DocumentFormattingParams, DocumentHighlight, DocumentHighlightParams,
+    DocumentRangeFormattingParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
+    ExecuteCommandParams, FoldingRange, FoldingRangeKind, FoldingRangeParams,
+    FoldingRangeProviderCapability, GotoDefinitionParams, GotoDefinitionResponse, Hover,
+    HoverContents, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
+    InitializedParams, InlayHint, InlayHintKind, InlayHintLabel, InlayHintOptions, InlayHintParams,
+    InlayHintServerCapabilities, Location, MarkupContent, MarkupKind, OneOf, ParameterInformation,
+    Position, PrepareRenameResponse, Range, ReferenceParams, RenameOptions, RenameParams,
+    SemanticToken, SemanticTokenType, SemanticTokens, SemanticTokensLegend, SemanticTokensParams,
+    SemanticTokensResult, ServerCapabilities, SignatureHelp, SignatureHelpOptions,
     SignatureHelpParams, SignatureInformation, SymbolInformation, SymbolKind,
     TextDocumentContentChangeEvent, TextDocumentPositionParams, TextDocumentSyncCapability,
     TextDocumentSyncKind, TextEdit, Url, WorkspaceEdit, WorkspaceSymbolParams,
 };
-use tower_lsp::{Client, LanguageServer, LspService, Server};
+use tower_lsp::{Client, LanguageServer};
 use wrela::parser::ast::AstNode;
 use wrela::parser::{self, ParseError, SyntaxNode, SyntaxToken, ast, kind::SyntaxKind};
 
 #[derive(Clone)]
+struct WorkspaceIndex {
+    root: Url,
+    documents: HashMap<Url, DocumentState>,
+}
+
+#[derive(Clone)]
+struct LineIndex {
+    line_starts: Vec<usize>,
+}
+
+impl LineIndex {
+    fn new(text: &str) -> Self {
+        let mut line_starts = vec![0];
+        for (idx, ch) in text.char_indices() {
+            if ch == '\n' {
+                line_starts.push(idx + 1);
+            }
+        }
+        Self { line_starts }
+    }
+
+    fn line_for_offset(&self, offset: usize) -> usize {
+        match self.line_starts.binary_search(&offset) {
+            Ok(index) => index,
+            Err(index) => index.saturating_sub(1),
+        }
+    }
+}
+
+fn syntax_root(state: &DocumentState) -> SyntaxNode {
+    SyntaxNode::new_root(state.green.clone())
+}
+
+#[derive(Clone)]
 pub struct DocumentState {
     pub text: String,
+    green: GreenNode,
     index: SymbolIndex,
+    line_index: LineIndex,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -532,6 +571,8 @@ impl SymbolIndex {
 pub struct Backend {
     client: Client,
     documents: RwLock<HashMap<Url, DocumentState>>,
+    root_uri: RwLock<Option<Url>>,
+    index_cache: RwLock<Option<WorkspaceIndex>>,
 }
 
 impl Backend {
@@ -539,6 +580,8 @@ impl Backend {
         Self {
             client,
             documents: RwLock::new(HashMap::new()),
+            root_uri: RwLock::new(None),
+            index_cache: RwLock::new(None),
         }
     }
 
@@ -549,8 +592,20 @@ impl Backend {
         errors: Vec<ParseError>,
         state: &DocumentState,
     ) {
-        let mut diagnostics = diagnostics_for_errors(text, errors);
+        let mut diagnostics = diagnostics_for_errors(text, errors.clone());
         diagnostics.extend(check_unused_variables(state));
+        diagnostics.extend(check_unused_imports(state));
+        if errors.is_empty() {
+            let mut known = HashSet::new();
+            collect_def_names(&state.index, &mut known);
+            if let Some(root_uri) = self.root_uri.read().await.clone() {
+                let documents = self.indexed_documents(&root_uri).await;
+                for doc in documents.values() {
+                    collect_def_names(&doc.index, &mut known);
+                }
+            }
+            diagnostics.extend(check_unresolved_identifiers(state, &known));
+        }
         self.client
             .publish_diagnostics(uri.clone(), diagnostics, None)
             .await;
@@ -562,21 +617,49 @@ impl Backend {
 
     async fn update_document(&self, uri: Url, text: String) -> (Vec<ParseError>, DocumentState) {
         let (state, errors) = build_document_state(text);
-        self.documents.write().await.insert(uri, state.clone());
+        self.documents
+            .write()
+            .await
+            .insert(uri.clone(), state.clone());
+        if let Some(cache) = self.index_cache.write().await.as_mut() {
+            cache.documents.insert(uri, state.clone());
+        }
         (errors, state)
+    }
+
+    async fn indexed_documents(&self, root_uri: &Url) -> HashMap<Url, DocumentState> {
+        if let Some(cache) = self.index_cache.read().await.as_ref() {
+            if &cache.root == root_uri {
+                return cache.documents.clone();
+            }
+        }
+        let documents = index_workspace_documents(root_uri);
+        *self.index_cache.write().await = Some(WorkspaceIndex {
+            root: root_uri.clone(),
+            documents: documents.clone(),
+        });
+        documents
     }
 }
 
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
-    async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
+    async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
+        let root_uri = params.root_uri.or_else(|| {
+            params
+                .workspace_folders
+                .and_then(|mut folders| folders.pop().map(|f| f.uri))
+        });
+        if let Some(uri) = root_uri {
+            *self.root_uri.write().await = Some(uri);
+        }
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
-                    TextDocumentSyncKind::FULL,
+                    TextDocumentSyncKind::INCREMENTAL,
                 )),
                 completion_provider: Some(CompletionOptions {
-                    trigger_characters: Some(vec![".".to_string(), "(".to_string()]),
+                    trigger_characters: Some(vec![".".to_string(), "(".to_string(), ",".to_string()]),
                     ..CompletionOptions::default()
                 }),
                 definition_provider: Some(OneOf::Left(true)),
@@ -593,16 +676,9 @@ impl LanguageServer for Backend {
                 }),
                 document_symbol_provider: Some(OneOf::Left(true)),
                 workspace_symbol_provider: Some(OneOf::Left(true)),
-                semantic_tokens_provider: Some(
-                    SemanticTokensServerCapabilities::SemanticTokensOptions(
-                        SemanticTokensOptions {
-                            legend: SEMANTIC_TOKEN_LEGEND.clone(),
-                            full: Some(SemanticTokensFullOptions::Bool(true)),
-                            range: None,
-                            work_done_progress_options: Default::default(),
-                        },
-                    ),
-                ),
+                code_lens_provider: None,
+                folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
+                semantic_tokens_provider: None,
                 inlay_hint_provider: Some(OneOf::Right(InlayHintServerCapabilities::Options(
                     InlayHintOptions {
                         resolve_provider: Some(false),
@@ -610,6 +686,8 @@ impl LanguageServer for Backend {
                     },
                 ))),
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+                document_formatting_provider: Some(OneOf::Left(true)),
+                document_range_formatting_provider: Some(OneOf::Left(true)),
                 ..ServerCapabilities::default()
             },
             ..InitializeResult::default()
@@ -631,12 +709,14 @@ impl LanguageServer for Backend {
 
     async fn did_change(&self, params: tower_lsp::lsp_types::DidChangeTextDocumentParams) {
         let uri = params.text_document.uri;
-        if let Some(change) = params.content_changes.into_iter().next() {
-            if let Some(text) = full_text_change(change) {
-                let (errors, state) = self.update_document(uri.clone(), text.clone()).await;
-                self.publish_diagnostics(&uri, &text, errors, &state).await;
-            }
-        }
+        let Some(existing) = self.document_state(&uri).await else {
+            return;
+        };
+        let Some(text) = apply_content_changes(existing.text, params.content_changes) else {
+            return;
+        };
+        let (errors, state) = self.update_document(uri.clone(), text.clone()).await;
+        self.publish_diagnostics(&uri, &text, errors, &state).await;
     }
 
     async fn did_close(&self, params: tower_lsp::lsp_types::DidCloseTextDocumentParams) {
@@ -653,7 +733,12 @@ impl LanguageServer for Backend {
         let Some(state) = self.document_state(&uri).await else {
             return Ok(Some(CompletionResponse::Array(Vec::new())));
         };
-        let items = completion_items(&state, params.text_document_position.position);
+        let trigger = params
+            .context
+            .as_ref()
+            .and_then(|ctx| ctx.trigger_character.as_ref())
+            .and_then(|s| s.chars().next());
+        let items = completion_items(&state, params.text_document_position.position, trigger);
         Ok(Some(CompletionResponse::Array(items)))
     }
 
@@ -695,7 +780,7 @@ impl LanguageServer for Backend {
                 range,
             })));
         }
-        let Some(name) = identifier_at_position(&state.text, position) else {
+        let Some(name) = identifier_at_position(&state, position) else {
             return Ok(None);
         };
         let documents = self.documents.read().await;
@@ -722,7 +807,7 @@ impl LanguageServer for Backend {
                 range,
             })
             .collect::<Vec<_>>();
-        let name = identifier_at_position(&state.text, position);
+        let name = identifier_at_position(&state, position);
         if let Some(name) = name {
             let documents = self.documents.read().await;
             locations.extend(workspace_references(
@@ -746,7 +831,7 @@ impl LanguageServer for Backend {
         if let Some(edits) = edits {
             changes.insert(uri.clone(), edits);
         }
-        if let Some(name) = identifier_at_position(&state.text, position) {
+        if let Some(name) = identifier_at_position(&state, position) {
             if is_valid_identifier(&params.new_name) && !is_keyword(&params.new_name) {
                 let documents = self.documents.read().await;
                 let workspace_edits = workspace_rename(&documents, &uri, &name, &params.new_name);
@@ -835,13 +920,108 @@ impl LanguageServer for Backend {
         Ok(Some(inlay_hints(&state)))
     }
 
+    async fn code_lens(
+        &self,
+        params: tower_lsp::lsp_types::CodeLensParams,
+    ) -> Result<Option<Vec<CodeLens>>> {
+        let _ = params;
+        Ok(None)
+    }
+
+    async fn folding_range(&self, params: FoldingRangeParams) -> Result<Option<Vec<FoldingRange>>> {
+        let uri = params.text_document.uri;
+        let Some(state) = self.document_state(&uri).await else {
+            return Ok(None);
+        };
+        Ok(Some(folding_ranges(&state)))
+    }
+
+    async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
+        let uri = params.text_document.uri;
+        let Some(state) = self.document_state(&uri).await else {
+            return Ok(None);
+        };
+        let formatted = format_text(&state.text);
+        Ok(Some(vec![TextEdit {
+            range: full_document_range(&state.text),
+            new_text: formatted,
+        }]))
+    }
+
+    async fn range_formatting(
+        &self,
+        params: DocumentRangeFormattingParams,
+    ) -> Result<Option<Vec<TextEdit>>> {
+        let uri = params.text_document.uri;
+        let Some(state) = self.document_state(&uri).await else {
+            return Ok(None);
+        };
+        let edit = format_range_text(&state, params.range);
+        Ok(edit.map(|edit| vec![edit]))
+    }
+
+    async fn execute_command(
+        &self,
+        params: ExecuteCommandParams,
+    ) -> Result<Option<serde_json::Value>> {
+        if params.command != "wrela.goToTypeDefinition"
+            && params.command != "wrela.peekTypeDefinition"
+        {
+            return Ok(None);
+        }
+        let args = params.arguments;
+        let uri = args
+            .get(0)
+            .and_then(|v: &serde_json::Value| v.as_str())
+            .and_then(|s| Url::parse(s).ok());
+        let line = args
+            .get(1)
+            .and_then(|v: &serde_json::Value| v.as_u64())
+            .map(|v| v as u32);
+        let character = args
+            .get(2)
+            .and_then(|v: &serde_json::Value| v.as_u64())
+            .map(|v| v as u32);
+        let Some(uri) = uri else {
+            return Ok(None);
+        };
+        let Some(line) = line else {
+            return Ok(None);
+        };
+        let Some(character) = character else {
+            return Ok(None);
+        };
+        let Some(state) = self.document_state(&uri).await else {
+            return Ok(None);
+        };
+        let position = Position { line, character };
+        let Some(type_name) = type_at_position(&state, position) else {
+            return Ok(None);
+        };
+        let documents = self.documents.read().await;
+        let locations = workspace_type_definitions(&documents, &type_name);
+        let value = serde_json::to_value(locations).ok();
+        Ok(value)
+    }
+
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
         let uri = params.text_document.uri;
         let Some(state) = self.document_state(&uri).await else {
             return Ok(None);
         };
+        let mut documents = self.documents.read().await.clone();
+        if let Some(root_uri) = self.root_uri.read().await.clone() {
+            let indexed = self.indexed_documents(&root_uri).await;
+            for (uri, doc) in indexed {
+                documents.entry(uri).or_insert(doc);
+            }
+        }
+        let mut actions = code_actions(&state, params.range, &uri, &documents);
+        if let Some(only) = params.context.only {
+            actions.retain(|action| code_action_matches_only(action, &only));
+        }
         Ok(Some(
-            code_actions(&state, params.range, &uri)
+            actions
                 .into_iter()
                 .map(CodeActionOrCommand::CodeAction)
                 .collect(),
@@ -850,10 +1030,10 @@ impl LanguageServer for Backend {
 }
 
 pub fn semantic_tokens(state: &DocumentState) -> Vec<SemanticToken> {
-    let mut tokens = Vec::new();
-    let root = parser::parse(&state.text);
+    let root = syntax_root(state);
     let mut last_line = 0;
     let mut last_char = 0;
+    let mut collected = Vec::new();
 
     for token in root
         .descendants_with_tokens()
@@ -861,21 +1041,14 @@ pub fn semantic_tokens(state: &DocumentState) -> Vec<SemanticToken> {
     {
         let kind = token.kind();
         let token_type = match kind {
-            SyntaxKind::ClassKw | SyntaxKind::FuncDef => {
-                // Handle keywords generally
-                if is_keyword(token.text()) {
-                    0 // KEYWORD
-                } else {
-                    continue;
-                }
-            }
             SyntaxKind::Ident => {
                 if is_keyword(token.text()) {
-                    0 // KEYWORD
-                } else if let Some(def) =
-                    resolve_reference_token(&state.index, &root, &state.text, &token)
+                    None
+                } else if is_builtin(token.text()) {
+                    Some(2) // FUNCTION (builtins like print)
+                } else if let Some(def) = resolve_reference_token(&state.index, &state.text, &token)
                 {
-                    match def.kind {
+                    Some(match def.kind {
                         DefKind::Class => 1,     // CLASS
                         DefKind::Function => 2,  // FUNCTION
                         DefKind::Method => 3,    // METHOD
@@ -883,49 +1056,46 @@ pub fn semantic_tokens(state: &DocumentState) -> Vec<SemanticToken> {
                         DefKind::Variable => 5,  // VARIABLE
                         DefKind::Parameter => 6, // PARAMETER
                         DefKind::Module => 5,    // VARIABLE (fallback)
-                    }
-                } else {
-                    // Try to guess based on context if not resolved
-                    if let Some(parent) = token.parent() {
-                        if ast::ClassDef::can_cast(parent.kind()) {
-                            1 // CLASS
-                        } else if ast::FuncDef::can_cast(parent.kind()) {
-                            2 // FUNCTION
-                        } else if ast::MethodDef::can_cast(parent.kind()) {
-                            3 // METHOD
-                        } else if ast::FieldDef::can_cast(parent.kind()) {
-                            4 // PROPERTY
-                        } else if ast::Param::can_cast(parent.kind()) {
-                            6 // PARAMETER
-                        } else {
-                            5 // VARIABLE (default)
-                        }
+                    })
+                } else if let Some(parent) = token.parent() {
+                    Some(if ast::ClassDef::can_cast(parent.kind()) {
+                        1 // CLASS
+                    } else if ast::FuncDef::can_cast(parent.kind()) {
+                        2 // FUNCTION
+                    } else if ast::MethodDef::can_cast(parent.kind()) {
+                        3 // METHOD
+                    } else if ast::FieldDef::can_cast(parent.kind()) {
+                        4 // PROPERTY
+                    } else if ast::Param::can_cast(parent.kind()) {
+                        6 // PARAMETER
+                    } else if is_named_arg_name_token(&token) {
+                        4 // PROPERTY (named argument names)
                     } else {
-                        5 // VARIABLE
-                    }
-                }
-            }
-            SyntaxKind::StringLiteral
-            | SyntaxKind::StringStart
-            | SyntaxKind::StringPart
-            | SyntaxKind::StringEnd => 7, // STRING
-            SyntaxKind::IntNumber | SyntaxKind::FloatNumber => 8, // NUMBER
-            k if is_operator(k) => 9,                             // OPERATOR
-            SyntaxKind::Comment | SyntaxKind::DocComment => 10,   // COMMENT
-            SyntaxKind::At => 11,                                 // DECORATOR
-            _ => {
-                if is_keyword(token.text()) {
-                    0 // KEYWORD
+                        5 // VARIABLE (default)
+                    })
                 } else {
-                    continue;
+                    Some(5) // VARIABLE
                 }
             }
+            SyntaxKind::IntNumber | SyntaxKind::FloatNumber => Some(8), // NUMBER
+            SyntaxKind::Comment | SyntaxKind::DocComment => Some(10),   // COMMENT
+            SyntaxKind::At => Some(11),                                 // DECORATOR
+            _ => None,
         };
 
-        let range = token.text_range();
-        let start = offset_to_position(&state.text, range.start().into());
+        if let Some(token_type) = token_type {
+            collected.push((token, token_type));
+        }
+    }
 
-        // Semantic tokens are delta-encoded
+    collected.sort_by_key(|(token, _)| token.text_range().start());
+    let mut tokens = Vec::with_capacity(collected.len());
+
+    for (token, token_type) in collected {
+        let range = token.text_range();
+        let start =
+            offset_to_position_with_index(&state.text, &state.line_index, range.start().into());
+
         let delta_line = start.line - last_line;
         let delta_start = if delta_line == 0 {
             start.character - last_char
@@ -936,7 +1106,7 @@ pub fn semantic_tokens(state: &DocumentState) -> Vec<SemanticToken> {
         tokens.push(SemanticToken {
             delta_line,
             delta_start,
-            length: (range.end() - range.start()).into(),
+            length: token_text_len_utf16(&token),
             token_type,
             token_modifiers_bitset: 0,
         });
@@ -944,6 +1114,7 @@ pub fn semantic_tokens(state: &DocumentState) -> Vec<SemanticToken> {
         last_line = start.line;
         last_char = start.character;
     }
+
     tokens
 }
 
@@ -961,17 +1132,7 @@ fn is_operator(kind: SyntaxKind) -> bool {
             | SyntaxKind::LessEq
             | SyntaxKind::Greater
             | SyntaxKind::GreaterEq
-            | SyntaxKind::Arrow
-            | SyntaxKind::Dot
-            | SyntaxKind::Colon
             | SyntaxKind::Range
-            | SyntaxKind::Comma
-            | SyntaxKind::LParen
-            | SyntaxKind::RParen
-            | SyntaxKind::LBracket
-            | SyntaxKind::RBracket
-            | SyntaxKind::LBrace
-            | SyntaxKind::RBrace
             | SyntaxKind::PlusEq
             | SyntaxKind::MinusEq
             | SyntaxKind::StarEq
@@ -987,7 +1148,7 @@ fn is_operator(kind: SyntaxKind) -> bool {
 
 pub fn inlay_hints(state: &DocumentState) -> Vec<InlayHint> {
     let mut hints = Vec::new();
-    let root = parser::parse(&state.text);
+    let root = syntax_root(state);
 
     for node in root.descendants() {
         if let Some(call) = ast::CallExpr::cast(node.clone()) {
@@ -1042,8 +1203,9 @@ fn argument_hints(state: &DocumentState, call: &ast::CallExpr) -> Vec<InlayHint>
                 if param_idx < def.params.len() {
                     let param_name = &def.params[param_idx].name;
                     hints.push(InlayHint {
-                        position: offset_to_position(
+                        position: offset_to_position_with_index(
                             &state.text,
+                            &state.line_index,
                             expr.syntax().text_range().start().into(),
                         ),
                         label: InlayHintLabel::String(format!("{}: ", param_name)),
@@ -1106,7 +1268,7 @@ fn return_type_hint(state: &DocumentState, func: &ast::FuncDef) -> Option<InlayH
         };
 
         Some(InlayHint {
-            position: offset_to_position(&state.text, end_pos.into()),
+            position: offset_to_position_with_index(&state.text, &state.line_index, end_pos.into()),
             label: InlayHintLabel::String(format!(" -> {}", ty)),
             kind: Some(InlayHintKind::TYPE),
             text_edits: None,
@@ -1120,13 +1282,25 @@ fn return_type_hint(state: &DocumentState, func: &ast::FuncDef) -> Option<InlayH
     }
 }
 
-fn code_actions(state: &DocumentState, range: Range, uri: &Url) -> Vec<CodeAction> {
+fn code_actions(
+    state: &DocumentState,
+    range: Range,
+    uri: &Url,
+    documents: &HashMap<Url, DocumentState>,
+) -> Vec<CodeAction> {
     // We can just re-run check_unused_variables to find if the current range matches an unused variable
     // In a real implementation, we might want to pass the diagnostics in CodeActionParams context
     // but re-running is safer to ensure we have the latest state.
     // Optimization: filtering diagnostics from params would be faster.
 
-    let diagnostics = check_unused_variables(state);
+    let mut diagnostics = Vec::new();
+    diagnostics.extend(check_unused_variables(state));
+    diagnostics.extend(check_unused_imports(state));
+    let mut known = HashSet::new();
+    for doc in documents.values() {
+        collect_def_names(&doc.index, &mut known);
+    }
+    diagnostics.extend(check_unresolved_identifiers(state, &known));
     let mut actions = Vec::new();
 
     for diag in diagnostics {
@@ -1155,8 +1329,56 @@ fn code_actions(state: &DocumentState, range: Range, uri: &Url) -> Vec<CodeActio
                     ..Default::default()
                 });
             }
+            if diag.code
+                == Some(tower_lsp::lsp_types::NumberOrString::String(
+                    "unused_import".to_string(),
+                ))
+            {
+                let title = format!("Remove {}", diag.message);
+                actions.push(CodeAction {
+                    title,
+                    kind: Some(CodeActionKind::QUICKFIX),
+                    diagnostics: Some(vec![diag.clone()]),
+                    edit: Some(WorkspaceEdit {
+                        changes: Some(HashMap::from([(
+                            uri.clone(),
+                            vec![TextEdit {
+                                range: diag.range,
+                                new_text: "".to_string(),
+                            }],
+                        )])),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                });
+            }
+            if diag.code
+                == Some(tower_lsp::lsp_types::NumberOrString::String(
+                    "unresolved_identifier".to_string(),
+                ))
+            {
+                actions.extend(auto_import_code_actions(
+                    state,
+                    uri,
+                    &diag.message,
+                    documents,
+                ));
+            }
         }
     }
+
+    if let Some(edit) = organize_imports_edit(state, uri) {
+        actions.push(CodeAction {
+            title: "Organize imports".to_string(),
+            kind: Some(CodeActionKind::SOURCE_ORGANIZE_IMPORTS),
+            diagnostics: None,
+            edit: Some(edit),
+            ..Default::default()
+        });
+    }
+
+    actions.extend(extract_refactor_actions(state, uri, range));
+
     actions
 }
 
@@ -1169,8 +1391,432 @@ fn ranges_overlap(a: Range, b: Range) -> bool {
     true
 }
 
+fn auto_import_code_actions(
+    state: &DocumentState,
+    uri: &Url,
+    message: &str,
+    documents: &HashMap<Url, DocumentState>,
+) -> Vec<CodeAction> {
+    let name = message.trim_start_matches("Unresolved identifier: ").trim();
+    if name.is_empty() {
+        return Vec::new();
+    }
+    let candidates = workspace_import_candidates(documents, state, uri, name);
+    let mut actions = Vec::new();
+    for module in candidates {
+        if let Some(edit) = add_use_edit(state, uri, name, &module) {
+            actions.push(CodeAction {
+                title: format!("Add use {} from {}", name, module),
+                kind: Some(CodeActionKind::QUICKFIX),
+                diagnostics: None,
+                edit: Some(edit),
+                ..Default::default()
+            });
+        }
+    }
+    if actions.is_empty() {
+        if let Some(edit) = add_use_edit(state, uri, name, "module") {
+            actions.push(CodeAction {
+                title: format!("Add use {} from module", name),
+                kind: Some(CodeActionKind::QUICKFIX),
+                diagnostics: None,
+                edit: Some(edit),
+                ..Default::default()
+            });
+        }
+    }
+    actions
+}
+
+fn workspace_import_candidates(
+    documents: &HashMap<Url, DocumentState>,
+    state: &DocumentState,
+    current_uri: &Url,
+    name: &str,
+) -> Vec<String> {
+    let mut modules = Vec::new();
+    for (uri, other) in documents.iter() {
+        if uri == current_uri {
+            continue;
+        }
+        for def in other.index.defs.iter() {
+            if def.name != name {
+                continue;
+            }
+            if !matches!(def.kind, DefKind::Class | DefKind::Function) {
+                continue;
+            }
+            if let Some(module) = module_path_from_uri(uri) {
+                if !has_use_import(state, name, &module) {
+                    modules.push(module);
+                }
+            }
+        }
+    }
+    modules.sort();
+    modules.dedup();
+    modules
+}
+
+fn module_path_from_uri(uri: &Url) -> Option<String> {
+    let path = uri.to_file_path().ok()?;
+    let file = path.file_stem()?.to_string_lossy().to_string();
+    if file.is_empty() { None } else { Some(file) }
+}
+
+fn has_use_import(state: &DocumentState, name: &str, module: &str) -> bool {
+    let root = syntax_root(state);
+    let Some(ast_root) = ast::Root::cast(root) else {
+        return false;
+    };
+    for stmt in ast_root.statements() {
+        if let ast::Stmt::UseStmt(use_stmt) = stmt {
+            let text = node_text(&state.text, use_stmt.syntax()).unwrap_or_default();
+            if text.contains("from") && text.contains(module) {
+                if use_stmt.names().any(|token| token.text() == name) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn add_use_edit(
+    state: &DocumentState,
+    uri: &Url,
+    name: &str,
+    module: &str,
+) -> Option<WorkspaceEdit> {
+    let insert_offset = last_use_stmt_end_offset(state);
+    let insert_pos = offset_to_position_with_index(&state.text, &state.line_index, insert_offset);
+    let use_line = format!("use {} from {}\n", name, module);
+    let edit = TextEdit {
+        range: Range {
+            start: insert_pos,
+            end: insert_pos,
+        },
+        new_text: use_line,
+    };
+    Some(WorkspaceEdit {
+        changes: Some(HashMap::from([(uri.clone(), vec![edit])])),
+        ..Default::default()
+    })
+}
+
+fn last_use_stmt_end_offset(state: &DocumentState) -> usize {
+    let root = syntax_root(state);
+    let Some(ast_root) = ast::Root::cast(root) else {
+        return 0;
+    };
+    let mut end = 0usize;
+    for stmt in ast_root.statements() {
+        if let ast::Stmt::UseStmt(use_stmt) = stmt {
+            let range = use_stmt.syntax().text_range();
+            end = end.max(range.end().into());
+        }
+    }
+    if end == 0 { 0 } else { end + 1 }
+}
+
+fn organize_imports_edit(state: &DocumentState, uri: &Url) -> Option<WorkspaceEdit> {
+    let root = syntax_root(state);
+    let Some(ast_root) = ast::Root::cast(root) else {
+        return None;
+    };
+    let mut edits = Vec::new();
+    for stmt in ast_root.statements() {
+        let ast::Stmt::UseStmt(use_stmt) = stmt else {
+            continue;
+        };
+        let range = use_stmt.syntax().text_range();
+        let Some(text) = node_text(&state.text, use_stmt.syntax()) else {
+            continue;
+        };
+        let mut names = use_stmt
+            .names()
+            .map(|token| token.text().to_string())
+            .collect::<Vec<_>>();
+        names.sort();
+        names.dedup();
+        let from_idx = text.find("from")?;
+        let from_part = text[from_idx..].trim();
+        let new_text = format!("use {} {}", names.join(", "), from_part);
+        edits.push(TextEdit {
+            range: text_range_to_range_with_index(&state.text, &state.line_index, range),
+            new_text,
+        });
+    }
+    if edits.is_empty() {
+        None
+    } else {
+        Some(WorkspaceEdit {
+            changes: Some(HashMap::from([(uri.clone(), edits)])),
+            ..Default::default()
+        })
+    }
+}
+
+fn extract_refactor_actions(state: &DocumentState, uri: &Url, range: Range) -> Vec<CodeAction> {
+    if range.start == range.end {
+        return Vec::new();
+    }
+    let start = position_to_offset_with_index(&state.text, &state.line_index, range.start);
+    let end = position_to_offset_with_index(&state.text, &state.line_index, range.end);
+    if start >= end || end > state.text.len() {
+        return Vec::new();
+    }
+    let selected = &state.text[start..end];
+    if selected.trim().is_empty() || selected.contains('\n') {
+        return Vec::new();
+    }
+    let mut actions = Vec::new();
+    let name = unique_local_name(state, "extracted");
+    if let Some(edit) = extract_variable_edit(state, uri, range, &name, selected) {
+        actions.push(CodeAction {
+            title: format!("Extract variable '{}'", name),
+            kind: Some(CodeActionKind::REFACTOR_EXTRACT),
+            diagnostics: None,
+            edit: Some(edit),
+            ..Default::default()
+        });
+    }
+    let func_name = unique_local_name(state, "extracted_fn");
+    if let Some(edit) = extract_function_edit(state, uri, range, &func_name, selected) {
+        actions.push(CodeAction {
+            title: format!("Extract function '{}'", func_name),
+            kind: Some(CodeActionKind::REFACTOR_EXTRACT),
+            diagnostics: None,
+            edit: Some(edit),
+            ..Default::default()
+        });
+    }
+    actions
+}
+
+fn code_action_matches_only(action: &CodeAction, only: &Vec<CodeActionKind>) -> bool {
+    let Some(kind) = action.kind.as_ref() else {
+        return only.is_empty();
+    };
+    only.iter().any(|allowed| {
+        if kind == allowed {
+            true
+        } else {
+            kind.as_str().starts_with(allowed.as_str())
+        }
+    })
+}
+
+fn extract_variable_edit(
+    state: &DocumentState,
+    uri: &Url,
+    range: Range,
+    name: &str,
+    selected: &str,
+) -> Option<WorkspaceEdit> {
+    let line_start_offset = line_start_offset(&state.line_index, range.start.line as usize);
+    let indent = current_line_indent(&state.text, line_start_offset);
+    let insert_pos =
+        offset_to_position_with_index(&state.text, &state.line_index, line_start_offset);
+    let new_line = format!("{}{} = {}\n", indent, name, selected);
+    let edits = vec![
+        TextEdit {
+            range: Range {
+                start: insert_pos,
+                end: insert_pos,
+            },
+            new_text: new_line,
+        },
+        TextEdit {
+            range,
+            new_text: name.to_string(),
+        },
+    ];
+    Some(WorkspaceEdit {
+        changes: Some(HashMap::from([(uri.clone(), edits)])),
+        ..Default::default()
+    })
+}
+
+fn extract_function_edit(
+    state: &DocumentState,
+    uri: &Url,
+    range: Range,
+    name: &str,
+    selected: &str,
+) -> Option<WorkspaceEdit> {
+    let mut new_text = String::new();
+    if !state.text.ends_with('\n') {
+        new_text.push('\n');
+    }
+    new_text.push_str(&format!("\nto {}():\n    return {}\n", name, selected));
+    let end_pos = Position {
+        line: state.text.lines().count() as u32,
+        character: 0,
+    };
+    let edits = vec![
+        TextEdit {
+            range,
+            new_text: format!("{}()", name),
+        },
+        TextEdit {
+            range: Range {
+                start: end_pos,
+                end: end_pos,
+            },
+            new_text,
+        },
+    ];
+    Some(WorkspaceEdit {
+        changes: Some(HashMap::from([(uri.clone(), edits)])),
+        ..Default::default()
+    })
+}
+
+fn unique_local_name(state: &DocumentState, base: &str) -> String {
+    let mut name = base.to_string();
+    let mut counter = 1;
+    while state.index.defs.iter().any(|def| def.name == name) {
+        name = format!("{}{}", base, counter);
+        counter += 1;
+    }
+    name
+}
+
+fn line_start_offset(line_index: &LineIndex, line: usize) -> usize {
+    line_index.line_starts.get(line).copied().unwrap_or(0)
+}
+
+fn current_line_indent(text: &str, line_start: usize) -> String {
+    let mut indent = String::new();
+    for ch in text[line_start..].chars() {
+        if ch == ' ' || ch == '\t' {
+            indent.push(ch);
+        } else {
+            break;
+        }
+    }
+    indent
+}
+
+fn format_text(text: &str) -> String {
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim_end();
+        let mut normalized = String::new();
+        let mut started = false;
+        for ch in trimmed.chars() {
+            if !started && ch == '\t' {
+                normalized.push_str("    ");
+                continue;
+            }
+            started = true;
+            normalized.push(ch);
+        }
+        lines.push(normalized);
+    }
+    let mut out = lines.join("\n");
+    if text.ends_with('\n') || out.is_empty() {
+        out.push('\n');
+    } else {
+        out.push('\n');
+    }
+    out
+}
+
+fn format_range_text(state: &DocumentState, range: Range) -> Option<TextEdit> {
+    let start_offset = line_start_offset(&state.line_index, range.start.line as usize);
+    let end_line = range.end.line as usize;
+    let end_offset = state
+        .line_index
+        .line_starts
+        .get(end_line + 1)
+        .copied()
+        .unwrap_or(state.text.len());
+    if start_offset >= end_offset || end_offset > state.text.len() {
+        return None;
+    }
+    let slice = &state.text[start_offset..end_offset];
+    let formatted = format_text(slice);
+    Some(TextEdit {
+        range: Range {
+            start: offset_to_position_with_index(&state.text, &state.line_index, start_offset),
+            end: offset_to_position_with_index(&state.text, &state.line_index, end_offset),
+        },
+        new_text: formatted,
+    })
+}
+
+fn full_document_range(text: &str) -> Range {
+    Range {
+        start: Position {
+            line: 0,
+            character: 0,
+        },
+        end: offset_to_position(text, text.len()),
+    }
+}
+
+fn folding_ranges(state: &DocumentState) -> Vec<FoldingRange> {
+    let root = syntax_root(state);
+    let mut ranges = Vec::new();
+    for node in root.descendants() {
+        let kind = node.kind();
+        let fold_kind = match kind {
+            SyntaxKind::UseStmt => Some(FoldingRangeKind::Imports),
+            SyntaxKind::ClassDef
+            | SyntaxKind::FuncDef
+            | SyntaxKind::MethodDef
+            | SyntaxKind::Block
+            | SyntaxKind::MatchStmt
+            | SyntaxKind::HasBlock => Some(FoldingRangeKind::Region),
+            _ => None,
+        };
+        let Some(kind) = fold_kind else {
+            continue;
+        };
+        let range =
+            text_range_to_range_with_index(&state.text, &state.line_index, node.text_range());
+        if range.end.line > range.start.line {
+            ranges.push(FoldingRange {
+                start_line: range.start.line,
+                start_character: None,
+                end_line: range.end.line,
+                end_character: None,
+                kind: Some(kind),
+                collapsed_text: None,
+            });
+        }
+    }
+    ranges
+}
+
+fn code_lenses(state: &DocumentState) -> Vec<CodeLens> {
+    let mut lenses = Vec::new();
+    for def in &state.index.defs {
+        if !matches!(
+            def.kind,
+            DefKind::Class | DefKind::Function | DefKind::Method
+        ) {
+            continue;
+        }
+        let references = collect_references(state, def, false).len();
+        let range = text_range_to_range_with_index(&state.text, &state.line_index, def.name_range);
+        lenses.push(CodeLens {
+            range,
+            command: Some(Command {
+                title: format!("References: {}", references),
+                command: "wrela.codeLens.showReferences".to_string(),
+                arguments: None,
+            }),
+            data: None,
+        });
+    }
+    lenses
+}
+
 pub fn check_unused_variables(state: &DocumentState) -> Vec<Diagnostic> {
-    let root = parser::parse(&state.text);
+    let root = syntax_root(state);
     let mut ref_counts = HashMap::new();
 
     // Initialize counts for variables to 0
@@ -1186,7 +1832,7 @@ pub fn check_unused_variables(state: &DocumentState) -> Vec<Diagnostic> {
         .filter_map(|it| it.into_token())
     {
         if token.kind() == SyntaxKind::Ident {
-            if let Some(def) = resolve_reference_token(&state.index, &root, &state.text, &token) {
+            if let Some(def) = resolve_reference_token(&state.index, &state.text, &token) {
                 if let Some(count) = ref_counts.get_mut(&def.id) {
                     // Don't count the definition itself as a reference
                     if token.text_range() != def.name_range {
@@ -1206,7 +1852,7 @@ pub fn check_unused_variables(state: &DocumentState) -> Vec<Diagnostic> {
             // The def.range covers the node.
 
             diagnostics.push(Diagnostic {
-                range: text_range_to_range(&state.text, def.range), // Use full range for easier deletion
+                range: text_range_to_range_with_index(&state.text, &state.line_index, def.range), // Use full range for easier deletion
                 severity: Some(DiagnosticSeverity::HINT),
                 code: Some(tower_lsp::lsp_types::NumberOrString::String(
                     "unused_variable".to_string(),
@@ -1221,18 +1867,286 @@ pub fn check_unused_variables(state: &DocumentState) -> Vec<Diagnostic> {
     diagnostics
 }
 
-fn full_text_change(change: TextDocumentContentChangeEvent) -> Option<String> {
-    if change.range.is_none() && change.range_length.is_none() {
-        Some(change.text)
-    } else {
-        None
+pub fn check_unused_imports(state: &DocumentState) -> Vec<Diagnostic> {
+    let root = syntax_root(state);
+    let mut ref_counts = HashMap::new();
+    for def in &state.index.defs {
+        if def.kind == DefKind::Module {
+            ref_counts.insert(def.id, 0);
+        }
     }
+    if ref_counts.is_empty() {
+        return Vec::new();
+    }
+    for token in root
+        .descendants_with_tokens()
+        .filter_map(|it| it.into_token())
+    {
+        if token.kind() == SyntaxKind::Ident {
+            if let Some(def) = resolve_reference_token(&state.index, &state.text, &token) {
+                if let Some(count) = ref_counts.get_mut(&def.id) {
+                    if token.text_range() != def.name_range {
+                        *count += 1;
+                    }
+                }
+            }
+        }
+    }
+    let mut diagnostics = Vec::new();
+    for (id, count) in ref_counts {
+        if count == 0 {
+            let def = &state.index.defs[id];
+            diagnostics.push(Diagnostic {
+                range: text_range_to_range_with_index(&state.text, &state.line_index, def.range),
+                severity: Some(DiagnosticSeverity::HINT),
+                code: Some(tower_lsp::lsp_types::NumberOrString::String(
+                    "unused_import".to_string(),
+                )),
+                source: Some("wrela".to_string()),
+                message: format!("Unused import: {}", def.name),
+                tags: Some(vec![tower_lsp::lsp_types::DiagnosticTag::UNNECESSARY]),
+                ..Default::default()
+            });
+        }
+    }
+    diagnostics
+}
+
+pub fn check_unresolved_identifiers(
+    state: &DocumentState,
+    known_definitions: &HashSet<String>,
+) -> Vec<Diagnostic> {
+    let root = syntax_root(state);
+    let mut diagnostics = Vec::new();
+    for token in root
+        .descendants_with_tokens()
+        .filter_map(|it| it.into_token())
+    {
+        if token.kind() != SyntaxKind::Ident {
+            continue;
+        }
+        if is_keyword(token.text()) {
+            continue;
+        }
+        if is_type_context_token(&token) {
+            continue;
+        }
+        if is_member_name_token(&token) {
+            continue;
+        }
+        if is_named_arg_name_token(&token) {
+            continue;
+        }
+        if is_builtin(token.text()) {
+            continue;
+        }
+        if known_definitions.contains(token.text()) {
+            continue;
+        }
+        let offset: usize = token.text_range().start().into();
+        if definition_at_offset(state, offset).is_some() {
+            continue;
+        }
+        if resolve_reference_token(&state.index, &state.text, &token).is_some() {
+            continue;
+        }
+        diagnostics.push(Diagnostic {
+            range: text_range_to_range_with_index(
+                &state.text,
+                &state.line_index,
+                token.text_range(),
+            ),
+            severity: Some(DiagnosticSeverity::WARNING),
+            code: Some(tower_lsp::lsp_types::NumberOrString::String(
+                "unresolved_identifier".to_string(),
+            )),
+            source: Some("wrela".to_string()),
+            message: format!("Unresolved identifier: {}", token.text()),
+            ..Default::default()
+        });
+    }
+    diagnostics
+}
+
+fn collect_def_names(index: &SymbolIndex, names: &mut HashSet<String>) {
+    for def in &index.defs {
+        names.insert(def.name.clone());
+    }
+}
+
+pub fn check_shadowing(state: &DocumentState) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    for def in &state.index.defs {
+        if !matches!(
+            def.kind,
+            DefKind::Variable | DefKind::Parameter | DefKind::Function | DefKind::Method
+        ) {
+            continue;
+        }
+        let mut current = state.index.scopes.get(def.scope_id).and_then(|s| s.parent);
+        while let Some(id) = current {
+            if state
+                .index
+                .defs
+                .iter()
+                .any(|other| other.scope_id == id && other.name == def.name)
+            {
+                diagnostics.push(Diagnostic {
+                    range: text_range_to_range_with_index(
+                        &state.text,
+                        &state.line_index,
+                        def.name_range,
+                    ),
+                    severity: Some(DiagnosticSeverity::HINT),
+                    code: Some(tower_lsp::lsp_types::NumberOrString::String(
+                        "shadowed_name".to_string(),
+                    )),
+                    source: Some("wrela".to_string()),
+                    message: format!("'{}' shadows a name from an outer scope", def.name),
+                    ..Default::default()
+                });
+                break;
+            }
+            current = state.index.scopes.get(id).and_then(|scope| scope.parent);
+        }
+    }
+    diagnostics
+}
+
+pub fn check_naming_conventions(state: &DocumentState) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    for def in &state.index.defs {
+        let ok = match def.kind {
+            DefKind::Class => is_pascal_case(&def.name),
+            DefKind::Function | DefKind::Method | DefKind::Variable | DefKind::Parameter => {
+                is_lower_snake_case(&def.name)
+            }
+            _ => true,
+        };
+        if ok {
+            continue;
+        }
+        diagnostics.push(Diagnostic {
+            range: text_range_to_range_with_index(&state.text, &state.line_index, def.name_range),
+            severity: Some(DiagnosticSeverity::INFORMATION),
+            code: Some(tower_lsp::lsp_types::NumberOrString::String(
+                "naming_convention".to_string(),
+            )),
+            source: Some("wrela".to_string()),
+            message: format!("'{}' does not follow naming conventions", def.name),
+            ..Default::default()
+        });
+    }
+    diagnostics
+}
+
+fn is_member_name_token(token: &SyntaxToken) -> bool {
+    let mut node = token.parent();
+    while let Some(current) = node {
+        if let Some(member) = ast::MemberExpr::cast(current.clone()) {
+            if let Some(name) = member.name() {
+                return name.text_range() == token.text_range();
+            }
+        }
+        node = current.parent();
+    }
+    false
+}
+
+fn is_named_arg_name_token(token: &SyntaxToken) -> bool {
+    let mut node = token.parent();
+    while let Some(current) = node {
+        if let Some(named) = ast::NamedArg::cast(current.clone()) {
+            if let Some(name) = named.name() {
+                return name.text_range() == token.text_range();
+            }
+        }
+        node = current.parent();
+    }
+    false
+}
+
+fn is_type_context_token(token: &SyntaxToken) -> bool {
+    let mut node = token.parent();
+    while let Some(current) = node {
+        match current.kind() {
+            SyntaxKind::TypeRef | SyntaxKind::TypeArgList => return true,
+            _ => {}
+        }
+        node = current.parent();
+    }
+    false
+}
+
+fn is_lower_snake_case(name: &str) -> bool {
+    let mut prev_underscore = false;
+    for (i, ch) in name.chars().enumerate() {
+        if ch == '_' {
+            if i == 0 || prev_underscore {
+                return false;
+            }
+            prev_underscore = true;
+            continue;
+        }
+        if !ch.is_ascii_lowercase() && !ch.is_ascii_digit() {
+            return false;
+        }
+        prev_underscore = false;
+    }
+    !name.is_empty()
+}
+
+fn is_pascal_case(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(first) if first.is_ascii_uppercase() => (),
+        _ => return false,
+    }
+    chars.all(|ch| ch.is_ascii_alphanumeric())
+}
+
+fn apply_content_changes(
+    mut text: String,
+    changes: Vec<TextDocumentContentChangeEvent>,
+) -> Option<String> {
+    if changes.is_empty() {
+        return Some(text);
+    }
+    if changes.len() == 1 && changes[0].range.is_none() && changes[0].range_length.is_none() {
+        return Some(changes[0].text.clone());
+    }
+    let mut line_index = LineIndex::new(&text);
+    for change in changes {
+        if change.range.is_none() && change.range_length.is_none() {
+            text = change.text;
+            line_index = LineIndex::new(&text);
+            continue;
+        }
+        let range = change.range?;
+        let start = position_to_offset_with_index(&text, &line_index, range.start);
+        let end = position_to_offset_with_index(&text, &line_index, range.end);
+        if start > end || end > text.len() {
+            return None;
+        }
+        text.replace_range(start..end, &change.text);
+        line_index = LineIndex::new(&text);
+    }
+    Some(text)
 }
 
 pub fn build_document_state(text: String) -> (DocumentState, Vec<ParseError>) {
     let (root, errors) = parser::parse_with_errors(&text);
     let index = SymbolIndex::build(&text, &root);
-    (DocumentState { text, index }, errors)
+    let line_index = LineIndex::new(&text);
+    (
+        DocumentState {
+            text,
+            green: root.green().clone().into(),
+            index,
+            line_index,
+        },
+        errors,
+    )
 }
 
 fn diagnostics_for_errors(text: &str, errors: Vec<ParseError>) -> Vec<Diagnostic> {
@@ -1278,26 +2192,38 @@ fn offset_to_position(text: &str, offset: usize) -> Position {
     }
 }
 
-fn position_to_offset(text: &str, position: Position) -> usize {
-    let mut offset = 0usize;
-    let mut current_line = 0u32;
-    for line in text.split_inclusive('\n') {
-        if current_line == position.line {
-            let mut utf16_count = 0u32;
-            for (idx, ch) in line.char_indices() {
-                if utf16_count >= position.character {
-                    offset += idx;
-                    return offset.min(text.len());
-                }
-                utf16_count += ch.len_utf16() as u32;
-            }
-            offset += line.len();
-            return offset.min(text.len());
-        }
-        offset += line.len();
-        current_line += 1;
+fn offset_to_position_with_index(text: &str, line_index: &LineIndex, offset: usize) -> Position {
+    let offset = offset.min(text.len());
+    let line = line_index.line_for_offset(offset);
+    let line_start = *line_index.line_starts.get(line).unwrap_or(&0);
+    let line_slice = &text[line_start..offset];
+    let character = line_slice.encode_utf16().count();
+    Position {
+        line: line as u32,
+        character: character as u32,
     }
-    offset.min(text.len())
+}
+
+fn position_to_offset_with_index(text: &str, line_index: &LineIndex, position: Position) -> usize {
+    let line = position.line as usize;
+    let line_start = match line_index.line_starts.get(line) {
+        Some(start) => *start,
+        None => return text.len(),
+    };
+    let line_end = line_index
+        .line_starts
+        .get(line + 1)
+        .copied()
+        .unwrap_or(text.len());
+    let line_slice = &text[line_start..line_end];
+    let mut utf16_count = 0u32;
+    for (idx, ch) in line_slice.char_indices() {
+        if utf16_count >= position.character {
+            return (line_start + idx).min(text.len());
+        }
+        utf16_count += ch.len_utf16() as u32;
+    }
+    (line_start + line_slice.len()).min(text.len())
 }
 
 fn text_range_to_range(text: &str, range: TextRange) -> Range {
@@ -1305,6 +2231,17 @@ fn text_range_to_range(text: &str, range: TextRange) -> Range {
         start: offset_to_position(text, range.start().into()),
         end: offset_to_position(text, range.end().into()),
     }
+}
+
+fn text_range_to_range_with_index(text: &str, line_index: &LineIndex, range: TextRange) -> Range {
+    Range {
+        start: offset_to_position_with_index(text, line_index, range.start().into()),
+        end: offset_to_position_with_index(text, line_index, range.end().into()),
+    }
+}
+
+fn token_text_len_utf16(token: &SyntaxToken) -> u32 {
+    token.text().encode_utf16().count() as u32
 }
 
 fn node_text(text: &str, node: &SyntaxNode) -> Option<String> {
@@ -1343,6 +2280,78 @@ fn format_signature(name: &str, params: &[ParamInfo], ret_type: Option<&str>) ->
         signature.push_str(ret);
     }
     signature
+}
+
+fn class_field_params(index: &SymbolIndex, class_scope: usize) -> Vec<ParamInfo> {
+    index
+        .defs
+        .iter()
+        .filter(|def| def.scope_id == class_scope && def.kind == DefKind::Field)
+        .map(|def| ParamInfo {
+            name: def.name.clone(),
+            ty: def.ty.clone(),
+            range: def.name_range,
+        })
+        .collect()
+}
+
+fn call_signature_for_callee(
+    index: &SymbolIndex,
+    text: &str,
+    scope_id: usize,
+    call: &ast::CallExpr,
+) -> Option<(String, Vec<ParamInfo>)> {
+    let callee = call.callee()?;
+    match callee {
+        ast::Expr::Ident(expr) => {
+            let name = expr.name()?.text().to_string();
+            if let Some(class_scope) = class_scope_for_name(index, &name) {
+                let params = class_field_params(index, class_scope);
+                let label = format_signature(&name, &params, None);
+                return Some((label, params));
+            }
+            let def = resolve_in_scope_kinds(
+                index,
+                scope_id,
+                &name,
+                &[DefKind::Function, DefKind::Class],
+            )?;
+            if def.kind == DefKind::Class {
+                let class_scope = class_scope_for_name(index, &def.name)?;
+                let params = class_field_params(index, class_scope);
+                let label = format_signature(&def.name, &params, None);
+                return Some((label, params));
+            }
+            let label = def
+                .detail
+                .clone()
+                .unwrap_or_else(|| format_signature(&def.name, &def.params, def.ty.as_deref()));
+            Some((label, def.params.clone()))
+        }
+        ast::Expr::Member(expr) => {
+            let member_name = expr.name()?.text().to_string();
+            let object = expr.object()?;
+            let object_ty = index.infer_expr_type(scope_id, text, &object)?;
+            let class_scope = class_scope_for_name(index, &object_ty)?;
+            let def =
+                resolve_in_scope_kinds(index, class_scope, &member_name, &[DefKind::Method])?;
+            let label = def
+                .detail
+                .clone()
+                .unwrap_or_else(|| format_signature(&def.name, &def.params, def.ty.as_deref()));
+            Some((label, def.params.clone()))
+        }
+        _ => None,
+    }
+}
+
+fn call_params_for_completion(
+    index: &SymbolIndex,
+    text: &str,
+    scope_id: usize,
+    call: &ast::CallExpr,
+) -> Option<Vec<ParamInfo>> {
+    call_signature_for_callee(index, text, scope_id, call).map(|(_, params)| params)
 }
 
 fn literal_type(expr: &ast::LiteralExpr) -> Option<String> {
@@ -1394,9 +2403,26 @@ const KEYWORDS: &[&str] = &[
     "fire",
     "err",
     "crash",
+    "n",
 ];
 
-const CONSTANTS: &[&str] = &["true", "false", "nothing", "it", "its"];
+const CONSTANTS: &[&str] = &["true", "false", "nothing", "nil", "it", "its"];
+const BUILTINS: &[&str] = &[
+    "print",
+    "storage_get",
+    "storage_set",
+    "storage_delete",
+    "storage_configure",
+    "map_get",
+    "map_set",
+    "bytes_to_string",
+    "bytes_from_string",
+    "http_server_serve_get_requests",
+    "http_server_serve_post_requests",
+    "http_server_serve_requests",
+    "http_server_serve_on",
+    "http_server_stop",
+];
 
 lazy_static::lazy_static! {
     static ref SEMANTIC_TOKEN_LEGEND: SemanticTokensLegend = {
@@ -1424,6 +2450,10 @@ lazy_static::lazy_static! {
 
 fn is_keyword(name: &str) -> bool {
     KEYWORDS.contains(&name) || CONSTANTS.contains(&name)
+}
+
+fn is_builtin(name: &str) -> bool {
+    BUILTINS.contains(&name)
 }
 
 fn is_valid_identifier(name: &str) -> bool {
@@ -1462,20 +2492,216 @@ fn keyword_completion_items() -> Vec<CompletionItem> {
     items
 }
 
-fn completion_items(state: &DocumentState, position: Position) -> Vec<CompletionItem> {
-    let offset = position_to_offset(&state.text, position);
+fn completion_items(
+    state: &DocumentState,
+    position: Position,
+    trigger: Option<char>,
+) -> Vec<CompletionItem> {
+    let offset = position_to_offset_with_index(&state.text, &state.line_index, position);
     let mut seen = HashSet::new();
 
-    let root = parser::parse(&state.text);
-    if let Some(class_scope) = member_scope_at_offset(&state.index, &root, &state.text, offset) {
+    let root = syntax_root(state);
+    if is_completion_suppressed(&root, offset) {
+        return Vec::new();
+    }
+    if is_param_list_context(&root, offset) {
+        if is_type_completion_context(state, offset) {
+            return type_completion_items(state, &mut seen);
+        }
+        return Vec::new();
+    }
+    if let Some(class_scope) =
+        member_scope_at_completion_offset(&state.index, &root, &state.text, offset)
+    {
         return member_completion_items(&state.index, class_scope, &mut seen);
     }
+    if is_member_access_context(&root, offset) {
+        return Vec::new();
+    }
 
-    let mut items = keyword_completion_items();
+    let force_call_context = matches!(trigger, Some('(') | Some(','));
+    let in_param_list = is_param_list_context(&root, offset);
+    let call_context = call_argument_context(state, offset, force_call_context && !in_param_list);
+    if let Some(call_context) = call_context {
+        if call_context.has_params {
+            let mut items = Vec::new();
+            for item in call_context.items {
+                if seen.insert(item.label.clone()) {
+                    items.push(item);
+                }
+            }
+            return items;
+        }
+        return Vec::new();
+    }
+    let mut items = Vec::new();
+    if is_type_completion_context(state, offset) {
+        return type_completion_items(state, &mut seen);
+    }
     let scope_id = scope_at_offset(&state.index, offset)
         .map(|scope| scope.id)
         .unwrap_or(0);
     items.extend(scope_completion_items(&state.index, scope_id, &mut seen));
+    if completion_prefix(&state.text, offset).is_empty() {
+        for item in keyword_completion_items() {
+            if seen.insert(item.label.clone()) {
+                items.push(item);
+            }
+        }
+    }
+    items
+}
+
+struct CallArgContext {
+    items: Vec<CompletionItem>,
+    has_params: bool,
+}
+
+fn call_argument_context(
+    state: &DocumentState,
+    offset: usize,
+    force_call_context: bool,
+) -> Option<CallArgContext> {
+    let root = syntax_root(state);
+    if is_param_list_context(&root, offset) {
+        return None;
+    }
+    let mut in_call_context = false;
+    let call_opt = find_node_at_or_before_offset::<ast::CallExpr>(&root, offset).filter(|call| {
+        let inside = offset_in_call_arguments(call, offset);
+        if inside {
+            in_call_context = true;
+        }
+        inside
+    });
+    let scope_id = scope_at_offset(&state.index, offset)
+        .map(|scope| scope.id)
+        .unwrap_or(0);
+    let params = call_opt
+        .as_ref()
+        .and_then(|call| call_params_for_completion(&state.index, &state.text, scope_id, call))
+        .or_else(|| call_params_from_tokens_at_offset(state, offset));
+    let params = match params {
+        Some(params) => params,
+        None => {
+            let hinted = in_call_context
+                || is_call_context_from_tokens(&root, offset)
+                || is_call_context_from_text(state, offset)
+                || force_call_context;
+            if hinted {
+                return Some(CallArgContext {
+                    items: Vec::new(),
+                    has_params: false,
+                });
+            }
+            return None;
+        }
+    };
+    if params.is_empty() {
+        return Some(CallArgContext {
+            items: Vec::new(),
+            has_params: false,
+        });
+    }
+    let mut used = HashSet::new();
+    if let Some(call) = call_opt.as_ref() {
+        for arg in call.args() {
+            if let ast::Arg::Named(named) = arg {
+                if let Some(name) = named.name() {
+                    used.insert(name.text().to_string());
+                }
+            }
+        }
+    }
+    let mut items = Vec::new();
+    for param in params {
+        if used.contains(&param.name) {
+            continue;
+        }
+        let detail = param.ty.as_ref().map(|ty| format!("{}: {}", param.name, ty));
+        items.push(CompletionItem {
+            label: format!("{}=", param.name),
+            kind: Some(CompletionItemKind::FIELD),
+            detail,
+            insert_text: Some(format!("{}=", param.name)),
+            filter_text: Some(param.name.clone()),
+            sort_text: Some(format!("0_{}", param.name)),
+            ..CompletionItem::default()
+        });
+    }
+    Some(CallArgContext {
+        items,
+        has_params: true,
+    })
+}
+
+fn is_type_completion_context(state: &DocumentState, offset: usize) -> bool {
+    let root = syntax_root(state);
+    if find_node_at_or_before_offset::<ast::TypeRef>(&root, offset).is_some() {
+        return true;
+    }
+    let Some(prev) = token_before_offset_skip_trivia(&root, offset) else {
+        return false;
+    };
+    match prev.kind() {
+        SyntaxKind::Arrow => is_return_type_context(&prev),
+        SyntaxKind::Colon => is_field_or_param_type_context(&prev),
+        _ => false,
+    }
+}
+
+fn is_field_or_param_type_context(token: &SyntaxToken) -> bool {
+    let mut node = token.parent();
+    while let Some(current) = node {
+        if ast::FieldDef::can_cast(current.kind()) || ast::Param::can_cast(current.kind()) {
+            return true;
+        }
+        if ast::ClassDef::can_cast(current.kind())
+            || ast::FuncDef::can_cast(current.kind())
+            || ast::MethodDef::can_cast(current.kind())
+            || ast::IfStmt::can_cast(current.kind())
+            || ast::ForStmt::can_cast(current.kind())
+            || ast::WhileStmt::can_cast(current.kind())
+            || ast::MatchStmt::can_cast(current.kind())
+            || ast::MapExpr::can_cast(current.kind())
+        {
+            return false;
+        }
+        node = current.parent();
+    }
+    false
+}
+
+fn is_return_type_context(token: &SyntaxToken) -> bool {
+    let mut node = token.parent();
+    while let Some(current) = node {
+        if ast::FuncDef::can_cast(current.kind()) || ast::MethodDef::can_cast(current.kind()) {
+            return true;
+        }
+        node = current.parent();
+    }
+    false
+}
+
+fn type_completion_items(state: &DocumentState, seen: &mut HashSet<String>) -> Vec<CompletionItem> {
+    let mut items = Vec::new();
+    let primitives = [
+        "Int", "Float", "Number", "String", "Bool", "Nothing", "Map", "Bytes", "Result",
+    ];
+    for name in primitives {
+        if seen.insert(name.to_string()) {
+            items.push(CompletionItem {
+                label: name.to_string(),
+                kind: Some(CompletionItemKind::CLASS),
+                ..CompletionItem::default()
+            });
+        }
+    }
+    for def in state.index.defs.iter().filter(|def| def.kind == DefKind::Class) {
+        if seen.insert(def.name.clone()) {
+            items.push(completion_item_for_def(def));
+        }
+    }
     items
 }
 
@@ -1516,8 +2742,7 @@ fn scope_completion_items(
 fn completion_item_for_def(def: &Definition) -> CompletionItem {
     let kind = match def.kind {
         DefKind::Class => CompletionItemKind::CLASS,
-        DefKind::Function => CompletionItemKind::FUNCTION,
-        DefKind::Method => CompletionItemKind::METHOD,
+        DefKind::Function | DefKind::Method => CompletionItemKind::TEXT,
         DefKind::Field => CompletionItemKind::FIELD,
         DefKind::Module => CompletionItemKind::MODULE,
         DefKind::Parameter | DefKind::Variable => CompletionItemKind::VARIABLE,
@@ -1526,17 +2751,20 @@ fn completion_item_for_def(def: &Definition) -> CompletionItem {
         .detail
         .clone()
         .or_else(|| def.ty.as_ref().map(|ty| format!("{}: {}", def.name, ty)));
-    CompletionItem {
+    let mut item = CompletionItem {
         label: def.name.clone(),
         kind: Some(kind),
         detail,
         ..CompletionItem::default()
-    }
+    };
+    item.insert_text = Some(def.name.clone());
+    item.insert_text_format = Some(tower_lsp::lsp_types::InsertTextFormat::PLAIN_TEXT);
+    item
 }
 
 #[allow(deprecated)]
 fn document_symbols(state: &DocumentState) -> Vec<DocumentSymbol> {
-    let root = parser::parse(&state.text);
+    let root = syntax_root(state);
     let Some(ast_root) = ast::Root::cast(root) else {
         return Vec::new();
     };
@@ -1631,7 +2859,25 @@ fn token_range(text: &str, token: &SyntaxToken) -> Range {
 }
 
 pub fn hover_at_position(state: &DocumentState, position: Position) -> Option<Hover> {
-    let offset = position_to_offset(&state.text, position);
+    let offset = position_to_offset_with_index(&state.text, &state.line_index, position);
+    if let Some(token) = token_at_offset(&syntax_root(state), offset) {
+        if matches!(token.kind(), SyntaxKind::ItsKw | SyntaxKind::ItKw) {
+            let scope_id = scope_at_offset(&state.index, offset)
+                .map(|scope| scope.id)
+                .unwrap_or(0);
+            if let Some(class_name) = class_name_for_scope(&state.index, scope_id) {
+                let detail = format!("{}: {}", token.text(), class_name);
+                let value = format!("```wrela\n{}\n```", detail);
+                return Some(Hover {
+                    contents: HoverContents::Markup(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value,
+                    }),
+                    range: Some(text_range_to_range(&state.text, token.text_range())),
+                });
+            }
+        }
+    }
     let def =
         definition_at_offset(state, offset).or_else(|| resolve_reference_at_offset(state, offset));
     let def = def?;
@@ -1654,7 +2900,31 @@ pub fn hover_at_position(state: &DocumentState, position: Position) -> Option<Ho
             .map(|ty| format!("{}: {}", def.name, ty))
             .or_else(|| def.detail.clone())
             .unwrap_or_else(|| def.name.clone()),
-        DefKind::Class | DefKind::Module => def.name.clone(),
+        DefKind::Class => {
+            // Get class scope and collect fields
+            let mut class_detail = def.name.clone();
+            if let Some(class_scope) = class_scope_for_name(&state.index, &def.name) {
+                let fields: Vec<&Definition> = state
+                    .index
+                    .defs
+                    .iter()
+                    .filter(|d| d.scope_id == class_scope && matches!(d.kind, DefKind::Field))
+                    .collect();
+                if !fields.is_empty() {
+                    class_detail.push_str("\n\nFields:");
+                    for field in fields {
+                        let field_info = field
+                            .ty
+                            .as_ref()
+                            .map(|ty| format!("{}: {}", field.name, ty))
+                            .unwrap_or_else(|| field.name.clone());
+                        class_detail.push_str(&format!("\n  - {}", field_info));
+                    }
+                }
+            }
+            class_detail
+        }
+        DefKind::Module => def.name.clone(),
     };
 
     // Add documentation if available
@@ -1674,7 +2944,7 @@ pub fn hover_at_position(state: &DocumentState, position: Position) -> Option<Ho
 }
 
 fn definition_location(state: &DocumentState, position: Position) -> Option<Range> {
-    let offset = position_to_offset(&state.text, position);
+    let offset = position_to_offset_with_index(&state.text, &state.line_index, position);
     definition_at_offset(state, offset)
         .or_else(|| resolve_reference_at_offset(state, offset))
         .map(|def| text_range_to_range(&state.text, def.name_range))
@@ -1685,7 +2955,7 @@ fn references_at_position(
     position: Position,
     include_declaration: bool,
 ) -> Vec<Range> {
-    let offset = position_to_offset(&state.text, position);
+    let offset = position_to_offset_with_index(&state.text, &state.line_index, position);
     let Some(def) =
         definition_at_offset(state, offset).or_else(|| resolve_reference_at_offset(state, offset))
     else {
@@ -1702,7 +2972,7 @@ fn rename_at_position(
     if !is_valid_identifier(new_name) || is_keyword(new_name) {
         return None;
     }
-    let offset = position_to_offset(&state.text, position);
+    let offset = position_to_offset_with_index(&state.text, &state.line_index, position);
     let def = definition_at_offset(state, offset)
         .or_else(|| resolve_reference_at_offset(state, offset))?;
     let edits = collect_references(state, &def, true)
@@ -1719,7 +2989,7 @@ fn prepare_rename_at_position(
     state: &DocumentState,
     position: Position,
 ) -> Option<PrepareRenameResponse> {
-    let offset = position_to_offset(&state.text, position);
+    let offset = position_to_offset_with_index(&state.text, &state.line_index, position);
     let def = definition_at_offset(state, offset)
         .or_else(|| resolve_reference_at_offset(state, offset))?;
     if is_keyword(&def.name) {
@@ -1732,34 +3002,29 @@ fn prepare_rename_at_position(
 }
 
 fn signature_help_at_position(state: &DocumentState, position: Position) -> Option<SignatureHelp> {
-    let offset = position_to_offset(&state.text, position);
-    let root = parser::parse(&state.text);
-    let call = find_node_at_offset::<ast::CallExpr>(&root, offset)?;
-    let callee_name = match call.callee()? {
-        ast::Expr::Ident(expr) => expr.name().map(|token| token.text().to_string()),
-        ast::Expr::Member(expr) => expr.name().map(|token| token.text().to_string()),
-        _ => None,
-    }?;
+    let offset = position_to_offset_with_index(&state.text, &state.line_index, position);
+    let root = syntax_root(state);
     let scope_id = scope_at_offset(&state.index, offset)
         .map(|scope| scope.id)
         .unwrap_or(0);
-    let def = resolve_in_scope_kinds(
-        &state.index,
-        scope_id,
-        &callee_name,
-        &[DefKind::Function, DefKind::Method],
-    )
-    .or_else(|| {
-        member_scope_at_offset(&state.index, &root, &state.text, offset).and_then(|class_scope| {
-            resolve_in_scope_kinds(&state.index, class_scope, &callee_name, &[DefKind::Method])
-        })
-    })?;
-    if def.params.is_empty() {
+    let active_parameter;
+    let (label, params) = if let Some(call) = find_node_at_or_before_offset::<ast::CallExpr>(&root, offset) {
+        if !offset_in_call_arguments(&call, offset) {
+            return None;
+        }
+        active_parameter = call_argument_index(&call, offset);
+        call_signature_for_callee(&state.index, &state.text, scope_id, &call)?
+    } else {
+        if !is_call_context_from_tokens(&root, offset) {
+            return None;
+        }
+        active_parameter = call_argument_index_from_tokens(&root, offset);
+        call_signature_from_tokens_at_offset(state, offset)?
+    };
+    if params.is_empty() {
         return None;
     }
-    let active_parameter = call_argument_index(&call, offset);
-    let parameters = def
-        .params
+    let parameters = params
         .iter()
         .map(|param| ParameterInformation {
             label: tower_lsp::lsp_types::ParameterLabel::Simple(match &param.ty {
@@ -1770,7 +3035,7 @@ fn signature_help_at_position(state: &DocumentState, position: Position) -> Opti
         })
         .collect::<Vec<_>>();
     let signature = SignatureInformation {
-        label: def.detail.clone().unwrap_or_else(|| def.name.clone()),
+        label,
         documentation: None,
         parameters: Some(parameters),
         active_parameter: None,
@@ -1782,10 +3047,36 @@ fn signature_help_at_position(state: &DocumentState, position: Position) -> Opti
     })
 }
 
-fn identifier_at_position(text: &str, position: Position) -> Option<String> {
-    let offset = position_to_offset(text, position);
-    let root = parser::parse(text);
+fn type_at_position(state: &DocumentState, position: Position) -> Option<String> {
+    let offset = position_to_offset_with_index(&state.text, &state.line_index, position);
+    if let Some(def) =
+        definition_at_offset(state, offset).or_else(|| resolve_reference_at_offset(state, offset))
+    {
+        if def.kind == DefKind::Class {
+            return Some(def.name);
+        }
+        if let Some(ty) = def.ty {
+            return Some(ty);
+        }
+    }
+    let root = syntax_root(state);
     let token = token_at_offset(&root, offset)?;
+    let mut node = token.parent();
+    while let Some(current) = node {
+        if let Some(expr) = ast::Expr::cast(current.clone()) {
+            let scope_id = scope_at_offset(&state.index, offset)
+                .map(|scope| scope.id)
+                .unwrap_or(0);
+            return state.index.infer_expr_type(scope_id, &state.text, &expr);
+        }
+        node = current.parent();
+    }
+    None
+}
+
+fn identifier_at_position(state: &DocumentState, position: Position) -> Option<String> {
+    let offset = position_to_offset_with_index(&state.text, &state.line_index, position);
+    let token = token_at_offset(&syntax_root(state), offset)?;
     if token.kind() != SyntaxKind::Ident {
         return None;
     }
@@ -1859,6 +3150,73 @@ fn workspace_symbols(
     symbols
 }
 
+fn workspace_type_definitions(
+    documents: &HashMap<Url, DocumentState>,
+    type_name: &str,
+) -> Vec<Location> {
+    if is_primitive_type(type_name) {
+        return Vec::new();
+    }
+    let mut locations = Vec::new();
+    for (uri, state) in documents.iter() {
+        for def in state.index.defs.iter() {
+            if def.kind != DefKind::Class || def.name != type_name {
+                continue;
+            }
+            locations.push(Location {
+                uri: uri.clone(),
+                range: text_range_to_range_with_index(
+                    &state.text,
+                    &state.line_index,
+                    def.name_range,
+                ),
+            });
+        }
+    }
+    locations
+}
+
+fn index_workspace_documents(root_uri: &Url) -> HashMap<Url, DocumentState> {
+    let mut documents = HashMap::new();
+    let Ok(root_path) = root_uri.to_file_path() else {
+        return documents;
+    };
+    let mut stack = vec![root_path];
+    while let Some(path) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&path) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if should_skip_dir(&path) {
+                    continue;
+                }
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|s| s.to_str()) != Some("wr") {
+                continue;
+            }
+            let Ok(text) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let (state, _) = build_document_state(text);
+            if let Ok(uri) = Url::from_file_path(&path) {
+                documents.insert(uri, state);
+            }
+        }
+    }
+    documents
+}
+
+fn should_skip_dir(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+        return true;
+    };
+    matches!(name, ".git" | "target" | "node_modules")
+}
+
 fn workspace_references(
     documents: &HashMap<Url, DocumentState>,
     current_uri: &Url,
@@ -1870,10 +3228,7 @@ fn workspace_references(
         if uri == current_uri {
             continue;
         }
-        if document_has_definition(state, name) {
-            continue;
-        }
-        let ranges = collect_identifier_ranges(&state.text, name, include_declaration);
+        let ranges = collect_identifier_ranges(state, name, include_declaration);
         locations.extend(ranges.into_iter().map(|range| Location {
             uri: uri.clone(),
             range,
@@ -1896,7 +3251,7 @@ fn workspace_rename(
         if document_has_definition(state, name) {
             continue;
         }
-        let ranges = collect_identifier_ranges(&state.text, name, true);
+        let ranges = collect_identifier_ranges(state, name, true);
         if ranges.is_empty() {
             continue;
         }
@@ -1916,8 +3271,12 @@ fn document_has_definition(state: &DocumentState, name: &str) -> bool {
     state.index.defs.iter().any(|def| def.name == name)
 }
 
-fn collect_identifier_ranges(text: &str, name: &str, include_declaration: bool) -> Vec<Range> {
-    let root = parser::parse(text);
+fn collect_identifier_ranges(
+    state: &DocumentState,
+    name: &str,
+    include_declaration: bool,
+) -> Vec<Range> {
+    let root = syntax_root(state);
     let mut ranges = Vec::new();
     for token in root
         .descendants_with_tokens()
@@ -1932,7 +3291,11 @@ fn collect_identifier_ranges(text: &str, name: &str, include_declaration: bool) 
         if !include_declaration {
             // We don't know declaration locations in other documents; include all.
         }
-        ranges.push(text_range_to_range(text, token.text_range()));
+        ranges.push(text_range_to_range_with_index(
+            &state.text,
+            &state.line_index,
+            token.text_range(),
+        ));
     }
     ranges
 }
@@ -1951,7 +3314,7 @@ fn collect_references(
 ) -> Vec<Range> {
     let mut ranges = Vec::new();
     let def_name_range = def.name_range;
-    let root = parser::parse(&state.text);
+    let root = syntax_root(state);
     for token in root
         .descendants_with_tokens()
         .filter_map(|it| it.into_token())
@@ -1962,14 +3325,22 @@ fn collect_references(
         let range = token.text_range();
         if range == def_name_range {
             if include_declaration {
-                ranges.push(text_range_to_range(&state.text, range));
+                ranges.push(text_range_to_range_with_index(
+                    &state.text,
+                    &state.line_index,
+                    range,
+                ));
             }
             continue;
         }
-        if resolve_reference_token(&state.index, &root, &state.text, &token)
+        if resolve_reference_token(&state.index, &state.text, &token)
             .is_some_and(|resolved| resolved.id == def.id)
         {
-            ranges.push(text_range_to_range(&state.text, range));
+            ranges.push(text_range_to_range_with_index(
+                &state.text,
+                &state.line_index,
+                range,
+            ));
         }
     }
     ranges
@@ -1986,22 +3357,20 @@ fn definition_at_offset(state: &DocumentState, offset: usize) -> Option<Definiti
 }
 
 fn resolve_reference_at_offset(state: &DocumentState, offset: usize) -> Option<Definition> {
-    let root = parser::parse(&state.text);
-    let token = token_at_offset(&root, offset)?;
+    let token = token_at_offset(&syntax_root(state), offset)?;
     if token.kind() != SyntaxKind::Ident {
         return None;
     }
-    resolve_reference_token(&state.index, &root, &state.text, &token)
+    resolve_reference_token(&state.index, &state.text, &token)
 }
 
 fn resolve_reference_token(
     index: &SymbolIndex,
-    root: &SyntaxNode,
     text: &str,
     token: &SyntaxToken,
 ) -> Option<Definition> {
     let offset: usize = u32::from(token.text_range().start()) as usize;
-    if let Some(member_def) = resolve_in_class_members(index, root, text, offset, token.text()) {
+    if let Some(member_def) = resolve_member_reference(index, text, token) {
         return Some(member_def);
     }
     let scope_id = scope_at_offset(index, offset)
@@ -2010,17 +3379,35 @@ fn resolve_reference_token(
     resolve_in_scope(index, scope_id, token.text())
 }
 
-fn resolve_in_class_members(
+fn resolve_member_reference(
     index: &SymbolIndex,
-    root: &SyntaxNode,
     text: &str,
-    offset: usize,
-    name: &str,
+    token: &SyntaxToken,
 ) -> Option<Definition> {
-    let Some(class_scope) = member_scope_at_offset(index, root, text, offset) else {
-        return None;
-    };
-    resolve_in_scope_kinds(index, class_scope, name, &[DefKind::Field, DefKind::Method])
+    let mut node = token.parent();
+    while let Some(current) = node {
+        if let Some(member) = ast::MemberExpr::cast(current.clone()) {
+            let name = member.name()?;
+            if name.text_range() != token.text_range() {
+                return None;
+            }
+            let offset: usize = u32::from(token.text_range().start()) as usize;
+            let scope_id = scope_at_offset(index, offset)
+                .map(|scope| scope.id)
+                .unwrap_or(0);
+            let object = member.object()?;
+            let object_ty = index.infer_expr_type(scope_id, text, &object)?;
+            let class_scope = class_scope_for_name(index, &object_ty)?;
+            return resolve_in_scope_kinds(
+                index,
+                class_scope,
+                name.text(),
+                &[DefKind::Field, DefKind::Method],
+            );
+        }
+        node = current.parent();
+    }
+    None
 }
 
 fn scope_at_offset(index: &SymbolIndex, offset: usize) -> Option<&Scope> {
@@ -2050,6 +3437,53 @@ fn member_scope_at_offset(
     let object = member.object()?;
     let object_ty = index.infer_expr_type(scope_id, text, &object)?;
     class_scope_for_name(index, &object_ty)
+}
+
+fn member_scope_at_completion_offset(
+    index: &SymbolIndex,
+    root: &SyntaxNode,
+    text: &str,
+    offset: usize,
+) -> Option<usize> {
+    if let Some(class_scope) = member_scope_at_offset(index, root, text, offset) {
+        return Some(class_scope);
+    }
+    let prev_token = token_before_offset_skip_trivia(root, offset)?;
+    if prev_token.kind() != SyntaxKind::Dot {
+        return None;
+    }
+    let dot_offset: usize = prev_token.text_range().start().into();
+    let scope_id = scope_at_offset(index, offset)
+        .map(|scope| scope.id)
+        .unwrap_or(0);
+    if let Some(member) = find_node_at_offset::<ast::MemberExpr>(root, dot_offset) {
+        let object = member.object()?;
+        let object_ty = index.infer_expr_type(scope_id, text, &object)?;
+        return class_scope_for_name(index, &object_ty);
+    }
+    let object_token = token_before_offset_skip_trivia(root, dot_offset)?;
+    if object_token.kind() == SyntaxKind::Ident {
+        if let Some(def) = resolve_in_scope(index, scope_id, object_token.text()) {
+            if def.kind == DefKind::Class {
+                return class_scope_for_name(index, &def.name);
+            }
+            if let Some(ty) = def.ty.as_deref() {
+                return class_scope_for_name(index, ty);
+            }
+        }
+        if let Some(class_scope) = class_scope_for_name(index, object_token.text()) {
+            return Some(class_scope);
+        }
+    }
+    let mut node = object_token.parent();
+    while let Some(current) = node {
+        if let Some(expr) = ast::Expr::cast(current.clone()) {
+            let object_ty = index.infer_expr_type(scope_id, text, &expr)?;
+            return class_scope_for_name(index, &object_ty);
+        }
+        node = current.parent();
+    }
+    None
 }
 
 fn class_scope_for_name(index: &SymbolIndex, name: &str) -> Option<usize> {
@@ -2124,6 +3558,21 @@ fn find_node_at_offset<T: AstNode>(root: &SyntaxNode, offset: usize) -> Option<T
     None
 }
 
+fn find_node_at_or_before_offset<T: AstNode>(root: &SyntaxNode, offset: usize) -> Option<T> {
+    if let Some(found) = find_node_at_offset::<T>(root, offset) {
+        return Some(found);
+    }
+    let token = token_before_offset(root, offset)?;
+    let mut node = token.parent();
+    while let Some(current) = node {
+        if let Some(found) = T::cast(current.clone()) {
+            return Some(found);
+        }
+        node = current.parent();
+    }
+    None
+}
+
 fn token_at_offset(root: &SyntaxNode, offset: usize) -> Option<SyntaxToken> {
     let offset = TextSize::from(offset as u32);
     for token in root
@@ -2136,6 +3585,98 @@ fn token_at_offset(root: &SyntaxNode, offset: usize) -> Option<SyntaxToken> {
         }
     }
     None
+}
+
+fn token_before_offset(root: &SyntaxNode, offset: usize) -> Option<SyntaxToken> {
+    let offset = TextSize::from(offset as u32);
+    let mut prev = None;
+    for token in root
+        .descendants_with_tokens()
+        .filter_map(|it| it.into_token())
+    {
+        if token.text_range().start() >= offset {
+            break;
+        }
+        prev = Some(token);
+    }
+    prev
+}
+
+fn token_before_offset_skip_trivia(root: &SyntaxNode, offset: usize) -> Option<SyntaxToken> {
+    let offset = TextSize::from(offset as u32);
+    let mut prev = None;
+    for token in root
+        .descendants_with_tokens()
+        .filter_map(|it| it.into_token())
+    {
+        if token.text_range().start() >= offset {
+            break;
+        }
+        if is_trivia_kind(token.kind()) {
+            continue;
+        }
+        prev = Some(token);
+    }
+    prev
+}
+
+fn is_trivia_kind(kind: SyntaxKind) -> bool {
+    matches!(
+        kind,
+        SyntaxKind::Whitespace | SyntaxKind::Newline | SyntaxKind::Comment | SyntaxKind::DocComment
+    )
+}
+
+fn is_completion_suppressed(root: &SyntaxNode, offset: usize) -> bool {
+    let Some(token) = token_at_offset(root, offset) else {
+        return false;
+    };
+    matches!(
+        token.kind(),
+        SyntaxKind::Comment
+            | SyntaxKind::DocComment
+            | SyntaxKind::StringLiteral
+            | SyntaxKind::StringStart
+            | SyntaxKind::StringPart
+            | SyntaxKind::StringEnd
+    )
+}
+
+fn is_param_list_context(root: &SyntaxNode, offset: usize) -> bool {
+    if find_node_at_or_before_offset::<ast::ParamList>(root, offset).is_some() {
+        return true;
+    }
+    if let Some(prev) = token_before_offset_skip_trivia(root, offset) {
+        if prev.kind() == SyntaxKind::LParen && is_param_list_token(&prev) {
+            return true;
+        }
+    }
+    if let Some(lparen) = nearest_unmatched_lparen_before_offset(root, offset) {
+        return is_param_list_token(&lparen);
+    }
+    false
+}
+
+fn completion_prefix(text: &str, offset: usize) -> String {
+    let offset = offset.min(text.len());
+    let line_start = text[..offset].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let slice = &text[line_start..offset];
+    let mut start = slice.len();
+    for (idx, ch) in slice.char_indices().rev() {
+        if is_ident_continue(ch) {
+            start = idx;
+        } else {
+            break;
+        }
+    }
+    slice[start..].to_string()
+}
+
+fn is_primitive_type(name: &str) -> bool {
+    matches!(
+        name,
+        "Int" | "Float" | "Number" | "String" | "Bool" | "Nothing" | "Map" | "Bytes" | "Result"
+    )
 }
 
 fn call_argument_index(call: &ast::CallExpr, offset: usize) -> Option<u32> {
@@ -2171,6 +3712,367 @@ fn call_argument_index(call: &ast::CallExpr, offset: usize) -> Option<u32> {
             _ => {}
         }
     }
+    if seen_paren {
+        Some(commas)
+    } else {
+        None
+    }
+}
+
+fn call_argument_bounds(call: &ast::CallExpr) -> Option<(TextSize, Option<TextSize>)> {
+    let mut lparen_end = None;
+    let mut rparen_start = None;
+    let mut depth = 0u32;
+    let mut seen_paren = false;
+    for token in call
+        .syntax()
+        .descendants_with_tokens()
+        .filter_map(|it| it.into_token())
+    {
+        match token.kind() {
+            SyntaxKind::LParen => {
+                if !seen_paren {
+                    seen_paren = true;
+                    lparen_end = Some(token.text_range().end());
+                } else {
+                    depth += 1;
+                }
+            }
+            SyntaxKind::RParen if seen_paren => {
+                if depth == 0 {
+                    rparen_start = Some(token.text_range().start());
+                    break;
+                }
+                depth = depth.saturating_sub(1);
+            }
+            SyntaxKind::LBracket | SyntaxKind::LBrace => depth += 1,
+            SyntaxKind::RBracket | SyntaxKind::RBrace => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    let lparen_end = lparen_end?;
+    Some((lparen_end, rparen_start))
+}
+
+fn offset_in_call_arguments(call: &ast::CallExpr, offset: usize) -> bool {
+    let offset = TextSize::from(offset as u32);
+    match call_argument_bounds(call) {
+        Some((start, end)) => match end {
+            Some(end) => start <= offset && offset <= end,
+            None => start <= offset,
+        },
+        None => false,
+    }
+}
+
+fn is_param_list_token(token: &SyntaxToken) -> bool {
+    let mut node = token.parent();
+    while let Some(current) = node {
+        if current.kind() == SyntaxKind::ParamList {
+            return true;
+        }
+        node = current.parent();
+    }
+    false
+}
+
+fn is_call_context_from_tokens(root: &SyntaxNode, offset: usize) -> bool {
+    nearest_unmatched_lparen_before_offset(root, offset).is_some()
+}
+
+fn is_member_access_context(root: &SyntaxNode, offset: usize) -> bool {
+    let Some(prev) = token_before_offset_skip_trivia(root, offset) else {
+        return false;
+    };
+    if prev.kind() == SyntaxKind::Dot {
+        return true;
+    }
+    if prev.kind() == SyntaxKind::Ident {
+        let before = token_before_offset_skip_trivia(root, prev.text_range().start().into());
+        return before.is_some_and(|token| token.kind() == SyntaxKind::Dot);
+    }
+    false
+}
+
+fn is_call_context_from_text(state: &DocumentState, offset: usize) -> bool {
+    let text = &state.text;
+    let mut depth = 0i32;
+    let mut idx = offset.min(text.len());
+    let mut scanned = 0usize;
+    let mut lines = 0u32;
+    while idx > 0 {
+        idx -= 1;
+        scanned += 1;
+        let ch = text.as_bytes()[idx] as char;
+        match ch {
+            ')' => depth += 1,
+            '(' => {
+                if depth == 0 {
+                    return true;
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+        if ch == '\n' {
+            lines += 1;
+            if lines > 200 {
+                break;
+            }
+        }
+        if scanned > 5000 {
+            break;
+        }
+    }
+    false
+}
+
+fn nearest_unmatched_lparen_before_offset(
+    root: &SyntaxNode,
+    offset: usize,
+) -> Option<SyntaxToken> {
+    let offset = TextSize::from(offset as u32);
+    let mut stack: Vec<SyntaxToken> = Vec::new();
+    for token in root
+        .descendants_with_tokens()
+        .filter_map(|it| it.into_token())
+    {
+        if token.text_range().start() >= offset {
+            break;
+        }
+        match token.kind() {
+            SyntaxKind::LParen => stack.push(token),
+            SyntaxKind::RParen => {
+                if !stack.is_empty() {
+                    stack.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+    while let Some(token) = stack.pop() {
+        if !is_param_list_token(&token) {
+            return Some(token);
+        }
+    }
+    None
+}
+
+fn call_params_from_tokens_at_offset(
+    state: &DocumentState,
+    offset: usize,
+) -> Option<Vec<ParamInfo>> {
+    let root = syntax_root(state);
+    let lparen = nearest_unmatched_lparen_before_offset(&root, offset)?;
+    let callee = token_before_offset_skip_trivia(&root, lparen.text_range().start().into())?;
+    if callee.kind() != SyntaxKind::Ident {
+        return None;
+    }
+    let scope_id = scope_at_offset(&state.index, offset)
+        .map(|scope| scope.id)
+        .unwrap_or(0);
+    let callee_name = callee.text().to_string();
+    let before_callee =
+        token_before_offset_skip_trivia(&root, callee.text_range().start().into());
+    if let Some(dot) = before_callee.as_ref().filter(|tok| tok.kind() == SyntaxKind::Dot) {
+        let object_token = token_before_offset_skip_trivia(&root, dot.text_range().start().into())?;
+        if object_token.kind() == SyntaxKind::Ident {
+            if let Some(def) = resolve_in_scope(&state.index, scope_id, object_token.text()) {
+                if def.kind == DefKind::Class {
+                    if let Some(class_scope) = class_scope_for_name(&state.index, &def.name) {
+                        let method = resolve_in_scope_kinds(
+                            &state.index,
+                            class_scope,
+                            &callee_name,
+                            &[DefKind::Method],
+                        )?;
+                        return Some(method.params.clone());
+                    }
+                }
+                if let Some(ty) = def.ty.as_deref() {
+                    if let Some(class_scope) = class_scope_for_name(&state.index, ty) {
+                        let method = resolve_in_scope_kinds(
+                            &state.index,
+                            class_scope,
+                            &callee_name,
+                            &[DefKind::Method],
+                        )?;
+                        return Some(method.params.clone());
+                    }
+                }
+            }
+            if let Some(class_scope) = class_scope_for_name(&state.index, object_token.text()) {
+                let method = resolve_in_scope_kinds(
+                    &state.index,
+                    class_scope,
+                    &callee_name,
+                    &[DefKind::Method],
+                )?;
+                return Some(method.params.clone());
+            }
+        }
+        let mut node = object_token.parent();
+        while let Some(current) = node {
+            if let Some(expr) = ast::Expr::cast(current.clone()) {
+                if let Some(object_ty) = state.index.infer_expr_type(scope_id, &state.text, &expr) {
+                    if let Some(class_scope) = class_scope_for_name(&state.index, &object_ty) {
+                        let method = resolve_in_scope_kinds(
+                            &state.index,
+                            class_scope,
+                            &callee_name,
+                            &[DefKind::Method],
+                        )?;
+                        return Some(method.params.clone());
+                    }
+                }
+            }
+            node = current.parent();
+        }
+        return None;
+    }
+    if let Some(class_scope) = class_scope_for_name(&state.index, &callee_name) {
+        let params = class_field_params(&state.index, class_scope);
+        return Some(params);
+    }
+    let def = resolve_in_scope_kinds(
+        &state.index,
+        scope_id,
+        &callee_name,
+        &[DefKind::Function, DefKind::Class],
+    )?;
+    if def.kind == DefKind::Class {
+        let class_scope = class_scope_for_name(&state.index, &def.name)?;
+        return Some(class_field_params(&state.index, class_scope));
+    }
+    Some(def.params.clone())
+}
+
+fn call_signature_from_tokens_at_offset(
+    state: &DocumentState,
+    offset: usize,
+) -> Option<(String, Vec<ParamInfo>)> {
+    let root = syntax_root(state);
+    let lparen = nearest_unmatched_lparen_before_offset(&root, offset)?;
+    let callee = token_before_offset_skip_trivia(&root, lparen.text_range().start().into())?;
+    if callee.kind() != SyntaxKind::Ident {
+        return None;
+    }
+    let scope_id = scope_at_offset(&state.index, offset)
+        .map(|scope| scope.id)
+        .unwrap_or(0);
+    let callee_name = callee.text().to_string();
+    let before_callee =
+        token_before_offset_skip_trivia(&root, callee.text_range().start().into());
+    if let Some(dot) = before_callee.as_ref().filter(|tok| tok.kind() == SyntaxKind::Dot) {
+        let object_token = token_before_offset_skip_trivia(&root, dot.text_range().start().into())?;
+        if object_token.kind() == SyntaxKind::Ident {
+            if let Some(def) = resolve_in_scope(&state.index, scope_id, object_token.text()) {
+                if def.kind == DefKind::Class {
+                    if let Some(class_scope) = class_scope_for_name(&state.index, &def.name) {
+                        let method = resolve_in_scope_kinds(
+                            &state.index,
+                            class_scope,
+                            &callee_name,
+                            &[DefKind::Method],
+                        )?;
+                        let label = method
+                            .detail
+                            .clone()
+                            .unwrap_or_else(|| {
+                                format_signature(&method.name, &method.params, method.ty.as_deref())
+                            });
+                        return Some((label, method.params.clone()));
+                    }
+                }
+                if let Some(ty) = def.ty.as_deref() {
+                    if let Some(class_scope) = class_scope_for_name(&state.index, ty) {
+                        let method = resolve_in_scope_kinds(
+                            &state.index,
+                            class_scope,
+                            &callee_name,
+                            &[DefKind::Method],
+                        )?;
+                        let label = method
+                            .detail
+                            .clone()
+                            .unwrap_or_else(|| {
+                                format_signature(&method.name, &method.params, method.ty.as_deref())
+                            });
+                        return Some((label, method.params.clone()));
+                    }
+                }
+            }
+            if let Some(class_scope) = class_scope_for_name(&state.index, object_token.text()) {
+                let method = resolve_in_scope_kinds(
+                    &state.index,
+                    class_scope,
+                    &callee_name,
+                    &[DefKind::Method],
+                )?;
+                let label = method
+                    .detail
+                    .clone()
+                    .unwrap_or_else(|| {
+                        format_signature(&method.name, &method.params, method.ty.as_deref())
+                    });
+                return Some((label, method.params.clone()));
+            }
+        }
+        return None;
+    }
+    if let Some(class_scope) = class_scope_for_name(&state.index, &callee_name) {
+        let params = class_field_params(&state.index, class_scope);
+        let label = format_signature(&callee_name, &params, None);
+        return Some((label, params));
+    }
+    let def = resolve_in_scope_kinds(
+        &state.index,
+        scope_id,
+        &callee_name,
+        &[DefKind::Function, DefKind::Class],
+    )?;
+    if def.kind == DefKind::Class {
+        let class_scope = class_scope_for_name(&state.index, &def.name)?;
+        let params = class_field_params(&state.index, class_scope);
+        let label = format_signature(&def.name, &params, None);
+        return Some((label, params));
+    }
+    let label = def
+        .detail
+        .clone()
+        .unwrap_or_else(|| format_signature(&def.name, &def.params, def.ty.as_deref()));
+    Some((label, def.params.clone()))
+}
+
+fn call_argument_index_from_tokens(root: &SyntaxNode, offset: usize) -> Option<u32> {
+    let lparen = nearest_unmatched_lparen_before_offset(root, offset)?;
+    let offset = TextSize::from(offset as u32);
+    let mut depth = 0u32;
+    let mut commas = 0u32;
+    for token in root
+        .descendants_with_tokens()
+        .filter_map(|it| it.into_token())
+    {
+        if token.text_range().start() <= lparen.text_range().start() {
+            continue;
+        }
+        if token.text_range().start() > offset {
+            break;
+        }
+        match token.kind() {
+            SyntaxKind::LParen => depth += 1,
+            SyntaxKind::RParen => {
+                if depth == 0 {
+                    break;
+                }
+                depth = depth.saturating_sub(1);
+            }
+            SyntaxKind::LBracket | SyntaxKind::LBrace => depth += 1,
+            SyntaxKind::RBracket | SyntaxKind::RBrace => depth = depth.saturating_sub(1),
+            SyntaxKind::Comma if depth == 0 => commas += 1,
+            _ => {}
+        }
+    }
     Some(commas)
 }
 
@@ -2184,7 +4086,7 @@ fn extract_doc_comment(node: &SyntaxNode) -> Option<String> {
                 // Skip whitespace but if we see too many newlines, stop?
                 // For now just skip whitespace
             }
-            SyntaxKind::DocComment => {
+            SyntaxKind::Comment | SyntaxKind::DocComment => {
                 // element is moved by into_token, so clone it for that check,
                 // but we need element for prev_sibling_or_token later.
                 // Actually, we can just use element.as_token() if available or just check kind
@@ -2192,12 +4094,10 @@ fn extract_doc_comment(node: &SyntaxNode) -> Option<String> {
                 // Let's use as_token() if it exists or clone.
                 if let Some(token) = element.as_token() {
                     let text = token.text();
-                    // Remove '///' and trim
-                    let content = if text.starts_with("///") {
-                        text[3..].trim()
-                    } else {
-                        text.trim()
-                    };
+                    let content = text
+                        .strip_prefix("so:")
+                        .unwrap_or(text)
+                        .trim();
                     docs.push(content.to_string());
                 }
             }
@@ -2214,13 +4114,344 @@ fn extract_doc_comment(node: &SyntaxNode) -> Option<String> {
     }
 }
 
-#[tokio::main]
-async fn main() {
-    let stdin = tokio::io::stdin();
-    let stdout = tokio::io::stdout();
-    let (service, socket) = LspService::new(|client| Backend {
-        client,
-        documents: RwLock::new(HashMap::new()),
-    });
-    Server::new(stdin, stdout, socket).serve(service).await;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use insta::assert_debug_snapshot;
+    use std::collections::HashMap;
+
+    fn position_at(text: &str, needle: &str, offset: usize) -> Position {
+        let base = text.find(needle).expect("needle not found");
+        let index = LineIndex::new(text);
+        offset_to_position_with_index(text, &index, base + offset)
+    }
+
+    fn labels(items: Vec<CompletionItem>) -> Vec<String> {
+        let mut labels = items.into_iter().map(|item| item.label).collect::<Vec<_>>();
+        labels.sort();
+        labels
+    }
+
+    #[test]
+    fn completion_members_after_dot() {
+        let code = r#"
+to main():
+    foo = Foo()
+    foo.
+
+A Foo:
+    has:
+        value: Int
+    can bar(x: Int) -> Int:
+        return x
+"#;
+        let (state, _) = build_document_state(code.to_string());
+        let pos = position_at(code, "foo.", "foo.".len());
+        let items = completion_items(&state, pos, None);
+        assert_debug_snapshot!(labels(items));
+    }
+
+    #[test]
+    fn completion_named_args_for_constructor() {
+        let code = r#"
+to main():
+    whale = Whale(
+
+A Whale:
+    has:
+        name: String
+        age: Int
+"#;
+        let (state, _) = build_document_state(code.to_string());
+        let pos = position_at(code, "Whale(", "Whale(".len());
+        let items = labels(completion_items(&state, pos, None));
+        assert!(items.contains(&"name=".to_string()));
+        assert!(items.contains(&"age=".to_string()));
+    }
+
+    #[test]
+    fn completion_named_args_for_method_call() {
+        let code = r#"
+to main():
+    whale = Whale()
+    whale.swim(
+
+A Whale:
+    can swim(distance: Int, speed: Int) -> Nothing:
+        return nothing
+"#;
+        let (state, _) = build_document_state(code.to_string());
+        let pos = position_at(code, "swim(", "swim(".len());
+        let items = labels(completion_items(&state, pos, None));
+        assert!(items.contains(&"distance=".to_string()));
+        assert!(items.contains(&"speed=".to_string()));
+    }
+
+    #[test]
+    fn completion_named_args_for_constructor_multiline() {
+        let code = "to main():\n    whale = Whale(\n        name=\"moby\",\n        \nA Whale:\n    has:\n        name: String\n        age: Int\n";
+        let (state, _) = build_document_state(code.to_string());
+        let index = LineIndex::new(code);
+        let blank_line = code.find("\n        \nA Whale").unwrap();
+        let offset = blank_line + 1 + 8;
+        let pos = offset_to_position_with_index(code, &index, offset);
+        let items = labels(completion_items(&state, pos, None));
+        assert!(items.contains(&"age=".to_string()));
+        assert!(!items.contains(&"name=".to_string()));
+    }
+
+    #[test]
+    fn goto_definition_for_member() {
+        let code = r#"
+to main():
+    foo = Foo()
+    foo.bar(1)
+
+A Foo:
+    can bar(x: Int) -> Int:
+        return x
+"#;
+        let (state, _) = build_document_state(code.to_string());
+        let pos = position_at(code, "bar(1)", 1);
+        let range = definition_location(&state, pos);
+        assert_debug_snapshot!(range);
+    }
+
+    #[test]
+    fn references_in_document() {
+        let code = r#"
+to main():
+    x = 1
+    y = x + x
+"#;
+        let (state, _) = build_document_state(code.to_string());
+        let pos = position_at(code, "x + x", 0);
+        let ranges = references_at_position(&state, pos, true);
+        assert_debug_snapshot!(ranges);
+    }
+
+    #[test]
+    fn rename_edits_for_identifier() {
+        let code = r#"
+to main():
+    x = 1
+    y = x + x
+"#;
+        let (state, _) = build_document_state(code.to_string());
+        let pos = position_at(code, "x + x", 0);
+        let edits = rename_at_position(&state, pos, "total");
+        assert_debug_snapshot!(edits);
+    }
+
+    #[test]
+    fn signature_help_for_call() {
+        let code = r#"
+to add(a: Int, b: Int) -> Int:
+    return a + b
+to main():
+    add(1, 2)
+"#;
+        let (state, _) = build_document_state(code.to_string());
+        let pos = position_at(code, "add(1, 2)", "add(1, ".len());
+        let help = signature_help_at_position(&state, pos);
+        assert_debug_snapshot!(help);
+    }
+
+    #[test]
+    fn workspace_symbols_across_documents() {
+        let code_a = r#"
+to main():
+    foo = Foo()
+
+A Foo:
+    has:
+        value: Int
+"#;
+        let code_b = r#"
+to add(a: Int, b: Int) -> Int:
+    return a + b
+"#;
+        let (state_a, _) = build_document_state(code_a.to_string());
+        let (state_b, _) = build_document_state(code_b.to_string());
+        let mut documents = HashMap::new();
+        documents.insert(Url::parse("file:///a.wr").unwrap(), state_a);
+        documents.insert(Url::parse("file:///b.wr").unwrap(), state_b);
+
+        let defs = workspace_definitions(&documents, "Foo");
+        let symbols = workspace_symbols(&documents, "");
+        assert_debug_snapshot!(defs);
+        assert_debug_snapshot!(symbols.len());
+    }
+
+    #[test]
+    fn workspace_references_and_rename() {
+        let code_a = r#"
+to main():
+    x = 1
+"#;
+        let code_b = r#"
+to other():
+    y = x + x
+"#;
+        let (state_a, _) = build_document_state(code_a.to_string());
+        let (state_b, _) = build_document_state(code_b.to_string());
+        let uri_a = Url::parse("file:///a.wr").unwrap();
+        let uri_b = Url::parse("file:///b.wr").unwrap();
+        let mut documents = HashMap::new();
+        documents.insert(uri_a.clone(), state_a);
+        documents.insert(uri_b.clone(), state_b);
+
+        let references = workspace_references(&documents, &uri_a, "x", true);
+        let edits = workspace_rename(&documents, &uri_a, "x", "total");
+        assert_debug_snapshot!(references);
+        assert_debug_snapshot!(edits);
+    }
+
+    #[test]
+    fn apply_content_changes_incremental() {
+        let original = "to main():\n    x = 1\n";
+        let index = LineIndex::new(original);
+        let start = original.find("1").unwrap();
+        let end = start + 1;
+        let range = Range {
+            start: offset_to_position_with_index(original, &index, start),
+            end: offset_to_position_with_index(original, &index, end),
+        };
+        let changes = vec![TextDocumentContentChangeEvent {
+            range: Some(range),
+            range_length: None,
+            text: "42".to_string(),
+        }];
+        let updated = apply_content_changes(original.to_string(), changes).unwrap();
+        assert!(updated.contains("x = 42"));
+    }
+
+    #[test]
+    fn formatting_trims_whitespace() {
+        let text = "to main():  \n    x = 1\t\n";
+        let formatted = format_text(text);
+        assert_debug_snapshot!(formatted);
+    }
+
+    #[test]
+    fn folding_ranges_basic() {
+        let code = r#"
+to main():
+    if true:
+        x = 1
+
+A Foo:
+    has:
+        value: Int
+"#;
+        let (state, _) = build_document_state(code.to_string());
+        let ranges = folding_ranges(&state);
+        assert_debug_snapshot!(ranges);
+    }
+
+    #[test]
+    fn code_lens_references_count() {
+        let code = r#"
+to add(a: Int, b: Int) -> Int:
+    return a + b
+to main():
+    add(1, 2)
+    add(3, 4)
+"#;
+        let (state, _) = build_document_state(code.to_string());
+        let lenses = code_lenses(&state);
+        assert_debug_snapshot!(lenses);
+    }
+
+    #[test]
+    fn type_definition_for_variable() {
+        let code = r#"
+to main():
+    foo = Foo()
+    foo
+
+A Foo:
+    has:
+        value: Int
+"#;
+        let (state, _) = build_document_state(code.to_string());
+        let pos = position_at(code, "foo\n", 1);
+        let ty = type_at_position(&state, pos);
+        assert_debug_snapshot!(ty);
+    }
+
+    #[test]
+    fn organize_imports_editing() {
+        let code = r#"
+use b, a, a from core
+to main():
+    a()
+"#;
+        let (state, _) = build_document_state(code.to_string());
+        let uri = Url::parse("file:///main.wr").unwrap();
+        let edit = organize_imports_edit(&state, &uri);
+        assert_debug_snapshot!(edit);
+    }
+
+    #[test]
+    fn diagnostics_naming_and_shadowing() {
+        let code = r#"
+to BadName():
+    x = 1
+    to inner():
+        x = 2
+
+A foo:
+    has:
+        value: Int
+"#;
+        let (state, _) = build_document_state(code.to_string());
+        let mut diagnostics = Vec::new();
+        diagnostics.extend(check_naming_conventions(&state));
+        diagnostics.extend(check_shadowing(&state));
+        assert_debug_snapshot!(diagnostics);
+    }
+
+    #[test]
+    fn workspace_index_auto_import_candidates() {
+        let base = std::env::temp_dir().join("wrela_lsp_index_test");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let a_path = base.join("a.wr");
+        let b_path = base.join("b.wr");
+        fs::write(&a_path, "A Foo:\n    has:\n        value: Int\n").unwrap();
+        fs::write(&b_path, "to main():\n    foo = Foo()\n    bar = Bar()\n").unwrap();
+        let root_uri = Url::from_directory_path(&base).unwrap();
+        let documents = index_workspace_documents(&root_uri);
+        let current = documents
+            .get(&Url::from_file_path(&b_path).unwrap())
+            .unwrap()
+            .clone();
+        let candidates = workspace_import_candidates(
+            &documents,
+            &current,
+            &Url::from_file_path(&b_path).unwrap(),
+            "Foo",
+        );
+        assert_debug_snapshot!(candidates);
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn workspace_index_cache_reuse() {
+        let base = std::env::temp_dir().join("wrela_lsp_index_cache");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let a_path = base.join("a.wr");
+        fs::write(&a_path, "A Foo:\n    has:\n        value: Int\n").unwrap();
+        let root_uri = Url::from_directory_path(&base).unwrap();
+        let docs_first = index_workspace_documents(&root_uri);
+        let cache = WorkspaceIndex {
+            root: root_uri.clone(),
+            documents: docs_first.clone(),
+        };
+        let docs_second = cache.documents.clone();
+        assert_eq!(docs_first.len(), docs_second.len());
+        let _ = fs::remove_dir_all(&base);
+    }
 }

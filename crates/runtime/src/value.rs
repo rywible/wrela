@@ -1,4 +1,5 @@
 use crate::object::ObjHeader;
+use crate::bytes::with_bytes;
 use crate::string::with_string_bytes;
 use std::sync::atomic::AtomicU32;
 
@@ -152,7 +153,8 @@ pub enum TypeId {
     Iterator = 10,
     Result = 11,
     Pool = 12,
-    BoxedInt = 13,
+    Bytes = 13,
+    BoxedInt = 14,
     UserBase = 100,
 }
 
@@ -224,6 +226,10 @@ pub fn value_eq(a: Value, b: Value) -> bool {
                 });
                 return eq.unwrap_or(false);
             }
+            if ah.type_id == TypeId::Bytes as u32 && bh.type_id == TypeId::Bytes as u32 {
+                let eq = with_bytes(a, |ab| with_bytes(b, |bb| ab == bb).unwrap_or(false));
+                return eq.unwrap_or(false);
+            }
         }
     }
     if let (Some(ai), true) = (int_value(a), b.is_float()) {
@@ -266,6 +272,12 @@ pub fn value_hash<H: std::hash::Hasher>(val: Value, state: &mut H) {
                 });
                 return;
             }
+            if header.type_id == TypeId::Bytes as u32 {
+                let _ = with_bytes(val, |bytes| {
+                    bytes.hash(state);
+                });
+                return;
+            }
         }
     }
     val.0.hash(state);
@@ -301,6 +313,7 @@ pub fn int_value(val: Value) -> Option<i64> {
     None
 }
 
+#[allow(dead_code)]
 pub fn is_int_value(val: Value) -> bool {
     int_value(val).is_some()
 }

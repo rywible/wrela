@@ -19,6 +19,12 @@ pub const METRIC_STORAGE_COMMIT_LATENCY_NS: u32 = 14;
 pub const METRIC_STORAGE_READ_LATENCY_NS: u32 = 15;
 pub const METRIC_STORAGE_READS: u32 = 16;
 pub const METRIC_STORAGE_BATCHES: u32 = 17;
+pub const METRIC_STORAGE_BACKUP_SUCCESS: u32 = 18;
+pub const METRIC_STORAGE_BACKUP_FAILURE: u32 = 19;
+pub const METRIC_STORAGE_BACKUP_LAST_DURATION_NS: u32 = 20;
+pub const METRIC_STORAGE_BACKUP_LAST_SIZE: u32 = 21;
+pub const METRIC_STORAGE_BACKUP_LAST_TS: u32 = 22;
+pub const METRIC_STORAGE_BACKUP_RESTORE_FAILURE: u32 = 23;
 
 #[cfg(feature = "metrics")]
 struct Metrics {
@@ -40,6 +46,12 @@ struct Metrics {
     storage_read_latency_ns: AtomicU64,
     storage_reads: AtomicU64,
     storage_batches: AtomicU64,
+    storage_backup_success: AtomicU64,
+    storage_backup_failure: AtomicU64,
+    storage_backup_last_duration_ns: AtomicU64,
+    storage_backup_last_size: AtomicU64,
+    storage_backup_last_ts: AtomicU64,
+    storage_backup_restore_failure: AtomicU64,
 }
 
 #[cfg(feature = "metrics")]
@@ -62,7 +74,14 @@ static METRICS: Metrics = Metrics {
     storage_read_latency_ns: AtomicU64::new(0),
     storage_reads: AtomicU64::new(0),
     storage_batches: AtomicU64::new(0),
+    storage_backup_success: AtomicU64::new(0),
+    storage_backup_failure: AtomicU64::new(0),
+    storage_backup_last_duration_ns: AtomicU64::new(0),
+    storage_backup_last_size: AtomicU64::new(0),
+    storage_backup_last_ts: AtomicU64::new(0),
+    storage_backup_restore_failure: AtomicU64::new(0),
 };
+
 
 #[cfg(feature = "metrics")]
 pub fn inc_messages_sent() {
@@ -164,6 +183,48 @@ pub fn inc_storage_batch_open() {
 }
 
 #[cfg(feature = "metrics")]
+pub fn inc_storage_backup_success() {
+    METRICS
+        .storage_backup_success
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(feature = "metrics")]
+pub fn inc_storage_backup_failure() {
+    METRICS
+        .storage_backup_failure
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(feature = "metrics")]
+pub fn record_storage_backup_duration(duration: std::time::Duration) {
+    METRICS
+        .storage_backup_last_duration_ns
+        .store(duration.as_nanos() as u64, Ordering::Relaxed);
+}
+
+#[cfg(feature = "metrics")]
+pub fn record_storage_backup_size(size: usize) {
+    METRICS
+        .storage_backup_last_size
+        .store(size as u64, Ordering::Relaxed);
+}
+
+#[cfg(feature = "metrics")]
+pub fn record_storage_backup_ts(ts_secs: u64) {
+    METRICS
+        .storage_backup_last_ts
+        .store(ts_secs, Ordering::Relaxed);
+}
+
+#[cfg(feature = "metrics")]
+pub fn inc_storage_backup_restore_failure() {
+    METRICS
+        .storage_backup_restore_failure
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(feature = "metrics")]
 pub fn update_mailbox_high_water(len: usize) {
     let mut current = METRICS.mailbox_high_water.load(Ordering::Relaxed);
     let target = len as u64;
@@ -213,6 +274,16 @@ pub fn get(id: u32) -> u64 {
         }
         METRIC_STORAGE_READS => METRICS.storage_reads.load(Ordering::Relaxed),
         METRIC_STORAGE_BATCHES => METRICS.storage_batches.load(Ordering::Relaxed),
+        METRIC_STORAGE_BACKUP_SUCCESS => METRICS.storage_backup_success.load(Ordering::Relaxed),
+        METRIC_STORAGE_BACKUP_FAILURE => METRICS.storage_backup_failure.load(Ordering::Relaxed),
+        METRIC_STORAGE_BACKUP_LAST_DURATION_NS => {
+            METRICS.storage_backup_last_duration_ns.load(Ordering::Relaxed)
+        }
+        METRIC_STORAGE_BACKUP_LAST_SIZE => METRICS.storage_backup_last_size.load(Ordering::Relaxed),
+        METRIC_STORAGE_BACKUP_LAST_TS => METRICS.storage_backup_last_ts.load(Ordering::Relaxed),
+        METRIC_STORAGE_BACKUP_RESTORE_FAILURE => {
+            METRICS.storage_backup_restore_failure.load(Ordering::Relaxed)
+        }
         _ => 0,
     }
 }
@@ -247,6 +318,12 @@ pub fn reset() {
         .store(0, Ordering::Relaxed);
     METRICS.storage_reads.store(0, Ordering::Relaxed);
     METRICS.storage_batches.store(0, Ordering::Relaxed);
+    METRICS.storage_backup_success.store(0, Ordering::Relaxed);
+    METRICS.storage_backup_failure.store(0, Ordering::Relaxed);
+    METRICS.storage_backup_last_duration_ns.store(0, Ordering::Relaxed);
+    METRICS.storage_backup_last_size.store(0, Ordering::Relaxed);
+    METRICS.storage_backup_last_ts.store(0, Ordering::Relaxed);
+    METRICS.storage_backup_restore_failure.store(0, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "metrics"))]
@@ -289,5 +366,17 @@ pub fn record_storage_read_latency(_duration: std::time::Duration) {}
 pub fn inc_storage_read() {}
 #[cfg(not(feature = "metrics"))]
 pub fn inc_storage_batch_open() {}
+#[cfg(not(feature = "metrics"))]
+pub fn inc_storage_backup_success() {}
+#[cfg(not(feature = "metrics"))]
+pub fn inc_storage_backup_failure() {}
+#[cfg(not(feature = "metrics"))]
+pub fn record_storage_backup_duration(_duration: std::time::Duration) {}
+#[cfg(not(feature = "metrics"))]
+pub fn record_storage_backup_size(_size: usize) {}
+#[cfg(not(feature = "metrics"))]
+pub fn record_storage_backup_ts(_ts_secs: u64) {}
+#[cfg(not(feature = "metrics"))]
+pub fn inc_storage_backup_restore_failure() {}
 #[cfg(not(feature = "metrics"))]
 pub fn reset() {}

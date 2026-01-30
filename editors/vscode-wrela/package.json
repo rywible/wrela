@@ -14,6 +14,25 @@
     "onLanguage:wrela"
   ],
   "contributes": {
+    "configurationDefaults": {
+      "[wrela]": {
+        "editor.semanticHighlighting.enabled": false,
+        "editor.suggest.completeFunctionCalls": false,
+        "editor.wordBasedSuggestions": "off",
+        "editor.codeLens": false,
+        "editor.lineHeight": 0,
+        "editor.tokenColorCustomizations": {
+          "textMateRules": [
+            {
+              "scope": "punctuation.separator.wrela",
+              "settings": {
+                "foreground": "#D4D4D4"
+              }
+            }
+          ]
+        }
+      }
+    },
     "languages": [
       {
         "id": "wrela",
@@ -32,6 +51,24 @@
         "language": "wrela",
         "scopeName": "source.wrela",
         "path": "./syntaxes/wrela.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "wrela.codeLens.showReferences",
+        "title": "Wrela: Show References Info"
+      },
+      {
+        "command": "wrela.goToTypeDefinitionClient",
+        "title": "Wrela: Go To Type Definition"
+      },
+      {
+        "command": "wrela.peekTypeDefinitionClient",
+        "title": "Wrela: Peek Type Definition"
+      },
+      {
+        "command": "wrela.smokeTest.openGuide",
+        "title": "Wrela: Open Smoke Test Guide"
       }
     ],
     "configuration": {

@@ -16,6 +16,8 @@ use openraft::raft::{AppendEntriesRequest, AppendEntriesResponse, InstallSnapsho
 use openraft::RaftTypeConfig;
 
 use crate::storage::service::StorageError;
+use crate::storage::blob::BlobBackend;
+use crate::storage::value::StoredValue;
 use crate::storage::store::TypeConfig;
 
 pub type NodeId = <TypeConfig as RaftTypeConfig>::NodeId;
@@ -41,7 +43,6 @@ impl HttpNetworkFactory {
 }
 
 pub struct HttpNetwork {
-    target: NodeId,
     addr: String,
     client: reqwest::Client,
 }
@@ -154,7 +155,6 @@ impl RaftNetworkFactory<TypeConfig> for HttpNetworkFactory {
             .cloned()
             .unwrap_or_else(|| node.addr.clone());
         HttpNetwork {
-            target,
             addr,
             client: self.client.clone(),
         }
@@ -249,12 +249,14 @@ impl HttpNetwork {
 pub struct HttpServer {
     raft: openraft::Raft<TypeConfig>,
     store: Arc<crate::storage::store::KvStore>,
+    blob: BlobBackend,
 }
 
 pub async fn start_http_server(
     listener: TcpListener,
     raft: openraft::Raft<TypeConfig>,
     store: Arc<crate::storage::store::KvStore>,
+    blob: BlobBackend,
 ) -> Result<(SocketAddr, tokio::task::JoinHandle<()>), StorageError> {
     let addr = listener
         .local_addr()
@@ -269,7 +271,7 @@ pub async fn start_http_server(
     #[cfg(any(test, feature = "test-utils"))]
     let app = app.route("/storage/leader", post(storage_leader));
 
-    let app = app.with_state(HttpServer { raft, store });
+    let app = app.with_state(HttpServer { raft, store, blob });
 
     let handle = tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
@@ -321,9 +323,19 @@ async fn storage_read(
     if let Err(err) = resp {
         return Json(RpcEnvelope::err(err.to_string()));
     }
-    let guard = state.store.state_machine.read().await;
-    match guard.get_value(&req.key) {
-        Ok(value) => Json(RpcEnvelope::ok(StorageReadResponse { value })),
+    let stored = {
+        let guard = state.store.state_machine.read().await;
+        guard.get_value(&req.key)
+    };
+    match stored {
+        Ok(Some(StoredValue::Inline(bytes))) => {
+            Json(RpcEnvelope::ok(StorageReadResponse { value: Some(bytes) }))
+        }
+        Ok(Some(StoredValue::Blob(blob_ref))) => match state.blob.get(&blob_ref).await {
+            Ok(bytes) => Json(RpcEnvelope::ok(StorageReadResponse { value: Some(bytes) })),
+            Err(err) => Json(RpcEnvelope::err(err.to_string())),
+        },
+        Ok(None) => Json(RpcEnvelope::ok(StorageReadResponse { value: None })),
         Err(err) => Json(RpcEnvelope::err(err.to_string())),
     }
 }

@@ -11,6 +11,7 @@ impl TestFixture {
         Self { state }
     }
 
+    #[allow(dead_code)]
     pub fn position(&self, line: u32, character: u32) -> Position {
         Position { line, character }
     }

@@ -104,16 +104,16 @@ impl<'a> Parser<'a> {
         if self.at(kind) {
             self.bump();
         } else {
-            self.error();
+            self.error_expected(kind);
         }
     }
 
     pub fn error(&mut self) {
-        self.error_with_message("unexpected token", true);
+        self.error_unexpected(true);
     }
 
     pub fn error_no_bump(&mut self) {
-        self.error_with_message("unexpected token", false);
+        self.error_unexpected(false);
     }
 
     pub fn expect_stmt_boundary(&mut self) {
@@ -134,6 +134,14 @@ impl<'a> Parser<'a> {
 
     pub fn error_with_message_no_bump(&mut self, message: &str) {
         self.error_with_message(message, false);
+    }
+
+    pub fn expect_with_message(&mut self, kind: SyntaxKind, message: &str) {
+        if self.at(kind) {
+            self.bump();
+        } else {
+            self.error_with_message(message, true);
+        }
     }
 
     pub fn peek_nontrivia_at(&self, n: usize) -> SyntaxKind {
@@ -170,6 +178,10 @@ impl<'a> Parser<'a> {
         self.source.is_at_eof()
     }
 
+    pub fn cursor_pos(&self) -> usize {
+        self.source.cursor()
+    }
+
     fn error_with_message(&mut self, message: &str, should_bump: bool) {
         let span = self.source.peek_span();
         self.errors.push(ParseError {
@@ -181,6 +193,21 @@ impl<'a> Parser<'a> {
             self.bump();
         }
         m.complete(self, SyntaxKind::Error);
+    }
+
+    fn error_unexpected(&mut self, should_bump: bool) {
+        let found_kind = self.peek();
+        let found = format_found(found_kind, self.source.text());
+        let message = format!("unexpected {}", found);
+        self.error_with_message(&message, should_bump);
+    }
+
+    fn error_expected(&mut self, expected: SyntaxKind) {
+        let expected_label = kind_label(expected);
+        let found_kind = self.peek();
+        let found = format_found(found_kind, self.source.text());
+        let message = format!("expected {}, found {}", expected_label, found);
+        self.error_with_message(&message, true);
     }
 
     fn bump_any(&mut self) {
@@ -245,6 +272,113 @@ impl<'a> Parser<'a> {
                 } = self.events[i]
             {
                 *forward_parent = None;
+            }
+        }
+    }
+}
+
+fn kind_label(kind: SyntaxKind) -> &'static str {
+    match kind {
+        SyntaxKind::ClassKw => "'A'",
+        SyntaxKind::AnKw => "'An'",
+        SyntaxKind::HasKw => "'has'",
+        SyntaxKind::CanKw => "'can'",
+        SyntaxKind::ToKw => "'to'",
+        SyntaxKind::IfKw => "'if'",
+        SyntaxKind::ElseKw => "'else'",
+        SyntaxKind::WhileKw => "'while'",
+        SyntaxKind::ForKw => "'for'",
+        SyntaxKind::InKw => "'in'",
+        SyntaxKind::ReturnKw => "'return'",
+        SyntaxKind::BreakKw => "'break'",
+        SyntaxKind::ContinueKw => "'continue'",
+        SyntaxKind::MatchKw => "'match'",
+        SyntaxKind::OtherwiseKw => "'otherwise'",
+        SyntaxKind::ErrKw => "'err'",
+        SyntaxKind::CrashKw => "'crash'",
+        SyntaxKind::TrueKw => "'true'",
+        SyntaxKind::FalseKw => "'false'",
+        SyntaxKind::NothingKw => "'nothing'",
+        SyntaxKind::AndKw => "'and'",
+        SyntaxKind::OrKw => "'or'",
+        SyntaxKind::NotKw => "'not'",
+        SyntaxKind::AwaitKw => "'await'",
+        SyntaxKind::DetachKw => "'detach'",
+        SyntaxKind::SpawnKw => "'spawn'",
+        SyntaxKind::FireKw => "'fire'",
+        SyntaxKind::OptimizeKw => "'optimize'",
+        SyntaxKind::UseKw => "'use'",
+        SyntaxKind::FromKw => "'from'",
+        SyntaxKind::PublicKw => "'public'",
+        SyntaxKind::PrivateKw => "'private'",
+        SyntaxKind::ItsKw => "'its'",
+        SyntaxKind::ItKw => "'it'",
+        SyntaxKind::ChangingKw => "'changing'",
+        SyntaxKind::Ident => "identifier",
+        SyntaxKind::StringLiteral
+        | SyntaxKind::StringStart
+        | SyntaxKind::StringPart
+        | SyntaxKind::StringEnd => "string",
+        SyntaxKind::IntNumber => "integer",
+        SyntaxKind::FloatNumber => "float",
+        SyntaxKind::Colon => "':'",
+        SyntaxKind::LParen => "'('",
+        SyntaxKind::RParen => "')'",
+        SyntaxKind::LBracket => "'['",
+        SyntaxKind::RBracket => "']'",
+        SyntaxKind::LBrace => "'{'",
+        SyntaxKind::RBrace => "'}'",
+        SyntaxKind::Dot => "'.'",
+        SyntaxKind::Range => "'...'",
+        SyntaxKind::Comma => "','",
+        SyntaxKind::At => "'@'",
+        SyntaxKind::Arrow => "'->'",
+        SyntaxKind::Equals => "'='",
+        SyntaxKind::EqEq => "'=='",
+        SyntaxKind::BangEq => "'!='",
+        SyntaxKind::Less => "'<'",
+        SyntaxKind::LessEq => "'<='",
+        SyntaxKind::Greater => "'>'",
+        SyntaxKind::GreaterEq => "'>='",
+        SyntaxKind::Plus => "'+'",
+        SyntaxKind::Minus => "'-'",
+        SyntaxKind::Star => "'*'",
+        SyntaxKind::Slash => "'/'",
+        SyntaxKind::Percent => "'%'",
+        SyntaxKind::PlusEq => "'+='",
+        SyntaxKind::MinusEq => "'-='",
+        SyntaxKind::StarEq => "'*='",
+        SyntaxKind::SlashEq => "'/='",
+        SyntaxKind::Ampersand => "'&'",
+        SyntaxKind::Pipe => "'|'",
+        SyntaxKind::Caret => "'^'",
+        SyntaxKind::BitwiseNot => "'~'",
+        SyntaxKind::ShiftLeft => "'<<'",
+        SyntaxKind::ShiftRight => "'>>'",
+        SyntaxKind::Newline => "end of line",
+        SyntaxKind::Indent => "indent",
+        SyntaxKind::Dedent => "dedent",
+        SyntaxKind::Eof => "end of file",
+        _ => "token",
+    }
+}
+
+fn format_found(kind: SyntaxKind, text: &str) -> String {
+    match kind {
+        SyntaxKind::Eof => "end of file".to_string(),
+        SyntaxKind::Newline => "end of line".to_string(),
+        SyntaxKind::Whitespace | SyntaxKind::Indent | SyntaxKind::Dedent => kind_label(kind).into(),
+        SyntaxKind::Comment | SyntaxKind::DocComment => "comment".to_string(),
+        _ => {
+            let mut slice = text.replace('\n', "\\n").replace('\r', "\\r");
+            if slice.len() > 20 {
+                slice.truncate(20);
+                slice.push_str("…");
+            }
+            if slice.is_empty() {
+                kind_label(kind).into()
+            } else {
+                format!("{} ({})", kind_label(kind), slice)
             }
         }
     }

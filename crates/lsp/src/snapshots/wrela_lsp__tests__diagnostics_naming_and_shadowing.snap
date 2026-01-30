@@ -1,0 +1,90 @@
+---
+source: crates/lsp/src/lib.rs
+expression: diagnostics
+---
+[
+    Diagnostic {
+        range: Range {
+            start: Position {
+                line: 1,
+                character: 3,
+            },
+            end: Position {
+                line: 1,
+                character: 10,
+            },
+        },
+        severity: Some(
+            Information,
+        ),
+        code: Some(
+            String(
+                "naming_convention",
+            ),
+        ),
+        code_description: None,
+        source: Some(
+            "wrela",
+        ),
+        message: "'BadName' does not follow naming conventions",
+        related_information: None,
+        tags: None,
+        data: None,
+    },
+    Diagnostic {
+        range: Range {
+            start: Position {
+                line: 6,
+                character: 2,
+            },
+            end: Position {
+                line: 6,
+                character: 5,
+            },
+        },
+        severity: Some(
+            Information,
+        ),
+        code: Some(
+            String(
+                "naming_convention",
+            ),
+        ),
+        code_description: None,
+        source: Some(
+            "wrela",
+        ),
+        message: "'foo' does not follow naming conventions",
+        related_information: None,
+        tags: None,
+        data: None,
+    },
+    Diagnostic {
+        range: Range {
+            start: Position {
+                line: 4,
+                character: 8,
+            },
+            end: Position {
+                line: 4,
+                character: 9,
+            },
+        },
+        severity: Some(
+            Hint,
+        ),
+        code: Some(
+            String(
+                "shadowed_name",
+            ),
+        ),
+        code_description: None,
+        source: Some(
+            "wrela",
+        ),
+        message: "'x' shadows a name from an outer scope",
+        related_information: None,
+        tags: None,
+        data: None,
+    },
+]

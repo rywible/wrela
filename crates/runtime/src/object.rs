@@ -4,6 +4,7 @@ use crate::iter::drop_iter;
 use crate::list::drop_list;
 use crate::map::drop_map;
 use crate::string::drop_string;
+use crate::bytes::drop_bytes;
 use crate::result::drop_result;
 use crate::value::{drop_boxed_int, TypeId};
 use std::sync::atomic::AtomicU32;
@@ -28,6 +29,7 @@ pub unsafe fn drop_object(ptr: *mut ObjHeader) {
         x if x == TypeId::Iterator as u32 => unsafe { drop_iter(ptr) },
         x if x == TypeId::Result as u32 => unsafe { drop_result(ptr) },
         x if x == TypeId::Pool as u32 => unsafe { drop_pool(ptr) },
+        x if x == TypeId::Bytes as u32 => drop_bytes(ptr),
         x if x == TypeId::BoxedInt as u32 => unsafe { drop_boxed_int(ptr) },
         _ => {
             if type_id >= TypeId::UserBase as u32 {

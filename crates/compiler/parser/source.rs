@@ -48,6 +48,10 @@ impl<'a> TokenSource<'a> {
         }
     }
 
+    pub fn cursor(&self) -> usize {
+        self.cursor
+    }
+
     pub fn is_at_eof(&self) -> bool {
         self.peek() == SyntaxKind::Eof
     }

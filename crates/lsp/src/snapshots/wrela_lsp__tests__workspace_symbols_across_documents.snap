@@ -1,0 +1,29 @@
+---
+source: crates/lsp/src/lib.rs
+expression: defs
+---
+[
+    Location {
+        uri: Url {
+            scheme: "file",
+            cannot_be_a_base: false,
+            username: "",
+            password: None,
+            host: None,
+            port: None,
+            path: "/a.wr",
+            query: None,
+            fragment: None,
+        },
+        range: Range {
+            start: Position {
+                line: 4,
+                character: 2,
+            },
+            end: Position {
+                line: 4,
+                character: 5,
+            },
+        },
+    },
+]
