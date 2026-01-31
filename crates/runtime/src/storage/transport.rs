@@ -17,7 +17,7 @@ use openraft::RaftTypeConfig;
 
 use crate::storage::service::StorageError;
 use crate::storage::blob::BlobBackend;
-use crate::storage::value::StoredValue;
+use crate::storage::value::{StoredRecord, StoredValue};
 use crate::storage::store::TypeConfig;
 
 pub type NodeId = <TypeConfig as RaftTypeConfig>::NodeId;
@@ -130,6 +130,42 @@ pub struct StorageReadRequest {
 #[derive(Serialize, Deserialize)]
 pub struct StorageReadResponse {
     pub value: Option<Vec<u8>>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct StorageReadVersionResponse {
+    pub value: Option<Vec<u8>>,
+    pub version: Option<u64>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct StorageScanRequest {
+    pub start: Option<Vec<u8>>,
+    pub end: Option<Vec<u8>>,
+    pub limit: usize,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct StorageScanEntry {
+    pub key: Vec<u8>,
+    pub value: Vec<u8>,
+    pub version: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct StorageScanResponse {
+    pub entries: Vec<StorageScanEntry>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct StoragePrefixRequest {
+    pub prefix: Vec<u8>,
+    pub limit: usize,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct StoragePrefixResponse {
+    pub keys: Vec<Vec<u8>>,
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -266,7 +302,10 @@ pub async fn start_http_server(
         .route("/raft/append", post(append_entries))
         .route("/raft/install_snapshot", post(install_snapshot))
         .route("/raft/vote", post(vote))
-        .route("/storage/read", post(storage_read));
+        .route("/storage/read", post(storage_read))
+        .route("/storage/read_version", post(storage_read_version))
+        .route("/storage/scan", post(storage_scan))
+        .route("/storage/prefix", post(storage_prefix));
 
     #[cfg(any(test, feature = "test-utils"))]
     let app = app.route("/storage/leader", post(storage_leader));
@@ -328,15 +367,96 @@ async fn storage_read(
         guard.get_value(&req.key)
     };
     match stored {
-        Ok(Some(StoredValue::Inline(bytes))) => {
-            Json(RpcEnvelope::ok(StorageReadResponse { value: Some(bytes) }))
-        }
-        Ok(Some(StoredValue::Blob(blob_ref))) => match state.blob.get(&blob_ref).await {
+        Ok(Some(record)) => match record_bytes(&state.blob, &record).await {
             Ok(bytes) => Json(RpcEnvelope::ok(StorageReadResponse { value: Some(bytes) })),
-            Err(err) => Json(RpcEnvelope::err(err.to_string())),
+            Err(err) => Json(RpcEnvelope::err(err)),
         },
         Ok(None) => Json(RpcEnvelope::ok(StorageReadResponse { value: None })),
         Err(err) => Json(RpcEnvelope::err(err.to_string())),
+    }
+}
+
+async fn storage_read_version(
+    State(state): State<HttpServer>,
+    Json(req): Json<StorageReadRequest>,
+) -> Json<RpcEnvelope<StorageReadVersionResponse>> {
+    let resp = state.raft.ensure_linearizable().await;
+    if let Err(err) = resp {
+        return Json(RpcEnvelope::err(err.to_string()));
+    }
+    let stored = {
+        let guard = state.store.state_machine.read().await;
+        guard.get_value(&req.key)
+    };
+    match stored {
+        Ok(Some(record)) => match record_bytes(&state.blob, &record).await {
+            Ok(bytes) => Json(RpcEnvelope::ok(StorageReadVersionResponse {
+                value: Some(bytes),
+                version: Some(record.version),
+            })),
+            Err(err) => Json(RpcEnvelope::err(err)),
+        },
+        Ok(None) => Json(RpcEnvelope::ok(StorageReadVersionResponse {
+            value: None,
+            version: None,
+        })),
+        Err(err) => Json(RpcEnvelope::err(err.to_string())),
+    }
+}
+
+async fn storage_scan(
+    State(state): State<HttpServer>,
+    Json(req): Json<StorageScanRequest>,
+) -> Json<RpcEnvelope<StorageScanResponse>> {
+    let resp = state.raft.ensure_linearizable().await;
+    if let Err(err) = resp {
+        return Json(RpcEnvelope::err(err.to_string()));
+    }
+    let records = {
+        let guard = state.store.state_machine.read().await;
+        guard.scan_range(req.start.as_deref(), req.end.as_deref(), req.limit)
+    };
+    let records = match records {
+        Ok(records) => records,
+        Err(err) => return Json(RpcEnvelope::err(err.to_string())),
+    };
+    let mut entries = Vec::with_capacity(records.len());
+    for (key, record) in records {
+        let bytes = match record_bytes(&state.blob, &record).await {
+            Ok(bytes) => bytes,
+            Err(err) => return Json(RpcEnvelope::err(err)),
+        };
+        entries.push(StorageScanEntry {
+            key,
+            value: bytes,
+            version: record.version,
+        });
+    }
+    Json(RpcEnvelope::ok(StorageScanResponse { entries }))
+}
+
+async fn storage_prefix(
+    State(state): State<HttpServer>,
+    Json(req): Json<StoragePrefixRequest>,
+) -> Json<RpcEnvelope<StoragePrefixResponse>> {
+    let resp = state.raft.ensure_linearizable().await;
+    if let Err(err) = resp {
+        return Json(RpcEnvelope::err(err.to_string()));
+    }
+    let keys = {
+        let guard = state.store.state_machine.read().await;
+        guard.list_prefix_keys(&req.prefix, req.limit)
+    };
+    match keys {
+        Ok(keys) => Json(RpcEnvelope::ok(StoragePrefixResponse { keys })),
+        Err(err) => Json(RpcEnvelope::err(err.to_string())),
+    }
+}
+
+async fn record_bytes(blob: &BlobBackend, record: &StoredRecord) -> Result<Vec<u8>, String> {
+    match &record.value {
+        StoredValue::Inline(bytes) => Ok(bytes.clone()),
+        StoredValue::Blob(blob_ref) => blob.get(blob_ref).await.map_err(|err| err.to_string()),
     }
 }
 

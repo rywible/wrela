@@ -31,6 +31,7 @@ use rocksdb::ColumnFamily;
 use rocksdb::ColumnFamilyDescriptor;
 use rocksdb::Direction;
 use rocksdb::Options;
+use rocksdb::ReadOptions;
 use rocksdb::WriteBatch;
 use rocksdb::DB;
 use serde::Deserialize;
@@ -39,7 +40,7 @@ use tokio::sync::RwLock;
 
 use super::backup::{snapshot_meta_from_bytes, BackupSink};
 use super::blob::BlobBackend;
-use super::value::{BlobRef, StoredValue};
+use super::value::{BlobRef, StoredRecord, StoredValue};
 
 pub type NodeId = u64;
 
@@ -63,11 +64,17 @@ pub enum KvCommand {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum KvRequest {
     Batch { ops: Vec<KvCommand> },
+    CompareAndSet {
+        key: Vec<u8>,
+        expected_version: Option<u64>,
+        value: Option<StoredValue>,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum KvResponse {
     Applied,
+    CompareAndSet(bool),
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -80,7 +87,7 @@ pub struct KvSnapshot {
 pub struct SerializableKvStateMachine {
     pub last_applied_log: Option<LogId<NodeId>>,
     pub last_membership: StoredMembership<NodeId, BasicNode>,
-    pub data: Vec<(Vec<u8>, StoredValue)>,
+    pub data: Vec<(Vec<u8>, StoredRecord)>,
 }
 
 impl From<&KvStateMachine> for SerializableKvStateMachine {
@@ -90,8 +97,7 @@ impl From<&KvStateMachine> for SerializableKvStateMachine {
         let it = state.db.iterator_cf(state.cf_sm_data(), rocksdb::IteratorMode::Start);
         for item in it {
             let (key, value) = item.expect("invalid kv record");
-            let stored =
-                decode_stored_value(&value).expect("invalid stored value");
+            let stored = decode_stored_record(&value).expect("invalid stored record");
             data.push((key.to_vec(), stored));
         }
 
@@ -125,12 +131,75 @@ impl KvStateMachine {
         self.db.cf_handle("sm_data").unwrap()
     }
 
-    pub fn get_value(&self, key: &[u8]) -> StorageResult<Option<StoredValue>> {
+    pub fn get_value(&self, key: &[u8]) -> StorageResult<Option<StoredRecord>> {
         let value = self.db.get_cf(self.cf_sm_data(), key).map_err(sm_r_err)?;
         match value {
             None => Ok(None),
-            Some(bytes) => Ok(Some(decode_stored_value(&bytes)?)),
+            Some(bytes) => Ok(Some(decode_stored_record(&bytes)?)),
         }
+    }
+
+    pub fn scan_range(
+        &self,
+        start: Option<&[u8]>,
+        end: Option<&[u8]>,
+        limit: usize,
+    ) -> StorageResult<Vec<(Vec<u8>, StoredRecord)>> {
+        let mut options = ReadOptions::default();
+        let start_vec = start.map(|v| v.to_vec());
+        let end_vec = end.map(|v| v.to_vec());
+        if let Some(lb) = start_vec.as_ref() {
+            options.set_iterate_lower_bound(lb.clone());
+        }
+        if let Some(ub) = end_vec.as_ref() {
+            options.set_iterate_upper_bound(ub.clone());
+        }
+        let mode = match start_vec.as_ref() {
+            Some(lb) => rocksdb::IteratorMode::From(lb, Direction::Forward),
+            None => rocksdb::IteratorMode::Start,
+        };
+        let mut out = Vec::new();
+        let it = self
+            .db
+            .iterator_cf_opt(self.cf_sm_data(), options, mode);
+        for item in it {
+            let (key, value) = item.map_err(sm_r_err)?;
+            let record = decode_stored_record(&value)?;
+            out.push((key.to_vec(), record));
+            if limit > 0 && out.len() >= limit {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn list_prefix_keys(
+        &self,
+        prefix: &[u8],
+        limit: usize,
+    ) -> StorageResult<Vec<Vec<u8>>> {
+        let mut options = ReadOptions::default();
+        let lower = prefix.to_vec();
+        let upper = next_prefix(prefix);
+        options.set_iterate_lower_bound(lower.clone());
+        if let Some(ub) = upper.as_ref() {
+            options.set_iterate_upper_bound(ub.clone());
+        }
+        let mut out = Vec::new();
+        let it = self
+            .db
+            .iterator_cf_opt(self.cf_sm_data(), options, rocksdb::IteratorMode::From(&lower, Direction::Forward));
+        for item in it {
+            let (key, _value) = item.map_err(sm_r_err)?;
+            if !prefix.is_empty() && !key.starts_with(prefix) {
+                break;
+            }
+            out.push(key.to_vec());
+            if limit > 0 && out.len() >= limit {
+                break;
+            }
+        }
+        Ok(out)
     }
 
     fn get_last_membership(&self) -> StorageResult<StoredMembership<NodeId, BasicNode>> {
@@ -174,7 +243,7 @@ impl KvStateMachine {
         }
 
         if let Some(ops) = ops {
-            let mut seen: std::collections::HashMap<Vec<u8>, Option<StoredValue>> =
+            let mut seen: std::collections::HashMap<Vec<u8>, Option<StoredRecord>> =
                 std::collections::HashMap::new();
             for op in ops {
                 match op {
@@ -183,11 +252,18 @@ impl KvStateMachine {
                             Some(val) => val.clone(),
                             None => self.get_value(key)?,
                         };
-                        if let Some(StoredValue::Blob(blob)) = current {
-                            blobs_to_delete.push(blob);
+                        if let Some(StoredRecord { value: StoredValue::Blob(blob), .. }) =
+                            current.as_ref()
+                        {
+                            blobs_to_delete.push(blob.clone());
                         }
-                        seen.insert(key.clone(), Some(value.clone()));
-                        let encoded = encode_stored_value(value)?;
+                        let next_version = current.as_ref().map(|rec| rec.version + 1).unwrap_or(1);
+                        let record = StoredRecord {
+                            version: next_version,
+                            value: value.clone(),
+                        };
+                        seen.insert(key.clone(), Some(record.clone()));
+                        let encoded = encode_stored_record(&record)?;
                         batch.put_cf(self.cf_sm_data(), key, encoded);
                     }
                     KvCommand::Delete { key } => {
@@ -195,8 +271,10 @@ impl KvStateMachine {
                             Some(val) => val.clone(),
                             None => self.get_value(key)?,
                         };
-                        if let Some(StoredValue::Blob(blob)) = current {
-                            blobs_to_delete.push(blob);
+                        if let Some(StoredRecord { value: StoredValue::Blob(blob), .. }) =
+                            current.as_ref()
+                        {
+                            blobs_to_delete.push(blob.clone());
                         }
                         seen.insert(key.clone(), None);
                         batch.delete_cf(self.cf_sm_data(), key);
@@ -209,11 +287,54 @@ impl KvStateMachine {
         Ok(blobs_to_delete)
     }
 
+    fn apply_compare_and_set(
+        &self,
+        log_id: LogId<NodeId>,
+        expected_version: Option<u64>,
+        key: &[u8],
+        value: Option<&StoredValue>,
+    ) -> StorageResult<(bool, Vec<BlobRef>)> {
+        let mut batch = WriteBatch::default();
+        let mut blobs_to_delete = Vec::new();
+        batch.put_cf(
+            self.cf_sm_meta(),
+            "last_applied_log".as_bytes(),
+            serde_json::to_vec(&log_id).map_err(sm_w_err)?,
+        );
+        let current = self.get_value(key)?;
+        let matches = match (expected_version, current.as_ref()) {
+            (None, None) => true,
+            (Some(expected), Some(rec)) => rec.version == expected,
+            _ => false,
+        };
+        if matches {
+            if let Some(StoredRecord { value: StoredValue::Blob(blob), .. }) = current.as_ref() {
+                blobs_to_delete.push(blob.clone());
+            }
+            match value {
+                Some(next_value) => {
+                    let next_version = current.as_ref().map(|rec| rec.version + 1).unwrap_or(1);
+                    let record = StoredRecord {
+                        version: next_version,
+                        value: next_value.clone(),
+                    };
+                    let encoded = encode_stored_record(&record)?;
+                    batch.put_cf(self.cf_sm_data(), key, encoded);
+                }
+                None => {
+                    batch.delete_cf(self.cf_sm_data(), key);
+                }
+            }
+        }
+        self.db.write(batch).map_err(sm_w_err)?;
+        Ok((matches, blobs_to_delete))
+    }
+
     fn from_serializable(sm: SerializableKvStateMachine, db: Arc<DB>) -> StorageResult<Self> {
         let r = Self { db };
 
         for (key, value) in sm.data {
-            let encoded = encode_stored_value(&value)?;
+            let encoded = encode_stored_record(&value)?;
             r.db.put_cf(r.cf_sm_data(), key, encoded).map_err(sm_w_err)?;
         }
 
@@ -529,6 +650,20 @@ impl RaftStorage<TypeConfig> for Arc<KvStore> {
                             blobs_to_delete.extend(sm.apply_entry(entry.log_id, None, Some(ops))?);
                             res.push(KvResponse::Applied);
                         }
+                        KvRequest::CompareAndSet {
+                            key,
+                            expected_version,
+                            value,
+                        } => {
+                            let (applied, deleted) = sm.apply_compare_and_set(
+                                entry.log_id,
+                                *expected_version,
+                                key,
+                                value.as_ref(),
+                            )?;
+                            blobs_to_delete.extend(deleted);
+                            res.push(KvResponse::CompareAndSet(applied));
+                        }
                     },
                     EntryPayload::Membership(mem) => {
                         let stored = StoredMembership::new(Some(entry.log_id), mem.clone());
@@ -691,12 +826,34 @@ impl KvStore {
     }
 }
 
-fn encode_stored_value(value: &StoredValue) -> StorageResult<Vec<u8>> {
+fn encode_stored_record(value: &StoredRecord) -> StorageResult<Vec<u8>> {
     bincode::serialize(value).map_err(sm_w_err)
 }
 
-fn decode_stored_value(bytes: &[u8]) -> StorageResult<StoredValue> {
-    bincode::deserialize(bytes).map_err(sm_r_err)
+fn decode_stored_record(bytes: &[u8]) -> StorageResult<StoredRecord> {
+    if let Ok(record) = bincode::deserialize::<StoredRecord>(bytes) {
+        return Ok(record);
+    }
+    let legacy: StoredValue = bincode::deserialize(bytes).map_err(sm_r_err)?;
+    Ok(StoredRecord {
+        version: 1,
+        value: legacy,
+    })
+}
+
+fn next_prefix(prefix: &[u8]) -> Option<Vec<u8>> {
+    if prefix.is_empty() {
+        return None;
+    }
+    let mut out = prefix.to_vec();
+    for idx in (0..out.len()).rev() {
+        if out[idx] != 0xFF {
+            out[idx] = out[idx].wrapping_add(1);
+            out.truncate(idx + 1);
+            return Some(out);
+        }
+    }
+    None
 }
 
 fn read_logs_err(e: impl Error + 'static) -> StorageError<NodeId> {

@@ -201,21 +201,23 @@ impl SymbolIndex {
             ast::Stmt::FuncDef(def) => self.collect_function(scope_id, text, def),
             ast::Stmt::VarAssign(def) => {
                 if let Some(name) = def.name() {
-                    let ty = def
-                        .value()
-                        .and_then(|expr| self.infer_expr_type(scope_id, text, &expr));
-                    let detail = ty.as_ref().map(|ty| format!("{}: {}", name.text(), ty));
-                    self.add_def(
-                        name.text().to_string(),
-                        DefKind::Variable,
-                        scope_id,
-                        def.syntax().text_range(),
-                        name.text_range(),
-                        detail,
-                        ty,
-                        Vec::new(),
-                        None,
-                    );
+                    if !is_augmented_assign(def.syntax()) {
+                        let ty = def
+                            .value()
+                            .and_then(|expr| self.infer_expr_type(scope_id, text, &expr));
+                        let detail = ty.as_ref().map(|ty| format!("{}: {}", name.text(), ty));
+                        self.add_def(
+                            name.text().to_string(),
+                            DefKind::Variable,
+                            scope_id,
+                            def.syntax().text_range(),
+                            name.text_range(),
+                            detail,
+                            ty,
+                            Vec::new(),
+                            None,
+                        );
+                    }
                 }
             }
             ast::Stmt::ForStmt(def) => {
@@ -373,10 +375,7 @@ impl SymbolIndex {
         for block in def.has_blocks() {
             for field in block.fields() {
                 if let Some(name) = field.name() {
-                    let ty = field
-                        .ty()
-                        .and_then(|ty| node_text(text, ty.syntax()))
-                        .map(|ty| ty.to_string());
+                let ty = field.ty().and_then(|ty| format_type_ref(&ty));
                     let detail = ty.as_ref().map(|ty| format!("{}: {}", name.text(), ty));
                     let doc = extract_doc_comment(field.syntax());
                     self.add_def(
@@ -397,9 +396,7 @@ impl SymbolIndex {
         for method in def.methods() {
             if let Some(name) = method.name() {
                 let params = params_from_iter(text, method.params());
-                let ret_ty = method
-                    .ret_type()
-                    .and_then(|ty| node_text(text, ty.syntax()));
+                let ret_ty = method.ret_type().and_then(|ty| format_type_ref(&ty));
                 let detail = Some(format_signature(name.text(), &params, ret_ty.as_deref()));
                 let doc = extract_doc_comment(method.syntax());
                 self.add_def(
@@ -446,7 +443,7 @@ impl SymbolIndex {
     fn collect_function(&mut self, scope_id: usize, text: &str, def: &ast::FuncDef) {
         if let Some(name) = def.name() {
             let params = params_from_iter(text, def.params());
-            let ret_ty = def.ret_type().and_then(|ty| node_text(text, ty.syntax()));
+            let ret_ty = def.ret_type().and_then(|ty| format_type_ref(&ty));
             let detail = Some(format_signature(name.text(), &params, ret_ty.as_deref()));
             let doc = extract_doc_comment(def.syntax());
             self.add_def(
@@ -622,7 +619,9 @@ impl Backend {
             .await
             .insert(uri.clone(), state.clone());
         if let Some(cache) = self.index_cache.write().await.as_mut() {
-            cache.documents.insert(uri, state.clone());
+            if uri_in_workspace(&cache.root, &uri) {
+                cache.documents.insert(uri, state.clone());
+            }
         }
         (errors, state)
     }
@@ -722,6 +721,9 @@ impl LanguageServer for Backend {
     async fn did_close(&self, params: tower_lsp::lsp_types::DidCloseTextDocumentParams) {
         let uri = params.text_document.uri;
         self.documents.write().await.remove(&uri);
+        if let Some(cache) = self.index_cache.write().await.as_mut() {
+            cache.documents.remove(&uri);
+        }
         self.client.publish_diagnostics(uri, Vec::new(), None).await;
     }
 
@@ -1312,6 +1314,16 @@ fn code_actions(
                 ))
             {
                 let title = format!("Remove {}", diag.message);
+                let mut edit_range = diag.range;
+                let offset =
+                    position_to_offset_with_index(&state.text, &state.line_index, diag.range.start);
+                if let Some(def) = definition_at_offset(state, offset) {
+                    edit_range = text_range_to_range_with_index(
+                        &state.text,
+                        &state.line_index,
+                        def.range,
+                    );
+                }
                 actions.push(CodeAction {
                     title,
                     kind: Some(CodeActionKind::QUICKFIX),
@@ -1320,7 +1332,7 @@ fn code_actions(
                         changes: Some(HashMap::from([(
                             uri.clone(),
                             vec![TextEdit {
-                                range: diag.range, // This is the full range from check_unused_variables
+                                range: edit_range,
                                 new_text: "".to_string(),
                             }],
                         )])),
@@ -1852,7 +1864,7 @@ pub fn check_unused_variables(state: &DocumentState) -> Vec<Diagnostic> {
             // The def.range covers the node.
 
             diagnostics.push(Diagnostic {
-                range: text_range_to_range_with_index(&state.text, &state.line_index, def.range), // Use full range for easier deletion
+                range: text_range_to_range_with_index(&state.text, &state.line_index, def.name_range),
                 severity: Some(DiagnosticSeverity::HINT),
                 code: Some(tower_lsp::lsp_types::NumberOrString::String(
                     "unused_variable".to_string(),
@@ -1938,6 +1950,9 @@ pub fn check_unresolved_identifiers(
             continue;
         }
         if is_builtin(token.text()) {
+            continue;
+        }
+        if is_implicit_binding(token.text()) {
             continue;
         }
         if known_definitions.contains(token.text()) {
@@ -2251,11 +2266,25 @@ fn node_text(text: &str, node: &SyntaxNode) -> Option<String> {
     text.get(start..end).map(|slice| slice.to_string())
 }
 
+fn format_type_ref(ty: &ast::TypeRef) -> Option<String> {
+    let name = ty.name()?.text().to_string();
+    let args = ty
+        .args()
+        .into_iter()
+        .filter_map(|arg| format_type_ref(&arg))
+        .collect::<Vec<_>>();
+    if args.is_empty() {
+        Some(name)
+    } else {
+        Some(format!("{}[{}]", name, args.join(", ")))
+    }
+}
+
 fn params_from_iter(text: &str, params: impl Iterator<Item = ast::Param>) -> Vec<ParamInfo> {
     params
         .filter_map(|param| {
             let name = param.name()?;
-            let ty = param.ty().and_then(|ty| node_text(text, ty.syntax()));
+            let ty = param.ty().and_then(|ty| format_type_ref(&ty));
             Some(ParamInfo {
                 name: name.text().to_string(),
                 ty,
@@ -2403,6 +2432,10 @@ const KEYWORDS: &[&str] = &[
     "fire",
     "err",
     "crash",
+    "latency",
+    "throughput",
+    "conservation",
+    "balance",
     "n",
 ];
 
@@ -2422,6 +2455,13 @@ const BUILTINS: &[&str] = &[
     "http_server_serve_requests",
     "http_server_serve_on",
     "http_server_stop",
+];
+const IMPLICIT_BINDINGS: &[&str] = &[
+    "Pool",
+    "latency",
+    "throughput",
+    "conservation",
+    "balance",
 ];
 
 lazy_static::lazy_static! {
@@ -2456,6 +2496,10 @@ fn is_builtin(name: &str) -> bool {
     BUILTINS.contains(&name)
 }
 
+fn is_implicit_binding(name: &str) -> bool {
+    IMPLICIT_BINDINGS.contains(&name)
+}
+
 fn is_valid_identifier(name: &str) -> bool {
     let mut chars = name.chars();
     let Some(first) = chars.next() else {
@@ -2473,6 +2517,17 @@ fn is_ident_start(c: char) -> bool {
 
 fn is_ident_continue(c: char) -> bool {
     c == '_' || c.is_ascii_alphanumeric() || (c > '\u{007f}' && !c.is_whitespace())
+}
+
+fn is_augmented_assign(node: &SyntaxNode) -> bool {
+    node.children_with_tokens().any(|it| {
+        it.into_token().is_some_and(|tok| {
+            matches!(
+                tok.kind(),
+                SyntaxKind::PlusEq | SyntaxKind::MinusEq | SyntaxKind::StarEq | SyntaxKind::SlashEq
+            )
+        })
+    })
 }
 
 fn keyword_completion_items() -> Vec<CompletionItem> {
@@ -2860,7 +2915,9 @@ fn token_range(text: &str, token: &SyntaxToken) -> Range {
 
 pub fn hover_at_position(state: &DocumentState, position: Position) -> Option<Hover> {
     let offset = position_to_offset_with_index(&state.text, &state.line_index, position);
-    if let Some(token) = token_at_offset(&syntax_root(state), offset) {
+    let root = syntax_root(state);
+    let token_at_or_before = token_at_offset(&root, offset).or_else(|| token_before_offset(&root, offset));
+    if let Some(token) = token_at_or_before.clone() {
         if matches!(token.kind(), SyntaxKind::ItsKw | SyntaxKind::ItKw) {
             let scope_id = scope_at_offset(&state.index, offset)
                 .map(|scope| scope.id)
@@ -2878,8 +2935,32 @@ pub fn hover_at_position(state: &DocumentState, position: Position) -> Option<Ho
             }
         }
     }
-    let def =
+    let mut def =
         definition_at_offset(state, offset).or_else(|| resolve_reference_at_offset(state, offset));
+    if def.is_none() {
+        if let Some(token) = token_at_or_before {
+            if token.kind() == SyntaxKind::Dot {
+                if let Some(member) = find_node_at_offset::<ast::MemberExpr>(&root, offset) {
+                    if let Some(name) = member.name() {
+                        def = resolve_reference_token(&state.index, &state.text, &name);
+                    }
+                }
+            } else if token.kind() == SyntaxKind::Ident {
+                def = resolve_reference_token(&state.index, &state.text, &token).or_else(|| {
+                    member_scope_at_offset(&state.index, &root, &state.text, offset).and_then(
+                        |class_scope| {
+                            resolve_in_scope_kinds(
+                                &state.index,
+                                class_scope,
+                                token.text(),
+                                &[DefKind::Method, DefKind::Field],
+                            )
+                        },
+                    )
+                });
+            }
+        }
+    }
     let def = def?;
     let _label = match def.kind {
         DefKind::Class => "class",
@@ -3215,6 +3296,16 @@ fn should_skip_dir(path: &Path) -> bool {
         return true;
     };
     matches!(name, ".git" | "target" | "node_modules")
+}
+
+fn uri_in_workspace(root: &Url, uri: &Url) -> bool {
+    let Ok(root_path) = root.to_file_path() else {
+        return false;
+    };
+    let Ok(doc_path) = uri.to_file_path() else {
+        return false;
+    };
+    doc_path.starts_with(root_path)
 }
 
 fn workspace_references(

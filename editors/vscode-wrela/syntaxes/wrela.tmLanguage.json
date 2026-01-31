@@ -6,6 +6,9 @@
   ],
   "patterns": [
     {
+      "include": "#comments"
+    },
+    {
       "include": "#definitions"
     },
     {
@@ -25,9 +28,6 @@
     },
     {
       "include": "#strings"
-    },
-    {
-      "include": "#comments"
     },
     {
       "include": "#numbers"
@@ -167,7 +167,7 @@
     "field_definitions": {
       "patterns": [
         {
-          "begin": "(?m)^\\s*(?:(public|private)\\s+)?(?!has\\b|can\\b)([_\\p{L}][_\\p{L}\\p{N}]*)\\s*(:)\\s*",
+          "begin": "(?m)^\\s*(?:(public|private)\\s+)?(?!A\\b|An\\b|has\\b|can\\b|to\\b|public\\b|private\\b|changing\\b|if\\b|else\\b|while\\b|for\\b|in\\b|return\\b|break\\b|continue\\b|match\\b|otherwise\\b|use\\b|from\\b|optimize\\b|and\\b|or\\b|not\\b|await\\b|detach\\b|spawn\\b|fire\\b|err\\b|crash\\b|true\\b|false\\b|nothing\\b|nil\\b|it\\b|its\\b|n\\b|so\\b)([_\\p{L}][_\\p{L}\\p{N}]*)\\s*(:)\\s*",
           "beginCaptures": {
             "1": {
               "name": "storage.modifier.wrela"
@@ -399,7 +399,8 @@
       "patterns": [
         {
           "name": "comment.line.wrela",
-          "match": "\\bso:.*$"
+          "begin": "(?m)^(\\s*)so:.*$",
+          "while": "(?m)^(?:\\1\\s+.*|\\s*$)"
         }
       ]
     },
@@ -504,7 +505,7 @@
       "patterns": [
         {
           "name": "keyword.control.wrela",
-          "match": "\\b(?:public|private|changing|if|else|while|for|in|return|break|continue|match|otherwise|use|from|optimize|await|detach|spawn|fire|err|crash)\\b"
+          "match": "\\b(?:public|private|changing|if|else|while|for|in|return|break|continue|match|otherwise|use|from|optimize|await|detach|spawn|fire|err|crash|latency|throughput|conservation|balance)\\b"
         },
         {
           "name": "keyword.control.wrela",

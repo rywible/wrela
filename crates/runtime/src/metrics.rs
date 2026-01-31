@@ -204,6 +204,42 @@ pub fn record_storage_backup_duration(duration: std::time::Duration) {
 }
 
 #[cfg(feature = "metrics")]
+pub fn metrics_get_raw(id: u32) -> u64 {
+    match id {
+        METRIC_MESSAGES_SENT => METRICS.messages_sent.load(Ordering::Relaxed),
+        METRIC_MESSAGES_DROPPED => METRICS.messages_dropped.load(Ordering::Relaxed),
+        METRIC_PENDING_RESOLVED => METRICS.pending_resolved.load(Ordering::Relaxed),
+        METRIC_PENDING_DROPPED => METRICS.pending_dropped.load(Ordering::Relaxed),
+        METRIC_MAILBOX_HIGH_WATER => METRICS.mailbox_high_water.load(Ordering::Relaxed),
+        METRIC_RC_INC => METRICS.rc_inc.load(Ordering::Relaxed),
+        METRIC_RC_DEC => METRICS.rc_dec.load(Ordering::Relaxed),
+        METRIC_MESSAGES_DROPPED_PAUSED => METRICS.messages_dropped_paused.load(Ordering::Relaxed),
+        METRIC_SCHED_DISPATCHED => METRICS.sched_dispatched.load(Ordering::Relaxed),
+        METRIC_SCHED_SKIPPED_NO_CREDIT => METRICS.sched_skipped_no_credit.load(Ordering::Relaxed),
+        METRIC_POOL_QUEUE_FULL => METRICS.pool_queue_full.load(Ordering::Relaxed),
+        METRIC_POOL_ENQUEUE_AFTER_RETIRE => METRICS.pool_enqueue_after_retire.load(Ordering::Relaxed),
+        METRIC_STORAGE_BATCH_SIZE => METRICS.storage_batch_size.load(Ordering::Relaxed),
+        METRIC_STORAGE_BATCH_LATENCY_NS => METRICS.storage_batch_latency_ns.load(Ordering::Relaxed),
+        METRIC_STORAGE_COMMIT_LATENCY_NS => METRICS.storage_commit_latency_ns.load(Ordering::Relaxed),
+        METRIC_STORAGE_READ_LATENCY_NS => METRICS.storage_read_latency_ns.load(Ordering::Relaxed),
+        METRIC_STORAGE_READS => METRICS.storage_reads.load(Ordering::Relaxed),
+        METRIC_STORAGE_BATCHES => METRICS.storage_batches.load(Ordering::Relaxed),
+        METRIC_STORAGE_BACKUP_SUCCESS => METRICS.storage_backup_success.load(Ordering::Relaxed),
+        METRIC_STORAGE_BACKUP_FAILURE => METRICS.storage_backup_failure.load(Ordering::Relaxed),
+        METRIC_STORAGE_BACKUP_LAST_DURATION_NS => METRICS.storage_backup_last_duration_ns.load(Ordering::Relaxed),
+        METRIC_STORAGE_BACKUP_LAST_SIZE => METRICS.storage_backup_last_size.load(Ordering::Relaxed),
+        METRIC_STORAGE_BACKUP_LAST_TS => METRICS.storage_backup_last_ts.load(Ordering::Relaxed),
+        METRIC_STORAGE_BACKUP_RESTORE_FAILURE => METRICS.storage_backup_restore_failure.load(Ordering::Relaxed),
+        _ => 0,
+    }
+}
+
+#[cfg(not(feature = "metrics"))]
+pub fn metrics_get_raw(_id: u32) -> u64 {
+    0
+}
+
+#[cfg(feature = "metrics")]
 pub fn record_storage_backup_size(size: usize) {
     METRICS
         .storage_backup_last_size

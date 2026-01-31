@@ -622,11 +622,447 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
+            SmolStr::new("env_get"),
+            FunctionSig {
+                params: vec![(SmolStr::new("key"), Type::String)],
+                ret: Type::Unknown,
+            },
+        ),
+        (
+            SmolStr::new("env_get_or"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("key"), Type::String),
+                    (SmolStr::new("default"), Type::String),
+                ],
+                ret: Type::String,
+            },
+        ),
+        (
+            SmolStr::new("env_get_as_bool"),
+            FunctionSig {
+                params: vec![(SmolStr::new("key"), Type::String)],
+                ret: Type::Unknown,
+            },
+        ),
+        (
+            SmolStr::new("env_get_as_int"),
+            FunctionSig {
+                params: vec![(SmolStr::new("key"), Type::String)],
+                ret: Type::Unknown,
+            },
+        ),
+        (
+            SmolStr::new("env_set"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("key"), Type::String),
+                    (SmolStr::new("value"), Type::String),
+                ],
+                ret: Type::Bool,
+            },
+        ),
+        (
+            SmolStr::new("env_load"),
+            FunctionSig {
+                params: vec![(SmolStr::new("path"), Type::String)],
+                ret: Type::Bool,
+            },
+        ),
+        (
+            SmolStr::new("auth_create_user"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (SmolStr::new("email"), Type::String),
+                    (SmolStr::new("username"), Type::String),
+                    (SmolStr::new("password"), Type::String),
+                ],
+                ret: Type::Pending(Box::new(Type::Unknown)),
+            },
+        ),
+        (
+            SmolStr::new("auth_verify_password"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (SmolStr::new("user_id"), Type::String),
+                    (SmolStr::new("password"), Type::String),
+                ],
+                ret: Type::Pending(Box::new(Type::Bool)),
+            },
+        ),
+        (
+            SmolStr::new("auth_issue_jwt"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (SmolStr::new("user_id"), Type::String),
+                    (SmolStr::new("claims"), Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown))),
+                    (SmolStr::new("ttl_secs"), Type::Int),
+                ],
+                ret: Type::Pending(Box::new(Type::String)),
+            },
+        ),
+        (
+            SmolStr::new("auth_verify_jwt"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (SmolStr::new("token"), Type::String),
+                ],
+                ret: Type::Pending(Box::new(Type::Unknown)),
+            },
+        ),
+        (
+            SmolStr::new("auth_issue_email_token"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (SmolStr::new("user_id"), Type::String),
+                    (SmolStr::new("ttl_secs"), Type::Int),
+                ],
+                ret: Type::Pending(Box::new(Type::String)),
+            },
+        ),
+        (
+            SmolStr::new("auth_verify_email_token"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (SmolStr::new("token"), Type::String),
+                ],
+                ret: Type::Pending(Box::new(Type::Unknown)),
+            },
+        ),
+        (
+            SmolStr::new("auth_oauth_login"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (SmolStr::new("provider"), Type::String),
+                    (SmolStr::new("code"), Type::String),
+                ],
+                ret: Type::Pending(Box::new(Type::Unknown)),
+            },
+        ),
+        (
+            SmolStr::new("rbac_create_role"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (SmolStr::new("scope"), Type::String),
+                    (SmolStr::new("name"), Type::String),
+                    (SmolStr::new("permissions"), Type::List(Box::new(Type::String))),
+                ],
+                ret: Type::Pending(Box::new(Type::String)),
+            },
+        ),
+        (
+            SmolStr::new("rbac_assign_role"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (SmolStr::new("user_id"), Type::String),
+                    (SmolStr::new("role_id"), Type::String),
+                    (SmolStr::new("scope_id"), Type::String),
+                ],
+                ret: Type::Pending(Box::new(Type::Bool)),
+            },
+        ),
+        (
+            SmolStr::new("rbac_check"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (SmolStr::new("user_id"), Type::String),
+                    (SmolStr::new("permission"), Type::String),
+                    (SmolStr::new("scope_id"), Type::String),
+                ],
+                ret: Type::Pending(Box::new(Type::Bool)),
+            },
+        ),
+        (
+            SmolStr::new("rbac_permissions_for"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (SmolStr::new("user_id"), Type::String),
+                    (SmolStr::new("scope_id"), Type::String),
+                ],
+                ret: Type::Pending(Box::new(Type::List(Box::new(Type::String)))),
+            },
+        ),
+        (
+            SmolStr::new("files_upload_stream"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (SmolStr::new("stream"), Type::Named(SmolStr::new("Bytes"))),
+                    (SmolStr::new("opts"), Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown))),
+                ],
+                ret: Type::Pending(Box::new(Type::String)),
+            },
+        ),
+        (
+            SmolStr::new("files_signed_url"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (SmolStr::new("file_id"), Type::String),
+                    (SmolStr::new("opts"), Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown))),
+                ],
+                ret: Type::Pending(Box::new(Type::String)),
+            },
+        ),
+        (
+            SmolStr::new("files_metadata"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (SmolStr::new("file_id"), Type::String),
+                ],
+                ret: Type::Pending(Box::new(Type::Unknown)),
+            },
+        ),
+        (
+            SmolStr::new("files_delete"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (SmolStr::new("file_id"), Type::String),
+                ],
+                ret: Type::Pending(Box::new(Type::Bool)),
+            },
+        ),
+        (
+            SmolStr::new("files_set_acl"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (SmolStr::new("file_id"), Type::String),
+                    (SmolStr::new("acl"), Type::String),
+                ],
+                ret: Type::Pending(Box::new(Type::Bool)),
+            },
+        ),
+        (
+            SmolStr::new("jobs_enqueue"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (SmolStr::new("queue"), Type::String),
+                    (SmolStr::new("payload"), Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown))),
+                    (SmolStr::new("opts"), Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown))),
+                ],
+                ret: Type::Pending(Box::new(Type::String)),
+            },
+        ),
+        (
+            SmolStr::new("jobs_process"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (SmolStr::new("queue"), Type::String),
+                    (SmolStr::new("handler"), Type::Unknown),
+                ],
+                ret: Type::Pending(Box::new(Type::Bool)),
+            },
+        ),
+        (
+            SmolStr::new("jobs_dead_letter"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (SmolStr::new("queue"), Type::String),
+                ],
+                ret: Type::Pending(Box::new(Type::List(Box::new(Type::Unknown)))),
+            },
+        ),
+        (
+            SmolStr::new("schedule_cron"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (SmolStr::new("expr"), Type::String),
+                    (SmolStr::new("job"), Type::Unknown),
+                ],
+                ret: Type::Pending(Box::new(Type::Bool)),
+            },
+        ),
+        (
+            SmolStr::new("schedule_every"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (SmolStr::new("seconds"), Type::Int),
+                    (SmolStr::new("job"), Type::Unknown),
+                ],
+                ret: Type::Pending(Box::new(Type::Bool)),
+            },
+        ),
+        (
+            SmolStr::new("schedule_at"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (SmolStr::new("timestamp"), Type::Int),
+                    (SmolStr::new("job"), Type::Unknown),
+                ],
+                ret: Type::Pending(Box::new(Type::Bool)),
+            },
+        ),
+        (
+            SmolStr::new("search_index"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (SmolStr::new("collection"), Type::String),
+                    (SmolStr::new("id"), Type::String),
+                    (SmolStr::new("text"), Type::String),
+                    (SmolStr::new("fields"), Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown))),
+                ],
+                ret: Type::Pending(Box::new(Type::Bool)),
+            },
+        ),
+        (
+            SmolStr::new("search_remove"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (SmolStr::new("collection"), Type::String),
+                    (SmolStr::new("id"), Type::String),
+                ],
+                ret: Type::Pending(Box::new(Type::Bool)),
+            },
+        ),
+        (
+            SmolStr::new("search_query"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (SmolStr::new("collection"), Type::String),
+                    (SmolStr::new("query"), Type::String),
+                    (SmolStr::new("opts"), Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown))),
+                ],
+                ret: Type::Pending(Box::new(Type::List(Box::new(Type::Unknown)))),
+            },
+        ),
+        (
+            SmolStr::new("realtime_on_connect"),
+            FunctionSig {
+                params: vec![(SmolStr::new("handler"), Type::Unknown)],
+                ret: Type::Pending(Box::new(Type::Bool)),
+            },
+        ),
+        (
+            SmolStr::new("realtime_join"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("socket_id"), Type::String),
+                    (SmolStr::new("room"), Type::String),
+                ],
+                ret: Type::Pending(Box::new(Type::Bool)),
+            },
+        ),
+        (
+            SmolStr::new("realtime_leave"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("socket_id"), Type::String),
+                    (SmolStr::new("room"), Type::String),
+                ],
+                ret: Type::Pending(Box::new(Type::Bool)),
+            },
+        ),
+        (
+            SmolStr::new("realtime_broadcast"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("room"), Type::String),
+                    (SmolStr::new("message"), Type::Unknown),
+                ],
+                ret: Type::Pending(Box::new(Type::Bool)),
+            },
+        ),
+        (
+            SmolStr::new("realtime_send"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("socket_id"), Type::String),
+                    (SmolStr::new("message"), Type::Unknown),
+                ],
+                ret: Type::Pending(Box::new(Type::Bool)),
+            },
+        ),
+        (
+            SmolStr::new("rate_check"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (SmolStr::new("key"), Type::String),
+                    (SmolStr::new("opts"), Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown))),
+                ],
+                ret: Type::Pending(Box::new(Type::Bool)),
+            },
+        ),
+        (
+            SmolStr::new("rate_ip"),
+            FunctionSig {
+                params: vec![(SmolStr::new("request"), Type::Named(SmolStr::new("HttpRequest")))],
+                ret: Type::String,
+            },
+        ),
+        (
+            SmolStr::new("admin_enable"),
+            FunctionSig {
+                params: vec![(SmolStr::new("opts"), Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown)))],
+                ret: Type::Pending(Box::new(Type::Bool)),
+            },
+        ),
+        (
             SmolStr::new("storage_get"),
             FunctionSig {
                 params: vec![(SmolStr::new("key"), Type::String)],
                 ret: Type::Pending(Box::new(Type::Result(
                     Box::new(Type::Unknown),
+                    Box::new(err.clone()),
+                ))),
+            },
+        ),
+        (
+            SmolStr::new("storage_get_with_version"),
+            FunctionSig {
+                params: vec![(SmolStr::new("key"), Type::String)],
+                ret: Type::Pending(Box::new(Type::Result(
+                    Box::new(Type::Unknown),
+                    Box::new(err.clone()),
+                ))),
+            },
+        ),
+        (
+            SmolStr::new("storage_scan"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("start"), Type::Unknown),
+                    (SmolStr::new("end"), Type::Unknown),
+                    (SmolStr::new("limit"), Type::Number),
+                ],
+                ret: Type::Pending(Box::new(Type::Result(
+                    Box::new(Type::List(Box::new(Type::Unknown))),
+                    Box::new(err.clone()),
+                ))),
+            },
+        ),
+        (
+            SmolStr::new("storage_list_prefix"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("prefix"), Type::String),
+                    (SmolStr::new("limit"), Type::Number),
+                ],
+                ret: Type::Pending(Box::new(Type::Result(
+                    Box::new(Type::List(Box::new(Type::String))),
                     Box::new(err.clone()),
                 ))),
             },
@@ -652,11 +1088,51 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
+            SmolStr::new("storage_set_if_version"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("key"), Type::String),
+                    (SmolStr::new("value"), Type::String),
+                    (SmolStr::new("version"), Type::Number),
+                ],
+                ret: Type::Pending(Box::new(Type::Result(
+                    Box::new(Type::Bool),
+                    Box::new(err.clone()),
+                ))),
+            },
+        ),
+        (
+            SmolStr::new("storage_delete_if_version"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("key"), Type::String),
+                    (SmolStr::new("version"), Type::Number),
+                ],
+                ret: Type::Pending(Box::new(Type::Result(
+                    Box::new(Type::Bool),
+                    Box::new(err.clone()),
+                ))),
+            },
+        ),
+        (
             SmolStr::new("storage_delete"),
             FunctionSig {
                 params: vec![(SmolStr::new("key"), Type::String)],
                 ret: Type::Pending(Box::new(Type::Result(
                     Box::new(Type::Nil),
+                    Box::new(err.clone()),
+                ))),
+            },
+        ),
+        (
+            SmolStr::new("storage_batch_set"),
+            FunctionSig {
+                params: vec![(SmolStr::new("items"), Type::List(Box::new(Type::Map(
+                    Box::new(Type::Unknown),
+                    Box::new(Type::Unknown),
+                ))))],
+                ret: Type::Pending(Box::new(Type::Result(
+                    Box::new(Type::Bool),
                     Box::new(err),
                 ))),
             },

@@ -283,6 +283,10 @@ pub fn compile_to_executable(mir: &MirModule, output: &Path) -> Result<(), Codeg
         }
         cmd.env("MACOSX_DEPLOYMENT_TARGET", "11.0");
         cmd.arg("-Wl,-w");
+        cmd.arg("-framework").arg("Security");
+        cmd.arg("-framework").arg("CoreFoundation");
+        cmd.arg("-framework").arg("SystemConfiguration");
+        cmd.arg("-lc++");
     }
     if std::env::var("WRELA_LINKER_DEBUG").is_ok() {
         eprintln!("linker: {:?}", cmd);
@@ -1293,13 +1297,108 @@ fn lower_rvalue(
                                     }
                                     "clock_ns" => Some(runtime_fn_clock_ns(module, runtime)?),
                                     "sleep_ms" => Some(runtime_fn_sleep_ms(module, runtime)?),
+                                    "env_get" => Some(runtime_fn_env_get(module, runtime)?),
+                                    "env_get_or" => Some(runtime_fn_env_get_or(module, runtime)?),
+                                    "env_get_as_bool" => {
+                                        Some(runtime_fn_env_get_as_bool(module, runtime)?)
+                                    }
+                                    "env_get_as_int" => {
+                                        Some(runtime_fn_env_get_as_int(module, runtime)?)
+                                    }
+                                    "env_set" => Some(runtime_fn_env_set(module, runtime)?),
+                                    "env_load" => Some(runtime_fn_env_load(module, runtime)?),
+                                    "auth_create_user" => {
+                                        Some(runtime_fn_auth_create_user(module, runtime)?)
+                                    }
+                                    "auth_verify_password" => {
+                                        Some(runtime_fn_auth_verify_password(module, runtime)?)
+                                    }
+                                    "auth_issue_jwt" => {
+                                        Some(runtime_fn_auth_issue_jwt(module, runtime)?)
+                                    }
+                                    "auth_verify_jwt" => {
+                                        Some(runtime_fn_auth_verify_jwt(module, runtime)?)
+                                    }
+                                    "auth_issue_email_token" => {
+                                        Some(runtime_fn_auth_issue_email_token(module, runtime)?)
+                                    }
+                                    "auth_verify_email_token" => {
+                                        Some(runtime_fn_auth_verify_email_token(module, runtime)?)
+                                    }
+                                    "auth_oauth_login" => {
+                                        Some(runtime_fn_auth_oauth_login(module, runtime)?)
+                                    }
+                                    "rbac_create_role" => {
+                                        Some(runtime_fn_rbac_create_role(module, runtime)?)
+                                    }
+                                    "rbac_assign_role" => {
+                                        Some(runtime_fn_rbac_assign_role(module, runtime)?)
+                                    }
+                                    "rbac_check" => Some(runtime_fn_rbac_check(module, runtime)?),
+                                    "rbac_permissions_for" => {
+                                        Some(runtime_fn_rbac_permissions_for(module, runtime)?)
+                                    }
+                                    "files_upload_stream" => {
+                                        Some(runtime_fn_files_upload_stream(module, runtime)?)
+                                    }
+                                    "files_signed_url" => {
+                                        Some(runtime_fn_files_signed_url(module, runtime)?)
+                                    }
+                                    "files_metadata" => {
+                                        Some(runtime_fn_files_metadata(module, runtime)?)
+                                    }
+                                    "files_delete" => Some(runtime_fn_files_delete(module, runtime)?),
+                                    "files_set_acl" => Some(runtime_fn_files_set_acl(module, runtime)?),
+                                    "jobs_enqueue" => Some(runtime_fn_jobs_enqueue(module, runtime)?),
+                                    "jobs_process" => Some(runtime_fn_jobs_process(module, runtime)?),
+                                    "jobs_dead_letter" => {
+                                        Some(runtime_fn_jobs_dead_letter(module, runtime)?)
+                                    }
+                                    "schedule_cron" => Some(runtime_fn_schedule_cron(module, runtime)?),
+                                    "schedule_every" => {
+                                        Some(runtime_fn_schedule_every(module, runtime)?)
+                                    }
+                                    "schedule_at" => Some(runtime_fn_schedule_at(module, runtime)?),
+                                    "search_index" => Some(runtime_fn_search_index(module, runtime)?),
+                                    "search_remove" => Some(runtime_fn_search_remove(module, runtime)?),
+                                    "search_query" => Some(runtime_fn_search_query(module, runtime)?),
+                                    "realtime_on_connect" => {
+                                        Some(runtime_fn_realtime_on_connect(module, runtime)?)
+                                    }
+                                    "realtime_join" => Some(runtime_fn_realtime_join(module, runtime)?),
+                                    "realtime_leave" => {
+                                        Some(runtime_fn_realtime_leave(module, runtime)?)
+                                    }
+                                    "realtime_broadcast" => {
+                                        Some(runtime_fn_realtime_broadcast(module, runtime)?)
+                                    }
+                                    "realtime_send" => Some(runtime_fn_realtime_send(module, runtime)?),
+                                    "rate_check" => Some(runtime_fn_rate_check(module, runtime)?),
+                                    "rate_ip" => Some(runtime_fn_rate_ip(module, runtime)?),
+                                    "admin_enable" => Some(runtime_fn_admin_enable(module, runtime)?),
                                     "storage_get" => Some(runtime_fn_storage_get(module, runtime)?),
+                                    "storage_get_with_version" => {
+                                        Some(runtime_fn_storage_get_with_version(module, runtime)?)
+                                    }
+                                    "storage_scan" => Some(runtime_fn_storage_scan(module, runtime)?),
+                                    "storage_list_prefix" => {
+                                        Some(runtime_fn_storage_list_prefix(module, runtime)?)
+                                    }
                                     "storage_configure" => {
                                         Some(runtime_fn_storage_configure(module, runtime)?)
                                     }
                                     "storage_set" => Some(runtime_fn_storage_set(module, runtime)?),
+                                    "storage_set_if_version" => {
+                                        Some(runtime_fn_storage_set_if_version(module, runtime)?)
+                                    }
+                                    "storage_delete_if_version" => {
+                                        Some(runtime_fn_storage_delete_if_version(module, runtime)?)
+                                    }
                                     "storage_delete" => {
                                         Some(runtime_fn_storage_delete(module, runtime)?)
+                                    }
+                                    "storage_batch_set" => {
+                                        Some(runtime_fn_storage_batch_set(module, runtime)?)
                                     }
                                     "bytes_from_string" => {
                                         Some(runtime_fn_bytes_from_string(module, runtime)?)
@@ -2059,12 +2158,376 @@ fn runtime_fn_sleep_ms(
     runtime.get_func(module, "wr_sleep_ms", sig)
 }
 
+fn runtime_fn_env_get(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_env_get", sig)
+}
+
+fn runtime_fn_env_get_or(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_env_get_or", sig)
+}
+
+fn runtime_fn_env_get_as_bool(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_env_get_as_bool", sig)
+}
+
+fn runtime_fn_env_get_as_int(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_env_get_as_int", sig)
+}
+
+fn runtime_fn_env_set(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_env_set", sig)
+}
+
+fn runtime_fn_env_load(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_env_load", sig)
+}
+
+fn runtime_fn_auth_create_user(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(
+        module,
+        &[types::I64, types::I64, types::I64, types::I64],
+        &[types::I64],
+    );
+    runtime.get_func(module, "wr_auth_create_user", sig)
+}
+
+fn runtime_fn_auth_verify_password(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_auth_verify_password", sig)
+}
+
+fn runtime_fn_auth_issue_jwt(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(
+        module,
+        &[types::I64, types::I64, types::I64, types::I64],
+        &[types::I64],
+    );
+    runtime.get_func(module, "wr_auth_issue_jwt", sig)
+}
+
+fn runtime_fn_auth_verify_jwt(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_auth_verify_jwt", sig)
+}
+
+fn runtime_fn_auth_issue_email_token(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_auth_issue_email_token", sig)
+}
+
+fn runtime_fn_auth_verify_email_token(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_auth_verify_email_token", sig)
+}
+
+fn runtime_fn_auth_oauth_login(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_auth_oauth_login", sig)
+}
+
+fn runtime_fn_rbac_create_role(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(
+        module,
+        &[types::I64, types::I64, types::I64, types::I64],
+        &[types::I64],
+    );
+    runtime.get_func(module, "wr_rbac_create_role", sig)
+}
+
+fn runtime_fn_rbac_assign_role(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(
+        module,
+        &[types::I64, types::I64, types::I64, types::I64],
+        &[types::I64],
+    );
+    runtime.get_func(module, "wr_rbac_assign_role", sig)
+}
+
+fn runtime_fn_rbac_check(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(
+        module,
+        &[types::I64, types::I64, types::I64, types::I64],
+        &[types::I64],
+    );
+    runtime.get_func(module, "wr_rbac_check", sig)
+}
+
+fn runtime_fn_rbac_permissions_for(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_rbac_permissions_for", sig)
+}
+
+fn runtime_fn_files_upload_stream(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_files_upload_stream", sig)
+}
+
+fn runtime_fn_files_signed_url(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_files_signed_url", sig)
+}
+
+fn runtime_fn_files_metadata(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_files_metadata", sig)
+}
+
+fn runtime_fn_files_delete(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_files_delete", sig)
+}
+
+fn runtime_fn_files_set_acl(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_files_set_acl", sig)
+}
+
+fn runtime_fn_jobs_enqueue(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(
+        module,
+        &[types::I64, types::I64, types::I64, types::I64],
+        &[types::I64],
+    );
+    runtime.get_func(module, "wr_jobs_enqueue", sig)
+}
+
+fn runtime_fn_jobs_process(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_jobs_process", sig)
+}
+
+fn runtime_fn_jobs_dead_letter(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_jobs_dead_letter", sig)
+}
+
+fn runtime_fn_schedule_cron(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_schedule_cron", sig)
+}
+
+fn runtime_fn_schedule_every(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_schedule_every", sig)
+}
+
+fn runtime_fn_schedule_at(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_schedule_at", sig)
+}
+
+fn runtime_fn_search_index(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(
+        module,
+        &[types::I64, types::I64, types::I64, types::I64, types::I64],
+        &[types::I64],
+    );
+    runtime.get_func(module, "wr_search_index", sig)
+}
+
+fn runtime_fn_search_remove(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_search_remove", sig)
+}
+
+fn runtime_fn_search_query(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_search_query", sig)
+}
+
+fn runtime_fn_realtime_on_connect(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_realtime_on_connect", sig)
+}
+
+fn runtime_fn_realtime_join(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_realtime_join", sig)
+}
+
+fn runtime_fn_realtime_leave(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_realtime_leave", sig)
+}
+
+fn runtime_fn_realtime_broadcast(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_realtime_broadcast", sig)
+}
+
+fn runtime_fn_realtime_send(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_realtime_send", sig)
+}
+
+fn runtime_fn_rate_check(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_rate_check", sig)
+}
+
+fn runtime_fn_rate_ip(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_rate_ip", sig)
+}
+
+fn runtime_fn_admin_enable(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_admin_enable", sig)
+}
+
 fn runtime_fn_storage_get(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
 ) -> Result<cranelift_module::FuncId, CodegenError> {
     let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
     runtime.get_func(module, "wr_storage_get", sig)
+}
+
+fn runtime_fn_storage_get_with_version(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_storage_get_with_version", sig)
+}
+
+fn runtime_fn_storage_scan(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_storage_scan", sig)
+}
+
+fn runtime_fn_storage_list_prefix(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_storage_list_prefix", sig)
 }
 
 fn runtime_fn_storage_configure(
@@ -2083,12 +2546,37 @@ fn runtime_fn_storage_set(
     runtime.get_func(module, "wr_storage_set", sig)
 }
 
+fn runtime_fn_storage_set_if_version(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig =
+        RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_storage_set_if_version", sig)
+}
+
+fn runtime_fn_storage_delete_if_version(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_storage_delete_if_version", sig)
+}
+
 fn runtime_fn_storage_delete(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
 ) -> Result<cranelift_module::FuncId, CodegenError> {
     let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
     runtime.get_func(module, "wr_storage_delete", sig)
+}
+
+fn runtime_fn_storage_batch_set(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_storage_batch_set", sig)
 }
 
 fn runtime_fn_http_server_serve_get_requests(

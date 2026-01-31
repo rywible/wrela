@@ -122,7 +122,7 @@ fn class_id_for(name: &str) -> Option<u32> {
     registry.by_name.get(name).copied()
 }
 
-fn method_id_for(class_id: u32, name: &str) -> Option<u32> {
+pub(crate) fn method_id_for(class_id: u32, name: &str) -> Option<u32> {
     let registry = class_registry().lock().expect("class registry lock");
     registry
         .methods

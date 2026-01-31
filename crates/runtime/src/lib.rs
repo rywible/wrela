@@ -18,6 +18,17 @@ mod config;
 mod scheduler;
 mod diagnostics;
 mod http;
+mod env;
+mod auth;
+mod rbac;
+mod files;
+mod jobs;
+mod schedule;
+mod search;
+mod realtime;
+mod rate_limit;
+mod admin;
+mod storage_helpers;
 pub mod storage;
 
 pub use value::{TypeId, Value};
@@ -83,11 +94,13 @@ pub extern "C" fn wr_unbox_int(val: Value) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_runtime_init() {
     diagnostics::runtime_init();
+    env::init();
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_runtime_abi() -> u32 {
     diagnostics::runtime_init();
+    env::init();
     diagnostics::RUNTIME_ABI_VERSION
 }
 
@@ -572,6 +585,21 @@ pub extern "C" fn wr_storage_get(key: Value) -> Value {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn wr_storage_get_with_version(key: Value) -> Value {
+    storage::storage_get_with_version(key)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_storage_scan(start: Value, end: Value, limit: Value) -> Value {
+    storage::storage_scan(start, end, limit)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_storage_list_prefix(prefix: Value, limit: Value) -> Value {
+    storage::storage_list_prefix(prefix, limit)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn wr_storage_configure(config: Value) -> Value {
     storage::storage_configure(config)
 }
@@ -582,8 +610,23 @@ pub extern "C" fn wr_storage_set(key: Value, value: Value) -> Value {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn wr_storage_set_if_version(key: Value, value: Value, version: Value) -> Value {
+    storage::storage_set_if_version(key, value, version)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_storage_delete_if_version(key: Value, version: Value) -> Value {
+    storage::storage_delete_if_version(key, version)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn wr_storage_delete(key: Value) -> Value {
     storage::storage_delete(key)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_storage_batch_set(items: Value) -> Value {
+    storage::storage_batch_set(items)
 }
 
 #[unsafe(no_mangle)]
@@ -609,6 +652,246 @@ pub extern "C" fn wr_http_server_serve_on(addr: Value) -> Value {
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_http_server_stop() -> Value {
     http::stop()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_env_get(key: Value) -> Value {
+    env::env_get(key)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_env_get_or(key: Value, default: Value) -> Value {
+    env::env_get_or(key, default)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_env_get_as_bool(key: Value) -> Value {
+    env::env_get_as_bool(key)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_env_get_as_int(key: Value) -> Value {
+    env::env_get_as_int(key)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_env_set(key: Value, val: Value) -> Value {
+    env::env_set(key, val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_env_load(path: Value) -> Value {
+    env::env_load(path)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_auth_create_user(
+    storage: Value,
+    email: Value,
+    username: Value,
+    password: Value,
+) -> Value {
+    auth::auth_create_user(storage, email, username, password)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_auth_verify_password(storage: Value, user_id: Value, password: Value) -> Value {
+    auth::auth_verify_password(storage, user_id, password)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_auth_issue_jwt(
+    storage: Value,
+    user_id: Value,
+    claims: Value,
+    ttl_secs: Value,
+) -> Value {
+    auth::auth_issue_jwt(storage, user_id, claims, ttl_secs)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_auth_verify_jwt(storage: Value, token: Value) -> Value {
+    auth::auth_verify_jwt(storage, token)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_auth_issue_email_token(
+    storage: Value,
+    user_id: Value,
+    ttl_secs: Value,
+) -> Value {
+    auth::auth_issue_email_token(storage, user_id, ttl_secs)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_auth_verify_email_token(storage: Value, token: Value) -> Value {
+    auth::auth_verify_email_token(storage, token)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_auth_oauth_login(storage: Value, provider: Value, code: Value) -> Value {
+    auth::auth_oauth_login(storage, provider, code)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_rbac_create_role(
+    storage: Value,
+    scope: Value,
+    name: Value,
+    permissions: Value,
+) -> Value {
+    rbac::rbac_create_role(storage, scope, name, permissions)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_rbac_assign_role(
+    storage: Value,
+    user_id: Value,
+    role_id: Value,
+    scope_id: Value,
+) -> Value {
+    rbac::rbac_assign_role(storage, user_id, role_id, scope_id)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_rbac_check(
+    storage: Value,
+    user_id: Value,
+    permission: Value,
+    scope_id: Value,
+) -> Value {
+    rbac::rbac_check(storage, user_id, permission, scope_id)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_rbac_permissions_for(storage: Value, user_id: Value, scope_id: Value) -> Value {
+    rbac::rbac_permissions_for(storage, user_id, scope_id)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_files_upload_stream(storage: Value, stream: Value, opts: Value) -> Value {
+    files::files_upload_stream(storage, stream, opts)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_files_signed_url(storage: Value, file_id: Value, opts: Value) -> Value {
+    files::files_signed_url(storage, file_id, opts)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_files_metadata(storage: Value, file_id: Value) -> Value {
+    files::files_metadata(storage, file_id)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_files_delete(storage: Value, file_id: Value) -> Value {
+    files::files_delete(storage, file_id)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_files_set_acl(storage: Value, file_id: Value, acl: Value) -> Value {
+    files::files_set_acl(storage, file_id, acl)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_jobs_enqueue(
+    storage: Value,
+    queue: Value,
+    payload: Value,
+    opts: Value,
+) -> Value {
+    jobs::jobs_enqueue(storage, queue, payload, opts)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_jobs_process(storage: Value, queue: Value, handler: Value) -> Value {
+    jobs::jobs_process(storage, queue, handler)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_jobs_dead_letter(storage: Value, queue: Value) -> Value {
+    jobs::jobs_dead_letter(storage, queue)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_schedule_cron(storage: Value, expr: Value, job: Value) -> Value {
+    schedule::schedule_cron(storage, expr, job)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_schedule_every(storage: Value, seconds: Value, job: Value) -> Value {
+    schedule::schedule_every(storage, seconds, job)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_schedule_at(storage: Value, timestamp: Value, job: Value) -> Value {
+    schedule::schedule_at(storage, timestamp, job)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_search_index(
+    storage: Value,
+    collection: Value,
+    id: Value,
+    text: Value,
+    fields: Value,
+) -> Value {
+    search::search_index(storage, collection, id, text, fields)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_search_remove(storage: Value, collection: Value, id: Value) -> Value {
+    search::search_remove(storage, collection, id)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_search_query(
+    storage: Value,
+    collection: Value,
+    query: Value,
+    opts: Value,
+) -> Value {
+    search::search_query(storage, collection, query, opts)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_realtime_on_connect(handler: Value) -> Value {
+    realtime::realtime_on_connect(handler)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_realtime_join(socket_id: Value, room: Value) -> Value {
+    realtime::realtime_join(socket_id, room)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_realtime_leave(socket_id: Value, room: Value) -> Value {
+    realtime::realtime_leave(socket_id, room)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_realtime_broadcast(room: Value, message: Value) -> Value {
+    realtime::realtime_broadcast(room, message)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_realtime_send(socket_id: Value, message: Value) -> Value {
+    realtime::realtime_send(socket_id, message)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_rate_check(storage: Value, key: Value, opts: Value) -> Value {
+    rate_limit::rate_check(storage, key, opts)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_rate_ip(request: Value) -> Value {
+    rate_limit::rate_ip(request)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_admin_enable(opts: Value) -> Value {
+    admin::admin_enable(opts)
 }
 
 #[cfg(test)]

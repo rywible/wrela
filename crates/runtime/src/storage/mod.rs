@@ -13,9 +13,11 @@ mod backup_tests;
 
 use crate::actor::{pending_new, resolve_pending, runtime_spawn};
 use crate::class;
+use crate::list;
+use crate::map;
 use crate::result;
 use crate::string;
-use crate::value::Value;
+use crate::value::{int_value, Value};
 use crate::wr_rc_dec;
 use config::StorageUserConfig;
 use service::{StorageError, StorageRequest, StorageResponse, StorageService};
@@ -42,6 +44,15 @@ fn value_bytes(val: Value) -> Result<Vec<u8>, Value> {
         .ok_or_else(|| error_value("storage expects a String value"))
 }
 
+fn optional_key_bytes(val: Value) -> Result<Option<Vec<u8>>, Value> {
+    if val.is_nil() {
+        return Ok(None);
+    }
+    string::with_string_bytes(val, |bytes| bytes.to_vec())
+        .map(Some)
+        .ok_or_else(|| error_value("storage expects a String key"))
+}
+
 fn resolve_response(resp: StorageResponse) -> Value {
     match resp {
         StorageResponse::Ok(value) => ok_value(value),
@@ -64,6 +75,76 @@ pub fn storage_get(key: Value) -> Value {
     };
     runtime_spawn(async move {
         let result = StorageService::dispatch(StorageRequest::Get { key }).await;
+        let resolved = match result {
+            Ok(resp) => resolve_response(resp),
+            Err(err) => resolve_error(err),
+        };
+        resolve_pending(state, resolved);
+    });
+    pending
+}
+
+pub fn storage_get_with_version(key: Value) -> Value {
+    let (pending, state) = pending_new();
+    let key = match key_bytes(key) {
+        Ok(bytes) => bytes,
+        Err(err_val) => {
+            resolve_pending(state, err_val);
+            return pending;
+        }
+    };
+    runtime_spawn(async move {
+        let result = StorageService::dispatch(StorageRequest::GetWithVersion { key }).await;
+        let resolved = match result {
+            Ok(resp) => resolve_response(resp),
+            Err(err) => resolve_error(err),
+        };
+        resolve_pending(state, resolved);
+    });
+    pending
+}
+
+pub fn storage_scan(start: Value, end: Value, limit: Value) -> Value {
+    let (pending, state) = pending_new();
+    let start = match optional_key_bytes(start) {
+        Ok(bytes) => bytes,
+        Err(err_val) => {
+            resolve_pending(state, err_val);
+            return pending;
+        }
+    };
+    let end = match optional_key_bytes(end) {
+        Ok(bytes) => bytes,
+        Err(err_val) => {
+            resolve_pending(state, err_val);
+            return pending;
+        }
+    };
+    let limit = int_value(limit).unwrap_or(1000).max(0) as usize;
+    runtime_spawn(async move {
+        let result = StorageService::dispatch(StorageRequest::Scan { start, end, limit }).await;
+        let resolved = match result {
+            Ok(resp) => resolve_response(resp),
+            Err(err) => resolve_error(err),
+        };
+        resolve_pending(state, resolved);
+    });
+    pending
+}
+
+pub fn storage_list_prefix(prefix: Value, limit: Value) -> Value {
+    let (pending, state) = pending_new();
+    let prefix = match key_bytes(prefix) {
+        Ok(bytes) => bytes,
+        Err(err_val) => {
+            resolve_pending(state, err_val);
+            return pending;
+        }
+    };
+    let limit = int_value(limit).unwrap_or(1000).max(0) as usize;
+    runtime_spawn(async move {
+        let result =
+            StorageService::dispatch(StorageRequest::ListPrefix { prefix, limit }).await;
         let resolved = match result {
             Ok(resp) => resolve_response(resp),
             Err(err) => resolve_error(err),
@@ -100,6 +181,73 @@ pub fn storage_set(key: Value, value: Value) -> Value {
     pending
 }
 
+pub fn storage_set_if_version(key: Value, value: Value, version: Value) -> Value {
+    let (pending, state) = pending_new();
+    let key = match key_bytes(key) {
+        Ok(bytes) => bytes,
+        Err(err_val) => {
+            resolve_pending(state, err_val);
+            return pending;
+        }
+    };
+    let value = match value_bytes(value) {
+        Ok(bytes) => bytes,
+        Err(err_val) => {
+            resolve_pending(state, err_val);
+            return pending;
+        }
+    };
+    let expected = if version.is_nil() {
+        None
+    } else {
+        int_value(version).map(|v| v.max(0) as u64)
+    };
+    runtime_spawn(async move {
+        let result = StorageService::dispatch(StorageRequest::CompareAndSet {
+            key,
+            expected_version: expected,
+            value: Some(value),
+        })
+        .await;
+        let resolved = match result {
+            Ok(resp) => resolve_response(resp),
+            Err(err) => resolve_error(err),
+        };
+        resolve_pending(state, resolved);
+    });
+    pending
+}
+
+pub fn storage_delete_if_version(key: Value, version: Value) -> Value {
+    let (pending, state) = pending_new();
+    let key = match key_bytes(key) {
+        Ok(bytes) => bytes,
+        Err(err_val) => {
+            resolve_pending(state, err_val);
+            return pending;
+        }
+    };
+    let expected = if version.is_nil() {
+        None
+    } else {
+        int_value(version).map(|v| v.max(0) as u64)
+    };
+    runtime_spawn(async move {
+        let result = StorageService::dispatch(StorageRequest::CompareAndSet {
+            key,
+            expected_version: expected,
+            value: None,
+        })
+        .await;
+        let resolved = match result {
+            Ok(resp) => resolve_response(resp),
+            Err(err) => resolve_error(err),
+        };
+        resolve_pending(state, resolved);
+    });
+    pending
+}
+
 pub fn storage_delete(key: Value) -> Value {
     let (pending, state) = pending_new();
     let key = match key_bytes(key) {
@@ -111,6 +259,58 @@ pub fn storage_delete(key: Value) -> Value {
     };
     runtime_spawn(async move {
         let result = StorageService::dispatch(StorageRequest::Delete { key }).await;
+        let resolved = match result {
+            Ok(resp) => resolve_response(resp),
+            Err(err) => resolve_error(err),
+        };
+        resolve_pending(state, resolved);
+    });
+    pending
+}
+
+fn map_get_string(map_val: Value, key: &str) -> Option<Vec<u8>> {
+    let key_val = string::str_from_bytes(key.as_bytes());
+    let got = map::map_get(map_val, key_val);
+    unsafe { wr_rc_dec(key_val) };
+    if got.is_nil() {
+        return None;
+    }
+    let out = string::with_string_bytes(got, |bytes| bytes.to_vec());
+    unsafe { wr_rc_dec(got) };
+    out
+}
+
+pub fn storage_batch_set(items: Value) -> Value {
+    let (pending, state) = pending_new();
+    let list_ptr = match list::as_list_ref(items) {
+        Some(list) => list,
+        None => {
+            resolve_pending(state, error_value("storage expects a List"));
+            return pending;
+        }
+    };
+    let mut out = Vec::new();
+    unsafe {
+        let list_ref = &(*list_ptr).data;
+        for entry in list_ref.iter().take((*list_ptr).len) {
+            let map_val = *entry;
+            if map::as_map_ref(map_val).is_none() {
+                resolve_pending(state, error_value("storage batch expects Map entries"));
+                return pending;
+            }
+            let Some(key) = map_get_string(map_val, "key") else {
+                resolve_pending(state, error_value("storage batch requires key"));
+                return pending;
+            };
+            let Some(value) = map_get_string(map_val, "value") else {
+                resolve_pending(state, error_value("storage batch requires value"));
+                return pending;
+            };
+            out.push((key, value));
+        }
+    }
+    runtime_spawn(async move {
+        let result = StorageService::dispatch(StorageRequest::BatchSet { items: out }).await;
         let resolved = match result {
             Ok(resp) => resolve_response(resp),
             Err(err) => resolve_error(err),

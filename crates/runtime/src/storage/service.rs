@@ -13,6 +13,8 @@ use tokio::time::sleep;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::diagnostics;
+use crate::list;
+use crate::map;
 use crate::metrics;
 use crate::string;
 use crate::value::Value;
@@ -20,12 +22,13 @@ use crate::value::Value;
 use super::backup::{latest_backup_key, should_restore, verify_checksum, BackupSink, BackupState};
 use super::blob::BlobBackend;
 use super::config::{batch_max_delay, storage_config, StorageConfig};
-use super::store::{KvCommand, KvRequest, KvStore, NodeId, TypeConfig};
+use super::store::{KvCommand, KvRequest, KvResponse, KvStore, NodeId, TypeConfig};
 use super::transport::{
     start_http_server, HttpNetworkFactory, NullNetworkFactory, RpcEnvelope, StorageReadRequest,
-    StorageReadResponse,
+    StorageReadResponse, StorageReadVersionResponse, StorageScanRequest, StorageScanResponse,
+    StoragePrefixRequest, StoragePrefixResponse,
 };
-use super::value::StoredValue;
+use super::value::{StoredRecord, StoredValue};
 
 #[derive(Debug)]
 pub enum StorageError {
@@ -50,8 +53,21 @@ impl fmt::Display for StorageError {
 
 pub enum StorageRequest {
     Get { key: Vec<u8> },
+    GetWithVersion { key: Vec<u8> },
+    Scan {
+        start: Option<Vec<u8>>,
+        end: Option<Vec<u8>>,
+        limit: usize,
+    },
+    ListPrefix { prefix: Vec<u8>, limit: usize },
     Put { key: Vec<u8>, value: Vec<u8> },
     Delete { key: Vec<u8> },
+    CompareAndSet {
+        key: Vec<u8>,
+        expected_version: Option<u64>,
+        value: Option<Vec<u8>>,
+    },
+    BatchSet { items: Vec<(Vec<u8>, Vec<u8>)> },
 }
 
 pub enum StorageResponse {
@@ -113,7 +129,7 @@ impl StorageService {
 
     #[cfg(any(test, feature = "test-utils"))]
     pub async fn local_get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        read_local(&self.store, &self.blob, key).await.ok().flatten()
+        read_local_value(&self.store, &self.blob, key).await.ok().flatten()
     }
 
     #[cfg(any(test, feature = "test-utils"))]
@@ -123,8 +139,14 @@ impl StorageService {
 
     #[cfg(any(test, feature = "test-utils"))]
     pub async fn forward_read_for_test(&self, key: Vec<u8>) -> StorageResponse {
-        let resp =
-            read_linearizable(&self.raft, &self.store, &self.blob, key, Some(&self.peers)).await;
+        let resp = read_linearizable_value(
+            &self.raft,
+            &self.store,
+            &self.blob,
+            key,
+            Some(&self.peers),
+        )
+        .await;
         match resp {
             Ok(Some(bytes)) => StorageResponse::Ok(string::str_from_bytes(&bytes)),
             Ok(None) => StorageResponse::Ok(Value::nil()),
@@ -513,7 +535,8 @@ async fn handle_envelope(
     match env.req {
         StorageRequest::Get { key } => {
             let start = Instant::now();
-            let resp = read_linearizable(raft, store, blob, key, Some(&config.peers)).await;
+            let resp =
+                read_linearizable_value(raft, store, blob, key, Some(&config.peers)).await;
             let resp = match resp {
                 Ok(Some(bytes)) => StorageResponse::Ok(string::str_from_bytes(&bytes)),
                 Ok(None) => StorageResponse::Ok(Value::nil()),
@@ -522,6 +545,46 @@ async fn handle_envelope(
             let _ = env.resp.send(resp);
             metrics::inc_storage_read();
             metrics::record_storage_read_latency(start.elapsed());
+        }
+        StorageRequest::GetWithVersion { key } => {
+            let start = Instant::now();
+            let resp =
+                read_linearizable_record_value(raft, store, blob, key, Some(&config.peers)).await;
+            let resp = match resp {
+                Ok(Some((bytes, version))) => {
+                    StorageResponse::Ok(record_to_map(bytes, version))
+                }
+                Ok(None) => StorageResponse::Ok(Value::nil()),
+                Err(err) => StorageResponse::Err(err.to_string()),
+            };
+            let _ = env.resp.send(resp);
+            metrics::inc_storage_read();
+            metrics::record_storage_read_latency(start.elapsed());
+        }
+        StorageRequest::Scan { start, end, limit } => {
+            let start_ts = Instant::now();
+            let resp =
+                read_linearizable_scan(raft, store, blob, start, end, limit, Some(&config.peers))
+                    .await;
+            let resp = match resp {
+                Ok(list) => StorageResponse::Ok(list),
+                Err(err) => StorageResponse::Err(err.to_string()),
+            };
+            let _ = env.resp.send(resp);
+            metrics::inc_storage_read();
+            metrics::record_storage_read_latency(start_ts.elapsed());
+        }
+        StorageRequest::ListPrefix { prefix, limit } => {
+            let start_ts = Instant::now();
+            let resp =
+                read_linearizable_prefix(raft, store, prefix, limit, Some(&config.peers)).await;
+            let resp = match resp {
+                Ok(list) => StorageResponse::Ok(list),
+                Err(err) => StorageResponse::Err(err.to_string()),
+            };
+            let _ = env.resp.send(resp);
+            metrics::inc_storage_read();
+            metrics::record_storage_read_latency(start_ts.elapsed());
         }
         StorageRequest::Put { key, value } => {
             let stored = if value.len() > config.blob.threshold_bytes {
@@ -563,6 +626,87 @@ async fn handle_envelope(
                 flush_batch(raft, batch, batch_start).await;
             }
         }
+        StorageRequest::CompareAndSet {
+            key,
+            expected_version,
+            value,
+        } => {
+            let stored = match value {
+                Some(raw) => {
+                    if raw.len() > config.blob.threshold_bytes {
+                        match blob.put(&raw).await {
+                            Ok(blob_ref) => Some(StoredValue::Blob(blob_ref)),
+                            Err(err) => {
+                                let _ = env.resp.send(StorageResponse::Err(err.to_string()));
+                                return;
+                            }
+                        }
+                    } else {
+                        Some(StoredValue::Inline(raw))
+                    }
+                }
+                None => None,
+            };
+            let result = raft
+                .client_write(KvRequest::CompareAndSet {
+                    key,
+                    expected_version,
+                    value: stored.clone(),
+                })
+                .await;
+            let resp = match result {
+                Ok(resp) => match resp.data {
+                    KvResponse::CompareAndSet(applied) => {
+                        if !applied {
+                            if let Some(StoredValue::Blob(blob_ref)) = stored {
+                                let _ = blob.delete(&blob_ref).await;
+                            }
+                        }
+                        StorageResponse::Ok(Value::from_bool(applied))
+                    }
+                    _ => StorageResponse::Err("compare-and-set failed".to_string()),
+                },
+                Err(err) => {
+                    if let Some(StoredValue::Blob(blob_ref)) = stored {
+                        let _ = blob.delete(&blob_ref).await;
+                    }
+                    StorageResponse::Err(err.to_string())
+                }
+            };
+            let _ = env.resp.send(resp);
+        }
+        StorageRequest::BatchSet { items } => {
+            let mut ops = Vec::with_capacity(items.len());
+            let mut staged_blobs = Vec::new();
+            for (key, value) in items {
+                let stored = if value.len() > config.blob.threshold_bytes {
+                    match blob.put(&value).await {
+                        Ok(blob_ref) => {
+                            staged_blobs.push(blob_ref.clone());
+                            StoredValue::Blob(blob_ref)
+                        }
+                        Err(err) => {
+                            let _ = env.resp.send(StorageResponse::Err(err.to_string()));
+                            return;
+                        }
+                    }
+                } else {
+                    StoredValue::Inline(value)
+                };
+                ops.push(KvCommand::Put { key, value: stored });
+            }
+            let result = raft.client_write(KvRequest::Batch { ops }).await;
+            let resp = match result {
+                Ok(_) => StorageResponse::Ok(Value::from_bool(true)),
+                Err(err) => {
+                    for blob_ref in staged_blobs {
+                        let _ = blob.delete(&blob_ref).await;
+                    }
+                    StorageResponse::Err(err.to_string())
+                }
+            };
+            let _ = env.resp.send(resp);
+        }
     }
 }
 
@@ -596,31 +740,102 @@ async fn flush_batch(
     }
 }
 
-async fn read_local(
+fn record_to_map(value_bytes: Vec<u8>, version: u64) -> Value {
+    let map_val = map::map_new();
+    let value_val = string::str_from_bytes(&value_bytes);
+    let key_value = string::str_from_bytes(b"value");
+    map::map_set(map_val, key_value, value_val);
+    unsafe {
+        crate::wr_rc_dec(key_value);
+        if value_val.is_ptr() {
+            crate::wr_rc_dec(value_val);
+        }
+    }
+    let key_version = string::str_from_bytes(b"version");
+    map::map_set(map_val, key_version, Value::from_int(version as i64));
+    unsafe { crate::wr_rc_dec(key_version) };
+    map_val
+}
+
+async fn record_bytes(blob: &BlobBackend, record: &StoredRecord) -> Result<Vec<u8>, StorageError> {
+    match &record.value {
+        StoredValue::Inline(bytes) => Ok(bytes.clone()),
+        StoredValue::Blob(blob_ref) => blob
+            .get(blob_ref)
+            .await
+            .map_err(|err| StorageError::Internal(err.to_string())),
+    }
+}
+
+fn scan_entry_map(key: &[u8], value: &[u8], version: u64) -> Value {
+    let map_val = map::map_new();
+    let key_key = string::str_from_bytes(b"key");
+    let key_val = string::str_from_bytes(key);
+    map::map_set(map_val, key_key, key_val);
+    unsafe {
+        crate::wr_rc_dec(key_key);
+        crate::wr_rc_dec(key_val);
+    }
+    let value_key = string::str_from_bytes(b"value");
+    let value_val = string::str_from_bytes(value);
+    map::map_set(map_val, value_key, value_val);
+    unsafe {
+        crate::wr_rc_dec(value_key);
+        crate::wr_rc_dec(value_val);
+    }
+    let version_key = string::str_from_bytes(b"version");
+    map::map_set(map_val, version_key, Value::from_int(version as i64));
+    unsafe { crate::wr_rc_dec(version_key) };
+    map_val
+}
+
+fn list_from_keys(keys: Vec<Vec<u8>>) -> Value {
+    let list_val = list::list_new(0);
+    for key in keys {
+        let key_val = string::str_from_bytes(&key);
+        list::list_push(list_val, key_val);
+    }
+    list_val
+}
+
+fn list_from_entries(entries: Vec<(Vec<u8>, Vec<u8>, u64)>) -> Value {
+    let list_val = list::list_new(0);
+    for (key, value, version) in entries {
+        let map_val = scan_entry_map(&key, &value, version);
+        list::list_push(list_val, map_val);
+    }
+    list_val
+}
+
+async fn read_local_record_value(
     store: &Arc<KvStore>,
     blob: &BlobBackend,
     key: &[u8],
-) -> Result<Option<Vec<u8>>, StorageError> {
-    let value = {
+) -> Result<Option<(Vec<u8>, u64)>, StorageError> {
+    let record = {
         let guard = store.state_machine.read().await;
         guard
             .get_value(key)
             .map_err(|err| StorageError::Internal(format!("state machine get: {err}")))?
     };
-    Ok(match value {
-        None => None,
-        Some(StoredValue::Inline(bytes)) => Some(bytes),
-        Some(StoredValue::Blob(blob_ref)) => {
-            let bytes = blob
-                .get(&blob_ref)
-                .await
-                .map_err(|err| StorageError::Internal(err.to_string()))?;
-            Some(bytes)
-        }
-    })
+    let Some(record) = record else {
+        return Ok(None);
+    };
+    let bytes = record_bytes(blob, &record).await?;
+    Ok(Some((bytes, record.version)))
 }
 
-async fn read_linearizable(
+async fn read_local_value(
+    store: &Arc<KvStore>,
+    blob: &BlobBackend,
+    key: &[u8],
+) -> Result<Option<Vec<u8>>, StorageError> {
+    read_local_record_value(store, blob, key)
+        .await
+        .map(|opt| opt.map(|(bytes, _)| bytes))
+}
+
+async fn read_linearizable_value(
     raft: &Raft<TypeConfig>,
     store: &Arc<KvStore>,
     blob: &BlobBackend,
@@ -628,26 +843,114 @@ async fn read_linearizable(
     peers: Option<&std::collections::HashMap<NodeId, String>>,
 ) -> Result<Option<Vec<u8>>, StorageError> {
     match raft.ensure_linearizable().await {
-        Ok(_) => read_local(store, blob, &key).await,
-        Err(err) => {
-            if let Some(fwd) = err.forward_to_leader::<BasicNode>() {
-                if let Some(node) = fwd.leader_node.as_ref() {
-                    if !node.addr.is_empty() {
-                        return forward_read(node.addr.clone(), key).await;
-                    }
-                }
-                if let Some(id) = fwd.leader_id {
-                    if let Some(peers) = peers {
-                        if let Some(addr) = peers.get(&id) {
-                            return forward_read(addr.clone(), key).await;
-                        }
-                    }
-                }
-                Err(StorageError::Internal("leader address unknown".to_string()))
-            } else {
-                Err(StorageError::Internal(err.to_string()))
+        Ok(_) => read_local_value(store, blob, &key).await,
+        Err(err) => forward_to_leader(err, peers, |addr| async move {
+            forward_read(addr, key).await
+        })
+        .await,
+    }
+}
+
+async fn read_linearizable_record_value(
+    raft: &Raft<TypeConfig>,
+    store: &Arc<KvStore>,
+    blob: &BlobBackend,
+    key: Vec<u8>,
+    peers: Option<&std::collections::HashMap<NodeId, String>>,
+) -> Result<Option<(Vec<u8>, u64)>, StorageError> {
+    match raft.ensure_linearizable().await {
+        Ok(_) => read_local_record_value(store, blob, &key).await,
+        Err(err) => forward_to_leader(err, peers, |addr| async move {
+            forward_read_version(addr, key).await
+        })
+        .await,
+    }
+}
+
+async fn read_linearizable_scan(
+    raft: &Raft<TypeConfig>,
+    store: &Arc<KvStore>,
+    blob: &BlobBackend,
+    start: Option<Vec<u8>>,
+    end: Option<Vec<u8>>,
+    limit: usize,
+    peers: Option<&std::collections::HashMap<NodeId, String>>,
+) -> Result<Value, StorageError> {
+    match raft.ensure_linearizable().await {
+        Ok(_) => {
+            let records = {
+                let guard = store.state_machine.read().await;
+                guard.scan_range(start.as_deref(), end.as_deref(), limit)
+            }
+            .map_err(|err| StorageError::Internal(format!("state machine scan: {err}")))?;
+            let mut entries = Vec::with_capacity(records.len());
+            for (key, record) in records {
+                let bytes = record_bytes(blob, &record).await?;
+                entries.push((key, bytes, record.version));
+            }
+            Ok(list_from_entries(entries))
+        }
+        Err(err) => forward_to_leader(err, peers, |addr| async move {
+            forward_scan(addr, start, end, limit).await
+        })
+        .await,
+    }
+}
+
+async fn read_linearizable_prefix(
+    raft: &Raft<TypeConfig>,
+    store: &Arc<KvStore>,
+    prefix: Vec<u8>,
+    limit: usize,
+    peers: Option<&std::collections::HashMap<NodeId, String>>,
+) -> Result<Value, StorageError> {
+    match raft.ensure_linearizable().await {
+        Ok(_) => {
+            let keys = {
+                let guard = store.state_machine.read().await;
+                guard.list_prefix_keys(&prefix, limit)
+            }
+            .map_err(|err| StorageError::Internal(format!("state machine prefix: {err}")))?;
+            Ok(list_from_keys(keys))
+        }
+        Err(err) => forward_to_leader(err, peers, |addr| async move {
+            forward_prefix(addr, prefix, limit).await
+        })
+        .await,
+    }
+}
+
+async fn forward_to_leader<E, F, Fut, T>(
+    err: openraft::error::RaftError<NodeId, E>,
+    peers: Option<&std::collections::HashMap<NodeId, String>>,
+    f: F,
+) -> Result<T, StorageError>
+where
+    F: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = Result<T, StorageError>>,
+    E: openraft::TryAsRef<openraft::error::ForwardToLeader<NodeId, BasicNode>>
+        + std::error::Error
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+{
+    if let Some(fwd) = err.forward_to_leader::<BasicNode>() {
+        if let Some(node) = fwd.leader_node.as_ref() {
+            if !node.addr.is_empty() {
+                return f(node.addr.clone()).await;
             }
         }
+        if let Some(id) = fwd.leader_id {
+            if let Some(peers) = peers {
+                if let Some(addr) = peers.get(&id) {
+                    return f(addr.clone()).await;
+                }
+            }
+        }
+        Err(StorageError::Internal("leader address unknown".to_string()))
+    } else {
+        Err(StorageError::Internal(err.to_string()))
     }
 }
 
@@ -674,4 +977,104 @@ async fn forward_read(addr: String, key: Vec<u8>) -> Result<Option<Vec<u8>>, Sto
             envelope.error.unwrap_or_else(|| "read failed".to_string()),
         ))
     }
+}
+
+async fn forward_read_version(
+    addr: String,
+    key: Vec<u8>,
+) -> Result<Option<(Vec<u8>, u64)>, StorageError> {
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .map_err(|err| StorageError::Internal(err.to_string()))?;
+    let url = format!("http://{}/storage/read_version", addr);
+    let resp = client
+        .post(url)
+        .json(&StorageReadRequest { key })
+        .send()
+        .await
+        .map_err(|err| StorageError::Internal(err.to_string()))?;
+    let envelope: RpcEnvelope<StorageReadVersionResponse> = resp
+        .json()
+        .await
+        .map_err(|err| StorageError::Internal(err.to_string()))?;
+    if !envelope.ok {
+        return Err(StorageError::Internal(
+            envelope.error.unwrap_or_else(|| "read failed".to_string()),
+        ));
+    }
+    let Some(data) = envelope.data else {
+        return Ok(None);
+    };
+    match (data.value, data.version) {
+        (Some(bytes), Some(version)) => Ok(Some((bytes, version))),
+        _ => Ok(None),
+    }
+}
+
+async fn forward_scan(
+    addr: String,
+    start: Option<Vec<u8>>,
+    end: Option<Vec<u8>>,
+    limit: usize,
+) -> Result<Value, StorageError> {
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .map_err(|err| StorageError::Internal(err.to_string()))?;
+    let url = format!("http://{}/storage/scan", addr);
+    let resp = client
+        .post(url)
+        .json(&StorageScanRequest { start, end, limit })
+        .send()
+        .await
+        .map_err(|err| StorageError::Internal(err.to_string()))?;
+    let envelope: RpcEnvelope<StorageScanResponse> = resp
+        .json()
+        .await
+        .map_err(|err| StorageError::Internal(err.to_string()))?;
+    if !envelope.ok {
+        return Err(StorageError::Internal(
+            envelope.error.unwrap_or_else(|| "scan failed".to_string()),
+        ));
+    }
+    let entries = envelope
+        .data
+        .map(|data| {
+            data.entries
+                .into_iter()
+                .map(|entry| (entry.key, entry.value, entry.version))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    Ok(list_from_entries(entries))
+}
+
+async fn forward_prefix(
+    addr: String,
+    prefix: Vec<u8>,
+    limit: usize,
+) -> Result<Value, StorageError> {
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .map_err(|err| StorageError::Internal(err.to_string()))?;
+    let url = format!("http://{}/storage/prefix", addr);
+    let resp = client
+        .post(url)
+        .json(&StoragePrefixRequest { prefix, limit })
+        .send()
+        .await
+        .map_err(|err| StorageError::Internal(err.to_string()))?;
+    let envelope: RpcEnvelope<StoragePrefixResponse> = resp
+        .json()
+        .await
+        .map_err(|err| StorageError::Internal(err.to_string()))?;
+    if !envelope.ok {
+        return Err(StorageError::Internal(
+            envelope.error.unwrap_or_else(|| "prefix failed".to_string()),
+        ));
+    }
+    let keys = envelope.data.map(|data| data.keys).unwrap_or_default();
+    Ok(list_from_keys(keys))
 }

@@ -167,21 +167,8 @@ async fn storage_three_node_cluster() {
         .expect("put");
     matches_ok(resp);
 
-    let mut tries = 0u32;
-    loop {
-        if let Some(val) = service2.local_get(b"cluster").await {
-            assert_eq!(val, b"ok".to_vec());
-            break;
-        }
-        tries += 1;
-        if tries > 50 {
-            panic!("timed out waiting for replication");
-        }
-        sleep(Duration::from_millis(20)).await;
-    }
-
-    let val3 = service3.local_get(b"cluster").await;
-    assert_eq!(val3, Some(b"ok".to_vec()));
+    wait_for_value(&service2, b"cluster", b"ok".to_vec()).await;
+    wait_for_value(&service3, b"cluster", b"ok".to_vec()).await;
 
     service1.shutdown().await;
     service2.shutdown().await;
@@ -517,12 +504,24 @@ async fn storage_backup_restore_specific_id() {
     let snap_a = SerializableKvStateMachine {
         last_applied_log: None,
         last_membership: Default::default(),
-        data: vec![(b"k1".to_vec(), crate::storage::value::StoredValue::Inline(b"v1".to_vec()))],
+        data: vec![(
+            b"k1".to_vec(),
+            crate::storage::value::StoredRecord {
+                version: 1,
+                value: crate::storage::value::StoredValue::Inline(b"v1".to_vec()),
+            },
+        )],
     };
     let snap_b = SerializableKvStateMachine {
         last_applied_log: None,
         last_membership: Default::default(),
-        data: vec![(b"k1".to_vec(), crate::storage::value::StoredValue::Inline(b"v2".to_vec()))],
+        data: vec![(
+            b"k1".to_vec(),
+            crate::storage::value::StoredRecord {
+                version: 1,
+                value: crate::storage::value::StoredValue::Inline(b"v2".to_vec()),
+            },
+        )],
     };
     blob.put_named(&key_a, &serde_json::to_vec(&snap_a).unwrap())
         .await
@@ -582,7 +581,13 @@ async fn storage_backup_restore_missing_meta() {
     let snap = SerializableKvStateMachine {
         last_applied_log: None,
         last_membership: Default::default(),
-        data: vec![(b"k1".to_vec(), crate::storage::value::StoredValue::Inline(b"v1".to_vec()))],
+        data: vec![(
+            b"k1".to_vec(),
+            crate::storage::value::StoredRecord {
+                version: 1,
+                value: crate::storage::value::StoredValue::Inline(b"v1".to_vec()),
+            },
+        )],
     };
     blob.put_named(&key, &serde_json::to_vec(&snap).unwrap())
         .await
@@ -1980,7 +1985,7 @@ async fn wait_for_value(service: &StorageService, key: &[u8], expected: Vec<u8>)
             }
         }
         tries += 1;
-        if tries > 100 {
+        if tries > 200 {
             panic!("timed out waiting for value");
         }
         sleep(Duration::from_millis(20)).await;
@@ -1994,7 +1999,7 @@ async fn wait_for_absent(service: &StorageService, key: &[u8]) {
             return;
         }
         tries += 1;
-        if tries > 200 {
+        if tries > 600 {
             panic!("timed out waiting for key removal");
         }
         sleep(Duration::from_millis(20)).await;

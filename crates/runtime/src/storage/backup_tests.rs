@@ -34,7 +34,7 @@ async fn backup_prunes_by_age() {
     let prefix = backup_prefix(&config, 1);
 
     let old_key = format!("{}/{}-0-0.snap", prefix, 0);
-    let new_key = format!("{}/{}-0-0.snap", prefix, 325036800000u64); // year 3000
+    let new_key = format!("{}/{}-0-0.snap", prefix, 32503680000000u64); // year 3000
     let _ = blob.put_named(&old_key, b"old").await.expect("put");
     let _ = blob.put_named(&new_key, b"new").await.expect("put");
 
@@ -115,7 +115,7 @@ async fn backup_prunes_by_age_and_keep() {
 
     let old_key = format!("{}/{}-0-0.snap", prefix, 0u64);
     let mid_key = format!("{}/{}-0-0.snap", prefix, 1000u64);
-    let new_key = format!("{}/{}-0-0.snap", prefix, 325036800000u64);
+    let new_key = format!("{}/{}-0-0.snap", prefix, 32503680000000u64);
     let _ = blob.put_named(&old_key, b"old").await.expect("put");
     let _ = blob.put_named(&mid_key, b"mid").await.expect("put");
     let _ = blob.put_named(&new_key, b"new").await.expect("put");

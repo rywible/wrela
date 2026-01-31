@@ -1,0 +1,164 @@
+so: Wrela Language Tour
+    This file is a runnable (and heavily commented) tour of Wrela syntax and semantics.
+    All code is valid Wrela, but this file is not part of the build by default.
+
+so:
+    ------------------------------------------------------------
+    1) Classes, fields, and methods
+    ------------------------------------------------------------
+
+A Whale:
+    so: Fields are declared in `has` blocks and require types.
+    has:
+        name: String
+        age: Int
+
+    so: Methods are declared with `can` and use `it`/`its` as the receiver.
+    can describe() -> String:
+        return "Whale {its.name}, age {its.age}"
+
+    can swim(distance: Number) -> Bool:
+        so:
+            `its` is a synonym for `it`.
+            Methods can return Bool, String, etc.
+        return distance > 0
+
+so:
+    ------------------------------------------------------------
+    2) Functions, variables, and control flow
+    ------------------------------------------------------------
+
+to make_whale(name: String, age: Int) -> Whale:
+    so: Class constructors are called like functions.
+    return Whale(name=name, age=age)
+
+to demo_variables_and_flow(n: Int) -> Int:
+    so: Variables are immutable by default.
+    changing total = 0
+
+    so: Use `changing` for mutable variables.
+    changing i = 0
+
+    while i < n:
+        total += i
+        i += 1
+
+    if total > 10:
+        return total
+    else:
+        return 10
+
+so:
+    ------------------------------------------------------------
+    3) Lists, maps, ranges, and match
+    ------------------------------------------------------------
+
+to demo_collections() -> Int:
+    so: The range operator `...` builds a list of numbers, inclusive.
+    range = 1...5
+
+    so: `for` iterates over lists, maps, and ranges.
+    changing sum = 0
+    for value in range:
+        sum += value
+
+    so: `match` requires an `otherwise` case.
+    match sum:
+        15:
+            return 1
+        otherwise:
+            return 0
+
+so:
+    ------------------------------------------------------------
+    4) Strings and interpolation
+    ------------------------------------------------------------
+
+to demo_strings(name: String) -> String:
+    return "Hello {name}, welcome to Wrela"
+
+so:
+    ------------------------------------------------------------
+    5) Results, err, and otherwise
+    ------------------------------------------------------------
+
+to parse_number(text: String) -> Result[Int, String]:
+    so: `err` can only be used in functions that return Result.
+    if text == "42":
+        return 42
+    return err "not a number"
+
+to parse_number_or_zero(text: String) -> Int:
+    so: `otherwise` handles Result values.
+    return parse_number(text=text) otherwise 0
+
+so:
+    ------------------------------------------------------------
+    6) Actors, detach/spawn, await, and fire
+    ------------------------------------------------------------
+
+A Counter:
+    has:
+        value: Int
+
+    can inc() -> Int:
+        return its.value + 1
+
+    can slow_inc() -> Int:
+        so:
+            This method is synchronous here, but if it used `await`,
+            Counter would have to be instantiated as an actor.
+        return its.value + 1
+
+so: A detached class instance is an actor.
+
+to demo_actors() -> Result[Int, Error]:
+    actor = detach Counter(value=0) * 1
+
+    so:
+        Actor method calls return Pending[Result[...]]. You must await or fire them.
+    result = await actor.inc()
+    return result
+
+so: Fire-and-forget calls are statements only.
+
+to demo_fire() -> Nothing:
+    actor = detach Counter(value=0) * 1
+    fire actor.inc()
+    return nothing
+
+so:
+    ------------------------------------------------------------
+    7) Pools and optimize
+    ------------------------------------------------------------
+
+to demo_pools() -> Nothing:
+    so: optimize sets a pool objective for detach in this scope.
+    optimize balance:
+        actor = detach Counter(value=0) * 1
+        fire actor.inc()
+
+    so: Pool.of creates a pool with configuration options.
+    pool = Pool.of(
+        Counter,
+        size=4,
+        objective=throughput,
+        batch=8,
+        backpressure=queue(128)
+    )
+    so: Detaching a Pool.of target creates an actor pool.
+    actor_pool = detach pool * 1
+    fire actor_pool.inc()
+
+    return nothing
+
+so:
+    ------------------------------------------------------------
+    8) Entry point (only in the entry module)
+    ------------------------------------------------------------
+
+to run() -> Int:
+    whale = make_whale(name="Moby", age=10)
+    if whale.swim(5):
+        return 1
+    return 0

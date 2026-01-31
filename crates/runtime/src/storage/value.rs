@@ -11,3 +11,9 @@ pub enum StoredValue {
     Inline(Vec<u8>),
     Blob(BlobRef),
 }
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct StoredRecord {
+    pub version: u64,
+    pub value: StoredValue,
+}
