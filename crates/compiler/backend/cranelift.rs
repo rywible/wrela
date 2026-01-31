@@ -14,9 +14,9 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::io::Read;
 use std::process::Stdio;
 use std::time::{Duration, Instant, SystemTime};
 use target_lexicon::Triple;
@@ -48,7 +48,11 @@ fn nanbox_nil_const() -> i64 {
 fn nanbox_bool_const(value: bool) -> i64 {
     nanbox_const(
         NANBOX_TAG_IMM,
-        if value { NANBOX_IMM_TRUE } else { NANBOX_IMM_FALSE },
+        if value {
+            NANBOX_IMM_TRUE
+        } else {
+            NANBOX_IMM_FALSE
+        },
     )
 }
 
@@ -262,8 +266,7 @@ pub fn compile_to_object(mir: &MirModule) -> Result<Vec<u8>, CodegenError> {
 pub fn compile_to_executable(mir: &MirModule, output: &Path) -> Result<(), CodegenError> {
     let obj = compile_to_object(mir)?;
     if std::env::var("WRELA_SKIP_LINK").is_ok() {
-        fs::write(output, obj)
-            .map_err(|err| CodegenError(format!("write obj failed: {err}")))?;
+        fs::write(output, obj).map_err(|err| CodegenError(format!("write obj failed: {err}")))?;
         if std::env::var("WRELA_CODEGEN_DEBUG").is_ok() {
             eprintln!("linker: skipped (WRELA_SKIP_LINK=1)");
         }
@@ -294,12 +297,14 @@ pub fn compile_to_executable(mir: &MirModule, output: &Path) -> Result<(), Codeg
     let output = if let Ok(timeout_ms) = std::env::var("WRELA_LINK_TIMEOUT_MS") {
         let timeout_ms: u64 = timeout_ms.parse().unwrap_or(0);
         if timeout_ms == 0 {
-            cmd.output().map_err(|err| linker_io_error(&linker.name, err))?
+            cmd.output()
+                .map_err(|err| linker_io_error(&linker.name, err))?
         } else {
             run_linker_with_timeout(cmd, Duration::from_millis(timeout_ms), &linker.name)?
         }
     } else {
-        cmd.output().map_err(|err| linker_io_error(&linker.name, err))?
+        cmd.output()
+            .map_err(|err| linker_io_error(&linker.name, err))?
     };
 
     if !output.status.success() {
@@ -327,10 +332,7 @@ fn run_linker_with_timeout(
         .map_err(|err| linker_io_error(name, err))?;
     let start = Instant::now();
     loop {
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|err| linker_io_error(name, err))?
-        {
+        if let Some(status) = child.try_wait().map_err(|err| linker_io_error(name, err))? {
             let mut stdout = Vec::new();
             let mut stderr = Vec::new();
             if let Some(mut out) = child.stdout.take() {
@@ -555,7 +557,9 @@ fn newest_mtime_in_tree(root: &Path) -> Option<SystemTime> {
 }
 
 fn mtime(path: &Path) -> Option<SystemTime> {
-    fs::metadata(path).ok().and_then(|meta| meta.modified().ok())
+    fs::metadata(path)
+        .ok()
+        .and_then(|meta| meta.modified().ok())
 }
 
 fn tool_io_error(tool: &str, err: io::Error) -> CodegenError {
@@ -1271,7 +1275,9 @@ fn lower_rvalue(
                                     "list_push" => Some(runtime_fn_list_push(module, runtime)?),
                                     "map_get" => Some(runtime_fn_map_get(module, runtime)?),
                                     "map_set" => Some(runtime_fn_map_set(module, runtime)?),
-                                    "pool_auto_size" => Some(runtime_fn_pool_auto_size(module, runtime)?),
+                                    "pool_auto_size" => {
+                                        Some(runtime_fn_pool_auto_size(module, runtime)?)
+                                    }
                                     "pool_size" => Some(runtime_fn_pool_size(module, runtime)?),
                                     "pool_rr" => Some(runtime_fn_pool_rr(module, runtime)?),
                                     "pool_queue_len" => {
@@ -1281,7 +1287,9 @@ fn lower_rvalue(
                                         Some(runtime_fn_actor_mailbox_len(module, runtime)?)
                                     }
                                     "actor_pause" => Some(runtime_fn_actor_pause(module, runtime)?),
-                                    "actor_resume" => Some(runtime_fn_actor_resume(module, runtime)?),
+                                    "actor_resume" => {
+                                        Some(runtime_fn_actor_resume(module, runtime)?)
+                                    }
                                     "actor_pause_wait" => {
                                         Some(runtime_fn_actor_pause_wait(module, runtime)?)
                                     }
@@ -1289,12 +1297,9 @@ fn lower_rvalue(
                                     "metrics_dropped_paused_id" => {
                                         Some(runtime_fn_metrics_dropped_paused_id(module, runtime)?)
                                     }
-                                    "metrics_messages_dropped_id" => {
-                                        Some(runtime_fn_metrics_messages_dropped_id(
-                                            module,
-                                            runtime,
-                                        )?)
-                                    }
+                                    "metrics_messages_dropped_id" => Some(
+                                        runtime_fn_metrics_messages_dropped_id(module, runtime)?,
+                                    ),
                                     "clock_ns" => Some(runtime_fn_clock_ns(module, runtime)?),
                                     "sleep_ms" => Some(runtime_fn_sleep_ms(module, runtime)?),
                                     "env_get" => Some(runtime_fn_env_get(module, runtime)?),
@@ -1347,40 +1352,64 @@ fn lower_rvalue(
                                     "files_metadata" => {
                                         Some(runtime_fn_files_metadata(module, runtime)?)
                                     }
-                                    "files_delete" => Some(runtime_fn_files_delete(module, runtime)?),
-                                    "files_set_acl" => Some(runtime_fn_files_set_acl(module, runtime)?),
-                                    "jobs_enqueue" => Some(runtime_fn_jobs_enqueue(module, runtime)?),
-                                    "jobs_process" => Some(runtime_fn_jobs_process(module, runtime)?),
+                                    "files_delete" => {
+                                        Some(runtime_fn_files_delete(module, runtime)?)
+                                    }
+                                    "files_set_acl" => {
+                                        Some(runtime_fn_files_set_acl(module, runtime)?)
+                                    }
+                                    "jobs_enqueue" => {
+                                        Some(runtime_fn_jobs_enqueue(module, runtime)?)
+                                    }
+                                    "jobs_process" => {
+                                        Some(runtime_fn_jobs_process(module, runtime)?)
+                                    }
                                     "jobs_dead_letter" => {
                                         Some(runtime_fn_jobs_dead_letter(module, runtime)?)
                                     }
-                                    "schedule_cron" => Some(runtime_fn_schedule_cron(module, runtime)?),
+                                    "schedule_cron" => {
+                                        Some(runtime_fn_schedule_cron(module, runtime)?)
+                                    }
                                     "schedule_every" => {
                                         Some(runtime_fn_schedule_every(module, runtime)?)
                                     }
                                     "schedule_at" => Some(runtime_fn_schedule_at(module, runtime)?),
-                                    "search_index" => Some(runtime_fn_search_index(module, runtime)?),
-                                    "search_remove" => Some(runtime_fn_search_remove(module, runtime)?),
-                                    "search_query" => Some(runtime_fn_search_query(module, runtime)?),
+                                    "search_index" => {
+                                        Some(runtime_fn_search_index(module, runtime)?)
+                                    }
+                                    "search_remove" => {
+                                        Some(runtime_fn_search_remove(module, runtime)?)
+                                    }
+                                    "search_query" => {
+                                        Some(runtime_fn_search_query(module, runtime)?)
+                                    }
                                     "realtime_on_connect" => {
                                         Some(runtime_fn_realtime_on_connect(module, runtime)?)
                                     }
-                                    "realtime_join" => Some(runtime_fn_realtime_join(module, runtime)?),
+                                    "realtime_join" => {
+                                        Some(runtime_fn_realtime_join(module, runtime)?)
+                                    }
                                     "realtime_leave" => {
                                         Some(runtime_fn_realtime_leave(module, runtime)?)
                                     }
                                     "realtime_broadcast" => {
                                         Some(runtime_fn_realtime_broadcast(module, runtime)?)
                                     }
-                                    "realtime_send" => Some(runtime_fn_realtime_send(module, runtime)?),
+                                    "realtime_send" => {
+                                        Some(runtime_fn_realtime_send(module, runtime)?)
+                                    }
                                     "rate_check" => Some(runtime_fn_rate_check(module, runtime)?),
                                     "rate_ip" => Some(runtime_fn_rate_ip(module, runtime)?),
-                                    "admin_enable" => Some(runtime_fn_admin_enable(module, runtime)?),
+                                    "admin_enable" => {
+                                        Some(runtime_fn_admin_enable(module, runtime)?)
+                                    }
                                     "storage_get" => Some(runtime_fn_storage_get(module, runtime)?),
                                     "storage_get_with_version" => {
                                         Some(runtime_fn_storage_get_with_version(module, runtime)?)
                                     }
-                                    "storage_scan" => Some(runtime_fn_storage_scan(module, runtime)?),
+                                    "storage_scan" => {
+                                        Some(runtime_fn_storage_scan(module, runtime)?)
+                                    }
                                     "storage_list_prefix" => {
                                         Some(runtime_fn_storage_list_prefix(module, runtime)?)
                                     }
@@ -1407,15 +1436,17 @@ fn lower_rvalue(
                                         Some(runtime_fn_bytes_to_string(module, runtime)?)
                                     }
                                     "bytes_len" => Some(runtime_fn_bytes_len(module, runtime)?),
-                                    "http_server_serve_get_requests" => {
-                                        Some(runtime_fn_http_server_serve_get_requests(module, runtime)?)
-                                    }
+                                    "http_server_serve_get_requests" => Some(
+                                        runtime_fn_http_server_serve_get_requests(module, runtime)?,
+                                    ),
                                     "http_server_serve_post_requests" => {
-                                        Some(runtime_fn_http_server_serve_post_requests(module, runtime)?)
+                                        Some(runtime_fn_http_server_serve_post_requests(
+                                            module, runtime,
+                                        )?)
                                     }
-                                    "http_server_serve_requests" => {
-                                        Some(runtime_fn_http_server_serve_requests(module, runtime)?)
-                                    }
+                                    "http_server_serve_requests" => Some(
+                                        runtime_fn_http_server_serve_requests(module, runtime)?,
+                                    ),
                                     "http_server_serve_on" => {
                                         Some(runtime_fn_http_server_serve_on(module, runtime)?)
                                     }
@@ -1503,20 +1534,18 @@ fn lower_rvalue(
             let mailbox_cap_val = builder.ins().iconst(types::I64, mailbox_cap);
             let enqueue_timeout_val = builder.ins().iconst(types::I64, enqueue_timeout_ms);
             let batch_limit_val = builder.ins().iconst(types::I64, batch_limit);
-            let call = builder
-                .ins()
-                .call(
-                    callee,
-                    &[
-                        class_id,
-                        instance_val,
-                        pool_size_val,
-                        objective_val,
-                        mailbox_cap_val,
-                        enqueue_timeout_val,
-                        batch_limit_val,
-                    ],
-                );
+            let call = builder.ins().call(
+                callee,
+                &[
+                    class_id,
+                    instance_val,
+                    pool_size_val,
+                    objective_val,
+                    mailbox_cap_val,
+                    enqueue_timeout_val,
+                    batch_limit_val,
+                ],
+            );
             Ok(builder.inst_results(call)[0])
         }
         Rvalue::PoolNew {
@@ -1796,9 +1825,7 @@ fn lower_literal(
             let val = builder.ins().iconst(types::I64, *v as i64);
             tag_int(builder, module, runtime, val)
         }
-        crate::hir::Literal::Bool(v) => Ok(builder
-            .ins()
-            .iconst(types::I64, nanbox_bool_const(*v))),
+        crate::hir::Literal::Bool(v) => Ok(builder.ins().iconst(types::I64, nanbox_bool_const(*v))),
         crate::hir::Literal::Nil => Ok(builder.ins().iconst(types::I64, nanbox_nil_const())),
         crate::hir::Literal::Float(v) => {
             let func_id = runtime_fn_box_float(module, runtime)?;
@@ -2046,7 +2073,8 @@ fn runtime_fn_map_set(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
 ) -> Result<cranelift_module::FuncId, CodegenError> {
-    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    let sig =
+        RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
     runtime.get_func(module, "wr_map_set", sig)
 }
 
@@ -2222,7 +2250,8 @@ fn runtime_fn_auth_verify_password(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
 ) -> Result<cranelift_module::FuncId, CodegenError> {
-    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    let sig =
+        RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
     runtime.get_func(module, "wr_auth_verify_password", sig)
 }
 
@@ -2250,7 +2279,8 @@ fn runtime_fn_auth_issue_email_token(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
 ) -> Result<cranelift_module::FuncId, CodegenError> {
-    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    let sig =
+        RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
     runtime.get_func(module, "wr_auth_issue_email_token", sig)
 }
 
@@ -2266,7 +2296,8 @@ fn runtime_fn_auth_oauth_login(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
 ) -> Result<cranelift_module::FuncId, CodegenError> {
-    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    let sig =
+        RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
     runtime.get_func(module, "wr_auth_oauth_login", sig)
 }
 
@@ -2310,7 +2341,8 @@ fn runtime_fn_rbac_permissions_for(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
 ) -> Result<cranelift_module::FuncId, CodegenError> {
-    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    let sig =
+        RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
     runtime.get_func(module, "wr_rbac_permissions_for", sig)
 }
 
@@ -2318,7 +2350,8 @@ fn runtime_fn_files_upload_stream(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
 ) -> Result<cranelift_module::FuncId, CodegenError> {
-    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    let sig =
+        RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
     runtime.get_func(module, "wr_files_upload_stream", sig)
 }
 
@@ -2326,7 +2359,8 @@ fn runtime_fn_files_signed_url(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
 ) -> Result<cranelift_module::FuncId, CodegenError> {
-    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    let sig =
+        RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
     runtime.get_func(module, "wr_files_signed_url", sig)
 }
 
@@ -2350,7 +2384,8 @@ fn runtime_fn_files_set_acl(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
 ) -> Result<cranelift_module::FuncId, CodegenError> {
-    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    let sig =
+        RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
     runtime.get_func(module, "wr_files_set_acl", sig)
 }
 
@@ -2370,7 +2405,8 @@ fn runtime_fn_jobs_process(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
 ) -> Result<cranelift_module::FuncId, CodegenError> {
-    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    let sig =
+        RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
     runtime.get_func(module, "wr_jobs_process", sig)
 }
 
@@ -2386,7 +2422,8 @@ fn runtime_fn_schedule_cron(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
 ) -> Result<cranelift_module::FuncId, CodegenError> {
-    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    let sig =
+        RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
     runtime.get_func(module, "wr_schedule_cron", sig)
 }
 
@@ -2394,7 +2431,8 @@ fn runtime_fn_schedule_every(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
 ) -> Result<cranelift_module::FuncId, CodegenError> {
-    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    let sig =
+        RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
     runtime.get_func(module, "wr_schedule_every", sig)
 }
 
@@ -2402,7 +2440,8 @@ fn runtime_fn_schedule_at(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
 ) -> Result<cranelift_module::FuncId, CodegenError> {
-    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    let sig =
+        RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
     runtime.get_func(module, "wr_schedule_at", sig)
 }
 
@@ -2422,7 +2461,8 @@ fn runtime_fn_search_remove(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
 ) -> Result<cranelift_module::FuncId, CodegenError> {
-    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    let sig =
+        RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
     runtime.get_func(module, "wr_search_remove", sig)
 }
 
@@ -2430,7 +2470,11 @@ fn runtime_fn_search_query(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
 ) -> Result<cranelift_module::FuncId, CodegenError> {
-    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+    let sig = RuntimeRegistry::runtime_sig(
+        module,
+        &[types::I64, types::I64, types::I64, types::I64],
+        &[types::I64],
+    );
     runtime.get_func(module, "wr_search_query", sig)
 }
 
@@ -2478,7 +2522,8 @@ fn runtime_fn_rate_check(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
 ) -> Result<cranelift_module::FuncId, CodegenError> {
-    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    let sig =
+        RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
     runtime.get_func(module, "wr_rate_check", sig)
 }
 
@@ -2518,7 +2563,8 @@ fn runtime_fn_storage_scan(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
 ) -> Result<cranelift_module::FuncId, CodegenError> {
-    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    let sig =
+        RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
     runtime.get_func(module, "wr_storage_scan", sig)
 }
 
@@ -2599,11 +2645,8 @@ fn runtime_fn_http_server_serve_requests(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
 ) -> Result<cranelift_module::FuncId, CodegenError> {
-    let sig = RuntimeRegistry::runtime_sig(
-        module,
-        &[types::I64, types::I64, types::I64],
-        &[types::I64],
-    );
+    let sig =
+        RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
     runtime.get_func(module, "wr_http_server_serve_requests", sig)
 }
 
@@ -2855,11 +2898,7 @@ fn runtime_fn_register_method_name(
     runtime: &mut RuntimeRegistry,
 ) -> Result<cranelift_module::FuncId, CodegenError> {
     let ptr_ty = module.target_config().pointer_type();
-    let sig = RuntimeRegistry::runtime_sig(
-        module,
-        &[ptr_ty, ptr_ty, types::I64, types::I64],
-        &[],
-    );
+    let sig = RuntimeRegistry::runtime_sig(module, &[ptr_ty, ptr_ty, types::I64, types::I64], &[]);
     runtime.get_func(module, "wr_register_method_name", sig)
 }
 
@@ -2971,11 +3010,9 @@ fn untag_int(
     let tag = builder.ins().band(value, tag_mask);
     let tag = builder.ins().ushr(tag, tag_shift);
     let tag_int = builder.ins().iconst(types::I64, NANBOX_TAG_INT as i64);
-    let is_int = builder.ins().icmp(
-        cranelift_codegen::ir::condcodes::IntCC::Equal,
-        tag,
-        tag_int,
-    );
+    let is_int = builder
+        .ins()
+        .icmp(cranelift_codegen::ir::condcodes::IntCC::Equal, tag, tag_int);
     let payload_mask = builder.ins().iconst(types::I64, NANBOX_PAYLOAD_MASK as i64);
 
     let imm_block = builder.create_block();
@@ -2984,27 +3021,31 @@ fn untag_int(
     builder.append_block_param(done_block, types::I64);
     let done_param = builder.block_params(done_block)[0];
 
-    builder
-        .ins()
-        .brif(is_int, imm_block, &[], ptr_block, &[]);
+    builder.ins().brif(is_int, imm_block, &[], ptr_block, &[]);
 
     builder.switch_to_block(imm_block);
     let payload = builder.ins().band(value, payload_mask);
-    let sign_bit = builder.ins().iconst(types::I64, 1i64 << (NANBOX_TAG_SHIFT - 1));
+    let sign_bit = builder
+        .ins()
+        .iconst(types::I64, 1i64 << (NANBOX_TAG_SHIFT - 1));
     let sign_set = builder.ins().band(payload, sign_bit);
     let has_sign = builder.ins().icmp_imm(
         cranelift_codegen::ir::condcodes::IntCC::NotEqual,
         sign_set,
         0,
     );
-    let sign_mask = builder.ins().iconst(types::I64, !NANBOX_PAYLOAD_MASK as i64);
+    let sign_mask = builder
+        .ins()
+        .iconst(types::I64, !NANBOX_PAYLOAD_MASK as i64);
     let signed = builder.ins().bor(payload, sign_mask);
     let unboxed = builder.ins().select(has_sign, signed, payload);
     builder.ins().jump(done_block, &[unboxed]);
 
     builder.switch_to_block(ptr_block);
     let ptr_payload = builder.ins().band(value, payload_mask);
-    let boxed_val = builder.ins().load(types::I64, MemFlags::new(), ptr_payload, 8);
+    let boxed_val = builder
+        .ins()
+        .load(types::I64, MemFlags::new(), ptr_payload, 8);
     builder.ins().jump(done_block, &[boxed_val]);
 
     builder.switch_to_block(done_block);
@@ -3022,11 +3063,10 @@ fn tag_bool(
     let base = builder.ins().bor(qnan, tag);
     let true_payload = builder.ins().iconst(types::I64, NANBOX_IMM_TRUE as i64);
     let false_payload = builder.ins().iconst(types::I64, NANBOX_IMM_FALSE as i64);
-    let is_true = builder.ins().icmp_imm(
-        cranelift_codegen::ir::condcodes::IntCC::NotEqual,
-        value,
-        0,
-    );
+    let is_true =
+        builder
+            .ins()
+            .icmp_imm(cranelift_codegen::ir::condcodes::IntCC::NotEqual, value, 0);
     let payload = builder.ins().select(is_true, true_payload, false_payload);
     builder.ins().bor(base, payload)
 }
@@ -3113,7 +3153,8 @@ fn emit_method_registrations(
     let register_method_name_id = runtime_fn_register_method_name(module, runtime)?;
     let register_method_name = module.declare_func_in_func(register_method_name_id, builder.func);
     for class in classes {
-        let (name_ptr, name_len) = lower_bytes_literal(builder, module, runtime, class.name.as_str())?;
+        let (name_ptr, name_len) =
+            lower_bytes_literal(builder, module, runtime, class.name.as_str())?;
         let class_id = builder.ins().iconst(types::I64, class.id.0 as i64);
         builder
             .ins()

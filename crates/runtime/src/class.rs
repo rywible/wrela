@@ -1,5 +1,5 @@
 use crate::object::ObjHeader;
-use crate::value::{header_raw, TypeId, Value};
+use crate::value::{TypeId, Value, header_raw};
 use crate::{wr_rc_dec, wr_rc_inc};
 use std::collections::HashMap;
 
@@ -9,7 +9,12 @@ pub struct ClassObj {
     fields: HashMap<Vec<u8>, Value>,
 }
 
-pub fn class_new(class_id: u32, names_ptr: *const *const u8, lens_ptr: *const usize, count: usize) -> Value {
+pub fn class_new(
+    class_id: u32,
+    names_ptr: *const *const u8,
+    lens_ptr: *const usize,
+    count: usize,
+) -> Value {
     if (names_ptr.is_null() || lens_ptr.is_null()) && count != 0 {
         return Value::nil();
     }

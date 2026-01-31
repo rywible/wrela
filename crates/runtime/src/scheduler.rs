@@ -1,15 +1,17 @@
-use crate::actor::{deliver_pool_message, PoolHandle, PoolMessage};
-use crate::config::{pool_max_share_default, pool_min_share_default, sched_ready_cap, sched_shards, sched_tick_ms};
+use crate::actor::{PoolHandle, PoolMessage, deliver_pool_message};
+use crate::config::{
+    pool_max_share_default, pool_min_share_default, sched_ready_cap, sched_shards, sched_tick_ms,
+};
+use crate::diagnostics;
 use crate::metrics::{
     inc_pool_enqueue_after_retire, inc_pool_queue_full, inc_sched_dispatched,
     inc_sched_skipped_no_credit,
 };
-use crate::diagnostics;
+use crate::wr_rc_dec;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::Notify;
 use tokio::time::{Duration, Instant};
-use crate::wr_rc_dec;
 
 static SHARDS: OnceLock<Vec<Arc<SchedulerShard>>> = OnceLock::new();
 static POOL_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -117,7 +119,6 @@ impl ReadyQueue {
         let diff = seq as isize - (head + 1) as isize;
         diff >= 0
     }
-
 }
 
 pub fn init() -> &'static Vec<Arc<SchedulerShard>> {
@@ -308,7 +309,8 @@ fn unlink_pool(shard: &SchedulerShard, target: *const PoolHandle) {
             return;
         }
         if head == target {
-            let next = unsafe { (*head).next_in_shard.load(Ordering::Acquire) as *const PoolHandle };
+            let next =
+                unsafe { (*head).next_in_shard.load(Ordering::Acquire) as *const PoolHandle };
             if shard
                 .head
                 .compare_exchange(
@@ -328,8 +330,9 @@ fn unlink_pool(shard: &SchedulerShard, target: *const PoolHandle) {
             unsafe { (*prev).next_in_shard.load(Ordering::Acquire) as *const PoolHandle };
         while !current.is_null() {
             if current == target {
-                let next =
-                    unsafe { (*current).next_in_shard.load(Ordering::Acquire) as *const PoolHandle };
+                let next = unsafe {
+                    (*current).next_in_shard.load(Ordering::Acquire) as *const PoolHandle
+                };
                 unsafe {
                     (*prev)
                         .next_in_shard
@@ -338,8 +341,7 @@ fn unlink_pool(shard: &SchedulerShard, target: *const PoolHandle) {
                 return;
             }
             prev = current;
-            current =
-                unsafe { (*prev).next_in_shard.load(Ordering::Acquire) as *const PoolHandle };
+            current = unsafe { (*prev).next_in_shard.load(Ordering::Acquire) as *const PoolHandle };
         }
         return;
     }
@@ -491,9 +493,9 @@ mod tests {
     use crate::list;
     use crate::value::Value;
     use crate::wr_rc_dec;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
     #[test]

@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
-use crate::storage::config::{BackupConfig, BlobConfig, RestoreMode, StorageConfig};
-use crate::storage::service::StorageError;
 use crate::metrics;
 use crate::storage::backup::{backup_prefix, verify_checksum};
 use crate::storage::blob::BlobBackend;
+use crate::storage::config::{BackupConfig, BlobConfig, RestoreMode, StorageConfig};
+use crate::storage::service::StorageError;
 use crate::storage::service::{StorageRequest, StorageResponse, StorageService};
 use crate::storage::store::{SerializableKvStateMachine, TypeConfig};
 use crate::storage::transport::set_drop_replication;
@@ -15,7 +15,7 @@ use openraft::Raft;
 use sha2::Digest;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 
 fn config_for_dir(path: String, snapshot_interval: u64) -> StorageConfig {
     let blob_path = format!("{path}.blobs");
@@ -62,7 +62,9 @@ fn config_for_dir_with_threshold(
 
 fn count_blob_files(path: &std::path::Path) -> usize {
     fn walk(dir: &std::path::Path, count: &mut usize) {
-        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
@@ -154,8 +156,22 @@ async fn storage_three_node_cluster() {
         .await
         .expect("start node3");
 
-    add_learner_with_retry(service1.raft_ref(), 2, BasicNode { addr: addr2.clone() }).await;
-    add_learner_with_retry(service1.raft_ref(), 3, BasicNode { addr: addr3.clone() }).await;
+    add_learner_with_retry(
+        service1.raft_ref(),
+        2,
+        BasicNode {
+            addr: addr2.clone(),
+        },
+    )
+    .await;
+    add_learner_with_retry(
+        service1.raft_ref(),
+        3,
+        BasicNode {
+            addr: addr3.clone(),
+        },
+    )
+    .await;
     change_membership_with_retry(service1.raft_ref(), [1u64, 2u64, 3u64]).await;
 
     let resp = service1
@@ -316,7 +332,9 @@ async fn storage_snapshot_recovery_restart() {
 
     for idx in 0..10u8 {
         let resp = service
-            .dispatch_to(StorageRequest::Get { key: vec![b'k', idx] })
+            .dispatch_to(StorageRequest::Get {
+                key: vec![b'k', idx],
+            })
             .await
             .expect("get");
         let bytes = expect_ok_bytes(resp);
@@ -377,10 +395,7 @@ async fn storage_backup_restore_from_blob() {
                 if let Ok(snapshot) =
                     serde_json::from_slice::<SerializableKvStateMachine>(&snapshot_bytes)
                 {
-                    let saw_key = snapshot
-                        .data
-                        .iter()
-                        .any(|(key, _)| key.as_slice() == b"k1");
+                    let saw_key = snapshot.data.iter().any(|(key, _)| key.as_slice() == b"k1");
                     if saw_key {
                         restore_id = Some(entry.key);
                         break;
@@ -409,7 +424,9 @@ async fn storage_backup_restore_from_blob() {
         .expect("restore service");
     wait_for_leader(&[&restore_service], &[1]).await;
     let resp = restore_service
-        .dispatch_to(StorageRequest::Get { key: b"k1".to_vec() })
+        .dispatch_to(StorageRequest::Get {
+            key: b"k1".to_vec(),
+        })
         .await
         .expect("get");
     let bytes = expect_ok_bytes(resp);
@@ -531,8 +548,14 @@ async fn storage_backup_restore_specific_id() {
         .expect("put b");
     let checksum_a = format!("{key_a}.sha256");
     let checksum_b = format!("{key_b}.sha256");
-    let hash_a = format!("{:x}", sha2::Sha256::digest(serde_json::to_vec(&snap_a).unwrap()));
-    let hash_b = format!("{:x}", sha2::Sha256::digest(serde_json::to_vec(&snap_b).unwrap()));
+    let hash_a = format!(
+        "{:x}",
+        sha2::Sha256::digest(serde_json::to_vec(&snap_a).unwrap())
+    );
+    let hash_b = format!(
+        "{:x}",
+        sha2::Sha256::digest(serde_json::to_vec(&snap_b).unwrap())
+    );
     blob.put_named(&checksum_a, hash_a.as_bytes())
         .await
         .expect("put a checksum");
@@ -548,7 +571,9 @@ async fn storage_backup_restore_specific_id() {
     wait_for_leader(&[&service], &[1]).await;
 
     let resp = service
-        .dispatch_to(StorageRequest::Get { key: b"k1".to_vec() })
+        .dispatch_to(StorageRequest::Get {
+            key: b"k1".to_vec(),
+        })
         .await
         .expect("get");
     let bytes = expect_ok_bytes(resp);
@@ -593,7 +618,10 @@ async fn storage_backup_restore_missing_meta() {
         .await
         .expect("put");
     let checksum = format!("{key}.sha256");
-    let hash = format!("{:x}", sha2::Sha256::digest(serde_json::to_vec(&snap).unwrap()));
+    let hash = format!(
+        "{:x}",
+        sha2::Sha256::digest(serde_json::to_vec(&snap).unwrap())
+    );
     blob.put_named(&checksum, hash.as_bytes())
         .await
         .expect("put checksum");
@@ -605,7 +633,9 @@ async fn storage_backup_restore_missing_meta() {
         .expect("restore service");
     wait_for_leader(&[&service], &[1]).await;
     let resp = service
-        .dispatch_to(StorageRequest::Get { key: b"k1".to_vec() })
+        .dispatch_to(StorageRequest::Get {
+            key: b"k1".to_vec(),
+        })
         .await
         .expect("get");
     let bytes = expect_ok_bytes(resp);
@@ -713,7 +743,9 @@ async fn storage_backup_restore_skips_when_state_exists() {
     wait_for_value(&service, b"k2", b"v2".to_vec()).await;
 
     let resp = service
-        .dispatch_to(StorageRequest::Get { key: b"k2".to_vec() })
+        .dispatch_to(StorageRequest::Get {
+            key: b"k2".to_vec(),
+        })
         .await
         .expect("get");
     let bytes = expect_ok_bytes(resp);
@@ -731,7 +763,9 @@ async fn storage_backup_restore_skips_when_state_exists() {
         .expect("restore service");
     wait_for_leader(&[&restore_service], &[1]).await;
     let resp = restore_service
-        .dispatch_to(StorageRequest::Get { key: b"k2".to_vec() })
+        .dispatch_to(StorageRequest::Get {
+            key: b"k2".to_vec(),
+        })
         .await
         .expect("get");
     let bytes = expect_ok_bytes(resp);
@@ -809,28 +843,14 @@ async fn storage_backup_leader_only() {
     peers.insert(1, addr1.clone());
     peers.insert(2, addr2.clone());
 
-    let mut cfg1 = config_for_node(
-        node1_path,
-        1,
-        addr1.clone(),
-        peers_for(1, &peers),
-        true,
-        1,
-    );
+    let mut cfg1 = config_for_node(node1_path, 1, addr1.clone(), peers_for(1, &peers), true, 1);
     cfg1.blob.file_path = blob_path.clone();
     cfg1.backup.enabled = true;
     cfg1.backup.only_leader = true;
     cfg1.backup.max_logs = 1;
     cfg1.backup.max_age_secs = 1;
 
-    let mut cfg2 = config_for_node(
-        node2_path,
-        2,
-        addr2.clone(),
-        peers_for(2, &peers),
-        false,
-        1,
-    );
+    let mut cfg2 = config_for_node(node2_path, 2, addr2.clone(), peers_for(2, &peers), false, 1);
     cfg2.blob.file_path = blob_path.clone();
     cfg2.backup.enabled = true;
     cfg2.backup.only_leader = true;
@@ -1255,8 +1275,22 @@ async fn storage_leader_failover_writes() {
     .await
     .expect("start node3");
 
-    add_learner_with_retry(service1.raft_ref(), 2, BasicNode { addr: addr2.clone() }).await;
-    add_learner_with_retry(service1.raft_ref(), 3, BasicNode { addr: addr3.clone() }).await;
+    add_learner_with_retry(
+        service1.raft_ref(),
+        2,
+        BasicNode {
+            addr: addr2.clone(),
+        },
+    )
+    .await;
+    add_learner_with_retry(
+        service1.raft_ref(),
+        3,
+        BasicNode {
+            addr: addr3.clone(),
+        },
+    )
+    .await;
     change_membership_with_retry(service1.raft_ref(), [1u64, 2u64, 3u64]).await;
 
     let mut service1 = Some(service1);
@@ -1306,8 +1340,7 @@ async fn storage_leader_failover_writes() {
         active_services.push((3, service));
     }
 
-    let active_refs: Vec<&StorageService> =
-        active_services.iter().map(|(_, svc)| *svc).collect();
+    let active_refs: Vec<&StorageService> = active_services.iter().map(|(_, svc)| *svc).collect();
     let allowed: Vec<u64> = active_services.iter().map(|(id, _)| *id).collect();
     let new_leader_id = wait_for_leader(&active_refs, &allowed).await;
     let new_leader = active_services
@@ -1391,7 +1424,14 @@ async fn storage_follower_catchup_after_lag() {
     .await
     .expect("start node2");
 
-    add_learner_with_retry(service1.raft_ref(), 2, BasicNode { addr: addr2.clone() }).await;
+    add_learner_with_retry(
+        service1.raft_ref(),
+        2,
+        BasicNode {
+            addr: addr2.clone(),
+        },
+    )
+    .await;
     change_membership_with_retry(service1.raft_ref(), [1u64, 2u64]).await;
     wait_for_membership_contains(service2.raft_ref(), 2).await;
 
@@ -1428,7 +1468,14 @@ async fn storage_follower_catchup_after_lag() {
     .await
     .expect("start node3");
 
-    add_learner_with_retry(service1.raft_ref(), 3, BasicNode { addr: addr3.clone() }).await;
+    add_learner_with_retry(
+        service1.raft_ref(),
+        3,
+        BasicNode {
+            addr: addr3.clone(),
+        },
+    )
+    .await;
     change_membership_with_retry(service1.raft_ref(), [1u64, 2u64, 3u64]).await;
     wait_for_membership_contains(service3.raft_ref(), 3).await;
 
@@ -1508,8 +1555,22 @@ async fn storage_uncommitted_write_discarded_on_leader_crash() {
     .await
     .expect("start node3");
 
-    add_learner_with_retry(service1.raft_ref(), 2, BasicNode { addr: addr2.clone() }).await;
-    add_learner_with_retry(service1.raft_ref(), 3, BasicNode { addr: addr3.clone() }).await;
+    add_learner_with_retry(
+        service1.raft_ref(),
+        2,
+        BasicNode {
+            addr: addr2.clone(),
+        },
+    )
+    .await;
+    add_learner_with_retry(
+        service1.raft_ref(),
+        3,
+        BasicNode {
+            addr: addr3.clone(),
+        },
+    )
+    .await;
     change_membership_with_retry(service1.raft_ref(), [1u64, 2u64, 3u64]).await;
     wait_for_membership_contains(service2.raft_ref(), 2).await;
     wait_for_membership_contains(service3.raft_ref(), 3).await;
@@ -1571,8 +1632,7 @@ async fn storage_uncommitted_write_discarded_on_leader_crash() {
         active_services.push((3, service));
     }
 
-    let active_refs: Vec<&StorageService> =
-        active_services.iter().map(|(_, svc)| *svc).collect();
+    let active_refs: Vec<&StorageService> = active_services.iter().map(|(_, svc)| *svc).collect();
     let allowed: Vec<u64> = active_services.iter().map(|(id, _)| *id).collect();
     let new_leader_id = wait_for_leader(&active_refs, &allowed).await;
     let new_leader = active_services
@@ -1661,8 +1721,22 @@ async fn storage_committed_write_survives_leader_crash() {
     .await
     .expect("start node3");
 
-    add_learner_with_retry(service1.raft_ref(), 2, BasicNode { addr: addr2.clone() }).await;
-    add_learner_with_retry(service1.raft_ref(), 3, BasicNode { addr: addr3.clone() }).await;
+    add_learner_with_retry(
+        service1.raft_ref(),
+        2,
+        BasicNode {
+            addr: addr2.clone(),
+        },
+    )
+    .await;
+    add_learner_with_retry(
+        service1.raft_ref(),
+        3,
+        BasicNode {
+            addr: addr3.clone(),
+        },
+    )
+    .await;
     change_membership_with_retry(service1.raft_ref(), [1u64, 2u64, 3u64]).await;
     wait_for_membership_contains(service2.raft_ref(), 2).await;
     wait_for_membership_contains(service3.raft_ref(), 3).await;
@@ -1721,8 +1795,7 @@ async fn storage_committed_write_survives_leader_crash() {
         active_services.push((3, service));
     }
 
-    let active_refs: Vec<&StorageService> =
-        active_services.iter().map(|(_, svc)| *svc).collect();
+    let active_refs: Vec<&StorageService> = active_services.iter().map(|(_, svc)| *svc).collect();
     let allowed: Vec<u64> = active_services.iter().map(|(id, _)| *id).collect();
     let new_leader_id = wait_for_leader(&active_refs, &allowed).await;
     let new_leader = active_services
@@ -1813,8 +1886,22 @@ async fn storage_membership_remove_node() {
 
     wait_for_leader(&[&service1], &[1]).await;
 
-    add_learner_with_retry(service1.raft_ref(), 2, BasicNode { addr: addr2.clone() }).await;
-    add_learner_with_retry(service1.raft_ref(), 3, BasicNode { addr: addr3.clone() }).await;
+    add_learner_with_retry(
+        service1.raft_ref(),
+        2,
+        BasicNode {
+            addr: addr2.clone(),
+        },
+    )
+    .await;
+    add_learner_with_retry(
+        service1.raft_ref(),
+        3,
+        BasicNode {
+            addr: addr3.clone(),
+        },
+    )
+    .await;
     change_membership_with_retry(service1.raft_ref(), [1u64, 2u64, 3u64]).await;
     wait_for_membership_contains(service2.raft_ref(), 2).await;
     wait_for_membership_contains(service3.raft_ref(), 3).await;
@@ -1900,7 +1987,14 @@ async fn storage_linearizable_read_via_follower() {
 
     wait_for_leader(&[&service1], &[1]).await;
 
-    add_learner_with_retry(service1.raft_ref(), 2, BasicNode { addr: addr2.clone() }).await;
+    add_learner_with_retry(
+        service1.raft_ref(),
+        2,
+        BasicNode {
+            addr: addr2.clone(),
+        },
+    )
+    .await;
     change_membership_with_retry(service1.raft_ref(), [1u64, 2u64]).await;
     wait_for_membership_contains(service2.raft_ref(), 2).await;
 

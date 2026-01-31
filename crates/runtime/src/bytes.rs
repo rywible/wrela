@@ -1,7 +1,7 @@
 use crate::list;
 use crate::object::ObjHeader;
 use crate::string;
-use crate::value::{header, int_value, TypeId, Value};
+use crate::value::{TypeId, Value, header, int_value};
 
 #[repr(C)]
 pub struct BytesObj {

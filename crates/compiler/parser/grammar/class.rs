@@ -82,7 +82,10 @@ fn field_def(p: &mut Parser) {
 fn method_def(p: &mut Parser) {
     let m = p.start();
     parse_visibility(p);
-    p.expect_with_message(SyntaxKind::CanKw, "expected 'can' to start a method definition");
+    p.expect_with_message(
+        SyntaxKind::CanKw,
+        "expected 'can' to start a method definition",
+    );
     p.expect_with_message(SyntaxKind::Ident, "expected method name after 'can'");
     p.expect_with_message(SyntaxKind::LParen, "expected '(' after method name");
     parse_param_list(p);

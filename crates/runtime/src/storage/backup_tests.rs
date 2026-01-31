@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use tokio::time::Duration;
 
-use super::backup::{backup_prefix, prune_backups_for_test, BackupSink, BackupState};
+use super::backup::{BackupSink, BackupState, backup_prefix, prune_backups_for_test};
 use super::blob::BlobBackend;
 use super::config::{BackupConfig, RestoreMode};
 use crate::metrics;

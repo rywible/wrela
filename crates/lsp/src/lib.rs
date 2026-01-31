@@ -375,7 +375,7 @@ impl SymbolIndex {
         for block in def.has_blocks() {
             for field in block.fields() {
                 if let Some(name) = field.name() {
-                let ty = field.ty().and_then(|ty| format_type_ref(&ty));
+                    let ty = field.ty().and_then(|ty| format_type_ref(&ty));
                     let detail = ty.as_ref().map(|ty| format!("{}: {}", name.text(), ty));
                     let doc = extract_doc_comment(field.syntax());
                     self.add_def(
@@ -658,7 +658,11 @@ impl LanguageServer for Backend {
                     TextDocumentSyncKind::INCREMENTAL,
                 )),
                 completion_provider: Some(CompletionOptions {
-                    trigger_characters: Some(vec![".".to_string(), "(".to_string(), ",".to_string()]),
+                    trigger_characters: Some(vec![
+                        ".".to_string(),
+                        "(".to_string(),
+                        ",".to_string(),
+                    ]),
                     ..CompletionOptions::default()
                 }),
                 definition_provider: Some(OneOf::Left(true)),
@@ -1318,11 +1322,8 @@ fn code_actions(
                 let offset =
                     position_to_offset_with_index(&state.text, &state.line_index, diag.range.start);
                 if let Some(def) = definition_at_offset(state, offset) {
-                    edit_range = text_range_to_range_with_index(
-                        &state.text,
-                        &state.line_index,
-                        def.range,
-                    );
+                    edit_range =
+                        text_range_to_range_with_index(&state.text, &state.line_index, def.range);
                 }
                 actions.push(CodeAction {
                     title,
@@ -1864,7 +1865,11 @@ pub fn check_unused_variables(state: &DocumentState) -> Vec<Diagnostic> {
             // The def.range covers the node.
 
             diagnostics.push(Diagnostic {
-                range: text_range_to_range_with_index(&state.text, &state.line_index, def.name_range),
+                range: text_range_to_range_with_index(
+                    &state.text,
+                    &state.line_index,
+                    def.name_range,
+                ),
                 severity: Some(DiagnosticSeverity::HINT),
                 code: Some(tower_lsp::lsp_types::NumberOrString::String(
                     "unused_variable".to_string(),
@@ -2362,8 +2367,7 @@ fn call_signature_for_callee(
             let object = expr.object()?;
             let object_ty = index.infer_expr_type(scope_id, text, &object)?;
             let class_scope = class_scope_for_name(index, &object_ty)?;
-            let def =
-                resolve_in_scope_kinds(index, class_scope, &member_name, &[DefKind::Method])?;
+            let def = resolve_in_scope_kinds(index, class_scope, &member_name, &[DefKind::Method])?;
             let label = def
                 .detail
                 .clone()
@@ -2456,13 +2460,7 @@ const BUILTINS: &[&str] = &[
     "http_server_serve_on",
     "http_server_stop",
 ];
-const IMPLICIT_BINDINGS: &[&str] = &[
-    "Pool",
-    "latency",
-    "throughput",
-    "conservation",
-    "balance",
-];
+const IMPLICIT_BINDINGS: &[&str] = &["Pool", "latency", "throughput", "conservation", "balance"];
 
 lazy_static::lazy_static! {
     static ref SEMANTIC_TOKEN_LEGEND: SemanticTokensLegend = {
@@ -2673,7 +2671,10 @@ fn call_argument_context(
         if used.contains(&param.name) {
             continue;
         }
-        let detail = param.ty.as_ref().map(|ty| format!("{}: {}", param.name, ty));
+        let detail = param
+            .ty
+            .as_ref()
+            .map(|ty| format!("{}: {}", param.name, ty));
         items.push(CompletionItem {
             label: format!("{}=", param.name),
             kind: Some(CompletionItemKind::FIELD),
@@ -2752,7 +2753,12 @@ fn type_completion_items(state: &DocumentState, seen: &mut HashSet<String>) -> V
             });
         }
     }
-    for def in state.index.defs.iter().filter(|def| def.kind == DefKind::Class) {
+    for def in state
+        .index
+        .defs
+        .iter()
+        .filter(|def| def.kind == DefKind::Class)
+    {
         if seen.insert(def.name.clone()) {
             items.push(completion_item_for_def(def));
         }
@@ -2916,7 +2922,8 @@ fn token_range(text: &str, token: &SyntaxToken) -> Range {
 pub fn hover_at_position(state: &DocumentState, position: Position) -> Option<Hover> {
     let offset = position_to_offset_with_index(&state.text, &state.line_index, position);
     let root = syntax_root(state);
-    let token_at_or_before = token_at_offset(&root, offset).or_else(|| token_before_offset(&root, offset));
+    let token_at_or_before =
+        token_at_offset(&root, offset).or_else(|| token_before_offset(&root, offset));
     if let Some(token) = token_at_or_before.clone() {
         if matches!(token.kind(), SyntaxKind::ItsKw | SyntaxKind::ItKw) {
             let scope_id = scope_at_offset(&state.index, offset)
@@ -3089,19 +3096,20 @@ fn signature_help_at_position(state: &DocumentState, position: Position) -> Opti
         .map(|scope| scope.id)
         .unwrap_or(0);
     let active_parameter;
-    let (label, params) = if let Some(call) = find_node_at_or_before_offset::<ast::CallExpr>(&root, offset) {
-        if !offset_in_call_arguments(&call, offset) {
-            return None;
-        }
-        active_parameter = call_argument_index(&call, offset);
-        call_signature_for_callee(&state.index, &state.text, scope_id, &call)?
-    } else {
-        if !is_call_context_from_tokens(&root, offset) {
-            return None;
-        }
-        active_parameter = call_argument_index_from_tokens(&root, offset);
-        call_signature_from_tokens_at_offset(state, offset)?
-    };
+    let (label, params) =
+        if let Some(call) = find_node_at_or_before_offset::<ast::CallExpr>(&root, offset) {
+            if !offset_in_call_arguments(&call, offset) {
+                return None;
+            }
+            active_parameter = call_argument_index(&call, offset);
+            call_signature_for_callee(&state.index, &state.text, scope_id, &call)?
+        } else {
+            if !is_call_context_from_tokens(&root, offset) {
+                return None;
+            }
+            active_parameter = call_argument_index_from_tokens(&root, offset);
+            call_signature_from_tokens_at_offset(state, offset)?
+        };
     if params.is_empty() {
         return None;
     }
@@ -3803,11 +3811,7 @@ fn call_argument_index(call: &ast::CallExpr, offset: usize) -> Option<u32> {
             _ => {}
         }
     }
-    if seen_paren {
-        Some(commas)
-    } else {
-        None
-    }
+    if seen_paren { Some(commas) } else { None }
 }
 
 fn call_argument_bounds(call: &ast::CallExpr) -> Option<(TextSize, Option<TextSize>)> {
@@ -3918,10 +3922,7 @@ fn is_call_context_from_text(state: &DocumentState, offset: usize) -> bool {
     false
 }
 
-fn nearest_unmatched_lparen_before_offset(
-    root: &SyntaxNode,
-    offset: usize,
-) -> Option<SyntaxToken> {
+fn nearest_unmatched_lparen_before_offset(root: &SyntaxNode, offset: usize) -> Option<SyntaxToken> {
     let offset = TextSize::from(offset as u32);
     let mut stack: Vec<SyntaxToken> = Vec::new();
     for token in root
@@ -3963,9 +3964,11 @@ fn call_params_from_tokens_at_offset(
         .map(|scope| scope.id)
         .unwrap_or(0);
     let callee_name = callee.text().to_string();
-    let before_callee =
-        token_before_offset_skip_trivia(&root, callee.text_range().start().into());
-    if let Some(dot) = before_callee.as_ref().filter(|tok| tok.kind() == SyntaxKind::Dot) {
+    let before_callee = token_before_offset_skip_trivia(&root, callee.text_range().start().into());
+    if let Some(dot) = before_callee
+        .as_ref()
+        .filter(|tok| tok.kind() == SyntaxKind::Dot)
+    {
         let object_token = token_before_offset_skip_trivia(&root, dot.text_range().start().into())?;
         if object_token.kind() == SyntaxKind::Ident {
             if let Some(def) = resolve_in_scope(&state.index, scope_id, object_token.text()) {
@@ -4052,9 +4055,11 @@ fn call_signature_from_tokens_at_offset(
         .map(|scope| scope.id)
         .unwrap_or(0);
     let callee_name = callee.text().to_string();
-    let before_callee =
-        token_before_offset_skip_trivia(&root, callee.text_range().start().into());
-    if let Some(dot) = before_callee.as_ref().filter(|tok| tok.kind() == SyntaxKind::Dot) {
+    let before_callee = token_before_offset_skip_trivia(&root, callee.text_range().start().into());
+    if let Some(dot) = before_callee
+        .as_ref()
+        .filter(|tok| tok.kind() == SyntaxKind::Dot)
+    {
         let object_token = token_before_offset_skip_trivia(&root, dot.text_range().start().into())?;
         if object_token.kind() == SyntaxKind::Ident {
             if let Some(def) = resolve_in_scope(&state.index, scope_id, object_token.text()) {
@@ -4066,12 +4071,9 @@ fn call_signature_from_tokens_at_offset(
                             &callee_name,
                             &[DefKind::Method],
                         )?;
-                        let label = method
-                            .detail
-                            .clone()
-                            .unwrap_or_else(|| {
-                                format_signature(&method.name, &method.params, method.ty.as_deref())
-                            });
+                        let label = method.detail.clone().unwrap_or_else(|| {
+                            format_signature(&method.name, &method.params, method.ty.as_deref())
+                        });
                         return Some((label, method.params.clone()));
                     }
                 }
@@ -4083,12 +4085,9 @@ fn call_signature_from_tokens_at_offset(
                             &callee_name,
                             &[DefKind::Method],
                         )?;
-                        let label = method
-                            .detail
-                            .clone()
-                            .unwrap_or_else(|| {
-                                format_signature(&method.name, &method.params, method.ty.as_deref())
-                            });
+                        let label = method.detail.clone().unwrap_or_else(|| {
+                            format_signature(&method.name, &method.params, method.ty.as_deref())
+                        });
                         return Some((label, method.params.clone()));
                     }
                 }
@@ -4100,12 +4099,9 @@ fn call_signature_from_tokens_at_offset(
                     &callee_name,
                     &[DefKind::Method],
                 )?;
-                let label = method
-                    .detail
-                    .clone()
-                    .unwrap_or_else(|| {
-                        format_signature(&method.name, &method.params, method.ty.as_deref())
-                    });
+                let label = method.detail.clone().unwrap_or_else(|| {
+                    format_signature(&method.name, &method.params, method.ty.as_deref())
+                });
                 return Some((label, method.params.clone()));
             }
         }
@@ -4185,10 +4181,7 @@ fn extract_doc_comment(node: &SyntaxNode) -> Option<String> {
                 // Let's use as_token() if it exists or clone.
                 if let Some(token) = element.as_token() {
                     let text = token.text();
-                    let content = text
-                        .strip_prefix("so:")
-                        .unwrap_or(text)
-                        .trim();
+                    let content = text.strip_prefix("so:").unwrap_or(text).trim();
                     docs.push(content.to_string());
                 }
             }

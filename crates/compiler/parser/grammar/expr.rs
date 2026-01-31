@@ -153,7 +153,10 @@ fn parse_postfixes(
     lhs
 }
 
-fn parse_detach(p: &mut Parser, m: crate::parser::Marker) -> Option<crate::parser::CompletedMarker> {
+fn parse_detach(
+    p: &mut Parser,
+    m: crate::parser::Marker,
+) -> Option<crate::parser::CompletedMarker> {
     if p.at(SyntaxKind::DetachKw) {
         p.bump();
     } else {

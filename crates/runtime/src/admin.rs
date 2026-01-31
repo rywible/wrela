@@ -4,12 +4,12 @@ use crate::metrics;
 use crate::string;
 use crate::value::Value;
 use crate::wr_rc_dec;
+use axum::Json;
+use axum::Router;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::get;
-use axum::Json;
-use axum::Router;
 use serde_json::json;
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::net::TcpListener;
@@ -75,7 +75,8 @@ async fn health_handler() -> impl IntoResponse {
 
 pub fn admin_enable(opts: Value) -> Value {
     let (pending, state) = pending_new();
-    let bind_addr = map_get_string(opts, "bind_addr").unwrap_or_else(|| "127.0.0.1:9090".to_string());
+    let bind_addr =
+        map_get_string(opts, "bind_addr").unwrap_or_else(|| "127.0.0.1:9090".to_string());
     let auth = map_get_string(opts, "auth");
     runtime_spawn(async move {
         let should_start = {

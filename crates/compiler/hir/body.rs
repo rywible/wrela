@@ -204,7 +204,10 @@ pub enum AssignOp {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Arg {
-    Positional { value: Idx<Expr>, span: TextRange },
+    Positional {
+        value: Idx<Expr>,
+        span: TextRange,
+    },
     Named {
         name: SmolStr,
         value: Idx<Expr>,

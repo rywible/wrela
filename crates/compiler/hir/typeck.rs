@@ -1,8 +1,6 @@
 #![allow(unused_assignments)]
 
-use crate::hir::{
-    Body, BinaryOp, Expr, Function, Idx, Literal, Module, Stmt, TypeRef, UnaryOp,
-};
+use crate::hir::{BinaryOp, Body, Expr, Function, Idx, Literal, Module, Stmt, TypeRef, UnaryOp};
 use miette::{Diagnostic, SourceSpan};
 use smol_str::SmolStr;
 use std::collections::{HashMap, HashSet};
@@ -287,7 +285,11 @@ fn check_function(
         ctx.declare(SmolStr::new("it"), Type::Named(class_name.clone()));
     }
     for param in &func.params {
-        let ty = param.ty.as_ref().map(type_from_ref).unwrap_or(Type::Unknown);
+        let ty = param
+            .ty
+            .as_ref()
+            .map(type_from_ref)
+            .unwrap_or(Type::Unknown);
         ctx.declare(param.name.clone(), ty);
     }
     let ret_type = func.ret_type.as_ref().map(type_from_ref);
@@ -341,7 +343,11 @@ impl ClassIndex {
             let mut fields = HashMap::new();
             let mut field_order = Vec::new();
             for field in &class.fields {
-                let ty = field.ty.as_ref().map(type_from_ref).unwrap_or(Type::Unknown);
+                let ty = field
+                    .ty
+                    .as_ref()
+                    .map(type_from_ref)
+                    .unwrap_or(Type::Unknown);
                 fields.insert(field.name.clone(), ty);
                 field_order.push(field.name.clone());
             }
@@ -354,7 +360,11 @@ impl ClassIndex {
                     .map(|param| {
                         (
                             param.name.clone(),
-                            param.ty.as_ref().map(type_from_ref).unwrap_or(Type::Unknown),
+                            param
+                                .ty
+                                .as_ref()
+                                .map(type_from_ref)
+                                .unwrap_or(Type::Unknown),
                         )
                     })
                     .collect();
@@ -410,7 +420,11 @@ impl FunctionIndex {
                 .map(|param| {
                     (
                         param.name.clone(),
-                        param.ty.as_ref().map(type_from_ref).unwrap_or(Type::Unknown),
+                        param
+                            .ty
+                            .as_ref()
+                            .map(type_from_ref)
+                            .unwrap_or(Type::Unknown),
                     )
                 })
                 .collect();
@@ -508,7 +522,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             SmolStr::new("map_get"),
             FunctionSig {
                 params: vec![
-                    (SmolStr::new("map"), Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown))),
+                    (
+                        SmolStr::new("map"),
+                        Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown)),
+                    ),
                     (SmolStr::new("key"), Type::Unknown),
                 ],
                 ret: Type::Unknown,
@@ -518,7 +535,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             SmolStr::new("map_set"),
             FunctionSig {
                 params: vec![
-                    (SmolStr::new("map"), Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown))),
+                    (
+                        SmolStr::new("map"),
+                        Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown)),
+                    ),
                     (SmolStr::new("key"), Type::Unknown),
                     (SmolStr::new("value"), Type::Unknown),
                 ],
@@ -673,7 +693,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             SmolStr::new("auth_create_user"),
             FunctionSig {
                 params: vec![
-                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (
+                        SmolStr::new("storage"),
+                        Type::Named(SmolStr::new("StorageClient")),
+                    ),
                     (SmolStr::new("email"), Type::String),
                     (SmolStr::new("username"), Type::String),
                     (SmolStr::new("password"), Type::String),
@@ -685,7 +708,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             SmolStr::new("auth_verify_password"),
             FunctionSig {
                 params: vec![
-                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (
+                        SmolStr::new("storage"),
+                        Type::Named(SmolStr::new("StorageClient")),
+                    ),
                     (SmolStr::new("user_id"), Type::String),
                     (SmolStr::new("password"), Type::String),
                 ],
@@ -696,9 +722,15 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             SmolStr::new("auth_issue_jwt"),
             FunctionSig {
                 params: vec![
-                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (
+                        SmolStr::new("storage"),
+                        Type::Named(SmolStr::new("StorageClient")),
+                    ),
                     (SmolStr::new("user_id"), Type::String),
-                    (SmolStr::new("claims"), Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown))),
+                    (
+                        SmolStr::new("claims"),
+                        Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown)),
+                    ),
                     (SmolStr::new("ttl_secs"), Type::Int),
                 ],
                 ret: Type::Pending(Box::new(Type::String)),
@@ -708,7 +740,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             SmolStr::new("auth_verify_jwt"),
             FunctionSig {
                 params: vec![
-                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (
+                        SmolStr::new("storage"),
+                        Type::Named(SmolStr::new("StorageClient")),
+                    ),
                     (SmolStr::new("token"), Type::String),
                 ],
                 ret: Type::Pending(Box::new(Type::Unknown)),
@@ -718,7 +753,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             SmolStr::new("auth_issue_email_token"),
             FunctionSig {
                 params: vec![
-                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (
+                        SmolStr::new("storage"),
+                        Type::Named(SmolStr::new("StorageClient")),
+                    ),
                     (SmolStr::new("user_id"), Type::String),
                     (SmolStr::new("ttl_secs"), Type::Int),
                 ],
@@ -729,7 +767,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             SmolStr::new("auth_verify_email_token"),
             FunctionSig {
                 params: vec![
-                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (
+                        SmolStr::new("storage"),
+                        Type::Named(SmolStr::new("StorageClient")),
+                    ),
                     (SmolStr::new("token"), Type::String),
                 ],
                 ret: Type::Pending(Box::new(Type::Unknown)),
@@ -739,7 +780,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             SmolStr::new("auth_oauth_login"),
             FunctionSig {
                 params: vec![
-                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (
+                        SmolStr::new("storage"),
+                        Type::Named(SmolStr::new("StorageClient")),
+                    ),
                     (SmolStr::new("provider"), Type::String),
                     (SmolStr::new("code"), Type::String),
                 ],
@@ -750,10 +794,16 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             SmolStr::new("rbac_create_role"),
             FunctionSig {
                 params: vec![
-                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (
+                        SmolStr::new("storage"),
+                        Type::Named(SmolStr::new("StorageClient")),
+                    ),
                     (SmolStr::new("scope"), Type::String),
                     (SmolStr::new("name"), Type::String),
-                    (SmolStr::new("permissions"), Type::List(Box::new(Type::String))),
+                    (
+                        SmolStr::new("permissions"),
+                        Type::List(Box::new(Type::String)),
+                    ),
                 ],
                 ret: Type::Pending(Box::new(Type::String)),
             },
@@ -762,7 +812,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             SmolStr::new("rbac_assign_role"),
             FunctionSig {
                 params: vec![
-                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (
+                        SmolStr::new("storage"),
+                        Type::Named(SmolStr::new("StorageClient")),
+                    ),
                     (SmolStr::new("user_id"), Type::String),
                     (SmolStr::new("role_id"), Type::String),
                     (SmolStr::new("scope_id"), Type::String),
@@ -774,7 +827,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             SmolStr::new("rbac_check"),
             FunctionSig {
                 params: vec![
-                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (
+                        SmolStr::new("storage"),
+                        Type::Named(SmolStr::new("StorageClient")),
+                    ),
                     (SmolStr::new("user_id"), Type::String),
                     (SmolStr::new("permission"), Type::String),
                     (SmolStr::new("scope_id"), Type::String),
@@ -786,7 +842,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             SmolStr::new("rbac_permissions_for"),
             FunctionSig {
                 params: vec![
-                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (
+                        SmolStr::new("storage"),
+                        Type::Named(SmolStr::new("StorageClient")),
+                    ),
                     (SmolStr::new("user_id"), Type::String),
                     (SmolStr::new("scope_id"), Type::String),
                 ],
@@ -797,9 +856,15 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             SmolStr::new("files_upload_stream"),
             FunctionSig {
                 params: vec![
-                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (
+                        SmolStr::new("storage"),
+                        Type::Named(SmolStr::new("StorageClient")),
+                    ),
                     (SmolStr::new("stream"), Type::Named(SmolStr::new("Bytes"))),
-                    (SmolStr::new("opts"), Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown))),
+                    (
+                        SmolStr::new("opts"),
+                        Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown)),
+                    ),
                 ],
                 ret: Type::Pending(Box::new(Type::String)),
             },
@@ -808,9 +873,15 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             SmolStr::new("files_signed_url"),
             FunctionSig {
                 params: vec![
-                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (
+                        SmolStr::new("storage"),
+                        Type::Named(SmolStr::new("StorageClient")),
+                    ),
                     (SmolStr::new("file_id"), Type::String),
-                    (SmolStr::new("opts"), Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown))),
+                    (
+                        SmolStr::new("opts"),
+                        Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown)),
+                    ),
                 ],
                 ret: Type::Pending(Box::new(Type::String)),
             },
@@ -819,7 +890,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             SmolStr::new("files_metadata"),
             FunctionSig {
                 params: vec![
-                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (
+                        SmolStr::new("storage"),
+                        Type::Named(SmolStr::new("StorageClient")),
+                    ),
                     (SmolStr::new("file_id"), Type::String),
                 ],
                 ret: Type::Pending(Box::new(Type::Unknown)),
@@ -829,7 +903,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             SmolStr::new("files_delete"),
             FunctionSig {
                 params: vec![
-                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (
+                        SmolStr::new("storage"),
+                        Type::Named(SmolStr::new("StorageClient")),
+                    ),
                     (SmolStr::new("file_id"), Type::String),
                 ],
                 ret: Type::Pending(Box::new(Type::Bool)),
@@ -839,7 +916,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             SmolStr::new("files_set_acl"),
             FunctionSig {
                 params: vec![
-                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (
+                        SmolStr::new("storage"),
+                        Type::Named(SmolStr::new("StorageClient")),
+                    ),
                     (SmolStr::new("file_id"), Type::String),
                     (SmolStr::new("acl"), Type::String),
                 ],
@@ -850,10 +930,19 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             SmolStr::new("jobs_enqueue"),
             FunctionSig {
                 params: vec![
-                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (
+                        SmolStr::new("storage"),
+                        Type::Named(SmolStr::new("StorageClient")),
+                    ),
                     (SmolStr::new("queue"), Type::String),
-                    (SmolStr::new("payload"), Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown))),
-                    (SmolStr::new("opts"), Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown))),
+                    (
+                        SmolStr::new("payload"),
+                        Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown)),
+                    ),
+                    (
+                        SmolStr::new("opts"),
+                        Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown)),
+                    ),
                 ],
                 ret: Type::Pending(Box::new(Type::String)),
             },
@@ -862,7 +951,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             SmolStr::new("jobs_process"),
             FunctionSig {
                 params: vec![
-                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (
+                        SmolStr::new("storage"),
+                        Type::Named(SmolStr::new("StorageClient")),
+                    ),
                     (SmolStr::new("queue"), Type::String),
                     (SmolStr::new("handler"), Type::Unknown),
                 ],
@@ -873,7 +965,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             SmolStr::new("jobs_dead_letter"),
             FunctionSig {
                 params: vec![
-                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (
+                        SmolStr::new("storage"),
+                        Type::Named(SmolStr::new("StorageClient")),
+                    ),
                     (SmolStr::new("queue"), Type::String),
                 ],
                 ret: Type::Pending(Box::new(Type::List(Box::new(Type::Unknown)))),
@@ -883,7 +978,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             SmolStr::new("schedule_cron"),
             FunctionSig {
                 params: vec![
-                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (
+                        SmolStr::new("storage"),
+                        Type::Named(SmolStr::new("StorageClient")),
+                    ),
                     (SmolStr::new("expr"), Type::String),
                     (SmolStr::new("job"), Type::Unknown),
                 ],
@@ -894,7 +992,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             SmolStr::new("schedule_every"),
             FunctionSig {
                 params: vec![
-                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (
+                        SmolStr::new("storage"),
+                        Type::Named(SmolStr::new("StorageClient")),
+                    ),
                     (SmolStr::new("seconds"), Type::Int),
                     (SmolStr::new("job"), Type::Unknown),
                 ],
@@ -905,7 +1006,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             SmolStr::new("schedule_at"),
             FunctionSig {
                 params: vec![
-                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (
+                        SmolStr::new("storage"),
+                        Type::Named(SmolStr::new("StorageClient")),
+                    ),
                     (SmolStr::new("timestamp"), Type::Int),
                     (SmolStr::new("job"), Type::Unknown),
                 ],
@@ -916,11 +1020,17 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             SmolStr::new("search_index"),
             FunctionSig {
                 params: vec![
-                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (
+                        SmolStr::new("storage"),
+                        Type::Named(SmolStr::new("StorageClient")),
+                    ),
                     (SmolStr::new("collection"), Type::String),
                     (SmolStr::new("id"), Type::String),
                     (SmolStr::new("text"), Type::String),
-                    (SmolStr::new("fields"), Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown))),
+                    (
+                        SmolStr::new("fields"),
+                        Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown)),
+                    ),
                 ],
                 ret: Type::Pending(Box::new(Type::Bool)),
             },
@@ -929,7 +1039,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             SmolStr::new("search_remove"),
             FunctionSig {
                 params: vec![
-                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (
+                        SmolStr::new("storage"),
+                        Type::Named(SmolStr::new("StorageClient")),
+                    ),
                     (SmolStr::new("collection"), Type::String),
                     (SmolStr::new("id"), Type::String),
                 ],
@@ -940,10 +1053,16 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             SmolStr::new("search_query"),
             FunctionSig {
                 params: vec![
-                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (
+                        SmolStr::new("storage"),
+                        Type::Named(SmolStr::new("StorageClient")),
+                    ),
                     (SmolStr::new("collection"), Type::String),
                     (SmolStr::new("query"), Type::String),
-                    (SmolStr::new("opts"), Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown))),
+                    (
+                        SmolStr::new("opts"),
+                        Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown)),
+                    ),
                 ],
                 ret: Type::Pending(Box::new(Type::List(Box::new(Type::Unknown)))),
             },
@@ -999,9 +1118,15 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             SmolStr::new("rate_check"),
             FunctionSig {
                 params: vec![
-                    (SmolStr::new("storage"), Type::Named(SmolStr::new("StorageClient"))),
+                    (
+                        SmolStr::new("storage"),
+                        Type::Named(SmolStr::new("StorageClient")),
+                    ),
                     (SmolStr::new("key"), Type::String),
-                    (SmolStr::new("opts"), Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown))),
+                    (
+                        SmolStr::new("opts"),
+                        Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown)),
+                    ),
                 ],
                 ret: Type::Pending(Box::new(Type::Bool)),
             },
@@ -1009,14 +1134,20 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
         (
             SmolStr::new("rate_ip"),
             FunctionSig {
-                params: vec![(SmolStr::new("request"), Type::Named(SmolStr::new("HttpRequest")))],
+                params: vec![(
+                    SmolStr::new("request"),
+                    Type::Named(SmolStr::new("HttpRequest")),
+                )],
                 ret: Type::String,
             },
         ),
         (
             SmolStr::new("admin_enable"),
             FunctionSig {
-                params: vec![(SmolStr::new("opts"), Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown)))],
+                params: vec![(
+                    SmolStr::new("opts"),
+                    Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown)),
+                )],
                 ret: Type::Pending(Box::new(Type::Bool)),
             },
         ),
@@ -1070,7 +1201,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
         (
             SmolStr::new("storage_configure"),
             FunctionSig {
-                params: vec![(SmolStr::new("config"), Type::Named(SmolStr::new("StorageConfig")))],
+                params: vec![(
+                    SmolStr::new("config"),
+                    Type::Named(SmolStr::new("StorageConfig")),
+                )],
                 ret: Type::Result(Box::new(Type::Nil), Box::new(err.clone())),
             },
         ),
@@ -1127,14 +1261,14 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
         (
             SmolStr::new("storage_batch_set"),
             FunctionSig {
-                params: vec![(SmolStr::new("items"), Type::List(Box::new(Type::Map(
-                    Box::new(Type::Unknown),
-                    Box::new(Type::Unknown),
-                ))))],
-                ret: Type::Pending(Box::new(Type::Result(
-                    Box::new(Type::Bool),
-                    Box::new(err),
-                ))),
+                params: vec![(
+                    SmolStr::new("items"),
+                    Type::List(Box::new(Type::Map(
+                        Box::new(Type::Unknown),
+                        Box::new(Type::Unknown),
+                    ))),
+                )],
+                ret: Type::Pending(Box::new(Type::Result(Box::new(Type::Bool), Box::new(err)))),
             },
         ),
         (
@@ -1345,9 +1479,7 @@ fn check_stmt(
             );
             let span = body.stmt_span(stmt_id);
             if let Some(existing) = ctx.resolve(name) {
-                if types_known(&existing, &value_ty)
-                    && !is_assignable(&existing, &value_ty)
-                {
+                if types_known(&existing, &value_ty) && !is_assignable(&existing, &value_ty) {
                     errors.push(TypeError::InvalidAssignment {
                         name: name.clone(),
                         expected: type_label(&existing),
@@ -1424,7 +1556,11 @@ fn check_stmt(
                 ctx.exit_scope();
             }
         }
-        Stmt::For { iterable, body: loop_body, .. } => {
+        Stmt::For {
+            iterable,
+            body: loop_body,
+            ..
+        } => {
             infer_expr(
                 body,
                 *iterable,
@@ -1452,7 +1588,11 @@ fn check_stmt(
             }
             ctx.exit_scope();
         }
-        Stmt::Match { subject, cases, otherwise } => {
+        Stmt::Match {
+            subject,
+            cases,
+            otherwise,
+        } => {
             infer_expr(
                 body,
                 *subject,
@@ -1513,7 +1653,10 @@ fn check_stmt(
             }
         }
         Stmt::Use { .. } => {}
-        Stmt::While { condition, body: loop_body } => {
+        Stmt::While {
+            condition,
+            body: loop_body,
+        } => {
             infer_expr(
                 body,
                 *condition,
@@ -1652,7 +1795,12 @@ fn infer_expr(
                 unary_result(*op, &operand)
             }
         }
-        Expr::Binary { lhs, op, rhs, op_span } => {
+        Expr::Binary {
+            lhs,
+            op,
+            rhs,
+            op_span,
+        } => {
             if matches!(op, BinaryOp::Otherwise) {
                 let left = infer_expr(
                     body,
@@ -1943,7 +2091,11 @@ fn infer_expr(
             }
             ret_ty.unwrap_or(Type::Unknown)
         }
-        Expr::Member { object, member, member_span } => {
+        Expr::Member {
+            object,
+            member,
+            member_span,
+        } => {
             let object_ty = infer_expr(
                 body,
                 *object,
@@ -2043,7 +2195,10 @@ fn check_call_args(
     allow_result: bool,
     in_result_fn: bool,
 ) {
-    if args.iter().any(|arg| matches!(arg, crate::hir::Arg::Named { .. })) {
+    if args
+        .iter()
+        .any(|arg| matches!(arg, crate::hir::Arg::Named { .. }))
+    {
         let mut param_map = HashMap::new();
         for (name, ty) in params {
             param_map.insert(name.clone(), ty.clone());
@@ -2296,7 +2451,9 @@ fn infer_list(
             Some(_) => return Type::Unknown,
         }
     }
-    element_type.map(|ty| Type::List(Box::new(ty))).unwrap_or(Type::Unknown)
+    element_type
+        .map(|ty| Type::List(Box::new(ty)))
+        .unwrap_or(Type::Unknown)
 }
 
 fn infer_map(
@@ -2459,7 +2616,9 @@ fn binary_result(op: BinaryOp, left: &Type, right: &Type) -> Type {
                 numeric_result(left, right)
             }
         }
-        BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => numeric_result(left, right),
+        BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => {
+            numeric_result(left, right)
+        }
         BinaryOp::Eq | BinaryOp::Ne => Type::Bool,
         BinaryOp::Lt | BinaryOp::Gt | BinaryOp::Le | BinaryOp::Ge => Type::Bool,
         BinaryOp::And | BinaryOp::Or => Type::Bool,
@@ -2693,9 +2852,10 @@ fn check_async_actor_usage(
     let mut class_requires_actor = HashMap::new();
     let mut class_trace = HashMap::new();
     for (_idx, class) in module.classes.iter() {
-        let needs_actor = class.methods.iter().any(|method_id| {
-            *requires_actor.get(&method_id.into_raw()).unwrap_or(&false)
-        });
+        let needs_actor = class
+            .methods
+            .iter()
+            .any(|method_id| *requires_actor.get(&method_id.into_raw()).unwrap_or(&false));
         class_requires_actor.insert(class.name.clone(), needs_actor);
         if needs_actor {
             if let Some(method_id) = class
@@ -2782,7 +2942,9 @@ fn build_func_labels(
         }
     }
     for (func_id, func) in module.functions.iter() {
-        labels.entry(func_id.into_raw()).or_insert_with(|| func.name.to_string());
+        labels
+            .entry(func_id.into_raw())
+            .or_insert_with(|| func.name.to_string());
     }
     labels
 }
@@ -2860,8 +3022,7 @@ fn visit_stmt_for_async(
             has_await,
             calls,
         ),
-        Stmt::Optimize { body: stmts, .. }
-        | Stmt::While { body: stmts, .. } => {
+        Stmt::Optimize { body: stmts, .. } | Stmt::While { body: stmts, .. } => {
             for stmt in stmts {
                 visit_stmt_for_async(
                     body,
@@ -2913,7 +3074,11 @@ fn visit_stmt_for_async(
                 }
             }
         }
-        Stmt::For { iterable, body: stmts, .. } => {
+        Stmt::For {
+            iterable,
+            body: stmts,
+            ..
+        } => {
             visit_expr_for_async(
                 body,
                 *iterable,
@@ -3252,8 +3417,7 @@ fn check_stmt_async_usage(
             errors,
             in_detach,
         ),
-        Stmt::Optimize { body: stmts, .. }
-        | Stmt::While { body: stmts, .. } => {
+        Stmt::Optimize { body: stmts, .. } | Stmt::While { body: stmts, .. } => {
             for stmt in stmts {
                 check_stmt_async_usage(
                     body,
@@ -3325,7 +3489,11 @@ fn check_stmt_async_usage(
                 }
             }
         }
-        Stmt::For { iterable, body: stmts, .. } => {
+        Stmt::For {
+            iterable,
+            body: stmts,
+            ..
+        } => {
             check_expr_async_usage(
                 body,
                 *iterable,
@@ -3473,13 +3641,10 @@ fn check_expr_async_usage(
                         errors.push(TypeError::AsyncClassRequiresActor {
                             class: name.clone(),
                             span: span_from_range(body.expr_span(*callee)),
-                            help: class_trace
-                                .get(name)
-                                .cloned()
-                                .unwrap_or_else(|| {
-                                    "Use `detach` or `Pool.of(...)` to create an actor instance."
-                                        .to_string()
-                                }),
+                            help: class_trace.get(name).cloned().unwrap_or_else(|| {
+                                "Use `detach` or `Pool.of(...)` to create an actor instance."
+                                    .to_string()
+                            }),
                         });
                     }
                 }
@@ -3494,17 +3659,11 @@ fn check_expr_async_usage(
                         if let Type::Named(class_name) = obj_ty {
                             if let Some(methods) = class_method_ids.get(class_name) {
                                 if let Some(method_id) = methods.get(member) {
-                                    if *requires_actor
-                                        .get(&method_id.into_raw())
-                                        .unwrap_or(&false)
+                                    if *requires_actor.get(&method_id.into_raw()).unwrap_or(&false)
                                     {
                                         let hint = "Call this method on a detached or pooled actor instance.";
-                                        let trace = build_call_chain(
-                                            *method_id,
-                                            cause,
-                                            func_labels,
-                                            hint,
-                                        );
+                                        let trace =
+                                            build_call_chain(*method_id, cause, func_labels, hint);
                                         errors.push(TypeError::AsyncMethodRequiresActor {
                                             class: class_name.clone(),
                                             member: member.clone(),
@@ -3739,9 +3898,11 @@ mod tests {
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let errors = check_module(&module);
-        assert!(errors
-            .iter()
-            .any(|err| matches!(err, TypeError::InvalidBinaryOperands { .. })));
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::InvalidBinaryOperands { .. }))
+        );
     }
 
     #[test]
@@ -3751,9 +3912,11 @@ mod tests {
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let errors = check_module(&module);
-        assert!(errors
-            .iter()
-            .any(|err| matches!(err, TypeError::InvalidUnaryOperand { .. })));
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::InvalidUnaryOperand { .. }))
+        );
     }
 
     #[test]
@@ -3773,9 +3936,11 @@ mod tests {
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let errors = check_module(&module);
-        assert!(errors
-            .iter()
-            .any(|err| matches!(err, TypeError::InvalidBinaryOperands { .. })));
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::InvalidBinaryOperands { .. }))
+        );
     }
 
     #[test]
@@ -3795,9 +3960,11 @@ mod tests {
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let errors = check_module(&module);
-        assert!(errors
-            .iter()
-            .any(|err| matches!(err, TypeError::InvalidAssignment { .. })));
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::InvalidAssignment { .. }))
+        );
     }
 
     #[test]
@@ -3807,9 +3974,11 @@ mod tests {
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let errors = check_module(&module);
-        assert!(errors
-            .iter()
-            .any(|err| matches!(err, TypeError::ReturnTypeMismatch { .. })));
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::ReturnTypeMismatch { .. }))
+        );
     }
 
     #[test]
@@ -3831,9 +4000,11 @@ A Whale:\n    has:\n        name: String\n\nto f(w: Whale):\n    return w.age\n"
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let errors = check_module(&module);
-        assert!(errors
-            .iter()
-            .any(|err| matches!(err, TypeError::UnknownMember { .. })));
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::UnknownMember { .. }))
+        );
     }
 
     #[test]
@@ -3844,9 +4015,11 @@ A Whale:\n    can swim(distance: Int) -> Bool:\n        return true\n\nto f(w: W
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let errors = check_module(&module);
-        assert!(errors
-            .iter()
-            .any(|err| matches!(err, TypeError::ArgumentTypeMismatch { .. })));
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::ArgumentTypeMismatch { .. }))
+        );
     }
 
     #[test]
@@ -3857,9 +4030,11 @@ to add(a: Int, b: Int) -> Int:\n    return a + b\n\nto f():\n    return add(1, t
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let errors = check_module(&module);
-        assert!(errors
-            .iter()
-            .any(|err| matches!(err, TypeError::ArgumentTypeMismatch { .. })));
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::ArgumentTypeMismatch { .. }))
+        );
     }
 
     #[test]
@@ -3870,9 +4045,11 @@ to f():\n    x = 1\n    x(2)\n";
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let errors = check_module(&module);
-        assert!(errors
-            .iter()
-            .any(|err| matches!(err, TypeError::InvalidCallee { .. })));
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::InvalidCallee { .. }))
+        );
     }
 
     #[test]
@@ -3894,9 +4071,11 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f():\n    w = detac
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let errors = check_module(&module);
-        assert!(errors
-            .iter()
-            .any(|err| matches!(err, TypeError::PendingNotAwaited { .. })));
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::PendingNotAwaited { .. }))
+        );
     }
 
     #[test]
@@ -3906,9 +4085,11 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f():\n    w = detac
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let errors = check_module(&module);
-        assert!(errors
-            .iter()
-            .any(|err| matches!(err, TypeError::ErrOutsideResult { .. })));
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::ErrOutsideResult { .. }))
+        );
     }
 
     #[test]
@@ -3928,9 +4109,11 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f():\n    w = detac
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let errors = check_module(&module);
-        assert!(errors
-            .iter()
-            .any(|err| matches!(err, TypeError::InvalidOtherwiseOperand { .. })));
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::InvalidOtherwiseOperand { .. }))
+        );
     }
 
     #[test]
@@ -4006,9 +4189,11 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f() -> Result:\n   
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let errors = check_module(&module);
-        assert!(errors
-            .iter()
-            .any(|err| matches!(err, TypeError::UnhandledResult { .. })));
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::UnhandledResult { .. }))
+        );
     }
 
     #[test]
@@ -4029,9 +4214,11 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f(w: Whale):\n    r
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let errors = check_module(&module);
-        assert!(errors
-            .iter()
-            .any(|err| matches!(err, TypeError::InvalidAwaitOperand { .. })));
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::InvalidAwaitOperand { .. }))
+        );
     }
 
     #[test]
@@ -4053,9 +4240,11 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f(w: Whale):\n    f
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let errors = check_module(&module);
-        assert!(errors
-            .iter()
-            .any(|err| matches!(err, TypeError::InvalidFireOperand { .. })));
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::InvalidFireOperand { .. }))
+        );
     }
 
     #[test]
@@ -4067,9 +4256,11 @@ to f():\n    Whale(name=1)\n";
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let errors = check_module(&module);
-        assert!(errors
-            .iter()
-            .any(|err| matches!(err, TypeError::ArgumentTypeMismatch { .. })));
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::ArgumentTypeMismatch { .. }))
+        );
     }
 
     #[test]
@@ -4081,9 +4272,11 @@ to f():\n    Whale(age=\"old\")\n";
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let errors = check_module(&module);
-        assert!(errors
-            .iter()
-            .any(|err| matches!(err, TypeError::UnknownArgument { .. })));
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::UnknownArgument { .. }))
+        );
     }
 
     #[test]
@@ -4094,9 +4287,11 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f():\n    w = detac
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let errors = check_module(&module);
-        assert!(errors
-            .iter()
-            .any(|err| matches!(err, TypeError::InvalidAwaitOperand { .. })));
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::InvalidAwaitOperand { .. }))
+        );
     }
 
     #[test]
@@ -4107,9 +4302,11 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f():\n    w = detac
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let errors = check_module(&module);
-        assert!(errors
-            .iter()
-            .any(|err| matches!(err, TypeError::InvalidFireOperand { .. })));
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::InvalidFireOperand { .. }))
+        );
     }
 
     #[test]
@@ -4122,9 +4319,11 @@ to f():\n    Boat()\n";
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let errors = check_module(&module);
-        assert!(errors
-            .iter()
-            .any(|err| matches!(err, TypeError::AsyncClassRequiresActor { .. })));
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::AsyncClassRequiresActor { .. }))
+        );
     }
 
     #[test]
@@ -4137,9 +4336,11 @@ to f():\n    b = Boat()\n    return b.ride()\n";
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let errors = check_module(&module);
-        assert!(errors
-            .iter()
-            .any(|err| matches!(err, TypeError::AsyncMethodRequiresActor { .. })));
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::AsyncMethodRequiresActor { .. }))
+        );
     }
 
     #[test]
@@ -4153,9 +4354,11 @@ to f():\n    Boat()\n";
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let errors = check_module(&module);
-        assert!(errors
-            .iter()
-            .any(|err| matches!(err, TypeError::AsyncClassRequiresActor { .. })));
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::AsyncClassRequiresActor { .. }))
+        );
     }
 
     #[test]
@@ -4193,9 +4396,11 @@ to f():\n    Boat()\n";
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let errors = check_module(&module);
-        assert!(errors
-            .iter()
-            .any(|err| matches!(err, TypeError::AsyncClassRequiresActor { .. })));
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::AsyncClassRequiresActor { .. }))
+        );
     }
 
     #[test]

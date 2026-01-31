@@ -1,15 +1,15 @@
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use openraft::SnapshotMeta;
 
-use crate::metrics;
-use sha2::{Digest, Sha256};
 use super::blob::BlobBackend;
 use super::config::{BackupConfig, RestoreMode};
 use super::store::{NodeId, SerializableKvStateMachine};
+use crate::metrics;
 use openraft::BasicNode;
+use sha2::{Digest, Sha256};
 
 #[derive(Debug)]
 pub struct BackupState {
@@ -43,7 +43,8 @@ impl BackupState {
     }
 
     pub fn set_last_snapshot_index(&self, index: u64) {
-        self.last_snapshot_index.store(index, AtomicOrdering::Release);
+        self.last_snapshot_index
+            .store(index, AtomicOrdering::Release);
     }
 
     pub fn snapshot_inflight(&self) -> bool {
@@ -75,7 +76,12 @@ pub struct BackupSink {
 }
 
 impl BackupSink {
-    pub fn new(blob: BlobBackend, config: BackupConfig, state: Arc<BackupState>, node_id: u64) -> Self {
+    pub fn new(
+        blob: BlobBackend,
+        config: BackupConfig,
+        state: Arc<BackupState>,
+        node_id: u64,
+    ) -> Self {
         Self {
             blob,
             config,
@@ -174,7 +180,10 @@ pub async fn verify_checksum(
 }
 
 pub fn should_restore(config: &BackupConfig) -> bool {
-    matches!(config.restore_mode, RestoreMode::Single | RestoreMode::Cluster)
+    matches!(
+        config.restore_mode,
+        RestoreMode::Single | RestoreMode::Cluster
+    )
 }
 
 pub fn backup_prefix(config: &BackupConfig, node_id: u64) -> String {
@@ -186,7 +195,11 @@ pub fn backup_prefix(config: &BackupConfig, node_id: u64) -> String {
     }
 }
 
-fn backup_key(config: &BackupConfig, node_id: u64, meta: &SnapshotMeta<NodeId, BasicNode>) -> String {
+fn backup_key(
+    config: &BackupConfig,
+    node_id: u64,
+    meta: &SnapshotMeta<NodeId, BasicNode>,
+) -> String {
     let ts = now_millis();
     let (term, index) = meta
         .last_log_id

@@ -1,5 +1,5 @@
 use crate::string;
-use crate::value::{int_value, TypeId, Value};
+use crate::value::{TypeId, Value, int_value};
 
 pub fn num_add(a: Value, b: Value) -> Value {
     if is_string(a) && is_string(b) {

@@ -44,9 +44,7 @@ impl NodeProc {
             }
             if let Ok(Some(status)) = self.child.try_wait() {
                 let detail = last_line.unwrap_or_else(|| "<no output>".to_string());
-                panic!(
-                    "storage_node exited before {needle} (status: {status}): {detail}"
-                );
+                panic!("storage_node exited before {needle} (status: {status}): {detail}");
             }
         }
         panic!("timed out waiting for {needle}");
@@ -86,7 +84,12 @@ fn spawn_node(
         .arg("--bind-addr")
         .arg(bind_addr)
         .arg("--path")
-        .arg(dir.path().join(format!("db{node_id}")).to_string_lossy().to_string())
+        .arg(
+            dir.path()
+                .join(format!("db{node_id}"))
+                .to_string_lossy()
+                .to_string(),
+        )
         .arg("--bootstrap")
         .arg(if bootstrap { "true" } else { "false" });
 
@@ -122,10 +125,7 @@ fn spawn_node(
 
 fn pick_free_addr() -> Option<String> {
     match std::net::TcpListener::bind("127.0.0.1:0") {
-        Ok(listener) => listener
-            .local_addr()
-            .ok()
-            .map(|addr| addr.to_string()),
+        Ok(listener) => listener.local_addr().ok().map(|addr| addr.to_string()),
         Err(err) => {
             if err.kind() == std::io::ErrorKind::PermissionDenied {
                 None
@@ -223,28 +223,10 @@ async fn integration_uncommitted_write_is_discarded() {
         return;
     };
 
-    let mut node2 = spawn_node(
-        &dir,
-        2,
-        &addr2,
-        vec![],
-        false,
-        false,
-        None,
-        false,
-    );
+    let mut node2 = spawn_node(&dir, 2, &addr2, vec![], false, false, None, false);
     node2.wait_for("READY", Duration::from_secs(5));
 
-    let mut node3 = spawn_node(
-        &dir,
-        3,
-        &addr3,
-        vec![],
-        false,
-        false,
-        None,
-        false,
-    );
+    let mut node3 = spawn_node(&dir, 3, &addr3, vec![], false, false, None, false);
     node3.wait_for("READY", Duration::from_secs(5));
 
     let mut node1 = spawn_node(
@@ -289,28 +271,10 @@ async fn integration_committed_write_survives_leader_crash() {
         return;
     };
 
-    let mut node2 = spawn_node(
-        &dir,
-        2,
-        &addr2,
-        vec![],
-        false,
-        false,
-        None,
-        false,
-    );
+    let mut node2 = spawn_node(&dir, 2, &addr2, vec![], false, false, None, false);
     node2.wait_for("READY", Duration::from_secs(5));
 
-    let mut node3 = spawn_node(
-        &dir,
-        3,
-        &addr3,
-        vec![],
-        false,
-        false,
-        None,
-        false,
-    );
+    let mut node3 = spawn_node(&dir, 3, &addr3, vec![], false, false, None, false);
     node3.wait_for("READY", Duration::from_secs(5));
 
     let mut node1 = spawn_node(

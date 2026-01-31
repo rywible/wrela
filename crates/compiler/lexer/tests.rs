@@ -736,7 +736,10 @@ fn test_tree_sitter_keywords_match() {
     path.push("wrela");
     path.push("keywords.json");
     if !path.exists() {
-        eprintln!("tree-sitter keywords.json not found at {:?}, skipping", path);
+        eprintln!(
+            "tree-sitter keywords.json not found at {:?}, skipping",
+            path
+        );
         return;
     }
     let contents = fs::read_to_string(path).expect("read tree-sitter keywords.json");

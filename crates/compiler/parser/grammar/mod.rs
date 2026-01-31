@@ -162,7 +162,10 @@ fn parse_match(p: &mut Parser) {
 fn parse_optimize(p: &mut Parser) {
     let m = p.start();
     p.expect(SyntaxKind::OptimizeKw);
-    p.expect_with_message(SyntaxKind::Ident, "expected optimization objective after 'optimize'");
+    p.expect_with_message(
+        SyntaxKind::Ident,
+        "expected optimization objective after 'optimize'",
+    );
     p.expect_with_message(SyntaxKind::Colon, "expected ':' after optimize header");
     parse_block(p);
     m.complete(p, SyntaxKind::OptimizeStmt);

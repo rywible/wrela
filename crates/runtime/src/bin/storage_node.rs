@@ -8,11 +8,11 @@ mod test_utils {
 
     use tokio::time::sleep;
 
+    use openraft::BasicNode;
     use wrela_runtime::storage::config::{BackupConfig, BlobConfig, RestoreMode, StorageConfig};
     use wrela_runtime::storage::service::{StorageRequest, StorageService};
     use wrela_runtime::storage::set_drop_replication;
     use wrela_runtime::storage::store::NodeId;
-    use openraft::BasicNode;
 
     pub async fn run() -> Result<(), String> {
         let args = Args::parse(env::args().collect())?;
@@ -108,7 +108,13 @@ mod test_utils {
     async fn wait_for_leader(service: &StorageService) -> Result<(), String> {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            if service.raft_ref().metrics().borrow().current_leader.is_some() {
+            if service
+                .raft_ref()
+                .metrics()
+                .borrow()
+                .current_leader
+                .is_some()
+            {
                 return Ok(());
             }
             if Instant::now() > deadline {
@@ -183,7 +189,11 @@ mod test_utils {
     ) -> Result<(), String> {
         let mut tries = 0u32;
         loop {
-            match service.raft_ref().change_membership(members.clone(), false).await {
+            match service
+                .raft_ref()
+                .change_membership(members.clone(), false)
+                .await
+            {
                 Ok(_) => return Ok(()),
                 Err(err) => {
                     let msg = err.to_string();

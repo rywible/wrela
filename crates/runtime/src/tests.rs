@@ -1,6 +1,6 @@
 use super::*;
-use crate::value::value_eq;
 use crate::string;
+use crate::value::value_eq;
 use std::sync::OnceLock;
 
 fn await_ok(pending: Value) -> Value {
@@ -51,8 +51,7 @@ fn storage_get_string_test(key: &str) -> Option<String> {
 }
 
 fn storage_get_json_test(key: &str) -> Option<serde_json::Value> {
-    storage_get_string_test(key)
-        .and_then(|raw| serde_json::from_str(&raw).ok())
+    storage_get_string_test(key).and_then(|raw| serde_json::from_str(&raw).ok())
 }
 
 fn storage_set_string_test(key: &str, value: &str) {
@@ -501,11 +500,7 @@ fn pending_await_multiple_times() {
 fn env_load_and_get_precedence() {
     let dir = tempfile::tempdir().expect("tempdir");
     let env_path = dir.path().join(".env");
-    std::fs::write(
-        &env_path,
-        "PORT=1234\nDEBUG=true\nTIMEOUT=10\n",
-    )
-    .expect("write .env");
+    std::fs::write(&env_path, "PORT=1234\nDEBUG=true\nTIMEOUT=10\n").expect("write .env");
 
     let path_str = env_path.to_str().unwrap();
     let path_val = wr_str_from_utf8(path_str.as_ptr(), path_str.len());
@@ -682,7 +677,10 @@ fn auth_persists_and_rejects_duplicates() {
     let user_key = format!("auth:user:{user_id}");
     let user_json = storage_get_string_test(&user_key).expect("user record");
     let parsed: serde_json::Value = serde_json::from_str(&user_json).expect("json");
-    assert_eq!(parsed.get("email").and_then(|v| v.as_str()).unwrap(), email_str);
+    assert_eq!(
+        parsed.get("email").and_then(|v| v.as_str()).unwrap(),
+        email_str
+    );
 
     let dup_pending = wr_auth_create_user(storage, email, username, password);
     let dup = await_ok(dup_pending);
@@ -905,12 +903,19 @@ fn auth_email_verify_sets_flag() {
     let id_val = wr_map_get(user_map, id_key);
     let user_id = value_to_string_test(id_val);
 
-    let token = await_ok(wr_auth_issue_email_token(storage, id_val, Value::from_int(3600)));
+    let token = await_ok(wr_auth_issue_email_token(
+        storage,
+        id_val,
+        Value::from_int(3600),
+    ));
     let _ = await_ok(wr_auth_verify_email_token(storage, token));
 
     let user_key = format!("auth:user:{user_id}");
     let user_json = storage_get_json_test(&user_key).expect("user json");
-    assert_eq!(user_json.get("verified").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(
+        user_json.get("verified").and_then(|v| v.as_bool()),
+        Some(true)
+    );
 
     unsafe {
         wr_rc_dec(email);
@@ -938,7 +943,12 @@ fn auth_jwt_expiry_enforced() {
     let id_key = wr_str_from_utf8(b"id".as_ptr(), 2);
     let id_val = wr_map_get(user_map, id_key);
 
-    let jwt = await_ok(wr_auth_issue_jwt(storage, id_val, wr_map_new(), Value::from_int(1)));
+    let jwt = await_ok(wr_auth_issue_jwt(
+        storage,
+        id_val,
+        wr_map_new(),
+        Value::from_int(1),
+    ));
     let mut verified = Value::nil();
     for _ in 0..5 {
         std::thread::sleep(std::time::Duration::from_secs(1));
@@ -1185,7 +1195,6 @@ fn rbac_permissions_union() {
     }
 }
 
-
 #[test]
 fn files_upload_metadata_and_acl() {
     let storage = test_storage();
@@ -1376,7 +1385,6 @@ fn files_bulk_metadata() {
     }
 }
 
-
 #[test]
 fn jobs_process_and_dlq() {
     let storage = test_storage();
@@ -1488,7 +1496,12 @@ fn jobs_persists_queue_and_dlq() {
     let queue_key = format!("jobs:queue:{queue_name}");
     let queue_json = storage_get_string_test(&queue_key).expect("queue stored");
     let parsed: serde_json::Value = serde_json::from_str(&queue_json).expect("queue json");
-    assert!(parsed.as_array().map(|arr| !arr.is_empty()).unwrap_or(false));
+    assert!(
+        parsed
+            .as_array()
+            .map(|arr| !arr.is_empty())
+            .unwrap_or(false)
+    );
 
     unsafe {
         wr_rc_dec(queue);
@@ -1641,7 +1654,6 @@ fn jobs_dlq_bulk_count() {
     }
 }
 
-
 #[test]
 fn schedule_every_runs() {
     let storage = test_storage();
@@ -1701,7 +1713,12 @@ fn schedule_persists_entries() {
     }
     let entries = entries.expect("entries");
     let parsed: serde_json::Value = serde_json::from_str(&entries).expect("json");
-    assert!(parsed.as_array().map(|arr| !arr.is_empty()).unwrap_or(false));
+    assert!(
+        parsed
+            .as_array()
+            .map(|arr| !arr.is_empty())
+            .unwrap_or(false)
+    );
 
     unsafe {
         wr_rc_dec(handler);
@@ -1754,7 +1771,11 @@ fn schedule_entries_count() {
     wr_register_method_name(b"handle".as_ptr(), 6, CLASS_TICK, 0);
     let handler = wr_actor_spawn(CLASS_TICK as u64, Value::nil(), 1, 3, -1, -1, -1);
     let _ = await_ok(wr_schedule_every(storage, Value::from_int(5), handler));
-    let _ = await_ok(wr_schedule_cron(storage, wr_str_from_utf8(b"* * * * *".as_ptr(), 9), handler));
+    let _ = await_ok(wr_schedule_cron(
+        storage,
+        wr_str_from_utf8(b"* * * * *".as_ptr(), 9),
+        handler,
+    ));
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -1844,10 +1865,12 @@ fn search_persists_documents() {
     let list_key = format!("search:collection:{collection_name}");
     let list_json = storage_get_string_test(&list_key).expect("collection list");
     let parsed: serde_json::Value = serde_json::from_str(&list_json).expect("json");
-    assert!(parsed
-        .as_array()
-        .map(|arr| arr.iter().any(|v| v.as_str() == Some(&id_name)))
-        .unwrap_or(false));
+    assert!(
+        parsed
+            .as_array()
+            .map(|arr| arr.iter().any(|v| v.as_str() == Some(&id_name)))
+            .unwrap_or(false)
+    );
 
     unsafe {
         wr_rc_dec(collection);
@@ -1881,7 +1904,12 @@ fn search_filters_and_pagination() {
     wr_map_set(filters, k, v1);
     let key_filters = wr_str_from_utf8(b"filters".as_ptr(), 7);
     wr_map_set(opts, key_filters, filters);
-    let results = await_ok(wr_search_query(storage, collection, wr_str_from_utf8(b"hello".as_ptr(), 5), opts));
+    let results = await_ok(wr_search_query(
+        storage,
+        collection,
+        wr_str_from_utf8(b"hello".as_ptr(), 5),
+        opts,
+    ));
     let len = wr_list_len(results);
     assert_eq!(len.as_int(), 1);
 
@@ -1972,7 +2000,6 @@ fn search_query_case_insensitive() {
     }
 }
 
-
 #[test]
 fn realtime_join_leave_broadcast() {
     let rt = wr_realtime_on_connect(Value::nil());
@@ -2051,8 +2078,8 @@ fn rate_limit_check_and_ip() {
     wr_class_set(req, b"headers".as_ptr(), 7, headers);
 
     let ip = wr_rate_ip(req);
-    let ip_str = string::with_string_bytes(ip, |bytes| String::from_utf8_lossy(bytes).into_owned())
-        .unwrap();
+    let ip_str =
+        string::with_string_bytes(ip, |bytes| String::from_utf8_lossy(bytes).into_owned()).unwrap();
     assert_eq!(ip_str, "10.0.0.1");
 
     unsafe {
@@ -2250,9 +2277,9 @@ fn actor_invalid_args_returns_nil() {
 
 #[test]
 fn actor_fire_executes() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
     static COUNTER_PTR: OnceLock<Arc<AtomicUsize>> = OnceLock::new();
@@ -2289,7 +2316,12 @@ fn actor_fire_executes() {
 fn class_get_set() {
     let name_ptrs = [b"x".as_ptr()];
     let name_lens = [1usize];
-    let class = wr_class_new(TypeId::UserBase as u32, name_ptrs.as_ptr(), name_lens.as_ptr(), 1);
+    let class = wr_class_new(
+        TypeId::UserBase as u32,
+        name_ptrs.as_ptr(),
+        name_lens.as_ptr(),
+        1,
+    );
     assert_eq!(wr_type_id(class), TypeId::UserBase as u32);
     let got = wr_class_get(class, b"x".as_ptr(), 1);
     assert!(got.is_nil());
@@ -2309,10 +2341,8 @@ fn metrics_counts_basic() {
     wr_list_push(list, s);
     unsafe { wr_rc_dec(list) };
 
-    let rc_inc =
-        wr_metrics_get(Value::from_int(crate::metrics::METRIC_RC_INC as i64)).as_int();
-    let rc_dec =
-        wr_metrics_get(Value::from_int(crate::metrics::METRIC_RC_DEC as i64)).as_int();
+    let rc_inc = wr_metrics_get(Value::from_int(crate::metrics::METRIC_RC_INC as i64)).as_int();
+    let rc_dec = wr_metrics_get(Value::from_int(crate::metrics::METRIC_RC_DEC as i64)).as_int();
     assert!(rc_inc >= 1);
     assert!(rc_dec >= 1);
 }
@@ -2328,7 +2358,12 @@ fn refcount_invariants_common_flows() {
     let map = wr_map_new();
     let name_ptrs = [b"x".as_ptr()];
     let name_lens = [1usize];
-    let class = wr_class_new(TypeId::UserBase as u32, name_ptrs.as_ptr(), name_lens.as_ptr(), 1);
+    let class = wr_class_new(
+        TypeId::UserBase as u32,
+        name_ptrs.as_ptr(),
+        name_lens.as_ptr(),
+        1,
+    );
 
     let key = wr_str_from_utf8(b"k".as_ptr(), 1);
     let val = wr_str_from_utf8(b"v".as_ptr(), 1);
@@ -2355,10 +2390,8 @@ fn refcount_invariants_common_flows() {
         wr_rc_dec(result);
     }
 
-    let rc_inc =
-        wr_metrics_get(Value::from_int(crate::metrics::METRIC_RC_INC as i64)).as_int();
-    let rc_dec =
-        wr_metrics_get(Value::from_int(crate::metrics::METRIC_RC_DEC as i64)).as_int();
+    let rc_inc = wr_metrics_get(Value::from_int(crate::metrics::METRIC_RC_INC as i64)).as_int();
+    let rc_dec = wr_metrics_get(Value::from_int(crate::metrics::METRIC_RC_DEC as i64)).as_int();
     let released = rc_dec.saturating_sub(rc_inc);
     assert!(rc_dec >= rc_inc);
     assert!(released >= 9);

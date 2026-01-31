@@ -169,7 +169,9 @@ pub enum SemanticError {
     #[error("detached pools require an optimization objective")]
     #[diagnostic(
         code(lang::sem::missing_objective),
-        help("Add `optimize <objective>:` in scope or inline `optimize <objective>` on the detach.")
+        help(
+            "Add `optimize <objective>:` in scope or inline `optimize <objective>` on the detach."
+        )
     )]
     MissingObjective {
         #[label("detach here")]
@@ -493,10 +495,11 @@ impl<'a> Checker<'a> {
                 });
             }
             if field_names.contains_key(&method.name) {
-                self.warnings.push(SemanticWarning::MethodFieldNameConflict {
-                    name: method.name.clone(),
-                    span: span_from_option(method.name_span),
-                });
+                self.warnings
+                    .push(SemanticWarning::MethodFieldNameConflict {
+                        name: method.name.clone(),
+                        span: span_from_option(method.name_span),
+                    });
             }
             self.check_function(*method_id, method, true);
         }
@@ -612,7 +615,10 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            Stmt::Optimize { objective, body: opt_body } => {
+            Stmt::Optimize {
+                objective,
+                body: opt_body,
+            } => {
                 if let Some(scope) = self.scopes.last_mut() {
                     if scope.optimize_seen {
                         self.errors.push(SemanticError::DuplicateOptimize {
@@ -704,7 +710,10 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            Stmt::While { condition, body: loop_body } => {
+            Stmt::While {
+                condition,
+                body: loop_body,
+            } => {
                 self.check_expr_with_ctx(body, *condition, false, false);
                 self.enter_scope();
                 self.loop_depth += 1;
@@ -1179,7 +1188,10 @@ fn compute_objective_requirements(
         direct_await.insert(idx.into_raw(), has_await);
         graph.insert(
             idx.into_raw(),
-            callees.into_iter().map(|callee| callee.into_raw()).collect(),
+            callees
+                .into_iter()
+                .map(|callee| callee.into_raw())
+                .collect(),
         );
     }
 
@@ -1210,13 +1222,7 @@ fn await_in_transitive_call_graph(
     if !has_await {
         if let Some(callees) = graph.get(&func_id) {
             for callee in callees {
-                if await_in_transitive_call_graph(
-                    *callee,
-                    graph,
-                    direct_await,
-                    visiting,
-                    memo,
-                ) {
+                if await_in_transitive_call_graph(*callee, graph, direct_await, visiting, memo) {
                     has_await = true;
                     break;
                 }
@@ -1321,7 +1327,11 @@ fn collect_stmt_calls_and_awaits(
                 }
             }
         }
-        Stmt::For { iterable, body: inner, .. } => {
+        Stmt::For {
+            iterable,
+            body: inner,
+            ..
+        } => {
             collect_expr_calls_and_awaits(
                 body,
                 *iterable,
@@ -1389,7 +1399,10 @@ fn collect_stmt_calls_and_awaits(
                 }
             }
         }
-        Stmt::While { condition, body: inner } => {
+        Stmt::While {
+            condition,
+            body: inner,
+        } => {
             collect_expr_calls_and_awaits(
                 body,
                 *condition,
@@ -1615,9 +1628,18 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
         ),
         (SmolStr::new("clock_ns"), BindingKind::Function),
         (SmolStr::new("sleep_ms"), BindingKind::Function),
-        (SmolStr::new("http_server_serve_get_requests"), BindingKind::Function),
-        (SmolStr::new("http_server_serve_post_requests"), BindingKind::Function),
-        (SmolStr::new("http_server_serve_requests"), BindingKind::Function),
+        (
+            SmolStr::new("http_server_serve_get_requests"),
+            BindingKind::Function,
+        ),
+        (
+            SmolStr::new("http_server_serve_post_requests"),
+            BindingKind::Function,
+        ),
+        (
+            SmolStr::new("http_server_serve_requests"),
+            BindingKind::Function,
+        ),
         (SmolStr::new("http_server_serve_on"), BindingKind::Function),
         (SmolStr::new("http_server_stop"), BindingKind::Function),
         (SmolStr::new("nil"), BindingKind::Implicit),
@@ -1629,8 +1651,8 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
 mod tests {
     use super::*;
     use crate::hir::lower::lower;
-    use crate::parser::ast::AstNode;
     use crate::parser::ast;
+    use crate::parser::ast::AstNode;
     use crate::parser::parse;
 
     #[test]
@@ -1653,9 +1675,11 @@ mod tests {
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let diagnostics = check_module(&module);
-        assert!(diagnostics.errors
-            .iter()
-            .any(|err| matches!(err, SemanticError::ImmutableAssign { name, .. } if name == "x")));
+        assert!(
+            diagnostics.errors.iter().any(
+                |err| matches!(err, SemanticError::ImmutableAssign { name, .. } if name == "x")
+            )
+        );
     }
 
     #[test]
@@ -1678,9 +1702,12 @@ mod tests {
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let diagnostics = check_module(&module);
-        assert!(diagnostics.errors
-            .iter()
-            .any(|err| matches!(err, SemanticError::BreakOutsideLoop { .. })));
+        assert!(
+            diagnostics
+                .errors
+                .iter()
+                .any(|err| matches!(err, SemanticError::BreakOutsideLoop { .. }))
+        );
     }
 
     #[test]
@@ -1690,9 +1717,12 @@ mod tests {
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let diagnostics = check_module(&module);
-        assert!(diagnostics.errors
-            .iter()
-            .any(|err| matches!(err, SemanticError::FireInExpression { .. })));
+        assert!(
+            diagnostics
+                .errors
+                .iter()
+                .any(|err| matches!(err, SemanticError::FireInExpression { .. }))
+        );
     }
 
     #[test]
@@ -1702,9 +1732,12 @@ mod tests {
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let diagnostics = check_module(&module);
-        assert!(diagnostics.errors
-            .iter()
-            .any(|err| matches!(err, SemanticError::PositionalAfterNamed { .. })));
+        assert!(
+            diagnostics
+                .errors
+                .iter()
+                .any(|err| matches!(err, SemanticError::PositionalAfterNamed { .. }))
+        );
     }
 
     #[test]
@@ -1714,9 +1747,9 @@ mod tests {
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let diagnostics = check_module(&module);
-        assert!(diagnostics.errors
-            .iter()
-            .any(|err| matches!(err, SemanticError::DuplicateNamedArg { name, .. } if name == "a")));
+        assert!(diagnostics.errors.iter().any(
+            |err| matches!(err, SemanticError::DuplicateNamedArg { name, .. } if name == "a")
+        ));
     }
 
     #[test]
@@ -1765,9 +1798,12 @@ mod tests {
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let diagnostics = check_module(&module);
-        assert!(diagnostics.errors
-            .iter()
-            .any(|err| matches!(err, SemanticError::InvalidItUsage { .. })));
+        assert!(
+            diagnostics
+                .errors
+                .iter()
+                .any(|err| matches!(err, SemanticError::InvalidItUsage { .. }))
+        );
     }
 
     #[test]
@@ -1777,9 +1813,12 @@ mod tests {
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let diagnostics = check_module(&module);
-        assert!(diagnostics.errors
-            .iter()
-            .any(|err| matches!(err, SemanticError::MatchMissingOtherwise { .. })));
+        assert!(
+            diagnostics
+                .errors
+                .iter()
+                .any(|err| matches!(err, SemanticError::MatchMissingOtherwise { .. }))
+        );
     }
 
     #[test]
@@ -1789,9 +1828,12 @@ mod tests {
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let diagnostics = check_module(&module);
-        assert!(diagnostics.errors
-            .iter()
-            .any(|err| matches!(err, SemanticError::VisibilityMisuse { .. })));
+        assert!(
+            diagnostics
+                .errors
+                .iter()
+                .any(|err| matches!(err, SemanticError::VisibilityMisuse { .. }))
+        );
     }
 
     #[test]
@@ -1801,9 +1843,12 @@ mod tests {
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let diagnostics = check_module(&module);
-        assert!(diagnostics.errors
-            .iter()
-            .any(|err| matches!(err, SemanticError::PublicChangingVariable { .. })));
+        assert!(
+            diagnostics
+                .errors
+                .iter()
+                .any(|err| matches!(err, SemanticError::PublicChangingVariable { .. }))
+        );
     }
 
     #[test]
@@ -1814,9 +1859,12 @@ A Whale:\n    has:\n        name: String\n    can name() -> String:\n        ret
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let diagnostics = check_module(&module);
-        assert!(diagnostics.warnings
-            .iter()
-            .any(|err| matches!(err, SemanticWarning::MethodFieldNameConflict { .. })));
+        assert!(
+            diagnostics
+                .warnings
+                .iter()
+                .any(|err| matches!(err, SemanticWarning::MethodFieldNameConflict { .. }))
+        );
     }
 
     #[test]
@@ -1826,9 +1874,12 @@ A Whale:\n    has:\n        name: String\n    can name() -> String:\n        ret
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let diagnostics = check_module(&module);
-        assert!(diagnostics.warnings
-            .iter()
-            .any(|err| matches!(err, SemanticWarning::UnreachableCode { .. })));
+        assert!(
+            diagnostics
+                .warnings
+                .iter()
+                .any(|err| matches!(err, SemanticWarning::UnreachableCode { .. }))
+        );
     }
 
     #[test]
@@ -1838,9 +1889,11 @@ A Whale:\n    has:\n        name: String\n    can name() -> String:\n        ret
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let diagnostics = check_module(&module);
-        assert!(diagnostics.warnings
-            .iter()
-            .any(|err| matches!(err, SemanticWarning::UnusedBinding { name, .. } if name == "x")));
+        assert!(
+            diagnostics.warnings.iter().any(
+                |err| matches!(err, SemanticWarning::UnusedBinding { name, .. } if name == "x")
+            )
+        );
     }
 
     #[test]
@@ -1983,7 +2036,11 @@ to run() -> Int:
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let diagnostics = check_module(&module);
-        assert!(diagnostics.errors.is_empty(), "errors: {:?}", diagnostics.errors);
+        assert!(
+            diagnostics.errors.is_empty(),
+            "errors: {:?}",
+            diagnostics.errors
+        );
     }
 
     #[test]

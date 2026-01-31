@@ -11,7 +11,11 @@ static STATE: OnceLock<Mutex<EnvState>> = OnceLock::new();
 static INIT: OnceLock<()> = OnceLock::new();
 
 fn state() -> &'static Mutex<EnvState> {
-    STATE.get_or_init(|| Mutex::new(EnvState { dotenv: HashMap::new() }))
+    STATE.get_or_init(|| {
+        Mutex::new(EnvState {
+            dotenv: HashMap::new(),
+        })
+    })
 }
 
 pub fn init() {

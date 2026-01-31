@@ -14,11 +14,13 @@ struct RealtimeState {
 static STATE: OnceLock<Mutex<RealtimeState>> = OnceLock::new();
 
 fn realtime_state() -> &'static Mutex<RealtimeState> {
-    STATE.get_or_init(|| Mutex::new(RealtimeState {
-        rooms: HashMap::new(),
-        inbox: HashMap::new(),
-        on_connect: None,
-    }))
+    STATE.get_or_init(|| {
+        Mutex::new(RealtimeState {
+            rooms: HashMap::new(),
+            inbox: HashMap::new(),
+            on_connect: None,
+        })
+    })
 }
 
 fn value_to_string(val: Value) -> Option<String> {

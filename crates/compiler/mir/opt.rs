@@ -1,5 +1,7 @@
 use crate::hir::{BinaryOp, Literal, UnaryOp};
-use crate::mir::ir::{CallKind, CallTarget, MirFunction, MirType, Place, Rvalue, Stmt, Terminator, Value};
+use crate::mir::ir::{
+    CallKind, CallTarget, MirFunction, MirType, Place, Rvalue, Stmt, Terminator, Value,
+};
 use rowan::TextRange;
 use std::collections::HashSet;
 
@@ -19,12 +21,24 @@ pub fn constant_fold(func: &mut MirFunction) {
                 }
             }
         }
-        if let Terminator::Branch { cond, then_target, else_target, span } = &block.terminator {
+        if let Terminator::Branch {
+            cond,
+            then_target,
+            else_target,
+            span,
+        } = &block.terminator
+        {
             if let Value::Const(Literal::Bool(flag)) = cond {
                 block.terminator = if *flag {
-                    Terminator::Jump { target: *then_target, span: *span }
+                    Terminator::Jump {
+                        target: *then_target,
+                        span: *span,
+                    }
                 } else {
-                    Terminator::Jump { target: *else_target, span: *span }
+                    Terminator::Jump {
+                        target: *else_target,
+                        span: *span,
+                    }
                 };
             }
         }
@@ -33,12 +47,24 @@ pub fn constant_fold(func: &mut MirFunction) {
 
 pub fn simplify_branches(func: &mut MirFunction) {
     for block in &mut func.blocks {
-        if let Terminator::Branch { cond, then_target, else_target, span } = &block.terminator {
+        if let Terminator::Branch {
+            cond,
+            then_target,
+            else_target,
+            span,
+        } = &block.terminator
+        {
             if let Value::Const(Literal::Bool(flag)) = cond {
                 block.terminator = if *flag {
-                    Terminator::Jump { target: *then_target, span: *span }
+                    Terminator::Jump {
+                        target: *then_target,
+                        span: *span,
+                    }
                 } else {
-                    Terminator::Jump { target: *else_target, span: *span }
+                    Terminator::Jump {
+                        target: *else_target,
+                        span: *span,
+                    }
                 };
             }
         }
@@ -205,9 +231,7 @@ fn collect_rvalue(value: &Rvalue, used: &mut HashSet<usize>) {
             }
         }
         Rvalue::Spawn {
-            target,
-            instance,
-            ..
+            target, instance, ..
         } => {
             collect_value(target, used);
             collect_value(instance, used);
@@ -311,27 +335,29 @@ fn insert_rc(func: &mut MirFunction) {
             if let Stmt::Assign { place, value, .. } = stmt {
                 let idx = place_idx_opt(place, locals_len);
                 if rvalue_uses.contains(&idx) {
-                        let temp_id = crate::mir::ir::TempId(next_temp_id);
-                        next_temp_id += 1;
-                        func.temps.push(crate::mir::ir::Temp { ty: MirType::Unknown });
-                        new_stmts.push(Stmt::Assign {
-                            place: Place::Temp(temp_id),
-                            value: value.clone(),
+                    let temp_id = crate::mir::ir::TempId(next_temp_id);
+                    next_temp_id += 1;
+                    func.temps.push(crate::mir::ir::Temp {
+                        ty: MirType::Unknown,
+                    });
+                    new_stmts.push(Stmt::Assign {
+                        place: Place::Temp(temp_id),
+                        value: value.clone(),
+                        span,
+                    });
+                    if init[idx] && idx_is_ref(&types, idx) {
+                        new_stmts.push(Stmt::RcDec {
+                            value: value_from_idx(idx, locals_len),
                             span,
                         });
-                        if init[idx] && idx_is_ref(&types, idx) {
-                            new_stmts.push(Stmt::RcDec {
-                                value: value_from_idx(idx, locals_len),
-                                span,
-                            });
-                        }
-                        new_stmts.push(Stmt::Assign {
-                            place: place.clone(),
-                            value: Rvalue::Use(Value::Temp(temp_id)),
-                            span,
-                        });
-                        init[idx] = true;
-                        continue;
+                    }
+                    new_stmts.push(Stmt::Assign {
+                        place: place.clone(),
+                        value: Rvalue::Use(Value::Temp(temp_id)),
+                        span,
+                    });
+                    init[idx] = true;
+                    continue;
                 }
             }
             if let Stmt::Assign { value, .. } = stmt {
@@ -363,7 +389,10 @@ fn insert_rc(func: &mut MirFunction) {
         }
 
         let mut exclude = vec![false; total];
-        if let Terminator::Return { value: Some(value), .. } = &block.terminator {
+        if let Terminator::Return {
+            value: Some(value), ..
+        } = &block.terminator
+        {
             if let Some(idx) = value_idx(value, locals_len) {
                 exclude[idx] = true;
                 init[idx] = false;
@@ -605,13 +634,19 @@ fn stmt_defs(stmt: &Stmt, locals_len: usize) -> Vec<usize> {
         Stmt::Assign { place, .. } => vec![place_idx(place, locals_len)],
         Stmt::Await { dst, .. } => vec![place_idx(dst, locals_len)],
         Stmt::IterInit { dst, .. } => vec![place_idx(dst, locals_len)],
-        Stmt::IterNext { dst_value, dst_done, .. } => {
-            vec![place_idx(dst_value, locals_len), place_idx(dst_done, locals_len)]
+        Stmt::IterNext {
+            dst_value,
+            dst_done,
+            ..
+        } => {
+            vec![
+                place_idx(dst_value, locals_len),
+                place_idx(dst_done, locals_len),
+            ]
         }
-        Stmt::SetField { .. }
-        | Stmt::RcInc { .. }
-        | Stmt::RcDec { .. }
-        | Stmt::Fire { .. } => Vec::new(),
+        Stmt::SetField { .. } | Stmt::RcInc { .. } | Stmt::RcDec { .. } | Stmt::Fire { .. } => {
+            Vec::new()
+        }
     }
 }
 
@@ -711,9 +746,7 @@ fn collect_rvalue_uses(value: &Rvalue, locals_len: usize, out: &mut Vec<usize>) 
             }
         }
         Rvalue::Spawn {
-            target,
-            instance,
-            ..
+            target, instance, ..
         } => {
             if let Some(idx) = value_idx(target, locals_len) {
                 out.push(idx);
@@ -840,11 +873,11 @@ fn terminator_span(term: &Terminator) -> TextRange {
 mod tests {
     use super::*;
     use crate::hir::lower as hir_lower;
-    use crate::mir::ir::{BasicBlock, Local, LocalId};
     use crate::mir::ir::BlockId;
+    use crate::mir::ir::{BasicBlock, Local, LocalId};
     use crate::mir::lower::lower_module;
-    use crate::parser::ast::AstNode;
     use crate::parser::ast;
+    use crate::parser::ast::AstNode;
     use crate::parser::parse;
 
     #[test]
@@ -864,9 +897,11 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert!(assigns
-            .iter()
-            .any(|value| matches!(value, Rvalue::Use(Value::Const(Literal::Int(3))))));
+        assert!(
+            assigns
+                .iter()
+                .any(|value| matches!(value, Rvalue::Use(Value::Const(Literal::Int(3)))))
+        );
     }
 
     #[test]
@@ -923,8 +958,14 @@ mod tests {
         let mut saw_dec_old = false;
         for stmt in &func.blocks[0].stmts {
             match stmt {
-                Stmt::Assign { place: Place::Temp(_), .. } => saw_temp_assign = true,
-                Stmt::RcDec { value: Value::Local(LocalId(0)), .. } => saw_dec_old = true,
+                Stmt::Assign {
+                    place: Place::Temp(_),
+                    ..
+                } => saw_temp_assign = true,
+                Stmt::RcDec {
+                    value: Value::Local(LocalId(0)),
+                    ..
+                } => saw_dec_old = true,
                 _ => {}
             }
         }

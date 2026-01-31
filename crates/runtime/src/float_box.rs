@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use crate::object::ObjHeader;
-use crate::value::{header, TypeId, Value};
+use crate::value::{TypeId, Value, header};
 
 #[repr(C)]
 struct FloatBox {

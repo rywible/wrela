@@ -1,4 +1,6 @@
-use crate::actor::{actor_class_id, actor_send, pending_await_async, pending_new, resolve_pending, runtime_spawn};
+use crate::actor::{
+    actor_class_id, actor_send, pending_await_async, pending_new, resolve_pending, runtime_spawn,
+};
 use crate::http::method_id_for;
 use crate::storage_helpers::{storage_get_json_vec, storage_set_json, value_to_string};
 use crate::value::Value;

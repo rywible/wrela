@@ -1,9 +1,9 @@
 use serde_json::Value;
-use tower::util::ServiceExt;
 use tower::Service;
+use tower::util::ServiceExt;
+use tower_lsp::LspService;
 use tower_lsp::jsonrpc::Request;
 use tower_lsp::lsp_types::*;
-use tower_lsp::LspService;
 use wrela_lsp::Backend;
 
 #[tokio::test]
@@ -54,7 +54,10 @@ async fn lsp_flow_basic() {
     let completion_params = CompletionParams {
         text_document_position: TextDocumentPositionParams {
             text_document: TextDocumentIdentifier { uri: uri.clone() },
-            position: Position { line: 2, character: 8 },
+            position: Position {
+                line: 2,
+                character: 8,
+            },
         },
         work_done_progress_params: Default::default(),
         partial_result_params: Default::default(),
@@ -106,7 +109,11 @@ async fn lsp_flow_basic() {
 
     let execute_params = ExecuteCommandParams {
         command: "wrela.goToTypeDefinition".to_string(),
-        arguments: vec![Value::String(uri.to_string()), Value::from(4), Value::from(6)],
+        arguments: vec![
+            Value::String(uri.to_string()),
+            Value::from(4),
+            Value::from(6),
+        ],
         work_done_progress_params: Default::default(),
     };
     let execute_request = Request::build("workspace/executeCommand")

@@ -1,9 +1,11 @@
 use crate::actor::{pending_new, resolve_pending, runtime_spawn};
 use crate::list;
 use crate::map;
-use crate::storage_helpers::{storage_delete, storage_get_json, storage_get_json_vec, storage_set_json, value_to_string};
+use crate::storage_helpers::{
+    storage_delete, storage_get_json, storage_get_json_vec, storage_set_json, value_to_string,
+};
 use crate::string;
-use crate::value::{int_value, Value};
+use crate::value::{Value, int_value};
 use crate::wr_rc_dec;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -26,10 +28,14 @@ fn tokenize(text: &str) -> Vec<String> {
 
 fn json_from_map(val: Value) -> HashMap<String, JsonValue> {
     let mut out = HashMap::new();
-    let Some(map_ptr) = map::as_map_ref(val) else { return out };
+    let Some(map_ptr) = map::as_map_ref(val) else {
+        return out;
+    };
     unsafe {
         for (key, value) in (&(*map_ptr).entries).iter() {
-            let Some(key_str) = value_to_string(key.0) else { continue };
+            let Some(key_str) = value_to_string(key.0) else {
+                continue;
+            };
             let json_val = if value.is_nil() {
                 JsonValue::Null
             } else if value.is_bool() {
@@ -100,7 +106,13 @@ fn map_get_int(map_val: Value, key: &str) -> Option<i64> {
     out
 }
 
-pub fn search_index(storage: Value, collection: Value, id: Value, text: Value, fields: Value) -> Value {
+pub fn search_index(
+    storage: Value,
+    collection: Value,
+    id: Value,
+    text: Value,
+    fields: Value,
+) -> Value {
     let (pending, state) = pending_new();
     if storage.is_nil() {
         resolve_pending(state, Value::from_bool(false));
@@ -139,7 +151,8 @@ pub fn search_index(storage: Value, collection: Value, id: Value, text: Value, f
             text: text.clone(),
             fields: fields_map,
         };
-        let mut ids = storage_get_json_vec::<String>(&format!("search:collection:{collection}")).await;
+        let mut ids =
+            storage_get_json_vec::<String>(&format!("search:collection:{collection}")).await;
         if !ids.contains(&id) {
             ids.push(id.clone());
         }
@@ -174,7 +187,8 @@ pub fn search_remove(storage: Value, collection: Value, id: Value) -> Value {
         let doc_key = format!("search:doc:{collection}:{id}");
         let removed = storage_get_json::<Document>(&doc_key).await.is_some();
         if removed {
-            let mut ids = storage_get_json_vec::<String>(&format!("search:collection:{collection}")).await;
+            let mut ids =
+                storage_get_json_vec::<String>(&format!("search:collection:{collection}")).await;
             ids.retain(|val| val != &id);
             let _ = storage_set_json(&format!("search:collection:{collection}"), &ids).await;
             let _ = storage_delete(&doc_key).await;
@@ -216,7 +230,9 @@ pub fn search_query(storage: Value, collection: Value, query: Value, opts: Value
         let ids = storage_get_json_vec::<String>(&format!("search:collection:{collection}")).await;
         let mut docs = Vec::new();
         for id in ids {
-            if let Some(doc) = storage_get_json::<Document>(&format!("search:doc:{collection}:{id}")).await {
+            if let Some(doc) =
+                storage_get_json::<Document>(&format!("search:doc:{collection}:{id}")).await
+            {
                 docs.push(doc);
             }
         }

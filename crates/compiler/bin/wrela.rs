@@ -169,12 +169,7 @@ fn main() {
                     std::process::exit(EXIT_USAGE);
                 }
             };
-            let result = compile_to_mir(
-                &entry_path,
-                output_format,
-                emit_mir,
-                emit_mir_opt,
-            );
+            let result = compile_to_mir(&entry_path, output_format, emit_mir, emit_mir_opt);
             if let Err(code) = result {
                 std::process::exit(code);
             }
@@ -195,15 +190,11 @@ fn main() {
                     std::process::exit(EXIT_USAGE);
                 }
             };
-            let mir_module = match compile_to_mir(
-                &entry_path,
-                output_format,
-                emit_mir,
-                emit_mir_opt,
-            ) {
-                Ok(mir) => mir,
-                Err(code) => std::process::exit(code),
-            };
+            let mir_module =
+                match compile_to_mir(&entry_path, output_format, emit_mir, emit_mir_opt) {
+                    Ok(mir) => mir,
+                    Err(code) => std::process::exit(code),
+                };
             if let Some(path) = emit_obj {
                 match wrela::backend::cranelift::compile_to_object(&mir_module) {
                     Ok(obj) => {
@@ -221,7 +212,9 @@ fn main() {
             let output = out_path
                 .or(emit_bin)
                 .unwrap_or_else(|| "wrela.out".to_string());
-            if let Err(err) = wrela::backend::cranelift::compile_to_executable(&mir_module, output.as_ref()) {
+            if let Err(err) =
+                wrela::backend::cranelift::compile_to_executable(&mir_module, output.as_ref())
+            {
                 eprintln!("codegen error: {}", err.0);
                 std::process::exit(EXIT_CODEGEN);
             }
@@ -238,17 +231,15 @@ fn main() {
                     std::process::exit(EXIT_USAGE);
                 }
             };
-            let mir_module = match compile_to_mir(
-                &entry_path,
-                output_format,
-                emit_mir,
-                emit_mir_opt,
-            ) {
-                Ok(mir) => mir,
-                Err(code) => std::process::exit(code),
-            };
+            let mir_module =
+                match compile_to_mir(&entry_path, output_format, emit_mir, emit_mir_opt) {
+                    Ok(mir) => mir,
+                    Err(code) => std::process::exit(code),
+                };
             let output = out_path.unwrap_or_else(temp_exe_path);
-            if let Err(err) = wrela::backend::cranelift::compile_to_executable(&mir_module, output.as_ref()) {
+            if let Err(err) =
+                wrela::backend::cranelift::compile_to_executable(&mir_module, output.as_ref())
+            {
                 eprintln!("codegen error: {}", err.0);
                 std::process::exit(EXIT_CODEGEN);
             }
@@ -271,7 +262,14 @@ fn main() {
                 }
             };
             let poll = poll_ms.unwrap_or(500);
-            run_dev_loop(&entry_path, poll, output_format, emit_mir, emit_mir_opt, &program_args);
+            run_dev_loop(
+                &entry_path,
+                poll,
+                output_format,
+                emit_mir,
+                emit_mir_opt,
+                &program_args,
+            );
         }
         _ => {
             print_help();
@@ -384,7 +382,10 @@ fn emit_json_diag(kind: &str, message: String, span: SourceSpan, path: String) {
 }
 
 fn is_command(arg: &str) -> bool {
-    matches!(arg, "init" | "update" | "check" | "build" | "compile" | "run" | "dev")
+    matches!(
+        arg,
+        "init" | "update" | "check" | "build" | "compile" | "run" | "dev"
+    )
 }
 
 fn resolve_entry_path(path_arg: Option<&str>) -> Result<PathBuf, String> {
@@ -397,10 +398,7 @@ fn resolve_entry_path(path_arg: Option<&str>) -> Result<PathBuf, String> {
         if entry.exists() {
             return Ok(entry);
         }
-        return Err(format!(
-            "no entry file found at {}",
-            entry.display()
-        ));
+        return Err(format!("no entry file found at {}", entry.display()));
     }
     if !path.exists() {
         return Err(format!("path not found: {}", path.display()));
@@ -458,7 +456,9 @@ fn compile_to_mir(
                 );
             }
             if missing_run && matches!(output_format, OutputFormat::Pretty) {
-                eprintln!("note: add `to run()` in your entry file to define the program entrypoint");
+                eprintln!(
+                    "note: add `to run()` in your entry file to define the program entrypoint"
+                );
             }
             return Err(EXIT_PARSE);
         }
@@ -570,14 +570,9 @@ fn run_dev_loop(
     emit_mir_opt: bool,
     program_args: &[String],
 ) {
-    let src_root = find_src_root(entry_path).unwrap_or_else(|| {
-        entry_path.parent().unwrap_or(entry_path).to_path_buf()
-    });
-    eprintln!(
-        "dev: watching {} (poll {}ms)",
-        src_root.display(),
-        poll_ms
-    );
+    let src_root = find_src_root(entry_path)
+        .unwrap_or_else(|| entry_path.parent().unwrap_or(entry_path).to_path_buf());
+    eprintln!("dev: watching {} (poll {}ms)", src_root.display(), poll_ms);
     let mut last = snapshot_sources(&src_root);
     let mut child: Option<std::process::Child> = None;
     loop {
@@ -586,7 +581,8 @@ fn run_dev_loop(
                 let _ = running.kill();
                 let _ = running.wait();
             }
-            let mir_module = match compile_to_mir(entry_path, output_format, emit_mir, emit_mir_opt) {
+            let mir_module = match compile_to_mir(entry_path, output_format, emit_mir, emit_mir_opt)
+            {
                 Ok(mir) => mir,
                 Err(code) => {
                     if code != EXIT_USAGE {
@@ -597,7 +593,9 @@ fn run_dev_loop(
                 }
             };
             let output = temp_exe_path();
-            if let Err(err) = wrela::backend::cranelift::compile_to_executable(&mir_module, output.as_ref()) {
+            if let Err(err) =
+                wrela::backend::cranelift::compile_to_executable(&mir_module, output.as_ref())
+            {
                 eprintln!("codegen error: {}", err.0);
                 sleep_ms(poll_ms);
                 continue;
@@ -668,7 +666,10 @@ fn collect_sources(root: &Path, out: &mut Vec<(PathBuf, SystemTime)>) {
 }
 
 fn is_source_file(path: &Path) -> bool {
-    matches!(path.extension().and_then(|s| s.to_str()), Some("wr") | Some("sp"))
+    matches!(
+        path.extension().and_then(|s| s.to_str()),
+        Some("wr") | Some("sp")
+    )
 }
 
 fn sleep_ms(ms: u64) {
@@ -693,9 +694,8 @@ fn update_toolchain(prefix_override: Option<&str>) -> Result<(), String> {
         Some(tag) => tag,
         None => fetch_latest_tag()?,
     };
-    let url = format!(
-        "https://github.com/rywible/wrela/releases/download/{tag}/wrela-{target}.tar.gz"
-    );
+    let url =
+        format!("https://github.com/rywible/wrela/releases/download/{tag}/wrela-{target}.tar.gz");
 
     fs::create_dir_all(&prefix).map_err(|err| format!("create prefix failed: {err}"))?;
     let tmp_path = env::temp_dir().join(format!(
@@ -708,9 +708,7 @@ fn update_toolchain(prefix_override: Option<&str>) -> Result<(), String> {
     ));
 
     let mut curl = Command::new("curl");
-    curl.args(["-fsSL", "-o"])
-        .arg(&tmp_path)
-        .arg(&url);
+    curl.args(["-fsSL", "-o"]).arg(&tmp_path).arg(&url);
     let curl_out = curl.output().map_err(|err| {
         if err.kind() == io::ErrorKind::NotFound {
             "curl not found (install curl to use `wrela update`)".to_string()
@@ -724,10 +722,7 @@ fn update_toolchain(prefix_override: Option<&str>) -> Result<(), String> {
     }
 
     let mut tar = Command::new("tar");
-    tar.args(["-xzf"])
-        .arg(&tmp_path)
-        .arg("-C")
-        .arg(&prefix);
+    tar.args(["-xzf"]).arg(&tmp_path).arg("-C").arg(&prefix);
     let tar_out = tar.output().map_err(|err| {
         if err.kind() == io::ErrorKind::NotFound {
             "tar not found (install tar to use `wrela update`)".to_string()
@@ -759,7 +754,10 @@ fn resolve_target_triple() -> Result<&'static str, String> {
 
 fn fetch_latest_tag() -> Result<String, String> {
     let mut curl = Command::new("curl");
-    curl.args(["-fsSL", "https://api.github.com/repos/rywible/wrela/releases"]);
+    curl.args([
+        "-fsSL",
+        "https://api.github.com/repos/rywible/wrela/releases",
+    ]);
     let output = curl.output().map_err(|err| {
         if err.kind() == io::ErrorKind::NotFound {
             "curl not found (install curl to use `wrela update`)".to_string()

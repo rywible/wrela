@@ -1,6 +1,8 @@
 use crate::actor::{pending_new, resolve_pending, runtime_spawn};
 use crate::list;
-use crate::storage_helpers::{storage_get_json, storage_get_json_vec, storage_set_json, value_to_string};
+use crate::storage_helpers::{
+    storage_get_json, storage_get_json_vec, storage_set_json, value_to_string,
+};
 use crate::string;
 use crate::value::Value;
 use crate::wr_rc_dec;
@@ -16,7 +18,9 @@ struct StoredRole {
 }
 
 fn list_to_strings(list_val: Value) -> Vec<String> {
-    let Some(list_ptr) = list::as_list_ref(list_val) else { return Vec::new() };
+    let Some(list_ptr) = list::as_list_ref(list_val) else {
+        return Vec::new();
+    };
     let mut out = Vec::new();
     unsafe {
         for val in (&(*list_ptr).data).iter() {

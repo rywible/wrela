@@ -22,11 +22,7 @@ pub fn lower_root_body(root: ast::Root) -> Option<Body> {
             }
         }
     }
-    if has_stmt {
-        Some(body_ctx.body)
-    } else {
-        None
-    }
+    if has_stmt { Some(body_ctx.body) } else { None }
 }
 
 #[derive(Default)]
@@ -177,7 +173,11 @@ impl LoweringContext {
                 .map(|tok| SmolStr::new(tok.text()))
                 .unwrap_or_default(),
             name_span: t.name().map(|tok| tok.text_range()),
-            args: t.args().into_iter().map(|arg| self.lower_type_ref(arg)).collect(),
+            args: t
+                .args()
+                .into_iter()
+                .map(|arg| self.lower_type_ref(arg))
+                .collect(),
         }
     }
 }
@@ -437,10 +437,7 @@ impl BodyLoweringContext {
             ast::Expr::Member(m) => {
                 let object = self.lower_expr(m.object()?)?;
                 let member = m.name().map(|t| SmolStr::new(t.text())).unwrap_or_default();
-                let member_span = m
-                    .name()
-                    .map(|t| t.text_range())
-                    .unwrap_or(expr_span);
+                let member_span = m.name().map(|t| t.text_range()).unwrap_or(expr_span);
                 Expr::Member {
                     object,
                     member,
@@ -485,10 +482,7 @@ impl BodyLoweringContext {
             ast::Arg::Named(n) => {
                 let name = n.name().map(|t| SmolStr::new(t.text())).unwrap_or_default();
                 let span = n.syntax().text_range();
-                let name_span = n
-                    .name()
-                    .map(|t| t.text_range())
-                    .unwrap_or(span);
+                let name_span = n.name().map(|t| t.text_range()).unwrap_or(span);
                 let value = self.lower_expr(n.value()?)?;
                 Some(Arg::Named {
                     name,
@@ -500,10 +494,7 @@ impl BodyLoweringContext {
         }
     }
 
-    fn lower_binary_op(
-        &self,
-        node: &crate::parser::SyntaxNode,
-    ) -> Option<(BinaryOp, TextRange)> {
+    fn lower_binary_op(&self, node: &crate::parser::SyntaxNode) -> Option<(BinaryOp, TextRange)> {
         let op_tok = node
             .children_with_tokens()
             .filter_map(|it| it.into_token())
@@ -569,10 +560,7 @@ impl BodyLoweringContext {
         Some((op, op_tok.text_range()))
     }
 
-    fn lower_unary_op(
-        &self,
-        node: &crate::parser::SyntaxNode,
-    ) -> Option<(UnaryOp, TextRange)> {
+    fn lower_unary_op(&self, node: &crate::parser::SyntaxNode) -> Option<(UnaryOp, TextRange)> {
         let op_tok = node
             .children_with_tokens()
             .filter_map(|it| it.into_token())
@@ -665,8 +653,7 @@ impl BodyLoweringContext {
                                     }
                                     match tok.kind() {
                                         SyntaxKind::IntNumber => {
-                                            let parsed =
-                                                tok.text().parse::<i64>().unwrap_or(1);
+                                            let parsed = tok.text().parse::<i64>().unwrap_or(1);
                                             size = PoolSize::Fixed(parsed);
                                         }
                                         SyntaxKind::Ident => {
@@ -732,7 +719,11 @@ fn parse_use_stmt(u: &ast::UseStmt) -> (Vec<UseName>, SmolStr, Option<TextRange>
     let mut in_module = false;
     let mut module_span: Option<TextRange> = None;
 
-    for token in u.syntax().children_with_tokens().filter_map(|it| it.into_token()) {
+    for token in u
+        .syntax()
+        .children_with_tokens()
+        .filter_map(|it| it.into_token())
+    {
         match token.kind() {
             SyntaxKind::FromKw => {
                 in_module = true;
@@ -887,10 +878,7 @@ to f():
         let body = func.body.as_ref().unwrap();
         assert_eq!(body.root_stmts.len(), 2);
 
-        assert!(matches!(
-            &body.stmts[body.root_stmts[0]],
-            Stmt::For { .. }
-        ));
+        assert!(matches!(&body.stmts[body.root_stmts[0]], Stmt::For { .. }));
         assert!(matches!(
             &body.stmts[body.root_stmts[1]],
             Stmt::Match { .. }
@@ -1040,9 +1028,7 @@ to f():
     }
 }
 
-fn first_non_trivia_token(
-    node: &crate::parser::SyntaxNode,
-) -> Option<crate::parser::SyntaxToken> {
+fn first_non_trivia_token(node: &crate::parser::SyntaxNode) -> Option<crate::parser::SyntaxToken> {
     node.children_with_tokens()
         .filter_map(|it| it.into_token())
         .find(|token| !token.kind().is_trivia())

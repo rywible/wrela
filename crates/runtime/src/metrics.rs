@@ -82,7 +82,6 @@ static METRICS: Metrics = Metrics {
     storage_backup_restore_failure: AtomicU64::new(0),
 };
 
-
 #[cfg(feature = "metrics")]
 pub fn inc_messages_sent() {
     METRICS.messages_sent.fetch_add(1, Ordering::Relaxed);
@@ -217,19 +216,27 @@ pub fn metrics_get_raw(id: u32) -> u64 {
         METRIC_SCHED_DISPATCHED => METRICS.sched_dispatched.load(Ordering::Relaxed),
         METRIC_SCHED_SKIPPED_NO_CREDIT => METRICS.sched_skipped_no_credit.load(Ordering::Relaxed),
         METRIC_POOL_QUEUE_FULL => METRICS.pool_queue_full.load(Ordering::Relaxed),
-        METRIC_POOL_ENQUEUE_AFTER_RETIRE => METRICS.pool_enqueue_after_retire.load(Ordering::Relaxed),
+        METRIC_POOL_ENQUEUE_AFTER_RETIRE => {
+            METRICS.pool_enqueue_after_retire.load(Ordering::Relaxed)
+        }
         METRIC_STORAGE_BATCH_SIZE => METRICS.storage_batch_size.load(Ordering::Relaxed),
         METRIC_STORAGE_BATCH_LATENCY_NS => METRICS.storage_batch_latency_ns.load(Ordering::Relaxed),
-        METRIC_STORAGE_COMMIT_LATENCY_NS => METRICS.storage_commit_latency_ns.load(Ordering::Relaxed),
+        METRIC_STORAGE_COMMIT_LATENCY_NS => {
+            METRICS.storage_commit_latency_ns.load(Ordering::Relaxed)
+        }
         METRIC_STORAGE_READ_LATENCY_NS => METRICS.storage_read_latency_ns.load(Ordering::Relaxed),
         METRIC_STORAGE_READS => METRICS.storage_reads.load(Ordering::Relaxed),
         METRIC_STORAGE_BATCHES => METRICS.storage_batches.load(Ordering::Relaxed),
         METRIC_STORAGE_BACKUP_SUCCESS => METRICS.storage_backup_success.load(Ordering::Relaxed),
         METRIC_STORAGE_BACKUP_FAILURE => METRICS.storage_backup_failure.load(Ordering::Relaxed),
-        METRIC_STORAGE_BACKUP_LAST_DURATION_NS => METRICS.storage_backup_last_duration_ns.load(Ordering::Relaxed),
+        METRIC_STORAGE_BACKUP_LAST_DURATION_NS => METRICS
+            .storage_backup_last_duration_ns
+            .load(Ordering::Relaxed),
         METRIC_STORAGE_BACKUP_LAST_SIZE => METRICS.storage_backup_last_size.load(Ordering::Relaxed),
         METRIC_STORAGE_BACKUP_LAST_TS => METRICS.storage_backup_last_ts.load(Ordering::Relaxed),
-        METRIC_STORAGE_BACKUP_RESTORE_FAILURE => METRICS.storage_backup_restore_failure.load(Ordering::Relaxed),
+        METRIC_STORAGE_BACKUP_RESTORE_FAILURE => METRICS
+            .storage_backup_restore_failure
+            .load(Ordering::Relaxed),
         _ => 0,
     }
 }
@@ -287,39 +294,31 @@ pub fn get(id: u32) -> u64 {
         METRIC_MAILBOX_HIGH_WATER => METRICS.mailbox_high_water.load(Ordering::Relaxed),
         METRIC_RC_INC => METRICS.rc_inc.load(Ordering::Relaxed),
         METRIC_RC_DEC => METRICS.rc_dec.load(Ordering::Relaxed),
-        METRIC_MESSAGES_DROPPED_PAUSED => {
-            METRICS.messages_dropped_paused.load(Ordering::Relaxed)
-        }
+        METRIC_MESSAGES_DROPPED_PAUSED => METRICS.messages_dropped_paused.load(Ordering::Relaxed),
         METRIC_SCHED_DISPATCHED => METRICS.sched_dispatched.load(Ordering::Relaxed),
-        METRIC_SCHED_SKIPPED_NO_CREDIT => {
-            METRICS.sched_skipped_no_credit.load(Ordering::Relaxed)
-        }
+        METRIC_SCHED_SKIPPED_NO_CREDIT => METRICS.sched_skipped_no_credit.load(Ordering::Relaxed),
         METRIC_POOL_QUEUE_FULL => METRICS.pool_queue_full.load(Ordering::Relaxed),
         METRIC_POOL_ENQUEUE_AFTER_RETIRE => {
             METRICS.pool_enqueue_after_retire.load(Ordering::Relaxed)
         }
         METRIC_STORAGE_BATCH_SIZE => METRICS.storage_batch_size.load(Ordering::Relaxed),
-        METRIC_STORAGE_BATCH_LATENCY_NS => {
-            METRICS.storage_batch_latency_ns.load(Ordering::Relaxed)
-        }
+        METRIC_STORAGE_BATCH_LATENCY_NS => METRICS.storage_batch_latency_ns.load(Ordering::Relaxed),
         METRIC_STORAGE_COMMIT_LATENCY_NS => {
             METRICS.storage_commit_latency_ns.load(Ordering::Relaxed)
         }
-        METRIC_STORAGE_READ_LATENCY_NS => {
-            METRICS.storage_read_latency_ns.load(Ordering::Relaxed)
-        }
+        METRIC_STORAGE_READ_LATENCY_NS => METRICS.storage_read_latency_ns.load(Ordering::Relaxed),
         METRIC_STORAGE_READS => METRICS.storage_reads.load(Ordering::Relaxed),
         METRIC_STORAGE_BATCHES => METRICS.storage_batches.load(Ordering::Relaxed),
         METRIC_STORAGE_BACKUP_SUCCESS => METRICS.storage_backup_success.load(Ordering::Relaxed),
         METRIC_STORAGE_BACKUP_FAILURE => METRICS.storage_backup_failure.load(Ordering::Relaxed),
-        METRIC_STORAGE_BACKUP_LAST_DURATION_NS => {
-            METRICS.storage_backup_last_duration_ns.load(Ordering::Relaxed)
-        }
+        METRIC_STORAGE_BACKUP_LAST_DURATION_NS => METRICS
+            .storage_backup_last_duration_ns
+            .load(Ordering::Relaxed),
         METRIC_STORAGE_BACKUP_LAST_SIZE => METRICS.storage_backup_last_size.load(Ordering::Relaxed),
         METRIC_STORAGE_BACKUP_LAST_TS => METRICS.storage_backup_last_ts.load(Ordering::Relaxed),
-        METRIC_STORAGE_BACKUP_RESTORE_FAILURE => {
-            METRICS.storage_backup_restore_failure.load(Ordering::Relaxed)
-        }
+        METRIC_STORAGE_BACKUP_RESTORE_FAILURE => METRICS
+            .storage_backup_restore_failure
+            .load(Ordering::Relaxed),
         _ => 0,
     }
 }
@@ -335,31 +334,29 @@ pub fn reset() {
     METRICS.rc_dec.store(0, Ordering::Relaxed);
     METRICS.messages_dropped_paused.store(0, Ordering::Relaxed);
     METRICS.sched_dispatched.store(0, Ordering::Relaxed);
-    METRICS
-        .sched_skipped_no_credit
-        .store(0, Ordering::Relaxed);
+    METRICS.sched_skipped_no_credit.store(0, Ordering::Relaxed);
     METRICS.pool_queue_full.store(0, Ordering::Relaxed);
     METRICS
         .pool_enqueue_after_retire
         .store(0, Ordering::Relaxed);
     METRICS.storage_batch_size.store(0, Ordering::Relaxed);
-    METRICS
-        .storage_batch_latency_ns
-        .store(0, Ordering::Relaxed);
+    METRICS.storage_batch_latency_ns.store(0, Ordering::Relaxed);
     METRICS
         .storage_commit_latency_ns
         .store(0, Ordering::Relaxed);
-    METRICS
-        .storage_read_latency_ns
-        .store(0, Ordering::Relaxed);
+    METRICS.storage_read_latency_ns.store(0, Ordering::Relaxed);
     METRICS.storage_reads.store(0, Ordering::Relaxed);
     METRICS.storage_batches.store(0, Ordering::Relaxed);
     METRICS.storage_backup_success.store(0, Ordering::Relaxed);
     METRICS.storage_backup_failure.store(0, Ordering::Relaxed);
-    METRICS.storage_backup_last_duration_ns.store(0, Ordering::Relaxed);
+    METRICS
+        .storage_backup_last_duration_ns
+        .store(0, Ordering::Relaxed);
     METRICS.storage_backup_last_size.store(0, Ordering::Relaxed);
     METRICS.storage_backup_last_ts.store(0, Ordering::Relaxed);
-    METRICS.storage_backup_restore_failure.store(0, Ordering::Relaxed);
+    METRICS
+        .storage_backup_restore_failure
+        .store(0, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "metrics"))]

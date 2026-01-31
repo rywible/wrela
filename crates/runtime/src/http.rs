@@ -1,20 +1,20 @@
+use axum::Router;
 use axum::body::Bytes;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
 use axum::response::IntoResponse;
 use axum::routing::any;
-use axum::Router;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
 use crate::actor::{actor_class_id, runtime_block_on};
-use crate::class::{class_get, class_new, class_set};
 use crate::bytes;
+use crate::class::{class_get, class_new, class_set};
 use crate::map::{as_map_ref, map_new, map_set};
 use crate::result;
 use crate::string;
-use crate::value::{int_value, Value};
+use crate::value::{Value, int_value};
 use crate::{wr_rc_dec, wr_rc_inc};
 
 struct Route {
@@ -124,10 +124,7 @@ fn class_id_for(name: &str) -> Option<u32> {
 
 pub(crate) fn method_id_for(class_id: u32, name: &str) -> Option<u32> {
     let registry = class_registry().lock().expect("class registry lock");
-    registry
-        .methods
-        .get(&(class_id, name.to_string()))
-        .copied()
+    registry.methods.get(&(class_id, name.to_string())).copied()
 }
 
 pub fn serve_get_requests(path: Value, handler: Value) -> Value {
@@ -258,10 +255,11 @@ async fn handle_request(
     let headers_map = build_headers_map(&headers);
     let body_val = bytes::bytes_from_slice(&body);
 
-    let req_val = match build_request_value(&method, &uri, headers_map, query_map, params_map, body_val) {
-        Some(val) => val,
-        None => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
+    let req_val =
+        match build_request_value(&method, &uri, headers_map, query_map, params_map, body_val) {
+            Some(val) => val,
+            None => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        };
 
     let args = [req_val];
     let pending = crate::actor::actor_send(route.handler, route.method_id, 1, args.as_ptr());
@@ -636,11 +634,7 @@ mod tests {
         let body_ok = value::int_value(body_len).unwrap_or(0) == 5;
 
         let status_code = if ok && body_ok { 200 } else { 400 };
-        let body_text: &[u8] = if status_code == 200 {
-            b"ok"
-        } else {
-            b"bad"
-        };
+        let body_text: &[u8] = if status_code == 200 { b"ok" } else { b"bad" };
 
         let resp = class::class_new(CLASS_HTTP_RESPONSE, std::ptr::null(), std::ptr::null(), 0);
         let headers_map = map::map_new();
@@ -723,7 +717,12 @@ mod tests {
         let resp = class::class_new(CLASS_HTTP_RESPONSE, std::ptr::null(), std::ptr::null(), 0);
         let body: &[u8] = if ok { b"ok" } else { b"bad" };
         let body_bytes = bytes::bytes_from_slice(body);
-        class::class_set(resp, b"status".as_ptr(), 6, Value::from_int(if ok { 200 } else { 400 }));
+        class::class_set(
+            resp,
+            b"status".as_ptr(),
+            6,
+            Value::from_int(if ok { 200 } else { 400 }),
+        );
         class::class_set(resp, b"headers".as_ptr(), 7, map::map_new());
         class::class_set(resp, b"body".as_ptr(), 4, body_bytes);
 
@@ -781,7 +780,12 @@ mod tests {
         let resp = class::class_new(CLASS_HTTP_RESPONSE, std::ptr::null(), std::ptr::null(), 0);
         let body: &[u8] = if ok { b"ok" } else { b"bad" };
         let body_bytes = bytes::bytes_from_slice(body);
-        class::class_set(resp, b"status".as_ptr(), 6, Value::from_int(if ok { 200 } else { 400 }));
+        class::class_set(
+            resp,
+            b"status".as_ptr(),
+            6,
+            Value::from_int(if ok { 200 } else { 400 }),
+        );
         class::class_set(resp, b"headers".as_ptr(), 7, map::map_new());
         class::class_set(resp, b"body".as_ptr(), 4, body_bytes);
 
@@ -886,12 +890,13 @@ mod tests {
         };
         unsafe { wr_rc_dec(route_val) };
 
-        let listener =
-            runtime_block_on(async { TcpListener::bind("127.0.0.1:0").await.unwrap() });
+        let listener = runtime_block_on(async { TcpListener::bind("127.0.0.1:0").await.unwrap() });
         serve_on_listener(listener)
     }
 
-    fn start_server_with_routes(routes: Vec<(Method, &'static str, Value)>) -> std::net::SocketAddr {
+    fn start_server_with_routes(
+        routes: Vec<(Method, &'static str, Value)>,
+    ) -> std::net::SocketAddr {
         for (method, path, handler) in routes {
             let route_val = string::str_from_bytes(path.as_bytes());
             match method {
@@ -909,8 +914,7 @@ mod tests {
             }
             unsafe { wr_rc_dec(route_val) };
         }
-        let listener =
-            runtime_block_on(async { TcpListener::bind("127.0.0.1:0").await.unwrap() });
+        let listener = runtime_block_on(async { TcpListener::bind("127.0.0.1:0").await.unwrap() });
         serve_on_listener(listener)
     }
 
@@ -959,15 +963,9 @@ mod tests {
         let resp = send_with_retry(|| client.post(&url).header("x-test", "ok").body("hello"));
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let echo = resp
-            .headers()
-            .get("x-echo")
-            .and_then(|v| v.to_str().ok());
+        let echo = resp.headers().get("x-echo").and_then(|v| v.to_str().ok());
         assert_eq!(echo, Some("yes"));
-        let server = resp
-            .headers()
-            .get("server")
-            .and_then(|v| v.to_str().ok());
+        let server = resp.headers().get("server").and_then(|v| v.to_str().ok());
         assert_eq!(server, Some("Wrela"));
         let content_type = resp
             .headers()
@@ -1060,7 +1058,11 @@ mod tests {
 
         let client = Client::new();
         let body = vec![0, 1, 2, 3, 4, 255];
-        let resp = send_with_retry(|| client.post(format!("http://{addr}/echo")).body(body.clone()));
+        let resp = send_with_retry(|| {
+            client
+                .post(format!("http://{addr}/echo"))
+                .body(body.clone())
+        });
         assert_eq!(resp.status(), StatusCode::OK);
 
         let bytes = runtime_block_on(async { resp.bytes().await.expect("body") });
@@ -1139,8 +1141,7 @@ mod tests {
         serve_get_requests(route_val, Value::nil());
         unsafe { wr_rc_dec(route_val) };
 
-        let listener =
-            runtime_block_on(async { TcpListener::bind("127.0.0.1:0").await.unwrap() });
+        let listener = runtime_block_on(async { TcpListener::bind("127.0.0.1:0").await.unwrap() });
         let addr = serve_on_listener(listener);
 
         let client = Client::new();
@@ -1159,25 +1160,9 @@ mod tests {
 
         wr_register_method(CLASS_HANDLER_POOL, METHOD_HANDLE, handle_pool);
         let instance_a = string::str_from_bytes(b"a");
-        let actor_a = wr_actor_spawn(
-            CLASS_HANDLER_POOL.into(),
-            instance_a,
-            1,
-            3,
-            -1,
-            -1,
-            -1,
-        );
+        let actor_a = wr_actor_spawn(CLASS_HANDLER_POOL.into(), instance_a, 1, 3, -1, -1, -1);
         let instance_b = string::str_from_bytes(b"b");
-        let actor_b = wr_actor_spawn(
-            CLASS_HANDLER_POOL.into(),
-            instance_b,
-            1,
-            3,
-            -1,
-            -1,
-            -1,
-        );
+        let actor_b = wr_actor_spawn(CLASS_HANDLER_POOL.into(), instance_b, 1, 3, -1, -1, -1);
         unsafe {
             wr_rc_dec(instance_a);
             wr_rc_dec(instance_b);
@@ -1282,10 +1267,7 @@ mod tests {
             .get("content-type")
             .and_then(|v| v.to_str().ok());
         assert_eq!(content_type, Some("text/custom"));
-        let server = resp
-            .headers()
-            .get("server")
-            .and_then(|v| v.to_str().ok());
+        let server = resp.headers().get("server").and_then(|v| v.to_str().ok());
         assert_eq!(server, Some("Custom"));
 
         stop();

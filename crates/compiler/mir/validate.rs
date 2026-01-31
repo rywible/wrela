@@ -1,6 +1,5 @@
 use crate::mir::ir::{
-    CallKind, CallTarget, MirFunction, MirModule, MirType, Place, Rvalue, Stmt, Terminator,
-    Value,
+    CallKind, CallTarget, MirFunction, MirModule, MirType, Place, Rvalue, Stmt, Terminator, Value,
 };
 use std::collections::VecDeque;
 
@@ -26,7 +25,11 @@ fn validate_function(func: &MirFunction) -> Vec<MirValidationError> {
                 message: format!("block {idx} has no terminator"),
             });
         }
-        if block.stmts.iter().any(|stmt| matches!(stmt, Stmt::Await { .. })) {
+        if block
+            .stmts
+            .iter()
+            .any(|stmt| matches!(stmt, Stmt::Await { .. }))
+        {
             has_await = true;
         }
     }
@@ -202,10 +205,7 @@ fn apply_stmt_defs(stmt: &Stmt, state: &mut DefState) {
             state.set_place(dst_value);
             state.set_place(dst_done);
         }
-        Stmt::SetField { .. }
-        | Stmt::RcInc { .. }
-        | Stmt::RcDec { .. }
-        | Stmt::Fire { .. } => {}
+        Stmt::SetField { .. } | Stmt::RcInc { .. } | Stmt::RcDec { .. } | Stmt::Fire { .. } => {}
     }
 }
 
@@ -311,9 +311,7 @@ fn check_rvalue_uses(
                     check_value_use(func, block_idx, value, defined, errors);
                     if matches!(kind, CallKind::Actor) {
                         errors.push(MirValidationError {
-                            message: format!(
-                                "actor call on indirect target in block {block_idx}"
-                            ),
+                            message: format!("actor call on indirect target in block {block_idx}"),
                         });
                     }
                 }
@@ -323,9 +321,7 @@ fn check_rvalue_uses(
             }
         }
         Rvalue::Spawn {
-            target,
-            instance,
-            ..
+            target, instance, ..
         } => {
             check_value_use(func, block_idx, target, defined, errors);
             check_value_use(func, block_idx, instance, defined, errors);
@@ -363,7 +359,9 @@ fn check_terminator_uses(
     errors: &mut Vec<MirValidationError>,
 ) {
     match term {
-        Terminator::Return { value: Some(value), .. } => {
+        Terminator::Return {
+            value: Some(value), ..
+        } => {
             check_value_use(func, block_idx, value, defined, errors);
         }
         Terminator::Branch { cond, .. } => {
@@ -419,7 +417,13 @@ fn value_type(func: &MirFunction, value: &Value) -> Option<MirType> {
         Value::Local(id) => func.locals.get(id.0).map(|local| local.ty.clone()),
         Value::Temp(id) => func.temps.get(id.0).map(|temp| temp.ty.clone()),
     }
-    .and_then(|ty| if matches!(ty, MirType::Unknown) { None } else { Some(ty) })
+    .and_then(|ty| {
+        if matches!(ty, MirType::Unknown) {
+            None
+        } else {
+            Some(ty)
+        }
+    })
 }
 
 fn terminator_successors(term: &Terminator) -> Vec<crate::mir::ir::BlockId> {

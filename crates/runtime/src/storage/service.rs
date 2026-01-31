@@ -1,16 +1,16 @@
-use std::collections::BTreeMap;
-use std::fmt;
-use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use openraft::BasicNode;
 use openraft::Config;
 use openraft::Raft;
 use openraft::RaftTypeConfig;
 use openraft::SnapshotPolicy;
 use openraft::storage::Adaptor;
+use std::collections::BTreeMap;
+use std::fmt;
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
-use tokio::time::sleep;
 use tokio::sync::{mpsc, oneshot};
+use tokio::time::sleep;
 
 use crate::diagnostics;
 use crate::list;
@@ -19,14 +19,14 @@ use crate::metrics;
 use crate::string;
 use crate::value::Value;
 
-use super::backup::{latest_backup_key, should_restore, verify_checksum, BackupSink, BackupState};
+use super::backup::{BackupSink, BackupState, latest_backup_key, should_restore, verify_checksum};
 use super::blob::BlobBackend;
-use super::config::{batch_max_delay, storage_config, StorageConfig};
+use super::config::{StorageConfig, batch_max_delay, storage_config};
 use super::store::{KvCommand, KvRequest, KvResponse, KvStore, NodeId, TypeConfig};
 use super::transport::{
-    start_http_server, HttpNetworkFactory, NullNetworkFactory, RpcEnvelope, StorageReadRequest,
-    StorageReadResponse, StorageReadVersionResponse, StorageScanRequest, StorageScanResponse,
-    StoragePrefixRequest, StoragePrefixResponse,
+    HttpNetworkFactory, NullNetworkFactory, RpcEnvelope, StoragePrefixRequest,
+    StoragePrefixResponse, StorageReadRequest, StorageReadResponse, StorageReadVersionResponse,
+    StorageScanRequest, StorageScanResponse, start_http_server,
 };
 use super::value::{StoredRecord, StoredValue};
 
@@ -52,22 +52,36 @@ impl fmt::Display for StorageError {
 }
 
 pub enum StorageRequest {
-    Get { key: Vec<u8> },
-    GetWithVersion { key: Vec<u8> },
+    Get {
+        key: Vec<u8>,
+    },
+    GetWithVersion {
+        key: Vec<u8>,
+    },
     Scan {
         start: Option<Vec<u8>>,
         end: Option<Vec<u8>>,
         limit: usize,
     },
-    ListPrefix { prefix: Vec<u8>, limit: usize },
-    Put { key: Vec<u8>, value: Vec<u8> },
-    Delete { key: Vec<u8> },
+    ListPrefix {
+        prefix: Vec<u8>,
+        limit: usize,
+    },
+    Put {
+        key: Vec<u8>,
+        value: Vec<u8>,
+    },
+    Delete {
+        key: Vec<u8>,
+    },
     CompareAndSet {
         key: Vec<u8>,
         expected_version: Option<u64>,
         value: Option<Vec<u8>>,
     },
-    BatchSet { items: Vec<(Vec<u8>, Vec<u8>)> },
+    BatchSet {
+        items: Vec<(Vec<u8>, Vec<u8>)>,
+    },
 }
 
 pub enum StorageResponse {
@@ -129,7 +143,10 @@ impl StorageService {
 
     #[cfg(any(test, feature = "test-utils"))]
     pub async fn local_get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        read_local_value(&self.store, &self.blob, key).await.ok().flatten()
+        read_local_value(&self.store, &self.blob, key)
+            .await
+            .ok()
+            .flatten()
     }
 
     #[cfg(any(test, feature = "test-utils"))]
@@ -139,14 +156,9 @@ impl StorageService {
 
     #[cfg(any(test, feature = "test-utils"))]
     pub async fn forward_read_for_test(&self, key: Vec<u8>) -> StorageResponse {
-        let resp = read_linearizable_value(
-            &self.raft,
-            &self.store,
-            &self.blob,
-            key,
-            Some(&self.peers),
-        )
-        .await;
+        let resp =
+            read_linearizable_value(&self.raft, &self.store, &self.blob, key, Some(&self.peers))
+                .await;
         match resp {
             Ok(Some(bytes)) => StorageResponse::Ok(string::str_from_bytes(&bytes)),
             Ok(None) => StorageResponse::Ok(Value::nil()),
@@ -189,11 +201,9 @@ impl StorageService {
         let (listener, bind_addr_override) = if config.http_enabled {
             let listener = match listener {
                 Some(listener) => listener,
-                None => TcpListener::bind(&config.bind_addr)
-                    .await
-                    .map_err(|err| {
-                        StorageError::Internal(format!("failed to bind raft http: {err}"))
-                    })?,
+                None => TcpListener::bind(&config.bind_addr).await.map_err(|err| {
+                    StorageError::Internal(format!("failed to bind raft http: {err}"))
+                })?,
             };
             let bind_addr = listener
                 .local_addr()
@@ -249,14 +259,26 @@ impl StorageService {
         let (log_store, state_machine) = Adaptor::new(store.clone());
         let raft = if config.http_enabled {
             let network = HttpNetworkFactory::new((*peers).clone());
-            Raft::new(config.node_id, raft_config, network, log_store, state_machine)
-                .await
-                .map_err(|_| StorageError::InitFailed("failed to create raft"))?
+            Raft::new(
+                config.node_id,
+                raft_config,
+                network,
+                log_store,
+                state_machine,
+            )
+            .await
+            .map_err(|_| StorageError::InitFailed("failed to create raft"))?
         } else {
             let network = NullNetworkFactory::default();
-            Raft::new(config.node_id, raft_config, network, log_store, state_machine)
-                .await
-                .map_err(|_| StorageError::InitFailed("failed to create raft"))?
+            Raft::new(
+                config.node_id,
+                raft_config,
+                network,
+                log_store,
+                state_machine,
+            )
+            .await
+            .map_err(|_| StorageError::InitFailed("failed to create raft"))?
         };
 
         let http_handle = if let Some(listener) = listener {
@@ -327,13 +349,7 @@ async fn maybe_restore_from_backup(
             return Ok(());
         }
     };
-    if let Err(err) = verify_checksum(
-        blob,
-        &key,
-        &bytes,
-        config.backup.restore_id.is_some(),
-    )
-    .await
+    if let Err(err) = verify_checksum(blob, &key, &bytes, config.backup.restore_id.is_some()).await
     {
         if config.backup.restore_id.is_some() {
             crate::metrics::inc_storage_backup_restore_failure();
@@ -443,12 +459,7 @@ async fn bootstrap_or_join(
             },
         );
         for (id, addr) in &config.peers {
-            members.insert(
-                *id,
-                BasicNode {
-                    addr: addr.clone(),
-                },
-            );
+            members.insert(*id, BasicNode { addr: addr.clone() });
         }
         raft.initialize(members)
             .await
@@ -535,8 +546,7 @@ async fn handle_envelope(
     match env.req {
         StorageRequest::Get { key } => {
             let start = Instant::now();
-            let resp =
-                read_linearizable_value(raft, store, blob, key, Some(&config.peers)).await;
+            let resp = read_linearizable_value(raft, store, blob, key, Some(&config.peers)).await;
             let resp = match resp {
                 Ok(Some(bytes)) => StorageResponse::Ok(string::str_from_bytes(&bytes)),
                 Ok(None) => StorageResponse::Ok(Value::nil()),
@@ -551,9 +561,7 @@ async fn handle_envelope(
             let resp =
                 read_linearizable_record_value(raft, store, blob, key, Some(&config.peers)).await;
             let resp = match resp {
-                Ok(Some((bytes, version))) => {
-                    StorageResponse::Ok(record_to_map(bytes, version))
-                }
+                Ok(Some((bytes, version))) => StorageResponse::Ok(record_to_map(bytes, version)),
                 Ok(None) => StorageResponse::Ok(Value::nil()),
                 Err(err) => StorageResponse::Err(err.to_string()),
             };
@@ -599,10 +607,7 @@ async fn handle_envelope(
                 StoredValue::Inline(value)
             };
             batch.push(WriteItem {
-                cmd: KvCommand::Put {
-                    key,
-                    value: stored,
-                },
+                cmd: KvCommand::Put { key, value: stored },
                 resp: env.resp,
             });
             if batch_start.is_none() {
@@ -727,9 +732,7 @@ async fn flush_batch(
     }
     let start_commit = Instant::now();
     let commands: Vec<KvCommand> = ops.iter().map(|item| item.cmd.clone()).collect();
-    let result = raft
-        .client_write(KvRequest::Batch { ops: commands })
-        .await;
+    let result = raft.client_write(KvRequest::Batch { ops: commands }).await;
     metrics::record_storage_commit_latency(start_commit.elapsed());
     for item in ops {
         let resp = match &result {
@@ -844,10 +847,14 @@ async fn read_linearizable_value(
 ) -> Result<Option<Vec<u8>>, StorageError> {
     match raft.ensure_linearizable().await {
         Ok(_) => read_local_value(store, blob, &key).await,
-        Err(err) => forward_to_leader(err, peers, |addr| async move {
-            forward_read(addr, key).await
-        })
-        .await,
+        Err(err) => {
+            forward_to_leader(
+                err,
+                peers,
+                |addr| async move { forward_read(addr, key).await },
+            )
+            .await
+        }
     }
 }
 
@@ -860,10 +867,12 @@ async fn read_linearizable_record_value(
 ) -> Result<Option<(Vec<u8>, u64)>, StorageError> {
     match raft.ensure_linearizable().await {
         Ok(_) => read_local_record_value(store, blob, &key).await,
-        Err(err) => forward_to_leader(err, peers, |addr| async move {
-            forward_read_version(addr, key).await
-        })
-        .await,
+        Err(err) => {
+            forward_to_leader(err, peers, |addr| async move {
+                forward_read_version(addr, key).await
+            })
+            .await
+        }
     }
 }
 
@@ -890,10 +899,12 @@ async fn read_linearizable_scan(
             }
             Ok(list_from_entries(entries))
         }
-        Err(err) => forward_to_leader(err, peers, |addr| async move {
-            forward_scan(addr, start, end, limit).await
-        })
-        .await,
+        Err(err) => {
+            forward_to_leader(err, peers, |addr| async move {
+                forward_scan(addr, start, end, limit).await
+            })
+            .await
+        }
     }
 }
 
@@ -913,10 +924,12 @@ async fn read_linearizable_prefix(
             .map_err(|err| StorageError::Internal(format!("state machine prefix: {err}")))?;
             Ok(list_from_keys(keys))
         }
-        Err(err) => forward_to_leader(err, peers, |addr| async move {
-            forward_prefix(addr, prefix, limit).await
-        })
-        .await,
+        Err(err) => {
+            forward_to_leader(err, peers, |addr| async move {
+                forward_prefix(addr, prefix, limit).await
+            })
+            .await
+        }
     }
 }
 
@@ -1072,7 +1085,9 @@ async fn forward_prefix(
         .map_err(|err| StorageError::Internal(err.to_string()))?;
     if !envelope.ok {
         return Err(StorageError::Internal(
-            envelope.error.unwrap_or_else(|| "prefix failed".to_string()),
+            envelope
+                .error
+                .unwrap_or_else(|| "prefix failed".to_string()),
         ));
     }
     let keys = envelope.data.map(|data| data.keys).unwrap_or_default();

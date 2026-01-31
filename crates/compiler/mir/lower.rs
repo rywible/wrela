@@ -458,7 +458,10 @@ impl FunctionLowerer {
                     }
                 }
             }
-            HirStmt::Optimize { body: optimize_body, .. } => {
+            HirStmt::Optimize {
+                body: optimize_body,
+                ..
+            } => {
                 self.enter_scope();
                 self.lower_stmt_block(body, optimize_body);
                 self.exit_scope();
@@ -1430,11 +1433,7 @@ impl FunctionLowerer {
             if let Some(value) = value {
                 self.push_stmt(MirStmt::SetField {
                     base: Value::Temp(temp),
-                    field: class
-                        .fields
-                        .get(idx)
-                        .cloned()
-                        .unwrap_or_default(),
+                    field: class.fields.get(idx).cloned().unwrap_or_default(),
                     value: value.clone(),
                     span,
                 });
@@ -1443,11 +1442,7 @@ impl FunctionLowerer {
         Value::Temp(temp)
     }
 
-    fn parse_pool_of(
-        &self,
-        body: &hir::Body,
-        expr_id: hir::Idx<Expr>,
-    ) -> Option<PoolOfSpec> {
+    fn parse_pool_of(&self, body: &hir::Body, expr_id: hir::Idx<Expr>) -> Option<PoolOfSpec> {
         let Expr::Call { callee, args } = &body.exprs[expr_id] else {
             return None;
         };

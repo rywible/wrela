@@ -8,8 +8,6 @@ use std::sync::Arc;
 use byteorder::BigEndian;
 use byteorder::ReadBytesExt;
 use byteorder::WriteBytesExt;
-use openraft::storage::LogState;
-use openraft::storage::Snapshot;
 use openraft::AnyError;
 use openraft::BasicNode;
 use openraft::Entry;
@@ -27,18 +25,20 @@ use openraft::StorageIOError;
 use openraft::StoredMembership;
 use openraft::TokioRuntime;
 use openraft::Vote;
+use openraft::storage::LogState;
+use openraft::storage::Snapshot;
 use rocksdb::ColumnFamily;
 use rocksdb::ColumnFamilyDescriptor;
+use rocksdb::DB;
 use rocksdb::Direction;
 use rocksdb::Options;
 use rocksdb::ReadOptions;
 use rocksdb::WriteBatch;
-use rocksdb::DB;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::RwLock;
 
-use super::backup::{snapshot_meta_from_bytes, BackupSink};
+use super::backup::{BackupSink, snapshot_meta_from_bytes};
 use super::blob::BlobBackend;
 use super::value::{BlobRef, StoredRecord, StoredValue};
 
@@ -63,7 +63,9 @@ pub enum KvCommand {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum KvRequest {
-    Batch { ops: Vec<KvCommand> },
+    Batch {
+        ops: Vec<KvCommand>,
+    },
     CompareAndSet {
         key: Vec<u8>,
         expected_version: Option<u64>,
@@ -94,7 +96,9 @@ impl From<&KvStateMachine> for SerializableKvStateMachine {
     fn from(state: &KvStateMachine) -> Self {
         let mut data = Vec::new();
 
-        let it = state.db.iterator_cf(state.cf_sm_data(), rocksdb::IteratorMode::Start);
+        let it = state
+            .db
+            .iterator_cf(state.cf_sm_data(), rocksdb::IteratorMode::Start);
         for item in it {
             let (key, value) = item.expect("invalid kv record");
             let stored = decode_stored_record(&value).expect("invalid stored record");
@@ -159,9 +163,7 @@ impl KvStateMachine {
             None => rocksdb::IteratorMode::Start,
         };
         let mut out = Vec::new();
-        let it = self
-            .db
-            .iterator_cf_opt(self.cf_sm_data(), options, mode);
+        let it = self.db.iterator_cf_opt(self.cf_sm_data(), options, mode);
         for item in it {
             let (key, value) = item.map_err(sm_r_err)?;
             let record = decode_stored_record(&value)?;
@@ -173,11 +175,7 @@ impl KvStateMachine {
         Ok(out)
     }
 
-    pub fn list_prefix_keys(
-        &self,
-        prefix: &[u8],
-        limit: usize,
-    ) -> StorageResult<Vec<Vec<u8>>> {
+    pub fn list_prefix_keys(&self, prefix: &[u8], limit: usize) -> StorageResult<Vec<Vec<u8>>> {
         let mut options = ReadOptions::default();
         let lower = prefix.to_vec();
         let upper = next_prefix(prefix);
@@ -186,9 +184,11 @@ impl KvStateMachine {
             options.set_iterate_upper_bound(ub.clone());
         }
         let mut out = Vec::new();
-        let it = self
-            .db
-            .iterator_cf_opt(self.cf_sm_data(), options, rocksdb::IteratorMode::From(&lower, Direction::Forward));
+        let it = self.db.iterator_cf_opt(
+            self.cf_sm_data(),
+            options,
+            rocksdb::IteratorMode::From(&lower, Direction::Forward),
+        );
         for item in it {
             let (key, _value) = item.map_err(sm_r_err)?;
             if !prefix.is_empty() && !key.starts_with(prefix) {
@@ -217,7 +217,11 @@ impl KvStateMachine {
         self.db
             .get_cf(self.cf_sm_meta(), "last_applied_log".as_bytes())
             .map_err(sm_r_err)
-            .and_then(|value| value.map(|v| serde_json::from_slice(&v).map_err(sm_r_err)).transpose())
+            .and_then(|value| {
+                value
+                    .map(|v| serde_json::from_slice(&v).map_err(sm_r_err))
+                    .transpose()
+            })
     }
 
     fn apply_entry(
@@ -252,8 +256,10 @@ impl KvStateMachine {
                             Some(val) => val.clone(),
                             None => self.get_value(key)?,
                         };
-                        if let Some(StoredRecord { value: StoredValue::Blob(blob), .. }) =
-                            current.as_ref()
+                        if let Some(StoredRecord {
+                            value: StoredValue::Blob(blob),
+                            ..
+                        }) = current.as_ref()
                         {
                             blobs_to_delete.push(blob.clone());
                         }
@@ -271,8 +277,10 @@ impl KvStateMachine {
                             Some(val) => val.clone(),
                             None => self.get_value(key)?,
                         };
-                        if let Some(StoredRecord { value: StoredValue::Blob(blob), .. }) =
-                            current.as_ref()
+                        if let Some(StoredRecord {
+                            value: StoredValue::Blob(blob),
+                            ..
+                        }) = current.as_ref()
                         {
                             blobs_to_delete.push(blob.clone());
                         }
@@ -308,7 +316,11 @@ impl KvStateMachine {
             _ => false,
         };
         if matches {
-            if let Some(StoredRecord { value: StoredValue::Blob(blob), .. }) = current.as_ref() {
+            if let Some(StoredRecord {
+                value: StoredValue::Blob(blob),
+                ..
+            }) = current.as_ref()
+            {
                 blobs_to_delete.push(blob.clone());
             }
             match value {
@@ -335,26 +347,25 @@ impl KvStateMachine {
 
         for (key, value) in sm.data {
             let encoded = encode_stored_record(&value)?;
-            r.db.put_cf(r.cf_sm_data(), key, encoded).map_err(sm_w_err)?;
-        }
-
-        if let Some(log_id) = sm.last_applied_log {
-            r.db
-                .put_cf(
-                    r.cf_sm_meta(),
-                    "last_applied_log".as_bytes(),
-                    serde_json::to_vec(&log_id).map_err(sm_w_err)?,
-                )
+            r.db.put_cf(r.cf_sm_data(), key, encoded)
                 .map_err(sm_w_err)?;
         }
 
-        r.db
-            .put_cf(
+        if let Some(log_id) = sm.last_applied_log {
+            r.db.put_cf(
                 r.cf_sm_meta(),
-                "last_membership".as_bytes(),
-                serde_json::to_vec(&sm.last_membership).map_err(sm_w_err)?,
+                "last_applied_log".as_bytes(),
+                serde_json::to_vec(&log_id).map_err(sm_w_err)?,
             )
             .map_err(sm_w_err)?;
+        }
+
+        r.db.put_cf(
+            r.cf_sm_meta(),
+            "last_membership".as_bytes(),
+            serde_json::to_vec(&sm.last_membership).map_err(sm_w_err)?,
+        )
+        .map_err(sm_w_err)?;
 
         Ok(r)
     }
@@ -445,28 +456,29 @@ impl KvStore {
     }
 
     fn get_meta<M: meta::StoreMeta>(&self) -> Result<Option<M::Value>, StorageError<NodeId>> {
-        let v = self
-            .db
-            .get_cf(self.cf_meta(), M::KEY)
-            .map_err(|e| StorageIOError::new(M::subject(None), ErrorVerb::Read, AnyError::new(&e)))?;
+        let v = self.db.get_cf(self.cf_meta(), M::KEY).map_err(|e| {
+            StorageIOError::new(M::subject(None), ErrorVerb::Read, AnyError::new(&e))
+        })?;
 
         let t = match v {
             None => None,
-            Some(bytes) => Some(
-                serde_json::from_slice(&bytes)
-                    .map_err(|e| StorageIOError::new(M::subject(None), ErrorVerb::Read, AnyError::new(&e)))?,
-            ),
+            Some(bytes) => Some(serde_json::from_slice(&bytes).map_err(|e| {
+                StorageIOError::new(M::subject(None), ErrorVerb::Read, AnyError::new(&e))
+            })?),
         };
         Ok(t)
     }
 
     fn put_meta<M: meta::StoreMeta>(&self, value: &M::Value) -> Result<(), StorageError<NodeId>> {
-        let json_value = serde_json::to_vec(value)
-            .map_err(|e| StorageIOError::new(M::subject(Some(value)), ErrorVerb::Write, AnyError::new(&e)))?;
+        let json_value = serde_json::to_vec(value).map_err(|e| {
+            StorageIOError::new(M::subject(Some(value)), ErrorVerb::Write, AnyError::new(&e))
+        })?;
 
         self.db
             .put_cf(self.cf_meta(), M::KEY, json_value)
-            .map_err(|e| StorageIOError::new(M::subject(Some(value)), ErrorVerb::Write, AnyError::new(&e)))?;
+            .map_err(|e| {
+                StorageIOError::new(M::subject(Some(value)), ErrorVerb::Write, AnyError::new(&e))
+            })?;
 
         Ok(())
     }
@@ -484,9 +496,10 @@ impl RaftLogReader<TypeConfig> for Arc<KvStore> {
             std::ops::Bound::Unbounded => 0,
         };
 
-        let it = self
-            .db
-            .iterator_cf(self.cf_logs(), rocksdb::IteratorMode::From(&id_to_bin(start), Direction::Forward));
+        let it = self.db.iterator_cf(
+            self.cf_logs(),
+            rocksdb::IteratorMode::From(&id_to_bin(start), Direction::Forward),
+        );
         for item_res in it {
             let (id, val) = item_res.map_err(read_logs_err)?;
             let id = bin_to_id(&id);
@@ -509,7 +522,8 @@ impl RaftSnapshotBuilder<TypeConfig> for Arc<KvStore> {
 
         {
             let state_machine = SerializableKvStateMachine::from(&*self.state_machine.read().await);
-            data = serde_json::to_vec(&state_machine).map_err(|e| StorageIOError::read_state_machine(&e))?;
+            data = serde_json::to_vec(&state_machine)
+                .map_err(|e| StorageIOError::read_state_machine(&e))?;
             last_applied_log = state_machine.last_applied_log;
             last_membership = state_machine.last_membership;
         }
@@ -552,13 +566,17 @@ impl RaftStorage<TypeConfig> for Arc<KvStore> {
     type SnapshotBuilder = Self;
 
     async fn get_log_state(&mut self) -> StorageResult<LogState<TypeConfig>> {
-        let last = self.db.iterator_cf(self.cf_logs(), rocksdb::IteratorMode::End).next();
+        let last = self
+            .db
+            .iterator_cf(self.cf_logs(), rocksdb::IteratorMode::End)
+            .next();
 
         let last_log_id = match last {
             None => None,
             Some(res) => {
                 let (_log_index, entry_bytes) = res.map_err(read_logs_err)?;
-                let ent = serde_json::from_slice::<Entry<TypeConfig>>(&entry_bytes).map_err(read_logs_err)?;
+                let ent = serde_json::from_slice::<Entry<TypeConfig>>(&entry_bytes)
+                    .map_err(read_logs_err)?;
                 Some(ent.log_id)
             }
         };
@@ -622,7 +640,8 @@ impl RaftStorage<TypeConfig> for Arc<KvStore> {
 
     async fn last_applied_state(
         &mut self,
-    ) -> Result<(Option<LogId<NodeId>>, StoredMembership<NodeId, BasicNode>), StorageError<NodeId>> {
+    ) -> Result<(Option<LogId<NodeId>>, StoredMembership<NodeId, BasicNode>), StorageError<NodeId>>
+    {
         let state_machine = self.state_machine.read().await;
         Ok((
             state_machine.get_last_applied_log()?,
@@ -647,7 +666,11 @@ impl RaftStorage<TypeConfig> for Arc<KvStore> {
                     }
                     EntryPayload::Normal(req) => match req {
                         KvRequest::Batch { ops } => {
-                            blobs_to_delete.extend(sm.apply_entry(entry.log_id, None, Some(ops))?);
+                            blobs_to_delete.extend(sm.apply_entry(
+                                entry.log_id,
+                                None,
+                                Some(ops),
+                            )?);
                             res.push(KvResponse::Applied);
                         }
                         KvRequest::CompareAndSet {
@@ -674,7 +697,9 @@ impl RaftStorage<TypeConfig> for Arc<KvStore> {
             }
         }
 
-        self.db.flush_wal(true).map_err(|e| StorageIOError::write_logs(&e))?;
+        self.db
+            .flush_wal(true)
+            .map_err(|e| StorageIOError::write_logs(&e))?;
         for blob in blobs_to_delete {
             let _ = self.blob.delete(&blob).await;
         }
@@ -696,7 +721,9 @@ impl RaftStorage<TypeConfig> for Arc<KvStore> {
         self.apply_snapshot_data(meta.clone(), data).await
     }
 
-    async fn get_current_snapshot(&mut self) -> Result<Option<Snapshot<TypeConfig>>, StorageError<NodeId>> {
+    async fn get_current_snapshot(
+        &mut self,
+    ) -> Result<Option<Snapshot<TypeConfig>>, StorageError<NodeId>> {
         let curr_snap = self.get_meta::<meta::Snapshot>()?;
         match curr_snap {
             Some(snapshot) => {
@@ -740,7 +767,7 @@ impl KvStore {
 
         #[cfg(any(test, feature = "test-utils"))]
         let db = {
-            use tokio::time::{sleep, Duration};
+            use tokio::time::{Duration, sleep};
             let mut tries = 0u32;
             loop {
                 let meta = ColumnFamilyDescriptor::new("meta", Options::default());

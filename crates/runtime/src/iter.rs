@@ -1,7 +1,7 @@
 use crate::list::as_list_ref;
 use crate::map::as_map_ref;
 use crate::object::ObjHeader;
-use crate::value::{header, TypeId, Value};
+use crate::value::{TypeId, Value, header};
 use crate::{wr_rc_dec, wr_rc_inc};
 
 #[repr(C)]
@@ -12,8 +12,14 @@ pub struct IterObj {
 
 #[repr(C)]
 pub enum IterKind {
-    List { list: Value, index: usize },
-    Map { entries: Vec<(Value, Value)>, index: usize },
+    List {
+        list: Value,
+        index: usize,
+    },
+    Map {
+        entries: Vec<(Value, Value)>,
+        index: usize,
+    },
 }
 
 pub fn iter_init(iterable: Value) -> Value {
@@ -21,7 +27,10 @@ pub fn iter_init(iterable: Value) -> Value {
         unsafe { wr_rc_inc(iterable) };
         let obj = Box::new(IterObj {
             header: header(TypeId::Iterator),
-            kind: IterKind::List { list: iterable, index: 0 },
+            kind: IterKind::List {
+                list: iterable,
+                index: 0,
+            },
         });
         return Value::from_ptr(Box::into_raw(obj) as *mut ObjHeader);
     }

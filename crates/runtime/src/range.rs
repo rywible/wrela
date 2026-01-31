@@ -1,5 +1,5 @@
 use crate::list;
-use crate::value::{int_value, Value};
+use crate::value::{Value, int_value};
 
 pub fn range_new(start: Value, end: Value) -> Value {
     match (num_kind(start), num_kind(end)) {

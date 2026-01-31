@@ -1,12 +1,12 @@
 use crate::actor::{drop_actor, drop_pending, drop_pool};
+use crate::bytes::drop_bytes;
 use crate::class::drop_class;
 use crate::iter::drop_iter;
 use crate::list::drop_list;
 use crate::map::drop_map;
-use crate::string::drop_string;
-use crate::bytes::drop_bytes;
 use crate::result::drop_result;
-use crate::value::{drop_boxed_int, TypeId};
+use crate::string::drop_string;
+use crate::value::{TypeId, drop_boxed_int};
 use std::sync::atomic::AtomicU32;
 
 #[repr(C)]

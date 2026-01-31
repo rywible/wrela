@@ -1,5 +1,5 @@
 use crate::object::ObjHeader;
-use crate::value::{header, int_value, TypeId, Value};
+use crate::value::{TypeId, Value, header, int_value};
 use crate::{wr_rc_dec, wr_rc_inc};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -121,7 +121,11 @@ fn value_to_bytes(val: Value) -> Vec<u8> {
         return i.to_string().into_bytes();
     }
     if val.is_bool() {
-        return if val.as_bool() { b"true".to_vec() } else { b"false".to_vec() };
+        return if val.as_bool() {
+            b"true".to_vec()
+        } else {
+            b"false".to_vec()
+        };
     }
     if val.is_nil() {
         return b"nil".to_vec();

@@ -1,26 +1,25 @@
 use crate::config::{
-    actor_config_for_objective, normalize_objective, normalize_pool_size,
-    pool_queue_cap_for_policy,
+    actor_config_for_objective, normalize_objective, normalize_pool_size, pool_queue_cap_for_policy,
 };
-use crate::scheduler;
 use crate::metrics::{
     inc_messages_dropped, inc_messages_dropped_paused, inc_messages_sent, inc_pending_dropped,
     inc_pending_resolved, update_mailbox_high_water,
 };
 use crate::object::ObjHeader;
 use crate::result;
-use crate::value::{header, TypeId, Value};
+use crate::scheduler;
+use crate::value::{TypeId, Value, header};
 use crate::{wr_rc_dec, wr_rc_inc};
+use std::cell::UnsafeCell;
 use std::collections::HashMap;
 use std::future::Future;
-use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tokio::runtime::{Handle, Runtime};
 use tokio::sync::mpsc::error::{SendTimeoutError, TryRecvError};
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{Notify, mpsc};
 use tokio::time::sleep;
 
 pub type MethodFn = extern "C" fn(argc: usize, argv: *const Value) -> Value;
@@ -88,7 +87,6 @@ struct PoolSlot {
 }
 
 unsafe impl Sync for PoolSlot {}
-
 
 struct Mailbox {
     sender: Mutex<Option<mpsc::Sender<Message>>>,
@@ -607,7 +605,6 @@ pub async fn pending_await_async(pending: Value) -> Value {
     }
 }
 
-
 pub unsafe fn drop_actor(ptr: *mut ObjHeader) {
     let actor = ptr as *mut ActorHandle;
     unsafe {
@@ -772,7 +769,12 @@ fn as_pool_ref(val: Value) -> Option<*const PoolHandle> {
     }
 }
 
-fn pool_send(pool: *const PoolHandle, method_id: u32, argc: usize, argv_ptr: *const Value) -> Value {
+fn pool_send(
+    pool: *const PoolHandle,
+    method_id: u32,
+    argc: usize,
+    argv_ptr: *const Value,
+) -> Value {
     unsafe {
         if (*pool).pool_size == 0 {
             return Value::nil();
@@ -1006,9 +1008,9 @@ pub(crate) fn pending_new() -> (Value, Arc<PendingState>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::metrics;
     use std::sync::Arc;
     use std::thread;
-    use crate::metrics;
 
     fn dummy_mailbox() -> Arc<Mailbox> {
         let (tx, _rx) = mpsc::channel(1);
@@ -1159,10 +1161,7 @@ mod tests {
             },
         };
         let _ = crate::scheduler::enqueue(pool_ptr, msg);
-        assert_eq!(
-            metrics::get(metrics::METRIC_POOL_ENQUEUE_AFTER_RETIRE),
-            1
-        );
+        assert_eq!(metrics::get(metrics::METRIC_POOL_ENQUEUE_AFTER_RETIRE), 1);
         unsafe {
             wr_rc_dec(pool);
             wr_rc_dec(handles);

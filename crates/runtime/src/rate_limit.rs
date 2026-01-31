@@ -2,7 +2,7 @@ use crate::actor::{pending_new, resolve_pending, runtime_spawn};
 use crate::map;
 use crate::storage_helpers::{storage_get_json, storage_set_json, value_to_string};
 use crate::string;
-use crate::value::{int_value, Value};
+use crate::value::{Value, int_value};
 use crate::wr_rc_dec;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -49,12 +49,14 @@ pub fn rate_check(storage: Value, key: Value, opts: Value) -> Value {
     runtime_spawn(async move {
         let now = now_secs();
         let bucket_key = format!("rate:{key}");
-        let mut bucket = storage_get_json::<Bucket>(&bucket_key).await.unwrap_or(Bucket {
-            tokens: burst,
-            last: now,
-            burst,
-            per_secs,
-        });
+        let mut bucket = storage_get_json::<Bucket>(&bucket_key)
+            .await
+            .unwrap_or(Bucket {
+                tokens: burst,
+                last: now,
+                burst,
+                per_secs,
+            });
         let elapsed = (now.saturating_sub(bucket.last)) as f64;
         let rate = bucket.burst / bucket.per_secs;
         bucket.tokens = (bucket.tokens + elapsed * rate).min(bucket.burst);

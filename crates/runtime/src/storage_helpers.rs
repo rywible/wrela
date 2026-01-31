@@ -1,5 +1,5 @@
-use crate::string;
 use crate::storage::service::{StorageRequest, StorageResponse, StorageService};
+use crate::string;
 use crate::value::Value;
 use crate::wr_rc_dec;
 
@@ -16,9 +16,7 @@ pub async fn storage_get_string(key: &str) -> Option<String> {
     if value.is_nil() {
         return None;
     }
-    let out = string::with_string_bytes(value, |bytes| {
-        String::from_utf8_lossy(bytes).into_owned()
-    });
+    let out = string::with_string_bytes(value, |bytes| String::from_utf8_lossy(bytes).into_owned());
     if value.is_ptr() {
         unsafe { wr_rc_dec(value) };
     }

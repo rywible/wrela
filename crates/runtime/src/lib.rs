@@ -1,38 +1,38 @@
 #![allow(clippy::missing_safety_doc)]
 
-mod value;
-mod object;
-mod string;
+mod actor;
+mod admin;
+mod auth;
 mod bytes;
+mod class;
+mod config;
+mod diagnostics;
+mod env;
+mod files;
+mod float_box;
+mod http;
+mod iter;
+mod jobs;
 mod list;
 mod map;
-mod float_box;
-mod actor;
-mod iter;
-mod class;
 mod metrics;
-mod result;
 mod number;
+mod object;
 mod range;
-mod config;
-mod scheduler;
-mod diagnostics;
-mod http;
-mod env;
-mod auth;
-mod rbac;
-mod files;
-mod jobs;
-mod schedule;
-mod search;
-mod realtime;
 mod rate_limit;
-mod admin;
-mod storage_helpers;
+mod rbac;
+mod realtime;
+mod result;
+mod schedule;
+mod scheduler;
+mod search;
 pub mod storage;
+mod storage_helpers;
+mod string;
+mod value;
 
-pub use value::{TypeId, Value};
 use value::int_value;
+pub use value::{TypeId, Value};
 
 use object::drop_object;
 use std::sync::OnceLock;
@@ -45,9 +45,7 @@ pub unsafe extern "C" fn wr_rc_inc(value: Value) {
     }
     metrics::inc_rc_inc();
     let header = unsafe { &*value.as_ptr() };
-    header
-        .rc
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    header.rc.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
 #[unsafe(no_mangle)]
@@ -57,10 +55,7 @@ pub unsafe extern "C" fn wr_rc_dec(value: Value) {
     }
     metrics::inc_rc_dec();
     let header = unsafe { &*value.as_ptr() };
-    let next = header
-        .rc
-        .fetch_sub(1, std::sync::atomic::Ordering::Release)
-        - 1;
+    let next = header.rc.fetch_sub(1, std::sync::atomic::Ordering::Release) - 1;
     if next == 0 {
         std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
         unsafe { drop_object(value.as_ptr()) };
@@ -74,11 +69,7 @@ pub extern "C" fn wr_box_float(val: f64) -> Value {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_unbox_float(val: Value) -> f64 {
-    if val.is_float() {
-        val.as_float()
-    } else {
-        0.0
-    }
+    if val.is_float() { val.as_float() } else { 0.0 }
 }
 
 #[unsafe(no_mangle)]
@@ -254,7 +245,11 @@ pub extern "C" fn wr_print(val: Value) -> Value {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_assert(cond: Value, msg: Value) -> Value {
-    let ok = if cond.is_bool() { cond.as_bool() } else { false };
+    let ok = if cond.is_bool() {
+        cond.as_bool()
+    } else {
+        false
+    };
     if ok {
         return Value::nil();
     }
@@ -426,12 +421,7 @@ pub extern "C" fn wr_pool_auto_size(
     let max = int_value(max).unwrap_or(0);
     let weight = int_value(weight).unwrap_or(0);
     Value::from_int(
-        config::pool_auto_size(
-            config::normalize_objective(obj),
-            min,
-            max,
-            weight,
-        ) as i64,
+        config::pool_auto_size(config::normalize_objective(obj), min, max, weight) as i64,
     )
 }
 
@@ -510,12 +500,22 @@ pub extern "C" fn wr_list_push_val(list_val: Value, val: Value) -> Value {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn wr_actor_send(handle: Value, method_id: u32, argc: usize, argv_ptr: *const Value) -> Value {
+pub extern "C" fn wr_actor_send(
+    handle: Value,
+    method_id: u32,
+    argc: usize,
+    argv_ptr: *const Value,
+) -> Value {
     actor::actor_send(handle, method_id, argc, argv_ptr)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn wr_actor_fire(handle: Value, method_id: u32, argc: usize, argv_ptr: *const Value) {
+pub extern "C" fn wr_actor_fire(
+    handle: Value,
+    method_id: u32,
+    argc: usize,
+    argv_ptr: *const Value,
+) {
     actor::actor_fire(handle, method_id, argc, argv_ptr)
 }
 
@@ -555,7 +555,12 @@ pub extern "C" fn wr_iter_next(iter_val: Value, dst_value: *mut Value, dst_done:
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn wr_class_new(class_id: u32, names_ptr: *const *const u8, lens_ptr: *const usize, count: usize) -> Value {
+pub extern "C" fn wr_class_new(
+    class_id: u32,
+    names_ptr: *const *const u8,
+    lens_ptr: *const usize,
+    count: usize,
+) -> Value {
     class::class_new(class_id, names_ptr, lens_ptr, count)
 }
 
@@ -640,7 +645,11 @@ pub extern "C" fn wr_http_server_serve_post_requests(path: Value, handler: Value
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn wr_http_server_serve_requests(method: Value, path: Value, handler: Value) -> Value {
+pub extern "C" fn wr_http_server_serve_requests(
+    method: Value,
+    path: Value,
+    handler: Value,
+) -> Value {
     http::serve_requests(method, path, handler)
 }
 
@@ -695,7 +704,11 @@ pub extern "C" fn wr_auth_create_user(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn wr_auth_verify_password(storage: Value, user_id: Value, password: Value) -> Value {
+pub extern "C" fn wr_auth_verify_password(
+    storage: Value,
+    user_id: Value,
+    password: Value,
+) -> Value {
     auth::auth_verify_password(storage, user_id, password)
 }
 
@@ -764,7 +777,11 @@ pub extern "C" fn wr_rbac_check(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn wr_rbac_permissions_for(storage: Value, user_id: Value, scope_id: Value) -> Value {
+pub extern "C" fn wr_rbac_permissions_for(
+    storage: Value,
+    user_id: Value,
+    scope_id: Value,
+) -> Value {
     rbac::rbac_permissions_for(storage, user_id, scope_id)
 }
 

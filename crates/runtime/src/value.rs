@@ -1,5 +1,5 @@
-use crate::object::ObjHeader;
 use crate::bytes::with_bytes;
+use crate::object::ObjHeader;
 use crate::string::with_string_bytes;
 use std::sync::atomic::AtomicU32;
 
@@ -221,9 +221,8 @@ pub fn value_eq(a: Value, b: Value) -> bool {
             let ah = &*a.as_ptr();
             let bh = &*b.as_ptr();
             if ah.type_id == TypeId::String as u32 && bh.type_id == TypeId::String as u32 {
-                let eq = with_string_bytes(a, |ab| {
-                    with_string_bytes(b, |bb| ab == bb).unwrap_or(false)
-                });
+                let eq =
+                    with_string_bytes(a, |ab| with_string_bytes(b, |bb| ab == bb).unwrap_or(false));
                 return eq.unwrap_or(false);
             }
             if ah.type_id == TypeId::Bytes as u32 && bh.type_id == TypeId::Bytes as u32 {

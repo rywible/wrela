@@ -1,5 +1,5 @@
 use crate::object::ObjHeader;
-use crate::value::{header, TypeId, Value};
+use crate::value::{TypeId, Value, header};
 use crate::{wr_rc_dec, wr_rc_inc};
 
 const FLAG_MUTABLE: u32 = 1;

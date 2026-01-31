@@ -210,82 +210,71 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
     errors
 }
 
-fn validate_detach_tail(
-    node: &SyntaxNode,
-    objectives: &[&str],
-    errors: &mut Vec<ValidationError>,
-) {
+fn validate_detach_tail(node: &SyntaxNode, objectives: &[&str], errors: &mut Vec<ValidationError>) {
     let mut iter = node.children_with_tokens().peekable();
 
     while let Some(child) = iter.next() {
         match child {
             rowan::NodeOrToken::Node(_) => {}
-            rowan::NodeOrToken::Token(t) => {
-                match t.kind() {
-                    SyntaxKind::Star => {
-                        let mut size_token = None;
-                        while let Some(next) = iter.next() {
-                            if let Some(tok) = next.into_token() {
-                                if tok.kind().is_trivia() {
-                                    continue;
-                                }
-                                size_token = Some(tok);
-                                break;
+            rowan::NodeOrToken::Token(t) => match t.kind() {
+                SyntaxKind::Star => {
+                    let mut size_token = None;
+                    while let Some(next) = iter.next() {
+                        if let Some(tok) = next.into_token() {
+                            if tok.kind().is_trivia() {
+                                continue;
                             }
+                            size_token = Some(tok);
+                            break;
                         }
-                        if let Some(tok) = size_token {
-                            match tok.kind() {
-                                SyntaxKind::IntNumber => {}
-                                SyntaxKind::Ident => {
-                                    if tok.text() != "n" {
-                                        errors.push(ValidationError {
-                                            message:
-                                                "pool size must be an integer literal or 'n'"
-                                                    .to_string(),
-                                            span: span_for_token(&tok),
-                                        });
-                                    }
-                                }
-                                _ => {
+                    }
+                    if let Some(tok) = size_token {
+                        match tok.kind() {
+                            SyntaxKind::IntNumber => {}
+                            SyntaxKind::Ident => {
+                                if tok.text() != "n" {
                                     errors.push(ValidationError {
-                                        message:
-                                            "pool size must be an integer literal or 'n'"
-                                                .to_string(),
+                                        message: "pool size must be an integer literal or 'n'"
+                                            .to_string(),
                                         span: span_for_token(&tok),
                                     });
                                 }
                             }
-                        }
-                    }
-                    SyntaxKind::OptimizeKw => {
-                        let mut obj_token = None;
-                        while let Some(next) = iter.next() {
-                            if let Some(tok) = next.into_token() {
-                                if tok.kind().is_trivia() {
-                                    continue;
-                                }
-                                obj_token = Some(tok);
-                                break;
-                            }
-                        }
-                        if let Some(tok) = obj_token {
-                            if tok.kind() == SyntaxKind::Ident
-                                && !objectives.contains(&tok.text())
-                            {
+                            _ => {
                                 errors.push(ValidationError {
-                                    message: "invalid optimize objective".to_string(),
+                                    message: "pool size must be an integer literal or 'n'"
+                                        .to_string(),
                                     span: span_for_token(&tok),
                                 });
                             }
                         }
                     }
-                    _ => {}
                 }
-            }
+                SyntaxKind::OptimizeKw => {
+                    let mut obj_token = None;
+                    while let Some(next) = iter.next() {
+                        if let Some(tok) = next.into_token() {
+                            if tok.kind().is_trivia() {
+                                continue;
+                            }
+                            obj_token = Some(tok);
+                            break;
+                        }
+                    }
+                    if let Some(tok) = obj_token {
+                        if tok.kind() == SyntaxKind::Ident && !objectives.contains(&tok.text()) {
+                            errors.push(ValidationError {
+                                message: "invalid optimize objective".to_string(),
+                                span: span_for_token(&tok),
+                            });
+                        }
+                    }
+                }
+                _ => {}
+            },
         }
     }
 }
-
 
 fn is_in_return(node: &SyntaxNode) -> bool {
     node.ancestors()
@@ -466,7 +455,11 @@ to () -> Int:
 ";
         let root = parse(text);
         let errors = validate(&root);
-        assert!(errors.iter().any(|e| e.message == "function definition requires a name"));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message == "function definition requires a name")
+        );
     }
 
     #[test]
@@ -477,6 +470,10 @@ to f():
 ";
         let root = parse(text);
         let errors = validate(&root);
-        assert!(errors.iter().any(|e| e.message == "invalid numeric literal"));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message == "invalid numeric literal")
+        );
     }
 }

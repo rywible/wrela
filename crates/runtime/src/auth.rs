@@ -5,14 +5,14 @@ use crate::storage_helpers::{
     value_to_string,
 };
 use crate::string;
-use crate::value::{int_value, Value};
+use crate::value::{Value, int_value};
 use crate::wr_rc_dec;
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation};
 use password_hash::SaltString;
 use password_hash::rand_core::OsRng;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map as JsonMap, Value as JsonValue};
+use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
@@ -78,7 +78,9 @@ fn json_from_map(val: Value) -> Option<JsonValue> {
     unsafe {
         let map_ref = &(*map_ptr).entries;
         for (key, value) in map_ref.iter() {
-            let Some(key_str) = value_to_string(key.0) else { continue };
+            let Some(key_str) = value_to_string(key.0) else {
+                continue;
+            };
             if value.is_nil() {
                 out.insert(key_str, JsonValue::Null);
                 continue;
@@ -108,7 +110,9 @@ fn json_from_map(val: Value) -> Option<JsonValue> {
 
 fn map_from_json(value: &JsonValue) -> Value {
     let map_val = map::map_new();
-    let JsonValue::Object(obj) = value else { return map_val };
+    let JsonValue::Object(obj) = value else {
+        return map_val;
+    };
     for (key, val) in obj {
         let key_val = string::str_from_bytes(key.as_bytes());
         let out_val = match val {
@@ -147,7 +151,9 @@ fn hash_password(password: &str) -> Option<String> {
 }
 
 fn verify_password_hash(hash: &str, password: &str) -> bool {
-    let Ok(parsed) = PasswordHash::new(hash) else { return false };
+    let Ok(parsed) = PasswordHash::new(hash) else {
+        return false;
+    };
     Argon2::default()
         .verify_password(password.as_bytes(), &parsed)
         .is_ok()
@@ -214,8 +220,8 @@ pub fn auth_create_user(storage: Value, email: Value, username: Value, password:
             created_at: now_secs(),
         };
         let user_key = format!("auth:user:{id}");
-        let stored = storage_set_json(&user_key, &user).await
-            && storage_set_string(&email_key, &id).await;
+        let stored =
+            storage_set_json(&user_key, &user).await && storage_set_string(&email_key, &id).await;
         if !stored {
             resolve_pending(state, Value::nil());
             return;
@@ -559,7 +565,9 @@ pub fn auth_oauth_login(storage: Value, provider: Value, code: Value) -> Value {
         };
         let email_key = format!("auth:email:{}", user.email);
         if let Some(existing_id) = storage_get_string(&email_key).await {
-            if let Some(existing) = storage_get_json::<UserRecord>(&format!("auth:user:{existing_id}")).await {
+            if let Some(existing) =
+                storage_get_json::<UserRecord>(&format!("auth:user:{existing_id}")).await
+            {
                 resolve_pending(state, user_to_map(&existing));
                 return;
             }

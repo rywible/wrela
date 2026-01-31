@@ -1,15 +1,15 @@
-pub mod config;
-pub mod blob;
 mod backup;
+pub mod blob;
+pub mod config;
 pub mod service;
 pub mod store;
-pub mod value;
 mod transport;
+pub mod value;
 
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod backup_tests;
+#[cfg(test)]
+mod tests;
 
 use crate::actor::{pending_new, resolve_pending, runtime_spawn};
 use crate::class;
@@ -17,7 +17,7 @@ use crate::list;
 use crate::map;
 use crate::result;
 use crate::string;
-use crate::value::{int_value, Value};
+use crate::value::{Value, int_value};
 use crate::wr_rc_dec;
 use config::StorageUserConfig;
 use service::{StorageError, StorageRequest, StorageResponse, StorageService};
@@ -143,8 +143,7 @@ pub fn storage_list_prefix(prefix: Value, limit: Value) -> Value {
     };
     let limit = int_value(limit).unwrap_or(1000).max(0) as usize;
     runtime_spawn(async move {
-        let result =
-            StorageService::dispatch(StorageRequest::ListPrefix { prefix, limit }).await;
+        let result = StorageService::dispatch(StorageRequest::ListPrefix { prefix, limit }).await;
         let resolved = match result {
             Ok(resp) => resolve_response(resp),
             Err(err) => resolve_error(err),

@@ -210,65 +210,57 @@ fn blob_config(user: Option<&StorageUserConfig>) -> BlobConfig {
 
 fn s3_config(user: Option<&StorageUserConfig>) -> Option<S3Config> {
     let use_env = user.is_none();
-    let bucket = user
-        .and_then(|cfg| cfg.s3_bucket.clone())
-        .or_else(|| {
-            if use_env {
-                std::env::var("WRELA_STORE_BLOB_S3_BUCKET").ok()
-            } else {
-                None
-            }
-        });
-    let region = user
-        .and_then(|cfg| cfg.s3_region.clone())
-        .or_else(|| {
-            if use_env {
-                std::env::var("WRELA_STORE_BLOB_S3_REGION").ok()
-            } else {
-                None
-            }
-        });
-    let access_key = user
-        .and_then(|cfg| cfg.s3_access_key.clone())
-        .or_else(|| {
-            if use_env {
-                std::env::var("WRELA_STORE_BLOB_S3_ACCESS_KEY").ok()
-            } else {
-                None
-            }
-        });
-    let secret_key = user
-        .and_then(|cfg| cfg.s3_secret_key.clone())
-        .or_else(|| {
-            if use_env {
-                std::env::var("WRELA_STORE_BLOB_S3_SECRET_KEY").ok()
-            } else {
-                None
-            }
-        });
-    let endpoint = user
-        .and_then(|cfg| cfg.s3_endpoint.clone())
-        .or_else(|| {
-            if use_env {
-                std::env::var("WRELA_STORE_BLOB_S3_ENDPOINT").ok()
-            } else {
-                None
-            }
-        });
-    let prefix = user
-        .and_then(|cfg| cfg.s3_prefix.clone())
-        .or_else(|| {
-            if use_env {
-                std::env::var("WRELA_STORE_BLOB_S3_PREFIX").ok()
-            } else {
-                None
-            }
-        });
+    let bucket = user.and_then(|cfg| cfg.s3_bucket.clone()).or_else(|| {
+        if use_env {
+            std::env::var("WRELA_STORE_BLOB_S3_BUCKET").ok()
+        } else {
+            None
+        }
+    });
+    let region = user.and_then(|cfg| cfg.s3_region.clone()).or_else(|| {
+        if use_env {
+            std::env::var("WRELA_STORE_BLOB_S3_REGION").ok()
+        } else {
+            None
+        }
+    });
+    let access_key = user.and_then(|cfg| cfg.s3_access_key.clone()).or_else(|| {
+        if use_env {
+            std::env::var("WRELA_STORE_BLOB_S3_ACCESS_KEY").ok()
+        } else {
+            None
+        }
+    });
+    let secret_key = user.and_then(|cfg| cfg.s3_secret_key.clone()).or_else(|| {
+        if use_env {
+            std::env::var("WRELA_STORE_BLOB_S3_SECRET_KEY").ok()
+        } else {
+            None
+        }
+    });
+    let endpoint = user.and_then(|cfg| cfg.s3_endpoint.clone()).or_else(|| {
+        if use_env {
+            std::env::var("WRELA_STORE_BLOB_S3_ENDPOINT").ok()
+        } else {
+            None
+        }
+    });
+    let prefix = user.and_then(|cfg| cfg.s3_prefix.clone()).or_else(|| {
+        if use_env {
+            std::env::var("WRELA_STORE_BLOB_S3_PREFIX").ok()
+        } else {
+            None
+        }
+    });
 
     let Some(bucket) = bucket else { return None };
     let Some(region) = region else { return None };
-    let Some(access_key) = access_key else { return None };
-    let Some(secret_key) = secret_key else { return None };
+    let Some(access_key) = access_key else {
+        return None;
+    };
+    let Some(secret_key) = secret_key else {
+        return None;
+    };
 
     Some(S3Config {
         bucket,

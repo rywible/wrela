@@ -1,11 +1,13 @@
-use crate::actor::{actor_class_id, actor_send, pending_await_async, pending_new, resolve_pending, runtime_spawn};
+use crate::actor::{
+    actor_class_id, actor_send, pending_await_async, pending_new, resolve_pending, runtime_spawn,
+};
 use crate::http::method_id_for;
 use crate::list;
 use crate::map;
 use crate::result;
 use crate::storage_helpers::{storage_get_json_vec, storage_set_json, value_to_string};
 use crate::string;
-use crate::value::{int_value, type_id_raw, TypeId, Value};
+use crate::value::{TypeId, Value, int_value, type_id_raw};
 use crate::{wr_rc_dec, wr_rc_inc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -49,7 +51,11 @@ struct JobsState {
 static STATE: OnceLock<Mutex<JobsState>> = OnceLock::new();
 
 fn jobs_state() -> &'static Mutex<JobsState> {
-    STATE.get_or_init(|| Mutex::new(JobsState { queues: HashMap::new() }))
+    STATE.get_or_init(|| {
+        Mutex::new(JobsState {
+            queues: HashMap::new(),
+        })
+    })
 }
 
 fn now_secs() -> u64 {
@@ -85,11 +91,15 @@ fn map_set_int(map_val: Value, key: &str, value: i64) {
 }
 
 fn json_from_map(val: Value) -> JsonValue {
-    let Some(map_ptr) = map::as_map_ref(val) else { return JsonValue::Null };
+    let Some(map_ptr) = map::as_map_ref(val) else {
+        return JsonValue::Null;
+    };
     let mut out = serde_json::Map::new();
     unsafe {
         for (key, value) in (&(*map_ptr).entries).iter() {
-            let Some(key_str) = value_to_string(key.0) else { continue };
+            let Some(key_str) = value_to_string(key.0) else {
+                continue;
+            };
             let json_val = if value.is_nil() {
                 JsonValue::Null
             } else if value.is_bool() {
@@ -113,7 +123,9 @@ fn json_from_map(val: Value) -> JsonValue {
 
 fn map_from_json(value: &JsonValue) -> Value {
     let map_val = map::map_new();
-    let JsonValue::Object(obj) = value else { return map_val };
+    let JsonValue::Object(obj) = value else {
+        return map_val;
+    };
     for (key, val) in obj {
         let key_val = string::str_from_bytes(key.as_bytes());
         let out_val = match val {
@@ -163,12 +175,15 @@ async fn save_dlq(queue: &str, jobs: &[StoredJob]) -> bool {
 }
 
 fn queue_state_mut<'a>(guard: &'a mut JobsState, name: &str) -> &'a mut QueueState {
-    guard.queues.entry(name.to_string()).or_insert_with(|| QueueState {
-        sender: None,
-        backlog: VecDeque::new(),
-        handler: None,
-        method_id: None,
-    })
+    guard
+        .queues
+        .entry(name.to_string())
+        .or_insert_with(|| QueueState {
+            sender: None,
+            backlog: VecDeque::new(),
+            handler: None,
+            method_id: None,
+        })
 }
 
 pub fn jobs_enqueue(storage: Value, queue: Value, payload: Value, opts: Value) -> Value {

@@ -1,7 +1,7 @@
-use axum::extract::State;
-use axum::routing::post;
 use axum::Json;
 use axum::Router;
+use axum::extract::State;
+use axum::routing::post;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -10,15 +10,18 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::net::TcpListener;
 
+use openraft::RaftTypeConfig;
 use openraft::error::{InstallSnapshotError, NetworkError, RPCError, RaftError};
 use openraft::network::{RPCOption, RaftNetwork, RaftNetworkFactory};
-use openraft::raft::{AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse, VoteRequest, VoteResponse};
-use openraft::RaftTypeConfig;
+use openraft::raft::{
+    AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse,
+    VoteRequest, VoteResponse,
+};
 
-use crate::storage::service::StorageError;
 use crate::storage::blob::BlobBackend;
-use crate::storage::value::{StoredRecord, StoredValue};
+use crate::storage::service::StorageError;
 use crate::storage::store::TypeConfig;
+use crate::storage::value::{StoredRecord, StoredValue};
 
 pub type NodeId = <TypeConfig as RaftTypeConfig>::NodeId;
 pub type Node = <TypeConfig as RaftTypeConfig>::Node;
@@ -253,10 +256,8 @@ impl HttpNetwork {
             .map_err(|err| RPCError::Network(NetworkError::new(&err)))?;
         let status = resp.status();
         if !status.is_success() {
-            let err = std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("http status {}", status),
-            );
+            let err =
+                std::io::Error::new(std::io::ErrorKind::Other, format!("http status {}", status));
             return Err(RPCError::Network(NetworkError::new(&err)));
         }
         let envelope: RpcEnvelope<R> = resp
@@ -264,12 +265,12 @@ impl HttpNetwork {
             .await
             .map_err(|err| RPCError::Network(NetworkError::new(&err)))?;
         if envelope.ok {
-            envelope
-                .data
-                .ok_or_else(|| RPCError::Network(NetworkError::new(&std::io::Error::new(
+            envelope.data.ok_or_else(|| {
+                RPCError::Network(NetworkError::new(&std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     "missing response data",
-                ))))
+                )))
+            })
         } else {
             Err(RPCError::Network(NetworkError::new(&std::io::Error::new(
                 std::io::ErrorKind::Other,
@@ -345,7 +346,7 @@ async fn install_snapshot(
 
 async fn vote(
     State(state): State<HttpServer>,
-    Json(req): Json<VoteRequest<NodeId>>, 
+    Json(req): Json<VoteRequest<NodeId>>,
 ) -> Json<RpcEnvelope<VoteResponse<NodeId>>> {
     let resp: Result<VoteResponse<NodeId>, RaftError<NodeId>> = state.raft.vote(req).await;
     match resp {
@@ -474,5 +475,8 @@ async fn storage_leader(
     let metrics = state.raft.metrics().borrow().clone();
     let leader_id = metrics.current_leader;
     let node_id = metrics.id;
-    Json(RpcEnvelope::ok(StorageLeaderResponse { node_id, leader_id }))
+    Json(RpcEnvelope::ok(StorageLeaderResponse {
+        node_id,
+        leader_id,
+    }))
 }

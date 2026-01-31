@@ -10,4 +10,4 @@ pub use body::*;
 pub use def::*;
 pub use semantic::*;
 pub mod project;
-pub use typeck::{Type, TypeError, TypeInfo, FunctionTypeInfo};
+pub use typeck::{FunctionTypeInfo, Type, TypeError, TypeInfo};

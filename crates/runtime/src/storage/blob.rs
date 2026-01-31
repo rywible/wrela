@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
-use aws_config::meta::region::RegionProviderChain;
 use aws_config::BehaviorVersion;
+use aws_config::meta::region::RegionProviderChain;
 use aws_credential_types::Credentials;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_types::region::Region;
@@ -220,13 +220,7 @@ pub struct S3BlobStore {
 
 impl S3BlobStore {
     pub async fn new(cfg: S3Config) -> Result<Self, BlobError> {
-        let creds = Credentials::new(
-            cfg.access_key,
-            cfg.secret_key,
-            None,
-            None,
-            "wrela-storage",
-        );
+        let creds = Credentials::new(cfg.access_key, cfg.secret_key, None, None, "wrela-storage");
         let region = Region::new(cfg.region);
         let region_provider = RegionProviderChain::first_try(region.clone()).or_default_provider();
         let mut loader = aws_config::defaults(BehaviorVersion::latest())
@@ -429,11 +423,11 @@ async fn list_dir(base: &Path, dir: &Path, out: &mut Vec<BlobRef>) -> Result<(),
             .map_err(|err| BlobError(format!("blob list: {err}")))?
         {
             let path = entry.path();
-        let meta = match entry.metadata().await {
-            Ok(meta) => meta,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(err) => return Err(BlobError(format!("blob meta: {err}"))),
-        };
+            let meta = match entry.metadata().await {
+                Ok(meta) => meta,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(err) => return Err(BlobError(format!("blob meta: {err}"))),
+            };
             if meta.is_dir() {
                 stack.push(path);
             } else {

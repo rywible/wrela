@@ -1,5 +1,5 @@
 use crate::object::ObjHeader;
-use crate::value::{header, int_value, value_eq, value_hash as hash_value, TypeId, Value};
+use crate::value::{TypeId, Value, header, int_value, value_eq, value_hash as hash_value};
 use crate::{wr_rc_dec, wr_rc_inc};
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
