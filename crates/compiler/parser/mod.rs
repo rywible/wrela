@@ -88,6 +88,21 @@ impl<'a> Parser<'a> {
         self.peek() == kind
     }
 
+    pub fn at_ident_text(&self, text: &str) -> bool {
+        self.peek() == SyntaxKind::Ident && self.peek_text() == text
+    }
+
+    pub fn peek_text(&self) -> &str {
+        let mut n = 0;
+        loop {
+            let kind = self.source.peek_at(n);
+            if !kind.is_trivia() {
+                return self.source.text_at(n);
+            }
+            n += 1;
+        }
+    }
+
     pub fn bump(&mut self) {
         loop {
             let kind = self.source.peek();
@@ -309,7 +324,6 @@ fn kind_label(kind: SyntaxKind) -> &'static str {
         SyntaxKind::OptimizeKw => "'optimize'",
         SyntaxKind::UseKw => "'use'",
         SyntaxKind::FromKw => "'from'",
-        SyntaxKind::PublicKw => "'public'",
         SyntaxKind::PrivateKw => "'private'",
         SyntaxKind::ItsKw => "'its'",
         SyntaxKind::ItKw => "'it'",
@@ -525,12 +539,14 @@ its.name
     #[test]
     fn test_class_has_block() {
         let text = "\
-public A Whale:
+A Whale:
     has:
         name: String
-        private age: Number
-    public can swim(distance: Number):
-        return it
+    private:
+        has:
+            age: Number
+        can swim(distance: Number) -> Nothing:
+            return it
 ";
         let (_node, errors) = parse_with_errors(text);
         assert!(errors.is_empty(), "{errors:?}");
@@ -585,7 +601,7 @@ to f(x: Int) -> Bool:
     fn test_function_block_contains_statements() {
         use ast::{AstNode, Stmt};
         let text = "\
-to f():
+to f() -> Int:
     return 1
 ";
         let node = parse(text);

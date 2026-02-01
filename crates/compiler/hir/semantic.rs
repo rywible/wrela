@@ -137,25 +137,6 @@ pub enum SemanticError {
         span: SourceSpan,
     },
 
-    #[error("visibility modifier is not valid here")]
-    #[diagnostic(
-        code(lang::sem::visibility_misuse),
-        help("Remove the visibility modifier.")
-    )]
-    VisibilityMisuse {
-        #[label("visibility here")]
-        span: SourceSpan,
-    },
-
-    #[error("public variables cannot be changing")]
-    #[diagnostic(
-        code(lang::sem::public_changing_variable),
-        help("Remove 'changing' or make the variable private.")
-    )]
-    PublicChangingVariable {
-        #[label("variable here")]
-        span: SourceSpan,
-    },
 
     #[error("match requires an otherwise case")]
     #[diagnostic(
@@ -299,8 +280,6 @@ impl SemanticError {
             SemanticError::InvalidItUsage { span } => *span,
             SemanticError::ShadowedName { span, .. } => *span,
             SemanticError::FireInExpression { span } => *span,
-            SemanticError::VisibilityMisuse { span, .. } => *span,
-            SemanticError::PublicChangingVariable { span } => *span,
             SemanticError::DuplicateNamedArg { span, .. } => *span,
             SemanticError::PositionalAfterNamed { span } => *span,
             SemanticError::MatchMissingOtherwise { span } => *span,
@@ -538,6 +517,9 @@ impl<'a> Checker<'a> {
         let stmt = &body.stmts[stmt_id];
         match stmt {
             Stmt::Expr(expr) => self.check_expr_with_ctx(body, *expr, false, true),
+            Stmt::Assert { expr, .. } => {
+                self.check_expr_with_ctx(body, *expr, false, true);
+            }
             Stmt::Let {
                 name,
                 value,
@@ -546,16 +528,7 @@ impl<'a> Checker<'a> {
             } => {
                 self.check_expr_with_ctx(body, *value, false, false);
                 let span = body.stmt_span(stmt_id);
-                if visibility.is_some() {
-                    self.errors.push(SemanticError::VisibilityMisuse {
-                        span: span_from_range(span),
-                    });
-                }
-                if matches!(visibility, Some(crate::hir::Visibility::Public)) && *mutable {
-                    self.errors.push(SemanticError::PublicChangingVariable {
-                        span: span_from_range(span),
-                    });
-                }
+                let _ = visibility;
                 self.declare(
                     name.clone(),
                     Binding {
@@ -570,16 +543,7 @@ impl<'a> Checker<'a> {
                 self.check_expr_with_ctx(body, *value, false, false);
                 let span = body.stmt_span(stmt_id);
                 if let Stmt::Assign { visibility, .. } = stmt {
-                    if visibility.is_some() {
-                        self.errors.push(SemanticError::VisibilityMisuse {
-                            span: span_from_range(span),
-                        });
-                    }
-                    if matches!(visibility, Some(crate::hir::Visibility::Public)) {
-                        self.errors.push(SemanticError::PublicChangingVariable {
-                            span: span_from_range(span),
-                        });
-                    }
+                    let _ = visibility;
                 }
                 match self.resolve(name) {
                     Some(binding) => match binding.kind {
@@ -1271,6 +1235,16 @@ fn collect_stmt_calls_and_awaits(
             has_await,
             callees,
         ),
+        Stmt::Assert { expr, .. } => {
+            collect_expr_calls_and_awaits(
+                body,
+                *expr,
+                function_ids,
+                method_name_ids,
+                has_await,
+                callees,
+            );
+        }
         Stmt::Let { value, .. } | Stmt::Assign { value, .. } => collect_expr_calls_and_awaits(
             body,
             *value,
@@ -1607,8 +1581,59 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
         (SmolStr::new("bytes_to_string"), BindingKind::Function),
         (SmolStr::new("bytes_len"), BindingKind::Function),
         (SmolStr::new("list_push"), BindingKind::Function),
+        (SmolStr::new("map_new"), BindingKind::Function),
         (SmolStr::new("map_get"), BindingKind::Function),
         (SmolStr::new("map_set"), BindingKind::Function),
+        (SmolStr::new("log"), BindingKind::Function),
+        (SmolStr::new("env_get"), BindingKind::Function),
+        (SmolStr::new("env_get_or"), BindingKind::Function),
+        (SmolStr::new("env_get_as_bool"), BindingKind::Function),
+        (SmolStr::new("env_get_as_int"), BindingKind::Function),
+        (SmolStr::new("env_set"), BindingKind::Function),
+        (SmolStr::new("env_load"), BindingKind::Function),
+        (SmolStr::new("auth_create_user"), BindingKind::Function),
+        (SmolStr::new("auth_verify_password"), BindingKind::Function),
+        (SmolStr::new("auth_issue_jwt"), BindingKind::Function),
+        (SmolStr::new("auth_verify_jwt"), BindingKind::Function),
+        (SmolStr::new("auth_issue_email_token"), BindingKind::Function),
+        (SmolStr::new("auth_verify_email_token"), BindingKind::Function),
+        (SmolStr::new("auth_oauth_login"), BindingKind::Function),
+        (SmolStr::new("rbac_create_role"), BindingKind::Function),
+        (SmolStr::new("rbac_assign_role"), BindingKind::Function),
+        (SmolStr::new("rbac_check"), BindingKind::Function),
+        (SmolStr::new("rbac_permissions_for"), BindingKind::Function),
+        (SmolStr::new("files_upload_stream"), BindingKind::Function),
+        (SmolStr::new("files_signed_url"), BindingKind::Function),
+        (SmolStr::new("files_metadata"), BindingKind::Function),
+        (SmolStr::new("files_delete"), BindingKind::Function),
+        (SmolStr::new("files_set_acl"), BindingKind::Function),
+        (SmolStr::new("jobs_enqueue"), BindingKind::Function),
+        (SmolStr::new("jobs_process"), BindingKind::Function),
+        (SmolStr::new("jobs_dead_letter"), BindingKind::Function),
+        (SmolStr::new("schedule_cron"), BindingKind::Function),
+        (SmolStr::new("schedule_every"), BindingKind::Function),
+        (SmolStr::new("schedule_at"), BindingKind::Function),
+        (SmolStr::new("search_index"), BindingKind::Function),
+        (SmolStr::new("search_remove"), BindingKind::Function),
+        (SmolStr::new("search_query"), BindingKind::Function),
+        (SmolStr::new("realtime_on_connect"), BindingKind::Function),
+        (SmolStr::new("realtime_join"), BindingKind::Function),
+        (SmolStr::new("realtime_leave"), BindingKind::Function),
+        (SmolStr::new("realtime_broadcast"), BindingKind::Function),
+        (SmolStr::new("realtime_send"), BindingKind::Function),
+        (SmolStr::new("rate_check"), BindingKind::Function),
+        (SmolStr::new("rate_ip"), BindingKind::Function),
+        (SmolStr::new("admin_enable"), BindingKind::Function),
+        (SmolStr::new("storage_get"), BindingKind::Function),
+        (SmolStr::new("storage_get_with_version"), BindingKind::Function),
+        (SmolStr::new("storage_scan"), BindingKind::Function),
+        (SmolStr::new("storage_list_prefix"), BindingKind::Function),
+        (SmolStr::new("storage_set"), BindingKind::Function),
+        (SmolStr::new("storage_set_if_version"), BindingKind::Function),
+        (SmolStr::new("storage_delete_if_version"), BindingKind::Function),
+        (SmolStr::new("storage_delete"), BindingKind::Function),
+        (SmolStr::new("storage_batch_set"), BindingKind::Function),
+        (SmolStr::new("storage_configure"), BindingKind::Function),
         (SmolStr::new("pool_auto_size"), BindingKind::Function),
         (SmolStr::new("pool_size"), BindingKind::Function),
         (SmolStr::new("pool_rr"), BindingKind::Function),
@@ -1657,7 +1682,7 @@ mod tests {
 
     #[test]
     fn test_undefined_name() {
-        let input = "to f():\n    return x";
+        let input = "to f() -> Int:\n    return x";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -1670,7 +1695,7 @@ mod tests {
 
     #[test]
     fn test_immutable_assign() {
-        let input = "to f():\n    x = 1\n    x += 1";
+        let input = "to f() -> Nothing:\n    x = 1\n    x += 1";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -1684,7 +1709,7 @@ mod tests {
 
     #[test]
     fn test_duplicate_local() {
-        let input = "to f():\n    x = 1\n    x = 2";
+        let input = "to f() -> Nothing:\n    x = 1\n    x = 2";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -1697,7 +1722,7 @@ mod tests {
 
     #[test]
     fn test_break_outside_loop() {
-        let input = "to f():\n    break";
+        let input = "to f() -> Nothing:\n    break";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -1712,7 +1737,7 @@ mod tests {
 
     #[test]
     fn test_fire_in_expression() {
-        let input = "to f():\n    return fire Whale().swim()";
+        let input = "to f() -> Nothing:\n    return fire Whale().swim()";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -1727,7 +1752,7 @@ mod tests {
 
     #[test]
     fn test_positional_after_named_arg() {
-        let input = "to f():\n    foo(a=1, 2)";
+        let input = "to f() -> Nothing:\n    foo(a=1, 2)";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -1742,7 +1767,7 @@ mod tests {
 
     #[test]
     fn test_duplicate_named_arg() {
-        let input = "to f():\n    foo(a=1, a=2)";
+        let input = "to f() -> Nothing:\n    foo(a=1, a=2)";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -1754,7 +1779,7 @@ mod tests {
 
     #[test]
     fn test_invalid_assign_target() {
-        let input = "to f(a: Int):\n    a += 1";
+        let input = "to f(a: Int) -> Nothing:\n    a += 1";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -1767,7 +1792,7 @@ mod tests {
 
     #[test]
     fn test_duplicate_param() {
-        let input = "to f(a: Int, a: Int):\n    return a";
+        let input = "to f(a: Int, a: Int) -> Int:\n    return a";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -1780,7 +1805,7 @@ mod tests {
 
     #[test]
     fn test_shadowing_local() {
-        let input = "to f():\n    x = 1\n    if true:\n        x = 2";
+        let input = "to f() -> Nothing:\n    x = 1\n    if true:\n        x = 2";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -1793,7 +1818,7 @@ mod tests {
 
     #[test]
     fn test_it_outside_return() {
-        let input = "to f():\n    it";
+        let input = "to f() -> Nothing:\n    it";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -1808,7 +1833,7 @@ mod tests {
 
     #[test]
     fn test_match_missing_otherwise() {
-        let input = "to f():\n    match x:\n        1: return it";
+        let input = "to f() -> Int:\n    match x:\n        1: return it";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -1818,36 +1843,6 @@ mod tests {
                 .errors
                 .iter()
                 .any(|err| matches!(err, SemanticError::MatchMissingOtherwise { .. }))
-        );
-    }
-
-    #[test]
-    fn test_visibility_misuse() {
-        let input = "to f():\n    public x = 1";
-        let node = parse(input);
-        let root = ast::Root::cast(node).unwrap();
-        let module = lower(root);
-        let diagnostics = check_module(&module);
-        assert!(
-            diagnostics
-                .errors
-                .iter()
-                .any(|err| matches!(err, SemanticError::VisibilityMisuse { .. }))
-        );
-    }
-
-    #[test]
-    fn test_public_changing_variable() {
-        let input = "to f():\n    public changing x = 1";
-        let node = parse(input);
-        let root = ast::Root::cast(node).unwrap();
-        let module = lower(root);
-        let diagnostics = check_module(&module);
-        assert!(
-            diagnostics
-                .errors
-                .iter()
-                .any(|err| matches!(err, SemanticError::PublicChangingVariable { .. }))
         );
     }
 
@@ -1869,7 +1864,7 @@ A Whale:\n    has:\n        name: String\n    can name() -> String:\n        ret
 
     #[test]
     fn test_unreachable_code() {
-        let input = "to f():\n    return 1\n    x = 2";
+        let input = "to f() -> Int:\n    return 1\n    x = 2";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -1884,7 +1879,7 @@ A Whale:\n    has:\n        name: String\n    can name() -> String:\n        ret
 
     #[test]
     fn test_unused_local() {
-        let input = "to f():\n    x = 1\n    return 2";
+        let input = "to f() -> Int:\n    x = 1\n    return 2";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);

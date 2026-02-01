@@ -113,7 +113,7 @@ impl From<&KvStateMachine> for SerializableKvStateMachine {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct KvStateMachine {
     pub db: Arc<DB>,
 }
@@ -149,22 +149,22 @@ impl KvStateMachine {
         end: Option<&[u8]>,
         limit: usize,
     ) -> StorageResult<Vec<(Vec<u8>, StoredRecord)>> {
-        let mut options = ReadOptions::default();
-        let start_vec = start.map(|v| v.to_vec());
-        let end_vec = end.map(|v| v.to_vec());
-        if let Some(lb) = start_vec.as_ref() {
-            options.set_iterate_lower_bound(lb.clone());
+        let mut out = Vec::new();
+        let mut read_opts = ReadOptions::default();
+        if let Some(start) = start {
+            read_opts.set_iterate_lower_bound(start.to_vec());
         }
-        if let Some(ub) = end_vec.as_ref() {
-            options.set_iterate_upper_bound(ub.clone());
+        if let Some(end) = end {
+            read_opts.set_iterate_upper_bound(end.to_vec());
         }
-        let mode = match start_vec.as_ref() {
-            Some(lb) => rocksdb::IteratorMode::From(lb, Direction::Forward),
+        let mode = match start {
+            Some(start) => rocksdb::IteratorMode::From(start, Direction::Forward),
             None => rocksdb::IteratorMode::Start,
         };
-        let mut out = Vec::new();
-        let it = self.db.iterator_cf_opt(self.cf_sm_data(), options, mode);
-        for item in it {
+        let iter = self
+            .db
+            .iterator_cf_opt(self.cf_sm_data(), read_opts, mode);
+        for item in iter {
             let (key, value) = item.map_err(sm_r_err)?;
             let record = decode_stored_record(&value)?;
             out.push((key.to_vec(), record));
@@ -176,20 +176,20 @@ impl KvStateMachine {
     }
 
     pub fn list_prefix_keys(&self, prefix: &[u8], limit: usize) -> StorageResult<Vec<Vec<u8>>> {
-        let mut options = ReadOptions::default();
-        let lower = prefix.to_vec();
-        let upper = next_prefix(prefix);
-        options.set_iterate_lower_bound(lower.clone());
-        if let Some(ub) = upper.as_ref() {
-            options.set_iterate_upper_bound(ub.clone());
-        }
         let mut out = Vec::new();
-        let it = self.db.iterator_cf_opt(
-            self.cf_sm_data(),
-            options,
-            rocksdb::IteratorMode::From(&lower, Direction::Forward),
-        );
-        for item in it {
+        let mut read_opts = ReadOptions::default();
+        let mut mode = rocksdb::IteratorMode::Start;
+        if !prefix.is_empty() {
+            read_opts.set_iterate_lower_bound(prefix.to_vec());
+            if let Some(end) = next_prefix(prefix) {
+                read_opts.set_iterate_upper_bound(end);
+            }
+            mode = rocksdb::IteratorMode::From(prefix, Direction::Forward);
+        }
+        let iter = self
+            .db
+            .iterator_cf_opt(self.cf_sm_data(), read_opts, mode);
+        for item in iter {
             let (key, _value) = item.map_err(sm_r_err)?;
             if !prefix.is_empty() && !key.starts_with(prefix) {
                 break;
@@ -347,7 +347,7 @@ impl KvStateMachine {
 
         for (key, value) in sm.data {
             let encoded = encode_stored_record(&value)?;
-            r.db.put_cf(r.cf_sm_data(), key, encoded)
+            r.db.put_cf(r.cf_sm_data(), &key, encoded)
                 .map_err(sm_w_err)?;
         }
 

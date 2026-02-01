@@ -5,13 +5,11 @@ mod common;
 #[test]
 fn test_semantic_tokens_basic() {
     let code = r#"
-    class Foo {
-        public field: Int
-        
-        fn bar(x: Int) -> Int {
+    A Foo:
+        has:
+            value: Int
+        can bar(x: Int) -> Int:
             return x + 1
-        }
-    }
     "#;
     let fixture = TestFixture::new(code);
     let tokens = wrela_lsp::semantic_tokens(&fixture.state);
@@ -32,9 +30,11 @@ fn test_semantic_tokens_operators() {
 #[test]
 fn test_semantic_tokens_comments() {
     let code = r#"
-    // Line comment
-    /// Doc comment
-    class A {}
+    so: Line comment
+        Doc comment
+    A Whale:
+        has:
+            name: String
     "#;
     let fixture = TestFixture::new(code);
     let tokens = wrela_lsp::semantic_tokens(&fixture.state);

@@ -65,6 +65,10 @@ async fn metrics_handler(
         "pending_resolved": metrics::metrics_get_raw(metrics::METRIC_PENDING_RESOLVED),
         "storage_backup_success": metrics::metrics_get_raw(metrics::METRIC_STORAGE_BACKUP_SUCCESS),
         "storage_backup_failure": metrics::metrics_get_raw(metrics::METRIC_STORAGE_BACKUP_FAILURE),
+        "pubsub_publish": metrics::metrics_get_raw(metrics::METRIC_PUBSUB_PUBLISH),
+        "pubsub_publish_failure": metrics::metrics_get_raw(metrics::METRIC_PUBSUB_PUBLISH_FAILURE),
+        "sched_wakeups": metrics::metrics_get_raw(metrics::METRIC_SCHED_WAKEUPS),
+        "jobs_wakeups": metrics::metrics_get_raw(metrics::METRIC_JOBS_WAKEUPS),
     });
     Json(body).into_response()
 }

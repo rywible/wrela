@@ -25,6 +25,10 @@ pub const METRIC_STORAGE_BACKUP_LAST_DURATION_NS: u32 = 20;
 pub const METRIC_STORAGE_BACKUP_LAST_SIZE: u32 = 21;
 pub const METRIC_STORAGE_BACKUP_LAST_TS: u32 = 22;
 pub const METRIC_STORAGE_BACKUP_RESTORE_FAILURE: u32 = 23;
+pub const METRIC_PUBSUB_PUBLISH: u32 = 24;
+pub const METRIC_PUBSUB_PUBLISH_FAILURE: u32 = 25;
+pub const METRIC_SCHED_WAKEUPS: u32 = 26;
+pub const METRIC_JOBS_WAKEUPS: u32 = 27;
 
 #[cfg(feature = "metrics")]
 struct Metrics {
@@ -52,6 +56,10 @@ struct Metrics {
     storage_backup_last_size: AtomicU64,
     storage_backup_last_ts: AtomicU64,
     storage_backup_restore_failure: AtomicU64,
+    pubsub_publish: AtomicU64,
+    pubsub_publish_failure: AtomicU64,
+    sched_wakeups: AtomicU64,
+    jobs_wakeups: AtomicU64,
 }
 
 #[cfg(feature = "metrics")]
@@ -80,6 +88,10 @@ static METRICS: Metrics = Metrics {
     storage_backup_last_size: AtomicU64::new(0),
     storage_backup_last_ts: AtomicU64::new(0),
     storage_backup_restore_failure: AtomicU64::new(0),
+    pubsub_publish: AtomicU64::new(0),
+    pubsub_publish_failure: AtomicU64::new(0),
+    sched_wakeups: AtomicU64::new(0),
+    jobs_wakeups: AtomicU64::new(0),
 };
 
 #[cfg(feature = "metrics")]
@@ -117,6 +129,28 @@ pub fn inc_messages_dropped_paused() {
     METRICS
         .messages_dropped_paused
         .fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(feature = "metrics")]
+pub fn inc_pubsub_publish() {
+    METRICS.pubsub_publish.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(feature = "metrics")]
+pub fn inc_pubsub_publish_failure() {
+    METRICS
+        .pubsub_publish_failure
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(feature = "metrics")]
+pub fn inc_sched_wakeup() {
+    METRICS.sched_wakeups.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(feature = "metrics")]
+pub fn inc_jobs_wakeup() {
+    METRICS.jobs_wakeups.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(feature = "metrics")]
@@ -237,6 +271,12 @@ pub fn metrics_get_raw(id: u32) -> u64 {
         METRIC_STORAGE_BACKUP_RESTORE_FAILURE => METRICS
             .storage_backup_restore_failure
             .load(Ordering::Relaxed),
+        METRIC_PUBSUB_PUBLISH => METRICS.pubsub_publish.load(Ordering::Relaxed),
+        METRIC_PUBSUB_PUBLISH_FAILURE => {
+            METRICS.pubsub_publish_failure.load(Ordering::Relaxed)
+        }
+        METRIC_SCHED_WAKEUPS => METRICS.sched_wakeups.load(Ordering::Relaxed),
+        METRIC_JOBS_WAKEUPS => METRICS.jobs_wakeups.load(Ordering::Relaxed),
         _ => 0,
     }
 }
@@ -319,6 +359,12 @@ pub fn get(id: u32) -> u64 {
         METRIC_STORAGE_BACKUP_RESTORE_FAILURE => METRICS
             .storage_backup_restore_failure
             .load(Ordering::Relaxed),
+        METRIC_PUBSUB_PUBLISH => METRICS.pubsub_publish.load(Ordering::Relaxed),
+        METRIC_PUBSUB_PUBLISH_FAILURE => {
+            METRICS.pubsub_publish_failure.load(Ordering::Relaxed)
+        }
+        METRIC_SCHED_WAKEUPS => METRICS.sched_wakeups.load(Ordering::Relaxed),
+        METRIC_JOBS_WAKEUPS => METRICS.jobs_wakeups.load(Ordering::Relaxed),
         _ => 0,
     }
 }

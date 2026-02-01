@@ -184,18 +184,15 @@ async fn read_value_once(addr: &str, key: &[u8]) -> Result<Option<Vec<u8>>, Stri
 
 async fn read_value_with_retry(addrs: &[String], key: &[u8]) -> Option<Vec<u8>> {
     let deadline = Instant::now() + Duration::from_secs(5);
-    let mut last_err = None::<String>;
     loop {
         let leader_addr = wait_for_leader(addrs).await;
         match read_value_once(&leader_addr, key).await {
             Ok(value) => return value,
-            Err(err) => last_err = Some(err),
-        }
-        if Instant::now() > deadline {
-            panic!(
-                "read failed after retries: {}",
-                last_err.unwrap_or_else(|| "unknown error".to_string())
-            );
+            Err(err) => {
+                if Instant::now() > deadline {
+                    panic!("read failed after retries: {err}");
+                }
+            }
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }

@@ -4,7 +4,7 @@ use miette::{Diagnostic, NamedSource, Report, SourceSpan};
 use serde::Serialize;
 use std::env;
 use std::fs;
-use std::io;
+use std::io::{self};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -45,6 +45,8 @@ fn main() {
     let mut path_arg: Option<String> = None;
     let mut program_args: Vec<String> = Vec::new();
     let mut poll_ms: Option<u64> = None;
+    let mut test_jobs: Option<usize> = None;
+    let mut test_timeout_ms: Option<u64> = None;
     let mut seen_double_dash = false;
 
     let mut iter = args.into_iter();
@@ -82,6 +84,14 @@ fn main() {
         }
         if let Some(ms) = arg.strip_prefix("--poll-ms=") {
             poll_ms = ms.parse::<u64>().ok();
+            continue;
+        }
+        if let Some(jobs) = arg.strip_prefix("--jobs=") {
+            test_jobs = jobs.parse::<usize>().ok();
+            continue;
+        }
+        if let Some(ms) = arg.strip_prefix("--test-timeout-ms=") {
+            test_timeout_ms = ms.parse::<u64>().ok();
             continue;
         }
         if arg == "--prefix" {
@@ -271,6 +281,26 @@ fn main() {
                 &program_args,
             );
         }
+        "test" => {
+            if trace {
+                eprintln!("build: command test");
+            }
+            if !program_args.is_empty() {
+                eprintln!("error: unexpected extra arguments");
+                std::process::exit(EXIT_USAGE);
+            }
+            let jobs = test_jobs.unwrap_or(1).max(1);
+            let timeout = Duration::from_millis(test_timeout_ms.unwrap_or(5000).max(1));
+            let root = match resolve_test_root(path_arg.as_deref()) {
+                Ok(path) => path,
+                Err(err) => {
+                    eprintln!("error: {err}");
+                    std::process::exit(EXIT_USAGE);
+                }
+            };
+            let exit = run_tests(&root, jobs, timeout, output_format);
+            std::process::exit(exit);
+        }
         _ => {
             print_help();
             std::process::exit(EXIT_USAGE);
@@ -290,6 +320,7 @@ commands:\n\
   compile <path>        alias for build\n\
   run <path>            compile and run\n\
   dev <path>            watch and rebuild (polling)\n\
+  test [path]           discover and run tests\n\
 \n\
 options:\n\
   --prefix PATH         install/update prefix (default: $PREFIX or ~/.local/wrela)\n\
@@ -299,6 +330,8 @@ options:\n\
   --emit-obj=PATH       emit object file\n\
   --emit-bin=PATH       emit executable\n\
   --poll-ms=N           poll interval for dev (default: 500)\n\
+  --jobs=N              test runner parallelism (default: 1)\n\
+  --test-timeout-ms=N   per-test timeout in milliseconds (default: 5000)\n\
   --format=json         emit diagnostics as JSON\n\
   -h, --help            show this help\n\
   -V, --version         show version\n"
@@ -384,8 +417,283 @@ fn emit_json_diag(kind: &str, message: String, span: SourceSpan, path: String) {
 fn is_command(arg: &str) -> bool {
     matches!(
         arg,
-        "init" | "update" | "check" | "build" | "compile" | "run" | "dev"
+        "init" | "update" | "check" | "build" | "compile" | "run" | "dev" | "test"
     )
+}
+
+fn resolve_test_root(path_arg: Option<&str>) -> Result<PathBuf, String> {
+    let path = PathBuf::from(path_arg.unwrap_or("."));
+    let candidate = if path.is_file() {
+        path.parent().map(|p| p.to_path_buf()).unwrap_or(path)
+    } else {
+        path
+    };
+    if candidate.is_dir() {
+        return Ok(candidate);
+    }
+    Err("test root must be a directory".to_string())
+}
+
+#[derive(Clone)]
+struct TestCase {
+    name: String,
+    module_path: String,
+    func_name: String,
+}
+
+fn run_tests(root: &Path, jobs: usize, timeout: Duration, output_format: OutputFormat) -> i32 {
+    let src_root = root.join("src");
+    let tests_root = root.join("tests");
+    if !tests_root.is_dir() {
+        eprintln!("no tests found at {}", tests_root.display());
+        return EXIT_OK;
+    }
+
+    let mut tests = Vec::new();
+    if let Err(err) = collect_tests(&tests_root, &src_root, &tests_root, &mut tests) {
+        eprintln!("test discovery error: {err}");
+        return EXIT_USAGE;
+    }
+    if tests.is_empty() {
+        eprintln!("no tests found at {}", tests_root.display());
+        return EXIT_OK;
+    }
+
+    let queue = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from(tests)));
+    let (tx, rx) = std::sync::mpsc::channel::<(String, bool, Duration, String)>();
+    let mut handles = Vec::new();
+
+    for _ in 0..jobs {
+        let queue = std::sync::Arc::clone(&queue);
+        let tx = tx.clone();
+        let src_root = src_root.clone();
+        let root = root.to_path_buf();
+        handles.push(std::thread::spawn(move || {
+            loop {
+                let next = {
+                    let mut guard = queue.lock().expect("test queue");
+                    guard.pop_front()
+                };
+                let Some(test) = next else { break };
+                let start = Instant::now();
+                let result = run_single_test(&root, &src_root, &test, timeout, output_format);
+                let dur = start.elapsed();
+                let (ok, err) = match result {
+                    Ok(()) => (true, String::new()),
+                    Err(msg) => (false, msg),
+                };
+                let _ = tx.send((test.name.clone(), ok, dur, err));
+            }
+        }));
+    }
+    drop(tx);
+
+    let mut ok_count = 0usize;
+    let mut fail_count = 0usize;
+    for (name, ok, dur, err) in rx.iter() {
+        if ok {
+            println!("ok   {:>7?}  {}", dur, name);
+            ok_count += 1;
+        } else {
+            println!("fail {:>7?}  {}  {}", dur, name, err);
+            fail_count += 1;
+        }
+    }
+    for handle in handles {
+        let _ = handle.join();
+    }
+    println!("tests: {} passed, {} failed", ok_count, fail_count);
+    if fail_count == 0 { EXIT_OK } else { EXIT_CODEGEN }
+}
+
+fn collect_tests(
+    root: &Path,
+    src_root: &Path,
+    tests_root: &Path,
+    out: &mut Vec<TestCase>,
+) -> io::Result<()> {
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_tests(&path, src_root, tests_root, out)?;
+            continue;
+        }
+        if path.extension().and_then(|s| s.to_str()) != Some("wr") {
+            continue;
+        }
+        let source = fs::read_to_string(&path)?;
+        let module_path = module_path_for_test_file(&path, tests_root)?;
+        let names = extract_test_functions(&source);
+        for func in names {
+            let name = format!("{module_path}::{func}");
+            out.push(TestCase {
+                name,
+                module_path: module_path.clone(),
+                func_name: func,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn module_path_for_test_file(path: &Path, tests_root: &Path) -> io::Result<String> {
+    let rel = path.strip_prefix(tests_root).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("test file must live under {}", tests_root.display()),
+        )
+    })?;
+    let mut rel = rel.to_path_buf();
+    rel.set_extension("");
+    let parts: Vec<String> = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    Ok(format!("tests/{}", parts.join("/")))
+}
+
+fn extract_test_functions(source: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with("to test_") {
+            continue;
+        }
+        let rest = trimmed.trim_start_matches("to ").trim();
+        let name_end = rest.find('(').unwrap_or(rest.len());
+        let name = rest[..name_end].trim();
+        if name.starts_with("test_") && !name.is_empty() {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
+fn run_single_test(
+    root: &Path,
+    src_root: &Path,
+    test: &TestCase,
+    timeout: Duration,
+    output_format: OutputFormat,
+) -> Result<(), String> {
+    let temp_dir = root.join("target").join("wrela_tests");
+    let _ = fs::create_dir_all(&temp_dir);
+    let file_stem = test
+        .name
+        .replace('/', "_")
+        .replace(':', "_")
+        .replace("::", "_");
+    let entry_path = temp_dir.join(format!("{}_entry.wr", file_stem));
+    let exe_path = temp_dir.join(format!("{}_bin", file_stem));
+    let entry = format!(
+        "use {func} from {module}\n\nto run() -> Int:\n    {func}()\n    return 0\n",
+        func = test.func_name,
+        module = test.module_path
+    );
+    if let Err(err) = fs::write(&entry_path, entry) {
+        return Err(format!("failed to write test entry: {err}"));
+    }
+    let tests_root = root.join("tests");
+    let mir_module = match compile_to_mir_with_root(&entry_path, src_root, Some(&tests_root), output_format) {
+        Ok(mir) => mir,
+        Err(_) => return Err("compile failed".to_string()),
+    };
+    if let Err(err) = wrela::backend::cranelift::compile_to_executable(&mir_module, &exe_path) {
+        return Err(format!("codegen error: {}", err.0));
+    }
+    run_with_timeout(&exe_path, timeout).map_err(|e| e)
+}
+
+fn run_with_timeout(exe: &Path, timeout: Duration) -> Result<(), String> {
+    let mut child = Command::new(exe)
+        .spawn()
+        .map_err(|e| format!("failed to run: {e}"))?;
+    let start = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().map_err(|e| format!("wait failed: {e}"))? {
+            if status.success() {
+                return Ok(());
+            }
+            return Err(format!("exit code {}", status.code().unwrap_or(1)));
+        }
+        if start.elapsed() >= timeout {
+            let _ = child.kill();
+            return Err("timeout".to_string());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn compile_to_mir_with_root(
+    entry_path: &Path,
+    root_dir: &Path,
+    tests_dir: Option<&Path>,
+    output_format: OutputFormat,
+) -> Result<mir::ir::MirModule, i32> {
+    let (module, source, source_name) = match hir::project::load_project_with_roots(
+        entry_path,
+        root_dir,
+        tests_dir.map(|p| p.to_path_buf()),
+    ) {
+        Ok(project) => {
+            for warn in project.warnings {
+                emit_diag(
+                    output_format,
+                    "warning",
+                    warn.message,
+                    warn.span,
+                    warn.path.display().to_string(),
+                    warn.source,
+                );
+            }
+            (project.module, project.entry_source, entry_path.display().to_string())
+        }
+        Err(errors) => {
+            for err in errors {
+                emit_diag(
+                    output_format,
+                    "error",
+                    err.message,
+                    err.span,
+                    err.path.display().to_string(),
+                    err.source,
+                );
+            }
+            return Err(EXIT_PARSE);
+        }
+    };
+    let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+    for err in type_errors {
+        emit_diag(
+            output_format,
+            "error",
+            err.to_string(),
+            err.primary_span(),
+            source_name.clone(),
+            source.clone(),
+        );
+        return Err(EXIT_TYPE);
+    }
+    let mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut had_errors = false;
+    for err in mir::validate::validate_module(&mir_module) {
+        emit_diag(
+            output_format,
+            "error",
+            err.message,
+            SourceSpan::from((0usize, 0usize)),
+            source_name.clone(),
+            source.clone(),
+        );
+        had_errors = true;
+    }
+    if had_errors {
+        Err(EXIT_CODEGEN)
+    } else {
+        Ok(mir_module)
+    }
 }
 
 fn resolve_entry_path(path_arg: Option<&str>) -> Result<PathBuf, String> {
@@ -793,4 +1101,5 @@ fn parse_first_tag(body: &str) -> Option<String> {
 const EXIT_USAGE: i32 = 1;
 const EXIT_PARSE: i32 = 2;
 const EXIT_TYPE: i32 = 3;
+const EXIT_OK: i32 = 0;
 const EXIT_CODEGEN: i32 = 4;

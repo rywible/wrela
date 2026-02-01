@@ -1268,11 +1268,31 @@ fn lower_rvalue(
                                 match name.as_str() {
                                     "print" => Some(runtime_fn_print(module, runtime)?),
                                     "assert" => Some(runtime_fn_assert(module, runtime)?),
+                                    "assert_eq" => {
+                                        Some(runtime_fn_assert_eq(module, runtime)?)
+                                    }
+                                    "value_deep_eq" => {
+                                        Some(runtime_fn_value_deep_eq(module, runtime)?)
+                                    }
+                                    "identity_eq" => {
+                                        Some(runtime_fn_identity_eq(module, runtime)?)
+                                    }
+                                    "assert_value_equality" => Some(
+                                        runtime_fn_assert_value_equality(module, runtime)?,
+                                    ),
+                                    "assert_identity" => {
+                                        Some(runtime_fn_assert_identity(module, runtime)?)
+                                    }
+                                    "assert_err" => {
+                                        Some(runtime_fn_assert_err(module, runtime)?)
+                                    }
+                                    "log" => Some(runtime_fn_log(module, runtime)?),
                                     "parse_int" => Some(runtime_fn_parse_int(module, runtime)?),
                                     "parse_float" => Some(runtime_fn_parse_float(module, runtime)?),
                                     "read_file" => Some(runtime_fn_read_file(module, runtime)?),
                                     "write_file" => Some(runtime_fn_write_file(module, runtime)?),
                                     "list_push" => Some(runtime_fn_list_push(module, runtime)?),
+                                    "map_new" => Some(runtime_fn_map_new(module, runtime)?),
                                     "map_get" => Some(runtime_fn_map_get(module, runtime)?),
                                     "map_set" => Some(runtime_fn_map_set(module, runtime)?),
                                     "pool_auto_size" => {
@@ -1983,6 +2003,22 @@ fn runtime_fn_value_eq(
 ) -> Result<cranelift_module::FuncId, CodegenError> {
     let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
     runtime.get_func(module, "wr_value_eq", sig)
+}
+
+fn runtime_fn_value_deep_eq(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_value_deep_eq", sig)
+}
+
+fn runtime_fn_identity_eq(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_identity_eq", sig)
 }
 
 fn runtime_fn_str_from_utf8(
@@ -2827,12 +2863,53 @@ fn runtime_fn_print(
     runtime.get_func(module, "wr_print", sig)
 }
 
+fn runtime_fn_log(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig =
+        RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_log", sig)
+}
+
 fn runtime_fn_assert(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
 ) -> Result<cranelift_module::FuncId, CodegenError> {
     let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
     runtime.get_func(module, "wr_assert", sig)
+}
+
+fn runtime_fn_assert_eq(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_assert_eq", sig)
+}
+
+fn runtime_fn_assert_value_equality(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_assert_value_equality", sig)
+}
+
+fn runtime_fn_assert_identity(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_assert_identity", sig)
+}
+
+fn runtime_fn_assert_err(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_assert_err", sig)
 }
 
 fn runtime_fn_parse_int(

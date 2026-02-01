@@ -1,6 +1,13 @@
 use std::collections::HashMap;
+#[cfg(any(test, feature = "test-utils"))]
+use std::future::Future;
 use std::sync::OnceLock;
 use std::time::Duration;
+
+#[cfg(any(test, feature = "test-utils"))]
+tokio::task_local! {
+    static STORAGE_CONFIG_OVERRIDE: StorageConfig;
+}
 
 #[derive(Clone, Debug)]
 pub struct StorageConfig {
@@ -9,6 +16,7 @@ pub struct StorageConfig {
     pub node_id: u64,
     pub bind_addr: String,
     pub http_enabled: bool,
+    pub peer_token: Option<String>,
     pub peers: HashMap<u64, String>,
     pub bootstrap: bool,
     pub snapshot_interval: u64,
@@ -70,6 +78,10 @@ pub struct BackupConfig {
 static STORAGE_USER_CONFIG: OnceLock<StorageUserConfig> = OnceLock::new();
 
 pub fn storage_config() -> StorageConfig {
+    #[cfg(any(test, feature = "test-utils"))]
+    if let Ok(config) = STORAGE_CONFIG_OVERRIDE.try_with(|cfg| cfg.clone()) {
+        return config;
+    }
     let user = STORAGE_USER_CONFIG.get();
     let enabled = user.is_some() || read_env_bool("WRELA_STORE_ENABLED", false);
     let path = std::env::var("WRELA_STORE_PATH").unwrap_or_else(|_| "./wrela.db".to_string());
@@ -77,6 +89,9 @@ pub fn storage_config() -> StorageConfig {
     let bind_addr =
         std::env::var("WRELA_RAFT_BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
     let http_enabled = read_env_bool("WRELA_RAFT_HTTP_ENABLED", true);
+    let peer_token = std::env::var("WRELA_PEER_TOKEN")
+        .ok()
+        .and_then(|val| if val.trim().is_empty() { None } else { Some(val) });
     let peers = parse_peers(std::env::var("WRELA_RAFT_PEERS").ok());
     let bootstrap = read_env_bool("WRELA_RAFT_BOOTSTRAP", peers.is_empty());
     let snapshot_interval = read_env_u64("WRELA_RAFT_SNAPSHOT_INTERVAL", 10_000);
@@ -91,6 +106,7 @@ pub fn storage_config() -> StorageConfig {
         node_id,
         bind_addr,
         http_enabled,
+        peer_token,
         peers,
         bootstrap,
         snapshot_interval,
@@ -104,6 +120,14 @@ pub fn storage_config() -> StorageConfig {
 
 pub fn set_storage_user_config(config: StorageUserConfig) {
     let _ = STORAGE_USER_CONFIG.set(config);
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+pub async fn with_storage_config_override<F, R>(config: StorageConfig, fut: F) -> R
+where
+    F: Future<Output = R>,
+{
+    STORAGE_CONFIG_OVERRIDE.scope(config, fut).await
 }
 
 fn parse_peers(raw: Option<String>) -> HashMap<u64, String> {

@@ -2,17 +2,26 @@ use crate::actor::{
     actor_class_id, actor_send, pending_await_async, pending_new, resolve_pending, runtime_spawn,
 };
 use crate::http::method_id_for;
+use crate::lease;
 use crate::list;
 use crate::map;
+use crate::pubsub;
 use crate::result;
-use crate::storage_helpers::{storage_get_json_vec, storage_set_json, value_to_string};
+use crate::metrics;
+use crate::storage::config::storage_config;
+use crate::storage_helpers::{
+    storage_delete, storage_get_string, storage_list_prefix_keys, storage_set_json,
+    storage_set_string_if_version, value_to_string,
+};
 use crate::string;
 use crate::value::{TypeId, Value, int_value, type_id_raw};
 use crate::{wr_rc_dec, wr_rc_inc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use std::collections::{HashMap, VecDeque};
-use std::sync::{Mutex, OnceLock};
+use std::collections::{HashMap, HashSet, VecDeque};
+#[cfg(any(test, feature = "test-utils"))]
+use std::future::Future;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -25,6 +34,8 @@ struct JobItem {
     max_retries: u32,
     backoff_secs: u64,
     enqueued_at: u64,
+    run_at: u64,
+    storage_key: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -35,6 +46,8 @@ struct StoredJob {
     max_retries: u32,
     backoff_secs: u64,
     enqueued_at: u64,
+    #[serde(default)]
+    run_at: u64,
 }
 
 struct QueueState {
@@ -42,20 +55,56 @@ struct QueueState {
     backlog: VecDeque<JobItem>,
     handler: Option<Value>,
     method_id: Option<u32>,
+    inflight: std::collections::HashSet<String>,
 }
 
 struct JobsState {
     queues: HashMap<String, QueueState>,
+    subscribed: HashSet<String>,
 }
 
-static STATE: OnceLock<Mutex<JobsState>> = OnceLock::new();
+static STATE: OnceLock<Arc<Mutex<JobsState>>> = OnceLock::new();
 
-fn jobs_state() -> &'static Mutex<JobsState> {
-    STATE.get_or_init(|| {
-        Mutex::new(JobsState {
-            queues: HashMap::new(),
+#[cfg(any(test, feature = "test-utils"))]
+tokio::task_local! {
+    static JOBS_STATE_OVERRIDE: Arc<Mutex<JobsState>>;
+}
+
+fn jobs_state() -> Arc<Mutex<JobsState>> {
+    #[cfg(any(test, feature = "test-utils"))]
+    if let Ok(state) = JOBS_STATE_OVERRIDE.try_with(Arc::clone) {
+        return state;
+    }
+    STATE
+        .get_or_init(|| {
+            Arc::new(Mutex::new(JobsState {
+                queues: HashMap::new(),
+                subscribed: HashSet::new(),
+            }))
         })
-    })
+        .clone()
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+#[allow(dead_code)]
+pub struct JobsStateHandle(Arc<Mutex<JobsState>>);
+
+#[cfg(any(test, feature = "test-utils"))]
+#[allow(dead_code)]
+pub fn new_jobs_state_for_test() -> JobsStateHandle {
+    JobsStateHandle(Arc::new(Mutex::new(JobsState {
+        queues: HashMap::new(),
+        subscribed: HashSet::new(),
+    })))
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+#[allow(dead_code)]
+pub async fn with_jobs_state_override<F, R>(state: &JobsStateHandle, fut: F) -> R
+where
+    F: Future<Output = R>,
+{
+    JOBS_STATE_OVERRIDE.scope(state.0.clone(), fut).await
 }
 
 fn now_secs() -> u64 {
@@ -63,6 +112,14 @@ fn now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+fn job_lease_ttl_secs() -> u64 {
+    std::env::var("WRELA_JOBS_LEASE_TTL_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(60)
+        .max(1)
 }
 
 fn map_get_int(map_val: Value, key: &str) -> Option<i64> {
@@ -155,23 +212,115 @@ fn map_from_json(value: &JsonValue) -> Value {
 }
 
 async fn load_queue(queue: &str) -> Vec<StoredJob> {
-    let key = format!("jobs:queue:{queue}");
-    storage_get_json_vec(&key).await
+    let prefix = queue_prefix(queue);
+    let keys = storage_list_prefix_keys(&prefix, 1000).await;
+    let mut out = Vec::new();
+    for key in keys {
+        let Some(raw) = storage_get_string(&key).await else {
+            continue;
+        };
+        let Ok(mut job) = serde_json::from_str::<StoredJob>(&raw) else {
+            continue;
+        };
+        if job.run_at == 0 {
+            job.run_at = job.enqueued_at;
+        }
+        out.push(job);
+    }
+    out
 }
 
-async fn save_queue(queue: &str, jobs: &[StoredJob]) -> bool {
-    let key = format!("jobs:queue:{queue}");
-    storage_set_json(&key, jobs).await
+async fn scan_due_jobs(queue: &str, sender: &mpsc::Sender<JobItem>, owner: &str) {
+    let prefix = queue_prefix(queue);
+    let keys = storage_list_prefix_keys(&prefix, 1000).await;
+    if keys.is_empty() {
+        return;
+    }
+    let now = now_secs();
+    for key in keys {
+        let Some(raw) = storage_get_string(&key).await else {
+            continue;
+        };
+        let Ok(mut job) = serde_json::from_str::<StoredJob>(&raw) else {
+            continue;
+        };
+        if job.run_at == 0 {
+            job.run_at = job.enqueued_at;
+        }
+        if job.run_at > now {
+            continue;
+        }
+        let done = storage_get_string(&done_key(queue, &job.id)).await;
+        if done.is_some() {
+            let _ = storage_delete(&key).await;
+            continue;
+        }
+        let lease_key = lease_key(queue, &job.id);
+        let lease_ttl = job_lease_ttl_secs();
+        let acquired = lease::try_acquire_lease(&lease_key, owner, lease_ttl).await;
+        if !acquired {
+            continue;
+        }
+        let payload_val = map_from_json(&job.payload);
+        let item = JobItem {
+            id: job.id.clone(),
+            payload: payload_val,
+            attempts: job.attempts,
+            max_retries: job.max_retries,
+            backoff_secs: job.backoff_secs,
+            enqueued_at: job.enqueued_at,
+            run_at: job.run_at,
+            storage_key: key.clone(),
+        };
+        if sender.send(item).await.is_err() {
+            let _ = lease::release_lease(&lease_key, owner).await;
+            unsafe {
+                if payload_val.is_ptr() {
+                    wr_rc_dec(payload_val);
+                }
+            }
+        }
+    }
 }
 
 async fn load_dlq(queue: &str) -> Vec<StoredJob> {
-    let key = format!("jobs:dlq:{queue}");
-    storage_get_json_vec(&key).await
+    let prefix = dlq_prefix(queue);
+    let keys = storage_list_prefix_keys(&prefix, 1000).await;
+    let mut out = Vec::new();
+    for key in keys {
+        let Some(raw) = storage_get_string(&key).await else {
+            continue;
+        };
+        let Ok(job) = serde_json::from_str::<StoredJob>(&raw) else {
+            continue;
+        };
+        out.push(job);
+    }
+    out
 }
 
-async fn save_dlq(queue: &str, jobs: &[StoredJob]) -> bool {
-    let key = format!("jobs:dlq:{queue}");
-    storage_set_json(&key, jobs).await
+fn queue_prefix(queue: &str) -> String {
+    format!("jobs:queue:{queue}:")
+}
+
+fn queue_key(queue: &str, job_id: &str) -> String {
+    format!("jobs:queue:{queue}:{job_id}")
+}
+
+fn dlq_prefix(queue: &str) -> String {
+    format!("jobs:dlq:{queue}:")
+}
+
+fn dlq_key(queue: &str, job_id: &str) -> String {
+    format!("jobs:dlq:{queue}:{job_id}")
+}
+
+fn lease_key(queue: &str, job_id: &str) -> String {
+    format!("jobs:lease:{queue}:{job_id}")
+}
+
+fn done_key(queue: &str, job_id: &str) -> String {
+    format!("jobs:done:{queue}:{job_id}")
 }
 
 fn queue_state_mut<'a>(guard: &'a mut JobsState, name: &str) -> &'a mut QueueState {
@@ -183,6 +332,7 @@ fn queue_state_mut<'a>(guard: &'a mut JobsState, name: &str) -> &'a mut QueueSta
             backlog: VecDeque::new(),
             handler: None,
             method_id: None,
+            inflight: std::collections::HashSet::new(),
         })
 }
 
@@ -204,14 +354,20 @@ pub fn jobs_enqueue(storage: Value, queue: Value, payload: Value, opts: Value) -
     let backoff_secs = map_get_int(opts, "backoff").unwrap_or(1).max(0) as u64;
     unsafe { wr_rc_inc(payload) };
     runtime_spawn(async move {
+        let ha_enabled = !storage_config().peers.is_empty();
         let job_id = Uuid::new_v4().to_string();
+        let now = now_secs();
+        let run_at = now.saturating_add(delay_secs);
+        let storage_key = queue_key(&queue, &job_id);
         let job = JobItem {
             id: job_id.clone(),
             payload,
             attempts: 0,
             max_retries,
             backoff_secs,
-            enqueued_at: now_secs(),
+            enqueued_at: now,
+            run_at,
+            storage_key: storage_key.clone(),
         };
         let stored = StoredJob {
             id: job_id.clone(),
@@ -220,11 +376,17 @@ pub fn jobs_enqueue(storage: Value, queue: Value, payload: Value, opts: Value) -
             max_retries,
             backoff_secs,
             enqueued_at: job.enqueued_at,
+            run_at: job.run_at,
         };
-        let mut stored_queue = load_queue(&queue).await;
-        stored_queue.push(stored.clone());
-        let _ = save_queue(&queue, &stored_queue).await;
-        let mut guard = jobs_state().lock().expect("jobs state lock");
+        let _ = storage_set_json(&storage_key, &stored).await;
+        if ha_enabled {
+            let topic = format!("jobs:wakeup:{queue}");
+            #[cfg(feature = "metrics")]
+            metrics::inc_jobs_wakeup();
+            pubsub::publish(&topic, JsonValue::Null).await;
+        }
+        let jobs_state_ref = jobs_state();
+        let mut guard = jobs_state_ref.lock().expect("jobs state lock");
         let queue_state = queue_state_mut(&mut guard, &queue);
         if let Some(sender) = queue_state.sender.clone() {
             let job_clone = job.clone();
@@ -268,9 +430,24 @@ pub fn jobs_process(storage: Value, queue: Value, handler: Value) -> Value {
     };
     unsafe { wr_rc_inc(handler) };
     runtime_spawn(async move {
+        let ha_enabled = !storage_config().peers.is_empty();
         let (sender, mut rx) = mpsc::channel::<JobItem>(1024);
+        let owner = lease::owner_id();
+        if ha_enabled {
+            let scan_sender = sender.clone();
+            let queue_name = queue_name.clone();
+            let owner_for_scan = owner.clone();
+            tokio::spawn(async move {
+                loop {
+                    scan_due_jobs(&queue_name, &scan_sender, &owner_for_scan).await;
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            });
+        }
+        let lease_ttl_default = job_lease_ttl_secs();
         {
-            let mut guard = jobs_state().lock().expect("jobs state lock");
+            let jobs_state_ref = jobs_state();
+            let mut guard = jobs_state_ref.lock().expect("jobs state lock");
             let queue_state = queue_state_mut(&mut guard, &queue_name);
             queue_state.sender = Some(sender.clone());
             if let Some(old) = queue_state.handler.take() {
@@ -283,10 +460,35 @@ pub fn jobs_process(storage: Value, queue: Value, handler: Value) -> Value {
                 let _ = sender.try_send(job);
             }
         }
+        if ha_enabled {
+            let should_subscribe = {
+                let jobs_state_ref = jobs_state();
+                let mut guard = jobs_state_ref.lock().expect("jobs state lock");
+                guard.subscribed.insert(queue_name.clone())
+            };
+            if should_subscribe {
+                let queue_name_for_pubsub = queue_name.clone();
+                let topic = format!("jobs:wakeup:{queue_name_for_pubsub}");
+                let scan_sender = sender.clone();
+                let owner = owner.clone();
+                runtime_spawn(async move {
+                    pubsub::subscribe(&topic, move |_| {
+                        let scan_sender = scan_sender.clone();
+                        let queue_name = queue_name_for_pubsub.clone();
+                        let owner = owner.clone();
+                        async move {
+                            scan_due_jobs(&queue_name, &scan_sender, &owner).await;
+                        }
+                    })
+                    .await;
+                });
+            }
+        }
 
         let stored_backlog = load_queue(&queue_name).await;
         for stored in stored_backlog {
             let payload_val = map_from_json(&stored.payload);
+            let storage_key = queue_key(&queue_name, &stored.id);
             let job = JobItem {
                 id: stored.id,
                 payload: payload_val,
@@ -294,11 +496,70 @@ pub fn jobs_process(storage: Value, queue: Value, handler: Value) -> Value {
                 max_retries: stored.max_retries,
                 backoff_secs: stored.backoff_secs,
                 enqueued_at: stored.enqueued_at,
+                run_at: stored.run_at,
+                storage_key,
             };
-            let _ = sender.try_send(job);
+            let now = now_secs();
+            if job.run_at > now {
+                let delay = job.run_at - now;
+                let retry_sender = sender.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(delay)).await;
+                    let _ = retry_sender.send(job).await;
+                });
+            } else {
+                let _ = sender.try_send(job);
+            }
         }
 
         while let Some(mut job) = rx.recv().await {
+            let now = now_secs();
+            if job.run_at > now {
+                let delay = job.run_at - now;
+                let retry_sender = sender.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(delay)).await;
+                    let _ = retry_sender.send(job).await;
+                });
+                continue;
+            }
+            let job_id = job.id.clone();
+            {
+                let state = jobs_state();
+                let mut guard = state.lock().expect("jobs state lock");
+                let queue_state = queue_state_mut(&mut guard, &queue_name);
+                if queue_state.inflight.contains(&job_id) {
+                    continue;
+                }
+                queue_state.inflight.insert(job_id.clone());
+            }
+            let done = storage_get_string(&done_key(&queue_name, &job.id)).await;
+            if done.is_some() {
+                let _ = storage_delete(&job.storage_key).await;
+                let state = jobs_state();
+                let mut guard = state.lock().expect("jobs state lock");
+                let queue_state = queue_state_mut(&mut guard, &queue_name);
+                queue_state.inflight.remove(&job_id);
+                unsafe { wr_rc_dec(job.payload) };
+                continue;
+            }
+            let lease_key = lease_key(&queue_name, &job.id);
+            if ha_enabled {
+                let acquired =
+                    lease::try_acquire_lease(&lease_key, &owner, lease_ttl_default).await;
+                if !acquired {
+                    let state = jobs_state();
+                    let mut guard = state.lock().expect("jobs state lock");
+                    let queue_state = queue_state_mut(&mut guard, &queue_name);
+                    queue_state.inflight.remove(&job_id);
+                    let retry_sender = sender.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        let _ = retry_sender.send(job).await;
+                    });
+                    continue;
+                }
+            }
             let args = [job.payload];
             let pending_val = actor_send(handler, method_id, 1, args.as_ptr());
             let result = pending_await_async(pending_val).await;
@@ -324,36 +585,65 @@ pub fn jobs_process(storage: Value, queue: Value, handler: Value) -> Value {
                 }
             }
             if success {
-                let mut stored_queue = load_queue(&queue_name).await;
-                stored_queue.retain(|entry| entry.id != job.id);
-                let _ = save_queue(&queue_name, &stored_queue).await;
+                let _ = storage_delete(&job.storage_key).await;
+                let _ =
+                    storage_set_string_if_version(&done_key(&queue_name, &job.id), "1", None).await;
+                if ha_enabled {
+                    let _ = lease::release_lease(&lease_key, &owner).await;
+                }
+                let state = jobs_state();
+                let mut guard = state.lock().expect("jobs state lock");
+                let queue_state = queue_state_mut(&mut guard, &queue_name);
+                queue_state.inflight.remove(&job_id);
                 unsafe { wr_rc_dec(job.payload) };
                 continue;
             }
             job.attempts += 1;
             if job.attempts > job.max_retries {
-                let mut stored_queue = load_queue(&queue_name).await;
-                stored_queue.retain(|entry| entry.id != job.id);
-                let _ = save_queue(&queue_name, &stored_queue).await;
-                let mut dlq = load_dlq(&queue_name).await;
-                dlq.push(StoredJob {
+                let _ = storage_delete(&job.storage_key).await;
+                let dlq_entry = StoredJob {
                     id: job.id.clone(),
                     payload: json_from_map(job.payload),
                     attempts: job.attempts,
                     max_retries: job.max_retries,
                     backoff_secs: job.backoff_secs,
                     enqueued_at: job.enqueued_at,
-                });
-                let _ = save_dlq(&queue_name, &dlq).await;
+                    run_at: now_secs(),
+                };
+                let dlq_storage_key = dlq_key(&queue_name, &job.id);
+                let _ = storage_set_json(&dlq_storage_key, &dlq_entry).await;
+                if ha_enabled {
+                    let _ = lease::release_lease(&lease_key, &owner).await;
+                }
+                let state = jobs_state();
+                let mut guard = state.lock().expect("jobs state lock");
+                let queue_state = queue_state_mut(&mut guard, &queue_name);
+                queue_state.inflight.remove(&job_id);
+                unsafe { wr_rc_dec(job.payload) };
                 continue;
             }
-            let mut stored_queue = load_queue(&queue_name).await;
-            if let Some(entry) = stored_queue.iter_mut().find(|entry| entry.id == job.id) {
-                entry.attempts = job.attempts;
-            }
-            let _ = save_queue(&queue_name, &stored_queue).await;
             let retry_sender = sender.clone();
             let delay = job.backoff_secs * (job.attempts as u64);
+            job.run_at = now_secs().saturating_add(delay);
+            let stored = StoredJob {
+                id: job.id.clone(),
+                payload: json_from_map(job.payload),
+                attempts: job.attempts,
+                max_retries: job.max_retries,
+                backoff_secs: job.backoff_secs,
+                enqueued_at: job.enqueued_at,
+                run_at: job.run_at,
+            };
+            let _ = storage_set_json(&job.storage_key, &stored).await;
+            if ha_enabled {
+                let _ = lease::renew_lease(&lease_key, &owner, delay.saturating_add(30)).await;
+            }
+            {
+                let state = jobs_state();
+                let mut guard = state.lock().expect("jobs state lock");
+                let queue_state = queue_state_mut(&mut guard, &queue_name);
+                queue_state.inflight.remove(&job_id);
+            }
             tokio::spawn(async move {
                 if delay > 0 {
                     tokio::time::sleep(Duration::from_secs(delay)).await;

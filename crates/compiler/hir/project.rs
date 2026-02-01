@@ -55,6 +55,8 @@ enum DefinitionKind {
 
 struct ProjectLoader {
     root_dir: PathBuf,
+    #[allow(dead_code)]
+    tests_dir: Option<PathBuf>,
     modules: HashMap<SmolStr, LoadedModule>,
     errors: Vec<ProjectError>,
     warnings: Vec<ProjectWarning>,
@@ -82,24 +84,30 @@ pub fn load_project(entry_path: &Path) -> Result<LoadedProject, Vec<ProjectError
             }
         },
     };
+    load_project_with_root(entry_path, &root_dir)
+}
+
+pub fn load_project_with_root(
+    entry_path: &Path,
+    root_dir: &Path,
+) -> Result<LoadedProject, Vec<ProjectError>> {
+    load_project_with_roots(entry_path, root_dir, None)
+}
+
+pub fn load_project_with_roots(
+    entry_path: &Path,
+    root_dir: &Path,
+    tests_dir: Option<PathBuf>,
+) -> Result<LoadedProject, Vec<ProjectError>> {
     let mut loader = ProjectLoader {
-        root_dir,
+        root_dir: root_dir.to_path_buf(),
+        tests_dir,
         modules: HashMap::new(),
         errors: Vec::new(),
         warnings: Vec::new(),
     };
 
-    let entry_name = match module_name_for_path(entry_path, &loader.root_dir) {
-        Some(name) => name,
-        None => {
-            return Err(vec![ProjectError {
-                path: entry_path.to_path_buf(),
-                source: String::new(),
-                message: "failed to compute module name for entry file".to_string(),
-                span: SourceSpan::from((0usize, 0usize)),
-            }]);
-        }
-    };
+    let entry_name = module_name_for_entry_path(entry_path, &loader.root_dir);
 
     loader.load_module(entry_name.clone(), entry_path.to_path_buf());
     if build_trace() {
@@ -125,7 +133,16 @@ pub fn load_project(entry_path: &Path) -> Result<LoadedProject, Vec<ProjectError
         HashMap::new();
 
     for module in loader.modules.values() {
-        for (_, func) in module.module.functions.iter() {
+        let mut method_ids = HashSet::new();
+        for (_, class) in module.module.classes.iter() {
+            for method in &class.methods {
+                method_ids.insert(*method);
+            }
+        }
+        for (func_id, func) in module.module.functions.iter() {
+            if method_ids.contains(&func_id) {
+                continue;
+            }
             if let Some((prev_mod, prev_span, prev_path, prev_src)) =
                 function_origins.get(&func.name)
             {
@@ -408,7 +425,7 @@ impl ProjectLoader {
             self.errors.push(ProjectError {
                 path: entry_module.path.clone(),
                 source: entry_module.source.clone(),
-                message: "entry module must define 'to run()'".to_string(),
+                    message: "entry module must define 'to run() -> Type'".to_string(),
                 span: SourceSpan::from((0usize, 0usize)),
             });
             return;
@@ -491,29 +508,24 @@ impl ProjectLoader {
 
     fn analyze_imports(&mut self) {
         let mut public_exports: HashMap<SmolStr, HashSet<SmolStr>> = HashMap::new();
-        let mut public_kinds: HashMap<SmolStr, HashMap<SmolStr, DefinitionKind>> = HashMap::new();
         let mut local_defs: HashMap<SmolStr, HashSet<SmolStr>> = HashMap::new();
 
         for (name, module) in &self.modules {
             let mut exports = HashSet::new();
-            let mut kinds = HashMap::new();
             let mut locals = HashSet::new();
             for (_, func) in module.module.functions.iter() {
                 locals.insert(func.name.clone());
                 if matches!(func.visibility, Visibility::Public) {
                     exports.insert(func.name.clone());
-                    kinds.insert(func.name.clone(), DefinitionKind::Function);
                 }
             }
             for (_, class) in module.module.classes.iter() {
                 locals.insert(class.name.clone());
                 if matches!(class.visibility, Visibility::Public) {
                     exports.insert(class.name.clone());
-                    kinds.insert(class.name.clone(), DefinitionKind::Class);
                 }
             }
             public_exports.insert(name.clone(), exports);
-            public_kinds.insert(name.clone(), kinds);
             local_defs.insert(name.clone(), locals);
         }
 
@@ -522,14 +534,13 @@ impl ProjectLoader {
             used_external.insert(name.clone(), collect_used_external_names(&module.module));
         }
 
-        let mut used_exports: HashMap<SmolStr, HashSet<SmolStr>> = HashMap::new();
-
         for module in self.modules.values() {
             let mut imported_names: HashMap<SmolStr, (SmolStr, TextRange)> = HashMap::new();
             let mut imported_set: HashSet<SmolStr> = HashSet::new();
             let mut glob_modules: HashSet<SmolStr> = HashSet::new();
             let used = used_external.get(&module.name).cloned().unwrap_or_default();
             let locals = local_defs.get(&module.name).cloned().unwrap_or_default();
+            let skip_import_checks = module.name.as_str() == "core";
 
             for use_site in &module.uses {
                 let target = use_site.module.clone();
@@ -579,12 +590,7 @@ impl ProjectLoader {
                             }
                             imported_names.insert(item.clone(), (target.clone(), name.span));
                             imported_set.insert(item.clone());
-                            if used.contains_key(item) {
-                                used_exports
-                                    .entry(target.clone())
-                                    .or_default()
-                                    .insert(item.clone());
-                            } else {
+                            if !used.contains_key(item) {
                                 self.warnings.push(ProjectWarning {
                                     path: module.path.clone(),
                                     source: module.source.clone(),
@@ -642,17 +648,9 @@ impl ProjectLoader {
                         imported_set.insert(export.clone());
                     }
 
-                    let mut any_used = false;
-                    for export in &target_public {
-                        if used.contains_key(export) {
-                            any_used = true;
-                            used_exports
-                                .entry(target.clone())
-                                .or_default()
-                                .insert(export.clone());
-                        }
-                    }
-                    if !any_used && !target_public.is_empty() {
+                    if !target_public.is_empty()
+                        && !target_public.iter().any(|export| used.contains_key(export))
+                    {
                         self.warnings.push(ProjectWarning {
                             path: module.path.clone(),
                             source: module.source.clone(),
@@ -664,6 +662,18 @@ impl ProjectLoader {
             }
 
             for (name, span) in &used {
+                if skip_import_checks {
+                    continue;
+                }
+                if name.as_str() == "Any" {
+                    self.errors.push(ProjectError {
+                        path: module.path.clone(),
+                        source: module.source.clone(),
+                        message: "type 'Any' is reserved for stdlib".to_string(),
+                        span: span_from_range(*span),
+                    });
+                    continue;
+                }
                 if locals.contains(name) || imported_set.contains(name) {
                     continue;
                 }
@@ -678,33 +688,6 @@ impl ProjectLoader {
                 });
             }
 
-            for (name, kind) in public_kinds.get(&module.name).cloned().unwrap_or_default() {
-                let used_set = used_exports.get(&module.name);
-                if used_set.map_or(true, |set| !set.contains(&name)) {
-                    self.warnings.push(ProjectWarning {
-                        path: module.path.clone(),
-                        source: module.source.clone(),
-                        message: format!("unused public {} '{}'", def_kind(kind), name),
-                        span: span_from_range(
-                            module
-                                .module
-                                .functions
-                                .iter()
-                                .find(|(_, f)| f.name == name)
-                                .and_then(|(_, f)| f.name_span)
-                                .or_else(|| {
-                                    module
-                                        .module
-                                        .classes
-                                        .iter()
-                                        .find(|(_, c)| c.name == name)
-                                        .and_then(|(_, c)| c.name_span)
-                                })
-                                .unwrap_or_else(|| TextRange::empty(0.into())),
-                        ),
-                    });
-                }
-            }
         }
     }
 
@@ -715,6 +698,20 @@ impl ProjectLoader {
                 .join("core.wr");
             if stdlib.is_file() {
                 return Some(stdlib);
+            }
+        }
+        if let Some(tests_root) = &self.tests_dir {
+            if let Some(test_rel) = name.as_str().strip_prefix("tests/") {
+                let mut rel = PathBuf::from(test_rel);
+                let candidate_wr = tests_root.join(rel.with_extension("wr"));
+                if candidate_wr.is_file() {
+                    return Some(candidate_wr);
+                }
+                rel = PathBuf::from(test_rel);
+                let candidate_sp = tests_root.join(rel.with_extension("sp"));
+                if candidate_sp.is_file() {
+                    return Some(candidate_sp);
+                }
             }
         }
         let mut rel = PathBuf::from(name.as_str());
@@ -794,7 +791,7 @@ impl ProjectLoader {
                                     path: module.path.clone(),
                                     source: module.source.clone(),
                                     message: format!(
-                                        "module '{}' has no public item named '{}'",
+                                        "module '{}' has no item named '{}'",
                                         use_site.module, item
                                     ),
                                     span: span_from_range(name.span),
@@ -896,6 +893,17 @@ fn module_name_for_path(path: &Path, root: &Path) -> Option<SmolStr> {
     }
 }
 
+fn module_name_for_entry_path(path: &Path, root: &Path) -> SmolStr {
+    if let Some(name) = module_name_for_path(path, root) {
+        return name;
+    }
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("entry");
+    SmolStr::new(format!("__entry__{stem}"))
+}
+
 fn span_from_range(range: TextRange) -> SourceSpan {
     let start: usize = range.start().into();
     let len: usize = range.len().into();
@@ -958,6 +966,8 @@ fn is_builtin_type_name(name: &SmolStr) -> bool {
             | "Bool"
             | "String"
             | "Nil"
+            | "Nothing"
+            | "Bytes"
             | "List"
             | "Map"
             | "Result"
@@ -983,6 +993,7 @@ fn is_builtin_value_name(name: &SmolStr) -> bool {
             | "read_file"
             | "write_file"
             | "list_push"
+            | "map_new"
             | "pool_auto_size"
             | "pool_size"
             | "pool_rr"
@@ -996,6 +1007,61 @@ fn is_builtin_value_name(name: &SmolStr) -> bool {
             | "metrics_messages_dropped_id"
             | "clock_ns"
             | "sleep_ms"
+            | "bytes_from_string"
+            | "bytes_to_string"
+            | "bytes_len"
+            | "map_get"
+            | "map_set"
+            | "log"
+            | "env_get"
+            | "env_get_or"
+            | "env_get_as_bool"
+            | "env_get_as_int"
+            | "env_set"
+            | "env_load"
+            | "auth_create_user"
+            | "auth_verify_password"
+            | "auth_issue_jwt"
+            | "auth_verify_jwt"
+            | "auth_issue_email_token"
+            | "auth_verify_email_token"
+            | "auth_oauth_login"
+            | "rbac_create_role"
+            | "rbac_assign_role"
+            | "rbac_check"
+            | "rbac_permissions_for"
+            | "files_upload_stream"
+            | "files_signed_url"
+            | "files_metadata"
+            | "files_delete"
+            | "files_set_acl"
+            | "jobs_enqueue"
+            | "jobs_process"
+            | "jobs_dead_letter"
+            | "schedule_cron"
+            | "schedule_every"
+            | "schedule_at"
+            | "search_index"
+            | "search_remove"
+            | "search_query"
+            | "realtime_on_connect"
+            | "realtime_join"
+            | "realtime_leave"
+            | "realtime_broadcast"
+            | "realtime_send"
+            | "rate_check"
+            | "rate_ip"
+            | "admin_enable"
+            | "storage_get"
+            | "storage_get_with_version"
+            | "storage_scan"
+            | "storage_list_prefix"
+            | "storage_set"
+            | "storage_set_if_version"
+            | "storage_delete_if_version"
+            | "storage_delete"
+            | "storage_batch_set"
+            | "storage_configure"
             | "Pool"
             | "nil"
             | "queue"
@@ -1044,6 +1110,7 @@ fn collect_used_in_block(
         let stmt = &body.stmts[*stmt_id];
         match stmt {
             Stmt::Expr(expr) => collect_used_in_expr(body, *expr, scope, used),
+            Stmt::Assert { expr, .. } => collect_used_in_expr(body, *expr, scope, used),
             Stmt::Let { name, value, .. } => {
                 collect_used_in_expr(body, *value, scope, used);
                 scope.insert(name.clone());
@@ -1210,9 +1277,9 @@ mod tests {
 
         write_temp(
             &entry_path,
-            "use foo from bar\n\nto run():\n    return f()\n\nto f():\n    return foo()\n",
+            "use foo from bar\n\nto run() -> Int:\n    return f()\n\nto f() -> Int:\n    return foo()\n",
         );
-        write_temp(&mod_path, "public to foo() -> Int:\n    return 1\n");
+        write_temp(&mod_path, "to foo() -> Int:\n    return 1\n");
 
         let project = load_project(&entry_path);
         assert!(project.is_ok());
@@ -1242,9 +1309,9 @@ mod tests {
 
         write_temp(
             &entry_path,
-            "use foo from bar\n\nto run():\n    return foo()\n",
+            "use foo from bar\n\nto run() -> Int:\n    return foo()\n",
         );
-        write_temp(&mod_path, "public to foo() -> Int:\n    return 1\n");
+        write_temp(&mod_path, "to foo() -> Int:\n    return 1\n");
 
         let project = load_project(&entry_path);
         assert!(project.is_ok());
@@ -1280,7 +1347,7 @@ mod tests {
         let entry_path = base.join("src").join("main.wr");
         let mod_path = base.join("src").join("bar.wr");
 
-        write_temp(&entry_path, "use * from bar\n\nto run():\n    return 1\n");
+        write_temp(&entry_path, "use * from bar\n\nto run() -> Int:\n    return 1\n");
         write_temp(&mod_path, "print(\"hi\")\n");
 
         let project = load_project(&entry_path);
@@ -1298,7 +1365,7 @@ mod tests {
                 .as_nanos()
         ));
         let entry_path = base.join("src").join("main.wr");
-        write_temp(&entry_path, "to run():\n    return foo()\n");
+        write_temp(&entry_path, "to run() -> Int:\n    return foo()\n");
 
         let project = load_project(&entry_path);
         assert!(project.is_err());
@@ -1315,7 +1382,7 @@ mod tests {
                 .as_nanos()
         ));
         let entry_path = base.join("src").join("main.wr");
-        write_temp(&entry_path, "to f():\n    return 1\n");
+        write_temp(&entry_path, "to f() -> Int:\n    return 1\n");
 
         let project = load_project(&entry_path);
         assert!(project.is_err());
@@ -1334,8 +1401,8 @@ mod tests {
         let entry_path = base.join("src").join("main.wr");
         let mod_path = base.join("src").join("bar.wr");
 
-        write_temp(&entry_path, "use * from bar\n\nto run():\n    return 1\n");
-        write_temp(&mod_path, "to run():\n    return 2\n");
+        write_temp(&entry_path, "use * from bar\n\nto run() -> Int:\n    return 1\n");
+        write_temp(&mod_path, "to run() -> Int:\n    return 2\n");
 
         let project = load_project(&entry_path);
         assert!(project.is_err());

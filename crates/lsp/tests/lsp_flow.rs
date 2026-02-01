@@ -35,7 +35,7 @@ async fn lsp_flow_basic() {
             uri: uri.clone(),
             language_id: "wrela".to_string(),
             version: 1,
-            text: "to main():\n    foo = Foo()\n    foo.\n\nA Foo:\n    has:\n        value: Int\n"
+            text: "to main() -> Nothing:\n    foo = Foo()\n    foo.\n\nA Foo:\n    has:\n        value: Int\n"
                 .to_string(),
         },
     };

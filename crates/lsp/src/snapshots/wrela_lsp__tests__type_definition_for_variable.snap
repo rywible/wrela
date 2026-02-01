@@ -1,5 +1,8 @@
 ---
 source: crates/lsp/src/lib.rs
+assertion_line: 5098
 expression: ty
 ---
-None
+Some(
+    "Foo",
+)

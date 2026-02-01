@@ -7,9 +7,9 @@ use tokio::sync::RwLock;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams,
-    CodeActionProviderCapability, CodeActionResponse, CodeLens, CodeLensOptions, Command,
-    CompletionItem, CompletionItemKind, CompletionOptions, CompletionResponse, Diagnostic,
-    DiagnosticSeverity, DocumentFormattingParams, DocumentHighlight, DocumentHighlightParams,
+    CodeActionProviderCapability, CodeActionResponse, CodeLens, CompletionItem,
+    CompletionItemKind, CompletionOptions, CompletionResponse, Diagnostic, DiagnosticSeverity,
+    DocumentFormattingParams, DocumentHighlight, DocumentHighlightParams,
     DocumentRangeFormattingParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
     ExecuteCommandParams, FoldingRange, FoldingRangeKind, FoldingRangeParams,
     FoldingRangeProviderCapability, GotoDefinitionParams, GotoDefinitionResponse, Hover,
@@ -24,6 +24,10 @@ use tower_lsp::lsp_types::{
     TextDocumentSyncKind, TextEdit, Url, WorkspaceEdit, WorkspaceSymbolParams,
 };
 use tower_lsp::{Client, LanguageServer};
+#[cfg(test)]
+use tower_lsp::lsp_types::Command;
+use wrela::hir;
+use wrela::hir::TypeError;
 use wrela::parser::ast::AstNode;
 use wrela::parser::{self, ParseError, SyntaxNode, SyntaxToken, ast, kind::SyntaxKind};
 
@@ -139,6 +143,22 @@ impl SymbolIndex {
         let root_scope = index.add_scope(ScopeKind::Root, None, root.text_range(), None);
         if let Some(ast_root) = ast::Root::cast(root.clone()) {
             for stmt in ast_root.statements() {
+                if let ast::Stmt::ClassDef(def) = stmt {
+                    if let Some(name) = def.name() {
+                        let class_name = name.text().to_string();
+                        if !index.class_scopes.contains_key(&class_name) {
+                            let class_scope = index.add_scope(
+                                ScopeKind::Class,
+                                Some(root_scope),
+                                def.syntax().text_range(),
+                                Some(class_name.clone()),
+                            );
+                            index.class_scopes.insert(class_name, class_scope);
+                        }
+                    }
+                }
+            }
+            for stmt in ast_root.statements() {
                 index.collect_stmt(root_scope, text, &stmt);
             }
         }
@@ -199,6 +219,11 @@ impl SymbolIndex {
         match stmt {
             ast::Stmt::ClassDef(def) => self.collect_class(scope_id, text, def),
             ast::Stmt::FuncDef(def) => self.collect_function(scope_id, text, def),
+            ast::Stmt::PrivateBlock(block) => {
+                for stmt in block.statements() {
+                    self.collect_stmt(scope_id, text, &stmt);
+                }
+            }
             ast::Stmt::VarAssign(def) => {
                 if let Some(name) = def.name() {
                     if !is_augmented_assign(def.syntax()) {
@@ -362,87 +387,137 @@ impl SymbolIndex {
                 doc,
             );
         }
-        let class_scope = self.add_scope(
-            ScopeKind::Class,
-            Some(scope_id),
-            def.syntax().text_range(),
-            class_name.clone(),
-        );
-        if let Some(name) = class_name.as_ref() {
-            self.class_scopes.insert(name.clone(), class_scope);
-        }
+        let class_scope = if let Some(name) = class_name.as_ref() {
+            self.class_scopes.get(name).copied().unwrap_or_else(|| {
+                let scope = self.add_scope(
+                    ScopeKind::Class,
+                    Some(scope_id),
+                    def.syntax().text_range(),
+                    class_name.clone(),
+                );
+                self.class_scopes.insert(name.clone(), scope);
+                scope
+            })
+        } else {
+            self.add_scope(
+                ScopeKind::Class,
+                Some(scope_id),
+                def.syntax().text_range(),
+                class_name.clone(),
+            )
+        };
 
         for block in def.has_blocks() {
-            for field in block.fields() {
-                if let Some(name) = field.name() {
-                    let ty = field.ty().and_then(|ty| format_type_ref(&ty));
-                    let detail = ty.as_ref().map(|ty| format!("{}: {}", name.text(), ty));
-                    let doc = extract_doc_comment(field.syntax());
-                    self.add_def(
-                        name.text().to_string(),
-                        DefKind::Field,
-                        class_scope,
-                        field.syntax().text_range(),
-                        name.text_range(),
-                        detail,
-                        ty,
-                        Vec::new(),
-                        doc,
-                    );
-                }
-            }
+            self.collect_fields_from_has_block(class_scope, text, &block);
         }
 
         for method in def.methods() {
-            if let Some(name) = method.name() {
-                let params = params_from_iter(text, method.params());
-                let ret_ty = method.ret_type().and_then(|ty| format_type_ref(&ty));
-                let detail = Some(format_signature(name.text(), &params, ret_ty.as_deref()));
-                let doc = extract_doc_comment(method.syntax());
-                self.add_def(
-                    name.text().to_string(),
-                    DefKind::Method,
-                    class_scope,
-                    method.syntax().text_range(),
-                    name.text_range(),
-                    detail,
-                    ret_ty.clone(),
-                    params.clone(),
-                    doc,
-                );
-                let method_scope = self.add_scope(
-                    ScopeKind::Method,
-                    Some(class_scope),
-                    method.syntax().text_range(),
-                    class_name.clone(),
-                );
-                for param in params {
-                    let detail = param
-                        .ty
-                        .as_ref()
-                        .map(|ty| format!("{}: {}", param.name, ty));
-                    self.add_def(
-                        param.name.clone(),
-                        DefKind::Parameter,
-                        method_scope,
-                        param.range,
-                        param.range,
-                        detail,
-                        param.ty.clone(),
-                        Vec::new(),
-                        None,
-                    );
+            self.collect_method(class_scope, text, class_name.clone(), &method);
+        }
+
+        for private_block in def.syntax().children().filter_map(ast::PrivateBlock::cast) {
+            for child in private_block.syntax().children() {
+                if let Some(has_block) = ast::HasBlock::cast(child.clone()) {
+                    self.collect_fields_from_has_block(class_scope, text, &has_block);
+                    continue;
                 }
-                for stmt in method.statements() {
-                    self.collect_stmt(method_scope, text, &stmt);
+                if let Some(method) = ast::MethodDef::cast(child) {
+                    self.collect_method(class_scope, text, class_name.clone(), &method);
                 }
             }
         }
     }
 
+    fn collect_method(
+        &mut self,
+        class_scope: usize,
+        text: &str,
+        class_name: Option<String>,
+        method: &ast::MethodDef,
+    ) {
+        if let Some(name) = method.name() {
+            let params = params_from_iter(method.params());
+            let ret_ty = method.ret_type().and_then(|ty| format_type_ref(&ty));
+            let detail = Some(format_signature(name.text(), &params, ret_ty.as_deref()));
+            let doc = extract_doc_comment(method.syntax());
+            self.add_def(
+                name.text().to_string(),
+                DefKind::Method,
+                class_scope,
+                method.syntax().text_range(),
+                name.text_range(),
+                detail,
+                ret_ty.clone(),
+                params.clone(),
+                doc,
+            );
+            let method_scope = self.add_scope(
+                ScopeKind::Method,
+                Some(class_scope),
+                method.syntax().text_range(),
+                class_name,
+            );
+            for param in params {
+                let detail = param
+                    .ty
+                    .as_ref()
+                    .map(|ty| format!("{}: {}", param.name, ty));
+                self.add_def(
+                    param.name.clone(),
+                    DefKind::Parameter,
+                    method_scope,
+                    param.range,
+                    param.range,
+                    detail,
+                    param.ty.clone(),
+                    Vec::new(),
+                    None,
+                );
+            }
+            for stmt in method.statements() {
+                self.collect_stmt(method_scope, text, &stmt);
+            }
+        }
+    }
+
+    fn collect_fields_from_has_block(
+        &mut self,
+        class_scope: usize,
+        _text: &str,
+        block: &ast::HasBlock,
+    ) {
+        for field in block.fields() {
+            self.collect_field(class_scope, &field);
+        }
+        for private_block in block.syntax().children().filter_map(ast::PrivateBlock::cast) {
+            for field in private_block.syntax().children().filter_map(ast::FieldDef::cast) {
+                self.collect_field(class_scope, &field);
+            }
+        }
+    }
+
+    fn collect_field(&mut self, class_scope: usize, field: &ast::FieldDef) {
+        if let Some(name) = field.name() {
+            let ty = field.ty().and_then(|ty| format_type_ref(&ty));
+            let detail = ty.as_ref().map(|ty| format!("{}: {}", name.text(), ty));
+            let doc = extract_doc_comment(field.syntax());
+            self.add_def(
+                name.text().to_string(),
+                DefKind::Field,
+                class_scope,
+                field.syntax().text_range(),
+                name.text_range(),
+                detail,
+                ty,
+                Vec::new(),
+                doc,
+            );
+        }
+    }
+
     fn collect_function(&mut self, scope_id: usize, text: &str, def: &ast::FuncDef) {
         if let Some(name) = def.name() {
-            let params = params_from_iter(text, def.params());
+            let params = params_from_iter(def.params());
             let ret_ty = def.ret_type().and_then(|ty| format_type_ref(&ty));
             let detail = Some(format_signature(name.text(), &params, ret_ty.as_deref()));
             let doc = extract_doc_comment(def.syntax());
@@ -593,6 +668,7 @@ impl Backend {
         diagnostics.extend(check_unused_variables(state));
         diagnostics.extend(check_unused_imports(state));
         if errors.is_empty() {
+            diagnostics.extend(check_result_handling_diagnostics(state));
             let mut known = HashSet::new();
             collect_def_names(&state.index, &mut known);
             if let Some(root_uri) = self.root_uri.read().await.clone() {
@@ -1124,34 +1200,6 @@ pub fn semantic_tokens(state: &DocumentState) -> Vec<SemanticToken> {
     tokens
 }
 
-fn is_operator(kind: SyntaxKind) -> bool {
-    matches!(
-        kind,
-        SyntaxKind::Plus
-            | SyntaxKind::Minus
-            | SyntaxKind::Star
-            | SyntaxKind::Slash
-            | SyntaxKind::Equals
-            | SyntaxKind::EqEq
-            | SyntaxKind::BangEq
-            | SyntaxKind::Less
-            | SyntaxKind::LessEq
-            | SyntaxKind::Greater
-            | SyntaxKind::GreaterEq
-            | SyntaxKind::Range
-            | SyntaxKind::PlusEq
-            | SyntaxKind::MinusEq
-            | SyntaxKind::StarEq
-            | SyntaxKind::SlashEq
-            | SyntaxKind::Ampersand
-            | SyntaxKind::Pipe
-            | SyntaxKind::Caret
-            | SyntaxKind::BitwiseNot
-            | SyntaxKind::ShiftLeft
-            | SyntaxKind::ShiftRight
-    )
-}
-
 pub fn inlay_hints(state: &DocumentState) -> Vec<InlayHint> {
     let mut hints = Vec::new();
     let root = syntax_root(state);
@@ -1302,6 +1350,7 @@ fn code_actions(
     let mut diagnostics = Vec::new();
     diagnostics.extend(check_unused_variables(state));
     diagnostics.extend(check_unused_imports(state));
+    diagnostics.extend(check_result_handling_diagnostics(state));
     let mut known = HashSet::new();
     for doc in documents.values() {
         collect_def_names(&doc.index, &mut known);
@@ -1376,6 +1425,90 @@ fn code_actions(
                     &diag.message,
                     documents,
                 ));
+            }
+            if diag.code
+                == Some(tower_lsp::lsp_types::NumberOrString::String(
+                    "pending_not_awaited".to_string(),
+                ))
+            {
+                let insert = TextEdit {
+                    range: Range {
+                        start: diag.range.start,
+                        end: diag.range.start,
+                    },
+                    new_text: "await ".to_string(),
+                };
+                actions.push(CodeAction {
+                    title: "Add `await`".to_string(),
+                    kind: Some(CodeActionKind::QUICKFIX),
+                    diagnostics: Some(vec![diag.clone()]),
+                    edit: Some(WorkspaceEdit {
+                        changes: Some(HashMap::from([(uri.clone(), vec![insert])])),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                });
+                let offset =
+                    position_to_offset_with_index(&state.text, &state.line_index, diag.range.start);
+                if is_stmt_expr_at_offset(state, offset) {
+                    let fire_insert = TextEdit {
+                        range: Range {
+                            start: diag.range.start,
+                            end: diag.range.start,
+                        },
+                        new_text: "fire ".to_string(),
+                    };
+                    actions.push(CodeAction {
+                        title: "Add `fire` (statement)".to_string(),
+                        kind: Some(CodeActionKind::QUICKFIX),
+                        diagnostics: Some(vec![diag.clone()]),
+                        edit: Some(WorkspaceEdit {
+                            changes: Some(HashMap::from([(uri.clone(), vec![fire_insert])])),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    });
+                }
+            }
+            if diag.code
+                == Some(tower_lsp::lsp_types::NumberOrString::String(
+                    "unhandled_result".to_string(),
+                ))
+            {
+                let insert = TextEdit {
+                    range: Range {
+                        start: diag.range.end,
+                        end: diag.range.end,
+                    },
+                    new_text: " otherwise nothing".to_string(),
+                };
+                actions.push(CodeAction {
+                    title: "Wrap with `otherwise` (edit fallback)".to_string(),
+                    kind: Some(CodeActionKind::QUICKFIX),
+                    diagnostics: Some(vec![diag.clone()]),
+                    edit: Some(WorkspaceEdit {
+                        changes: Some(HashMap::from([(uri.clone(), vec![insert])])),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                });
+            }
+            if diag.code
+                == Some(tower_lsp::lsp_types::NumberOrString::String(
+                    "missing_result_return".to_string(),
+                ))
+            {
+                let offset =
+                    position_to_offset_with_index(&state.text, &state.line_index, diag.range.start);
+                if let Some(edit) = result_return_type_edit(state, uri, offset) {
+                    actions.push(CodeAction {
+                        title: "Change return type to Result".to_string(),
+                        kind: Some(CodeActionKind::QUICKFIX),
+                        diagnostics: Some(vec![diag.clone()]),
+                        edit: Some(edit),
+                        ..Default::default()
+                    });
+                }
             }
         }
     }
@@ -1804,6 +1937,7 @@ fn folding_ranges(state: &DocumentState) -> Vec<FoldingRange> {
     ranges
 }
 
+#[cfg(test)]
 fn code_lenses(state: &DocumentState) -> Vec<CodeLens> {
     let mut lenses = Vec::new();
     for def in &state.index.defs {
@@ -1992,6 +2126,54 @@ fn collect_def_names(index: &SymbolIndex, names: &mut HashSet<String>) {
     for def in &index.defs {
         names.insert(def.name.clone());
     }
+}
+
+pub fn check_result_handling_diagnostics(state: &DocumentState) -> Vec<Diagnostic> {
+    let root = syntax_root(state);
+    let Some(ast_root) = ast::Root::cast(root) else {
+        return Vec::new();
+    };
+    let module = hir::lower::lower(ast_root);
+    let (errors, _) = hir::typeck::check_module_with_info(&module);
+    errors
+        .into_iter()
+        .filter_map(|error| {
+            let message = error.to_string();
+            match error {
+                TypeError::PendingNotAwaited { span, help } => Some(Diagnostic {
+                    range: span_to_range(&state.text, span),
+                    severity: Some(DiagnosticSeverity::ERROR),
+                    source: Some("wrela".to_string()),
+                    code: Some(tower_lsp::lsp_types::NumberOrString::String(
+                        "pending_not_awaited".to_string(),
+                    )),
+                    message: format!("{message}\nHint: {help}"),
+                    ..Diagnostic::default()
+                }),
+                TypeError::UnhandledResult { span, help } => Some(Diagnostic {
+                    range: span_to_range(&state.text, span),
+                    severity: Some(DiagnosticSeverity::ERROR),
+                    source: Some("wrela".to_string()),
+                    code: Some(tower_lsp::lsp_types::NumberOrString::String(
+                        "unhandled_result".to_string(),
+                    )),
+                    message: format!("{message}\nHint: {help}"),
+                    ..Diagnostic::default()
+                }),
+                TypeError::MissingResultReturn { span, help } => Some(Diagnostic {
+                    range: span_to_range(&state.text, span),
+                    severity: Some(DiagnosticSeverity::ERROR),
+                    source: Some("wrela".to_string()),
+                    code: Some(tower_lsp::lsp_types::NumberOrString::String(
+                        "missing_result_return".to_string(),
+                    )),
+                    message: format!("{message}\nHint: {help}"),
+                    ..Diagnostic::default()
+                }),
+                _ => None,
+            }
+        })
+        .collect()
 }
 
 pub fn check_shadowing(state: &DocumentState) -> Vec<Diagnostic> {
@@ -2285,7 +2467,7 @@ fn format_type_ref(ty: &ast::TypeRef) -> Option<String> {
     }
 }
 
-fn params_from_iter(text: &str, params: impl Iterator<Item = ast::Param>) -> Vec<ParamInfo> {
+fn params_from_iter(params: impl Iterator<Item = ast::Param>) -> Vec<ParamInfo> {
     params
         .filter_map(|param| {
             let name = param.name()?;
@@ -2327,6 +2509,228 @@ fn class_field_params(index: &SymbolIndex, class_scope: usize) -> Vec<ParamInfo>
             range: def.name_range,
         })
         .collect()
+}
+
+fn class_field_params_from_text(text: &str, class_name: &str) -> Vec<ParamInfo> {
+    let mut params = Vec::new();
+    let mut in_class = false;
+    let mut in_has = false;
+    let mut class_indent = 0usize;
+    let mut has_indent = 0usize;
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let indent = line.len().saturating_sub(trimmed.len());
+        if !in_class {
+            let class_decl = trimmed
+                .strip_prefix("A ")
+                .or_else(|| trimmed.strip_prefix("An "));
+            let Some(rest) = class_decl else { continue };
+            let name = rest
+                .trim()
+                .trim_end_matches(':')
+                .split_whitespace()
+                .next()
+                .unwrap_or("");
+            if name == class_name {
+                in_class = true;
+                class_indent = indent;
+            }
+            continue;
+        }
+        if indent <= class_indent {
+            break;
+        }
+        if !in_has {
+            if trimmed == "has:" {
+                in_has = true;
+                has_indent = indent;
+            }
+            continue;
+        }
+        if indent <= has_indent {
+            in_has = false;
+            continue;
+        }
+        let Some((name, ty)) = trimmed.split_once(':') else {
+            continue;
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let ty = ty.trim();
+        params.push(ParamInfo {
+            name: name.to_string(),
+            ty: if ty.is_empty() { None } else { Some(ty.to_string()) },
+            range: TextRange::new(TextSize::from(0), TextSize::from(0)),
+        });
+    }
+    params
+}
+
+fn class_decl_exists_in_text(text: &str, class_name: &str) -> bool {
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        let class_decl = trimmed
+            .strip_prefix("A ")
+            .or_else(|| trimmed.strip_prefix("An "));
+        let Some(rest) = class_decl else { continue };
+        let name = rest
+            .trim()
+            .trim_end_matches(':')
+            .split_whitespace()
+            .next()
+            .unwrap_or("");
+        if name == class_name {
+            return true;
+        }
+    }
+    false
+}
+
+fn class_name_from_assignment(text: &str, var_name: &str) -> Option<String> {
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with(var_name) {
+            continue;
+        }
+        let rest = trimmed[var_name.len()..].trim_start();
+        let Some(rest) = rest.strip_prefix('=') else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let name = rest
+            .split(|ch: char| ch == '(' || ch.is_whitespace())
+            .next()
+            .unwrap_or("");
+        if !name.is_empty() {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+fn class_member_items_from_text(
+    text: &str,
+    class_name: &str,
+    seen: &mut HashSet<String>,
+) -> Vec<CompletionItem> {
+    let mut items = Vec::new();
+    let mut in_class = false;
+    let mut in_has = false;
+    let mut class_indent = 0usize;
+    let mut has_indent = 0usize;
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let indent = line.len().saturating_sub(trimmed.len());
+        if !in_class {
+            let class_decl = trimmed
+                .strip_prefix("A ")
+                .or_else(|| trimmed.strip_prefix("An "));
+            let Some(rest) = class_decl else { continue };
+            let name = rest
+                .trim()
+                .trim_end_matches(':')
+                .split_whitespace()
+                .next()
+                .unwrap_or("");
+            if name == class_name {
+                in_class = true;
+                class_indent = indent;
+            }
+            continue;
+        }
+        if indent <= class_indent {
+            break;
+        }
+        if trimmed == "has:" {
+            in_has = true;
+            has_indent = indent;
+            continue;
+        }
+        if in_has {
+            if indent <= has_indent {
+                in_has = false;
+                continue;
+            }
+            if let Some((name, _)) = trimmed.split_once(':') {
+                let name = name.trim();
+                if !name.is_empty() && seen.insert(name.to_string()) {
+                    items.push(CompletionItem {
+                        label: name.to_string(),
+                        kind: Some(CompletionItemKind::FIELD),
+                        ..CompletionItem::default()
+                    });
+                }
+            }
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("can ") {
+            let rest = rest.trim_start();
+            let method_name = rest
+                .split(|ch: char| ch == '(' || ch.is_whitespace())
+                .next()
+                .unwrap_or("");
+            if !method_name.is_empty() && seen.insert(method_name.to_string()) {
+                items.push(CompletionItem {
+                    label: method_name.to_string(),
+                    kind: Some(CompletionItemKind::METHOD),
+                    ..CompletionItem::default()
+                });
+            }
+        }
+    }
+    items
+}
+
+fn method_params_from_text(text: &str, method_name: &str) -> Vec<ParamInfo> {
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        let Some(rest) = trimmed.strip_prefix("can ") else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        if !rest.starts_with(method_name) {
+            continue;
+        }
+        let rest = rest[method_name.len()..].trim_start();
+        let Some(rest) = rest.strip_prefix('(') else {
+            continue;
+        };
+        let Some(end) = rest.find(')') else {
+            continue;
+        };
+        let args = &rest[..end];
+        let mut params = Vec::new();
+        for arg in args.split(',') {
+            let arg = arg.trim();
+            if arg.is_empty() {
+                continue;
+            }
+            let (name, ty) = match arg.split_once(':') {
+                Some((name, ty)) => (name.trim(), Some(ty.trim())),
+                None => (arg, None),
+            };
+            if name.is_empty() {
+                continue;
+            }
+            params.push(ParamInfo {
+                name: name.to_string(),
+                ty: ty.and_then(|ty| if ty.is_empty() { None } else { Some(ty.to_string()) }),
+                range: TextRange::new(TextSize::from(0), TextSize::from(0)),
+            });
+        }
+        if !params.is_empty() {
+            return params;
+        }
+    }
+    Vec::new()
 }
 
 fn call_signature_for_callee(
@@ -2411,7 +2815,6 @@ const KEYWORDS: &[&str] = &[
     "has",
     "can",
     "to",
-    "public",
     "private",
     "changing",
     "if",
@@ -2569,6 +2972,10 @@ fn completion_items(
         return member_completion_items(&state.index, class_scope, &mut seen);
     }
     if is_member_access_context(&root, offset) {
+        let items = member_completion_items_from_text(state, offset, &mut seen);
+        if !items.is_empty() {
+            return items;
+        }
         return Vec::new();
     }
 
@@ -2849,6 +3256,30 @@ fn document_symbols(state: &DocumentState) -> Vec<DocumentSymbol> {
                     });
                 }
             }
+            ast::Stmt::PrivateBlock(block) => {
+                for stmt in block.statements() {
+                    match stmt {
+                        ast::Stmt::ClassDef(def) => {
+                            symbols.push(class_symbol(&state.text, &def));
+                        }
+                        ast::Stmt::FuncDef(def) => {
+                            if let Some(name) = def.name() {
+                                symbols.push(DocumentSymbol {
+                                    name: name.text().to_string(),
+                                    kind: SymbolKind::FUNCTION,
+                                    range: node_range(&state.text, def.syntax()),
+                                    selection_range: token_range(&state.text, &name),
+                                    children: None,
+                                    deprecated: None,
+                                    tags: None,
+                                    detail: None,
+                                });
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -2869,20 +3300,7 @@ fn class_symbol(text: &str, def: &ast::ClassDef) -> DocumentSymbol {
 
     let mut children = Vec::new();
     for block in def.has_blocks() {
-        for field in block.fields() {
-            if let Some(name) = field.name() {
-                children.push(DocumentSymbol {
-                    name: name.text().to_string(),
-                    kind: SymbolKind::FIELD,
-                    range: node_range(text, field.syntax()),
-                    selection_range: token_range(text, &name),
-                    children: None,
-                    deprecated: None,
-                    tags: None,
-                    detail: None,
-                });
-            }
-        }
+        collect_fields_from_has_block(text, &mut children, &block);
     }
     for method in def.methods() {
         if let Some(name) = method.name() {
@@ -2898,8 +3316,33 @@ fn class_symbol(text: &str, def: &ast::ClassDef) -> DocumentSymbol {
             });
         }
     }
+    for private_block in def.syntax().children().filter_map(ast::PrivateBlock::cast) {
+        for child in private_block.syntax().children() {
+            if let Some(has_block) = ast::HasBlock::cast(child.clone()) {
+                collect_fields_from_has_block(text, &mut children, &has_block);
+                continue;
+            }
+            if let Some(method) = ast::MethodDef::cast(child) {
+                if let Some(name) = method.name() {
+                    #[allow(deprecated)]
+                    let symbol = DocumentSymbol {
+                        name: name.text().to_string(),
+                        kind: SymbolKind::METHOD,
+                        range: node_range(text, method.syntax()),
+                        selection_range: token_range(text, &name),
+                        children: None,
+                        deprecated: None,
+                        tags: None,
+                        detail: None,
+                    };
+                    children.push(symbol);
+                }
+            }
+        }
+    }
 
-    DocumentSymbol {
+    #[allow(deprecated)]
+    let symbol = DocumentSymbol {
         name: class_name,
         kind: SymbolKind::CLASS,
         range: node_range(text, def.syntax()),
@@ -2908,6 +3351,48 @@ fn class_symbol(text: &str, def: &ast::ClassDef) -> DocumentSymbol {
         deprecated: None,
         tags: None,
         detail: None,
+    };
+    symbol
+}
+
+fn collect_fields_from_has_block(
+    text: &str,
+    children: &mut Vec<DocumentSymbol>,
+    block: &ast::HasBlock,
+) {
+    for field in block.fields() {
+        if let Some(name) = field.name() {
+            #[allow(deprecated)]
+            let symbol = DocumentSymbol {
+                name: name.text().to_string(),
+                kind: SymbolKind::FIELD,
+                range: node_range(text, field.syntax()),
+                selection_range: token_range(text, &name),
+                children: None,
+                deprecated: None,
+                tags: None,
+                detail: None,
+            };
+            children.push(symbol);
+        }
+    }
+    for private_block in block.syntax().children().filter_map(ast::PrivateBlock::cast) {
+        for field in private_block.syntax().children().filter_map(ast::FieldDef::cast) {
+            if let Some(name) = field.name() {
+                #[allow(deprecated)]
+                let symbol = DocumentSymbol {
+                    name: name.text().to_string(),
+                    kind: SymbolKind::FIELD,
+                    range: node_range(text, field.syntax()),
+                    selection_range: token_range(text, &name),
+                    children: None,
+                    deprecated: None,
+                    tags: None,
+                    detail: None,
+                };
+                children.push(symbol);
+            }
+        }
     }
 }
 
@@ -3585,6 +4070,54 @@ fn member_scope_at_completion_offset(
     None
 }
 
+fn member_completion_items_from_text(
+    state: &DocumentState,
+    offset: usize,
+    seen: &mut HashSet<String>,
+) -> Vec<CompletionItem> {
+    let root = syntax_root(state);
+    let prev_token = token_before_offset_skip_trivia(&root, offset);
+    let Some(prev_token) = prev_token else { return Vec::new() };
+    if prev_token.kind() != SyntaxKind::Dot {
+        return Vec::new();
+    }
+    let dot_offset: usize = prev_token.text_range().start().into();
+    let scope_id = scope_at_offset(&state.index, offset)
+        .map(|scope| scope.id)
+        .unwrap_or(0);
+    let mut class_name = None;
+    if let Some(member) = find_node_at_offset::<ast::MemberExpr>(&root, dot_offset) {
+        if let Some(object) = member.object() {
+            if let Some(object_ty) = state.index.infer_expr_type(scope_id, &state.text, &object) {
+                class_name = Some(object_ty);
+            }
+        }
+    }
+    if class_name.is_none() {
+        if let Some(object_token) = token_before_offset_skip_trivia(&root, dot_offset) {
+            if object_token.kind() == SyntaxKind::Ident {
+                if let Some(def) = resolve_in_scope(&state.index, scope_id, object_token.text()) {
+                    if def.kind == DefKind::Class {
+                        class_name = Some(def.name.clone());
+                    } else if let Some(ty) = def.ty.clone() {
+                        class_name = Some(ty);
+                    }
+                }
+                if class_name.is_none()
+                    && class_decl_exists_in_text(&state.text, object_token.text())
+                {
+                    class_name = Some(object_token.text().to_string());
+                }
+                if class_name.is_none() {
+                    class_name = class_name_from_assignment(&state.text, object_token.text());
+                }
+            }
+        }
+    }
+    let Some(class_name) = class_name else { return Vec::new() };
+    class_member_items_from_text(&state.text, &class_name, seen)
+}
+
 fn class_scope_for_name(index: &SymbolIndex, name: &str) -> Option<usize> {
     let base = name.split('[').next().unwrap_or(name).trim();
     index.class_scopes.get(base).copied()
@@ -3670,6 +4203,59 @@ fn find_node_at_or_before_offset<T: AstNode>(root: &SyntaxNode, offset: usize) -
         node = current.parent();
     }
     None
+}
+
+fn is_stmt_expr_at_offset(state: &DocumentState, offset: usize) -> bool {
+    let root = syntax_root(state);
+    find_node_at_or_before_offset::<ast::StmtExpr>(&root, offset).is_some()
+}
+
+fn result_return_type_edit(
+    state: &DocumentState,
+    uri: &Url,
+    offset: usize,
+) -> Option<WorkspaceEdit> {
+    let root = syntax_root(state);
+    let func = find_node_at_or_before_offset::<ast::FuncDef>(&root, offset)?;
+    if let Some(ret_ty) = func.ret_type() {
+        let ret_text = format_type_ref(&ret_ty)?;
+        if ret_text.trim_start().starts_with("Result") {
+            return None;
+        }
+        let new_text = format!("Result[{ret_text}]");
+        let range = text_range_to_range_with_index(
+            &state.text,
+            &state.line_index,
+            ret_ty.syntax().text_range(),
+        );
+        return Some(WorkspaceEdit {
+            changes: Some(HashMap::from([(
+                uri.clone(),
+                vec![TextEdit { range, new_text }],
+            )])),
+            ..Default::default()
+        });
+    }
+    let param_list = func
+        .syntax()
+        .children()
+        .find(|node| node.kind() == SyntaxKind::ParamList)?;
+    let insert_offset: usize = param_list.text_range().end().into();
+    let insert_pos = offset_to_position_with_index(&state.text, &state.line_index, insert_offset);
+    let range = Range {
+        start: insert_pos,
+        end: insert_pos,
+    };
+    Some(WorkspaceEdit {
+        changes: Some(HashMap::from([(
+            uri.clone(),
+            vec![TextEdit {
+                range,
+                new_text: " -> Result".to_string(),
+            }],
+        )])),
+        ..Default::default()
+    })
 }
 
 fn token_at_offset(root: &SyntaxNode, offset: usize) -> Option<SyntaxToken> {
@@ -4022,11 +4608,19 @@ fn call_params_from_tokens_at_offset(
             }
             node = current.parent();
         }
+        let fallback = method_params_from_text(&state.text, &callee_name);
+        if !fallback.is_empty() {
+            return Some(fallback);
+        }
         return None;
     }
     if let Some(class_scope) = class_scope_for_name(&state.index, &callee_name) {
         let params = class_field_params(&state.index, class_scope);
         return Some(params);
+    }
+    let fallback = class_field_params_from_text(&state.text, &callee_name);
+    if !fallback.is_empty() {
+        return Some(fallback);
     }
     let def = resolve_in_scope_kinds(
         &state.index,
@@ -4035,8 +4629,14 @@ fn call_params_from_tokens_at_offset(
         &[DefKind::Function, DefKind::Class],
     )?;
     if def.kind == DefKind::Class {
-        let class_scope = class_scope_for_name(&state.index, &def.name)?;
-        return Some(class_field_params(&state.index, class_scope));
+        if let Some(class_scope) = class_scope_for_name(&state.index, &def.name) {
+            return Some(class_field_params(&state.index, class_scope));
+        }
+        let fallback = class_field_params_from_text(&state.text, &def.name);
+        if !fallback.is_empty() {
+            return Some(fallback);
+        }
+        return None;
     }
     Some(def.params.clone())
 }
@@ -4105,12 +4705,22 @@ fn call_signature_from_tokens_at_offset(
                 return Some((label, method.params.clone()));
             }
         }
+        let fallback = method_params_from_text(&state.text, &callee_name);
+        if !fallback.is_empty() {
+            let label = format_signature(&callee_name, &fallback, None);
+            return Some((label, fallback));
+        }
         return None;
     }
     if let Some(class_scope) = class_scope_for_name(&state.index, &callee_name) {
         let params = class_field_params(&state.index, class_scope);
         let label = format_signature(&callee_name, &params, None);
         return Some((label, params));
+    }
+    let fallback = class_field_params_from_text(&state.text, &callee_name);
+    if !fallback.is_empty() {
+        let label = format_signature(&callee_name, &fallback, None);
+        return Some((label, fallback));
     }
     let def = resolve_in_scope_kinds(
         &state.index,
@@ -4119,10 +4729,17 @@ fn call_signature_from_tokens_at_offset(
         &[DefKind::Function, DefKind::Class],
     )?;
     if def.kind == DefKind::Class {
-        let class_scope = class_scope_for_name(&state.index, &def.name)?;
-        let params = class_field_params(&state.index, class_scope);
-        let label = format_signature(&def.name, &params, None);
-        return Some((label, params));
+        if let Some(class_scope) = class_scope_for_name(&state.index, &def.name) {
+            let params = class_field_params(&state.index, class_scope);
+            let label = format_signature(&def.name, &params, None);
+            return Some((label, params));
+        }
+        let fallback = class_field_params_from_text(&state.text, &def.name);
+        if !fallback.is_empty() {
+            let label = format_signature(&def.name, &fallback, None);
+            return Some((label, fallback));
+        }
+        return None;
     }
     let label = def
         .detail
@@ -4219,7 +4836,7 @@ mod tests {
     #[test]
     fn completion_members_after_dot() {
         let code = r#"
-to main():
+to main() -> Nothing:
     foo = Foo()
     foo.
 
@@ -4238,7 +4855,7 @@ A Foo:
     #[test]
     fn completion_named_args_for_constructor() {
         let code = r#"
-to main():
+to main() -> Nothing:
     whale = Whale(
 
 A Whale:
@@ -4256,7 +4873,7 @@ A Whale:
     #[test]
     fn completion_named_args_for_method_call() {
         let code = r#"
-to main():
+to main() -> Nothing:
     whale = Whale()
     whale.swim(
 
@@ -4273,7 +4890,7 @@ A Whale:
 
     #[test]
     fn completion_named_args_for_constructor_multiline() {
-        let code = "to main():\n    whale = Whale(\n        name=\"moby\",\n        \nA Whale:\n    has:\n        name: String\n        age: Int\n";
+        let code = "to main() -> Nothing:\n    whale = Whale(\n        name=\"moby\",\n        \nA Whale:\n    has:\n        name: String\n        age: Int\n";
         let (state, _) = build_document_state(code.to_string());
         let index = LineIndex::new(code);
         let blank_line = code.find("\n        \nA Whale").unwrap();
@@ -4287,7 +4904,7 @@ A Whale:
     #[test]
     fn goto_definition_for_member() {
         let code = r#"
-to main():
+to main() -> Nothing:
     foo = Foo()
     foo.bar(1)
 
@@ -4304,7 +4921,7 @@ A Foo:
     #[test]
     fn references_in_document() {
         let code = r#"
-to main():
+to main() -> Nothing:
     x = 1
     y = x + x
 "#;
@@ -4317,7 +4934,7 @@ to main():
     #[test]
     fn rename_edits_for_identifier() {
         let code = r#"
-to main():
+to main() -> Nothing:
     x = 1
     y = x + x
 "#;
@@ -4332,7 +4949,7 @@ to main():
         let code = r#"
 to add(a: Int, b: Int) -> Int:
     return a + b
-to main():
+to main() -> Nothing:
     add(1, 2)
 "#;
         let (state, _) = build_document_state(code.to_string());
@@ -4344,7 +4961,7 @@ to main():
     #[test]
     fn workspace_symbols_across_documents() {
         let code_a = r#"
-to main():
+to main() -> Nothing:
     foo = Foo()
 
 A Foo:
@@ -4370,11 +4987,11 @@ to add(a: Int, b: Int) -> Int:
     #[test]
     fn workspace_references_and_rename() {
         let code_a = r#"
-to main():
+to main() -> Nothing:
     x = 1
 "#;
         let code_b = r#"
-to other():
+to other() -> Nothing:
     y = x + x
 "#;
         let (state_a, _) = build_document_state(code_a.to_string());
@@ -4393,7 +5010,7 @@ to other():
 
     #[test]
     fn apply_content_changes_incremental() {
-        let original = "to main():\n    x = 1\n";
+        let original = "to main() -> Nothing:\n    x = 1\n";
         let index = LineIndex::new(original);
         let start = original.find("1").unwrap();
         let end = start + 1;
@@ -4412,7 +5029,7 @@ to other():
 
     #[test]
     fn formatting_trims_whitespace() {
-        let text = "to main():  \n    x = 1\t\n";
+        let text = "to main() -> Nothing:  \n    x = 1\t\n";
         let formatted = format_text(text);
         assert_debug_snapshot!(formatted);
     }
@@ -4420,7 +5037,7 @@ to other():
     #[test]
     fn folding_ranges_basic() {
         let code = r#"
-to main():
+to main() -> Nothing:
     if true:
         x = 1
 
@@ -4438,7 +5055,7 @@ A Foo:
         let code = r#"
 to add(a: Int, b: Int) -> Int:
     return a + b
-to main():
+to main() -> Nothing:
     add(1, 2)
     add(3, 4)
 "#;
@@ -4450,7 +5067,7 @@ to main():
     #[test]
     fn type_definition_for_variable() {
         let code = r#"
-to main():
+to main() -> Nothing:
     foo = Foo()
     foo
 
@@ -4468,7 +5085,7 @@ A Foo:
     fn organize_imports_editing() {
         let code = r#"
 use b, a, a from core
-to main():
+to main() -> Nothing:
     a()
 "#;
         let (state, _) = build_document_state(code.to_string());
@@ -4480,9 +5097,9 @@ to main():
     #[test]
     fn diagnostics_naming_and_shadowing() {
         let code = r#"
-to BadName():
+to BadName() -> Nothing:
     x = 1
-    to inner():
+    to inner() -> Nothing:
         x = 2
 
 A foo:
@@ -4504,7 +5121,7 @@ A foo:
         let a_path = base.join("a.wr");
         let b_path = base.join("b.wr");
         fs::write(&a_path, "A Foo:\n    has:\n        value: Int\n").unwrap();
-        fs::write(&b_path, "to main():\n    foo = Foo()\n    bar = Bar()\n").unwrap();
+        fs::write(&b_path, "to main() -> Nothing:\n    foo = Foo()\n    bar = Bar()\n").unwrap();
         let root_uri = Url::from_directory_path(&base).unwrap();
         let documents = index_workspace_documents(&root_uri);
         let current = documents

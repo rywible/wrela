@@ -3,8 +3,11 @@ use axum::body::Bytes;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
 use axum::response::IntoResponse;
 use axum::routing::any;
+use jsonwebtoken::{DecodingKey, Validation};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
@@ -16,6 +19,222 @@ use crate::result;
 use crate::string;
 use crate::value::{Value, int_value};
 use crate::{wr_rc_dec, wr_rc_inc};
+use crate::storage_helpers::{
+    storage_get_json_result, storage_get_json_vec_result,
+    storage_set_json_result,
+};
+use crate::storage::service::StorageError;
+
+fn http_auth_token() -> Option<String> {
+    std::env::var("WRELA_HTTP_AUTH_TOKEN")
+        .ok()
+        .and_then(|val| if val.trim().is_empty() { None } else { Some(val) })
+}
+
+fn http_auth_jwt_enabled() -> bool {
+    std::env::var("WRELA_HTTP_AUTH_JWT")
+        .ok()
+        .map(|v| !matches!(v.as_str(), "0" | "false" | "off"))
+        .unwrap_or(false)
+}
+
+fn jwt_secret() -> String {
+    std::env::var("WRELA_JWT_SECRET").unwrap_or_else(|_| "wrela-dev-secret".to_string())
+}
+
+#[derive(Deserialize)]
+struct JwtClaims {
+    #[allow(dead_code)]
+    exp: usize,
+    sub: Option<String>,
+}
+
+fn decode_jwt(token: &str) -> Option<JwtClaims> {
+    let key = DecodingKey::from_secret(jwt_secret().as_bytes());
+    let mut validation = Validation::default();
+    validation.validate_exp = true;
+    jsonwebtoken::decode::<JwtClaims>(token, &key, &validation)
+        .ok()
+        .map(|data| data.claims)
+}
+
+fn authorized(headers: &HeaderMap) -> bool {
+    let auth = headers
+        .get("authorization")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    if let Some(token) = http_auth_token() {
+        if auth == token || auth == format!("Bearer {token}") {
+            return true;
+        }
+    }
+    if http_auth_jwt_enabled() {
+        let bearer = auth.strip_prefix("Bearer ").unwrap_or(auth);
+        return !bearer.is_empty() && decode_jwt(bearer).is_some();
+    }
+    true
+}
+
+fn http_rbac_permission() -> Option<String> {
+    std::env::var("WRELA_HTTP_RBAC_PERMISSION")
+        .ok()
+        .and_then(|val| if val.trim().is_empty() { None } else { Some(val) })
+}
+
+fn http_rbac_scope() -> String {
+    std::env::var("WRELA_HTTP_RBAC_SCOPE").unwrap_or_else(|_| "global".to_string())
+}
+
+fn http_rbac_skip_paths() -> Vec<String> {
+    std::env::var("WRELA_HTTP_RBAC_SKIP_PATHS")
+        .ok()
+        .map(|val| {
+            val.split(',')
+                .map(|entry| entry.trim().to_string())
+                .filter(|entry| !entry.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn http_rate_limit_enabled() -> bool {
+    std::env::var("WRELA_HTTP_RATE_LIMIT")
+        .ok()
+        .map(|v| !matches!(v.as_str(), "0" | "false" | "off"))
+        .unwrap_or(false)
+}
+
+fn http_rate_limit_burst() -> u64 {
+    std::env::var("WRELA_HTTP_RATE_LIMIT_BURST")
+        .ok()
+        .and_then(|val| val.parse::<u64>().ok())
+        .unwrap_or(60)
+        .max(1)
+}
+
+fn http_rate_limit_per_secs() -> u64 {
+    std::env::var("WRELA_HTTP_RATE_LIMIT_PER_SECS")
+        .ok()
+        .and_then(|val| val.parse::<u64>().ok())
+        .unwrap_or(60)
+        .max(1)
+}
+
+fn http_rate_limit_skip_paths() -> Vec<String> {
+    std::env::var("WRELA_HTTP_RATE_LIMIT_SKIP_PATHS")
+        .ok()
+        .map(|val| {
+            val.split(',')
+                .map(|entry| entry.trim().to_string())
+                .filter(|entry| !entry.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn header_value(headers: &HeaderMap, key: &str) -> Option<String> {
+    headers
+        .get(key)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.to_string())
+}
+
+fn rate_limit_key(headers: &HeaderMap) -> String {
+    if let Some(ip) = header_value(headers, "x-forwarded-for") {
+        return ip;
+    }
+    if let Some(ip) = header_value(headers, "x-real-ip") {
+        return ip;
+    }
+    "unknown".to_string()
+}
+
+fn jwt_subject(headers: &HeaderMap) -> Option<String> {
+    let auth = headers
+        .get("authorization")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    if auth.is_empty() {
+        return None;
+    }
+    let bearer = auth.strip_prefix("Bearer ").unwrap_or(auth);
+    decode_jwt(bearer).and_then(|claims| claims.sub)
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct StoredRole {
+    id: String,
+    scope: String,
+    name: String,
+    permissions: Vec<String>,
+}
+
+async fn rbac_allowed(
+    user_id: &str,
+    permission: &str,
+    scope_id: &str,
+) -> Result<bool, StorageError> {
+    let assign_key = format!("rbac:assign:{scope_id}:{user_id}");
+    let role_ids = storage_get_json_vec_result::<String>(&assign_key).await?;
+    for role_id in role_ids {
+        let role_key = format!("rbac:role:{role_id}");
+        match storage_get_json_result::<StoredRole>(&role_key).await? {
+            Some(role) => {
+                if role.permissions.iter().any(|p| p == permission) {
+                    return Ok(true);
+                }
+            }
+            None => {}
+        }
+    }
+    Ok(false)
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct RateBucket {
+    tokens: f64,
+    last: u64,
+    burst: f64,
+    per_secs: f64,
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+async fn rate_limit_allowed(
+    key: &str,
+    burst: u64,
+    per_secs: u64,
+) -> Result<bool, StorageError> {
+    let bucket_key = format!("rate:{key}");
+    let burst = burst as f64;
+    let per_secs = per_secs as f64;
+    let now = now_secs();
+    let mut bucket = storage_get_json_result::<RateBucket>(&bucket_key)
+        .await?
+        .unwrap_or(RateBucket {
+            tokens: burst,
+            last: now,
+            burst,
+            per_secs,
+        });
+    let elapsed = (now.saturating_sub(bucket.last)) as f64;
+    let rate = bucket.burst / bucket.per_secs;
+    bucket.tokens = (bucket.tokens + elapsed * rate).min(bucket.burst);
+    bucket.last = now;
+    let ok = if bucket.tokens >= 1.0 {
+        bucket.tokens -= 1.0;
+        true
+    } else {
+        false
+    };
+    storage_set_json_result(&bucket_key, &bucket).await?;
+    Ok(ok)
+}
 
 struct Route {
     method: Method,
@@ -244,7 +463,38 @@ async fn handle_request(
     headers: HeaderMap,
     body: Bytes,
 ) -> axum::response::Response {
-    let Some((routes, params_map)) = match_route(uri.path(), &state.routes) else {
+    if !authorized(&headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let path = uri.path();
+    if let Some(permission) = http_rbac_permission() {
+        let skip = http_rbac_skip_paths();
+        if !path_matches_any(path, &skip) {
+            let scope = http_rbac_scope();
+            let Some(user_id) = jwt_subject(&headers) else {
+                return StatusCode::FORBIDDEN.into_response();
+            };
+            match rbac_allowed(&user_id, &permission, &scope).await {
+                Ok(true) => {}
+                Ok(false) => return StatusCode::FORBIDDEN.into_response(),
+                Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+            }
+        }
+    }
+    if http_rate_limit_enabled() {
+        let skip = http_rate_limit_skip_paths();
+        if !path_matches_any(path, &skip) {
+            let key = rate_limit_key(&headers);
+            let burst = http_rate_limit_burst();
+            let per_secs = http_rate_limit_per_secs();
+            match rate_limit_allowed(&key, burst, per_secs).await {
+                Ok(true) => {}
+                Ok(false) => return StatusCode::TOO_MANY_REQUESTS.into_response(),
+                Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+            }
+        }
+    }
+    let Some((routes, params_map)) = match_route(path, &state.routes) else {
         return StatusCode::NOT_FOUND.into_response();
     };
     let Some(route) = routes.iter().find(|route| route.method == method).cloned() else {
@@ -342,6 +592,7 @@ fn build_response(resp_val: Value) -> axum::response::Response {
         }
     }
 
+    apply_default_security_headers(&mut headers);
     let mut response = axum::response::Response::new(axum::body::Body::from(body_bytes));
     *response.status_mut() = status_code;
     *response.headers_mut() = headers;
@@ -358,6 +609,11 @@ fn build_response_headers(headers_val: Value) -> (HeaderMap, bool, bool) {
     let mut headers = HeaderMap::new();
     let mut has_content_type = false;
     let mut has_server = false;
+    let mut has_csp = false;
+    let mut has_xcto = false;
+    let mut has_xfo = false;
+    let mut has_referrer = false;
+    let mut has_permissions = false;
 
     let Some(map) = as_map_ref(headers_val) else {
         return (headers, has_content_type, has_server);
@@ -383,11 +639,73 @@ fn build_response_headers(headers_val: Value) -> (HeaderMap, bool, bool) {
             if header_name == HeaderName::from_static("server") {
                 has_server = true;
             }
+            if header_name == HeaderName::from_static("content-security-policy") {
+                has_csp = true;
+            }
+            if header_name == HeaderName::from_static("x-content-type-options") {
+                has_xcto = true;
+            }
+            if header_name == HeaderName::from_static("x-frame-options") {
+                has_xfo = true;
+            }
+            if header_name == HeaderName::from_static("referrer-policy") {
+                has_referrer = true;
+            }
+            if header_name == HeaderName::from_static("permissions-policy") {
+                has_permissions = true;
+            }
             headers.insert(header_name, header_value);
         }
     }
 
+    if !has_csp {
+        if let Some(csp) = default_csp() {
+            let value = HeaderValue::from_str(&csp).unwrap_or_else(|_| {
+                HeaderValue::from_static(
+                    "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'",
+                )
+            });
+            headers.insert("content-security-policy", value);
+        }
+    }
+    if !has_xcto {
+        headers.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+    }
+    if !has_xfo {
+        headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
+    }
+    if !has_referrer {
+        headers.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
+    }
+    if !has_permissions {
+        headers.insert(
+            "permissions-policy",
+            HeaderValue::from_static("geolocation=(), microphone=(), camera=()"),
+        );
+    }
+
     (headers, has_content_type, has_server)
+}
+
+fn apply_default_security_headers(headers: &mut HeaderMap) {
+    if std::env::var("WRELA_HTTP_HSTS").ok().as_deref() == Some("1") {
+        headers.entry("strict-transport-security").or_insert(
+            HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+        );
+    }
+}
+
+fn default_csp() -> Option<String> {
+    if let Ok(val) = std::env::var("WRELA_HTTP_CSP") {
+        let trimmed = val.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    Some(
+        "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'"
+            .to_string(),
+    )
 }
 
 fn build_headers_map(headers: &HeaderMap) -> Value {
@@ -547,17 +865,43 @@ fn normalize_path(path: &str) -> String {
     out
 }
 
+fn path_matches_any(path: &str, patterns: &[String]) -> bool {
+    for pattern in patterns {
+        if path_matches(pattern, path) {
+            return true;
+        }
+    }
+    false
+}
+
+fn path_matches(pattern: &str, path: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    if let Some(prefix) = pattern.strip_suffix('*') {
+        return path.starts_with(prefix);
+    }
+    pattern == path
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::class;
+    use crate::list;
     use crate::map;
     use crate::string;
     use crate::value;
     use crate::wr_actor_spawn;
+    use crate::wr_pending_await;
+    use crate::wr_result_is_ok;
+    use crate::wr_result_unwrap;
+    use crate::storage::config::StorageUserConfig;
+    use crate::storage::config::{BackupConfig, BlobConfig, RestoreMode, StorageConfig};
     use crate::wr_rc_dec;
     use crate::wr_register_method;
     use reqwest::Client;
+    use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
     use std::time::Duration;
 
@@ -587,6 +931,69 @@ mod tests {
         reg.routes.clear();
         reg.shutdown = None;
         drop(reg);
+    }
+
+    fn await_ok(pending: Value) -> Value {
+        let result = wr_pending_await(pending);
+        let ok = wr_result_is_ok(result);
+        assert!(ok.is_bool());
+        assert!(ok.as_bool());
+        let val = wr_result_unwrap(result);
+        unsafe {
+            wr_rc_dec(result);
+            wr_rc_dec(ok);
+        }
+        val
+    }
+
+    fn ensure_storage_configured() {
+        static STORAGE_ONCE: OnceLock<()> = OnceLock::new();
+        STORAGE_ONCE.get_or_init(|| {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let path = dir.path().join("wrela-http-tests.db");
+            std::mem::forget(dir);
+            let user = StorageUserConfig {
+                file_path: Some(path.to_string_lossy().to_string()),
+                ..Default::default()
+            };
+            crate::storage::config::set_storage_user_config(user);
+            unsafe {
+                std::env::set_var("WRELA_RAFT_HTTP_ENABLED", "0");
+            }
+        });
+    }
+
+    fn disabled_storage_config() -> StorageConfig {
+        StorageConfig {
+            enabled: false,
+            path: String::new(),
+            node_id: 1,
+            bind_addr: String::new(),
+            http_enabled: false,
+            peer_token: None,
+            peers: HashMap::new(),
+            bootstrap: true,
+            snapshot_interval: 1,
+            batch_max_ops: 1,
+            batch_max_ms: 1,
+            queue_cap: 1,
+            blob: BlobConfig {
+                threshold_bytes: 1,
+                file_path: String::new(),
+                s3: None,
+            },
+            backup: BackupConfig {
+                enabled: false,
+                max_age_secs: 60,
+                max_logs: 1,
+                retention_days: 1,
+                max_keep: 0,
+                prefix: "backups".to_string(),
+                only_leader: true,
+                restore_mode: RestoreMode::Single,
+                restore_id: None,
+            },
+        }
     }
 
     fn register_http_classes() {
@@ -918,6 +1325,23 @@ mod tests {
         serve_on_listener(listener)
     }
 
+    fn net_available() -> bool {
+        use std::io::ErrorKind;
+        use std::sync::OnceLock;
+
+        static AVAIL: OnceLock<bool> = OnceLock::new();
+        *AVAIL.get_or_init(|| {
+            match runtime_block_on(async { TcpListener::bind("127.0.0.1:0").await }) {
+                Ok(listener) => {
+                    drop(listener);
+                    true
+                }
+                Err(err) if err.kind() == ErrorKind::PermissionDenied => false,
+                Err(err) => panic!("bind: {err}"),
+            }
+        })
+    }
+
     fn send_with_retry<F>(mut make: F) -> reqwest::Response
     where
         F: FnMut() -> reqwest::RequestBuilder,
@@ -952,6 +1376,9 @@ mod tests {
 
     #[test]
     fn http_server_bytes_and_params() {
+        if !net_available() {
+            return;
+        }
         let _lock = test_lock();
         reset_registry();
         register_http_classes();
@@ -986,6 +1413,9 @@ mod tests {
 
     #[test]
     fn http_server_respects_content_type_and_not_found() {
+        if !net_available() {
+            return;
+        }
         let _lock = test_lock();
         reset_registry();
         register_http_classes();
@@ -1017,6 +1447,9 @@ mod tests {
 
     #[test]
     fn http_server_multiple_routes_and_params() {
+        if !net_available() {
+            return;
+        }
         let _lock = test_lock();
         reset_registry();
         register_http_classes();
@@ -1049,6 +1482,9 @@ mod tests {
 
     #[test]
     fn http_server_binary_round_trip() {
+        if !net_available() {
+            return;
+        }
         let _lock = test_lock();
         reset_registry();
         register_http_classes();
@@ -1077,6 +1513,9 @@ mod tests {
 
     #[test]
     fn http_server_query_decode_and_empty_body() {
+        if !net_available() {
+            return;
+        }
         let _lock = test_lock();
         reset_registry();
         register_http_classes();
@@ -1111,6 +1550,9 @@ mod tests {
 
     #[test]
     fn http_server_stop_closes_port() {
+        if !net_available() {
+            return;
+        }
         let _lock = test_lock();
         reset_registry();
         register_http_classes();
@@ -1133,6 +1575,9 @@ mod tests {
 
     #[test]
     fn http_server_ignores_invalid_handler() {
+        if !net_available() {
+            return;
+        }
         let _lock = test_lock();
         reset_registry();
         register_http_classes();
@@ -1154,6 +1599,9 @@ mod tests {
 
     #[test]
     fn http_server_pool_fan_out() {
+        if !net_available() {
+            return;
+        }
         let _lock = test_lock();
         reset_registry();
         register_http_classes();
@@ -1206,6 +1654,9 @@ mod tests {
 
     #[test]
     fn http_server_concurrent_requests() {
+        if !net_available() {
+            return;
+        }
         let _lock = test_lock();
         reset_registry();
         register_http_classes();
@@ -1252,6 +1703,9 @@ mod tests {
 
     #[test]
     fn http_server_header_override_and_case() {
+        if !net_available() {
+            return;
+        }
         let _lock = test_lock();
         reset_registry();
         register_http_classes();
@@ -1269,12 +1723,421 @@ mod tests {
         assert_eq!(content_type, Some("text/custom"));
         let server = resp.headers().get("server").and_then(|v| v.to_str().ok());
         assert_eq!(server, Some("Custom"));
+        let csp = resp
+            .headers()
+            .get("content-security-policy")
+            .and_then(|v| v.to_str().ok());
+        assert!(csp.is_some());
+        let xfo = resp
+            .headers()
+            .get("x-frame-options")
+            .and_then(|v| v.to_str().ok());
+        assert_eq!(xfo, Some("DENY"));
+        let xcto = resp
+            .headers()
+            .get("x-content-type-options")
+            .and_then(|v| v.to_str().ok());
+        assert_eq!(xcto, Some("nosniff"));
+        let referrer = resp
+            .headers()
+            .get("referrer-policy")
+            .and_then(|v| v.to_str().ok());
+        assert_eq!(referrer, Some("no-referrer"));
+        let perms = resp
+            .headers()
+            .get("permissions-policy")
+            .and_then(|v| v.to_str().ok());
+        assert!(perms.is_some());
 
         stop();
         std::thread::sleep(Duration::from_millis(50));
         unsafe {
             wr_rc_dec(handler);
         }
+    }
+
+    #[test]
+    fn http_server_auth_token() {
+        if !net_available() {
+            return;
+        }
+        let _lock = test_lock();
+        reset_registry();
+        register_http_classes();
+        unsafe {
+            std::env::set_var("WRELA_HTTP_AUTH_TOKEN", "token-123");
+        }
+        let handler = spawn_handler(CLASS_HANDLER_TEXT, handle_text);
+        let addr = start_server("/secure", Method::GET, handler);
+
+        let client = Client::new();
+        let url = format!("http://{addr}/secure");
+        let resp = send_with_retry(|| client.get(&url));
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        let resp = send_with_retry(|| client.get(&url).header("authorization", "Bearer token-123"));
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        stop();
+        std::thread::sleep(Duration::from_millis(50));
+        unsafe {
+            std::env::remove_var("WRELA_HTTP_AUTH_TOKEN");
+        }
+
+        unsafe {
+            wr_rc_dec(handler);
+        }
+    }
+
+    #[test]
+    fn http_server_auth_jwt() {
+        if !net_available() {
+            return;
+        }
+        let _lock = test_lock();
+        reset_registry();
+        register_http_classes();
+        unsafe {
+            std::env::set_var("WRELA_HTTP_AUTH_JWT", "1");
+            std::env::set_var("WRELA_JWT_SECRET", "test-secret");
+        }
+        #[derive(serde::Serialize)]
+        struct Claims {
+            exp: usize,
+        }
+        let header = jsonwebtoken::Header::default();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let claims = Claims { exp: (now + 60) as usize };
+        let key = jsonwebtoken::EncodingKey::from_secret(b"test-secret");
+        let token = jsonwebtoken::encode(&header, &claims, &key).expect("token");
+
+        let handler = spawn_handler(CLASS_HANDLER_TEXT, handle_text);
+        let addr = start_server("/secure-jwt", Method::GET, handler);
+
+        let client = Client::new();
+        let url = format!("http://{addr}/secure-jwt");
+        let resp = send_with_retry(|| client.get(&url));
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        let resp = send_with_retry(|| {
+            client.get(&url).header("authorization", format!("Bearer {token}"))
+        });
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        stop();
+        std::thread::sleep(Duration::from_millis(50));
+        unsafe {
+            std::env::remove_var("WRELA_HTTP_AUTH_JWT");
+            std::env::remove_var("WRELA_JWT_SECRET");
+        }
+
+        unsafe {
+            wr_rc_dec(handler);
+        }
+    }
+
+    #[test]
+    fn http_server_csp_override_and_hsts() {
+        if !net_available() {
+            return;
+        }
+        let _lock = test_lock();
+        reset_registry();
+        register_http_classes();
+        unsafe {
+            std::env::set_var("WRELA_HTTP_CSP", "default-src 'none'");
+            std::env::set_var("WRELA_HTTP_HSTS", "1");
+        }
+        let handler = spawn_handler(CLASS_HANDLER_TEXT, handle_text);
+        let addr = start_server("/csp", Method::GET, handler);
+
+        let client = Client::new();
+        let resp = send_with_retry(|| client.get(format!("http://{addr}/csp")));
+        assert_eq!(resp.status(), StatusCode::OK);
+        let csp = resp
+            .headers()
+            .get("content-security-policy")
+            .and_then(|v| v.to_str().ok());
+        assert_eq!(csp, Some("default-src 'none'"));
+        let hsts = resp
+            .headers()
+            .get("strict-transport-security")
+            .and_then(|v| v.to_str().ok());
+        assert!(hsts.is_some());
+
+        stop();
+        std::thread::sleep(Duration::from_millis(50));
+        unsafe {
+            std::env::remove_var("WRELA_HTTP_CSP");
+            std::env::remove_var("WRELA_HTTP_HSTS");
+            wr_rc_dec(handler);
+        }
+    }
+
+    #[test]
+    fn http_server_rbac_permission() {
+        if !net_available() {
+            return;
+        }
+        let _lock = test_lock();
+        reset_registry();
+        register_http_classes();
+        ensure_storage_configured();
+        unsafe {
+            std::env::set_var("WRELA_HTTP_AUTH_JWT", "1");
+            std::env::set_var("WRELA_JWT_SECRET", "rbac-secret");
+            std::env::set_var("WRELA_HTTP_RBAC_PERMISSION", "admin");
+            std::env::set_var("WRELA_HTTP_RBAC_SCOPE", "scope-a");
+        }
+
+        let storage = Value::from_int(1);
+        let scope = string::str_from_bytes(b"scope-a");
+        let role_name = string::str_from_bytes(b"admin-role");
+        let permissions = list::list_new(0);
+        let perm = string::str_from_bytes(b"admin");
+        list::list_push(permissions, perm);
+        let role_pending = crate::wr_rbac_create_role(storage, scope, role_name, permissions);
+        let role_id = await_ok(role_pending);
+
+        let user_id = string::str_from_bytes(b"user-1");
+        let assign_pending = crate::wr_rbac_assign_role(storage, user_id, role_id, scope);
+        let assigned = await_ok(assign_pending);
+        assert!(assigned.is_bool());
+        assert!(assigned.as_bool());
+
+        #[derive(serde::Serialize)]
+        struct Claims {
+            exp: usize,
+            sub: String,
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let header = jsonwebtoken::Header::default();
+        let key = jsonwebtoken::EncodingKey::from_secret(b"rbac-secret");
+        let token_user1 = jsonwebtoken::encode(
+            &header,
+            &Claims {
+                exp: (now + 60) as usize,
+                sub: "user-1".to_string(),
+            },
+            &key,
+        )
+        .expect("token user1");
+        let token_user2 = jsonwebtoken::encode(
+            &header,
+            &Claims {
+                exp: (now + 60) as usize,
+                sub: "user-2".to_string(),
+            },
+            &key,
+        )
+        .expect("token user2");
+
+        let handler = spawn_handler(CLASS_HANDLER_TEXT, handle_text);
+        let addr = start_server("/secure-rbac", Method::GET, handler);
+
+        let client = Client::new();
+        let url = format!("http://{addr}/secure-rbac");
+        let resp = send_with_retry(|| client.get(&url));
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        let resp = send_with_retry(|| {
+            client
+                .get(&url)
+                .header("authorization", format!("Bearer {token_user2}"))
+        });
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+        let resp = send_with_retry(|| {
+            client
+                .get(&url)
+                .header("authorization", format!("Bearer {token_user1}"))
+        });
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        stop();
+        std::thread::sleep(Duration::from_millis(50));
+        unsafe {
+            std::env::remove_var("WRELA_HTTP_AUTH_JWT");
+            std::env::remove_var("WRELA_JWT_SECRET");
+            std::env::remove_var("WRELA_HTTP_RBAC_PERMISSION");
+            std::env::remove_var("WRELA_HTTP_RBAC_SCOPE");
+        }
+
+        unsafe {
+            wr_rc_dec(scope);
+            wr_rc_dec(role_name);
+            wr_rc_dec(permissions);
+            wr_rc_dec(perm);
+            wr_rc_dec(role_pending);
+            wr_rc_dec(role_id);
+            wr_rc_dec(user_id);
+            wr_rc_dec(assign_pending);
+            wr_rc_dec(assigned);
+            wr_rc_dec(handler);
+        }
+    }
+
+    #[test]
+    fn http_server_rate_limit_blocks() {
+        if !net_available() {
+            return;
+        }
+        let _lock = test_lock();
+        reset_registry();
+        register_http_classes();
+        ensure_storage_configured();
+        unsafe {
+            std::env::set_var("WRELA_HTTP_RATE_LIMIT", "1");
+            std::env::set_var("WRELA_HTTP_RATE_LIMIT_BURST", "1");
+            std::env::set_var("WRELA_HTTP_RATE_LIMIT_PER_SECS", "60");
+        }
+        let handler = spawn_handler(CLASS_HANDLER_TEXT, handle_text);
+        let addr = start_server("/limited", Method::GET, handler);
+        let client = Client::new();
+        let url = format!("http://{addr}/limited");
+        let ip = format!("test-{}", uuid::Uuid::new_v4());
+        let resp = send_with_retry(|| client.get(&url).header("x-real-ip", ip.clone()));
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let resp = send_with_retry(|| client.get(&url).header("x-real-ip", ip.clone()));
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        stop();
+        std::thread::sleep(Duration::from_millis(50));
+        unsafe {
+            std::env::remove_var("WRELA_HTTP_RATE_LIMIT");
+            std::env::remove_var("WRELA_HTTP_RATE_LIMIT_BURST");
+            std::env::remove_var("WRELA_HTTP_RATE_LIMIT_PER_SECS");
+            wr_rc_dec(handler);
+        }
+    }
+
+    #[test]
+    fn http_server_rbac_skip_paths() {
+        if !net_available() {
+            return;
+        }
+        let _lock = test_lock();
+        reset_registry();
+        register_http_classes();
+        ensure_storage_configured();
+        unsafe {
+            std::env::set_var("WRELA_HTTP_AUTH_JWT", "1");
+            std::env::set_var("WRELA_JWT_SECRET", "skip-secret");
+            std::env::set_var("WRELA_HTTP_RBAC_PERMISSION", "admin");
+            std::env::set_var("WRELA_HTTP_RBAC_SCOPE", "scope-skip");
+            std::env::set_var("WRELA_HTTP_RBAC_SKIP_PATHS", "/public");
+        }
+        #[derive(serde::Serialize)]
+        struct Claims {
+            exp: usize,
+            sub: String,
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let header = jsonwebtoken::Header::default();
+        let key = jsonwebtoken::EncodingKey::from_secret(b"skip-secret");
+        let token = jsonwebtoken::encode(
+            &header,
+            &Claims {
+                exp: (now + 60) as usize,
+                sub: "user-no-role".to_string(),
+            },
+            &key,
+        )
+        .expect("token");
+
+        let handler = spawn_handler(CLASS_HANDLER_TEXT, handle_text);
+        let addr = start_server("/public", Method::GET, handler);
+
+        let client = Client::new();
+        let url = format!("http://{addr}/public");
+        let resp = send_with_retry(|| {
+            client
+                .get(&url)
+                .header("authorization", format!("Bearer {token}"))
+        });
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        stop();
+        std::thread::sleep(Duration::from_millis(50));
+        unsafe {
+            std::env::remove_var("WRELA_HTTP_AUTH_JWT");
+            std::env::remove_var("WRELA_JWT_SECRET");
+            std::env::remove_var("WRELA_HTTP_RBAC_PERMISSION");
+            std::env::remove_var("WRELA_HTTP_RBAC_SCOPE");
+            std::env::remove_var("WRELA_HTTP_RBAC_SKIP_PATHS");
+            wr_rc_dec(handler);
+        }
+    }
+
+    #[test]
+    fn http_server_rate_limit_skip_paths() {
+        if !net_available() {
+            return;
+        }
+        let _lock = test_lock();
+        reset_registry();
+        register_http_classes();
+        ensure_storage_configured();
+        unsafe {
+            std::env::set_var("WRELA_HTTP_RATE_LIMIT", "1");
+            std::env::set_var("WRELA_HTTP_RATE_LIMIT_BURST", "1");
+            std::env::set_var("WRELA_HTTP_RATE_LIMIT_PER_SECS", "60");
+            std::env::set_var("WRELA_HTTP_RATE_LIMIT_SKIP_PATHS", "/open");
+        }
+        let handler = spawn_handler(CLASS_HANDLER_TEXT, handle_text);
+        let addr = start_server("/open", Method::GET, handler);
+        let client = Client::new();
+        let url = format!("http://{addr}/open");
+        let ip = format!("skip-{}", uuid::Uuid::new_v4());
+
+        let resp = send_with_retry(|| client.get(&url).header("x-real-ip", ip.clone()));
+        assert_eq!(resp.status(), StatusCode::OK);
+        let resp = send_with_retry(|| client.get(&url).header("x-real-ip", ip.clone()));
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        stop();
+        std::thread::sleep(Duration::from_millis(50));
+        unsafe {
+            std::env::remove_var("WRELA_HTTP_RATE_LIMIT");
+            std::env::remove_var("WRELA_HTTP_RATE_LIMIT_BURST");
+            std::env::remove_var("WRELA_HTTP_RATE_LIMIT_PER_SECS");
+            std::env::remove_var("WRELA_HTTP_RATE_LIMIT_SKIP_PATHS");
+            wr_rc_dec(handler);
+        }
+    }
+
+    #[test]
+    fn http_storage_outage_denies_rbac() {
+        let cfg = disabled_storage_config();
+        crate::actor::runtime_block_on(async move {
+            crate::storage::config::with_storage_config_override(cfg, async {
+                let res = rbac_allowed("user", "perm", "scope").await;
+                assert!(res.is_err());
+            })
+            .await;
+        });
+    }
+
+    #[test]
+    fn http_storage_outage_denies_rate_limit() {
+        let cfg = disabled_storage_config();
+        crate::actor::runtime_block_on(async move {
+            crate::storage::config::with_storage_config_override(cfg, async {
+                let res = rate_limit_allowed("ip", 1, 60).await;
+                assert!(res.is_err());
+            })
+            .await;
+        });
     }
 }
 

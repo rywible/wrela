@@ -20,6 +20,7 @@ pub fn lower_module_with_types(module: &Module, type_info: Option<&TypeInfo>) ->
     let mut classes = Vec::new();
     let mut class_method_ids = HashMap::new();
     let mut method_ids = HashSet::new();
+    let mut method_qnames: HashMap<hir::Idx<hir::Function>, SmolStr> = HashMap::new();
     for (_idx, class) in module.classes.iter() {
         let id = TypeTagId(type_tags.len() + CLASS_ID_BASE);
         type_tags.push(class.name.clone());
@@ -36,9 +37,11 @@ pub fn lower_module_with_types(module: &Module, type_info: Option<&TypeInfo>) ->
             let method = &module.functions[*method_id];
             method_ids.insert(method_id.into_raw());
             method_map.insert(method.name.clone(), idx as u32);
+            let qname = SmolStr::new(format!("{}.{}", class.name, method.name));
+            method_qnames.insert(*method_id, qname.clone());
             methods.push(MirMethodInfo {
                 name: method.name.clone(),
-                func: method.name.clone(),
+                func: qname,
                 arity: method.params.len() + 1,
                 id: idx as u32,
             });
@@ -56,8 +59,17 @@ pub fn lower_module_with_types(module: &Module, type_info: Option<&TypeInfo>) ->
     let mut function_names: HashSet<SmolStr> = module
         .functions
         .iter()
-        .map(|(_, func)| func.name.clone())
+        .filter_map(|(idx, func)| {
+            if method_ids.contains(&idx.into_raw()) {
+                None
+            } else {
+                Some(func.name.clone())
+            }
+        })
         .collect();
+    for qname in method_qnames.values() {
+        function_names.insert(qname.clone());
+    }
     for name in builtin_function_names() {
         function_names.insert(name);
     }
@@ -79,8 +91,17 @@ pub fn lower_module_with_types(module: &Module, type_info: Option<&TypeInfo>) ->
         };
         let is_method = method_ids.contains(&_idx.into_raw());
         let fn_types = type_info.and_then(|info| info.function(_idx));
+        let name = if is_method {
+            method_qnames
+                .get(&_idx)
+                .cloned()
+                .unwrap_or_else(|| func.name.clone())
+        } else {
+            func.name.clone()
+        };
         functions.push(lower_function(
             func,
+            name,
             body,
             &tag_map,
             &class_fields,
@@ -100,6 +121,7 @@ pub fn lower_module_with_types(module: &Module, type_info: Option<&TypeInfo>) ->
 
 fn lower_function(
     func: &hir::Function,
+    name: SmolStr,
     body: &hir::Body,
     type_tags: &HashMap<SmolStr, TypeTagId>,
     class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
@@ -110,7 +132,7 @@ fn lower_function(
     type_info: Option<&FunctionTypeInfo>,
 ) -> MirFunction {
     let mut lowerer = FunctionLowerer::new(
-        func.name.clone(),
+        name,
         type_tags,
         class_fields,
         function_names,
@@ -176,7 +198,7 @@ mod tests {
     #[test]
     fn test_lower_marks_suspendable() {
         let input = "\
-A Whale:\n    can swim() -> Bool:\n        return true\n\nto f():\n    w = detach Whale() * 1\n    return await w.swim()\n";
+A Whale:\n    can swim() -> Bool:\n        return true\n\nto f() -> Result[Bool]:\n    w = detach Whale() * 1\n    return await w.swim()\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = hir_lower::lower(root);
@@ -187,7 +209,7 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f():\n    w = detac
 
     #[test]
     fn test_lower_if_creates_blocks() {
-        let input = "to f():\n    if true:\n        x = 1\n    else:\n        x = 2\n";
+        let input = "to f() -> Nothing:\n    if true:\n        x = 1\n    else:\n        x = 2\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = hir_lower::lower(root);
@@ -394,6 +416,21 @@ impl FunctionLowerer {
         match &body.stmts[stmt_id] {
             HirStmt::Expr(expr) => {
                 let _ = self.lower_expr(body, *expr);
+            }
+            HirStmt::Assert { kind, expr } => {
+                let cond = self.lower_assert_expr(body, *expr, *kind);
+                let func = SmolStr::new("assert");
+                let args = vec![cond, Value::Const(Literal::Nil)];
+                let temp = self.new_temp(MirType::Nil);
+                self.push_stmt(MirStmt::Assign {
+                    place: Place::Temp(temp),
+                    value: Rvalue::Call {
+                        kind: CallKind::Sync,
+                        target: CallTarget::Function(func),
+                        args,
+                    },
+                    span,
+                });
             }
             HirStmt::Let {
                 name,
@@ -722,6 +759,50 @@ impl FunctionLowerer {
                 }
             }
         }
+    }
+
+    fn lower_assert_expr(
+        &mut self,
+        body: &hir::Body,
+        expr_id: hir::Idx<Expr>,
+        kind: hir::AssertKind,
+    ) -> Value {
+        let span = body.expr_span(expr_id);
+        if let Expr::Binary { lhs, op, rhs, .. } = &body.exprs[expr_id] {
+            if matches!(op, BinaryOp::Eq | BinaryOp::Ne) {
+                let left = self.lower_expr(body, *lhs);
+                let right = self.lower_expr(body, *rhs);
+                let func = match kind {
+                    hir::AssertKind::Value => SmolStr::new("value_deep_eq"),
+                    hir::AssertKind::Identity => SmolStr::new("identity_eq"),
+                };
+                let temp = self.new_temp(MirType::Bool);
+                self.push_stmt(MirStmt::Assign {
+                    place: Place::Temp(temp),
+                    value: Rvalue::Call {
+                        kind: CallKind::Sync,
+                        target: CallTarget::Function(func),
+                        args: vec![left, right],
+                    },
+                    span,
+                });
+                let mut result = Value::Temp(temp);
+                if matches!(op, BinaryOp::Ne) {
+                    let not_temp = self.new_temp(MirType::Bool);
+                    self.push_stmt(MirStmt::Assign {
+                        place: Place::Temp(not_temp),
+                        value: Rvalue::Unary {
+                            op: UnaryOp::Not,
+                            operand: result,
+                        },
+                        span,
+                    });
+                    result = Value::Temp(not_temp);
+                }
+                return result;
+            }
+        }
+        self.lower_expr(body, expr_id)
     }
 
     fn lower_case_label(
@@ -1583,27 +1664,49 @@ impl FunctionLowerer {
         match &body.exprs[callee] {
             Expr::Member { object, member, .. } => {
                 let receiver = self.lower_expr(body, *object);
-                let method_id = match self.expr_type(*object) {
+                let class_hint = match &body.exprs[*object] {
+                    Expr::Variable(name) if self.type_tags.contains_key(name) => Some(name.clone()),
+                    _ => None,
+                };
+                let (method_id, method_name) = match self.expr_type(*object) {
                     MirType::Actor(inner) => {
                         if let MirType::Named(class_name) = *inner {
-                            self.method_id_for(&class_name, member)
+                            (
+                                self.method_id_for(&class_name, member),
+                                SmolStr::new(format!("{}.{}", class_name, member)),
+                            )
                         } else {
-                            None
+                            (None, member.clone())
                         }
                     }
-                    MirType::Named(class_name) => self.method_id_for(&class_name, member),
-                    _ => None,
+                    MirType::Named(class_name) => (
+                        self.method_id_for(&class_name, member),
+                        SmolStr::new(format!("{}.{}", class_name, member)),
+                    ),
+                    _ => {
+                        if let Some(class_name) = class_hint {
+                            (
+                                self.method_id_for(&class_name, member),
+                                SmolStr::new(format!("{}.{}", class_name, member)),
+                            )
+                        } else {
+                            (None, member.clone())
+                        }
+                    }
                 };
                 (
                     CallTarget::Method {
                         receiver,
-                        method: member.clone(),
+                        method: method_name,
                         method_id,
                     },
                     values,
                 )
             }
             Expr::Variable(name) if self.function_names.contains(name) => {
+                if name.as_str() == "assert" && values.len() == 1 {
+                    values.push(Value::Const(Literal::Nil));
+                }
                 (CallTarget::Function(name.clone()), values)
             }
             _ => {
@@ -1730,6 +1833,7 @@ fn mir_type_from_type(ty: &Type) -> MirType {
 
 fn builtin_function_names() -> Vec<SmolStr> {
     vec![
+        SmolStr::new("assert_err"),
         SmolStr::new("print"),
         SmolStr::new("parse_int"),
         SmolStr::new("parse_float"),
@@ -1738,9 +1842,11 @@ fn builtin_function_names() -> Vec<SmolStr> {
         SmolStr::new("bytes_from_string"),
         SmolStr::new("bytes_to_string"),
         SmolStr::new("bytes_len"),
+        SmolStr::new("map_new"),
         SmolStr::new("list_push"),
         SmolStr::new("map_get"),
         SmolStr::new("map_set"),
+        SmolStr::new("log"),
         SmolStr::new("pool_auto_size"),
         SmolStr::new("pool_size"),
         SmolStr::new("pool_rr"),

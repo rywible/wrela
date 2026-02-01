@@ -64,12 +64,12 @@ pub enum Token {
     Fire,
     #[strum(serialize = "optimize")]
     Optimize,
+    #[strum(serialize = "assert")]
+    Assert,
     #[strum(serialize = "use")]
     Use,
     #[strum(serialize = "from")]
     From,
-    #[strum(serialize = "public")]
-    Public,
     #[strum(serialize = "private")]
     Private,
     #[strum(serialize = "its")]
@@ -222,9 +222,9 @@ impl Token {
                 | Token::Spawn
                 | Token::Fire
                 | Token::Optimize
+                | Token::Assert
                 | Token::Use
                 | Token::From
-                | Token::Public
                 | Token::Private
                 | Token::Its
                 | Token::It

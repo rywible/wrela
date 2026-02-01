@@ -21,15 +21,6 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                 span: span_for_token(&token),
             });
         }
-        if (token.kind() == SyntaxKind::PublicKw || token.kind() == SyntaxKind::PrivateKw)
-            && let Some(parent) = token.parent()
-            && !is_allowed_visibility_parent(parent.kind())
-        {
-            errors.push(ValidationError {
-                message: "visibility modifier is not valid here".to_string(),
-                span: span_for_token(&token),
-            });
-        }
     }
     for node in root.descendants() {
         match node.kind() {
@@ -37,6 +28,14 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                 if !has_token(&node, SyntaxKind::Ident) {
                     errors.push(ValidationError {
                         message: "function definition requires a name".to_string(),
+                        span: span_for_node(&node),
+                    });
+                }
+                let has_arrow = has_token(&node, SyntaxKind::Arrow);
+                let has_return_type = node.children().any(|child| child.kind() == SyntaxKind::TypeRef);
+                if !has_arrow || !has_return_type {
+                    errors.push(ValidationError {
+                        message: "function requires an explicit return type".to_string(),
                         span: span_for_node(&node),
                     });
                 }
@@ -53,6 +52,14 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                 if !has_token(&node, SyntaxKind::Ident) {
                     errors.push(ValidationError {
                         message: "method definition requires a name".to_string(),
+                        span: span_for_node(&node),
+                    });
+                }
+                let has_arrow = has_token(&node, SyntaxKind::Arrow);
+                let has_return_type = node.children().any(|child| child.kind() == SyntaxKind::TypeRef);
+                if !has_arrow || !has_return_type {
+                    errors.push(ValidationError {
+                        message: "method requires an explicit return type".to_string(),
                         span: span_for_node(&node),
                     });
                 }
@@ -89,14 +96,84 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                     });
                 }
             }
-            SyntaxKind::VarAssign => {
-                if has_token(&node, SyntaxKind::PublicKw)
-                    && has_token(&node, SyntaxKind::ChangingKw)
-                {
+            SyntaxKind::PrivateBlock => {
+                let parent_kind = node.parent().map(|p| p.kind());
+                if !matches!(
+                    parent_kind,
+                    Some(SyntaxKind::Root | SyntaxKind::ClassDef | SyntaxKind::HasBlock)
+                ) {
                     errors.push(ValidationError {
-                        message: "public variables cannot be changing".to_string(),
+                        message: "private blocks are only valid at the top level, in classes, \
+or inside 'has' blocks"
+                            .to_string(),
                         span: span_for_node(&node),
                     });
+                } else if parent_kind == Some(SyntaxKind::Root) {
+                    for child in node.children() {
+                        if child.kind() == SyntaxKind::Block {
+                            for stmt in child.children() {
+                                if !matches!(
+                                    stmt.kind(),
+                                    SyntaxKind::ClassDef | SyntaxKind::FuncDef
+                                ) {
+                                    errors.push(ValidationError {
+                                        message: "private blocks at the top level may only \
+contain functions and classes"
+                                            .to_string(),
+                                        span: span_for_node(&stmt),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                } else if parent_kind == Some(SyntaxKind::ClassDef) {
+                    for child in node.children() {
+                        if !matches!(
+                            child.kind(),
+                            SyntaxKind::HasBlock | SyntaxKind::MethodDef
+                        ) {
+                            errors.push(ValidationError {
+                                message: "private blocks in classes may only contain 'has' \
+blocks or methods"
+                                    .to_string(),
+                                span: span_for_node(&child),
+                            });
+                        }
+                    }
+                } else if parent_kind == Some(SyntaxKind::HasBlock) {
+                    let mut saw_block = false;
+                    let mut saw_child = false;
+                    for child in node.children() {
+                        saw_child = true;
+                        if child.kind() == SyntaxKind::Block {
+                            saw_block = true;
+                            for stmt in child.children() {
+                                if stmt.kind() != SyntaxKind::FieldDef {
+                                    errors.push(ValidationError {
+                                        message: "private blocks inside 'has' may only contain \
+field definitions"
+                                            .to_string(),
+                                        span: span_for_node(&stmt),
+                                    });
+                                }
+                            }
+                        } else if child.kind() != SyntaxKind::FieldDef {
+                            errors.push(ValidationError {
+                                message: "private blocks inside 'has' may only contain field \
+definitions"
+                                    .to_string(),
+                                span: span_for_node(&child),
+                            });
+                        }
+                    }
+                    if !saw_block && !saw_child {
+                        errors.push(ValidationError {
+                            message: "private blocks inside 'has' may only contain field \
+definitions"
+                                .to_string(),
+                            span: span_for_node(&node),
+                        });
+                    }
                 }
             }
             SyntaxKind::MatchStmt => {
@@ -311,18 +388,6 @@ fn has_token(node: &SyntaxNode, kind: SyntaxKind) -> bool {
         .any(|token| token.kind() == kind)
 }
 
-fn is_allowed_visibility_parent(kind: SyntaxKind) -> bool {
-    matches!(
-        kind,
-        SyntaxKind::ClassDef
-            | SyntaxKind::FuncDef
-            | SyntaxKind::MethodDef
-            | SyntaxKind::FieldDef
-            | SyntaxKind::HasBlock
-            | SyntaxKind::VarAssign
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,7 +397,7 @@ mod tests {
     fn test_it_only_in_return() {
         let text = "\
 it
-to f():
+to f() -> Int:
     return it
 ";
         let root = parse(text);
@@ -344,24 +409,12 @@ to f():
     #[test]
     fn test_it_inside_return_expr() {
         let text = "\
-to f():
+to f() -> Int:
     return it + 1
 ";
         let root = parse(text);
         let errors = validate(&root);
         assert!(errors.is_empty());
-    }
-
-    #[test]
-    fn test_public_changing_error() {
-        let text = "public changing x = 1\n";
-        let root = parse(text);
-        let errors = validate(&root);
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.message == "public variables cannot be changing")
-        );
     }
 
     #[test]
@@ -421,18 +474,66 @@ while true:
     }
 
     #[test]
-    fn test_visibility_misuse() {
+    fn test_return_type_required() {
         let text = "\
-public if true:
-    break
+to f():
+    return 1
 ";
         let root = parse(text);
         let errors = validate(&root);
         assert!(
             errors
                 .iter()
-                .any(|e| e.message == "visibility modifier is not valid here")
+                .any(|e| e.message == "function requires an explicit return type")
         );
+    }
+
+    #[test]
+    fn test_private_block_top_level_restricts_members() {
+        let text = "\
+private:
+    to f() -> Int:
+        return 1
+    changing x = 1
+";
+        let root = parse(text);
+        let errors = validate(&root);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("private blocks at the top level"))
+        );
+    }
+
+    #[test]
+    fn test_private_block_class_restricts_members() {
+        let text = "\
+A Foo:
+    private:
+        to f() -> Int:
+            return 1
+";
+        let root = parse(text);
+        let errors = validate(&root);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("private blocks in classes"))
+        );
+    }
+
+    #[test]
+    fn test_private_block_in_has_allows_fields() {
+        let text = "\
+A Foo:
+    has:
+        name: String
+        private:
+            secret: String
+";
+        let root = parse(text);
+        let errors = validate(&root);
+        assert!(errors.is_empty(), "{errors:?}");
     }
 
     #[test]
@@ -465,7 +566,7 @@ to () -> Int:
     #[test]
     fn test_invalid_numeric_literal() {
         let text = "\
-to f():
+to f() -> Int:
     return 1e
 ";
         let root = parse(text);

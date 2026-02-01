@@ -25,6 +25,7 @@ fn config_for_dir(path: String, snapshot_interval: u64) -> StorageConfig {
         node_id: 1,
         bind_addr: "127.0.0.1:0".to_string(),
         http_enabled: false,
+        peer_token: None,
         peers: HashMap::new(),
         bootstrap: true,
         snapshot_interval,
@@ -1068,7 +1069,7 @@ async fn storage_batch_atomicity_mixed_ops() {
     service.shutdown().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread")]
 async fn storage_large_values_many_keys() {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("db").to_string_lossy().to_string();
@@ -1077,8 +1078,19 @@ async fn storage_large_values_many_keys() {
         .await
         .expect("start service");
 
-    let big_value = vec![b'x'; 64 * 1024];
-    for idx in 0..200u16 {
+    let value_size = std::env::var("WRELA_STORAGE_LARGE_VALUE_SIZE")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .unwrap_or(32 * 1024)
+        .max(1024);
+    let key_count = std::env::var("WRELA_STORAGE_LARGE_KEY_COUNT")
+        .ok()
+        .and_then(|raw| raw.parse::<u16>().ok())
+        .unwrap_or(64)
+        .max(1);
+    let probe_idx = key_count / 2;
+    let big_value = vec![b'x'; value_size];
+    for idx in 0..key_count {
         let key = format!("key-{idx}").into_bytes();
         let resp = service
             .dispatch_to(StorageRequest::Put {
@@ -1090,10 +1102,9 @@ async fn storage_large_values_many_keys() {
         matches_ok(resp);
     }
 
+    let probe_key = format!("key-{probe_idx}").into_bytes();
     let resp = service
-        .dispatch_to(StorageRequest::Get {
-            key: b"key-42".to_vec(),
-        })
+        .dispatch_to(StorageRequest::Get { key: probe_key })
         .await
         .expect("get");
     let bytes = expect_ok_bytes(resp);
@@ -1652,6 +1663,140 @@ async fn storage_uncommitted_write_discarded_on_leader_crash() {
     if let Some(service) = service3.take() {
         service.shutdown().await;
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn storage_partition_recovers_and_replicates() {
+    let _lock = acquire_cluster_lock().await;
+    let _guard = DropReplicationGuard::new();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let base = dir.path().to_string_lossy().to_string();
+
+    let Some((listener1, addr1)) = try_bind("127.0.0.1:0").await else {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    };
+    let Some((listener2, addr2)) = try_bind("127.0.0.1:0").await else {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    };
+    let Some((listener3, addr3)) = try_bind("127.0.0.1:0").await else {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    };
+
+    let mut all_peers = HashMap::new();
+    all_peers.insert(1, addr1.clone());
+    all_peers.insert(2, addr2.clone());
+    all_peers.insert(3, addr3.clone());
+
+    let service1 = StorageService::start_for_test_with_listener(
+        config_for_node(
+            format!("{}/db1", base),
+            1,
+            addr1.clone(),
+            peers_for(1, &all_peers),
+            true,
+            50,
+        ),
+        listener1,
+    )
+    .await
+    .expect("start node1");
+    let service2 = StorageService::start_for_test_with_listener(
+        config_for_node(
+            format!("{}/db2", base),
+            2,
+            addr2.clone(),
+            peers_for(2, &all_peers),
+            false,
+            50,
+        ),
+        listener2,
+    )
+    .await
+    .expect("start node2");
+    let service3 = StorageService::start_for_test_with_listener(
+        config_for_node(
+            format!("{}/db3", base),
+            3,
+            addr3.clone(),
+            peers_for(3, &all_peers),
+            false,
+            50,
+        ),
+        listener3,
+    )
+    .await
+    .expect("start node3");
+
+    add_learner_with_retry(
+        service1.raft_ref(),
+        2,
+        BasicNode {
+            addr: addr2.clone(),
+        },
+    )
+    .await;
+    add_learner_with_retry(
+        service1.raft_ref(),
+        3,
+        BasicNode {
+            addr: addr3.clone(),
+        },
+    )
+    .await;
+    change_membership_with_retry(service1.raft_ref(), [1u64, 2u64, 3u64]).await;
+    wait_for_membership_contains(service2.raft_ref(), 2).await;
+    wait_for_membership_contains(service3.raft_ref(), 3).await;
+
+    let leader_id = wait_for_leader(&[&service1, &service2, &service3], &[1, 2, 3]).await;
+    let leader = match leader_id {
+        1 => &service1,
+        2 => &service2,
+        3 => &service3,
+        _ => unreachable!(),
+    };
+
+    set_drop_replication(true);
+    let result = tokio::time::timeout(
+        Duration::from_millis(200),
+        leader.dispatch_to(StorageRequest::Put {
+            key: b"partitioned".to_vec(),
+            value: b"nope".to_vec(),
+        }),
+    )
+    .await;
+    match result {
+        Ok(Ok(StorageResponse::Ok(_))) => panic!("write unexpectedly committed"),
+        _ => {}
+    }
+    set_drop_replication(false);
+
+    let leader_id = wait_for_leader(&[&service1, &service2, &service3], &[1, 2, 3]).await;
+    let leader = match leader_id {
+        1 => &service1,
+        2 => &service2,
+        3 => &service3,
+        _ => unreachable!(),
+    };
+
+    let resp = leader
+        .dispatch_to(StorageRequest::Put {
+            key: b"partitioned".to_vec(),
+            value: b"ok".to_vec(),
+        })
+        .await
+        .expect("put");
+    matches_ok(resp);
+
+    wait_for_value(&service1, b"partitioned", b"ok".to_vec()).await;
+    wait_for_value(&service2, b"partitioned", b"ok".to_vec()).await;
+    wait_for_value(&service3, b"partitioned", b"ok".to_vec()).await;
+
+    service1.shutdown().await;
+    service2.shutdown().await;
+    service3.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

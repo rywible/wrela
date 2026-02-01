@@ -1,0 +1,9 @@
+A Whale:
+    has:
+        name: String
+    can greet() -> String:
+        return "hi {it.name}"
+
+to test_class_constructor() -> Nothing:
+    whale = Whale(name="Moby")
+    assert value whale.greet() == "hi Moby"

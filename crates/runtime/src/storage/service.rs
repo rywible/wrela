@@ -6,10 +6,12 @@ use openraft::SnapshotPolicy;
 use openraft::storage::Adaptor;
 use std::collections::BTreeMap;
 use std::fmt;
+#[cfg(any(test, feature = "test-utils"))]
+use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Mutex as AsyncMutex, mpsc, oneshot};
 use tokio::time::sleep;
 
 use crate::diagnostics;
@@ -113,9 +115,19 @@ pub struct StorageService {
 }
 
 static STORAGE: std::sync::OnceLock<StorageService> = std::sync::OnceLock::new();
+static STORAGE_INIT_LOCK: std::sync::OnceLock<AsyncMutex<()>> = std::sync::OnceLock::new();
+
+#[cfg(any(test, feature = "test-utils"))]
+tokio::task_local! {
+    static STORAGE_OVERRIDE: Arc<StorageService>;
+}
 
 impl StorageService {
     pub async fn dispatch(req: StorageRequest) -> Result<StorageResponse, StorageError> {
+        #[cfg(any(test, feature = "test-utils"))]
+        if let Ok(service) = STORAGE_OVERRIDE.try_with(Arc::clone) {
+            return service.dispatch_to(req).await;
+        }
         let service = Self::get_or_init().await?;
         service.dispatch_to(req).await
     }
@@ -134,6 +146,14 @@ impl StorageService {
         let _ = self.http_handle.abort();
         let _ = self.backup_handle.abort();
         let _ = self.raft.shutdown().await;
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    pub async fn with_storage_override<F, R>(service: Arc<StorageService>, fut: F) -> R
+    where
+        F: Future<Output = R>,
+    {
+        STORAGE_OVERRIDE.scope(service, fut).await
     }
 
     #[cfg(any(test, feature = "test-utils"))]
@@ -170,11 +190,16 @@ impl StorageService {
         if let Some(service) = STORAGE.get() {
             return Ok(service);
         }
+        let lock = STORAGE_INIT_LOCK.get_or_init(|| AsyncMutex::new(()));
+        let _guard = lock.lock().await;
+        if let Some(service) = STORAGE.get() {
+            return Ok(service);
+        }
         let config = storage_config();
         if !config.enabled {
             return Err(StorageError::Disabled);
         }
-        let service = Self::start(config, None).await?;
+        let service = Self::start(config, None, None).await?;
         let _ = STORAGE.set(service);
         STORAGE
             .get()
@@ -183,7 +208,7 @@ impl StorageService {
 
     #[cfg(any(test, feature = "test-utils"))]
     pub async fn start_for_test(config: StorageConfig) -> Result<Self, StorageError> {
-        Self::start(config, None).await
+        Self::start(config, None, None).await
     }
 
     #[cfg(any(test, feature = "test-utils"))]
@@ -191,12 +216,23 @@ impl StorageService {
         config: StorageConfig,
         listener: TcpListener,
     ) -> Result<Self, StorageError> {
-        Self::start(config, Some(listener)).await
+        Self::start(config, Some(listener), None).await
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    #[allow(dead_code)]
+    pub(crate) async fn start_for_test_with_listener_and_state(
+        config: StorageConfig,
+        listener: TcpListener,
+        realtime_state: crate::realtime::RealtimeStateHandleArc,
+    ) -> Result<Self, StorageError> {
+        Self::start(config, Some(listener), Some(realtime_state)).await
     }
 
     async fn start(
         mut config: StorageConfig,
         listener: Option<TcpListener>,
+        realtime_state: Option<crate::realtime::RealtimeStateHandleArc>,
     ) -> Result<Self, StorageError> {
         let (listener, bind_addr_override) = if config.http_enabled {
             let listener = match listener {
@@ -258,7 +294,7 @@ impl StorageService {
 
         let (log_store, state_machine) = Adaptor::new(store.clone());
         let raft = if config.http_enabled {
-            let network = HttpNetworkFactory::new((*peers).clone());
+            let network = HttpNetworkFactory::new((*peers).clone(), config.peer_token.clone());
             Raft::new(
                 config.node_id,
                 raft_config,
@@ -282,8 +318,16 @@ impl StorageService {
         };
 
         let http_handle = if let Some(listener) = listener {
-            let (_addr, handle) =
-                start_http_server(listener, raft.clone(), store.clone(), blob.clone()).await?;
+            let realtime = realtime_state.unwrap_or_else(crate::realtime::realtime_state_shared);
+            let (_addr, handle) = start_http_server(
+                listener,
+                raft.clone(),
+                store.clone(),
+                blob.clone(),
+                realtime,
+                config.peer_token.clone(),
+            )
+                .await?;
             handle
         } else {
             tokio::spawn(async {})
@@ -545,6 +589,9 @@ async fn handle_envelope(
 ) {
     match env.req {
         StorageRequest::Get { key } => {
+            if !batch.is_empty() {
+                flush_batch(raft, batch, batch_start).await;
+            }
             let start = Instant::now();
             let resp = read_linearizable_value(raft, store, blob, key, Some(&config.peers)).await;
             let resp = match resp {
@@ -557,6 +604,9 @@ async fn handle_envelope(
             metrics::record_storage_read_latency(start.elapsed());
         }
         StorageRequest::GetWithVersion { key } => {
+            if !batch.is_empty() {
+                flush_batch(raft, batch, batch_start).await;
+            }
             let start = Instant::now();
             let resp =
                 read_linearizable_record_value(raft, store, blob, key, Some(&config.peers)).await;
@@ -570,6 +620,9 @@ async fn handle_envelope(
             metrics::record_storage_read_latency(start.elapsed());
         }
         StorageRequest::Scan { start, end, limit } => {
+            if !batch.is_empty() {
+                flush_batch(raft, batch, batch_start).await;
+            }
             let start_ts = Instant::now();
             let resp =
                 read_linearizable_scan(raft, store, blob, start, end, limit, Some(&config.peers))
@@ -583,6 +636,9 @@ async fn handle_envelope(
             metrics::record_storage_read_latency(start_ts.elapsed());
         }
         StorageRequest::ListPrefix { prefix, limit } => {
+            if !batch.is_empty() {
+                flush_batch(raft, batch, batch_start).await;
+            }
             let start_ts = Instant::now();
             let resp =
                 read_linearizable_prefix(raft, store, prefix, limit, Some(&config.peers)).await;
@@ -848,12 +904,16 @@ async fn read_linearizable_value(
     match raft.ensure_linearizable().await {
         Ok(_) => read_local_value(store, blob, &key).await,
         Err(err) => {
-            forward_to_leader(
-                err,
-                peers,
-                |addr| async move { forward_read(addr, key).await },
-            )
-            .await
+            if is_single_node(peers) {
+                read_local_value(store, blob, &key).await
+            } else {
+                forward_to_leader(
+                    err,
+                    peers,
+                    |addr| async move { forward_read(addr, key).await },
+                )
+                .await
+            }
         }
     }
 }
@@ -868,10 +928,14 @@ async fn read_linearizable_record_value(
     match raft.ensure_linearizable().await {
         Ok(_) => read_local_record_value(store, blob, &key).await,
         Err(err) => {
-            forward_to_leader(err, peers, |addr| async move {
-                forward_read_version(addr, key).await
-            })
-            .await
+            if is_single_node(peers) {
+                read_local_record_value(store, blob, &key).await
+            } else {
+                forward_to_leader(err, peers, |addr| async move {
+                    forward_read_version(addr, key).await
+                })
+                .await
+            }
         }
     }
 }
@@ -887,23 +951,18 @@ async fn read_linearizable_scan(
 ) -> Result<Value, StorageError> {
     match raft.ensure_linearizable().await {
         Ok(_) => {
-            let records = {
-                let guard = store.state_machine.read().await;
-                guard.scan_range(start.as_deref(), end.as_deref(), limit)
-            }
-            .map_err(|err| StorageError::Internal(format!("state machine scan: {err}")))?;
-            let mut entries = Vec::with_capacity(records.len());
-            for (key, record) in records {
-                let bytes = record_bytes(blob, &record).await?;
-                entries.push((key, bytes, record.version));
-            }
-            Ok(list_from_entries(entries))
+            read_scan_with_retry(store, blob, start.as_deref(), end.as_deref(), limit, peers).await
         }
         Err(err) => {
-            forward_to_leader(err, peers, |addr| async move {
-                forward_scan(addr, start, end, limit).await
-            })
-            .await
+            if is_single_node(peers) {
+                read_scan_with_retry(store, blob, start.as_deref(), end.as_deref(), limit, peers)
+                    .await
+            } else {
+                forward_to_leader(err, peers, |addr| async move {
+                    forward_scan(addr, start, end, limit).await
+                })
+                .await
+            }
         }
     }
 }
@@ -916,21 +975,122 @@ async fn read_linearizable_prefix(
     peers: Option<&std::collections::HashMap<NodeId, String>>,
 ) -> Result<Value, StorageError> {
     match raft.ensure_linearizable().await {
-        Ok(_) => {
-            let keys = {
-                let guard = store.state_machine.read().await;
-                guard.list_prefix_keys(&prefix, limit)
-            }
-            .map_err(|err| StorageError::Internal(format!("state machine prefix: {err}")))?;
-            Ok(list_from_keys(keys))
-        }
+        Ok(_) => read_prefix_with_retry(store, &prefix, limit, peers).await,
         Err(err) => {
-            forward_to_leader(err, peers, |addr| async move {
-                forward_prefix(addr, prefix, limit).await
-            })
-            .await
+            if is_single_node(peers) {
+                read_prefix_with_retry(store, &prefix, limit, peers).await
+            } else {
+                forward_to_leader(err, peers, |addr| async move {
+                    forward_prefix(addr, prefix, limit).await
+                })
+                .await
+            }
         }
     }
+}
+
+fn is_single_node(peers: Option<&std::collections::HashMap<NodeId, String>>) -> bool {
+    peers.map(|p| p.is_empty()).unwrap_or(true)
+}
+
+async fn read_scan_with_retry(
+    store: &Arc<KvStore>,
+    blob: &BlobBackend,
+    start: Option<&[u8]>,
+    end: Option<&[u8]>,
+    limit: usize,
+    peers: Option<&std::collections::HashMap<NodeId, String>>,
+) -> Result<Value, StorageError> {
+    let mut entries = read_scan_entries(store, blob, start, end, limit).await?;
+    if entries.is_empty() && is_single_node(peers) && start.is_some() {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        entries = read_scan_entries(store, blob, start, end, limit).await?;
+    }
+    Ok(list_from_entries(entries))
+}
+
+async fn read_scan_entries(
+    store: &Arc<KvStore>,
+    blob: &BlobBackend,
+    start: Option<&[u8]>,
+    end: Option<&[u8]>,
+    limit: usize,
+) -> Result<Vec<(Vec<u8>, Vec<u8>, u64)>, StorageError> {
+    let records = {
+        let guard = store.state_machine.read().await;
+        guard.scan_range(start, end, limit)
+    }
+    .map_err(|err| StorageError::Internal(format!("state machine scan: {err}")))?;
+    let mut entries = Vec::with_capacity(records.len());
+    for (key, record) in records {
+        let bytes = record_bytes(blob, &record).await?;
+        entries.push((key, bytes, record.version));
+    }
+    Ok(entries)
+}
+
+async fn read_prefix_with_retry(
+    store: &Arc<KvStore>,
+    prefix: &[u8],
+    limit: usize,
+    peers: Option<&std::collections::HashMap<NodeId, String>>,
+) -> Result<Value, StorageError> {
+    let mut keys = read_prefix_keys(store, prefix, limit).await?;
+    if keys.is_empty() && is_single_node(peers) && !prefix.is_empty() {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        keys = read_prefix_keys(store, prefix, limit).await?;
+    }
+    if keys.is_empty() && !prefix.is_empty() {
+        let end = next_prefix_bytes(prefix);
+        if let Ok(scan_keys) = read_scan_keys(store, Some(prefix), end.as_deref(), limit).await {
+            if !scan_keys.is_empty() {
+                keys = scan_keys;
+            }
+        }
+    }
+    Ok(list_from_keys(keys))
+}
+
+async fn read_prefix_keys(
+    store: &Arc<KvStore>,
+    prefix: &[u8],
+    limit: usize,
+) -> Result<Vec<Vec<u8>>, StorageError> {
+    let keys = {
+        let guard = store.state_machine.read().await;
+        guard.list_prefix_keys(prefix, limit)
+    }
+    .map_err(|err| StorageError::Internal(format!("state machine prefix: {err}")))?;
+    Ok(keys)
+}
+
+async fn read_scan_keys(
+    store: &Arc<KvStore>,
+    start: Option<&[u8]>,
+    end: Option<&[u8]>,
+    limit: usize,
+) -> Result<Vec<Vec<u8>>, StorageError> {
+    let records = {
+        let guard = store.state_machine.read().await;
+        guard.scan_range(start, end, limit)
+    }
+    .map_err(|err| StorageError::Internal(format!("state machine scan: {err}")))?;
+    Ok(records.into_iter().map(|(key, _record)| key).collect())
+}
+
+fn next_prefix_bytes(prefix: &[u8]) -> Option<Vec<u8>> {
+    if prefix.is_empty() {
+        return None;
+    }
+    let mut out = prefix.to_vec();
+    for idx in (0..out.len()).rev() {
+        if out[idx] != 0xFF {
+            out[idx] = out[idx].wrapping_add(1);
+            out.truncate(idx + 1);
+            return Some(out);
+        }
+    }
+    None
 }
 
 async fn forward_to_leader<E, F, Fut, T>(
@@ -973,11 +1133,11 @@ async fn forward_read(addr: String, key: Vec<u8>) -> Result<Option<Vec<u8>>, Sto
         .build()
         .map_err(|err| StorageError::Internal(err.to_string()))?;
     let url = format!("http://{}/storage/read", addr);
-    let resp = client
-        .post(url)
-        .json(&StorageReadRequest { key })
-        .send()
-        .await
+    let mut request = client.post(url).json(&StorageReadRequest { key });
+    if let Some(token) = storage_config().peer_token {
+        request = request.header("x-wrela-peer-token", token);
+    }
+    let resp = request.send().await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
     let envelope: RpcEnvelope<StorageReadResponse> = resp
         .json()
@@ -1001,11 +1161,11 @@ async fn forward_read_version(
         .build()
         .map_err(|err| StorageError::Internal(err.to_string()))?;
     let url = format!("http://{}/storage/read_version", addr);
-    let resp = client
-        .post(url)
-        .json(&StorageReadRequest { key })
-        .send()
-        .await
+    let mut request = client.post(url).json(&StorageReadRequest { key });
+    if let Some(token) = storage_config().peer_token {
+        request = request.header("x-wrela-peer-token", token);
+    }
+    let resp = request.send().await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
     let envelope: RpcEnvelope<StorageReadVersionResponse> = resp
         .json()
@@ -1036,11 +1196,13 @@ async fn forward_scan(
         .build()
         .map_err(|err| StorageError::Internal(err.to_string()))?;
     let url = format!("http://{}/storage/scan", addr);
-    let resp = client
+    let mut request = client
         .post(url)
-        .json(&StorageScanRequest { start, end, limit })
-        .send()
-        .await
+        .json(&StorageScanRequest { start, end, limit });
+    if let Some(token) = storage_config().peer_token {
+        request = request.header("x-wrela-peer-token", token);
+    }
+    let resp = request.send().await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
     let envelope: RpcEnvelope<StorageScanResponse> = resp
         .json()
@@ -1073,11 +1235,13 @@ async fn forward_prefix(
         .build()
         .map_err(|err| StorageError::Internal(err.to_string()))?;
     let url = format!("http://{}/storage/prefix", addr);
-    let resp = client
+    let mut request = client
         .post(url)
-        .json(&StoragePrefixRequest { prefix, limit })
-        .send()
-        .await
+        .json(&StoragePrefixRequest { prefix, limit });
+    if let Some(token) = storage_config().peer_token {
+        request = request.header("x-wrela-peer-token", token);
+    }
+    let resp = request.send().await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
     let envelope: RpcEnvelope<StoragePrefixResponse> = resp
         .json()

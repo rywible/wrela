@@ -330,6 +330,7 @@ pub fn storage_configure(config: Value) -> Value {
         s3_prefix: config_field_string(config, "s3_prefix"),
     };
     config::set_storage_user_config(user);
+    crate::schedule::ensure_scheduler_started();
     ok_value(Value::nil())
 }
 

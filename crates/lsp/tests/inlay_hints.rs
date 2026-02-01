@@ -8,7 +8,7 @@ fn test_inlay_hints_params() {
     let code = r#"
     to add(a: Int, b: Int) -> Int:
         return a + b
-    to main():
+    to main() -> Nothing:
         add(1, 2)
     "#;
     let fixture = TestFixture::new(code);
@@ -19,7 +19,7 @@ fn test_inlay_hints_params() {
 #[test]
 fn test_inlay_hints_return_type() {
     let code = r#"
-    to simple():
+    to simple() -> Nothing:
         return 42
     "#;
     let fixture = TestFixture::new(code);

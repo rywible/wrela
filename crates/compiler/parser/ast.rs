@@ -47,6 +47,8 @@ pub enum Stmt {
     MatchStmt(MatchStmt),
     UseStmt(UseStmt),
     OptimizeStmt(OptimizeStmt),
+    AssertStmt(AssertStmt),
+    PrivateBlock(PrivateBlock),
 }
 
 impl AstNode for Stmt {
@@ -66,6 +68,8 @@ impl AstNode for Stmt {
                 | SyntaxKind::MatchStmt
                 | SyntaxKind::UseStmt
                 | SyntaxKind::OptimizeStmt
+                | SyntaxKind::AssertStmt
+                | SyntaxKind::PrivateBlock
         )
     }
     fn cast(node: SyntaxNode) -> Option<Self> {
@@ -83,6 +87,8 @@ impl AstNode for Stmt {
             SyntaxKind::MatchStmt => MatchStmt::cast(node).map(Stmt::MatchStmt),
             SyntaxKind::UseStmt => UseStmt::cast(node).map(Stmt::UseStmt),
             SyntaxKind::OptimizeStmt => OptimizeStmt::cast(node).map(Stmt::OptimizeStmt),
+            SyntaxKind::AssertStmt => AssertStmt::cast(node).map(Stmt::AssertStmt),
+            SyntaxKind::PrivateBlock => PrivateBlock::cast(node).map(Stmt::PrivateBlock),
             _ => None,
         }
     }
@@ -101,7 +107,56 @@ impl AstNode for Stmt {
             Stmt::MatchStmt(it) => it.syntax(),
             Stmt::UseStmt(it) => it.syntax(),
             Stmt::OptimizeStmt(it) => it.syntax(),
+            Stmt::AssertStmt(it) => it.syntax(),
+            Stmt::PrivateBlock(it) => it.syntax(),
         }
+    }
+}
+
+pub enum AssertMode {
+    Value,
+    Identity,
+}
+
+pub struct AssertStmt(SyntaxNode);
+impl AstNode for AssertStmt {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::AssertStmt
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(AssertStmt(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl AssertStmt {
+    pub fn mode(&self) -> AssertMode {
+        for token in self
+            .0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+        {
+            if token.kind() == SyntaxKind::Ident {
+                let text = token.text();
+                if text == "value" {
+                    return AssertMode::Value;
+                }
+                if text == "identity" {
+                    return AssertMode::Identity;
+                }
+            }
+        }
+        AssertMode::Value
+    }
+
+    pub fn expr(&self) -> Option<Expr> {
+        self.0.children().filter_map(Expr::cast).next()
     }
 }
 
@@ -132,6 +187,32 @@ impl OptimizeStmt {
 
     pub fn block(&self) -> Option<Block> {
         self.0.children().find_map(Block::cast)
+    }
+}
+
+pub struct PrivateBlock(SyntaxNode);
+impl AstNode for PrivateBlock {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::PrivateBlock
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(PrivateBlock(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl PrivateBlock {
+    pub fn statements(&self) -> impl Iterator<Item = Stmt> {
+        self.0
+            .children()
+            .filter(|node| node.kind() == SyntaxKind::Block)
+            .flat_map(|block| block.children().filter_map(Stmt::cast))
     }
 }
 

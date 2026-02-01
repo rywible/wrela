@@ -102,6 +102,21 @@ pub enum TypeError {
         span: SourceSpan,
     },
 
+    #[error("assert identity does not allow primitive values")]
+    #[diagnostic(code(lang::ty::assert_identity_primitive))]
+    AssertIdentityPrimitive {
+        #[label("assert identity here")]
+        span: SourceSpan,
+    },
+
+    #[error("assert {mode} expects an equality expression")]
+    #[diagnostic(code(lang::ty::assert_expected_equality))]
+    AssertExpectedEquality {
+        mode: &'static str,
+        #[label("assert here")]
+        span: SourceSpan,
+    },
+
     #[error("argument '{name}' has type '{found}' but expected '{expected}'")]
     #[diagnostic(code(lang::ty::argument_type))]
     ArgumentTypeMismatch {
@@ -131,6 +146,8 @@ pub enum TypeError {
     PendingNotAwaited {
         #[label("actor call here")]
         span: SourceSpan,
+        #[help]
+        help: String,
     },
 
     #[error("result must be handled with `otherwise` or returned from a `Result` function")]
@@ -138,6 +155,8 @@ pub enum TypeError {
     UnhandledResult {
         #[label("result here")]
         span: SourceSpan,
+        #[help]
+        help: String,
     },
 
     #[error("`otherwise` expects a Result on the left side")]
@@ -159,6 +178,8 @@ pub enum TypeError {
     MissingResultReturn {
         #[label("function here")]
         span: SourceSpan,
+        #[help]
+        help: String,
     },
 
     #[error("cannot access members on actor instances")]
@@ -204,13 +225,15 @@ impl TypeError {
             TypeError::ArgumentCountMismatch { span, .. } => *span,
             TypeError::UnknownArgument { span, .. } => *span,
             TypeError::ArgumentTypeMismatch { span, .. } => *span,
+            TypeError::AssertIdentityPrimitive { span } => *span,
+            TypeError::AssertExpectedEquality { span, .. } => *span,
             TypeError::InvalidAwaitOperand { span } => *span,
             TypeError::InvalidFireOperand { span } => *span,
-            TypeError::PendingNotAwaited { span } => *span,
-            TypeError::UnhandledResult { span } => *span,
+            TypeError::PendingNotAwaited { span, .. } => *span,
+            TypeError::UnhandledResult { span, .. } => *span,
             TypeError::InvalidOtherwiseOperand { span } => *span,
             TypeError::ErrOutsideResult { span } => *span,
-            TypeError::MissingResultReturn { span } => *span,
+            TypeError::MissingResultReturn { span, .. } => *span,
             TypeError::ActorMemberAccess { span, .. } => *span,
             TypeError::AsyncClassRequiresActor { span, .. } => *span,
             TypeError::AsyncMethodRequiresActor { span, .. } => *span,
@@ -449,6 +472,16 @@ impl FunctionIndex {
 fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
     let err = error_type();
     vec![
+        (
+            SmolStr::new("assert_err"),
+            FunctionSig {
+                params: vec![(
+                    SmolStr::new("value"),
+                    Type::Result(Box::new(Type::Unknown), Box::new(Type::Unknown)),
+                )],
+                ret: Type::Nil,
+            },
+        ),
         (
             SmolStr::new("print"),
             FunctionSig {
@@ -1451,6 +1484,48 @@ fn check_stmt(
                 returns_result,
             );
         }
+        Stmt::Assert { kind, expr } => {
+            let _expr_ty = infer_expr(
+                body,
+                *expr,
+                ctx,
+                classes,
+                functions,
+                errors,
+                false,
+                returns_result,
+                returns_result,
+            );
+            let span = span_from_range(body.stmt_span(stmt_id));
+            match kind {
+                crate::hir::AssertKind::Value => {
+                    check_assert_expr(
+                        body,
+                        *expr,
+                        AssertEqualityMode::Value,
+                        ctx,
+                        classes,
+                        functions,
+                        errors,
+                        returns_result,
+                        span,
+                    );
+                }
+                crate::hir::AssertKind::Identity => {
+                    check_assert_expr(
+                        body,
+                        *expr,
+                        AssertEqualityMode::Identity,
+                        ctx,
+                        classes,
+                        functions,
+                        errors,
+                        returns_result,
+                        span,
+                    );
+                }
+            }
+        }
         Stmt::Let { name, value, .. } => {
             let value_ty = infer_expr(
                 body,
@@ -1686,6 +1761,7 @@ fn check_stmt(
         }
         Stmt::Return(expr) => {
             if let Some(expr) = expr {
+                let allow_pending = matches!(ret_type, Some(Type::Pending(_)));
                 let value_ty = infer_expr(
                     body,
                     *expr,
@@ -1693,7 +1769,7 @@ fn check_stmt(
                     classes,
                     functions,
                     errors,
-                    false,
+                    allow_pending,
                     returns_result,
                     returns_result,
                 );
@@ -1709,6 +1785,9 @@ fn check_stmt(
                     let span = func_span.unwrap_or_else(|| body.stmt_span(stmt_id));
                     errors.push(TypeError::MissingResultReturn {
                         span: span_from_range(span),
+                        help: "This function uses fallible operations (await/Result). Either \
+change the return type to Result[...] or handle results with `otherwise`."
+                            .to_string(),
                     });
                 }
             } else if let Some(expected) = ret_type {
@@ -1722,6 +1801,85 @@ fn check_stmt(
             }
         }
         Stmt::Break | Stmt::Continue => {}
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AssertEqualityMode {
+    Value,
+    Identity,
+}
+
+impl AssertEqualityMode {
+    fn label(self) -> &'static str {
+        match self {
+            AssertEqualityMode::Value => "value",
+            AssertEqualityMode::Identity => "identity",
+        }
+    }
+}
+
+fn check_assert_expr(
+    body: &Body,
+    expr_id: Idx<Expr>,
+    mode: AssertEqualityMode,
+    ctx: &mut TypeContext,
+    classes: &ClassIndex,
+    functions: &FunctionIndex,
+    errors: &mut Vec<TypeError>,
+    returns_result: bool,
+    span: SourceSpan,
+) {
+    match &body.exprs[expr_id] {
+        Expr::Binary { lhs, op, rhs, .. } => {
+            let allowed = match mode {
+                AssertEqualityMode::Identity => matches!(op, BinaryOp::Eq | BinaryOp::Ne),
+                AssertEqualityMode::Value => {
+                    matches!(op, BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le
+                        | BinaryOp::Gt | BinaryOp::Ge)
+                }
+            };
+            if !allowed {
+                errors.push(TypeError::AssertExpectedEquality {
+                    mode: mode.label(),
+                    span,
+                });
+                return;
+            }
+            let left_ty = infer_expr(
+                body,
+                *lhs,
+                ctx,
+                classes,
+                functions,
+                errors,
+                false,
+                returns_result,
+                returns_result,
+            );
+            let right_ty = infer_expr(
+                body,
+                *rhs,
+                ctx,
+                classes,
+                functions,
+                errors,
+                false,
+                returns_result,
+                returns_result,
+            );
+            if matches!(mode, AssertEqualityMode::Identity) && types_known(&left_ty, &right_ty) {
+                if is_identity_primitive(&left_ty) || is_identity_primitive(&right_ty) {
+                    errors.push(TypeError::AssertIdentityPrimitive { span });
+                }
+            }
+        }
+        _ => {
+            errors.push(TypeError::AssertExpectedEquality {
+                mode: mode.label(),
+                span,
+            });
+        }
     }
 }
 
@@ -1951,18 +2109,35 @@ fn infer_expr(
                     valid_callee = true;
                 }
                 if let Some(function) = functions.get(name) {
-                    check_call_args(
-                        body,
-                        expr_id,
-                        args,
-                        &function.params,
-                        ctx,
-                        classes,
-                        functions,
-                        errors,
-                        allow_result,
-                        in_result_fn,
-                    );
+                    if name.as_str() == "assert" && args.len() == 1 && function.params.len() == 2 {
+                        let mut params = Vec::new();
+                        params.push(function.params[0].clone());
+                        check_call_args(
+                            body,
+                            expr_id,
+                            args,
+                            &params,
+                            ctx,
+                            classes,
+                            functions,
+                            errors,
+                            allow_result,
+                            in_result_fn,
+                        );
+                    } else {
+                        check_call_args(
+                            body,
+                            expr_id,
+                            args,
+                            &function.params,
+                            ctx,
+                            classes,
+                            functions,
+                            errors,
+                            allow_result,
+                            in_result_fn,
+                        );
+                    }
                     ret_ty = Some(function.ret.clone());
                     valid_callee = true;
                 }
@@ -2173,11 +2348,17 @@ fn infer_expr(
     if matches!(ty, Type::Pending(_)) && !allow_pending {
         errors.push(TypeError::PendingNotAwaited {
             span: span_from_range(body.expr_span(expr_id)),
+            help: "`await` yields Result, and `fire` is for fire-and-forget. Use `await` or \
+`fire` here."
+                .to_string(),
         });
     }
     if matches!(ty, Type::Result(_, _)) && !allow_result {
         errors.push(TypeError::UnhandledResult {
             span: span_from_range(body.expr_span(expr_id)),
+            help: "Handle with `otherwise` or return the Result from a Result-returning \
+function."
+                .to_string(),
         });
     }
     ty
@@ -2660,6 +2841,9 @@ fn is_assignable(expected: &Type, found: &Type) -> bool {
         (Type::Result(ok_e, err_e), Type::Result(ok_f, err_f)) => {
             is_assignable(ok_e, ok_f) && is_assignable(err_e, err_f)
         }
+        (Type::Pending(exp), Type::Pending(found)) => {
+            matches!(**exp, Type::Unknown) || is_assignable(exp, found)
+        }
         (Type::Number, ty) if is_numeric(ty) => true,
         (Type::Float, Type::Int) => true,
         _ => false,
@@ -2668,6 +2852,19 @@ fn is_assignable(expected: &Type, found: &Type) -> bool {
 
 fn types_known(left: &Type, right: &Type) -> bool {
     is_known(left) && is_known(right)
+}
+
+fn is_identity_primitive(ty: &Type) -> bool {
+    match ty {
+        Type::Int
+        | Type::Float
+        | Type::Number
+        | Type::Bool
+        | Type::String
+        | Type::Nil => true,
+        Type::Named(name) => name.as_str() == "Bytes",
+        _ => false,
+    }
 }
 
 fn is_known(ty: &Type) -> bool {
@@ -3005,6 +3202,15 @@ fn visit_stmt_for_async(
 ) {
     match &body.stmts[stmt_id] {
         Stmt::Expr(expr) => visit_expr_for_async(
+            body,
+            *expr,
+            fn_info,
+            function_by_name,
+            class_method_ids,
+            has_await,
+            calls,
+        ),
+        Stmt::Assert { expr, .. } => visit_expr_for_async(
             body,
             *expr,
             fn_info,
@@ -3403,6 +3609,22 @@ fn check_stmt_async_usage(
             errors,
             in_detach,
         ),
+        Stmt::Assert { expr, .. } => {
+            check_expr_async_usage(
+                body,
+                *expr,
+                fn_info,
+                classes,
+                class_method_ids,
+                requires_actor,
+                class_requires_actor,
+                class_trace,
+                cause,
+                func_labels,
+                errors,
+                in_detach,
+            );
+        }
         Stmt::Let { value, .. } | Stmt::Assign { value, .. } => check_expr_async_usage(
             body,
             *value,
@@ -3893,7 +4115,7 @@ mod tests {
 
     #[test]
     fn test_type_error_binary() {
-        let input = "to f():\n    return 1 + true";
+        let input = "to f() -> Int:\n    return 1 + true";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -3907,7 +4129,7 @@ mod tests {
 
     #[test]
     fn test_type_error_unary() {
-        let input = "to f():\n    return not 1";
+        let input = "to f() -> Bool:\n    return not 1";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -3921,7 +4143,7 @@ mod tests {
 
     #[test]
     fn test_param_type_used() {
-        let input = "to f(x: Int):\n    return x + 1";
+        let input = "to f(x: Int) -> Int:\n    return x + 1";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -3931,7 +4153,7 @@ mod tests {
 
     #[test]
     fn test_param_type_mismatch() {
-        let input = "to f(x: Int):\n    return x + true";
+        let input = "to f(x: Int) -> Int:\n    return x + true";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -3945,7 +4167,7 @@ mod tests {
 
     #[test]
     fn test_string_concat_allowed() {
-        let input = "to f():\n    return \"a\" + \"b\"";
+        let input = "to f() -> String:\n    return \"a\" + \"b\"";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -3955,7 +4177,7 @@ mod tests {
 
     #[test]
     fn test_assignment_type_mismatch() {
-        let input = "to f(x: String):\n    x += 1";
+        let input = "to f(x: String) -> Nothing:\n    x += 1";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -3995,7 +4217,7 @@ A Whale:\n    has:\n        name: String\n\nto f(w: Whale) -> String:\n    retur
     #[test]
     fn test_unknown_member() {
         let input = "\
-A Whale:\n    has:\n        name: String\n\nto f(w: Whale):\n    return w.age\n";
+A Whale:\n    has:\n        name: String\n\nto f(w: Whale) -> Int:\n    return w.age\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -4010,7 +4232,7 @@ A Whale:\n    has:\n        name: String\n\nto f(w: Whale):\n    return w.age\n"
     #[test]
     fn test_method_call_checked() {
         let input = "\
-A Whale:\n    can swim(distance: Int) -> Bool:\n        return true\n\nto f(w: Whale):\n    return w.swim(true)\n";
+A Whale:\n    can swim(distance: Int) -> Bool:\n        return true\n\nto f(w: Whale) -> Bool:\n    return w.swim(true)\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -4025,7 +4247,7 @@ A Whale:\n    can swim(distance: Int) -> Bool:\n        return true\n\nto f(w: W
     #[test]
     fn test_function_call_checked() {
         let input = "\
-to add(a: Int, b: Int) -> Int:\n    return a + b\n\nto f():\n    return add(1, true)\n";
+to add(a: Int, b: Int) -> Int:\n    return a + b\n\nto f() -> Int:\n    return add(1, true)\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -4040,7 +4262,7 @@ to add(a: Int, b: Int) -> Int:\n    return a + b\n\nto f():\n    return add(1, t
     #[test]
     fn test_calling_non_callable_errors() {
         let input = "\
-to f():\n    x = 1\n    x(2)\n";
+to f() -> Nothing:\n    x = 1\n    x(2)\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -4066,7 +4288,7 @@ A Ocean:\n    has:\n        depth: Int\n\nA Whale:\n    can ocean() -> Ocean:\n 
     #[test]
     fn test_actor_call_requires_await_or_fire() {
         let input = "\
-A Whale:\n    can swim() -> Bool:\n        return true\n\nto f():\n    w = detach Whale() * 1\n    w.swim()\n";
+A Whale:\n    can swim() -> Bool:\n        return true\n\nto f() -> Nothing:\n    w = detach Whale() * 1\n    w.swim()\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -4080,7 +4302,7 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f():\n    w = detac
 
     #[test]
     fn test_err_requires_result_function() {
-        let input = "to f():\n    err \"nope\"";
+        let input = "to f() -> Int:\n    err \"nope\"";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -4104,7 +4326,7 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f():\n    w = detac
 
     #[test]
     fn test_invalid_otherwise_operand() {
-        let input = "to f():\n    return 1 otherwise 0";
+        let input = "to f() -> Int:\n    return 1 otherwise 0";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -4118,7 +4340,7 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f():\n    w = detac
 
     #[test]
     fn test_invalid_unary_operand_span() {
-        let input = "to f():\n    -true";
+        let input = "to f() -> Int:\n    -true";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -4128,7 +4350,7 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f():\n    w = detac
             .find(|err| matches!(err, TypeError::InvalidUnaryOperand { .. }))
             .expect("missing invalid unary operand error");
         if let TypeError::InvalidUnaryOperand { span, .. } = err {
-            let expected = input.find('-').unwrap();
+            let expected = input.rfind('-').unwrap();
             assert_eq!(span.offset(), expected);
             assert_eq!(span.len(), 1);
         }
@@ -4136,7 +4358,7 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f():\n    w = detac
 
     #[test]
     fn test_invalid_binary_operand_span() {
-        let input = "to f():\n    true + 1";
+        let input = "to f() -> Int:\n    true + 1";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -4155,7 +4377,7 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f():\n    w = detac
     #[test]
     fn test_unknown_member_span() {
         let input = "\
-A Foo:\n    has:\n        x: Int\n\nto f():\n    foo = Foo(x=1)\n    foo.bar\n";
+A Foo:\n    has:\n        x: Int\n\nto f() -> Nothing:\n    foo = Foo(x=1)\n    foo.bar\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -4184,7 +4406,7 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f() -> Result:\n   
 
     #[test]
     fn test_builtin_fallible_requires_handling() {
-        let input = "to f():\n    parse_int(\"1\")";
+        let input = "to f() -> Nothing:\n    parse_int(\"1\")";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -4209,7 +4431,7 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f() -> Result:\n   
     #[test]
     fn test_await_on_non_actor_call_errors() {
         let input = "\
-A Whale:\n    can swim() -> Bool:\n        return true\n\nto f(w: Whale):\n    return await w.swim()\n";
+A Whale:\n    can swim() -> Bool:\n        return true\n\nto f(w: Whale) -> Result[Bool]:\n    return await w.swim()\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -4224,7 +4446,7 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f(w: Whale):\n    r
     #[test]
     fn test_fire_actor_call_ok() {
         let input = "\
-A Whale:\n    can swim() -> Bool:\n        return true\n\nto f():\n    w = detach Whale() * 1\n    fire w.swim()\n";
+A Whale:\n    can swim() -> Bool:\n        return true\n\nto f() -> Nothing:\n    w = detach Whale() * 1\n    fire w.swim()\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -4235,7 +4457,7 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f():\n    w = detac
     #[test]
     fn test_fire_non_actor_call_errors() {
         let input = "\
-A Whale:\n    can swim() -> Bool:\n        return true\n\nto f(w: Whale):\n    fire w.swim()\n";
+A Whale:\n    can swim() -> Bool:\n        return true\n\nto f(w: Whale) -> Nothing:\n    fire w.swim()\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -4251,7 +4473,7 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f(w: Whale):\n    f
     fn test_class_init_field_type_checked() {
         let input = "\
 A Whale:\n    has:\n        name: String\n\n\
-to f():\n    Whale(name=1)\n";
+to f() -> Nothing:\n    Whale(name=1)\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -4267,7 +4489,7 @@ to f():\n    Whale(name=1)\n";
     fn test_class_init_unknown_field() {
         let input = "\
 A Whale:\n    has:\n        name: String\n\n\
-to f():\n    Whale(age=\"old\")\n";
+to f() -> Nothing:\n    Whale(age=\"old\")\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -4282,7 +4504,7 @@ to f():\n    Whale(age=\"old\")\n";
     #[test]
     fn test_await_on_actor_value_errors() {
         let input = "\
-A Whale:\n    can swim() -> Bool:\n        return true\n\nto f():\n    w = detach Whale() * 1\n    return await w\n";
+A Whale:\n    can swim() -> Bool:\n        return true\n\nto f() -> Result:\n    w = detach Whale() * 1\n    return await w\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -4297,7 +4519,7 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f():\n    w = detac
     #[test]
     fn test_fire_on_actor_value_errors() {
         let input = "\
-A Whale:\n    can swim() -> Bool:\n        return true\n\nto f():\n    w = detach Whale() * 1\n    fire w\n";
+A Whale:\n    can swim() -> Bool:\n        return true\n\nto f() -> Nothing:\n    w = detach Whale() * 1\n    fire w\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -4314,7 +4536,7 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f():\n    w = detac
         let input = "\
 A Whale:\n    can swim() -> Bool:\n        return true\n\n\
 A Boat:\n    can ride() -> Bool:\n        return await Whale().swim()\n\n\
-to f():\n    Boat()\n";
+to f() -> Nothing:\n    Boat()\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -4331,7 +4553,7 @@ to f():\n    Boat()\n";
         let input = "\
 A Whale:\n    can swim() -> Bool:\n        return true\n\n\
 A Boat:\n    can ride() -> Bool:\n        return await Whale().swim()\n\n\
-to f():\n    b = Boat()\n    return b.ride()\n";
+to f() -> Bool:\n    b = Boat()\n    return b.ride()\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -4349,7 +4571,7 @@ to f():\n    b = Boat()\n    return b.ride()\n";
 A Whale:\n    can swim() -> Bool:\n        return true\n\n\
 to helper() -> Bool:\n    return await Whale().swim()\n\n\
 A Boat:\n    can ride() -> Bool:\n        return helper()\n\n\
-to f():\n    Boat()\n";
+to f() -> Nothing:\n    Boat()\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -4367,7 +4589,7 @@ to f():\n    Boat()\n";
 A Whale:\n    can swim() -> Bool:\n        return true\n\n\
 to helper() -> Bool:\n    return await Whale().swim()\n\n\
 A Boat:\n    can ride() -> Bool:\n        return helper()\n\n\
-to f():\n    b = Boat()\n    return b.ride()\n";
+to f() -> Bool:\n    b = Boat()\n    return b.ride()\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -4391,7 +4613,7 @@ to f():\n    b = Boat()\n    return b.ride()\n";
 A Whale:\n    can swim() -> Bool:\n        return true\n\n\
 to helper() -> Bool:\n    fire Whale().swim()\n    return true\n\n\
 A Boat:\n    can ride() -> Bool:\n        return helper()\n\n\
-to f():\n    Boat()\n";
+to f() -> Nothing:\n    Boat()\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -4408,7 +4630,7 @@ to f():\n    Boat()\n";
         let input = "\
 A Whale:\n    can swim() -> Bool:\n        return true\n\n\
 A Boat:\n    can ride() -> Bool:\n        return await Whale().swim()\n\n\
-to f():\n    b = detach Boat() * 1\n    return await b.ride()\n";
+to f() -> Result:\n    b = detach Boat() * 1\n    return await b.ride()\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);

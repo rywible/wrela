@@ -59,8 +59,8 @@ This document describes how to make all runtime primitives HA while retaining a 
   - Best effort; delivery is not strictly guaranteed (state is still in storage)
 - Use for:
   - Realtime room fanout
-  - Job wakeups (optional)
-  - Scheduler tick notifications (optional)
+  - Job wakeups
+  - Scheduler tick notifications
 
 ## Primitive-by-Primitive HA Design
 
@@ -158,6 +158,7 @@ This document describes how to make all runtime primitives HA while retaining a 
 - **Leader election** via storage lease or Raft leader.
 - **Node identity**: each node has `node_id` and `bind_addr`.
 - **Membership** stored in Raft config.
+- **Peer auth**: set `WRELA_PEER_TOKEN` to require the `x-wrela-peer-token` header on intra-cluster HTTP.
 
 ## Consistency & Failure Semantics
 
@@ -169,13 +170,24 @@ This document describes how to make all runtime primitives HA while retaining a 
 
 ## Implementation Steps
 
-1) Add lease helper APIs in runtime
-2) Scheduler rehydrate + leader-lease + run-id dedupe
-3) Jobs lease-based claiming + idempotency key
-4) Realtime: storage-backed membership + pub/sub fanout
-5) Files: S3 integration for bytes + ACL validation
-6) Search: storage-backed inverted index
-7) Add HA test suite (multi-node integration tests)
+1) [x] Add lease helper APIs in runtime (crates/runtime/src/lease.rs)
+2) [x] Scheduler rehydrate + leader-lease + run-id dedupe (leader lease + run dedupe implemented; multi-node tests + failover tests added)
+3) [x] Jobs lease-based claiming + idempotency key (lease + done markers; multi-node tests + lease-expiry recovery added)
+4) [x] Realtime: storage-backed membership + pub/sub fanout (pub/sub fanout over HTTP; storage-backed membership recorded)
+5) [x] Files: S3 integration for bytes + ACL validation (S3 upload + presigned URLs; signed URL requires owner for private ACL)
+6) [x] Search: storage-backed inverted index (term lists per collection)
+7) [x] Add HA test suite (multi-node harness + scheduler/jobs/realtime tests; jobs lease-expiry recovery + scheduler failover; realtime TTL cleanup; burst + chaos loops; soak tests; search index restart persistence)
+
+## Current Status (as of 2026-02-01)
+
+- Leases: implemented via storage CAS; used by jobs.
+- Scheduler: leader lease + run-id dedupe in storage; jobs spawn by class/method (no actor instance persistence).
+- Jobs: lease claim + done markers; multi-node tests and lease-expiry recovery added.
+- Realtime: pub/sub fanout over HTTP; membership recorded in storage; delivery still uses local memory.
+- Files: S3 upload + presigned URLs when configured; local backend stores bytes in storage; signed URL requires owner for private ACL.
+- Search: storage-backed inverted index (term lists) and filtered lookups.
+- Pub/Sub: implemented via HTTP fanout; used for realtime fanout and scheduler/jobs wakeups.
+- HA Tests: in-process multi-node harness added; scheduler/jobs/realtime multi-node tests added; jobs lease-expiry recovery and scheduler failover tests added; realtime TTL cleanup added; burst + chaos loops added; soak tests added as ignored.
 
 ## Testing Plan
 

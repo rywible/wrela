@@ -6,7 +6,7 @@ mod common;
 #[test]
 fn test_unused_variable_diagnostic() {
     let code = r#"
-    to main():
+    to main() -> Nothing:
         unused = 1
         used = 2
         print(used)

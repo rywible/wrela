@@ -30,6 +30,10 @@ impl Body {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
     Expr(Idx<Expr>),
+    Assert {
+        kind: AssertKind,
+        expr: Idx<Expr>,
+    },
     Let {
         name: SmolStr,
         value: Idx<Expr>,
@@ -73,6 +77,12 @@ pub enum Stmt {
     Return(Option<Idx<Expr>>),
     Break,
     Continue,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssertKind {
+    Value,
+    Identity,
 }
 
 #[derive(Debug, Clone, PartialEq)]

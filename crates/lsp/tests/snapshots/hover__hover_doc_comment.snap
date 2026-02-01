@@ -1,5 +1,6 @@
 ---
 source: crates/lsp/tests/hover.rs
+assertion_line: 17
 expression: hover
 ---
 Some(
@@ -7,7 +8,7 @@ Some(
         contents: Markup(
             MarkupContent {
                 kind: Markdown,
-                value: "```wrela\nfoo()\n```",
+                value: "```wrela\nfoo() -> Nothing\n```",
             },
         ),
         range: Some(

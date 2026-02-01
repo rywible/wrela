@@ -17,17 +17,17 @@ Date: 2026-01-30
 
 ### Wrela Surface API (class-only)
 ```wrela
-public A HttpServer:
-    public can serve_get_requests(path: String, handler: HttpHandler) -> Nothing
-    public can serve_post_requests(path: String, handler: HttpHandler) -> Nothing
-    public can serve_requests(method: String, path: String, handler: HttpHandler) -> Nothing
-    public can serve_on(addr: String) -> Nothing
-    public can stop() -> Nothing
+A HttpServer:
+    can serve_get_requests(path: String, handler: HttpHandler) -> Nothing
+    can serve_post_requests(path: String, handler: HttpHandler) -> Nothing
+    can serve_requests(method: String, path: String, handler: HttpHandler) -> Nothing
+    can serve_on(addr: String) -> Nothing
+    can stop() -> Nothing
 
-public A HttpHandler:
-    public can handle(req: HttpRequest) -> HttpResponse
+A HttpHandler:
+    can handle(req: HttpRequest) -> HttpResponse
 
-public A HttpRequest:
+A HttpRequest:
     has:
         method: String
         path: String
@@ -36,15 +36,15 @@ public A HttpRequest:
         params: Map
         body: Bytes
 
-public A HttpResponse:
+A HttpResponse:
     has:
         status: Number
         headers: Map
         body: Bytes
 
-    public can ok(text: String) -> HttpResponse
-    public can json(value: Any) -> HttpResponse
-    public can header(name: String, value: String) -> HttpResponse
+    can ok(text: String) -> HttpResponse
+    can json(value: Any) -> HttpResponse
+    can header(name: String, value: String) -> HttpResponse
 ```
 
 ### Runtime Bridge (Rust)
@@ -111,16 +111,16 @@ public A HttpResponse:
 
 ## Example Usage (Wrela)
 ```wrela
-public A HelloHandler:
-    public can handle(req: HttpRequest) -> HttpResponse:
+A HelloHandler:
+    can handle(req: HttpRequest) -> HttpResponse:
         return HttpResponse.ok("hello")
 
-public A UserHandler:
-    public can handle(req: HttpRequest) -> HttpResponse:
+A UserHandler:
+    can handle(req: HttpRequest) -> HttpResponse:
         id = req.param("id")
         return HttpResponse.json({"id": id})
 
-to run():
+to run() -> Nothing:
     server = HttpServer()
     server.serve_get_requests("/", detach HelloHandler() * 1)
     server.serve_get_requests("/users/:id", detach Pool.of(UserHandler, size=8, backpressure=queue(256)) * 1)

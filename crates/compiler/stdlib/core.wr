@@ -1,145 +1,201 @@
-public A Env:
-    public can get(key: String) -> String:
+A Env:
+    can get(key: String) -> String:
         return env_get(key)
 
-    public can get_or(key: String, default: String) -> String:
+    can get_or(key: String, default: String) -> String:
         return env_get_or(key, default)
 
-    public can get_as_bool(key: String) -> Bool:
+    can get_as_bool(key: String) -> Bool:
         return env_get_as_bool(key)
 
-    public can get_as_int(key: String) -> Int:
+    can get_as_int(key: String) -> Int:
         return env_get_as_int(key)
 
-    public can set(key: String, value: String) -> Bool:
+    can set(key: String, value: String) -> Bool:
         return env_set(key, value)
 
-    public can load(path: String) -> Bool:
+    can load(path: String) -> Bool:
         return env_load(path)
 
-public A Auth:
+A Auth:
     has:
         storage: StorageClient
-    public can create_user(email: String, username: String, password: String) -> Pending:
+    can create_user(email: String, username: String, password: String) -> Pending:
         return auth_create_user(its.storage, email, username, password)
 
-    public can verify_password(user_id: String, password: String) -> Pending:
+    can verify_password(user_id: String, password: String) -> Pending:
         return auth_verify_password(its.storage, user_id, password)
 
-    public can issue_jwt(user_id: String, claims: Map, ttl_secs: Int) -> Pending:
+    can issue_jwt(user_id: String, claims: Map, ttl_secs: Int) -> Pending:
         return auth_issue_jwt(its.storage, user_id, claims, ttl_secs)
 
-    public can verify_jwt(token: String) -> Pending:
+    can verify_jwt(token: String) -> Pending:
         return auth_verify_jwt(its.storage, token)
 
-    public can issue_email_token(user_id: String, ttl_secs: Int) -> Pending:
+    can issue_email_token(user_id: String, ttl_secs: Int) -> Pending:
         return auth_issue_email_token(its.storage, user_id, ttl_secs)
 
-    public can verify_email_token(token: String) -> Pending:
+    can verify_email_token(token: String) -> Pending:
         return auth_verify_email_token(its.storage, token)
 
-    public can oauth_login(provider: String, code: String) -> Pending:
+    can oauth_login(provider: String, code: String) -> Pending:
         return auth_oauth_login(its.storage, provider, code)
 
-public A RBAC:
+A RBAC:
     has:
         storage: StorageClient
-    public can create_role(scope: String, name: String, permissions: List) -> Pending:
+    can create_role(scope: String, name: String, permissions: List[String]) -> Pending:
         return rbac_create_role(its.storage, scope, name, permissions)
 
-    public can assign_role(user_id: String, role_id: String, scope_id: String) -> Pending:
+    can assign_role(user_id: String, role_id: String, scope_id: String) -> Pending:
         return rbac_assign_role(its.storage, user_id, role_id, scope_id)
 
-    public can check(user_id: String, permission: String, scope_id: String) -> Pending:
+    can check(user_id: String, permission: String, scope_id: String) -> Pending:
         return rbac_check(its.storage, user_id, permission, scope_id)
 
-    public can permissions_for(user_id: String, scope_id: String) -> Pending:
+    can permissions_for(user_id: String, scope_id: String) -> Pending:
         return rbac_permissions_for(its.storage, user_id, scope_id)
 
-public A Files:
+A Files:
     has:
         storage: StorageClient
-    public can upload_stream(stream: Bytes, opts: Map) -> Pending:
+    can upload_stream(stream: Bytes, opts: Map) -> Pending:
         return files_upload_stream(its.storage, stream, opts)
 
-    public can signed_url(file_id: String, opts: Map) -> Pending:
+    can signed_url(file_id: String, opts: Map) -> Pending:
         return files_signed_url(its.storage, file_id, opts)
 
-    public can metadata(file_id: String) -> Pending:
+    can metadata(file_id: String) -> Pending:
         return files_metadata(its.storage, file_id)
 
-    public can delete(file_id: String) -> Pending:
+    can delete(file_id: String) -> Pending:
         return files_delete(its.storage, file_id)
 
-    public can set_acl(file_id: String, acl: String) -> Pending:
+    can set_acl(file_id: String, acl: String) -> Pending:
         return files_set_acl(its.storage, file_id, acl)
 
-public A Jobs:
+A Jobs:
     has:
         storage: StorageClient
-    public can enqueue(queue: String, payload: Map, opts: Map) -> Pending:
+    can enqueue(queue: String, payload: Map, opts: Map) -> Pending:
         return jobs_enqueue(its.storage, queue, payload, opts)
 
-    public can process(queue: String, handler) -> Pending:
+    can process(queue: String, handler: Any) -> Pending:
         return jobs_process(its.storage, queue, handler)
 
-    public can dead_letter(queue: String) -> Pending:
+    can dead_letter(queue: String) -> Pending:
         return jobs_dead_letter(its.storage, queue)
 
-public A Schedule:
+A Schedule:
     has:
         storage: StorageClient
-    public can cron(expr: String, job) -> Pending:
+    can cron(expr: String, job: Any) -> Pending:
         return schedule_cron(its.storage, expr, job)
 
-    public can every(seconds: Int, job) -> Pending:
+    can every(seconds: Int, job: Any) -> Pending:
         return schedule_every(its.storage, seconds, job)
 
-    public can at(timestamp: Int, job) -> Pending:
+    can at(timestamp: Int, job: Any) -> Pending:
         return schedule_at(its.storage, timestamp, job)
 
-public A Search:
+A Search:
     has:
         storage: StorageClient
-    public can index(collection: String, id: String, text: String, fields: Map) -> Pending:
+    can index(collection: String, id: String, text: String, fields: Map) -> Pending:
         return search_index(its.storage, collection, id, text, fields)
 
-    public can remove(collection: String, id: String) -> Pending:
+    can remove(collection: String, id: String) -> Pending:
         return search_remove(its.storage, collection, id)
 
-    public can query(collection: String, query: String, opts: Map) -> Pending:
+    can query(collection: String, query: String, opts: Map) -> Pending:
         return search_query(its.storage, collection, query, opts)
 
-public A Realtime:
-    public can on_connect(handler) -> Pending:
+A Realtime:
+    can on_connect(handler: Any) -> Pending:
         return realtime_on_connect(handler)
 
-    public can join(socket_id: String, room: String) -> Pending:
+    can join(socket_id: String, room: String) -> Pending:
         return realtime_join(socket_id, room)
 
-    public can leave(socket_id: String, room: String) -> Pending:
+    can leave(socket_id: String, room: String) -> Pending:
         return realtime_leave(socket_id, room)
 
-    public can broadcast(room: String, message) -> Pending:
+    can broadcast(room: String, message: Any) -> Pending:
         return realtime_broadcast(room, message)
 
-    public can send(socket_id: String, message) -> Pending:
+    can send(socket_id: String, message: Any) -> Pending:
         return realtime_send(socket_id, message)
 
-public A RateLimit:
+A Log:
+    can debug(message: String) -> Bool:
+        return log("debug", message, map_new())
+
+    can info(message: String) -> Bool:
+        return log("info", message, map_new())
+
+    can warn(message: String) -> Bool:
+        return log("warn", message, map_new())
+
+    can error(message: String) -> Bool:
+        return log("error", message, map_new())
+
+    can debug_with(message: String, fields: Map) -> Bool:
+        return log("debug", message, fields)
+
+    can info_with(message: String, fields: Map) -> Bool:
+        return log("info", message, fields)
+
+    can warn_with(message: String, fields: Map) -> Bool:
+        return log("warn", message, fields)
+
+    can error_with(message: String, fields: Map) -> Bool:
+        return log("error", message, fields)
+
+A Logger:
+    can log_debug(message: String) -> Bool:
+        return log("debug", message, map_new())
+
+    can log_info(message: String) -> Bool:
+        return log("info", message, map_new())
+
+    can log_warn(message: String) -> Bool:
+        return log("warn", message, map_new())
+
+    can log_warning(message: String) -> Bool:
+        return log("warn", message, map_new())
+
+    can log_error(message: String) -> Bool:
+        return log("error", message, map_new())
+
+    can log_debug_with(message: String, fields: Map) -> Bool:
+        return log("debug", message, fields)
+
+    can log_info_with(message: String, fields: Map) -> Bool:
+        return log("info", message, fields)
+
+    can log_warn_with(message: String, fields: Map) -> Bool:
+        return log("warn", message, fields)
+
+    can log_warning_with(message: String, fields: Map) -> Bool:
+        return log("warn", message, fields)
+
+    can log_error_with(message: String, fields: Map) -> Bool:
+        return log("error", message, fields)
+
+A RateLimit:
     has:
         storage: StorageClient
-    public can check(key: String, opts: Map) -> Pending:
+    can check(key: String, opts: Map) -> Pending:
         return rate_check(its.storage, key, opts)
 
-    public can ip(request: HttpRequest) -> String:
+    can ip(request: HttpRequest) -> String:
         return rate_ip(request)
 
-public A Admin:
-    public can enable(opts: Map) -> Pending:
+A Admin:
+    can enable(opts: Map) -> Pending:
         return admin_enable(opts)
 
-public A StorageConfig:
+A StorageConfig:
     has:
         s3_bucket: String
         s3_region: String
@@ -149,39 +205,39 @@ public A StorageConfig:
         s3_prefix: String
         file_path: String
 
-public A StorageClient:
-    public can get(key: String) -> Result:
+A StorageClient:
+    can get(key: String) -> Result:
         return await storage_get(key)
 
-    public can get_with_version(key: String) -> Result:
+    can get_with_version(key: String) -> Result:
         return await storage_get_with_version(key)
 
-    public can scan(start: String, end: String, limit: Number) -> Result:
+    can scan(start: String, end: String, limit: Number) -> Result:
         return await storage_scan(start, end, limit)
 
-    public can list_prefix(prefix: String, limit: Number) -> Result:
+    can list_prefix(prefix: String, limit: Number) -> Result:
         return await storage_list_prefix(prefix, limit)
 
-    public can set(key: String, value: String) -> Result:
+    can set(key: String, value: String) -> Result:
         return await storage_set(key, value)
 
-    public can set_if_version(key: String, value: String, version: Number) -> Result:
+    can set_if_version(key: String, value: String, version: Number) -> Result:
         return await storage_set_if_version(key, value, version)
 
-    public can delete_if_version(key: String, version: Number) -> Result:
+    can delete_if_version(key: String, version: Number) -> Result:
         return await storage_delete_if_version(key, version)
 
-    public can delete(key: String) -> Result:
+    can delete(key: String) -> Result:
         return await storage_delete(key)
 
-    public can batch_set(items: List) -> Result:
+    can batch_set(items: List[Map]) -> Result:
         return await storage_batch_set(items)
 
-public to storage_open(config: StorageConfig):
-    storage_configure(config)
+to storage_open(config: StorageConfig) -> Actor[StorageClient]:
+    storage_configure(config) otherwise nil
     return detach StorageClient() * 1
 
-public A HttpRequest:
+A HttpRequest:
     has:
         method: String
         path: String
@@ -190,34 +246,34 @@ public A HttpRequest:
         params: Map
         body: Bytes
 
-    public can header(name: String) -> String:
+    can header(name: String) -> String:
         return map_get(its.headers, name)
 
-    public can query_param(name: String) -> String:
+    can query_param(name: String) -> String:
         return map_get(its.query, name)
 
-    public can path_param(name: String) -> String:
+    can path_param(name: String) -> String:
         return map_get(its.params, name)
 
-    public can text() -> String:
+    can text() -> String:
         return bytes_to_string(its.body)
 
-    public can json() -> String:
+    can json() -> String:
         return bytes_to_string(its.body)
 
-public A HttpResponse:
+A HttpResponse:
     has:
         status: Number
         headers: Map
         body: Bytes
 
-    public can header(name: String, value: String) -> HttpResponse:
+    can header(name: String, value: String) -> HttpResponse:
         if its.headers == nil:
             its.headers = {}
         map_set(its.headers, name, value)
         return its
 
-    public can ok(text: String) -> HttpResponse:
+    can ok(text: String) -> HttpResponse:
         its.status = 200
         its.body = bytes_from_string(text)
         if its.headers == nil:
@@ -225,7 +281,7 @@ public A HttpResponse:
         map_set(its.headers, "content-type", "text/plain; charset=utf-8")
         return its
 
-    public can json(text: String) -> HttpResponse:
+    can json(text: String) -> HttpResponse:
         its.status = 200
         its.body = bytes_from_string(text)
         if its.headers == nil:
@@ -233,10 +289,10 @@ public A HttpResponse:
         map_set(its.headers, "content-type", "application/json")
         return its
 
-    public can text(text: String) -> HttpResponse:
+    can text(text: String) -> HttpResponse:
         return its.ok(text)
 
-    public can text_with_status(text: String, status: Number) -> HttpResponse:
+    can text_with_status(text: String, status: Number) -> HttpResponse:
         its.status = status
         its.body = bytes_from_string(text)
         if its.headers == nil:
@@ -244,28 +300,28 @@ public A HttpResponse:
         map_set(its.headers, "content-type", "text/plain; charset=utf-8")
         return its
 
-    public can empty() -> HttpResponse:
+    can empty() -> HttpResponse:
         its.status = 204
         its.body = bytes_from_string("")
         return its
 
-    public can empty_with_status(status: Number) -> HttpResponse:
+    can empty_with_status(status: Number) -> HttpResponse:
         its.status = status
         its.body = bytes_from_string("")
         return its
 
-public A HttpServer:
-    public can serve_get_requests(path: String, handler) -> Nothing:
+A HttpServer:
+    can serve_get_requests(path: String, handler: Any) -> Nothing:
         http_server_serve_get_requests(path, handler)
 
-    public can serve_post_requests(path: String, handler) -> Nothing:
+    can serve_post_requests(path: String, handler: Any) -> Nothing:
         http_server_serve_post_requests(path, handler)
 
-    public can serve_requests(method: String, path: String, handler) -> Nothing:
+    can serve_requests(method: String, path: String, handler: Any) -> Nothing:
         http_server_serve_requests(method, path, handler)
 
-    public can serve_on(addr: String) -> Nothing:
+    can serve_on(addr: String) -> Nothing:
         http_server_serve_on(addr)
 
-    public can stop() -> Nothing:
+    can stop() -> Nothing:
         http_server_stop()

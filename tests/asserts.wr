@@ -1,0 +1,16 @@
+to test_assert_value_bool() -> Nothing:
+    assert value true == true
+
+to test_assert_value_equality_list() -> Nothing:
+    a = [1, 2, 3]
+    b = [1, 2, 3]
+    assert value a == b
+
+to test_assert_value_equality_map() -> Nothing:
+    a = {"x": 1, "y": 2}
+    b = {"x": 1, "y": 2}
+    assert value a == b
+
+to test_assert_identity_same_object() -> Nothing:
+    a = [1, 2, 3]
+    assert identity a == a

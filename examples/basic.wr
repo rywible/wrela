@@ -6,9 +6,9 @@ A Whale:
     can swim(distance: Number, new_parameter: String) -> Nothing:
         print("Hi! My name is {its.name} and I can swim {distance.toString()}")
 
-to make_moby_swim(fake_param: String):
+to make_moby_swim(fake_param: String) -> Nothing:
     moby = Whale(name="moby")
     moby.swim(distance=500)
 
-to test():
+to test() -> String:
     return "test"

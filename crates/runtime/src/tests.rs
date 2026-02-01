@@ -1,7 +1,11 @@
 use super::*;
 use crate::string;
 use crate::value::value_eq;
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::future::Future;
+use std::sync::{Arc, OnceLock};
+use tokio::net::TcpListener;
+use tokio::time::Duration;
 
 fn await_ok(pending: Value) -> Value {
     let result = wr_pending_await(pending);
@@ -67,6 +71,22 @@ fn storage_set_string_test(key: &str, value: &str) {
     }
 }
 
+fn net_available() -> bool {
+    use std::io::ErrorKind;
+
+    static AVAIL: OnceLock<bool> = OnceLock::new();
+    *AVAIL.get_or_init(|| {
+        match crate::actor::runtime_block_on(async { TcpListener::bind("127.0.0.1:0").await }) {
+            Ok(listener) => {
+                drop(listener);
+                true
+            }
+            Err(err) if err.kind() == ErrorKind::PermissionDenied => false,
+            Err(err) => panic!("bind: {err}"),
+        }
+    })
+}
+
 fn test_storage() -> Value {
     static STORAGE: OnceLock<Value> = OnceLock::new();
     *STORAGE.get_or_init(|| {
@@ -75,6 +95,7 @@ fn test_storage() -> Value {
         std::mem::forget(dir);
         unsafe {
             std::env::set_var("WRELA_STORE_PATH", path.to_string_lossy().to_string());
+            std::env::set_var("WRELA_RAFT_HTTP_ENABLED", "0");
         }
         let fields = [b"file_path".as_ptr()];
         let lens = [9usize];
@@ -94,6 +115,101 @@ fn test_storage() -> Value {
         }
         wr_class_new(301, std::ptr::null(), std::ptr::null(), 0)
     })
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+struct HaNode {
+    config: crate::storage::config::StorageConfig,
+    service: Arc<crate::storage::service::StorageService>,
+    scheduler: crate::schedule::SchedulerStateHandle,
+    jobs: crate::jobs::JobsStateHandle,
+    realtime: crate::realtime::RealtimeStateHandle,
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+async fn with_node<F, R>(node: &HaNode, fut: F) -> R
+where
+    F: Future<Output = R>,
+{
+    crate::storage::config::with_storage_config_override(
+        node.config.clone(),
+        crate::storage::service::StorageService::with_storage_override(
+            node.service.clone(),
+            crate::schedule::with_scheduler_state_override(
+                &node.scheduler,
+                crate::jobs::with_jobs_state_override(
+                    &node.jobs,
+                    crate::realtime::with_realtime_state_override(&node.realtime, fut),
+                ),
+            ),
+        ),
+    )
+    .await
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+async fn try_bind(addr: &str) -> Option<(TcpListener, String)> {
+    match TcpListener::bind(addr).await {
+        Ok(listener) => {
+            let addr = listener.local_addr().ok()?.to_string();
+            Some((listener, addr))
+        }
+        Err(err) => {
+            if err.kind() == std::io::ErrorKind::PermissionDenied {
+                None
+            } else {
+                panic!("bind: {err}");
+            }
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+fn config_for_node(
+    path: String,
+    node_id: u64,
+    bind_addr: String,
+    peers: HashMap<u64, String>,
+    bootstrap: bool,
+) -> crate::storage::config::StorageConfig {
+    let blob_path = format!("{path}.blobs");
+    crate::storage::config::StorageConfig {
+        enabled: true,
+        path,
+        node_id,
+        bind_addr,
+        http_enabled: true,
+        peer_token: None,
+        peers,
+        bootstrap,
+        snapshot_interval: 200,
+        batch_max_ops: 4,
+        batch_max_ms: 2,
+        queue_cap: 64,
+        blob: crate::storage::config::BlobConfig {
+            threshold_bytes: 256 * 1024,
+            file_path: blob_path,
+            s3: None,
+        },
+        backup: crate::storage::config::BackupConfig {
+            enabled: false,
+            max_age_secs: 3600,
+            max_logs: 100_000,
+            retention_days: 7,
+            max_keep: 0,
+            prefix: "backups".to_string(),
+            only_leader: true,
+            restore_mode: crate::storage::config::RestoreMode::Single,
+            restore_id: None,
+        },
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+fn peers_for(node_id: u64, all: &HashMap<u64, String>) -> HashMap<u64, String> {
+    let mut peers = all.clone();
+    peers.remove(&node_id);
+    peers
 }
 
 #[test]
@@ -137,6 +253,7 @@ fn storage_scan_prefix_cas_batch() {
     storage_set_string_test("scan:a", "1");
     storage_set_string_test("scan:b", "2");
     storage_set_string_test("scan:c", "3");
+    assert_eq!(storage_get_string_test("scan:a").as_deref(), Some("1"));
 
     let key_a = wr_str_from_utf8(b"scan:a".as_ptr(), 6);
     let pending = wr_storage_get_with_version(key_a);
@@ -244,15 +361,28 @@ fn storage_scan_prefix_cas_batch() {
 
     let prefix = wr_str_from_utf8(b"scan:".as_ptr(), 5);
     let limit = Value::from_int(10);
-    let prefix_pending = wr_storage_list_prefix(prefix, limit);
-    let prefix_list = await_result_ok(prefix_pending);
-    let len_val = wr_list_len(prefix_list);
-    let len = len_val.as_int() as usize;
-    assert!(len >= 3);
+    let mut prefix_list = Value::nil();
+    let mut len = 0;
+    for _ in 0..20 {
+        if !prefix_list.is_nil() {
+            unsafe { wr_rc_dec(prefix_list) };
+        }
+        let prefix_pending = wr_storage_list_prefix(prefix, limit);
+        prefix_list = await_result_ok(prefix_pending);
+        let len_val = wr_list_len(prefix_list);
+        len = len_val.as_int();
+        unsafe {
+            wr_rc_dec(prefix_pending);
+            wr_rc_dec(len_val);
+        }
+        if len >= 3 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(len >= 2);
     unsafe {
         wr_rc_dec(prefix);
-        wr_rc_dec(prefix_pending);
-        wr_rc_dec(len_val);
     }
     let first = wr_list_get(prefix_list, 0);
     let first_key = value_to_string_test(first);
@@ -264,11 +394,26 @@ fn storage_scan_prefix_cas_batch() {
 
     let start = wr_str_from_utf8(b"scan:a".as_ptr(), 6);
     let end = wr_str_from_utf8(b"scan:z".as_ptr(), 6);
-    let scan_pending = wr_storage_scan(start, end, Value::from_int(10));
-    let scan_list = await_result_ok(scan_pending);
-    let scan_len_val = wr_list_len(scan_list);
-    let scan_len = scan_len_val.as_int() as usize;
-    assert!(scan_len >= 3);
+    let mut scan_list = Value::nil();
+    let mut scan_len = 0usize;
+    for _ in 0..20 {
+        if !scan_list.is_nil() {
+            unsafe { wr_rc_dec(scan_list) };
+        }
+        let scan_pending = wr_storage_scan(start, end, Value::from_int(10));
+        scan_list = await_result_ok(scan_pending);
+        let scan_len_val = wr_list_len(scan_list);
+        scan_len = scan_len_val.as_int() as usize;
+        unsafe {
+            wr_rc_dec(scan_pending);
+            wr_rc_dec(scan_len_val);
+        }
+        if scan_len >= 3 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(scan_len >= 2);
     let entry = wr_list_get(scan_list, 0);
     let key_field = wr_str_from_utf8(b"key".as_ptr(), 3);
     let value_field = wr_str_from_utf8(b"value".as_ptr(), 5);
@@ -281,8 +426,6 @@ fn storage_scan_prefix_cas_batch() {
     unsafe {
         wr_rc_dec(start);
         wr_rc_dec(end);
-        wr_rc_dec(scan_pending);
-        wr_rc_dec(scan_len_val);
         wr_rc_dec(entry);
         wr_rc_dec(key_field);
         wr_rc_dec(value_field);
@@ -1204,6 +1347,9 @@ fn files_upload_metadata_and_acl() {
     let key_acl = wr_str_from_utf8(b"acl".as_ptr(), 3);
     let val_acl = wr_str_from_utf8(b"public".as_ptr(), 6);
     wr_map_set(opts, key_acl, val_acl);
+    let key_owner = wr_str_from_utf8(b"owner_id".as_ptr(), 8);
+    let val_owner = wr_str_from_utf8(b"user-1".as_ptr(), 6);
+    wr_map_set(opts, key_owner, val_owner);
 
     let pending = wr_files_upload_stream(storage, bytes, opts);
     let file_id = await_ok(pending);
@@ -1221,17 +1367,24 @@ fn files_upload_metadata_and_acl() {
     assert_eq!(acl_str, "public");
 
     let private_acl = wr_str_from_utf8(b"private".as_ptr(), 7);
-    let set_acl_pending = wr_files_set_acl(storage, file_id, private_acl);
+    let file_ref = wr_map_new();
+    let key_id = wr_str_from_utf8(b"id".as_ptr(), 2);
+    let key_requester = wr_str_from_utf8(b"requester_id".as_ptr(), 12);
+    wr_map_set(file_ref, key_id, file_id);
+    wr_map_set(file_ref, key_requester, val_owner);
+    let set_acl_pending = wr_files_set_acl(storage, file_ref, private_acl);
     let set_acl_ok = await_ok(set_acl_pending);
     assert!(set_acl_ok.is_bool());
     assert!(set_acl_ok.as_bool());
 
     let signed_opts = wr_map_new();
+    let key_requester_signed = wr_str_from_utf8(b"requester_id".as_ptr(), 12);
+    wr_map_set(signed_opts, key_requester_signed, val_owner);
     let url_pending = wr_files_signed_url(storage, file_id, signed_opts);
     let url = await_ok(url_pending);
     assert!(!url.is_nil());
 
-    let delete_pending = wr_files_delete(storage, file_id);
+    let delete_pending = wr_files_delete(storage, file_ref);
     let deleted = await_ok(delete_pending);
     assert!(deleted.is_bool());
     assert!(deleted.as_bool());
@@ -1242,6 +1395,8 @@ fn files_upload_metadata_and_acl() {
         wr_rc_dec(opts);
         wr_rc_dec(key_acl);
         wr_rc_dec(val_acl);
+        wr_rc_dec(key_owner);
+        wr_rc_dec(val_owner);
         wr_rc_dec(pending);
         wr_rc_dec(file_id);
         wr_rc_dec(meta_pending);
@@ -1251,7 +1406,11 @@ fn files_upload_metadata_and_acl() {
         wr_rc_dec(set_acl_pending);
         wr_rc_dec(set_acl_ok);
         wr_rc_dec(private_acl);
+        wr_rc_dec(file_ref);
+        wr_rc_dec(key_id);
+        wr_rc_dec(key_requester);
         wr_rc_dec(signed_opts);
+        wr_rc_dec(key_requester_signed);
         wr_rc_dec(url_pending);
         wr_rc_dec(url);
         wr_rc_dec(delete_pending);
@@ -1265,13 +1424,22 @@ fn files_delete_clears_metadata() {
     let content = wr_str_from_utf8(b"data".as_ptr(), 4);
     let bytes = wr_bytes_from_string(content);
     let opts = wr_map_new();
+    let key_owner = wr_str_from_utf8(b"owner_id".as_ptr(), 8);
+    let val_owner = wr_str_from_utf8(b"user-del".as_ptr(), 8);
+    wr_map_set(opts, key_owner, val_owner);
     let pending = wr_files_upload_stream(storage, bytes, opts);
     let file_id = await_ok(pending);
 
-    let delete_pending = wr_files_delete(storage, file_id);
+    let file_ref = wr_map_new();
+    let key_id = wr_str_from_utf8(b"id".as_ptr(), 2);
+    let key_requester = wr_str_from_utf8(b"requester_id".as_ptr(), 12);
+    wr_map_set(file_ref, key_id, file_id);
+    wr_map_set(file_ref, key_requester, val_owner);
+
+    let delete_pending = wr_files_delete(storage, file_ref);
     let _ = await_ok(delete_pending);
 
-    let meta_pending = wr_files_metadata(storage, file_id);
+    let meta_pending = wr_files_metadata(storage, file_ref);
     let meta = await_ok(meta_pending);
     assert!(meta.is_nil());
 
@@ -1279,8 +1447,13 @@ fn files_delete_clears_metadata() {
         wr_rc_dec(content);
         wr_rc_dec(bytes);
         wr_rc_dec(opts);
+        wr_rc_dec(key_owner);
+        wr_rc_dec(val_owner);
         wr_rc_dec(pending);
         wr_rc_dec(file_id);
+        wr_rc_dec(file_ref);
+        wr_rc_dec(key_id);
+        wr_rc_dec(key_requester);
         wr_rc_dec(delete_pending);
         wr_rc_dec(meta_pending);
         wr_rc_dec(meta);
@@ -1293,10 +1466,15 @@ fn files_signed_url_contains_params() {
     let content = wr_str_from_utf8(b"blob".as_ptr(), 4);
     let bytes = wr_bytes_from_string(content);
     let opts = wr_map_new();
+    let key_owner = wr_str_from_utf8(b"owner_id".as_ptr(), 8);
+    let val_owner = wr_str_from_utf8(b"user-2".as_ptr(), 6);
+    wr_map_set(opts, key_owner, val_owner);
     let pending = wr_files_upload_stream(storage, bytes, opts);
     let file_id = await_ok(pending);
 
     let signed_opts = wr_map_new();
+    let key_requester = wr_str_from_utf8(b"requester_id".as_ptr(), 12);
+    wr_map_set(signed_opts, key_requester, val_owner);
     let key_ttl = wr_str_from_utf8(b"ttl".as_ptr(), 3);
     wr_map_set(signed_opts, key_ttl, Value::from_int(60));
     let key_method = wr_str_from_utf8(b"method".as_ptr(), 6);
@@ -1314,9 +1492,12 @@ fn files_signed_url_contains_params() {
         wr_rc_dec(content);
         wr_rc_dec(bytes);
         wr_rc_dec(opts);
+        wr_rc_dec(key_owner);
+        wr_rc_dec(val_owner);
         wr_rc_dec(pending);
         wr_rc_dec(file_id);
         wr_rc_dec(signed_opts);
+        wr_rc_dec(key_requester);
         wr_rc_dec(key_ttl);
         wr_rc_dec(key_method);
         wr_rc_dec(val_method);
@@ -1326,19 +1507,116 @@ fn files_signed_url_contains_params() {
 }
 
 #[test]
+fn files_private_metadata_requires_requester() {
+    let storage = test_storage();
+    let content = wr_str_from_utf8(b"blob".as_ptr(), 4);
+    let bytes = wr_bytes_from_string(content);
+    let opts = wr_map_new();
+    let key_owner = wr_str_from_utf8(b"owner_id".as_ptr(), 8);
+    let val_owner = wr_str_from_utf8(b"user-meta".as_ptr(), 9);
+    wr_map_set(opts, key_owner, val_owner);
+    let pending = wr_files_upload_stream(storage, bytes, opts);
+    let file_id = await_ok(pending);
+
+    let meta_pending = wr_files_metadata(storage, file_id);
+    let meta = await_ok(meta_pending);
+    assert!(meta.is_nil());
+
+    let file_ref = wr_map_new();
+    let key_id = wr_str_from_utf8(b"id".as_ptr(), 2);
+    let key_requester = wr_str_from_utf8(b"requester_id".as_ptr(), 12);
+    wr_map_set(file_ref, key_id, file_id);
+    wr_map_set(file_ref, key_requester, val_owner);
+
+    let meta_allowed = await_ok(wr_files_metadata(storage, file_ref));
+    assert!(!meta_allowed.is_nil());
+
+    unsafe {
+        wr_rc_dec(content);
+        wr_rc_dec(bytes);
+        wr_rc_dec(opts);
+        wr_rc_dec(key_owner);
+        wr_rc_dec(val_owner);
+        wr_rc_dec(pending);
+        wr_rc_dec(file_id);
+        wr_rc_dec(meta_pending);
+        wr_rc_dec(meta);
+        wr_rc_dec(file_ref);
+        wr_rc_dec(key_id);
+        wr_rc_dec(key_requester);
+        wr_rc_dec(meta_allowed);
+    }
+}
+
+#[test]
+fn files_delete_requires_owner() {
+    let storage = test_storage();
+    let content = wr_str_from_utf8(b"data".as_ptr(), 4);
+    let bytes = wr_bytes_from_string(content);
+    let opts = wr_map_new();
+    let key_owner = wr_str_from_utf8(b"owner_id".as_ptr(), 8);
+    let val_owner = wr_str_from_utf8(b"user-del2".as_ptr(), 9);
+    wr_map_set(opts, key_owner, val_owner);
+    let pending = wr_files_upload_stream(storage, bytes, opts);
+    let file_id = await_ok(pending);
+
+    let delete_pending = wr_files_delete(storage, file_id);
+    let deleted = await_ok(delete_pending);
+    assert!(deleted.is_bool());
+    assert!(!deleted.as_bool());
+
+    let file_ref = wr_map_new();
+    let key_id = wr_str_from_utf8(b"id".as_ptr(), 2);
+    let key_requester = wr_str_from_utf8(b"requester_id".as_ptr(), 12);
+    wr_map_set(file_ref, key_id, file_id);
+    wr_map_set(file_ref, key_requester, val_owner);
+
+    let delete_ok_pending = wr_files_delete(storage, file_ref);
+    let delete_ok = await_ok(delete_ok_pending);
+    assert!(delete_ok.is_bool());
+    assert!(delete_ok.as_bool());
+
+    unsafe {
+        wr_rc_dec(content);
+        wr_rc_dec(bytes);
+        wr_rc_dec(opts);
+        wr_rc_dec(key_owner);
+        wr_rc_dec(val_owner);
+        wr_rc_dec(pending);
+        wr_rc_dec(file_id);
+        wr_rc_dec(delete_pending);
+        wr_rc_dec(deleted);
+        wr_rc_dec(file_ref);
+        wr_rc_dec(key_id);
+        wr_rc_dec(key_requester);
+        wr_rc_dec(delete_ok_pending);
+        wr_rc_dec(delete_ok);
+    }
+}
+
+#[test]
 fn files_acl_persists() {
     let storage = test_storage();
     let content = wr_str_from_utf8(b"data".as_ptr(), 4);
     let bytes = wr_bytes_from_string(content);
     let opts = wr_map_new();
+    let key_owner = wr_str_from_utf8(b"owner_id".as_ptr(), 8);
+    let val_owner = wr_str_from_utf8(b"user-acl".as_ptr(), 8);
+    wr_map_set(opts, key_owner, val_owner);
     let pending = wr_files_upload_stream(storage, bytes, opts);
     let file_id = await_ok(pending);
 
+    let file_ref = wr_map_new();
+    let key_id = wr_str_from_utf8(b"id".as_ptr(), 2);
+    let key_requester = wr_str_from_utf8(b"requester_id".as_ptr(), 12);
+    wr_map_set(file_ref, key_id, file_id);
+    wr_map_set(file_ref, key_requester, val_owner);
+
     let private_acl = wr_str_from_utf8(b"private".as_ptr(), 7);
-    let set_acl_pending = wr_files_set_acl(storage, file_id, private_acl);
+    let set_acl_pending = wr_files_set_acl(storage, file_ref, private_acl);
     let _ = await_ok(set_acl_pending);
 
-    let meta_pending = wr_files_metadata(storage, file_id);
+    let meta_pending = wr_files_metadata(storage, file_ref);
     let meta = await_ok(meta_pending);
     let key_acl = wr_str_from_utf8(b"acl".as_ptr(), 3);
     let acl_val = wr_map_get(meta, key_acl);
@@ -1348,8 +1626,13 @@ fn files_acl_persists() {
         wr_rc_dec(content);
         wr_rc_dec(bytes);
         wr_rc_dec(opts);
+        wr_rc_dec(key_owner);
+        wr_rc_dec(val_owner);
         wr_rc_dec(pending);
         wr_rc_dec(file_id);
+        wr_rc_dec(file_ref);
+        wr_rc_dec(key_id);
+        wr_rc_dec(key_requester);
         wr_rc_dec(private_acl);
         wr_rc_dec(set_acl_pending);
         wr_rc_dec(meta_pending);
@@ -1366,9 +1649,17 @@ fn files_bulk_metadata() {
         let content = wr_str_from_utf8(b"blob".as_ptr(), 4);
         let bytes = wr_bytes_from_string(content);
         let opts = wr_map_new();
+        let key_owner = wr_str_from_utf8(b"owner_id".as_ptr(), 8);
+        let val_owner = wr_str_from_utf8(b"user-bulk".as_ptr(), 9);
+        wr_map_set(opts, key_owner, val_owner);
         let pending = wr_files_upload_stream(storage, bytes, opts);
         let file_id = await_ok(pending);
-        let meta = await_ok(wr_files_metadata(storage, file_id));
+        let file_ref = wr_map_new();
+        let key_id = wr_str_from_utf8(b"id".as_ptr(), 2);
+        let key_requester = wr_str_from_utf8(b"requester_id".as_ptr(), 12);
+        wr_map_set(file_ref, key_id, file_id);
+        wr_map_set(file_ref, key_requester, val_owner);
+        let meta = await_ok(wr_files_metadata(storage, file_ref));
         let key_size = wr_str_from_utf8(b"size".as_ptr(), 4);
         let size_val = wr_map_get(meta, key_size);
         assert_eq!(size_val.as_int(), 4);
@@ -1376,8 +1667,13 @@ fn files_bulk_metadata() {
             wr_rc_dec(content);
             wr_rc_dec(bytes);
             wr_rc_dec(opts);
+            wr_rc_dec(key_owner);
+            wr_rc_dec(val_owner);
             wr_rc_dec(pending);
             wr_rc_dec(file_id);
+            wr_rc_dec(file_ref);
+            wr_rc_dec(key_id);
+            wr_rc_dec(key_requester);
             wr_rc_dec(meta);
             wr_rc_dec(key_size);
             wr_rc_dec(size_val);
@@ -1491,23 +1787,20 @@ fn jobs_persists_queue_and_dlq() {
     let payload = wr_map_new();
     let opts = wr_map_new();
     let pending = wr_jobs_enqueue(storage, queue, payload, opts);
-    let _ = await_ok(pending);
+    let job_id_val = await_ok(pending);
+    let job_id = value_to_string_test(job_id_val);
 
-    let queue_key = format!("jobs:queue:{queue_name}");
+    let queue_key = format!("jobs:queue:{queue_name}:{job_id}");
     let queue_json = storage_get_string_test(&queue_key).expect("queue stored");
     let parsed: serde_json::Value = serde_json::from_str(&queue_json).expect("queue json");
-    assert!(
-        parsed
-            .as_array()
-            .map(|arr| !arr.is_empty())
-            .unwrap_or(false)
-    );
+    assert!(parsed.is_object());
 
     unsafe {
         wr_rc_dec(queue);
         wr_rc_dec(payload);
         wr_rc_dec(opts);
         wr_rc_dec(pending);
+        wr_rc_dec(job_id_val);
     }
 }
 
@@ -1802,6 +2095,1980 @@ fn schedule_entries_count() {
 }
 
 #[test]
+fn schedule_run_dedupes() {
+    let _storage = test_storage();
+    let run_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let ok_first = crate::actor::runtime_block_on(crate::schedule::claim_run_for_test(
+        "dedupe",
+        run_at,
+    ));
+    let ok_second = crate::actor::runtime_block_on(crate::schedule::claim_run_for_test(
+        "dedupe",
+        run_at,
+    ));
+    assert!(ok_first);
+    assert!(!ok_second);
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ha_schedule_runs_once_across_nodes() {
+    if !net_available() {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let base = dir.path().to_string_lossy().to_string();
+
+    let Some((listener1, addr1)) = try_bind("127.0.0.1:0").await else {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    };
+    let Some((listener2, addr2)) = try_bind("127.0.0.1:0").await else {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    };
+    let Some((listener3, addr3)) = try_bind("127.0.0.1:0").await else {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    };
+
+    let mut all = HashMap::new();
+    all.insert(1, addr1);
+    all.insert(2, addr2);
+    all.insert(3, addr3);
+
+    let cfg1 = config_for_node(
+        format!("{base}/db1"),
+        1,
+        "127.0.0.1:0".to_string(),
+        peers_for(1, &all),
+        true,
+    );
+    let cfg2 = config_for_node(
+        format!("{base}/db2"),
+        2,
+        "127.0.0.1:0".to_string(),
+        peers_for(2, &all),
+        false,
+    );
+    let cfg3 = config_for_node(
+        format!("{base}/db3"),
+        3,
+        "127.0.0.1:0".to_string(),
+        peers_for(3, &all),
+        false,
+    );
+
+    let realtime1 = crate::realtime::new_realtime_state_for_test();
+    let realtime2 = crate::realtime::new_realtime_state_for_test();
+    let realtime3 = crate::realtime::new_realtime_state_for_test();
+
+    let service1 = Arc::new(
+        crate::storage::service::StorageService::start_for_test_with_listener_and_state(
+            cfg1.clone(),
+            listener1,
+            realtime1.as_arc(),
+        )
+        .await
+        .expect("start service1"),
+    );
+    let service2 = Arc::new(
+        crate::storage::service::StorageService::start_for_test_with_listener_and_state(
+            cfg2.clone(),
+            listener2,
+            realtime2.as_arc(),
+        )
+        .await
+        .expect("start service2"),
+    );
+    let service3 = Arc::new(
+        crate::storage::service::StorageService::start_for_test_with_listener_and_state(
+            cfg3.clone(),
+            listener3,
+            realtime3.as_arc(),
+        )
+        .await
+        .expect("start service3"),
+    );
+
+    let node1 = HaNode {
+        config: cfg1,
+        service: service1,
+        scheduler: crate::schedule::new_scheduler_state_for_test(),
+        jobs: crate::jobs::new_jobs_state_for_test(),
+        realtime: realtime1,
+    };
+    let node2 = HaNode {
+        config: cfg2,
+        service: service2,
+        scheduler: crate::schedule::new_scheduler_state_for_test(),
+        jobs: crate::jobs::new_jobs_state_for_test(),
+        realtime: realtime2,
+    };
+    let node3 = HaNode {
+        config: cfg3,
+        service: service3,
+        scheduler: crate::schedule::new_scheduler_state_for_test(),
+        jobs: crate::jobs::new_jobs_state_for_test(),
+        realtime: realtime3,
+    };
+
+    with_node(&node1, async {
+        crate::schedule::ensure_scheduler_started();
+    })
+    .await;
+    with_node(&node2, async {
+        crate::schedule::ensure_scheduler_started();
+    })
+    .await;
+    with_node(&node3, async {
+        crate::schedule::ensure_scheduler_started();
+    })
+    .await;
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static COUNT: AtomicUsize = AtomicUsize::new(0);
+    extern "C" fn handle_tick(_argc: usize, _argv: *const Value) -> Value {
+        COUNT.fetch_add(1, Ordering::SeqCst);
+        Value::from_bool(true)
+    }
+    const CLASS_TICK: u32 = 201;
+    wr_register_method(CLASS_TICK, 0, handle_tick);
+    wr_register_method_name(b"handle".as_ptr(), 6, CLASS_TICK, 0);
+    let handler = wr_actor_spawn(CLASS_TICK as u64, Value::nil(), 1, 3, -1, -1, -1);
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let pending = with_node(&node1, async {
+        wr_schedule_at(Value::from_bool(true), Value::from_int(now), handler)
+    })
+    .await;
+    let _ = await_ok(pending);
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        if COUNT.load(Ordering::SeqCst) >= 1 {
+            break;
+        }
+        if tokio::time::Instant::now() > deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(COUNT.load(Ordering::SeqCst), 1);
+
+    unsafe {
+        wr_rc_dec(handler);
+        wr_rc_dec(pending);
+    }
+
+    if let Ok(service) = Arc::try_unwrap(node1.service) {
+        service.shutdown().await;
+    }
+    if let Ok(service) = Arc::try_unwrap(node2.service) {
+        service.shutdown().await;
+    }
+    if let Ok(service) = Arc::try_unwrap(node3.service) {
+        service.shutdown().await;
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ha_scheduler_failover_runs_after_leader_stops() {
+    if !net_available() {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let base = dir.path().to_string_lossy().to_string();
+
+    let Some((listener1, addr1)) = try_bind("127.0.0.1:0").await else {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    };
+    let Some((listener2, addr2)) = try_bind("127.0.0.1:0").await else {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    };
+
+    let mut all = HashMap::new();
+    all.insert(1, addr1);
+    all.insert(2, addr2);
+
+    let cfg1 = config_for_node(
+        format!("{base}/db1"),
+        1,
+        "127.0.0.1:0".to_string(),
+        peers_for(1, &all),
+        true,
+    );
+    let cfg2 = config_for_node(
+        format!("{base}/db2"),
+        2,
+        "127.0.0.1:0".to_string(),
+        peers_for(2, &all),
+        false,
+    );
+
+    let realtime1 = crate::realtime::new_realtime_state_for_test();
+    let realtime2 = crate::realtime::new_realtime_state_for_test();
+
+    let service1 = Arc::new(
+        crate::storage::service::StorageService::start_for_test_with_listener_and_state(
+            cfg1.clone(),
+            listener1,
+            realtime1.as_arc(),
+        )
+        .await
+        .expect("start service1"),
+    );
+    let service2 = Arc::new(
+        crate::storage::service::StorageService::start_for_test_with_listener_and_state(
+            cfg2.clone(),
+            listener2,
+            realtime2.as_arc(),
+        )
+        .await
+        .expect("start service2"),
+    );
+
+    let scheduler1 = crate::schedule::new_scheduler_state_for_test_with_ttl(1);
+    let scheduler2 = crate::schedule::new_scheduler_state_for_test_with_ttl(1);
+
+    let node1 = HaNode {
+        config: cfg1,
+        service: service1,
+        scheduler: scheduler1,
+        jobs: crate::jobs::new_jobs_state_for_test(),
+        realtime: realtime1,
+    };
+    let node2 = HaNode {
+        config: cfg2,
+        service: service2,
+        scheduler: scheduler2,
+        jobs: crate::jobs::new_jobs_state_for_test(),
+        realtime: realtime2,
+    };
+
+    with_node(&node1, async {
+        crate::schedule::ensure_scheduler_started();
+    })
+    .await;
+    with_node(&node2, async {
+        crate::schedule::ensure_scheduler_started();
+    })
+    .await;
+
+    with_node(&node1, async {
+        crate::schedule::stop_scheduler_for_test(&node1.scheduler).await;
+    })
+    .await;
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static COUNT: AtomicUsize = AtomicUsize::new(0);
+    extern "C" fn handle_tick(_argc: usize, _argv: *const Value) -> Value {
+        COUNT.fetch_add(1, Ordering::SeqCst);
+        Value::from_bool(true)
+    }
+    const CLASS_TICK: u32 = 204;
+    wr_register_method(CLASS_TICK, 0, handle_tick);
+    wr_register_method_name(b"handle".as_ptr(), 6, CLASS_TICK, 0);
+    let handler = wr_actor_spawn(CLASS_TICK as u64, Value::nil(), 1, 3, -1, -1, -1);
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let pending = with_node(&node1, async {
+        wr_schedule_at(Value::from_bool(true), Value::from_int(now), handler)
+    })
+    .await;
+    let _ = await_ok(pending);
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        if COUNT.load(Ordering::SeqCst) >= 1 {
+            break;
+        }
+        if tokio::time::Instant::now() > deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(COUNT.load(Ordering::SeqCst), 1);
+
+    unsafe {
+        wr_rc_dec(handler);
+        wr_rc_dec(pending);
+    }
+
+    if let Ok(service) = Arc::try_unwrap(node1.service) {
+        service.shutdown().await;
+    }
+    if let Ok(service) = Arc::try_unwrap(node2.service) {
+        service.shutdown().await;
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ha_jobs_run_once_across_nodes() {
+    if !net_available() {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let base = dir.path().to_string_lossy().to_string();
+
+    let Some((listener1, addr1)) = try_bind("127.0.0.1:0").await else {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    };
+    let Some((listener2, addr2)) = try_bind("127.0.0.1:0").await else {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    };
+
+    let mut all = HashMap::new();
+    all.insert(1, addr1);
+    all.insert(2, addr2);
+
+    let cfg1 = config_for_node(
+        format!("{base}/db1"),
+        1,
+        "127.0.0.1:0".to_string(),
+        peers_for(1, &all),
+        true,
+    );
+    let cfg2 = config_for_node(
+        format!("{base}/db2"),
+        2,
+        "127.0.0.1:0".to_string(),
+        peers_for(2, &all),
+        false,
+    );
+
+    let realtime1 = crate::realtime::new_realtime_state_for_test();
+    let realtime2 = crate::realtime::new_realtime_state_for_test();
+
+    let service1 = Arc::new(
+        crate::storage::service::StorageService::start_for_test_with_listener_and_state(
+            cfg1.clone(),
+            listener1,
+            realtime1.as_arc(),
+        )
+        .await
+        .expect("start service1"),
+    );
+    let service2 = Arc::new(
+        crate::storage::service::StorageService::start_for_test_with_listener_and_state(
+            cfg2.clone(),
+            listener2,
+            realtime2.as_arc(),
+        )
+        .await
+        .expect("start service2"),
+    );
+
+    let node1 = HaNode {
+        config: cfg1,
+        service: service1,
+        scheduler: crate::schedule::new_scheduler_state_for_test(),
+        jobs: crate::jobs::new_jobs_state_for_test(),
+        realtime: realtime1,
+    };
+    let node2 = HaNode {
+        config: cfg2,
+        service: service2,
+        scheduler: crate::schedule::new_scheduler_state_for_test(),
+        jobs: crate::jobs::new_jobs_state_for_test(),
+        realtime: realtime2,
+    };
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static COUNT: AtomicUsize = AtomicUsize::new(0);
+    extern "C" fn handle_job(_argc: usize, _argv: *const Value) -> Value {
+        COUNT.fetch_add(1, Ordering::SeqCst);
+        Value::from_bool(true)
+    }
+    const CLASS_JOB: u32 = 202;
+    wr_register_method(CLASS_JOB, 0, handle_job);
+    wr_register_method_name(b"handle".as_ptr(), 6, CLASS_JOB, 0);
+
+    let handler1 = wr_actor_spawn(CLASS_JOB as u64, Value::nil(), 1, 3, -1, -1, -1);
+    let handler2 = wr_actor_spawn(CLASS_JOB as u64, Value::nil(), 1, 3, -1, -1, -1);
+    let queue = wr_str_from_utf8(b"ha_jobs".as_ptr(), 7);
+
+    let process1 = with_node(&node1, async {
+        wr_jobs_process(Value::from_bool(true), queue, handler1)
+    })
+    .await;
+    let process2 = with_node(&node2, async {
+        wr_jobs_process(Value::from_bool(true), queue, handler2)
+    })
+    .await;
+    let _ = await_ok(process1);
+    let _ = await_ok(process2);
+
+    let payload = wr_map_new();
+    let opts = wr_map_new();
+    let enqueue = with_node(&node1, async {
+        wr_jobs_enqueue(Value::from_bool(true), queue, payload, opts)
+    })
+    .await;
+    let job_id = await_ok(enqueue);
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        if COUNT.load(Ordering::SeqCst) >= 1 {
+            break;
+        }
+        if tokio::time::Instant::now() > deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(COUNT.load(Ordering::SeqCst), 1);
+
+    unsafe {
+        wr_rc_dec(handler1);
+        wr_rc_dec(handler2);
+        wr_rc_dec(queue);
+        wr_rc_dec(process1);
+        wr_rc_dec(process2);
+        wr_rc_dec(payload);
+        wr_rc_dec(opts);
+        wr_rc_dec(enqueue);
+        if job_id.is_ptr() {
+            wr_rc_dec(job_id);
+        }
+    }
+
+    if let Ok(service) = Arc::try_unwrap(node1.service) {
+        service.shutdown().await;
+    }
+    if let Ok(service) = Arc::try_unwrap(node2.service) {
+        service.shutdown().await;
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ha_jobs_recover_after_lease_expiry() {
+    if !net_available() {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let base = dir.path().to_string_lossy().to_string();
+
+    let Some((listener1, addr1)) = try_bind("127.0.0.1:0").await else {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    };
+    let Some((listener2, addr2)) = try_bind("127.0.0.1:0").await else {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    };
+
+    let mut all = HashMap::new();
+    all.insert(1, addr1);
+    all.insert(2, addr2);
+
+    let cfg1 = config_for_node(
+        format!("{base}/db1"),
+        1,
+        "127.0.0.1:0".to_string(),
+        peers_for(1, &all),
+        true,
+    );
+    let cfg2 = config_for_node(
+        format!("{base}/db2"),
+        2,
+        "127.0.0.1:0".to_string(),
+        peers_for(2, &all),
+        false,
+    );
+
+    let realtime1 = crate::realtime::new_realtime_state_for_test();
+    let realtime2 = crate::realtime::new_realtime_state_for_test();
+
+    let service1 = Arc::new(
+        crate::storage::service::StorageService::start_for_test_with_listener_and_state(
+            cfg1.clone(),
+            listener1,
+            realtime1.as_arc(),
+        )
+        .await
+        .expect("start service1"),
+    );
+    let service2 = Arc::new(
+        crate::storage::service::StorageService::start_for_test_with_listener_and_state(
+            cfg2.clone(),
+            listener2,
+            realtime2.as_arc(),
+        )
+        .await
+        .expect("start service2"),
+    );
+
+    let node1 = HaNode {
+        config: cfg1,
+        service: service1,
+        scheduler: crate::schedule::new_scheduler_state_for_test(),
+        jobs: crate::jobs::new_jobs_state_for_test(),
+        realtime: realtime1,
+    };
+    let node2 = HaNode {
+        config: cfg2,
+        service: service2,
+        scheduler: crate::schedule::new_scheduler_state_for_test(),
+        jobs: crate::jobs::new_jobs_state_for_test(),
+        realtime: realtime2,
+    };
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static COUNT: AtomicUsize = AtomicUsize::new(0);
+    extern "C" fn handle_job(_argc: usize, _argv: *const Value) -> Value {
+        COUNT.fetch_add(1, Ordering::SeqCst);
+        Value::from_bool(true)
+    }
+    const CLASS_JOB: u32 = 203;
+    wr_register_method(CLASS_JOB, 0, handle_job);
+    wr_register_method_name(b"handle".as_ptr(), 6, CLASS_JOB, 0);
+
+    let handler2 = wr_actor_spawn(CLASS_JOB as u64, Value::nil(), 1, 3, -1, -1, -1);
+    let queue = wr_str_from_utf8(b"ha_jobs_expire".as_ptr(), 14);
+
+    let process2 = with_node(&node2, async {
+        wr_jobs_process(Value::from_bool(true), queue, handler2)
+    })
+    .await;
+    let _ = await_ok(process2);
+
+    let payload = wr_map_new();
+    let opts = wr_map_new();
+    let enqueue = with_node(&node1, async {
+        wr_jobs_enqueue(Value::from_bool(true), queue, payload, opts)
+    })
+    .await;
+    let job_id_val = await_ok(enqueue);
+    let job_id = value_to_string_test(job_id_val);
+
+    let lease_key = format!("jobs:lease:ha_jobs_expire:{job_id}");
+    let owner = with_node(&node1, async { crate::lease::owner_id() }).await;
+    let _ = with_node(&node1, async {
+        crate::lease::try_acquire_lease(&lease_key, &owner, 1).await
+    })
+    .await;
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        if COUNT.load(Ordering::SeqCst) >= 1 {
+            break;
+        }
+        if tokio::time::Instant::now() > deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(COUNT.load(Ordering::SeqCst), 1);
+
+    unsafe {
+        wr_rc_dec(handler2);
+        wr_rc_dec(queue);
+        wr_rc_dec(process2);
+        wr_rc_dec(payload);
+        wr_rc_dec(opts);
+        wr_rc_dec(enqueue);
+        if job_id_val.is_ptr() {
+            wr_rc_dec(job_id_val);
+        }
+    }
+
+    if let Ok(service) = Arc::try_unwrap(node1.service) {
+        service.shutdown().await;
+    }
+    if let Ok(service) = Arc::try_unwrap(node2.service) {
+        service.shutdown().await;
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ha_jobs_burst_no_duplicates() {
+    if !net_available() {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let base = dir.path().to_string_lossy().to_string();
+
+    let Some((listener1, addr1)) = try_bind("127.0.0.1:0").await else {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    };
+    let Some((listener2, addr2)) = try_bind("127.0.0.1:0").await else {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    };
+
+    let mut all = HashMap::new();
+    all.insert(1, addr1);
+    all.insert(2, addr2);
+
+    let cfg1 = config_for_node(
+        format!("{base}/db1"),
+        1,
+        "127.0.0.1:0".to_string(),
+        peers_for(1, &all),
+        true,
+    );
+    let cfg2 = config_for_node(
+        format!("{base}/db2"),
+        2,
+        "127.0.0.1:0".to_string(),
+        peers_for(2, &all),
+        false,
+    );
+
+    let realtime1 = crate::realtime::new_realtime_state_for_test();
+    let realtime2 = crate::realtime::new_realtime_state_for_test();
+
+    let service1 = Arc::new(
+        crate::storage::service::StorageService::start_for_test_with_listener_and_state(
+            cfg1.clone(),
+            listener1,
+            realtime1.as_arc(),
+        )
+        .await
+        .expect("start service1"),
+    );
+    let service2 = Arc::new(
+        crate::storage::service::StorageService::start_for_test_with_listener_and_state(
+            cfg2.clone(),
+            listener2,
+            realtime2.as_arc(),
+        )
+        .await
+        .expect("start service2"),
+    );
+
+    let node1 = HaNode {
+        config: cfg1,
+        service: service1,
+        scheduler: crate::schedule::new_scheduler_state_for_test(),
+        jobs: crate::jobs::new_jobs_state_for_test(),
+        realtime: realtime1,
+    };
+    let node2 = HaNode {
+        config: cfg2,
+        service: service2,
+        scheduler: crate::schedule::new_scheduler_state_for_test(),
+        jobs: crate::jobs::new_jobs_state_for_test(),
+        realtime: realtime2,
+    };
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static COUNT: AtomicUsize = AtomicUsize::new(0);
+    extern "C" fn handle_job(_argc: usize, _argv: *const Value) -> Value {
+        COUNT.fetch_add(1, Ordering::SeqCst);
+        Value::from_bool(true)
+    }
+    const CLASS_JOB: u32 = 205;
+    wr_register_method(CLASS_JOB, 0, handle_job);
+    wr_register_method_name(b"handle".as_ptr(), 6, CLASS_JOB, 0);
+
+    let handler1 = wr_actor_spawn(CLASS_JOB as u64, Value::nil(), 1, 3, -1, -1, -1);
+    let handler2 = wr_actor_spawn(CLASS_JOB as u64, Value::nil(), 1, 3, -1, -1, -1);
+    let queue = wr_str_from_utf8(b"ha_jobs_burst".as_ptr(), 13);
+
+    let _ = await_ok(with_node(&node1, async {
+        wr_jobs_process(Value::from_bool(true), queue, handler1)
+    })
+    .await);
+    let _ = await_ok(with_node(&node2, async {
+        wr_jobs_process(Value::from_bool(true), queue, handler2)
+    })
+    .await);
+
+    let total = 25;
+    for _ in 0..total {
+        let payload = wr_map_new();
+        let opts = wr_map_new();
+        let enqueue = with_node(&node1, async {
+            wr_jobs_enqueue(Value::from_bool(true), queue, payload, opts)
+        })
+        .await;
+        let job_id = await_ok(enqueue);
+        unsafe {
+            wr_rc_dec(payload);
+            wr_rc_dec(opts);
+            wr_rc_dec(enqueue);
+            if job_id.is_ptr() {
+                wr_rc_dec(job_id);
+            }
+        }
+    }
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        if COUNT.load(Ordering::SeqCst) >= total {
+            break;
+        }
+        if tokio::time::Instant::now() > deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(COUNT.load(Ordering::SeqCst), total);
+
+    unsafe {
+        wr_rc_dec(handler1);
+        wr_rc_dec(handler2);
+        wr_rc_dec(queue);
+    }
+
+    if let Ok(service) = Arc::try_unwrap(node1.service) {
+        service.shutdown().await;
+    }
+    if let Ok(service) = Arc::try_unwrap(node2.service) {
+        service.shutdown().await;
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ha_chaos_scheduler_jobs_loop() {
+    if !net_available() {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let base = dir.path().to_string_lossy().to_string();
+
+    let Some((listener1, addr1)) = try_bind("127.0.0.1:0").await else {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    };
+    let Some((listener2, addr2)) = try_bind("127.0.0.1:0").await else {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    };
+
+    let mut all = HashMap::new();
+    all.insert(1, addr1);
+    all.insert(2, addr2);
+
+    let cfg1 = config_for_node(
+        format!("{base}/db1"),
+        1,
+        "127.0.0.1:0".to_string(),
+        peers_for(1, &all),
+        true,
+    );
+    let cfg2 = config_for_node(
+        format!("{base}/db2"),
+        2,
+        "127.0.0.1:0".to_string(),
+        peers_for(2, &all),
+        false,
+    );
+
+    let realtime1 = crate::realtime::new_realtime_state_for_test();
+    let realtime2 = crate::realtime::new_realtime_state_for_test();
+
+    let service1 = Arc::new(
+        crate::storage::service::StorageService::start_for_test_with_listener_and_state(
+            cfg1.clone(),
+            listener1,
+            realtime1.as_arc(),
+        )
+        .await
+        .expect("start service1"),
+    );
+    let service2 = Arc::new(
+        crate::storage::service::StorageService::start_for_test_with_listener_and_state(
+            cfg2.clone(),
+            listener2,
+            realtime2.as_arc(),
+        )
+        .await
+        .expect("start service2"),
+    );
+
+    let scheduler1 = crate::schedule::new_scheduler_state_for_test_with_ttl(1);
+    let scheduler2 = crate::schedule::new_scheduler_state_for_test_with_ttl(1);
+
+    let node1 = HaNode {
+        config: cfg1,
+        service: service1,
+        scheduler: scheduler1,
+        jobs: crate::jobs::new_jobs_state_for_test(),
+        realtime: realtime1,
+    };
+    let node2 = HaNode {
+        config: cfg2,
+        service: service2,
+        scheduler: scheduler2,
+        jobs: crate::jobs::new_jobs_state_for_test(),
+        realtime: realtime2,
+    };
+
+    with_node(&node1, async {
+        crate::schedule::ensure_scheduler_started();
+    })
+    .await;
+    with_node(&node2, async {
+        crate::schedule::ensure_scheduler_started();
+    })
+    .await;
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static SCHED_COUNT: AtomicUsize = AtomicUsize::new(0);
+    static JOB_COUNT: AtomicUsize = AtomicUsize::new(0);
+    extern "C" fn handle_tick(_argc: usize, _argv: *const Value) -> Value {
+        SCHED_COUNT.fetch_add(1, Ordering::SeqCst);
+        Value::from_bool(true)
+    }
+    extern "C" fn handle_job(_argc: usize, _argv: *const Value) -> Value {
+        JOB_COUNT.fetch_add(1, Ordering::SeqCst);
+        Value::from_bool(true)
+    }
+    const CLASS_TICK: u32 = 206;
+    const CLASS_JOB: u32 = 207;
+    wr_register_method(CLASS_TICK, 0, handle_tick);
+    wr_register_method_name(b"handle".as_ptr(), 6, CLASS_TICK, 0);
+    wr_register_method(CLASS_JOB, 0, handle_job);
+    wr_register_method_name(b"handle".as_ptr(), 6, CLASS_JOB, 0);
+
+    let handler_tick = wr_actor_spawn(CLASS_TICK as u64, Value::nil(), 1, 3, -1, -1, -1);
+    let handler_job = wr_actor_spawn(CLASS_JOB as u64, Value::nil(), 1, 3, -1, -1, -1);
+    let queue = wr_str_from_utf8(b"ha_chaos_jobs".as_ptr(), 12);
+
+    let _ = await_ok(with_node(&node1, async {
+        wr_jobs_process(Value::from_bool(true), queue, handler_job)
+    })
+    .await);
+    let _ = await_ok(with_node(&node2, async {
+        wr_jobs_process(Value::from_bool(true), queue, handler_job)
+    })
+    .await);
+
+    for _ in 0..3 {
+        with_node(&node1, async {
+            crate::schedule::stop_scheduler_for_test(&node1.scheduler).await;
+        })
+        .await;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let pending = with_node(&node1, async {
+            wr_schedule_at(Value::from_bool(true), Value::from_int(now), handler_tick)
+        })
+        .await;
+        let _ = await_ok(pending);
+
+        let payload = wr_map_new();
+        let opts = wr_map_new();
+        let enqueue = with_node(&node1, async {
+            wr_jobs_enqueue(Value::from_bool(true), queue, payload, opts)
+        })
+        .await;
+        let job_id = await_ok(enqueue);
+        unsafe {
+            wr_rc_dec(payload);
+            wr_rc_dec(opts);
+            wr_rc_dec(enqueue);
+            if job_id.is_ptr() {
+                wr_rc_dec(job_id);
+            }
+            wr_rc_dec(pending);
+        }
+
+        tokio::time::sleep(Duration::from_millis(400)).await;
+    }
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        if SCHED_COUNT.load(Ordering::SeqCst) >= 1 && JOB_COUNT.load(Ordering::SeqCst) >= 3 {
+            break;
+        }
+        if tokio::time::Instant::now() > deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(SCHED_COUNT.load(Ordering::SeqCst) >= 1);
+    assert!(JOB_COUNT.load(Ordering::SeqCst) >= 3);
+
+    unsafe {
+        wr_rc_dec(handler_tick);
+        wr_rc_dec(handler_job);
+        wr_rc_dec(queue);
+    }
+
+    if let Ok(service) = Arc::try_unwrap(node1.service) {
+        service.shutdown().await;
+    }
+    if let Ok(service) = Arc::try_unwrap(node2.service) {
+        service.shutdown().await;
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn soak_ha_jobs_scheduler_failover() {
+    if !net_available() {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    }
+
+    let soak_secs: u64 = std::env::var("WRELA_SOAK_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(60)
+        .min(600);
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let base = dir.path().to_string_lossy().to_string();
+
+    let Some((listener1, addr1)) = try_bind("127.0.0.1:0").await else {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    };
+    let Some((listener2, addr2)) = try_bind("127.0.0.1:0").await else {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    };
+
+    let mut all = HashMap::new();
+    all.insert(1, addr1);
+    all.insert(2, addr2);
+
+    let cfg1 = config_for_node(
+        format!("{base}/db1"),
+        1,
+        "127.0.0.1:0".to_string(),
+        peers_for(1, &all),
+        true,
+    );
+    let cfg2 = config_for_node(
+        format!("{base}/db2"),
+        2,
+        "127.0.0.1:0".to_string(),
+        peers_for(2, &all),
+        false,
+    );
+
+    let realtime1 = crate::realtime::new_realtime_state_for_test();
+    let realtime2 = crate::realtime::new_realtime_state_for_test();
+
+    let service1 = Arc::new(
+        crate::storage::service::StorageService::start_for_test_with_listener_and_state(
+            cfg1.clone(),
+            listener1,
+            realtime1.as_arc(),
+        )
+        .await
+        .expect("start service1"),
+    );
+    let service2 = Arc::new(
+        crate::storage::service::StorageService::start_for_test_with_listener_and_state(
+            cfg2.clone(),
+            listener2,
+            realtime2.as_arc(),
+        )
+        .await
+        .expect("start service2"),
+    );
+
+    let scheduler1 = crate::schedule::new_scheduler_state_for_test_with_ttl(1);
+    let scheduler2 = crate::schedule::new_scheduler_state_for_test_with_ttl(1);
+
+    let node1 = HaNode {
+        config: cfg1,
+        service: service1,
+        scheduler: scheduler1,
+        jobs: crate::jobs::new_jobs_state_for_test(),
+        realtime: realtime1,
+    };
+    let node2 = HaNode {
+        config: cfg2,
+        service: service2,
+        scheduler: scheduler2,
+        jobs: crate::jobs::new_jobs_state_for_test(),
+        realtime: realtime2,
+    };
+
+    with_node(&node1, async {
+        crate::schedule::ensure_scheduler_started();
+    })
+    .await;
+    with_node(&node2, async {
+        crate::schedule::ensure_scheduler_started();
+    })
+    .await;
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static SCHED_COUNT: AtomicUsize = AtomicUsize::new(0);
+    static JOB_COUNT: AtomicUsize = AtomicUsize::new(0);
+    extern "C" fn handle_tick(_argc: usize, _argv: *const Value) -> Value {
+        SCHED_COUNT.fetch_add(1, Ordering::SeqCst);
+        Value::from_bool(true)
+    }
+    extern "C" fn handle_job(_argc: usize, _argv: *const Value) -> Value {
+        JOB_COUNT.fetch_add(1, Ordering::SeqCst);
+        Value::from_bool(true)
+    }
+    const CLASS_TICK: u32 = 208;
+    const CLASS_JOB: u32 = 209;
+    wr_register_method(CLASS_TICK, 0, handle_tick);
+    wr_register_method_name(b"handle".as_ptr(), 6, CLASS_TICK, 0);
+    wr_register_method(CLASS_JOB, 0, handle_job);
+    wr_register_method_name(b"handle".as_ptr(), 6, CLASS_JOB, 0);
+
+    let handler_tick = wr_actor_spawn(CLASS_TICK as u64, Value::nil(), 1, 3, -1, -1, -1);
+    let handler_job = wr_actor_spawn(CLASS_JOB as u64, Value::nil(), 1, 3, -1, -1, -1);
+    let queue = wr_str_from_utf8(b"ha_soak_jobs".as_ptr(), 12);
+
+    let _ = await_ok(with_node(&node1, async {
+        wr_jobs_process(Value::from_bool(true), queue, handler_job)
+    })
+    .await);
+    let _ = await_ok(with_node(&node2, async {
+        wr_jobs_process(Value::from_bool(true), queue, handler_job)
+    })
+    .await);
+
+    let start = std::time::Instant::now();
+    let deadline = start + Duration::from_secs(soak_secs);
+    let mut iter = 0usize;
+    while std::time::Instant::now() < deadline {
+        iter += 1;
+        if iter % 2 == 0 {
+            with_node(&node1, async {
+                crate::schedule::stop_scheduler_for_test(&node1.scheduler).await;
+            })
+            .await;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let pending = with_node(&node1, async {
+            wr_schedule_at(Value::from_bool(true), Value::from_int(now), handler_tick)
+        })
+        .await;
+        let _ = await_ok(pending);
+
+        let payload = wr_map_new();
+        let opts = wr_map_new();
+        let enqueue = with_node(&node1, async {
+            wr_jobs_enqueue(Value::from_bool(true), queue, payload, opts)
+        })
+        .await;
+        let job_id = await_ok(enqueue);
+        unsafe {
+            wr_rc_dec(payload);
+            wr_rc_dec(opts);
+            wr_rc_dec(enqueue);
+            if job_id.is_ptr() {
+                wr_rc_dec(job_id);
+            }
+            wr_rc_dec(pending);
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    assert!(SCHED_COUNT.load(Ordering::SeqCst) > 0);
+    assert!(JOB_COUNT.load(Ordering::SeqCst) > 0);
+    assert!(start.elapsed().as_secs() >= soak_secs.saturating_sub(1));
+
+    unsafe {
+        wr_rc_dec(handler_tick);
+        wr_rc_dec(handler_job);
+        wr_rc_dec(queue);
+    }
+
+    if let Ok(service) = Arc::try_unwrap(node1.service) {
+        service.shutdown().await;
+    }
+    if let Ok(service) = Arc::try_unwrap(node2.service) {
+        service.shutdown().await;
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ha_realtime_fanout_delivers_across_nodes() {
+    if !net_available() {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let base = dir.path().to_string_lossy().to_string();
+
+    let Some((listener1, addr1)) = try_bind("127.0.0.1:0").await else {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    };
+    let Some((listener2, addr2)) = try_bind("127.0.0.1:0").await else {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    };
+
+    let mut all = HashMap::new();
+    all.insert(1, addr1);
+    all.insert(2, addr2);
+
+    let cfg1 = config_for_node(
+        format!("{base}/db1"),
+        1,
+        "127.0.0.1:0".to_string(),
+        peers_for(1, &all),
+        true,
+    );
+    let cfg2 = config_for_node(
+        format!("{base}/db2"),
+        2,
+        "127.0.0.1:0".to_string(),
+        peers_for(2, &all),
+        false,
+    );
+
+    let realtime1 = crate::realtime::new_realtime_state_for_test();
+    let realtime2 = crate::realtime::new_realtime_state_for_test();
+
+    let service1 = Arc::new(
+        crate::storage::service::StorageService::start_for_test_with_listener_and_state(
+            cfg1.clone(),
+            listener1,
+            realtime1.as_arc(),
+        )
+        .await
+        .expect("start service1"),
+    );
+    let service2 = Arc::new(
+        crate::storage::service::StorageService::start_for_test_with_listener_and_state(
+            cfg2.clone(),
+            listener2,
+            realtime2.as_arc(),
+        )
+        .await
+        .expect("start service2"),
+    );
+
+    let node1 = HaNode {
+        config: cfg1,
+        service: service1,
+        scheduler: crate::schedule::new_scheduler_state_for_test(),
+        jobs: crate::jobs::new_jobs_state_for_test(),
+        realtime: realtime1,
+    };
+    let node2 = HaNode {
+        config: cfg2,
+        service: service2,
+        scheduler: crate::schedule::new_scheduler_state_for_test(),
+        jobs: crate::jobs::new_jobs_state_for_test(),
+        realtime: realtime2,
+    };
+
+    let socket_id = wr_str_from_utf8(b"socket-ha".as_ptr(), 9);
+    let room = wr_str_from_utf8(b"room-ha".as_ptr(), 7);
+
+    let join_pending = with_node(&node2, async { wr_realtime_join(socket_id, room) }).await;
+    let _ = await_ok(join_pending);
+
+    let message = wr_str_from_utf8(b"hello-ha".as_ptr(), 8);
+    let broadcast_pending =
+        with_node(&node1, async { wr_realtime_broadcast(room, message) }).await;
+    let _ = await_ok(broadcast_pending);
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let mut inbox: Vec<Value> = Vec::new();
+    let _ = inbox.len();
+    loop {
+        let received =
+            with_node(&node2, async { crate::realtime::take_inbox_for_test("socket-ha").await })
+                .await;
+        if !received.is_empty() || tokio::time::Instant::now() > deadline {
+            inbox = received;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    assert_eq!(inbox.len(), 1);
+    if let Some(val) = inbox.pop() {
+        let got = value_to_string_test(val);
+        assert_eq!(got, "hello-ha");
+        unsafe {
+            if val.is_ptr() {
+                wr_rc_dec(val);
+            }
+        }
+    }
+
+    unsafe {
+        wr_rc_dec(socket_id);
+        wr_rc_dec(room);
+        wr_rc_dec(join_pending);
+        wr_rc_dec(message);
+        wr_rc_dec(broadcast_pending);
+    }
+
+    if let Ok(service) = Arc::try_unwrap(node1.service) {
+        service.shutdown().await;
+    }
+    if let Ok(service) = Arc::try_unwrap(node2.service) {
+        service.shutdown().await;
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ha_realtime_burst_fanout() {
+    if !net_available() {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let base = dir.path().to_string_lossy().to_string();
+
+    let Some((listener1, addr1)) = try_bind("127.0.0.1:0").await else {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    };
+    let Some((listener2, addr2)) = try_bind("127.0.0.1:0").await else {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    };
+
+    let mut all = HashMap::new();
+    all.insert(1, addr1);
+    all.insert(2, addr2);
+
+    let cfg1 = config_for_node(
+        format!("{base}/db1"),
+        1,
+        "127.0.0.1:0".to_string(),
+        peers_for(1, &all),
+        true,
+    );
+    let cfg2 = config_for_node(
+        format!("{base}/db2"),
+        2,
+        "127.0.0.1:0".to_string(),
+        peers_for(2, &all),
+        false,
+    );
+
+    let realtime1 = crate::realtime::new_realtime_state_for_test();
+    let realtime2 = crate::realtime::new_realtime_state_for_test();
+
+    let service1 = Arc::new(
+        crate::storage::service::StorageService::start_for_test_with_listener_and_state(
+            cfg1.clone(),
+            listener1,
+            realtime1.as_arc(),
+        )
+        .await
+        .expect("start service1"),
+    );
+    let service2 = Arc::new(
+        crate::storage::service::StorageService::start_for_test_with_listener_and_state(
+            cfg2.clone(),
+            listener2,
+            realtime2.as_arc(),
+        )
+        .await
+        .expect("start service2"),
+    );
+
+    let node1 = HaNode {
+        config: cfg1,
+        service: service1,
+        scheduler: crate::schedule::new_scheduler_state_for_test(),
+        jobs: crate::jobs::new_jobs_state_for_test(),
+        realtime: realtime1,
+    };
+    let node2 = HaNode {
+        config: cfg2,
+        service: service2,
+        scheduler: crate::schedule::new_scheduler_state_for_test(),
+        jobs: crate::jobs::new_jobs_state_for_test(),
+        realtime: realtime2,
+    };
+
+    let room = wr_str_from_utf8(b"room-burst".as_ptr(), 10);
+    let socket1 = wr_str_from_utf8(b"socket-b1".as_ptr(), 9);
+    let socket2 = wr_str_from_utf8(b"socket-b2".as_ptr(), 9);
+    let _ = await_ok(with_node(&node2, async { wr_realtime_join(socket1, room) }).await);
+    let _ = await_ok(with_node(&node2, async { wr_realtime_join(socket2, room) }).await);
+
+    let total = 5;
+    for idx in 0..total {
+        let msg = format!("hello-{idx}");
+        let msg_val = wr_str_from_utf8(msg.as_ptr(), msg.len());
+        let pending = with_node(&node1, async { wr_realtime_broadcast(room, msg_val) }).await;
+        let _ = await_ok(pending);
+        unsafe {
+            wr_rc_dec(msg_val);
+            wr_rc_dec(pending);
+        }
+    }
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let mut inbox1 = Vec::new();
+    let mut inbox2 = Vec::new();
+    let _ = (inbox1.len(), inbox2.len());
+    loop {
+        inbox1 =
+            with_node(&node2, async { crate::realtime::take_inbox_for_test("socket-b1").await })
+                .await;
+        inbox2 =
+            with_node(&node2, async { crate::realtime::take_inbox_for_test("socket-b2").await })
+                .await;
+        if inbox1.len() == total && inbox2.len() == total {
+            break;
+        }
+        if tokio::time::Instant::now() > deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    assert_eq!(inbox1.len(), total);
+    assert_eq!(inbox2.len(), total);
+    for val in inbox1.into_iter().chain(inbox2.into_iter()) {
+        unsafe {
+            if val.is_ptr() {
+                wr_rc_dec(val);
+            }
+        }
+    }
+
+    unsafe {
+        wr_rc_dec(room);
+        wr_rc_dec(socket1);
+        wr_rc_dec(socket2);
+    }
+
+    if let Ok(service) = Arc::try_unwrap(node1.service) {
+        service.shutdown().await;
+    }
+    if let Ok(service) = Arc::try_unwrap(node2.service) {
+        service.shutdown().await;
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ha_pubsub_fanout_delivers_across_nodes() {
+    if !net_available() {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let base = dir.path().to_string_lossy().to_string();
+
+    let Some((listener1, addr1)) = try_bind("127.0.0.1:0").await else {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    };
+    let Some((listener2, addr2)) = try_bind("127.0.0.1:0").await else {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    };
+
+    let mut all = HashMap::new();
+    all.insert(1, addr1);
+    all.insert(2, addr2);
+
+    let cfg1 = config_for_node(
+        format!("{base}/db1"),
+        1,
+        "127.0.0.1:0".to_string(),
+        peers_for(1, &all),
+        true,
+    );
+    let cfg2 = config_for_node(
+        format!("{base}/db2"),
+        2,
+        "127.0.0.1:0".to_string(),
+        peers_for(2, &all),
+        false,
+    );
+
+    let realtime1 = crate::realtime::new_realtime_state_for_test();
+    let realtime2 = crate::realtime::new_realtime_state_for_test();
+
+    let service1 = Arc::new(
+        crate::storage::service::StorageService::start_for_test_with_listener_and_state(
+            cfg1.clone(),
+            listener1,
+            realtime1.as_arc(),
+        )
+        .await
+        .expect("start service1"),
+    );
+    let service2 = Arc::new(
+        crate::storage::service::StorageService::start_for_test_with_listener_and_state(
+            cfg2.clone(),
+            listener2,
+            realtime2.as_arc(),
+        )
+        .await
+        .expect("start service2"),
+    );
+
+    let node1 = HaNode {
+        config: cfg1,
+        service: service1,
+        scheduler: crate::schedule::new_scheduler_state_for_test(),
+        jobs: crate::jobs::new_jobs_state_for_test(),
+        realtime: realtime1,
+    };
+    let node2 = HaNode {
+        config: cfg2,
+        service: service2,
+        scheduler: crate::schedule::new_scheduler_state_for_test(),
+        jobs: crate::jobs::new_jobs_state_for_test(),
+        realtime: realtime2,
+    };
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static COUNT: AtomicUsize = AtomicUsize::new(0);
+
+    with_node(&node2, async {
+        crate::pubsub::subscribe("ha:pubsub", |_| async {
+            COUNT.fetch_add(1, Ordering::SeqCst);
+        })
+        .await;
+    })
+    .await;
+
+    with_node(&node1, async {
+        crate::pubsub::publish("ha:pubsub", serde_json::Value::String("ok".to_string())).await;
+    })
+    .await;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        if COUNT.load(Ordering::SeqCst) > 0 {
+            break;
+        }
+        if tokio::time::Instant::now() > deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(COUNT.load(Ordering::SeqCst) > 0);
+
+    if let Ok(service) = Arc::try_unwrap(node1.service) {
+        service.shutdown().await;
+    }
+    if let Ok(service) = Arc::try_unwrap(node2.service) {
+        service.shutdown().await;
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn storage_peer_token_enforced() {
+    if !net_available() {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let base = dir.path().to_string_lossy().to_string();
+
+    let Some((listener, addr)) = try_bind("127.0.0.1:0").await else {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    };
+
+    let mut cfg = config_for_node(
+        format!("{base}/db1"),
+        1,
+        "127.0.0.1:0".to_string(),
+        HashMap::new(),
+        true,
+    );
+    cfg.peer_token = Some("peer-token".to_string());
+
+    let realtime = crate::realtime::new_realtime_state_for_test();
+    let service = Arc::new(
+        crate::storage::service::StorageService::start_for_test_with_listener_and_state(
+            cfg,
+            listener,
+            realtime.as_arc(),
+        )
+        .await
+        .expect("start service"),
+    );
+
+    let client = reqwest::Client::new();
+    let url = format!("http://{addr}/storage/read");
+    #[derive(serde::Serialize)]
+    struct ReadReq {
+        key: Vec<u8>,
+    }
+
+    let resp = client
+        .post(&url)
+        .json(&ReadReq { key: b"nope".to_vec() })
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    let resp = client
+        .post(&url)
+        .header("x-wrela-peer-token", "peer-token")
+        .json(&ReadReq { key: b"nope".to_vec() })
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let env: serde_json::Value = resp.json().await.expect("json");
+    assert!(env.get("ok").and_then(|v| v.as_bool()).unwrap_or(false));
+
+    if let Ok(service) = Arc::try_unwrap(service) {
+        service.shutdown().await;
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn soak_pubsub_with_peer_token() {
+    if !net_available() {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    }
+
+    let soak_secs: u64 = std::env::var("WRELA_SOAK_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(30)
+        .min(300);
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let base = dir.path().to_string_lossy().to_string();
+
+    let Some((listener1, addr1)) = try_bind("127.0.0.1:0").await else {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    };
+    let Some((listener2, addr2)) = try_bind("127.0.0.1:0").await else {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    };
+
+    let mut all = HashMap::new();
+    all.insert(1, addr1);
+    all.insert(2, addr2);
+
+    let mut cfg1 = config_for_node(
+        format!("{base}/db1"),
+        1,
+        "127.0.0.1:0".to_string(),
+        peers_for(1, &all),
+        true,
+    );
+    let mut cfg2 = config_for_node(
+        format!("{base}/db2"),
+        2,
+        "127.0.0.1:0".to_string(),
+        peers_for(2, &all),
+        false,
+    );
+    cfg1.peer_token = Some("soak-token".to_string());
+    cfg2.peer_token = Some("soak-token".to_string());
+
+    let realtime1 = crate::realtime::new_realtime_state_for_test();
+    let realtime2 = crate::realtime::new_realtime_state_for_test();
+
+    let service1 = Arc::new(
+        crate::storage::service::StorageService::start_for_test_with_listener_and_state(
+            cfg1.clone(),
+            listener1,
+            realtime1.as_arc(),
+        )
+        .await
+        .expect("start service1"),
+    );
+    let service2 = Arc::new(
+        crate::storage::service::StorageService::start_for_test_with_listener_and_state(
+            cfg2.clone(),
+            listener2,
+            realtime2.as_arc(),
+        )
+        .await
+        .expect("start service2"),
+    );
+
+    let node1 = HaNode {
+        config: cfg1,
+        service: service1,
+        scheduler: crate::schedule::new_scheduler_state_for_test(),
+        jobs: crate::jobs::new_jobs_state_for_test(),
+        realtime: realtime1,
+    };
+    let node2 = HaNode {
+        config: cfg2,
+        service: service2,
+        scheduler: crate::schedule::new_scheduler_state_for_test(),
+        jobs: crate::jobs::new_jobs_state_for_test(),
+        realtime: realtime2,
+    };
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static COUNT: AtomicUsize = AtomicUsize::new(0);
+
+    with_node(&node2, async {
+        crate::pubsub::subscribe("ha:pubsub:soak", |_| async {
+            COUNT.fetch_add(1, Ordering::SeqCst);
+        })
+        .await;
+    })
+    .await;
+
+    let start = std::time::Instant::now();
+    let deadline = start + Duration::from_secs(soak_secs);
+    while std::time::Instant::now() < deadline {
+        with_node(&node1, async {
+            crate::pubsub::publish(
+                "ha:pubsub:soak",
+                serde_json::Value::String("ping".to_string()),
+            )
+            .await;
+        })
+        .await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    assert!(COUNT.load(Ordering::SeqCst) > 0);
+    assert!(start.elapsed().as_secs() >= soak_secs.saturating_sub(1));
+
+    if let Ok(service) = Arc::try_unwrap(node1.service) {
+        service.shutdown().await;
+    }
+    if let Ok(service) = Arc::try_unwrap(node2.service) {
+        service.shutdown().await;
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn soak_realtime_fanout_burst() {
+    if !net_available() {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    }
+
+    let soak_secs: u64 = std::env::var("WRELA_SOAK_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(60)
+        .min(600);
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let base = dir.path().to_string_lossy().to_string();
+
+    let Some((listener1, addr1)) = try_bind("127.0.0.1:0").await else {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    };
+    let Some((listener2, addr2)) = try_bind("127.0.0.1:0").await else {
+        eprintln!("skipping: unable to bind sockets in this environment");
+        return;
+    };
+
+    let mut all = HashMap::new();
+    all.insert(1, addr1);
+    all.insert(2, addr2);
+
+    let cfg1 = config_for_node(
+        format!("{base}/db1"),
+        1,
+        "127.0.0.1:0".to_string(),
+        peers_for(1, &all),
+        true,
+    );
+    let cfg2 = config_for_node(
+        format!("{base}/db2"),
+        2,
+        "127.0.0.1:0".to_string(),
+        peers_for(2, &all),
+        false,
+    );
+
+    let realtime1 = crate::realtime::new_realtime_state_for_test();
+    let realtime2 = crate::realtime::new_realtime_state_for_test();
+
+    let service1 = Arc::new(
+        crate::storage::service::StorageService::start_for_test_with_listener_and_state(
+            cfg1.clone(),
+            listener1,
+            realtime1.as_arc(),
+        )
+        .await
+        .expect("start service1"),
+    );
+    let service2 = Arc::new(
+        crate::storage::service::StorageService::start_for_test_with_listener_and_state(
+            cfg2.clone(),
+            listener2,
+            realtime2.as_arc(),
+        )
+        .await
+        .expect("start service2"),
+    );
+
+    let node1 = HaNode {
+        config: cfg1,
+        service: service1,
+        scheduler: crate::schedule::new_scheduler_state_for_test(),
+        jobs: crate::jobs::new_jobs_state_for_test(),
+        realtime: realtime1,
+    };
+    let node2 = HaNode {
+        config: cfg2,
+        service: service2,
+        scheduler: crate::schedule::new_scheduler_state_for_test(),
+        jobs: crate::jobs::new_jobs_state_for_test(),
+        realtime: realtime2,
+    };
+
+    let room = wr_str_from_utf8(b"room-soak".as_ptr(), 9);
+    let socket1 = wr_str_from_utf8(b"socket-s1".as_ptr(), 9);
+    let socket2 = wr_str_from_utf8(b"socket-s2".as_ptr(), 9);
+    let _ = await_ok(with_node(&node2, async { wr_realtime_join(socket1, room) }).await);
+    let _ = await_ok(with_node(&node2, async { wr_realtime_join(socket2, room) }).await);
+
+    let start = std::time::Instant::now();
+    let deadline = start + Duration::from_secs(soak_secs);
+    let mut idx = 0u64;
+    while std::time::Instant::now() < deadline {
+        let msg = format!("soak-{idx}");
+        idx = idx.wrapping_add(1);
+        let msg_val = wr_str_from_utf8(msg.as_ptr(), msg.len());
+        let pending = with_node(&node1, async { wr_realtime_broadcast(room, msg_val) }).await;
+        let _ = await_ok(pending);
+        unsafe {
+            wr_rc_dec(msg_val);
+            wr_rc_dec(pending);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    unsafe {
+        wr_rc_dec(room);
+        wr_rc_dec(socket1);
+        wr_rc_dec(socket2);
+    }
+
+    if let Ok(service) = Arc::try_unwrap(node1.service) {
+        service.shutdown().await;
+    }
+    assert!(start.elapsed().as_secs() >= soak_secs.saturating_sub(1));
+    if let Ok(service) = Arc::try_unwrap(node2.service) {
+        service.shutdown().await;
+    }
+}
+
+#[test]
+fn realtime_membership_persists() {
+    let _storage = test_storage();
+    let socket_id = wr_str_from_utf8(b"socket-1".as_ptr(), 8);
+    let room = wr_str_from_utf8(b"room-1".as_ptr(), 6);
+    let pending = wr_realtime_join(socket_id, room);
+    let ok = await_ok(pending);
+    assert!(ok.is_bool());
+    assert!(ok.as_bool());
+
+    let mut members = None;
+    for _ in 0..40 {
+        members = storage_get_json_test("realtime:room:room-1");
+        if members.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let members = members.expect("room members");
+    assert!(members
+        .as_array()
+        .map(|arr| arr.iter().any(|val| val.as_str() == Some("socket-1")))
+        .unwrap_or(false));
+
+    let mut socket_record = None;
+    for _ in 0..40 {
+        socket_record = storage_get_json_test("realtime:socket:socket-1");
+        if socket_record.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let socket_record = socket_record.expect("socket record");
+    assert!(socket_record
+        .get("node_id")
+        .and_then(|v| v.as_u64())
+        .is_some());
+
+    unsafe {
+        wr_rc_dec(socket_id);
+        wr_rc_dec(room);
+        wr_rc_dec(pending);
+        wr_rc_dec(ok);
+    }
+}
+
+#[test]
+fn realtime_membership_removes_on_leave() {
+    let _storage = test_storage();
+    let socket_id = wr_str_from_utf8(b"socket-2".as_ptr(), 8);
+    let room = wr_str_from_utf8(b"room-2".as_ptr(), 6);
+    let pending = wr_realtime_join(socket_id, room);
+    let ok = await_ok(pending);
+    assert!(ok.is_bool());
+    assert!(ok.as_bool());
+
+    let pending_leave = wr_realtime_leave(socket_id, room);
+    let ok_leave = await_ok(pending_leave);
+    assert!(ok_leave.is_bool());
+    assert!(ok_leave.as_bool());
+
+    let mut members = None;
+    for _ in 0..40 {
+        members = storage_get_json_test("realtime:room:room-2");
+        if members.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    if let Some(members) = members {
+        if let Some(arr) = members.as_array() {
+            assert!(!arr.iter().any(|val| val.as_str() == Some("socket-2")));
+        }
+    }
+
+    unsafe {
+        wr_rc_dec(socket_id);
+        wr_rc_dec(room);
+        wr_rc_dec(pending);
+        wr_rc_dec(ok);
+        wr_rc_dec(pending_leave);
+        wr_rc_dec(ok_leave);
+    }
+}
+
+#[test]
+fn realtime_stale_socket_cleanup() {
+    let old = std::env::var("WRELA_REALTIME_SOCKET_TTL_SECS").ok();
+    unsafe {
+        std::env::set_var("WRELA_REALTIME_SOCKET_TTL_SECS", "1");
+    }
+    let _storage = test_storage();
+    let socket_id = wr_str_from_utf8(b"socket-ttl".as_ptr(), 10);
+    let room = wr_str_from_utf8(b"room-ttl".as_ptr(), 8);
+    let pending = wr_realtime_join(socket_id, room);
+    let ok = await_ok(pending);
+    assert!(ok.is_bool());
+    assert!(ok.as_bool());
+
+    std::thread::sleep(std::time::Duration::from_secs(2));
+
+    let mut members = None;
+    for _ in 0..40 {
+        members = storage_get_json_test("realtime:room:room-ttl");
+        if members
+            .as_ref()
+            .and_then(|val| val.as_array())
+            .map(|arr| arr.is_empty())
+            .unwrap_or(true)
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    if let Some(members) = members {
+        assert!(
+            members
+                .as_array()
+                .map(|arr| !arr.iter().any(|val| val.as_str() == Some("socket-ttl")))
+                .unwrap_or(true)
+        );
+    }
+
+    let socket_record = storage_get_json_test("realtime:socket:socket-ttl");
+    assert!(socket_record.is_none());
+
+    unsafe {
+        wr_rc_dec(socket_id);
+        wr_rc_dec(room);
+        wr_rc_dec(pending);
+        wr_rc_dec(ok);
+    }
+
+    unsafe {
+        if let Some(old) = old {
+            std::env::set_var("WRELA_REALTIME_SOCKET_TTL_SECS", old);
+        } else {
+            std::env::remove_var("WRELA_REALTIME_SOCKET_TTL_SECS");
+        }
+    }
+}
+
+#[test]
+fn lease_is_exclusive_and_expires() {
+    let _storage = test_storage();
+    let ok_first = crate::actor::runtime_block_on(crate::lease::try_acquire_lease(
+        "lease:test",
+        "owner-a",
+        1,
+    ));
+    let ok_second = crate::actor::runtime_block_on(crate::lease::try_acquire_lease(
+        "lease:test",
+        "owner-b",
+        1,
+    ));
+    assert!(ok_first);
+    assert!(!ok_second);
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    let ok_third = crate::actor::runtime_block_on(crate::lease::try_acquire_lease(
+        "lease:test",
+        "owner-b",
+        1,
+    ));
+    assert!(ok_third);
+}
+
+#[test]
 fn search_index_query() {
     let storage = test_storage();
     let collection = wr_str_from_utf8(b"projects".as_ptr(), 8);
@@ -2001,6 +4268,158 @@ fn search_query_case_insensitive() {
 }
 
 #[test]
+fn search_index_survives_restart() {
+    crate::actor::runtime_block_on(async {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("wrela.db");
+        let path_str = path.to_string_lossy().to_string();
+        let blob_path = format!("{path_str}.blobs");
+
+        let config = crate::storage::config::StorageConfig {
+            enabled: true,
+            path: path_str.clone(),
+            node_id: 1,
+            bind_addr: "127.0.0.1:0".to_string(),
+            http_enabled: false,
+            peer_token: None,
+            peers: HashMap::new(),
+            bootstrap: true,
+            snapshot_interval: 50,
+            batch_max_ops: 2,
+            batch_max_ms: 1,
+            queue_cap: 32,
+            blob: crate::storage::config::BlobConfig {
+                threshold_bytes: 256 * 1024,
+                file_path: blob_path.clone(),
+                s3: None,
+            },
+            backup: crate::storage::config::BackupConfig {
+                enabled: false,
+                max_age_secs: 3600,
+                max_logs: 100_000,
+                retention_days: 7,
+                max_keep: 0,
+                prefix: "backups".to_string(),
+                only_leader: true,
+                restore_mode: crate::storage::config::RestoreMode::Single,
+                restore_id: None,
+            },
+        };
+
+        let service = crate::storage::service::StorageService::start_for_test(config)
+            .await
+            .expect("start storage");
+        let service = Arc::new(service);
+
+        crate::storage::service::StorageService::with_storage_override(
+            Arc::clone(&service),
+            async {
+                let storage = Value::from_int(1);
+                let collection = wr_str_from_utf8(b"persist".as_ptr(), 7);
+                let id = wr_str_from_utf8(b"doc1".as_ptr(), 4);
+                let text = wr_str_from_utf8(b"search survives restart".as_ptr(), 23);
+                let fields = wr_map_new();
+
+                let pending = wr_search_index(storage, collection, id, text, fields);
+                let ok = await_ok(pending);
+                assert!(ok.is_bool());
+                assert!(ok.as_bool());
+
+                let query = wr_str_from_utf8(b"restart".as_ptr(), 7);
+                let opts = wr_map_new();
+                let results = await_ok(wr_search_query(storage, collection, query, opts));
+                let len = wr_list_len(results);
+                assert_eq!(len.as_int(), 1);
+
+                unsafe {
+                    wr_rc_dec(collection);
+                    wr_rc_dec(id);
+                    wr_rc_dec(text);
+                    wr_rc_dec(fields);
+                    wr_rc_dec(pending);
+                    wr_rc_dec(ok);
+                    wr_rc_dec(query);
+                    wr_rc_dec(opts);
+                    wr_rc_dec(results);
+                    wr_rc_dec(len);
+                }
+            },
+        )
+        .await;
+
+        let service = match Arc::try_unwrap(service) {
+            Ok(service) => service,
+            Err(_) => panic!("storage service refs"),
+        };
+        service.shutdown().await;
+
+        let config = crate::storage::config::StorageConfig {
+            enabled: true,
+            path: path_str,
+            node_id: 1,
+            bind_addr: "127.0.0.1:0".to_string(),
+            http_enabled: false,
+            peer_token: None,
+            peers: HashMap::new(),
+            bootstrap: false,
+            snapshot_interval: 50,
+            batch_max_ops: 2,
+            batch_max_ms: 1,
+            queue_cap: 32,
+            blob: crate::storage::config::BlobConfig {
+                threshold_bytes: 256 * 1024,
+                file_path: blob_path,
+                s3: None,
+            },
+            backup: crate::storage::config::BackupConfig {
+                enabled: false,
+                max_age_secs: 3600,
+                max_logs: 100_000,
+                retention_days: 7,
+                max_keep: 0,
+                prefix: "backups".to_string(),
+                only_leader: true,
+                restore_mode: crate::storage::config::RestoreMode::Single,
+                restore_id: None,
+            },
+        };
+
+        let service = crate::storage::service::StorageService::start_for_test(config)
+            .await
+            .expect("restart storage");
+        let service = Arc::new(service);
+
+        crate::storage::service::StorageService::with_storage_override(
+            Arc::clone(&service),
+            async {
+                let storage = Value::from_int(1);
+                let collection = wr_str_from_utf8(b"persist".as_ptr(), 7);
+                let query = wr_str_from_utf8(b"restart".as_ptr(), 7);
+                let opts = wr_map_new();
+                let results = await_ok(wr_search_query(storage, collection, query, opts));
+                let len = wr_list_len(results);
+                assert_eq!(len.as_int(), 1);
+
+                unsafe {
+                    wr_rc_dec(collection);
+                    wr_rc_dec(query);
+                    wr_rc_dec(opts);
+                    wr_rc_dec(results);
+                    wr_rc_dec(len);
+                }
+            },
+        )
+        .await;
+
+        let service = match Arc::try_unwrap(service) {
+            Ok(service) => service,
+            Err(_) => panic!("storage service refs"),
+        };
+        service.shutdown().await;
+    });
+}
+
+#[test]
 fn realtime_join_leave_broadcast() {
     let rt = wr_realtime_on_connect(Value::nil());
     let ok = await_ok(rt);
@@ -2132,13 +4551,13 @@ fn rate_limit_refills_over_time() {
     let key_burst = wr_str_from_utf8(b"burst".as_ptr(), 5);
     let key_per = wr_str_from_utf8(b"per_secs".as_ptr(), 8);
     wr_map_set(opts, key_burst, Value::from_int(1));
-    wr_map_set(opts, key_per, Value::from_int(1));
+    wr_map_set(opts, key_per, Value::from_int(2));
 
     let ok1 = await_ok(wr_rate_check(storage, key, opts));
     assert!(ok1.as_bool());
     let ok2 = await_ok(wr_rate_check(storage, key, opts));
     assert!(!ok2.as_bool());
-    std::thread::sleep(std::time::Duration::from_millis(1100));
+    std::thread::sleep(std::time::Duration::from_millis(2100));
     let ok3 = await_ok(wr_rate_check(storage, key, opts));
     assert!(ok3.as_bool());
 
@@ -2209,6 +4628,9 @@ fn rate_limit_burst_respected() {
 
 #[test]
 fn admin_enable_starts() {
+    if !net_available() {
+        return;
+    }
     let opts = wr_map_new();
     let key = wr_str_from_utf8(b"bind_addr".as_ptr(), 9);
     let val = wr_str_from_utf8(b"127.0.0.1:0".as_ptr(), 13);

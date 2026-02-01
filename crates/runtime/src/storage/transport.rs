@@ -1,6 +1,8 @@
 use axum::Json;
 use axum::Router;
 use axum::extract::State;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::IntoResponse;
 use axum::routing::post;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -22,6 +24,8 @@ use crate::storage::blob::BlobBackend;
 use crate::storage::service::StorageError;
 use crate::storage::store::TypeConfig;
 use crate::storage::value::{StoredRecord, StoredValue};
+use crate::pubsub::{self, PubSubMessage};
+use crate::realtime::{self, FanoutRequest};
 
 pub type NodeId = <TypeConfig as RaftTypeConfig>::NodeId;
 pub type Node = <TypeConfig as RaftTypeConfig>::Node;
@@ -30,10 +34,11 @@ pub type Node = <TypeConfig as RaftTypeConfig>::Node;
 pub struct HttpNetworkFactory {
     peers: Arc<HashMap<NodeId, String>>,
     client: reqwest::Client,
+    peer_token: Option<String>,
 }
 
 impl HttpNetworkFactory {
-    pub fn new(peers: HashMap<NodeId, String>) -> Self {
+    pub fn new(peers: HashMap<NodeId, String>, peer_token: Option<String>) -> Self {
         let client = reqwest::Client::builder()
             .no_proxy()
             .build()
@@ -41,6 +46,7 @@ impl HttpNetworkFactory {
         Self {
             peers: Arc::new(peers),
             client,
+            peer_token,
         }
     }
 }
@@ -48,6 +54,7 @@ impl HttpNetworkFactory {
 pub struct HttpNetwork {
     addr: String,
     client: reqwest::Client,
+    peer_token: Option<String>,
 }
 
 #[derive(Clone, Default)]
@@ -196,6 +203,7 @@ impl RaftNetworkFactory<TypeConfig> for HttpNetworkFactory {
         HttpNetwork {
             addr,
             client: self.client.clone(),
+            peer_token: self.peer_token.clone(),
         }
     }
 }
@@ -247,12 +255,11 @@ impl HttpNetwork {
         E: std::error::Error + Clone + Send + Sync + 'static,
     {
         let url = format!("http://{}{}", self.addr, path);
-        let resp = self
-            .client
-            .post(url)
-            .json(&req)
-            .send()
-            .await
+        let mut request = self.client.post(url).json(&req);
+        if let Some(token) = self.peer_token.as_ref() {
+            request = request.header("x-wrela-peer-token", token);
+        }
+        let resp = request.send().await
             .map_err(|err| RPCError::Network(NetworkError::new(&err)))?;
         let status = resp.status();
         if !status.is_success() {
@@ -287,6 +294,8 @@ pub struct HttpServer {
     raft: openraft::Raft<TypeConfig>,
     store: Arc<crate::storage::store::KvStore>,
     blob: BlobBackend,
+    realtime: crate::realtime::RealtimeStateHandleArc,
+    peer_token: Option<String>,
 }
 
 pub async fn start_http_server(
@@ -294,6 +303,8 @@ pub async fn start_http_server(
     raft: openraft::Raft<TypeConfig>,
     store: Arc<crate::storage::store::KvStore>,
     blob: BlobBackend,
+    realtime: crate::realtime::RealtimeStateHandleArc,
+    peer_token: Option<String>,
 ) -> Result<(SocketAddr, tokio::task::JoinHandle<()>), StorageError> {
     let addr = listener
         .local_addr()
@@ -306,12 +317,20 @@ pub async fn start_http_server(
         .route("/storage/read", post(storage_read))
         .route("/storage/read_version", post(storage_read_version))
         .route("/storage/scan", post(storage_scan))
-        .route("/storage/prefix", post(storage_prefix));
+        .route("/storage/prefix", post(storage_prefix))
+        .route("/realtime/fanout", post(realtime_fanout))
+        .route("/pubsub/publish", post(pubsub_publish));
 
     #[cfg(any(test, feature = "test-utils"))]
     let app = app.route("/storage/leader", post(storage_leader));
 
-    let app = app.with_state(HttpServer { raft, store, blob });
+    let app = app.with_state(HttpServer {
+        raft,
+        store,
+        blob,
+        realtime,
+        peer_token,
+    });
 
     let handle = tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
@@ -320,48 +339,103 @@ pub async fn start_http_server(
     Ok((addr, handle))
 }
 
+fn authorize(headers: &HeaderMap, token: &Option<String>) -> bool {
+    let Some(expected) = token.as_ref() else {
+        return true;
+    };
+    headers
+        .get("x-wrela-peer-token")
+        .and_then(|val| val.to_str().ok())
+        .map(|val| val == expected)
+        .unwrap_or(false)
+}
+
+fn unauthorized<T>() -> (StatusCode, Json<RpcEnvelope<T>>) {
+    (StatusCode::UNAUTHORIZED, Json(RpcEnvelope::err("unauthorized")))
+}
+
 async fn append_entries(
     State(state): State<HttpServer>,
+    headers: HeaderMap,
     Json(req): Json<AppendEntriesRequest<TypeConfig>>,
-) -> Json<RpcEnvelope<AppendEntriesResponse<NodeId>>> {
+) -> impl IntoResponse {
+    if !authorize(&headers, &state.peer_token) {
+        return unauthorized();
+    }
     let resp: Result<AppendEntriesResponse<NodeId>, RaftError<NodeId>> =
         state.raft.append_entries(req).await;
     match resp {
-        Ok(ok) => Json(RpcEnvelope::ok(ok)),
-        Err(err) => Json(RpcEnvelope::err(err.to_string())),
+        Ok(ok) => (StatusCode::OK, Json(RpcEnvelope::ok(ok))),
+        Err(err) => (StatusCode::OK, Json(RpcEnvelope::err(err.to_string()))),
     }
 }
 
 async fn install_snapshot(
     State(state): State<HttpServer>,
+    headers: HeaderMap,
     Json(req): Json<InstallSnapshotRequest<TypeConfig>>,
-) -> Json<RpcEnvelope<InstallSnapshotResponse<NodeId>>> {
+) -> impl IntoResponse {
+    if !authorize(&headers, &state.peer_token) {
+        return unauthorized();
+    }
     let resp: Result<InstallSnapshotResponse<NodeId>, RaftError<NodeId, InstallSnapshotError>> =
         state.raft.install_snapshot(req).await;
     match resp {
-        Ok(ok) => Json(RpcEnvelope::ok(ok)),
-        Err(err) => Json(RpcEnvelope::err(err.to_string())),
+        Ok(ok) => (StatusCode::OK, Json(RpcEnvelope::ok(ok))),
+        Err(err) => (StatusCode::OK, Json(RpcEnvelope::err(err.to_string()))),
     }
 }
 
 async fn vote(
     State(state): State<HttpServer>,
+    headers: HeaderMap,
     Json(req): Json<VoteRequest<NodeId>>,
-) -> Json<RpcEnvelope<VoteResponse<NodeId>>> {
+) -> impl IntoResponse {
+    if !authorize(&headers, &state.peer_token) {
+        return unauthorized();
+    }
     let resp: Result<VoteResponse<NodeId>, RaftError<NodeId>> = state.raft.vote(req).await;
     match resp {
-        Ok(ok) => Json(RpcEnvelope::ok(ok)),
-        Err(err) => Json(RpcEnvelope::err(err.to_string())),
+        Ok(ok) => (StatusCode::OK, Json(RpcEnvelope::ok(ok))),
+        Err(err) => (StatusCode::OK, Json(RpcEnvelope::err(err.to_string()))),
     }
+}
+
+async fn realtime_fanout(
+    State(state): State<HttpServer>,
+    headers: HeaderMap,
+    Json(req): Json<FanoutRequest>,
+) -> impl IntoResponse {
+    if !authorize(&headers, &state.peer_token) {
+        return unauthorized();
+    }
+    realtime::deliver_fanout_with(state.realtime.clone(), req).await;
+    (StatusCode::OK, Json(RpcEnvelope::ok(true)))
+}
+
+async fn pubsub_publish(
+    State(state): State<HttpServer>,
+    headers: HeaderMap,
+    Json(req): Json<PubSubMessage>,
+) -> impl IntoResponse {
+    if !authorize(&headers, &state.peer_token) {
+        return unauthorized();
+    }
+    pubsub::handle_publish(req).await;
+    (StatusCode::OK, Json(RpcEnvelope::ok(true)))
 }
 
 async fn storage_read(
     State(state): State<HttpServer>,
+    headers: HeaderMap,
     Json(req): Json<StorageReadRequest>,
-) -> Json<RpcEnvelope<StorageReadResponse>> {
+) -> impl IntoResponse {
+    if !authorize(&headers, &state.peer_token) {
+        return unauthorized();
+    }
     let resp = state.raft.ensure_linearizable().await;
     if let Err(err) = resp {
-        return Json(RpcEnvelope::err(err.to_string()));
+        return (StatusCode::OK, Json(RpcEnvelope::err(err.to_string())));
     }
     let stored = {
         let guard = state.store.state_machine.read().await;
@@ -369,21 +443,25 @@ async fn storage_read(
     };
     match stored {
         Ok(Some(record)) => match record_bytes(&state.blob, &record).await {
-            Ok(bytes) => Json(RpcEnvelope::ok(StorageReadResponse { value: Some(bytes) })),
-            Err(err) => Json(RpcEnvelope::err(err)),
+            Ok(bytes) => (StatusCode::OK, Json(RpcEnvelope::ok(StorageReadResponse { value: Some(bytes) }))),
+            Err(err) => (StatusCode::OK, Json(RpcEnvelope::err(err))),
         },
-        Ok(None) => Json(RpcEnvelope::ok(StorageReadResponse { value: None })),
-        Err(err) => Json(RpcEnvelope::err(err.to_string())),
+        Ok(None) => (StatusCode::OK, Json(RpcEnvelope::ok(StorageReadResponse { value: None }))),
+        Err(err) => (StatusCode::OK, Json(RpcEnvelope::err(err.to_string()))),
     }
 }
 
 async fn storage_read_version(
     State(state): State<HttpServer>,
+    headers: HeaderMap,
     Json(req): Json<StorageReadRequest>,
-) -> Json<RpcEnvelope<StorageReadVersionResponse>> {
+) -> impl IntoResponse {
+    if !authorize(&headers, &state.peer_token) {
+        return unauthorized();
+    }
     let resp = state.raft.ensure_linearizable().await;
     if let Err(err) = resp {
-        return Json(RpcEnvelope::err(err.to_string()));
+        return (StatusCode::OK, Json(RpcEnvelope::err(err.to_string())));
     }
     let stored = {
         let guard = state.store.state_machine.read().await;
@@ -391,27 +469,31 @@ async fn storage_read_version(
     };
     match stored {
         Ok(Some(record)) => match record_bytes(&state.blob, &record).await {
-            Ok(bytes) => Json(RpcEnvelope::ok(StorageReadVersionResponse {
+            Ok(bytes) => (StatusCode::OK, Json(RpcEnvelope::ok(StorageReadVersionResponse {
                 value: Some(bytes),
                 version: Some(record.version),
-            })),
-            Err(err) => Json(RpcEnvelope::err(err)),
+            }))),
+            Err(err) => (StatusCode::OK, Json(RpcEnvelope::err(err))),
         },
-        Ok(None) => Json(RpcEnvelope::ok(StorageReadVersionResponse {
+        Ok(None) => (StatusCode::OK, Json(RpcEnvelope::ok(StorageReadVersionResponse {
             value: None,
             version: None,
-        })),
-        Err(err) => Json(RpcEnvelope::err(err.to_string())),
+        }))),
+        Err(err) => (StatusCode::OK, Json(RpcEnvelope::err(err.to_string()))),
     }
 }
 
 async fn storage_scan(
     State(state): State<HttpServer>,
+    headers: HeaderMap,
     Json(req): Json<StorageScanRequest>,
-) -> Json<RpcEnvelope<StorageScanResponse>> {
+) -> impl IntoResponse {
+    if !authorize(&headers, &state.peer_token) {
+        return unauthorized();
+    }
     let resp = state.raft.ensure_linearizable().await;
     if let Err(err) = resp {
-        return Json(RpcEnvelope::err(err.to_string()));
+        return (StatusCode::OK, Json(RpcEnvelope::err(err.to_string())));
     }
     let records = {
         let guard = state.store.state_machine.read().await;
@@ -419,13 +501,15 @@ async fn storage_scan(
     };
     let records = match records {
         Ok(records) => records,
-        Err(err) => return Json(RpcEnvelope::err(err.to_string())),
+        Err(err) => {
+            return (StatusCode::OK, Json(RpcEnvelope::err(err.to_string())));
+        }
     };
     let mut entries = Vec::with_capacity(records.len());
     for (key, record) in records {
         let bytes = match record_bytes(&state.blob, &record).await {
             Ok(bytes) => bytes,
-            Err(err) => return Json(RpcEnvelope::err(err)),
+            Err(err) => return (StatusCode::OK, Json(RpcEnvelope::err(err))),
         };
         entries.push(StorageScanEntry {
             key,
@@ -433,24 +517,28 @@ async fn storage_scan(
             version: record.version,
         });
     }
-    Json(RpcEnvelope::ok(StorageScanResponse { entries }))
+    (StatusCode::OK, Json(RpcEnvelope::ok(StorageScanResponse { entries })))
 }
 
 async fn storage_prefix(
     State(state): State<HttpServer>,
+    headers: HeaderMap,
     Json(req): Json<StoragePrefixRequest>,
-) -> Json<RpcEnvelope<StoragePrefixResponse>> {
+) -> impl IntoResponse {
+    if !authorize(&headers, &state.peer_token) {
+        return unauthorized();
+    }
     let resp = state.raft.ensure_linearizable().await;
     if let Err(err) = resp {
-        return Json(RpcEnvelope::err(err.to_string()));
+        return (StatusCode::OK, Json(RpcEnvelope::err(err.to_string())));
     }
     let keys = {
         let guard = state.store.state_machine.read().await;
         guard.list_prefix_keys(&req.prefix, req.limit)
     };
     match keys {
-        Ok(keys) => Json(RpcEnvelope::ok(StoragePrefixResponse { keys })),
-        Err(err) => Json(RpcEnvelope::err(err.to_string())),
+        Ok(keys) => (StatusCode::OK, Json(RpcEnvelope::ok(StoragePrefixResponse { keys }))),
+        Err(err) => (StatusCode::OK, Json(RpcEnvelope::err(err.to_string()))),
     }
 }
 
@@ -471,7 +559,11 @@ struct StorageLeaderResponse {
 #[cfg(any(test, feature = "test-utils"))]
 async fn storage_leader(
     State(state): State<HttpServer>,
+    headers: HeaderMap,
 ) -> Json<RpcEnvelope<StorageLeaderResponse>> {
+    if !authorize(&headers, &state.peer_token) {
+        return Json(RpcEnvelope::err("unauthorized"));
+    }
     let metrics = state.raft.metrics().borrow().clone();
     let leader_id = metrics.current_leader;
     let node_id = metrics.id;

@@ -59,6 +59,20 @@ pub fn result_unwrap(result: Value) -> Value {
     }
 }
 
+pub fn result_parts(result: Value) -> Option<(bool, Value)> {
+    if !result.is_ptr() {
+        return None;
+    }
+    unsafe {
+        let header = &*result.as_ptr();
+        if header.type_id != TypeId::Result as u32 {
+            return None;
+        }
+        let obj = result.as_ptr() as *const ResultObj;
+        Some(((*obj).is_ok != 0, (*obj).value))
+    }
+}
+
 pub unsafe fn drop_result(ptr: *mut ObjHeader) {
     let obj = unsafe { Box::from_raw(ptr as *mut ResultObj) };
     unsafe { wr_rc_dec(obj.value) };

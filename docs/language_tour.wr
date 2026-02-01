@@ -12,10 +12,17 @@ A Whale:
     has:
         name: String
         age: Int
+        private:
+            secret_id: String
 
     so: Methods are declared with `can` and use `it`/`its` as the receiver.
     can describe() -> String:
         return "Whale {its.name}, age {its.age}"
+
+    so: Private methods can be grouped in a `private:` block.
+    private:
+        can internal_note() -> String:
+            return "internal"
 
     can swim(distance: Number) -> Bool:
         so:
@@ -43,10 +50,8 @@ to demo_variables_and_flow(n: Int) -> Int:
         total += i
         i += 1
 
-    if total > 10:
-        return total
-    else:
-        return 10
+        if total > 10:
+            return total
 
 so:
     ------------------------------------------------------------
@@ -82,14 +87,17 @@ so:
     5) Results, err, and otherwise
     ------------------------------------------------------------
 
-to parse_number(text: String) -> Result[Int, String]:
-    so: `err` can only be used in functions that return Result.
+to parse_number(text: String) -> Result[Int]:
+    so:
+        `err` can only be used in functions that return Result.
+        `return 42` is treated as `Ok(42)` in a Result-returning function.
     if text == "42":
         return 42
     return err "not a number"
 
 to parse_number_or_zero(text: String) -> Int:
-    so: `otherwise` handles Result values.
+    so:
+        `otherwise` handles Result values by unwrapping Ok or returning the fallback.
     return parse_number(text=text) otherwise 0
 
 so:
@@ -116,9 +124,16 @@ to demo_actors() -> Result[Int, Error]:
     actor = detach Counter(value=0) * 1
 
     so:
-        Actor method calls return Pending[Result[...]]. You must await or fire them.
+        Actor method calls return Pending[...] values. `await` yields Result.
+        This function returns Result, so returning the awaited value is valid.
     result = await actor.inc()
     return result
+
+to demo_actors_handling() -> Int:
+    so:
+        If the function does not return Result, you must handle it with `otherwise`.
+    actor = detach Counter(value=0) * 1
+    return await actor.inc() otherwise 0
 
 so: Fire-and-forget calls are statements only.
 

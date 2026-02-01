@@ -26,6 +26,29 @@ fn tokenize(text: &str) -> Vec<String> {
         .collect()
 }
 
+fn term_key(collection: &str, token: &str) -> String {
+    format!("search:term:{collection}:{token}")
+}
+
+async fn add_term(collection: &str, token: &str, id: &str) {
+    let key = term_key(collection, token);
+    let mut ids = storage_get_json_vec::<String>(&key).await;
+    if !ids.contains(&id.to_string()) {
+        ids.push(id.to_string());
+        let _ = storage_set_json(&key, &ids).await;
+    }
+}
+
+async fn remove_term(collection: &str, token: &str, id: &str) {
+    let key = term_key(collection, token);
+    let mut ids = storage_get_json_vec::<String>(&key).await;
+    let before = ids.len();
+    ids.retain(|val| val != id);
+    if ids.len() != before {
+        let _ = storage_set_json(&key, &ids).await;
+    }
+}
+
 fn json_from_map(val: Value) -> HashMap<String, JsonValue> {
     let mut out = HashMap::new();
     let Some(map_ptr) = map::as_map_ref(val) else {
@@ -151,6 +174,7 @@ pub fn search_index(
             text: text.clone(),
             fields: fields_map,
         };
+        let tokens = tokenize(&text);
         let mut ids =
             storage_get_json_vec::<String>(&format!("search:collection:{collection}")).await;
         if !ids.contains(&id) {
@@ -158,6 +182,11 @@ pub fn search_index(
         }
         let ok = storage_set_json(&doc_key, &doc).await
             && storage_set_json(&format!("search:collection:{collection}"), &ids).await;
+        if ok {
+            for token in tokens {
+                add_term(&collection, &token, &id).await;
+            }
+        }
         resolve_pending(state, Value::from_bool(ok));
     });
     pending
@@ -185,15 +214,21 @@ pub fn search_remove(storage: Value, collection: Value, id: Value) -> Value {
     };
     runtime_spawn(async move {
         let doc_key = format!("search:doc:{collection}:{id}");
-        let removed = storage_get_json::<Document>(&doc_key).await.is_some();
-        if removed {
+        let removed = storage_get_json::<Document>(&doc_key).await;
+        if let Some(doc) = removed {
+            let tokens = tokenize(&doc.text);
             let mut ids =
                 storage_get_json_vec::<String>(&format!("search:collection:{collection}")).await;
             ids.retain(|val| val != &id);
             let _ = storage_set_json(&format!("search:collection:{collection}"), &ids).await;
             let _ = storage_delete(&doc_key).await;
+            for token in tokens {
+                remove_term(&collection, &token, &id).await;
+            }
+            resolve_pending(state, Value::from_bool(true));
+            return;
         }
-        resolve_pending(state, Value::from_bool(removed));
+        resolve_pending(state, Value::from_bool(false));
     });
     pending
 }
@@ -227,7 +262,27 @@ pub fn search_query(storage: Value, collection: Value, query: Value, opts: Value
             resolve_pending(state, list::list_new(0));
             return;
         }
-        let ids = storage_get_json_vec::<String>(&format!("search:collection:{collection}")).await;
+        let mut iter = tokens.into_iter();
+        let Some(first) = iter.next() else {
+            resolve_pending(state, list::list_new(0));
+            return;
+        };
+        let mut ids: HashSet<String> =
+            storage_get_json_vec::<String>(&term_key(&collection, &first))
+                .await
+                .into_iter()
+                .collect();
+        for token in iter {
+            if ids.is_empty() {
+                break;
+            }
+            let next: HashSet<String> =
+                storage_get_json_vec::<String>(&term_key(&collection, &token))
+                    .await
+                    .into_iter()
+                    .collect();
+            ids.retain(|id| next.contains(id));
+        }
         let mut docs = Vec::new();
         for id in ids {
             if let Some(doc) =
@@ -236,11 +291,6 @@ pub fn search_query(storage: Value, collection: Value, query: Value, opts: Value
                 docs.push(doc);
             }
         }
-        let token_set: HashSet<String> = tokens.into_iter().collect();
-        docs.retain(|doc| {
-            let text_tokens: HashSet<String> = tokenize(&doc.text).into_iter().collect();
-            token_set.is_subset(&text_tokens)
-        });
         if let Some(filters_val) = filters {
             let filter_fields = json_from_map(filters_val);
             docs.retain(|doc| {

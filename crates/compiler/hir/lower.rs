@@ -14,7 +14,10 @@ pub fn lower_root_body(root: ast::Root) -> Option<Body> {
     let mut has_stmt = false;
     for stmt in root.statements() {
         match stmt {
-            ast::Stmt::FuncDef(_) | ast::Stmt::ClassDef(_) | ast::Stmt::UseStmt(_) => {}
+            ast::Stmt::FuncDef(_)
+            | ast::Stmt::ClassDef(_)
+            | ast::Stmt::UseStmt(_)
+            | ast::Stmt::PrivateBlock(_) => {}
             other => {
                 let s = body_ctx.lower_stmt(other);
                 body_ctx.body.root_stmts.push(s);
@@ -57,6 +60,21 @@ impl LoweringContext {
                 ast::Stmt::ClassDef(c) => {
                     let class = self.lower_class(c);
                     self.module.classes.alloc(class);
+                }
+                ast::Stmt::PrivateBlock(block) => {
+                    for stmt in block.statements() {
+                        match stmt {
+                            ast::Stmt::FuncDef(f) => {
+                                let func = self.lower_func(f);
+                                self.module.functions.alloc(func);
+                            }
+                            ast::Stmt::ClassDef(c) => {
+                                let class = self.lower_class(c);
+                                self.module.classes.alloc(class);
+                            }
+                            _ => {}
+                        }
+                    }
                 }
                 ast::Stmt::UseStmt(u) => {
                     let (names, module, module_span) = parse_use_stmt(&u);
@@ -106,15 +124,27 @@ impl LoweringContext {
         let mut methods = Vec::new();
 
         for has_block in c.has_blocks() {
-            for field in has_block.fields() {
-                fields.push(self.lower_field(field));
-            }
+            self.push_fields_from_has_block(has_block, &mut fields);
         }
 
         for method in c.methods() {
             let func = self.lower_method(method);
             let id = self.module.functions.alloc(func);
             methods.push(id);
+        }
+
+        for private_block in c.syntax().children().filter_map(ast::PrivateBlock::cast) {
+            for child in private_block.syntax().children() {
+                if let Some(has_block) = ast::HasBlock::cast(child.clone()) {
+                    self.push_fields_from_has_block(has_block, &mut fields);
+                    continue;
+                }
+                if let Some(method) = ast::MethodDef::cast(child) {
+                    let func = self.lower_method(method);
+                    let id = self.module.functions.alloc(func);
+                    methods.push(id);
+                }
+            }
         }
 
         Class {
@@ -146,6 +176,21 @@ impl LoweringContext {
             params,
             ret_type,
             body: Some(body_ctx.body),
+        }
+    }
+
+    fn push_fields_from_has_block(&mut self, has_block: ast::HasBlock, fields: &mut Vec<Field>) {
+        for field in has_block.fields() {
+            fields.push(self.lower_field(field));
+        }
+        for private_block in has_block
+            .syntax()
+            .children()
+            .filter_map(ast::PrivateBlock::cast)
+        {
+            for field in private_block.syntax().children().filter_map(ast::FieldDef::cast) {
+                fields.push(self.lower_field(field));
+            }
         }
     }
 
@@ -342,6 +387,19 @@ impl BodyLoweringContext {
                     .unwrap_or(Objective::Balance);
                 let body = self.lower_block(o.block());
                 Stmt::Optimize { objective, body }
+            }
+            ast::Stmt::AssertStmt(a) => {
+                let expr = a
+                    .expr()
+                    .and_then(|e| self.lower_expr(e))
+                    .unwrap_or_else(|| {
+                        self.alloc_expr(Expr::Literal(Literal::Bool(false)), self.empty_span())
+                    });
+                let kind = match a.mode() {
+                    ast::AssertMode::Value => crate::hir::AssertKind::Value,
+                    ast::AssertMode::Identity => crate::hir::AssertKind::Identity,
+                };
+                Stmt::Assert { kind, expr }
             }
             ast::Stmt::UseStmt(u) => {
                 let (names, module, _module_span) = parse_use_stmt(&u);
@@ -693,14 +751,12 @@ impl BodyLoweringContext {
 fn visibility_for_node_default(node: &crate::parser::SyntaxNode) -> Visibility {
     match visibility_for_node(node) {
         Some(visibility) => visibility,
-        None => Visibility::Private,
+        None => Visibility::Public,
     }
 }
 
 fn visibility_for_node(node: &crate::parser::SyntaxNode) -> Option<Visibility> {
-    if has_token(node, SyntaxKind::PublicKw) {
-        Some(Visibility::Public)
-    } else if has_token(node, SyntaxKind::PrivateKw) {
+    if has_token(node, SyntaxKind::PrivateKw) || has_private_block_ancestor(node) {
         Some(Visibility::Private)
     } else {
         None
@@ -711,6 +767,17 @@ fn has_token(node: &crate::parser::SyntaxNode, kind: SyntaxKind) -> bool {
     node.children_with_tokens()
         .filter_map(|it| it.into_token())
         .any(|token| token.kind() == kind)
+}
+
+fn has_private_block_ancestor(node: &crate::parser::SyntaxNode) -> bool {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if parent.kind() == SyntaxKind::PrivateBlock {
+            return true;
+        }
+        current = parent.parent();
+    }
+    false
 }
 
 fn parse_use_stmt(u: &ast::UseStmt) -> (Vec<UseName>, SmolStr, Option<TextRange>) {
@@ -813,7 +880,7 @@ mod tests {
         assert_eq!(module.functions.len(), 1);
         let func = &module.functions[Idx::new(0)];
         assert_eq!(func.name, "add");
-        assert_eq!(func.visibility, Visibility::Private);
+        assert_eq!(func.visibility, Visibility::Public);
         assert_eq!(func.params.len(), 2);
         assert_eq!(func.params[0].name, "a");
         assert_eq!(func.params[1].name, "b");
@@ -850,7 +917,7 @@ use:
     io
 from core
 
-to f():
+to f() -> Int:
     for i in [1, 2]:
         if i == 1:
             break
@@ -888,7 +955,7 @@ to f():
     #[test]
     fn test_lower_string_interp_and_ops() {
         let input = "\
-to f():
+to f() -> String:
     return \"hi {name}\" 
 ";
         let node = parse(input);
@@ -912,7 +979,7 @@ to f():
     #[test]
     fn test_lower_unary_and_binary_ops() {
         let input = "\
-to f():
+to f() -> Result:
     return await detach Whale(name=\"moby\") * 1
 ";
         let node = parse(input);
@@ -933,7 +1000,7 @@ to f():
     #[test]
     fn test_lower_range_op() {
         let input = "\
-to f():
+to f() -> Nothing:
     1...3
 ";
         let node = parse(input);
@@ -956,7 +1023,7 @@ to f():
         let input = "\
 use std, io from core
 
-to f():
+to f() -> Map:
     foo(a=1, b=2)
     foo.bar
     return {a: 1, b: 2}
@@ -1009,7 +1076,7 @@ to f():
     #[test]
     fn test_lower_bitwise_and_shift_ops() {
         let input = "\
-to f():
+to f() -> Nothing:
     1 << 2
 ";
         let node = parse(input);

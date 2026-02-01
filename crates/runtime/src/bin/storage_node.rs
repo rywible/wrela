@@ -25,6 +25,9 @@ mod test_utils {
             node_id: args.node_id,
             bind_addr: args.bind_addr.clone(),
             http_enabled: true,
+            peer_token: env::var("WRELA_PEER_TOKEN")
+                .ok()
+                .and_then(|val| if val.trim().is_empty() { None } else { Some(val) }),
             peers: args.peers.clone(),
             bootstrap: args.bootstrap,
             snapshot_interval: args.snapshot_interval,

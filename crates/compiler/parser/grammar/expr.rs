@@ -105,6 +105,11 @@ fn is_expr_recovery_token(kind: SyntaxKind) -> bool {
 
 fn infix_binding_power(kind: SyntaxKind) -> Option<(u8, u8)> {
     match kind {
+        SyntaxKind::Equals
+        | SyntaxKind::PlusEq
+        | SyntaxKind::MinusEq
+        | SyntaxKind::StarEq
+        | SyntaxKind::SlashEq => Some((0, 0)),
         SyntaxKind::OtherwiseKw => Some((0, 1)),
         SyntaxKind::OrKw => Some((1, 2)),
         SyntaxKind::AndKw => Some((3, 4)),
@@ -198,7 +203,13 @@ fn parse_call(
     let m = lhs.precede(p);
     p.expect(SyntaxKind::LParen);
     let mut first = true;
+    let mut saw_dedent = false;
     while !p.at(SyntaxKind::RParen) && !p.is_at_eof() {
+        if p.at(SyntaxKind::Dedent) {
+            saw_dedent = true;
+            break;
+        }
+        let before = p.cursor_pos();
         if !first {
             if p.at(SyntaxKind::Comma) {
                 p.bump();
@@ -232,9 +243,18 @@ fn parse_call(
                 break;
             }
         }
+        if p.cursor_pos() == before {
+            p.error();
+        }
         first = false;
     }
-    p.expect(SyntaxKind::RParen);
+    if p.at(SyntaxKind::RParen) {
+        p.bump();
+    } else if saw_dedent {
+        p.error_with_message_no_bump("expected ')'");
+    } else {
+        p.expect(SyntaxKind::RParen);
+    }
     m.complete(p, SyntaxKind::CallExpr)
 }
 

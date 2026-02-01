@@ -20,6 +20,10 @@ pub fn root(p: &mut Parser) {
 }
 
 pub(crate) fn parse_statement(p: &mut Parser) {
+    if p.at(SyntaxKind::PrivateKw) && p.peek_nontrivia_at(1) == SyntaxKind::Colon {
+        parse_private_block(p);
+        return;
+    }
     if is_class_start(p) {
         class::class_def(p);
         return;
@@ -40,6 +44,7 @@ pub(crate) fn parse_statement(p: &mut Parser) {
         SyntaxKind::BreakKw => parse_break(p),
         SyntaxKind::ContinueKw => parse_continue(p),
         SyntaxKind::OptimizeKw => parse_optimize(p),
+        SyntaxKind::AssertKw => parse_assert(p),
         SyntaxKind::MatchKw => parse_match(p),
         SyntaxKind::UseKw => parse_use(p),
         SyntaxKind::Eof => (),
@@ -52,18 +57,36 @@ pub(crate) fn parse_statement(p: &mut Parser) {
     }
 }
 
+fn parse_assert(p: &mut Parser) {
+    let m = p.start();
+    p.expect(SyntaxKind::AssertKw);
+    if p.at_ident_text("value") {
+        p.bump();
+        expr::expr(p);
+        m.complete(p, SyntaxKind::AssertStmt);
+        p.expect_stmt_boundary();
+        return;
+    }
+    if p.at_ident_text("identity") {
+        p.bump();
+        expr::expr(p);
+        m.complete(p, SyntaxKind::AssertStmt);
+        p.expect_stmt_boundary();
+        return;
+    }
+    p.error_with_message_no_bump("expected 'value' or 'identity' after assert");
+    m.complete(p, SyntaxKind::AssertStmt);
+    p.expect_stmt_boundary();
+}
+
 fn parse_var_assign(p: &mut Parser) {
     let m = p.start();
-    let visibility = parse_visibility(p);
-    let is_changing = if p.at(SyntaxKind::ChangingKw) {
+    let _is_changing = if p.at(SyntaxKind::ChangingKw) {
         p.bump();
         true
     } else {
         false
     };
-    if visibility == Some(SyntaxKind::PublicKw) && is_changing {
-        p.error_with_message_no_bump("public variables cannot be changing");
-    }
     p.expect(SyntaxKind::Ident);
 
     match p.peek() {
@@ -288,7 +311,12 @@ pub(crate) fn parse_block(p: &mut Parser) {
     if p.at(SyntaxKind::Indent) {
         p.bump();
         while !p.at(SyntaxKind::Dedent) && !p.is_at_eof() {
+            let cursor = p.cursor_pos();
             parse_statement(p);
+            if p.cursor_pos() == cursor {
+                // Ensure forward progress to avoid infinite loops on unexpected tokens.
+                p.error();
+            }
         }
         p.expect(SyntaxKind::Dedent);
     } else {
@@ -337,20 +365,12 @@ fn is_class_start(p: &mut Parser) -> bool {
     if p.at(SyntaxKind::ClassKw) || p.at(SyntaxKind::AnKw) {
         return true;
     }
-    if p.at(SyntaxKind::PublicKw) || p.at(SyntaxKind::PrivateKw) {
-        let next = p.peek_nontrivia_at(1);
-        return matches!(next, SyntaxKind::ClassKw | SyntaxKind::AnKw);
-    }
     false
 }
 
 fn is_func_start(p: &mut Parser) -> bool {
     if p.at(SyntaxKind::ToKw) {
         return true;
-    }
-    if p.at(SyntaxKind::PublicKw) || p.at(SyntaxKind::PrivateKw) {
-        let next = p.peek_nontrivia_at(1);
-        return next == SyntaxKind::ToKw;
     }
     false
 }
@@ -371,24 +391,13 @@ fn is_var_assign_start(p: &mut Parser) -> bool {
         let next = p.peek_nontrivia_at(1);
         return next == SyntaxKind::Ident && p.peek_nontrivia_at(2) == SyntaxKind::Equals;
     }
-    if p.at(SyntaxKind::PublicKw) || p.at(SyntaxKind::PrivateKw) {
-        let next = p.peek_nontrivia_at(1);
-        return next == SyntaxKind::Ident && p.peek_nontrivia_at(2) == SyntaxKind::Equals
-            || next == SyntaxKind::ChangingKw
-                && p.peek_nontrivia_at(2) == SyntaxKind::Ident
-                && p.peek_nontrivia_at(3) == SyntaxKind::Equals;
-    }
     false
 }
 
-pub(crate) fn parse_visibility(p: &mut Parser) -> Option<SyntaxKind> {
-    if p.at(SyntaxKind::PublicKw) {
-        p.bump();
-        return Some(SyntaxKind::PublicKw);
-    }
-    if p.at(SyntaxKind::PrivateKw) {
-        p.bump();
-        return Some(SyntaxKind::PrivateKw);
-    }
-    None
+fn parse_private_block(p: &mut Parser) {
+    let m = p.start();
+    p.expect(SyntaxKind::PrivateKw);
+    p.expect_with_message(SyntaxKind::Colon, "expected ':' after 'private'");
+    parse_block(p);
+    m.complete(p, SyntaxKind::PrivateBlock);
 }

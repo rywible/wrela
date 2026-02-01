@@ -1,5 +1,17 @@
 ---
 source: crates/lsp/src/lib.rs
+assertion_line: 4935
 expression: range
 ---
-None
+Some(
+    Range {
+        start: Position {
+            line: 6,
+            character: 8,
+        },
+        end: Position {
+            line: 6,
+            character: 11,
+        },
+    },
+)

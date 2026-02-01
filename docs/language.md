@@ -40,7 +40,7 @@ Rules enforced by the parser and project loader:
 ### Entry point
 - Top-level executable statements are **not allowed**; only `use`, class definitions, and
   function definitions are legal at the top level.
-- The entry module must define `to run()`.
+- The entry module must define `to run() -> Type`.
 - Only the entry module may define `run`.
 - The name `main` is reserved; you must use `run` as the entrypoint.
 
@@ -79,7 +79,7 @@ A Whale:
 ```
 A An has can to if else while for in return break continue match otherwise
 err crash true false nothing and or not await detach spawn fire optimize use
-from public private its it changing
+from private its it changing assert
 ```
 
 ### Symbols and operators
@@ -89,6 +89,15 @@ from public private its it changing
 += -= *= /=
 & | ^ ~ << >>
 ```
+
+### Equality semantics (important)
+- **Values compare by value; objects compare by identity.**
+- By value: Int, Float, Bool, String, Bytes, Nothing
+- By identity: List, Map, class instances, actor handles
+
+### Assertions (keywords)
+- `assert value <bool expr>` allows `==`, `!=`, `<`, `<=`, `>`, `>=`.
+- `assert identity <bool expr>` only allows `==`/`!=` and rejects primitive operands.
 
 ---
 
@@ -109,6 +118,8 @@ Notes:
 ### Booleans and nil
 - `true` / `false`
 - `nothing` is the nil literal.
+  - `nothing` is the value of the `Nothing`/`Nil` type.
+  - Use `nothing` to represent the absence of a value.
 
 ### Strings
 - Double-quoted strings: `"hello"`.
@@ -129,9 +140,9 @@ Example:
 to name(param: Type, ...) -> ReturnType:
     ...
 ```
-- `-> ReturnType` is optional; missing return type implies `Nothing`.
+- `-> ReturnType` is required; use `-> Nothing` for “returns nothing”.
 - Parameters are required to have a type annotation.
-- Functions default to **private** visibility. `public` or `private` may be added.
+ 
 
 ### Classes
 ```
@@ -144,7 +155,38 @@ A Whale:
 - Class definitions start with `A` or `An`.
 - Fields are defined in `has` blocks.
 - Methods are defined with `can`.
-- Class, field, and method visibility defaults to **private**; `public` / `private` are allowed.
+- Class, field, and method visibility defaults to **public**.
+
+### Visibility and `private:` blocks
+- Wrela is **public by default**.
+- Use `private:` blocks to mark definitions as private.
+- `private:` is allowed:
+  - At the top level, containing only `to` functions and `A`/`An` classes.
+  - Inside a class, containing `has` blocks and `can` methods.
+  - Inside a `has` block, containing only field definitions.
+- `use` statements must remain at the top level and cannot appear inside `private:` blocks.
+
+Top-level example:
+```
+private:
+    to helper() -> Int:
+        return 1
+
+to run() -> Int:
+    return helper()
+```
+
+Class example:
+```
+A User:
+    has:
+        name: String
+        private:
+            password_hash: String
+    private:
+        can reset() -> Nothing:
+            return nothing
+```
 
 ### Fields (`has`)
 ```
@@ -163,6 +205,7 @@ A Whale:
         return true
 ```
 - Methods are functions with an implicit receiver (`it`).
+- Methods require an explicit return type (use `-> Nothing` for no value).
 
 ### The implicit receiver: `it` and `its`
 - Inside methods, `it` refers to the current instance.
@@ -183,9 +226,7 @@ count += 1
 - `changing` marks a variable as **mutable**.
 - `+=`, `-=`, `*=`, `/=` are allowed only on mutable variables.
 - Reassigning an immutable variable is an error.
-
-Visibility modifiers (`public` / `private`) are **not allowed on local variables** and
-produce a semantic error. `public changing` is also invalid.
+ 
 
 ### If / else
 ```
@@ -325,13 +366,21 @@ Result[Int]
 - `Result[Ok, Err]` (or `Result[Ok]`, which defaults `Err` to `Error`)
 - `Actor[T]`
 - `Pending[T]`
+- `Error`
+
+### `Nothing` / `Nil`
+- `nothing` is the literal value; `Nothing`/`Nil` is the type.
+- Use `Nothing`/`Nil` for “no value” (e.g., functions that return nothing).
+- In type positions you may write `Nothing` or `Nil` (they are equivalent).
 
 ### Type inference (high-level)
 - Numeric literals are inferred as `Int` or `Float`.
 - `Number` is a supertype used for numeric operations.
-- The `...` range operator builds a list of numbers.
+- The `...` range operator builds a list of numbers (runtime behavior), but the compiler
+  currently does not infer a specific `List[...]` type for it.
 - `err x` produces `Result[unknown, type(x)]`.
-- `await` on an actor call produces `Result[Ok, Error]`.
+- `await` on a pending value produces `Result[Ok, Error]`.
+ - `nothing` has type `Nothing`/`Nil`.
 
 ### Operator type rules (summary)
 - `+` supports numeric addition and string concatenation (`String + String`).
@@ -348,12 +397,19 @@ Result[Int]
 Wrela treats `Result` values as **must-handle**.
 `Result[T]` is shorthand for `Result[T, Error]`.
 
+### Result and the `Error` type
+- `Error` is the default error type when one is not specified.
+- A function declared to return `Result[Ok, Err]` may:
+  - `return value` (treated as `Ok(value)`), or
+  - `return err value` (treated as `Err(value)`).
+
 ### `err`
 ```
 return err "bad input"
 ```
 Rules:
 - `err` may only be used in functions that return `Result`.
+- The type of `err x` is `Result[Unknown, type(x)]`.
 
 ### `otherwise`
 ```
@@ -367,6 +423,19 @@ Rules:
 ### Unhandled results
 If a `Result` value is produced and **not** handled with `otherwise` (and the enclosing
 function does not return `Result`), the compiler reports an error.
+
+In a `Result`-returning function, you may:
+- return a `Result` directly (propagate it), or
+- use `otherwise` to unwrap/fallback and return a plain value.
+
+Example:
+```
+to read_or_default(path: String) -> String:
+    return read_file(path=path) otherwise ""
+
+to read_or_fail(path: String) -> Result[String]:
+    return read_file(path=path)
+```
 
 ---
 
@@ -394,11 +463,24 @@ result = await actor.swim()
 fire actor.swim()
 ```
 Rules:
-- `await` and `fire` are only valid for actor **method calls**.
+- `await` and `fire` are only valid for **pending** values (actor calls and a small set of
+  built-in functions such as `sleep_ms`).
 - `fire` is only valid as a **standalone statement**.
 - `await` yields a `Result`, even if the method itself returns a non-`Result` type.
 - The default error type used by `await` and `Result[T]` is the named type `Error`.
 - You cannot access fields on actor instances (only call methods).
+
+Because `await` produces a `Result`, you must handle it with `otherwise` unless your
+function itself returns `Result` (in which case you can return the `Result` directly).
+
+Example:
+```
+to inc_or_zero(actor: Actor[Counter]) -> Int:
+    return await actor.inc() otherwise 0
+
+to inc_or_error(actor: Actor[Counter]) -> Result[Int]:
+    return await actor.inc()
+```
 
 ### Async classes and methods
 If a class method uses `await`, then:
@@ -449,6 +531,7 @@ The compiler treats the following names as built-in bindings (functions or impli
 
 Functions:
 ```
+assert_err
 print
 parse_int
 parse_float
@@ -473,6 +556,55 @@ metrics_dropped_paused_id
 metrics_messages_dropped_id
 clock_ns
 sleep_ms
+env_get
+env_get_or
+env_get_as_bool
+env_get_as_int
+env_set
+env_load
+auth_create_user
+auth_verify_password
+auth_issue_jwt
+auth_verify_jwt
+auth_issue_email_token
+auth_verify_email_token
+auth_oauth_login
+rbac_create_role
+rbac_assign_role
+rbac_check
+rbac_permissions_for
+files_upload_stream
+files_signed_url
+files_metadata
+files_delete
+files_set_acl
+jobs_enqueue
+jobs_process
+jobs_dead_letter
+schedule_cron
+schedule_every
+schedule_at
+search_index
+search_remove
+search_query
+realtime_on_connect
+realtime_join
+realtime_leave
+realtime_broadcast
+realtime_send
+rate_check
+rate_ip
+admin_enable
+storage_get
+storage_get_with_version
+storage_scan
+storage_list_prefix
+storage_configure
+storage_set
+storage_set_if_version
+storage_delete_if_version
+storage_delete
+storage_batch_set
 http_server_serve_get_requests
 http_server_serve_post_requests
 http_server_serve_requests
@@ -484,6 +616,98 @@ Implicit values:
 ```
 nil
 Pool
+queue
+drop
+n
+```
+
+---
+
+## Appendix A) Runtime built-ins (compiler-recognized)
+
+This list mirrors the compiler's `builtin_functions()` table and is intended to be kept in
+sync with it.
+
+```
+assert_err
+print
+parse_int
+parse_float
+read_file
+write_file
+bytes_from_string
+bytes_to_string
+bytes_len
+list_push
+map_get
+map_set
+pool_auto_size
+pool_size
+pool_rr
+pool_queue_len
+actor_mailbox_len
+actor_pause
+actor_resume
+actor_pause_wait
+metrics_get
+metrics_dropped_paused_id
+metrics_messages_dropped_id
+clock_ns
+sleep_ms
+env_get
+env_get_or
+env_get_as_bool
+env_get_as_int
+env_set
+env_load
+auth_create_user
+auth_verify_password
+auth_issue_jwt
+auth_verify_jwt
+auth_issue_email_token
+auth_verify_email_token
+auth_oauth_login
+rbac_create_role
+rbac_assign_role
+rbac_check
+rbac_permissions_for
+files_upload_stream
+files_signed_url
+files_metadata
+files_delete
+files_set_acl
+jobs_enqueue
+jobs_process
+jobs_dead_letter
+schedule_cron
+schedule_every
+schedule_at
+search_index
+search_remove
+search_query
+realtime_on_connect
+realtime_join
+realtime_leave
+realtime_broadcast
+realtime_send
+rate_check
+rate_ip
+admin_enable
+storage_get
+storage_get_with_version
+storage_scan
+storage_list_prefix
+storage_configure
+storage_set
+storage_set_if_version
+storage_delete_if_version
+storage_delete
+storage_batch_set
+http_server_serve_get_requests
+http_server_serve_post_requests
+http_server_serve_requests
+http_server_serve_on
+http_server_stop
 ```
 
 ---
@@ -495,11 +719,10 @@ Pool
 - `break` / `continue` are only valid inside loops.
 - `use` is only valid at the top level.
 - `match` requires an `otherwise` case.
-- `public` / `private` on local variables is invalid.
-- `public changing` variables are invalid.
+- Missing return types (`-> Type`) on functions/methods are invalid.
 - Positional arguments cannot follow named arguments.
 - Duplicate named arguments are invalid.
-- `await` / `fire` only apply to actor method calls.
+- `await` / `fire` only apply to pending values.
 - Actor method calls must be `await`ed or `fire`d.
 - `err` can only be used in functions returning `Result`.
 - `otherwise` requires a `Result` on the left side.
@@ -515,7 +738,7 @@ A ClassName:
     can method(arg: Type) -> Type:
         return its.field
 
-public to function(arg: Type) -> Type:
+to function(arg: Type) -> Type:
     changing x = 1
     if x > 0:
         return x

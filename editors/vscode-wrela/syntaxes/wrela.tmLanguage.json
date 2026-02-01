@@ -60,43 +60,34 @@
       ]
     },
     "class_definition": {
-      "match": "\\b(?:(public|private)\\s+)?(A|An)\\s+([_\\p{L}][_\\p{L}\\p{N}]*)\\b",
+      "match": "\\b(A|An)\\s+([_\\p{L}][_\\p{L}\\p{N}]*)\\b",
       "captures": {
         "1": {
           "name": "storage.modifier.wrela"
         },
         "2": {
-          "name": "storage.type.wrela"
-        },
-        "3": {
           "name": "entity.name.type.wrela"
         }
       }
     },
     "has_statement": {
-      "match": "\\b(?:(public|private)\\s+)?(has)\\b",
+      "match": "\\b(has)\\b",
       "captures": {
         "1": {
           "name": "storage.modifier.wrela"
-        },
-        "2": {
-          "name": "storage.type.wrela"
         }
       }
     },
     "function_definition": {
-      "begin": "\\b(?:(public|private)\\s+)?(to)\\s+([_\\p{L}][_\\p{L}\\p{N}]*)\\s*(\\()",
+      "begin": "\\b(to)\\s+([_\\p{L}][_\\p{L}\\p{N}]*)\\s*(\\()",
       "beginCaptures": {
         "1": {
           "name": "storage.modifier.wrela"
         },
         "2": {
-          "name": "storage.type.wrela"
-        },
-        "3": {
           "name": "entity.name.function.wrela"
         },
-        "4": {
+        "3": {
           "name": "punctuation.bracket.wrela"
         }
       },
@@ -125,18 +116,15 @@
       ]
     },
     "method_definition": {
-      "begin": "\\b(?:(public|private)\\s+)?(can)\\s+([_\\p{L}][_\\p{L}\\p{N}]*)\\s*(\\()",
+      "begin": "\\b(can)\\s+([_\\p{L}][_\\p{L}\\p{N}]*)\\s*(\\()",
       "beginCaptures": {
         "1": {
           "name": "storage.modifier.wrela"
         },
         "2": {
-          "name": "storage.type.wrela"
-        },
-        "3": {
           "name": "entity.name.function.method.wrela"
         },
-        "4": {
+        "3": {
           "name": "punctuation.bracket.wrela"
         }
       },
@@ -167,15 +155,12 @@
     "field_definitions": {
       "patterns": [
         {
-          "begin": "(?m)^\\s*(?:(public|private)\\s+)?(?!A\\b|An\\b|has\\b|can\\b|to\\b|public\\b|private\\b|changing\\b|if\\b|else\\b|while\\b|for\\b|in\\b|return\\b|break\\b|continue\\b|match\\b|otherwise\\b|use\\b|from\\b|optimize\\b|and\\b|or\\b|not\\b|await\\b|detach\\b|spawn\\b|fire\\b|err\\b|crash\\b|true\\b|false\\b|nothing\\b|nil\\b|it\\b|its\\b|n\\b|so\\b)([_\\p{L}][_\\p{L}\\p{N}]*)\\s*(:)\\s*",
+          "begin": "(?m)^\\s*(?!A\\b|An\\b|has\\b|can\\b|to\\b|private\\b|changing\\b|if\\b|else\\b|while\\b|for\\b|in\\b|return\\b|break\\b|continue\\b|match\\b|otherwise\\b|use\\b|from\\b|optimize\\b|and\\b|or\\b|not\\b|await\\b|detach\\b|spawn\\b|fire\\b|err\\b|crash\\b|true\\b|false\\b|nothing\\b|nil\\b|it\\b|its\\b|n\\b|so\\b)([_\\p{L}][_\\p{L}\\p{N}]*)\\s*(:)\\s*",
           "beginCaptures": {
             "1": {
-              "name": "storage.modifier.wrela"
-            },
-            "2": {
               "name": "variable.other.member.wrela"
             },
-            "3": {
+            "2": {
               "name": "punctuation.separator.wrela"
             }
           },
@@ -291,7 +276,7 @@
           }
         },
         {
-          "match": "\\b(?!A\\b|An\\b|has\\b|can\\b|to\\b|public\\b|private\\b|changing\\b|if\\b|else\\b|while\\b|for\\b|in\\b|return\\b|break\\b|continue\\b|match\\b|otherwise\\b|use\\b|from\\b|optimize\\b|and\\b|or\\b|not\\b|await\\b|detach\\b|spawn\\b|fire\\b|err\\b|crash\\b|true\\b|false\\b|nothing\\b|nil\\b|it\\b|its\\b|n\\b)([_\\p{L}][_\\p{L}\\p{N}]*)\\b(?=\\s*\\()",
+          "match": "\\b(?!A\\b|An\\b|has\\b|can\\b|to\\b\\b|private\\b|changing\\b|if\\b|else\\b|while\\b|for\\b|in\\b|return\\b|break\\b|continue\\b|match\\b|otherwise\\b|use\\b|from\\b|optimize\\b|and\\b|or\\b|not\\b|await\\b|detach\\b|spawn\\b|fire\\b|err\\b|crash\\b|true\\b|false\\b|nothing\\b|nil\\b|it\\b|its\\b|n\\b)([_\\p{L}][_\\p{L}\\p{N}]*)\\b(?=\\s*\\()",
           "captures": {
             "1": {
               "name": "entity.name.function.wrela"
@@ -322,7 +307,7 @@
           }
         },
         {
-          "match": "\\b(?!A\\b|An\\b|has\\b|can\\b|to\\b|public\\b|private\\b|changing\\b|if\\b|else\\b|while\\b|for\\b|in\\b|return\\b|break\\b|continue\\b|match\\b|otherwise\\b|use\\b|from\\b|optimize\\b|and\\b|or\\b|not\\b|await\\b|detach\\b|spawn\\b|fire\\b|err\\b|crash\\b|true\\b|false\\b|nothing\\b|nil\\b|it\\b|its\\b|n\\b)([_\\p{L}][_\\p{L}\\p{N}]*)\\b(?=\\s*\\()",
+          "match": "\\b(?!A\\b|An\\b|has\\b|can\\b|to\\b\\b|private\\b|changing\\b|if\\b|else\\b|while\\b|for\\b|in\\b|return\\b|break\\b|continue\\b|match\\b|otherwise\\b|use\\b|from\\b|optimize\\b|and\\b|or\\b|not\\b|await\\b|detach\\b|spawn\\b|fire\\b|err\\b|crash\\b|true\\b|false\\b|nothing\\b|nil\\b|it\\b|its\\b|n\\b)([_\\p{L}][_\\p{L}\\p{N}]*)\\b(?=\\s*\\()",
           "captures": {
             "1": {
               "name": "entity.name.function.wrela"
@@ -353,7 +338,7 @@
     },
     "identifiers": {
       "name": "variable.other.wrela",
-      "match": "\\b(?!A\\b|An\\b|has\\b|can\\b|to\\b|public\\b|private\\b|changing\\b|if\\b|else\\b|while\\b|for\\b|in\\b|return\\b|break\\b|continue\\b|match\\b|otherwise\\b|use\\b|from\\b|optimize\\b|and\\b|or\\b|not\\b|await\\b|detach\\b|spawn\\b|fire\\b|err\\b|crash\\b|true\\b|false\\b|nothing\\b|nil\\b|it\\b|its\\b|n\\b)[_\\p{L}][_\\p{L}\\p{N}]*\\b"
+      "match": "\\b(?!A\\b|An\\b|has\\b|can\\b|to\\b\\b|private\\b|changing\\b|if\\b|else\\b|while\\b|for\\b|in\\b|return\\b|break\\b|continue\\b|match\\b|otherwise\\b|use\\b|from\\b|optimize\\b|and\\b|or\\b|not\\b|await\\b|detach\\b|spawn\\b|fire\\b|err\\b|crash\\b|true\\b|false\\b|nothing\\b|nil\\b|it\\b|its\\b|n\\b)[_\\p{L}][_\\p{L}\\p{N}]*\\b"
     },
     "type": {
       "patterns": [
@@ -505,7 +490,7 @@
       "patterns": [
         {
           "name": "keyword.control.wrela",
-          "match": "\\b(?:public|private|changing|if|else|while|for|in|return|break|continue|match|otherwise|use|from|optimize|await|detach|spawn|fire|err|crash|latency|throughput|conservation|balance)\\b"
+          "match": "\\b(?:private|changing|if|else|while|for|in|return|break|continue|match|otherwise|use|from|optimize|await|detach|spawn|fire|err|crash|latency|throughput|conservation|balance)\\b"
         },
         {
           "name": "keyword.control.wrela",

@@ -358,7 +358,7 @@ impl<'a> Lexer<'a> {
             // Check for DocComment promotion
             if matches!(
                 token,
-                Token::Class | Token::To | Token::Can | Token::Has | Token::Public
+                Token::Class | Token::To | Token::Can | Token::Has
             ) && let Some((_comment, _span)) = self.last_comment.take()
             {
                 // Promotion logic can go here if needed later

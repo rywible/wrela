@@ -461,7 +461,7 @@ fn test_error_recovery() {
 #[test]
 fn test_final_keywords() {
     let input = r#"
-public changing x = 1
+changing x = 1
 match x:
     1: break
     otherwise: continue
@@ -490,50 +490,49 @@ crash("boom")
         })
         .collect();
 
-    // public changing x = 1
-    assert_eq!(valid_tokens[0], Token::Public);
-    assert_eq!(valid_tokens[1], Token::Changing);
-    assert_eq!(valid_tokens[2], Token::Identifier(SmolStr::new("x")));
-    assert_eq!(valid_tokens[3], Token::Equals);
-    assert_eq!(valid_tokens[4], Token::Integer(1, SmolStr::new("1")));
+    // changing x = 1
+    assert_eq!(valid_tokens[0], Token::Changing);
+    assert_eq!(valid_tokens[1], Token::Identifier(SmolStr::new("x")));
+    assert_eq!(valid_tokens[2], Token::Equals);
+    assert_eq!(valid_tokens[3], Token::Integer(1, SmolStr::new("1")));
 
     // match x:
-    assert_eq!(valid_tokens[5], Token::Match);
-    assert_eq!(valid_tokens[6], Token::Identifier(SmolStr::new("x")));
-    assert_eq!(valid_tokens[7], Token::Colon);
+    assert_eq!(valid_tokens[4], Token::Match);
+    assert_eq!(valid_tokens[5], Token::Identifier(SmolStr::new("x")));
+    assert_eq!(valid_tokens[6], Token::Colon);
 
     // 1: break
-    assert_eq!(valid_tokens[8], Token::Integer(1, SmolStr::new("1")));
-    assert_eq!(valid_tokens[9], Token::Colon);
-    assert_eq!(valid_tokens[10], Token::Break);
+    assert_eq!(valid_tokens[7], Token::Integer(1, SmolStr::new("1")));
+    assert_eq!(valid_tokens[8], Token::Colon);
+    assert_eq!(valid_tokens[9], Token::Break);
 
     // otherwise: continue
-    assert_eq!(valid_tokens[11], Token::Otherwise);
-    assert_eq!(valid_tokens[12], Token::Colon);
-    assert_eq!(valid_tokens[13], Token::Continue);
+    assert_eq!(valid_tokens[10], Token::Otherwise);
+    assert_eq!(valid_tokens[11], Token::Colon);
+    assert_eq!(valid_tokens[12], Token::Continue);
 
     // its.name
-    assert_eq!(valid_tokens[14], Token::Its);
-    assert_eq!(valid_tokens[15], Token::Dot);
-    assert_eq!(valid_tokens[16], Token::Identifier(SmolStr::new("name")));
+    assert_eq!(valid_tokens[13], Token::Its);
+    assert_eq!(valid_tokens[14], Token::Dot);
+    assert_eq!(valid_tokens[15], Token::Identifier(SmolStr::new("name")));
 
     // it
-    assert_eq!(valid_tokens[17], Token::It);
+    assert_eq!(valid_tokens[16], Token::It);
 
     // An Apple
-    assert_eq!(valid_tokens[18], Token::An);
+    assert_eq!(valid_tokens[17], Token::An);
     // "Apple" is an identifier. It is not the keyword "A" (Class).
-    assert_eq!(valid_tokens[19], Token::Identifier(SmolStr::new("Apple")));
+    assert_eq!(valid_tokens[18], Token::Identifier(SmolStr::new("Apple")));
 
     // err "nope"
-    assert_eq!(valid_tokens[20], Token::Err);
-    assert_eq!(valid_tokens[21], Token::StringLiteral(SmolStr::new("nope")));
+    assert_eq!(valid_tokens[19], Token::Err);
+    assert_eq!(valid_tokens[20], Token::StringLiteral(SmolStr::new("nope")));
 
     // crash("boom")
-    assert_eq!(valid_tokens[22], Token::Crash);
-    assert_eq!(valid_tokens[23], Token::LParen);
-    assert_eq!(valid_tokens[24], Token::StringLiteral(SmolStr::new("boom")));
-    assert_eq!(valid_tokens[25], Token::RParen);
+    assert_eq!(valid_tokens[21], Token::Crash);
+    assert_eq!(valid_tokens[22], Token::LParen);
+    assert_eq!(valid_tokens[23], Token::StringLiteral(SmolStr::new("boom")));
+    assert_eq!(valid_tokens[24], Token::RParen);
 }
 
 #[test]

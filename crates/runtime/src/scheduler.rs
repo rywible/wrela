@@ -214,20 +214,25 @@ pub fn enqueue(pool: *const PoolHandle, msg: PoolMessage) -> Result<(), PoolMess
         if pool.is_null() {
             return Err(msg);
         }
+        (*pool).enqueue_inflight.fetch_add(1, Ordering::AcqRel);
         if !(*pool).alive.load(Ordering::Acquire) {
             inc_pool_enqueue_after_retire();
             diagnostics::log_event("enqueue_after_retire");
+            (*pool).enqueue_inflight.fetch_sub(1, Ordering::AcqRel);
             return Err(msg);
         }
         if (*pool).drop_on_full {
             inc_pool_queue_full();
+            (*pool).enqueue_inflight.fetch_sub(1, Ordering::AcqRel);
             return Err(msg);
         }
         let queue = &(*pool).queue;
         if let Err(msg) = queue.push(msg) {
             inc_pool_queue_full();
+            (*pool).enqueue_inflight.fetch_sub(1, Ordering::AcqRel);
             return Err(msg);
         }
+        (*pool).enqueue_inflight.fetch_sub(1, Ordering::AcqRel);
         let shard_id = (*pool).shard_id as usize;
         if let Some(shard) = SHARDS.get().and_then(|s| s.get(shard_id)) {
             if !(*pool).has_ready.swap(true, Ordering::AcqRel) {
@@ -288,6 +293,11 @@ fn reap_retired(shard: &SchedulerShard) {
     for pool in retired {
         let pool = pool as *const PoolHandle;
         unsafe {
+            if (*pool).enqueue_inflight.load(Ordering::Acquire) != 0 {
+                let mut guard = shard.retired.lock().expect("retired lock");
+                guard.push(pool as usize);
+                continue;
+            }
             diagnostics::log_event("retire_drain_start");
             while let Some(msg) = (*pool).queue.pop() {
                 deliver_pool_message(msg);

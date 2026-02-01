@@ -42,6 +42,13 @@ impl<'a> TokenSource<'a> {
             .unwrap_or_else(|| SourceSpan::from((self.source.len(), 0)))
     }
 
+    pub fn peek_span_at(&self, n: usize) -> SourceSpan {
+        self.tokens
+            .get(self.cursor + n)
+            .map(|(_, s)| *s)
+            .unwrap_or_else(|| SourceSpan::from((self.source.len(), 0)))
+    }
+
     pub fn bump(&mut self) {
         if self.cursor < self.tokens.len() {
             self.cursor += 1;
@@ -59,6 +66,11 @@ impl<'a> TokenSource<'a> {
     /// Returns the raw text of the current token
     pub fn text(&self) -> &str {
         let span = self.peek_span();
+        &self.source[span.offset()..span.offset() + span.len()]
+    }
+
+    pub fn text_at(&self, n: usize) -> &str {
+        let span = self.peek_span_at(n);
         &self.source[span.offset()..span.offset() + span.len()]
     }
 }

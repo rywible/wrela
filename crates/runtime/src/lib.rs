@@ -13,11 +13,14 @@ mod float_box;
 mod http;
 mod iter;
 mod jobs;
+mod lease;
 mod list;
+mod logging;
 mod map;
 mod metrics;
 mod number;
 mod object;
+mod pubsub;
 mod range;
 mod rate_limit;
 mod rbac;
@@ -37,6 +40,7 @@ pub use value::{TypeId, Value};
 use object::drop_object;
 use std::sync::OnceLock;
 use std::time::Instant;
+use std::collections::HashSet;
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wr_rc_inc(value: Value) {
@@ -103,6 +107,12 @@ pub extern "C" fn wr_type_id(val: Value) -> u32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_value_eq(a: Value, b: Value) -> Value {
     Value::from_bool(value::value_eq(a, b))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_identity_eq(a: Value, b: Value) -> Value {
+    let ok = a.0 == b.0 && !(a.is_float() && b.is_float() && a.as_float().is_nan());
+    Value::from_bool(ok)
 }
 
 #[unsafe(no_mangle)]
@@ -244,6 +254,11 @@ pub extern "C" fn wr_print(val: Value) -> Value {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn wr_log(level: Value, msg: Value, fields: Value) -> Value {
+    logging::log(level, msg, fields)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn wr_assert(cond: Value, msg: Value) -> Value {
     let ok = if cond.is_bool() {
         cond.as_bool()
@@ -266,6 +281,130 @@ pub extern "C" fn wr_assert(cond: Value, msg: Value) -> Value {
         }
     }
     eprintln!("assert failed");
+    diagnostics::dump_diagnostics();
+    std::process::abort();
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_assert_eq(left: Value, right: Value) -> Value {
+    if value::value_eq(left, right) {
+        return Value::nil();
+    }
+    eprintln!("assert_eq failed");
+    diagnostics::dump_diagnostics();
+    std::process::abort();
+}
+
+fn deep_eq(a: Value, b: Value, depth: usize, seen: &mut HashSet<(usize, usize)>) -> bool {
+    if depth > 16 {
+        return false;
+    }
+    if value::value_eq(a, b) {
+        return true;
+    }
+    if a.is_ptr() && b.is_ptr() {
+        let ap = a.as_ptr() as usize;
+        let bp = b.as_ptr() as usize;
+        let key = if ap <= bp { (ap, bp) } else { (bp, ap) };
+        if !seen.insert(key) {
+            return true;
+        }
+        unsafe {
+            let ah = &*a.as_ptr();
+            let bh = &*b.as_ptr();
+            if ah.type_id != bh.type_id {
+                return false;
+            }
+            if ah.type_id == TypeId::List as u32 {
+                let Some(al) = crate::list::as_list_ref(a) else { return false };
+                let Some(bl) = crate::list::as_list_ref(b) else { return false };
+                if (*al).len != (*bl).len {
+                    return false;
+                }
+                for idx in 0..(*al).len {
+                    let av = (&(*al).data)[idx];
+                    let bv = (&(*bl).data)[idx];
+                    if !deep_eq(av, bv, depth + 1, seen) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            if ah.type_id == TypeId::Map as u32 {
+                let Some(am) = crate::map::as_map_ref(a) else { return false };
+                let Some(bm) = crate::map::as_map_ref(b) else { return false };
+                if (*am).entries.len() != (*bm).entries.len() {
+                    return false;
+                }
+                for (key, val) in (*am).entries.iter() {
+                    let Some(other) = (*bm).entries.get(key).copied() else {
+                        return false;
+                    };
+                    if !deep_eq(*val, other, depth + 1, seen) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            if ah.type_id == TypeId::Result as u32 {
+                let Some((a_ok, a_val)) = result::result_parts(a) else { return false };
+                let Some((b_ok, b_val)) = result::result_parts(b) else { return false };
+                if a_ok != b_ok {
+                    return false;
+                }
+                return deep_eq(a_val, b_val, depth + 1, seen);
+            }
+        }
+    }
+    false
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_value_deep_eq(left: Value, right: Value) -> Value {
+    let mut seen: HashSet<(usize, usize)> = HashSet::new();
+    Value::from_bool(deep_eq(left, right, 0, &mut seen))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_assert_value_equality(left: Value, right: Value) -> Value {
+    let mut seen: HashSet<(usize, usize)> = HashSet::new();
+    if deep_eq(left, right, 0, &mut seen) {
+        return Value::nil();
+    }
+    eprintln!("assert_value_equality failed");
+    diagnostics::dump_diagnostics();
+    std::process::abort();
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_assert_identity(left: Value, right: Value) -> Value {
+    if left.0 == right.0 {
+        if left.is_float() && right.is_float() && left.as_float().is_nan() {
+            eprintln!("assert_identity failed");
+            diagnostics::dump_diagnostics();
+            std::process::abort();
+        }
+        return Value::nil();
+    }
+    eprintln!("assert_identity failed");
+    diagnostics::dump_diagnostics();
+    std::process::abort();
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_assert_err(val: Value) -> Value {
+    if val.is_ptr() {
+        unsafe {
+            let header = &*val.as_ptr();
+            if header.type_id == TypeId::Result as u32 {
+                let ok = result::result_is_ok(val);
+                if ok.is_bool() && !ok.as_bool() {
+                    return Value::nil();
+                }
+            }
+        }
+    }
+    eprintln!("assert_err failed");
     diagnostics::dump_diagnostics();
     std::process::abort();
 }

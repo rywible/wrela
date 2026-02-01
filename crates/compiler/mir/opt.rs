@@ -882,7 +882,7 @@ mod tests {
 
     #[test]
     fn test_constant_folding_binary() {
-        let input = "to f():\n    x = 1 + 2\n";
+        let input = "to f() -> Nothing:\n    x = 1 + 2\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = hir_lower::lower(root);
@@ -906,7 +906,7 @@ mod tests {
 
     #[test]
     fn test_dead_code_elim_unused_temp() {
-        let input = "to f():\n    1 + 2\n";
+        let input = "to f() -> Nothing:\n    1 + 2\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = hir_lower::lower(root);

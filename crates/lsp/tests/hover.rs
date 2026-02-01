@@ -8,7 +8,7 @@ fn test_hover_doc_comment() {
     let code = r#"
     /// This is a documentation comment
     /// It has multiple lines
-    to foo():
+    to foo() -> Nothing:
         return nothing
     "#;
     let fixture = TestFixture::new(code);
@@ -20,7 +20,7 @@ fn test_hover_doc_comment() {
 #[test]
 fn test_hover_inferred_variable() {
     let code = r#"
-    to main():
+    to main() -> Nothing:
         x = 10
     "#;
     let fixture = TestFixture::new(code);

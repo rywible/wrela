@@ -32,9 +32,9 @@ pub enum SyntaxKind {
     SpawnKw,     // spawn
     FireKw,      // fire
     OptimizeKw,  // optimize
+    AssertKw,    // assert
     UseKw,       // use
     FromKw,      // from
-    PublicKw,    // public
     PrivateKw,   // private
     ItsKw,       // its
     ItKw,        // it
@@ -128,6 +128,8 @@ pub enum SyntaxKind {
     OtherwiseCase,
     UseStmt,
     OptimizeStmt,
+    AssertStmt,
+    PrivateBlock,
 
     // Expressions
     BinExpr,
@@ -179,9 +181,9 @@ impl From<Token> for SyntaxKind {
             Token::Spawn => SyntaxKind::SpawnKw,
             Token::Fire => SyntaxKind::FireKw,
             Token::Optimize => SyntaxKind::OptimizeKw,
+            Token::Assert => SyntaxKind::AssertKw,
             Token::Use => SyntaxKind::UseKw,
             Token::From => SyntaxKind::FromKw,
-            Token::Public => SyntaxKind::PublicKw,
             Token::Private => SyntaxKind::PrivateKw,
             Token::Its => SyntaxKind::ItsKw,
             Token::It => SyntaxKind::ItKw,
