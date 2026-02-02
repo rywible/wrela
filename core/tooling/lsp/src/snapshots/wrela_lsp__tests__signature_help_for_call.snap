@@ -1,0 +1,38 @@
+---
+source: core/tooling/lsp/src/lib.rs
+assertion_line: 4348
+expression: help
+---
+Some(
+    SignatureHelp {
+        signatures: [
+            SignatureInformation {
+                label: "add(a: Int, b: Int) -> Int",
+                documentation: None,
+                parameters: Some(
+                    [
+                        ParameterInformation {
+                            label: Simple(
+                                "a: Int",
+                            ),
+                            documentation: None,
+                        },
+                        ParameterInformation {
+                            label: Simple(
+                                "b: Int",
+                            ),
+                            documentation: None,
+                        },
+                    ],
+                ),
+                active_parameter: None,
+            },
+        ],
+        active_signature: Some(
+            0,
+        ),
+        active_parameter: Some(
+            1,
+        ),
+    },
+)

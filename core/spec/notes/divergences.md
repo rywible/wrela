@@ -16,13 +16,13 @@ while producing the baseline spec. It is not normative.
 - Pool objectives (`latency/throughput/conservation/balance`) behavior and defaults.
 
 ## Runtime Builtins Consistency
-- Builtin list in `docs/language.md` vs `crates/compiler/hir/typeck.rs`.
-- Builtin implementations in `crates/runtime/src/lib.rs`.
-- Stdlib surface in `crates/compiler/stdlib/core.wr`.
+- Builtin list in `.plans/language.md` vs `core/compiler/hir/typeck.rs`.
+- Builtin implementations in `core/runtime/src/lib.rs`.
+- Stdlib surface in `core/compiler/stdlib/core.wr`.
 
 ## Module and Import Rules
 - `use` resolution rules and private import enforcement.
-- `run` entrypoint restrictions enforced by `crates/compiler/hir/project.rs`.
+- `run` entrypoint restrictions enforced by `core/compiler/hir/project.rs`.
 
 ## Error Reporting Stability
 - Are error messages stable enough for golden `.err` tests?

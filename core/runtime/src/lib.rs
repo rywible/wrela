@@ -1,0 +1,1059 @@
+#![allow(clippy::missing_safety_doc)]
+
+mod actor;
+mod admin;
+mod auth;
+mod bytes;
+mod class;
+mod config;
+mod diagnostics;
+mod env;
+mod files;
+mod float_box;
+mod http;
+mod iter;
+mod jobs;
+mod lease;
+mod list;
+mod logging;
+mod map;
+mod metrics;
+mod number;
+mod object;
+mod pubsub;
+mod range;
+mod rate_limit;
+mod rbac;
+mod realtime;
+mod result;
+mod schedule;
+mod scheduler;
+mod search;
+pub mod storage;
+mod storage_helpers;
+mod string;
+mod value;
+
+use value::int_value;
+pub use value::{TypeId, Value};
+
+use object::drop_object;
+use std::sync::OnceLock;
+use std::time::Instant;
+use std::collections::HashSet;
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wr_rc_inc(value: Value) {
+    if !value.is_ptr() {
+        return;
+    }
+    metrics::inc_rc_inc();
+    let header = unsafe { &*value.as_ptr() };
+    header.rc.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wr_rc_dec(value: Value) {
+    if !value.is_ptr() {
+        return;
+    }
+    metrics::inc_rc_dec();
+    let header = unsafe { &*value.as_ptr() };
+    let next = header.rc.fetch_sub(1, std::sync::atomic::Ordering::Release) - 1;
+    if next == 0 {
+        std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
+        unsafe { drop_object(value.as_ptr()) };
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_box_float(val: f64) -> Value {
+    Value::from_float(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_unbox_float(val: Value) -> f64 {
+    if val.is_float() { val.as_float() } else { 0.0 }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_box_int(val: i64) -> Value {
+    Value::from_int(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_unbox_int(val: Value) -> i64 {
+    int_value(val).unwrap_or(0)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_runtime_init() {
+    diagnostics::runtime_init();
+    env::init();
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_runtime_abi() -> u32 {
+    diagnostics::runtime_init();
+    env::init();
+    diagnostics::RUNTIME_ABI_VERSION
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_type_id(val: Value) -> u32 {
+    value::type_id_raw(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_value_eq(a: Value, b: Value) -> Value {
+    Value::from_bool(value::value_eq(a, b))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_identity_eq(a: Value, b: Value) -> Value {
+    let ok = a.0 == b.0 && !(a.is_float() && b.is_float() && a.as_float().is_nan());
+    Value::from_bool(ok)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_str_from_utf8(ptr: *const u8, len: usize) -> Value {
+    string::str_from_utf8(ptr, len)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_str_intern(val: Value) -> Value {
+    string::str_intern(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_str_concat(parts_ptr: *const Value, parts_len: usize) -> Value {
+    string::str_concat(parts_ptr, parts_len)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_bytes_from_string(val: Value) -> Value {
+    bytes::bytes_from_string(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_bytes_to_string(val: Value) -> Value {
+    bytes::bytes_to_string(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_bytes_len(val: Value) -> Value {
+    bytes::bytes_len(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_list_new(len: usize) -> Value {
+    list::list_new(len)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_list_get(list_val: Value, idx: usize) -> Value {
+    list::list_get(list_val, idx)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_list_set(list_val: Value, idx: usize, val: Value) {
+    list::list_set(list_val, idx, val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_list_push(list_val: Value, val: Value) {
+    list::list_push(list_val, val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_list_len(list_val: Value) -> Value {
+    list::list_len(list_val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_num_add(a: Value, b: Value) -> Value {
+    number::num_add(a, b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_num_sub(a: Value, b: Value) -> Value {
+    number::num_sub(a, b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_num_mul(a: Value, b: Value) -> Value {
+    number::num_mul(a, b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_num_div(a: Value, b: Value) -> Value {
+    number::num_div(a, b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_num_mod(a: Value, b: Value) -> Value {
+    number::num_mod(a, b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_num_neg(a: Value) -> Value {
+    number::num_neg(a)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_num_lt(a: Value, b: Value) -> Value {
+    number::num_lt(a, b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_num_gt(a: Value, b: Value) -> Value {
+    number::num_gt(a, b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_num_le(a: Value, b: Value) -> Value {
+    number::num_le(a, b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_num_ge(a: Value, b: Value) -> Value {
+    number::num_ge(a, b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_map_new() -> Value {
+    map::map_new()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_map_get(map_val: Value, key: Value) -> Value {
+    map::map_get(map_val, key)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_map_set(map_val: Value, key: Value, val: Value) -> Value {
+    map::map_set(map_val, key, val);
+    Value::nil()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_print(val: Value) -> Value {
+    if val.is_ptr() {
+        unsafe {
+            let header = &*val.as_ptr();
+            if header.type_id == TypeId::String as u32 {
+                let _ = string::with_string_bytes(val, |bytes| {
+                    println!("{}", String::from_utf8_lossy(bytes));
+                });
+                return Value::nil();
+            }
+        }
+    }
+    println!("<value>");
+    Value::nil()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_log(level: Value, msg: Value, fields: Value) -> Value {
+    logging::log(level, msg, fields)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_assert(cond: Value, msg: Value) -> Value {
+    let ok = if cond.is_bool() {
+        cond.as_bool()
+    } else {
+        false
+    };
+    if ok {
+        return Value::nil();
+    }
+    if msg.is_ptr() {
+        unsafe {
+            let header = &*msg.as_ptr();
+            if header.type_id == TypeId::String as u32 {
+                let _ = string::with_string_bytes(msg, |bytes| {
+                    eprintln!("assert: {}", String::from_utf8_lossy(bytes));
+                });
+                diagnostics::dump_diagnostics();
+                std::process::abort();
+            }
+        }
+    }
+    eprintln!("assert failed");
+    diagnostics::dump_diagnostics();
+    std::process::abort();
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_assert_eq(left: Value, right: Value) -> Value {
+    if value::value_eq(left, right) {
+        return Value::nil();
+    }
+    eprintln!("assert_eq failed");
+    diagnostics::dump_diagnostics();
+    std::process::abort();
+}
+
+fn deep_eq(a: Value, b: Value, depth: usize, seen: &mut HashSet<(usize, usize)>) -> bool {
+    if depth > 16 {
+        return false;
+    }
+    if value::value_eq(a, b) {
+        return true;
+    }
+    if a.is_ptr() && b.is_ptr() {
+        let ap = a.as_ptr() as usize;
+        let bp = b.as_ptr() as usize;
+        let key = if ap <= bp { (ap, bp) } else { (bp, ap) };
+        if !seen.insert(key) {
+            return true;
+        }
+        unsafe {
+            let ah = &*a.as_ptr();
+            let bh = &*b.as_ptr();
+            if ah.type_id != bh.type_id {
+                return false;
+            }
+            if ah.type_id == TypeId::List as u32 {
+                let Some(al) = crate::list::as_list_ref(a) else { return false };
+                let Some(bl) = crate::list::as_list_ref(b) else { return false };
+                if (*al).len != (*bl).len {
+                    return false;
+                }
+                for idx in 0..(*al).len {
+                    let av = (&(*al).data)[idx];
+                    let bv = (&(*bl).data)[idx];
+                    if !deep_eq(av, bv, depth + 1, seen) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            if ah.type_id == TypeId::Map as u32 {
+                let Some(am) = crate::map::as_map_ref(a) else { return false };
+                let Some(bm) = crate::map::as_map_ref(b) else { return false };
+                if (*am).entries.len() != (*bm).entries.len() {
+                    return false;
+                }
+                for (key, val) in (*am).entries.iter() {
+                    let Some(other) = (*bm).entries.get(key).copied() else {
+                        return false;
+                    };
+                    if !deep_eq(*val, other, depth + 1, seen) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            if ah.type_id == TypeId::Result as u32 {
+                let Some((a_ok, a_val)) = result::result_parts(a) else { return false };
+                let Some((b_ok, b_val)) = result::result_parts(b) else { return false };
+                if a_ok != b_ok {
+                    return false;
+                }
+                return deep_eq(a_val, b_val, depth + 1, seen);
+            }
+        }
+    }
+    false
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_value_deep_eq(left: Value, right: Value) -> Value {
+    let mut seen: HashSet<(usize, usize)> = HashSet::new();
+    Value::from_bool(deep_eq(left, right, 0, &mut seen))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_assert_value_equality(left: Value, right: Value) -> Value {
+    let mut seen: HashSet<(usize, usize)> = HashSet::new();
+    if deep_eq(left, right, 0, &mut seen) {
+        return Value::nil();
+    }
+    eprintln!("assert_value_equality failed");
+    diagnostics::dump_diagnostics();
+    std::process::abort();
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_assert_identity(left: Value, right: Value) -> Value {
+    if left.0 == right.0 {
+        if left.is_float() && right.is_float() && left.as_float().is_nan() {
+            eprintln!("assert_identity failed");
+            diagnostics::dump_diagnostics();
+            std::process::abort();
+        }
+        return Value::nil();
+    }
+    eprintln!("assert_identity failed");
+    diagnostics::dump_diagnostics();
+    std::process::abort();
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_assert_err(val: Value) -> Value {
+    if val.is_ptr() {
+        unsafe {
+            let header = &*val.as_ptr();
+            if header.type_id == TypeId::Result as u32 {
+                let ok = result::result_is_ok(val);
+                if ok.is_bool() && !ok.as_bool() {
+                    return Value::nil();
+                }
+            }
+        }
+    }
+    eprintln!("assert_err failed");
+    diagnostics::dump_diagnostics();
+    std::process::abort();
+}
+
+fn builtin_error(message: &str) -> Value {
+    string::str_from_utf8(message.as_ptr(), message.len())
+}
+
+fn string_bytes(val: Value) -> Option<Vec<u8>> {
+    string::with_string_bytes(val, |bytes| bytes.to_vec())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_parse_int(val: Value) -> Value {
+    let Some(bytes) = string_bytes(val) else {
+        return result::result_err(builtin_error("parse_int expects a String"));
+    };
+    let parsed = std::str::from_utf8(&bytes)
+        .ok()
+        .and_then(|s| s.trim().parse::<i64>().ok());
+    match parsed {
+        Some(num) => result::result_ok(Value::from_int(num)),
+        None => result::result_err(builtin_error("parse_int: invalid integer")),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_parse_float(val: Value) -> Value {
+    let Some(bytes) = string_bytes(val) else {
+        return result::result_err(builtin_error("parse_float expects a String"));
+    };
+    let parsed = std::str::from_utf8(&bytes)
+        .ok()
+        .and_then(|s| s.trim().parse::<f64>().ok());
+    match parsed {
+        Some(num) => result::result_ok(Value::from_float(num)),
+        None => result::result_err(builtin_error("parse_float: invalid float")),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_read_file(path: Value) -> Value {
+    let Some(bytes) = string_bytes(path) else {
+        return result::result_err(builtin_error("read_file expects a String"));
+    };
+    let path_str = String::from_utf8_lossy(&bytes);
+    match std::fs::read(path_str.as_ref()) {
+        Ok(contents) => match std::str::from_utf8(&contents) {
+            Ok(text) => result::result_ok(string::str_from_utf8(text.as_ptr(), text.len())),
+            Err(_) => result::result_err(builtin_error("read_file: invalid utf8")),
+        },
+        Err(err) => result::result_err(builtin_error(&format!("read_file: {err}"))),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_write_file(path: Value, contents: Value) -> Value {
+    let Some(path_bytes) = string_bytes(path) else {
+        return result::result_err(builtin_error("write_file expects a String path"));
+    };
+    let Some(contents_bytes) = string_bytes(contents) else {
+        return result::result_err(builtin_error("write_file expects String contents"));
+    };
+    let path_str = String::from_utf8_lossy(&path_bytes);
+    match std::fs::write(path_str.as_ref(), contents_bytes) {
+        Ok(()) => result::result_ok(Value::nil()),
+        Err(err) => result::result_err(builtin_error(&format!("write_file: {err}"))),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_result_ok(val: Value) -> Value {
+    result::result_ok(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_result_err(val: Value) -> Value {
+    result::result_err(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_result_is_ok(val: Value) -> Value {
+    result::result_is_ok(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_result_unwrap(val: Value) -> Value {
+    result::result_unwrap(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_result_err_unwrap(val: Value) -> Value {
+    result::result_err_unwrap(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_crash(val: Value) -> Value {
+    if val.is_ptr() {
+        unsafe {
+            let header = &*val.as_ptr();
+            if header.type_id == TypeId::String as u32 {
+                let _ = string::with_string_bytes(val, |bytes| {
+                    eprintln!("crash: {}", String::from_utf8_lossy(bytes));
+                });
+                diagnostics::dump_diagnostics();
+                std::process::abort();
+            }
+        }
+    }
+    let tid = wr_type_id(val);
+    eprintln!("crash (type_id={tid})");
+    diagnostics::dump_diagnostics();
+    std::process::abort();
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_actor_spawn(
+    class_id: u64,
+    instance: Value,
+    pool_size: i64,
+    objective: i64,
+    mailbox_cap: i64,
+    enqueue_timeout_ms: i64,
+    batch_limit: i64,
+) -> Value {
+    actor::actor_spawn(
+        class_id,
+        instance,
+        pool_size,
+        objective,
+        mailbox_cap,
+        enqueue_timeout_ms,
+        batch_limit,
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_pool_new(
+    handles: Value,
+    objective: i64,
+    min_size: i64,
+    max_size: i64,
+    weight: i64,
+    queue_cap: i64,
+) -> Value {
+    actor::pool_new(handles, objective, min_size, max_size, weight, queue_cap)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_pool_auto_size(
+    objective: Value,
+    min: Value,
+    max: Value,
+    weight: Value,
+) -> Value {
+    let obj = int_value(objective).unwrap_or(0);
+    let min = int_value(min).unwrap_or(0);
+    let max = int_value(max).unwrap_or(0);
+    let weight = int_value(weight).unwrap_or(0);
+    Value::from_int(
+        config::pool_auto_size(config::normalize_objective(obj), min, max, weight) as i64,
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_pool_size(handle: Value) -> Value {
+    actor::pool_size(handle)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_pool_rr(handle: Value) -> Value {
+    actor::pool_rr(handle)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_pool_queue_len(handle: Value) -> Value {
+    actor::pool_queue_len(handle)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_actor_mailbox_len(handle: Value) -> Value {
+    actor::actor_mailbox_len(handle)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_actor_pause(handle: Value) -> Value {
+    actor::actor_pause(handle);
+    Value::nil()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_actor_resume(handle: Value) -> Value {
+    actor::actor_resume(handle);
+    Value::nil()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_actor_pause_wait(handle: Value) -> Value {
+    actor::actor_pause_wait(handle);
+    Value::nil()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_sleep_ms(ms_val: Value) -> Value {
+    let ms = int_value(ms_val).unwrap_or(0);
+    actor::sleep_ms(ms)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_metrics_get(id_val: Value) -> Value {
+    let id = int_value(id_val).unwrap_or(0) as u32;
+    Value::from_int(metrics::get(id) as i64)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_metrics_dropped_paused_id() -> Value {
+    Value::from_int(metrics::METRIC_MESSAGES_DROPPED_PAUSED as i64)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_metrics_messages_dropped_id() -> Value {
+    Value::from_int(metrics::METRIC_MESSAGES_DROPPED as i64)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_clock_ns() -> Value {
+    static START: OnceLock<Instant> = OnceLock::new();
+    let start = START.get_or_init(Instant::now);
+    let ns = start.elapsed().as_nanos() as i64;
+    Value::from_int(ns)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_list_push_val(list_val: Value, val: Value) -> Value {
+    list::list_push(list_val, val);
+    Value::nil()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_actor_send(
+    handle: Value,
+    method_id: u32,
+    argc: usize,
+    argv_ptr: *const Value,
+) -> Value {
+    actor::actor_send(handle, method_id, argc, argv_ptr)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_actor_fire(
+    handle: Value,
+    method_id: u32,
+    argc: usize,
+    argv_ptr: *const Value,
+) {
+    actor::actor_fire(handle, method_id, argc, argv_ptr)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_pending_await(pending: Value) -> Value {
+    actor::pending_await(pending)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_register_method(class_id: u32, method_id: u32, func: actor::MethodFn) {
+    actor::register_method(class_id, method_id, func)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_register_class(name_ptr: *const u8, len: usize, class_id: u32) {
+    http::register_class(name_ptr, len, class_id)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_register_method_name(
+    name_ptr: *const u8,
+    len: usize,
+    class_id: u32,
+    method_id: u32,
+) {
+    http::register_method_name(name_ptr, len, class_id, method_id)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_iter_init(iterable: Value) -> Value {
+    iter::iter_init(iterable)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_iter_next(iter_val: Value, dst_value: *mut Value, dst_done: *mut Value) {
+    iter::iter_next(iter_val, dst_value, dst_done)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_class_new(
+    class_id: u32,
+    names_ptr: *const *const u8,
+    lens_ptr: *const usize,
+    count: usize,
+) -> Value {
+    class::class_new(class_id, names_ptr, lens_ptr, count)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_class_get(obj: Value, name_ptr: *const u8, len: usize) -> Value {
+    class::class_get(obj, name_ptr, len)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_class_set(obj: Value, name_ptr: *const u8, len: usize, val: Value) {
+    class::class_set(obj, name_ptr, len, val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_range_new(start: Value, end: Value) -> Value {
+    range::range_new(start, end)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_metrics_reset() {
+    metrics::reset()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_storage_get(key: Value) -> Value {
+    storage::storage_get(key)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_storage_get_with_version(key: Value) -> Value {
+    storage::storage_get_with_version(key)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_storage_scan(start: Value, end: Value, limit: Value) -> Value {
+    storage::storage_scan(start, end, limit)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_storage_list_prefix(prefix: Value, limit: Value) -> Value {
+    storage::storage_list_prefix(prefix, limit)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_storage_configure(config: Value) -> Value {
+    storage::storage_configure(config)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_storage_set(key: Value, value: Value) -> Value {
+    storage::storage_set(key, value)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_storage_set_if_version(key: Value, value: Value, version: Value) -> Value {
+    storage::storage_set_if_version(key, value, version)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_storage_delete_if_version(key: Value, version: Value) -> Value {
+    storage::storage_delete_if_version(key, version)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_storage_delete(key: Value) -> Value {
+    storage::storage_delete(key)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_storage_batch_set(items: Value) -> Value {
+    storage::storage_batch_set(items)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_http_server_serve_get_requests(path: Value, handler: Value) -> Value {
+    http::serve_get_requests(path, handler)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_http_server_serve_post_requests(path: Value, handler: Value) -> Value {
+    http::serve_post_requests(path, handler)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_http_server_serve_requests(
+    method: Value,
+    path: Value,
+    handler: Value,
+) -> Value {
+    http::serve_requests(method, path, handler)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_http_server_serve_on(addr: Value) -> Value {
+    http::serve_on(addr)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_http_server_stop() -> Value {
+    http::stop()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_env_get(key: Value) -> Value {
+    env::env_get(key)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_env_get_or(key: Value, default: Value) -> Value {
+    env::env_get_or(key, default)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_env_get_as_bool(key: Value) -> Value {
+    env::env_get_as_bool(key)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_env_get_as_int(key: Value) -> Value {
+    env::env_get_as_int(key)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_env_set(key: Value, val: Value) -> Value {
+    env::env_set(key, val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_env_load(path: Value) -> Value {
+    env::env_load(path)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_auth_create_user(
+    storage: Value,
+    email: Value,
+    username: Value,
+    password: Value,
+) -> Value {
+    auth::auth_create_user(storage, email, username, password)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_auth_verify_password(
+    storage: Value,
+    user_id: Value,
+    password: Value,
+) -> Value {
+    auth::auth_verify_password(storage, user_id, password)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_auth_issue_jwt(
+    storage: Value,
+    user_id: Value,
+    claims: Value,
+    ttl_secs: Value,
+) -> Value {
+    auth::auth_issue_jwt(storage, user_id, claims, ttl_secs)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_auth_verify_jwt(storage: Value, token: Value) -> Value {
+    auth::auth_verify_jwt(storage, token)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_auth_issue_email_token(
+    storage: Value,
+    user_id: Value,
+    ttl_secs: Value,
+) -> Value {
+    auth::auth_issue_email_token(storage, user_id, ttl_secs)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_auth_verify_email_token(storage: Value, token: Value) -> Value {
+    auth::auth_verify_email_token(storage, token)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_auth_oauth_login(storage: Value, provider: Value, code: Value) -> Value {
+    auth::auth_oauth_login(storage, provider, code)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_rbac_create_role(
+    storage: Value,
+    scope: Value,
+    name: Value,
+    permissions: Value,
+) -> Value {
+    rbac::rbac_create_role(storage, scope, name, permissions)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_rbac_assign_role(
+    storage: Value,
+    user_id: Value,
+    role_id: Value,
+    scope_id: Value,
+) -> Value {
+    rbac::rbac_assign_role(storage, user_id, role_id, scope_id)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_rbac_check(
+    storage: Value,
+    user_id: Value,
+    permission: Value,
+    scope_id: Value,
+) -> Value {
+    rbac::rbac_check(storage, user_id, permission, scope_id)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_rbac_permissions_for(
+    storage: Value,
+    user_id: Value,
+    scope_id: Value,
+) -> Value {
+    rbac::rbac_permissions_for(storage, user_id, scope_id)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_files_upload_stream(storage: Value, stream: Value, opts: Value) -> Value {
+    files::files_upload_stream(storage, stream, opts)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_files_signed_url(storage: Value, file_id: Value, opts: Value) -> Value {
+    files::files_signed_url(storage, file_id, opts)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_files_metadata(storage: Value, file_id: Value) -> Value {
+    files::files_metadata(storage, file_id)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_files_delete(storage: Value, file_id: Value) -> Value {
+    files::files_delete(storage, file_id)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_files_set_acl(storage: Value, file_id: Value, acl: Value) -> Value {
+    files::files_set_acl(storage, file_id, acl)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_jobs_enqueue(
+    storage: Value,
+    queue: Value,
+    payload: Value,
+    opts: Value,
+) -> Value {
+    jobs::jobs_enqueue(storage, queue, payload, opts)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_jobs_process(storage: Value, queue: Value, handler: Value) -> Value {
+    jobs::jobs_process(storage, queue, handler)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_jobs_dead_letter(storage: Value, queue: Value) -> Value {
+    jobs::jobs_dead_letter(storage, queue)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_schedule_cron(storage: Value, expr: Value, job: Value) -> Value {
+    schedule::schedule_cron(storage, expr, job)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_schedule_every(storage: Value, seconds: Value, job: Value) -> Value {
+    schedule::schedule_every(storage, seconds, job)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_schedule_at(storage: Value, timestamp: Value, job: Value) -> Value {
+    schedule::schedule_at(storage, timestamp, job)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_search_index(
+    storage: Value,
+    collection: Value,
+    id: Value,
+    text: Value,
+    fields: Value,
+) -> Value {
+    search::search_index(storage, collection, id, text, fields)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_search_remove(storage: Value, collection: Value, id: Value) -> Value {
+    search::search_remove(storage, collection, id)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_search_query(
+    storage: Value,
+    collection: Value,
+    query: Value,
+    opts: Value,
+) -> Value {
+    search::search_query(storage, collection, query, opts)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_realtime_on_connect(handler: Value) -> Value {
+    realtime::realtime_on_connect(handler)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_realtime_join(socket_id: Value, room: Value) -> Value {
+    realtime::realtime_join(socket_id, room)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_realtime_leave(socket_id: Value, room: Value) -> Value {
+    realtime::realtime_leave(socket_id, room)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_realtime_broadcast(room: Value, message: Value) -> Value {
+    realtime::realtime_broadcast(room, message)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_realtime_send(socket_id: Value, message: Value) -> Value {
+    realtime::realtime_send(socket_id, message)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_rate_check(storage: Value, key: Value, opts: Value) -> Value {
+    rate_limit::rate_check(storage, key, opts)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_rate_ip(request: Value) -> Value {
+    rate_limit::rate_ip(request)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_admin_enable(opts: Value) -> Value {
+    admin::admin_enable(opts)
+}
+
+#[cfg(test)]
+mod tests;

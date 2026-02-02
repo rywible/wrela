@@ -1,12 +1,11 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `crates/compiler`: Wrela compiler library and `wrela` CLI (`bin/wrela.rs`).
-- `crates/lsp`: Language server implementation and LSP tests in `crates/lsp/tests`.
-- `crates/runtime`: Runtime library, storage components, and runtime tests in `crates/runtime/tests` and `src/storage/tests.rs`.
-- `examples/`: Sample `.wr` programs (e.g., `examples/basic.wr`).
+- `core/compiler`: Wrela compiler library and `wrela` CLI (`bin/wrela.rs`).
+- `core/tooling/lsp`: Language server implementation and LSP tests in `core/tooling/lsp/tests`.
+- `core/runtime`: Runtime library, storage components, and runtime tests in `core/runtime/tests` and `src/storage/tests.rs`.
 - `editors/vscode-wrela`: VS Code extension assets.
-- `docs/`: Design and performance notes.
+- `.plans/`: Design and performance notes.
 - `scripts/`: Utility scripts (e.g., `scripts/install.sh`).
 
 ## Build, Test, and Development Commands
@@ -24,6 +23,6 @@
 - Use clear, descriptive names for Wrela language artifacts (e.g., `lexer`, `parser`, `hir`, `mir`).
 
 ## Testing Guidelines
-- Tests live in `crates/*/tests` and inline `src/*/tests.rs`.
+- Tests live in `core/*/tests` and inline `src/*/tests.rs`.
 - Use `cargo test -p <crate>` to scope runs (e.g., `cargo test -p wrela`).
 - Runtime storage tests require `--features test-utils`.

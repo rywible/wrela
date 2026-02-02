@@ -1,0 +1,40 @@
+---
+source: core/tooling/lsp/tests/inlay_hints.rs
+expression: hints
+---
+[
+    InlayHint {
+        position: Position {
+            line: 4,
+            character: 12,
+        },
+        label: String(
+            "a: ",
+        ),
+        kind: Some(
+            Parameter,
+        ),
+        text_edits: None,
+        tooltip: None,
+        padding_left: None,
+        padding_right: None,
+        data: None,
+    },
+    InlayHint {
+        position: Position {
+            line: 4,
+            character: 14,
+        },
+        label: String(
+            "b: ",
+        ),
+        kind: Some(
+            Parameter,
+        ),
+        text_edits: None,
+        tooltip: None,
+        padding_left: None,
+        padding_right: None,
+        data: None,
+    },
+]

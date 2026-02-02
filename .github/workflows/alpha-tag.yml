@@ -19,7 +19,7 @@ jobs:
       - name: Create next alpha tag
         run: |
           set -euo pipefail
-          version="$(awk -F' = ' '/^version = / { gsub(/"/, "", $2); print $2; exit }' crates/compiler/Cargo.toml)"
+          version="$(awk -F' = ' '/^version = / { gsub(/"/, "", $2); print $2; exit }' core/compiler/Cargo.toml)"
           prefix="v${version}-alpha."
           latest="$(git tag -l "${prefix}*" | sort -V | tail -n 1)"
           if [ -z "${latest}" ]; then

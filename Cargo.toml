@@ -1,9 +1,9 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/compiler",
-    "crates/lsp",
-    "crates/runtime",
+    "core/compiler",
+    "core/runtime",
+    "core/tooling/lsp",
 ]
 
 [profile.release]
