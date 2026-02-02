@@ -636,15 +636,43 @@ impl<'a> Checker<'a> {
                 self.check_expr_with_ctx(body, *value, false, false);
                 let span = body.stmt_span(stmt_id);
                 let _ = visibility;
-                self.declare(
-                    name.clone(),
-                    Binding {
-                        mutable: *mutable,
-                        kind: BindingKind::Local,
-                        span: Some(span),
-                        used: false,
-                    },
-                );
+                if let Some(binding) = self.resolve(name) {
+                    match binding.kind {
+                        BindingKind::Local | BindingKind::LoopVar => {
+                            if !binding.mutable {
+                                self.errors.push(SemanticError::ImmutableAssign {
+                                    name: name.clone(),
+                                    span: span_from_range(span),
+                                    definition: binding.span.map(span_from_range),
+                                });
+                            }
+                        }
+                        BindingKind::Param
+                        | BindingKind::Function
+                        | BindingKind::Class
+                        | BindingKind::Method
+                        | BindingKind::Field
+                        | BindingKind::Use
+                        | BindingKind::Implicit => {
+                            self.errors.push(SemanticError::InvalidAssignTarget {
+                                name: name.clone(),
+                                kind: binding_kind_label(binding.kind),
+                                span: span_from_range(span),
+                                definition: binding.span.map(span_from_range),
+                            });
+                        }
+                    }
+                } else {
+                    self.declare(
+                        name.clone(),
+                        Binding {
+                            mutable: *mutable,
+                            kind: BindingKind::Local,
+                            span: Some(span),
+                            used: false,
+                        },
+                    );
+                }
             }
             Stmt::Assign { name, value, .. } => {
                 if self.in_derived {
@@ -2064,7 +2092,7 @@ mod tests {
         let diagnostics = check_module(&module);
         assert!(diagnostics.errors.iter().any(|err| matches!(
             err,
-            SemanticError::ShadowedName { name, .. } if name == "x"
+            SemanticError::ImmutableAssign { name, .. } if name == "x"
         )));
     }
 

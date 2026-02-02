@@ -190,11 +190,27 @@ impl<'a> Parser<'a> {
     }
 
     pub fn is_at_eof(&self) -> bool {
-        self.source.is_at_eof()
+        let mut idx = 0;
+        loop {
+            let kind = self.source.peek_at(idx);
+            if kind == SyntaxKind::Eof {
+                return true;
+            }
+            if !kind.is_trivia() {
+                return false;
+            }
+            idx += 1;
+        }
     }
 
     pub fn cursor_pos(&self) -> usize {
         self.source.cursor()
+    }
+
+    pub fn consume_trivia(&mut self) {
+        while self.peek().is_trivia() {
+            self.bump_any();
+        }
     }
 
     fn error_with_message(&mut self, message: &str, should_bump: bool) {
@@ -498,6 +514,13 @@ mod tests {
         let text_ok = "1\n2";
         let (_node, errors_ok) = parse_with_errors(text_ok);
         assert!(errors_ok.is_empty());
+    }
+
+    #[test]
+    fn test_trailing_so_comment_is_ignored() {
+        let text = "to f() -> Nothing:\n    return\n\nso: trailing comment";
+        let (_node, errors) = parse_with_errors(text);
+        assert!(errors.is_empty(), "{errors:?}");
     }
 
     #[test]

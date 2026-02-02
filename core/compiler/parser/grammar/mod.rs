@@ -9,6 +9,10 @@ use crate::parser::kind::SyntaxKind;
 pub fn root(p: &mut Parser) {
     let m = p.start();
     while !p.is_at_eof() {
+        p.consume_trivia();
+        if p.is_at_eof() {
+            break;
+        }
         let cursor = p.cursor_pos();
         parse_statement(p);
         if p.cursor_pos() == cursor {
@@ -384,6 +388,10 @@ pub(crate) fn parse_block(p: &mut Parser) {
     if p.at(SyntaxKind::Indent) {
         p.bump();
         while !p.at(SyntaxKind::Dedent) && !p.is_at_eof() {
+            p.consume_trivia();
+            if p.at(SyntaxKind::Dedent) || p.is_at_eof() {
+                break;
+            }
             let cursor = p.cursor_pos();
             parse_statement(p);
             if p.cursor_pos() == cursor {

@@ -95,3 +95,17 @@ fn cli_check_success() {
         .expect("run wrela");
     assert!(output.status.success());
 }
+
+#[test]
+fn cli_check_without_run_is_ok() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("spec.wr");
+    std::fs::write(&path, "to helper() -> Int:\n    return 1\n").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("check")
+        .arg(&path)
+        .output()
+        .expect("run wrela");
+    assert!(output.status.success());
+}

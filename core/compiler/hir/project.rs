@@ -68,6 +68,13 @@ fn build_trace() -> bool {
 }
 
 pub fn load_project(entry_path: &Path) -> Result<LoadedProject, Vec<ProjectError>> {
+    load_project_with_entrypoint(entry_path, true)
+}
+
+pub fn load_project_with_entrypoint(
+    entry_path: &Path,
+    enforce_entrypoint: bool,
+) -> Result<LoadedProject, Vec<ProjectError>> {
     if build_trace() {
         eprintln!("project: load_project {}", entry_path.display());
     }
@@ -85,20 +92,21 @@ pub fn load_project(entry_path: &Path) -> Result<LoadedProject, Vec<ProjectError
             }
         },
     };
-    load_project_with_root(entry_path, &root_dir)
+    load_project_with_roots(entry_path, &root_dir, None, enforce_entrypoint)
 }
 
 pub fn load_project_with_root(
     entry_path: &Path,
     root_dir: &Path,
 ) -> Result<LoadedProject, Vec<ProjectError>> {
-    load_project_with_roots(entry_path, root_dir, None)
+    load_project_with_roots(entry_path, root_dir, None, true)
 }
 
 pub fn load_project_with_roots(
     entry_path: &Path,
     root_dir: &Path,
     tests_dir: Option<PathBuf>,
+    enforce_entrypoint: bool,
 ) -> Result<LoadedProject, Vec<ProjectError>> {
     let mut loader = ProjectLoader {
         root_dir: root_dir.to_path_buf(),
@@ -114,7 +122,9 @@ pub fn load_project_with_roots(
     if build_trace() {
         eprintln!("project: load_module done");
     }
-    loader.enforce_entrypoint(&entry_name);
+    if enforce_entrypoint {
+        loader.enforce_entrypoint(&entry_name);
+    }
     loader.validate_uses();
     loader.detect_cycles();
     loader.analyze_imports();

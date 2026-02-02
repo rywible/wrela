@@ -1,63 +1,63 @@
 so: Wrela Language Spec (Runnable)
-so:
-so: This file is the **authoritative, runnable spec** of the language as
-so: implemented in this repository. It is intentionally executable: every
-so: `to test_*` function is discovered by `wrela test` (via a symlink from
-so: `tests/spec/spec.wr`).
-so:
-so: This file is not a tutorial. It is a *contract* for current behavior.
-so: If behavior differs between this spec and the implementation, the
-so: implementation wins until the spec is updated alongside tests.
-so:
-so: ------------------------------------------------------------
-so: 1) Files, modules, and entrypoints (syntax-level rules)
-so:
-so: - Source files use `.wr` and optionally `.sp` for imports.
-so: - `use` is top-level only; it cannot appear inside functions/classes.
-so: - `use` supports inline and block lists, and `*` wildcard.
-so:   - Inline: `use Foo, Bar from my/module`
-so:   - Block:  `use: Foo, Bar from my.module`
-so:   - `use *` cannot be combined with named imports.
-so:   - Module paths accept `/` or `.` separators (normalized to `/`).
-so: - The entry module defines `to run() -> Type`.
-so: - Only the entry module may define `run`.
-so: - Top-level executable statements are illegal.
-so:
-so: These rules are enforced by the parser/project loader and are documented
-so: here for completeness, but not directly testable inside this file.
-so:
-so: ------------------------------------------------------------
-so: 2) Lexical structure
-so:
-so: - Significant indentation with colons `:` to open blocks.
-so: - Spaces only; tabs are lexer errors.
-so: - Comments use `so:` and can span indented blocks.
-so: - DocComment token exists but is not currently surfaced; `so:` is the only comment form.
-so: - Identifiers are case-sensitive and may include `_` and non-ASCII letters.
-so: - Keywords are reserved (see .plans/language.md).
-so:
-so: Keywords (current):
-so: A An has can must to if while for in return break continue match otherwise
-so: err crash true false nothing and or not await detach spawn fire optimize use
-so: from private its it mutable assert derives is either defer
-so:
-so: Symbols and operators:
-so: : ( ) [ ] { } . ... , @ ->
-so: = == != < <= > >= + - * / %
-so: += -= *= /=
-so: & | ^ ~ << >>
-so:
-so: These are lexer/parser rules and are not runtime-testable here.
-so:
-so: ------------------------------------------------------------
-so: 3) Literals and basic values
-so:
-so: Numbers: decimal, hex (0x), binary (0b), octal (0o), floats, underscores.
-so: - Radix prefixes allow uppercase: 0X, 0B, 0O.
-so: - Scientific notation: 1e3, 1E+3, 1.5e-2.
-so: Booleans: `true`, `false`.
-so: Nil: `nothing` (type `Nothing` / `Nil`).
-so: Strings: "..." with escapes and interpolation.
+    
+    This file is the **authoritative, runnable spec** of the language as
+    implemented in this repository. It is intentionally executable: every
+    `to test_*` function is discovered by `wrela test` (via a symlink from
+    `tests/spec/spec.wr`).
+    
+    This file is not a tutorial. It is a *contract* for current behavior.
+    If behavior differs between this spec and the implementation, the
+    implementation wins until the spec is updated alongside tests.
+    
+    ------------------------------------------------------------
+    1) Files, modules, and entrypoints (syntax-level rules)
+    
+    - Source files use `.wr` and optionally `.sp` for imports.
+    - `use` is top-level only; it cannot appear inside functions/classes.
+    - `use` supports inline and block lists, and `*` wildcard.
+      - Inline: `use Foo, Bar from my/module`
+      - Block:  `use: Foo, Bar from my.module`
+      - `use *` cannot be combined with named imports.
+      - Module paths accept `/` or `.` separators (normalized to `/`).
+    - The entry module defines `to run() -> Type`.
+    - Only the entry module may define `run`.
+    - Top-level executable statements are illegal.
+    
+    These rules are enforced by the parser/project loader and are documented
+    here for completeness, but not directly testable inside this file.
+    
+    ------------------------------------------------------------
+    2) Lexical structure
+    
+    - Significant indentation with colons `:` to open blocks.
+    - Spaces only; tabs are lexer errors.
+    - Comments use `so:` and can span indented blocks.
+    - DocComment token exists but is not currently surfaced; `so:` is the only comment form.
+    - Identifiers are case-sensitive and may include `_` and non-ASCII letters.
+    - Keywords are reserved (see .plans/language.md).
+    
+    Keywords (current):
+    A An has can must to if while for in return break continue match otherwise
+    err crash true false nothing and or not await detach spawn fire optimize use
+    from private its it mutable assert derives is either defer
+    
+    Symbols and operators:
+    : ( ) [ ] { } . ... , @ ->
+    = == != < <= > >= + - * / %
+    += -= *= /=
+    & | ^ ~ << >>
+    
+    These are lexer/parser rules and are not runtime-testable here.
+    
+    ------------------------------------------------------------
+    3) Literals and basic values
+    
+    Numbers: decimal, hex (0x), binary (0b), octal (0o), floats, underscores.
+    - Radix prefixes allow uppercase: 0X, 0B, 0O.
+    - Scientific notation: 1e3, 1E+3, 1.5e-2.
+    Booleans: `true`, `false`.
+    Nil: `nothing` (type `Nothing` / `Nil`).
+    Strings: "..." with escapes and interpolation.
 
 
 to test_literals_numbers() -> Nothing:
@@ -93,14 +93,14 @@ to test_string_escapes() -> Nothing:
     assert value s == "a\n\t\"b\""
 
 so: ------------------------------------------------------------
-so: 4) Variables and assignment
-so:
-so: - `name = expr` declares a new immutable binding.
-so: - `mutable` declares a mutable binding.
-so: - `+=`, `-=`, `*=`, `/=` are only valid on mutable bindings.
-so: - Assignment operators are parsed as infix operators but are only valid as statements.
-so:
-so: The compiler rejects reassignment of immutable variables. Not testable here.
+    4) Variables and assignment
+    
+    - `name = expr` declares a new immutable binding.
+    - `mutable` declares a mutable binding.
+    - `+=`, `-=`, `*=`, `/=` are only valid on mutable bindings.
+    - Assignment operators are parsed as infix operators but are only valid as statements.
+    
+    The compiler rejects reassignment of immutable variables. Not testable here.
 
 
 to test_assignment_mutable() -> Nothing:
@@ -113,18 +113,18 @@ to test_assignment_mutable() -> Nothing:
 
 
 so: ------------------------------------------------------------
-so: 5) Control flow: if / while / for / match
-so:
-so: - `if` requires a Bool condition.
-so: - `while` loops while the condition is true.
-so: - `for x in iterable:` iterates lists, maps, and ranges.
-so: - `match` requires an `otherwise` case; labels are patterns:
-so:   - Literals (existing)
-so:   - Wildcard `_`
-so:   - Enum constructors (e.g., `Status.Pending`, `Status.Processing(id)`)
-so:   - Result constructors `Ok(x)` / `Err(e)`
-so:   - Type checks via class or enum names
-so: - `break` / `continue` only valid inside loops.
+    5) Control flow: if / while / for / match
+    
+    - `if` requires a Bool condition.
+    - `while` loops while the condition is true.
+    - `for x in iterable:` iterates lists, maps, and ranges.
+    - `match` requires an `otherwise` case; labels are patterns:
+      - Literals (existing)
+      - Wildcard `_`
+      - Enum constructors (e.g., `Status.Pending`, `Status.Processing(id)`)
+      - Result constructors `Ok(x)` / `Err(e)`
+      - Type checks via class or enum names
+    - `break` / `continue` only valid inside loops.
 
 
 to test_if_else() -> Nothing:
@@ -175,12 +175,12 @@ to test_match_expression_labels() -> Nothing:
 
 
 so: ------------------------------------------------------------
-so: 6) Functions and returns
-so:
-so: - Functions are declared with `to name(...) -> ReturnType:`.
-so: - Return types are required.
-so: - `return` is only valid inside a function or method.
-so: - Parameters require type annotations.
+    6) Functions and returns
+    
+    - Functions are declared with `to name(...) -> ReturnType:`.
+    - Return types are required.
+    - `return` is only valid inside a function or method.
+    - Parameters require type annotations.
 
 
 to add(a: Int, b: Int) -> Int:
@@ -192,21 +192,21 @@ to test_functions_and_return() -> Nothing:
 
 
 so: ------------------------------------------------------------
-so: 7) Classes, fields, methods, and the implicit receiver
-so:
-so: - Classes are declared with `A` or `An`.
-so: - Fields are declared in `has:` blocks.
-so: - Methods are declared with `can` and have implicit `it` / `its`.
-so: - Derived properties are declared with `derives` and are accessed like fields.
-so:   - `it` is only allowed as `return it` inside methods.
-so:   - Member access must use `its.<field>` (not `it.<field>`).
-so: - Visibility is public by default; `private:` blocks restrict access.
-so: - Public definitions are the module export surface; private items are not importable.
-so:
-so: `private:` blocks are allowed:
-so: - At top level (only `to` and `A`/`An` inside)
-so: - Inside classes (only `has`, `can`, and `derives` inside)
-so: - Inside `has` blocks (only field definitions inside)
+    7) Classes, fields, methods, and the implicit receiver
+    
+    - Classes are declared with `A` or `An`.
+    - Fields are declared in `has:` blocks.
+    - Methods are declared with `can` and have implicit `it` / `its`.
+    - Derived properties are declared with `derives` and are accessed like fields.
+      - `it` is only allowed as `return it` inside methods.
+      - Member access must use `its.<field>` (not `it.<field>`).
+    - Visibility is public by default; `private:` blocks restrict access.
+    - Public definitions are the module export surface; private items are not importable.
+    
+    `private:` blocks are allowed:
+    - At top level (only `to` and `A`/`An` inside)
+    - Inside classes (only `has`, `can`, and `derives` inside)
+    - Inside `has` blocks (only field definitions inside)
 
 
 A Whale:
@@ -230,16 +230,16 @@ to test_class_fields_and_methods() -> Nothing:
 
 
 so: ------------------------------------------------------------
-so: 7b) Enums, interfaces, generics, and defer
-so:
-so: - Enums use `A Name is either:` with variants as identifiers or constructors.
-so: - Enum constructor syntax: `Name.Variant(...)` or `Name.Variant` for zero-arg variants.
-so: - Interfaces use `A Name:` with `must` method signatures only.
-so: - Classes implement a single interface with `is a Name` as the first line of the class body.
-so: - Interfaces cannot define fields, derives, or method bodies.
-so: - Generic type parameters are declared as `A Box[T]:` and instantiated with `Box[Int](...)`.
-so: - `defer expr` runs on all return paths in LIFO order.
-so:
+    7b) Enums, interfaces, generics, and defer
+    
+    - Enums use `A Name is either:` with variants as identifiers or constructors.
+    - Enum constructor syntax: `Name.Variant(...)` or `Name.Variant` for zero-arg variants.
+    - Interfaces use `A Name:` with `must` method signatures only.
+    - Classes implement a single interface with `is a Name` as the first line of the class body.
+    - Interfaces cannot define fields, derives, or method bodies.
+    - Generic type parameters are declared as `A Box[T]:` and instantiated with `Box[Int](...)`.
+    - `defer expr` runs on all return paths in LIFO order.
+    
 
 A Status is either:
     Pending
@@ -294,10 +294,10 @@ to test_defer_lifo() -> Nothing:
 
 
 so: ------------------------------------------------------------
-so: 8) Lists, maps, and equality semantics
-so:
-so: - Lists and maps are heap objects; identity comparisons use `assert identity`.
-so: - Value equality in `assert value` performs deep equality for lists/maps/results.
+    8) Lists, maps, and equality semantics
+    
+    - Lists and maps are heap objects; identity comparisons use `assert identity`.
+    - Value equality in `assert value` performs deep equality for lists/maps/results.
 
 
 to test_list_and_map_literals() -> Nothing:
@@ -320,29 +320,29 @@ so: Stdlib surface tests live in `core/spec/stdlib_surface.wr`.
 
 
 so: ------------------------------------------------------------
-so: 9) Operators and precedence (runtime-visible cases)
-so:
-so: - Arithmetic: + - * / %
-so: - Comparisons: == != < <= > >=
-so: - Boolean: and or not
-so: - Bitwise: & | ^ << >> ~
-so: - Range: ...
-so: - `otherwise` handles Result fallbacks
-so: - `crash(expr)` requires parentheses and aborts immediately.
-so:
-so: Precedence (lowest to highest):
-so: 1. otherwise
-so: 2. or
-so: 3. and
-so: 4. |
-so: 5. ^
-so: 6. &
-so: 7. == !=
-so: 8. < <= > >=
-so: 9. ...
-so: 10. << >>
-so: 11. + -
-so: 12. * / %
+    9) Operators and precedence (runtime-visible cases)
+    
+    - Arithmetic: + - * / %
+    - Comparisons: == != < <= > >=
+    - Boolean: and or not
+    - Bitwise: & | ^ << >> ~
+    - Range: ...
+    - `otherwise` handles Result fallbacks
+    - `crash(expr)` requires parentheses and aborts immediately.
+    
+    Precedence (lowest to highest):
+    1. otherwise
+    2. or
+    3. and
+    4. |
+    5. ^
+    6. &
+    7. == !=
+    8. < <= > >=
+    9. ...
+    10. << >>
+    11. + -
+    12. * / %
 
 
 to test_arithmetic_and_precedence() -> Nothing:
@@ -373,14 +373,13 @@ to test_range_operator() -> Nothing:
 
 
 so: ------------------------------------------------------------
-so: 10) Results, err, otherwise, and assert_err
-so:
-so: - `err x` constructs a Result error.
-so: - `Result[Ok, Err]` allows any `Err` type (including user-defined classes).
-so: - `Result[Ok]` defaults `Err` to `Error`.
-so: - `otherwise` unwraps Result or yields fallback.
-so: - Unhandled Result values are compile-time errors.
-so: - `assert_err(value)` aborts if the value is Ok.
+    10) Results, err, otherwise, and assert_err
+    
+    - `err x` constructs a Result error.
+    - `Result[Ok, Err]` allows any `Err` type (including user-defined classes).
+    - `Result[Ok]` defaults `Err` to `Error`.
+    - `otherwise` unwraps Result or yields fallback.
+    - Unhandled Result values are compile-time errors.
 
 
 to returns_result(flag: Bool) -> Result[Int]:
@@ -399,15 +398,11 @@ to test_result_otherwise_err() -> Nothing:
     assert value value == 9
 
 
-to test_assert_err() -> Nothing:
-    assert_err(returns_result(flag=false))
-
-
 so: ------------------------------------------------------------
-so: 11) Assertions
-so:
-so: - `assert value` compares with value semantics.
-so: - `assert identity` compares identity (and only allows ==/!=).
+    11) Assertions
+    
+    - `assert value` compares with value semantics.
+    - `assert identity` compares identity (and only allows ==/!=).
 
 
 to test_assert_value_comparison() -> Nothing:
@@ -422,116 +417,116 @@ to test_assert_identity_for_objects() -> Nothing:
 
 
 so: ------------------------------------------------------------
-so: 12) Concurrency and actors (documented behavior)
-so:
-so: - `detach`/`spawn` create actor pools.
-so: - Actor method calls produce Pending values.
-so: - `await` yields a Result; `fire` is fire-and-forget.
-so: - Pool objectives and `optimize` are validated by the compiler.
-so: - `fire` must be a standalone statement.
-so: - `detach`/`spawn` syntax: `detach Target(...) * <size> [optimize <objective>]`
-so: - Standalone `optimize <objective>:` statement blocks are allowed; only one per scope.
-so: - Pool size > 1 or `n` requires a class constructor or `Pool.of(...)`.
-so: - If `await` exists in a function’s call graph, every `detach` must include an objective
-so:   unless created via `Pool.of(... objective=...)`.
-so: - `Pool.of` supports `backpressure=queue(<int>)` or `backpressure=drop`.
-so: - Asynchronous functions are actor-only; user-defined async outside actor methods is not
-so:   supported.
-so:
-so: These features require runtime scheduling and are not exercised in this spec
-so: file. They are enforced in compiler/typechecker and runtime modules.
+    12) Concurrency and actors (documented behavior)
+    
+    - `detach`/`spawn` create actor pools.
+    - Actor method calls produce Pending values.
+    - `await` yields a Result; `fire` is fire-and-forget.
+    - Pool objectives and `optimize` are validated by the compiler.
+    - `fire` must be a standalone statement.
+    - `detach`/`spawn` syntax: `detach Target(...) * <size> [optimize <objective>]`
+    - Standalone `optimize <objective>:` statement blocks are allowed; only one per scope.
+    - Pool size > 1 or `n` requires a class constructor or `Pool.of(...)`.
+    - If `await` exists in a function’s call graph, every `detach` must include an objective
+      unless created via `Pool.of(... objective=...)`.
+    - `Pool.of` supports `backpressure=queue(<int>)` or `backpressure=drop`.
+    - Asynchronous functions are actor-only; user-defined async outside actor methods is not
+      supported.
+    
+    These features require runtime scheduling and are not exercised in this spec
+    file. They are enforced in compiler/typechecker and runtime modules.
 
 
 so: ------------------------------------------------------------
-so: 13) Types (built-in and parameterized)
-so:
-so: Built-in types (by name):
-so: Int, Float, Number, Bool, String, Bytes, Nothing (aka Nil), Error
-so:
-so: Generic type constructors:
-so: List[T]
-so: Map[K, V]
-so: Result[Ok, Err]  (Result[Ok] defaults Err to Error)
-so: Actor[T]
-so: Pending[T]
-so:
-so: Type inference (high-level):
-so: - Numeric literals infer Int or Float
-so: - `err x` yields Result[unknown, type(x)]
-so: - `await` yields Result[Ok, Error]
-so: - `nothing` has type Nothing/Nil
-so:
-so: ------------------------------------------------------------
-so: 14) Built-in bindings (compiler-recognized)
-so:
-so: The compiler recognizes a fixed list of builtin functions and implicit values.
-so: This list is documented in `.plans/language.md` and mirrored in compiler code.
-so:
-so: Builtins are not exhaustively tested here; they are integrated components of
-so: the runtime. The spec is a contract that these names exist and are callable.
-so:
-so: FFI note:
-so: - The language does not support user-defined foreign function interfaces.
-so: - Native integrations are provided via standard packages or the runtime/stdlib.
-so:
-so: Builtin functions (core language builtins):
-so: assert_err, print, parse_int, parse_float, read_file, write_file,
-so: bytes_from_string, bytes_to_string, bytes_len, list_push, map_new, map_get, map_set, log,
-so: pool_auto_size, pool_size, pool_rr, pool_queue_len,
-so: actor_mailbox_len, actor_pause, actor_resume, actor_pause_wait,
-so: metrics_get, metrics_dropped_paused_id, metrics_messages_dropped_id,
-so: clock_ns, sleep_ms,
-so: env_get, env_get_or, env_get_as_bool, env_get_as_int, env_set, env_load,
-so: auth_create_user, auth_verify_password, auth_issue_jwt, auth_verify_jwt,
-so: auth_issue_email_token, auth_verify_email_token, auth_oauth_login,
-so: rbac_create_role, rbac_assign_role, rbac_check, rbac_permissions_for,
-so: files_upload_stream, files_signed_url, files_metadata, files_delete, files_set_acl,
-so: jobs_enqueue, jobs_process, jobs_dead_letter,
-so: schedule_cron, schedule_every, schedule_at,
-so: search_index, search_remove, search_query,
-so: realtime_on_connect, realtime_join, realtime_leave, realtime_broadcast, realtime_send,
-so: rate_check, rate_ip, admin_enable,
-so: storage_get, storage_get_with_version, storage_scan, storage_list_prefix, storage_configure,
-so: storage_set, storage_set_if_version, storage_delete_if_version, storage_delete, storage_batch_set,
-so: http_server_serve_get_requests, http_server_serve_post_requests,
-so: http_server_serve_requests, http_server_serve_on, http_server_stop
-so:
-so: Implicit values:
-so: nil, Pool, queue, drop, n
+    13) Types (built-in and parameterized)
+    
+    Built-in types (by name):
+    Int, Float, Number, Bool, String, Bytes, Nothing (aka Nil), Error
+    
+    Generic type constructors:
+    List[T]
+    Map[K, V]
+    Result[Ok, Err]  (Result[Ok] defaults Err to Error)
+    Actor[T]
+    Pending[T]
+    
+    Type inference (high-level):
+    - Numeric literals infer Int or Float
+    - `err x` yields Result[unknown, type(x)]
+    - `await` yields Result[Ok, Error]
+    - `nothing` has type Nothing/Nil
+    
+    ------------------------------------------------------------
+    14) Built-in bindings (compiler-recognized)
+    
+    The compiler recognizes a fixed list of builtin functions and implicit values.
+    This list is documented in `.plans/language.md` and mirrored in compiler code.
+    
+    Builtins are not exhaustively tested here; they are integrated components of
+    the runtime. The spec is a contract that these names exist and are callable.
+    
+    FFI note:
+    - The language does not support user-defined foreign function interfaces.
+    - Native integrations are provided via standard packages or the runtime/stdlib.
+    
+    Builtin functions (core language builtins):
+    print, parse_int, parse_float, read_file, write_file,
+    bytes_from_string, bytes_to_string, bytes_len, list_push, map_new, map_get, map_set, log,
+    pool_auto_size, pool_size, pool_rr, pool_queue_len,
+    actor_mailbox_len, actor_pause, actor_resume, actor_pause_wait,
+    metrics_get, metrics_dropped_paused_id, metrics_messages_dropped_id,
+    clock_ns, sleep_ms,
+    env_get, env_get_or, env_get_as_bool, env_get_as_int, env_set, env_load,
+    auth_create_user, auth_verify_password, auth_issue_jwt, auth_verify_jwt,
+    auth_issue_email_token, auth_verify_email_token, auth_oauth_login,
+    rbac_create_role, rbac_assign_role, rbac_check, rbac_permissions_for,
+    files_upload_stream, files_signed_url, files_metadata, files_delete, files_set_acl,
+    jobs_enqueue, jobs_process, jobs_dead_letter,
+    schedule_cron, schedule_every, schedule_at,
+    search_index, search_remove, search_query,
+    realtime_on_connect, realtime_join, realtime_leave, realtime_broadcast, realtime_send,
+    rate_check, rate_ip, admin_enable,
+    storage_get, storage_get_with_version, storage_scan, storage_list_prefix, storage_configure,
+    storage_set, storage_set_if_version, storage_delete_if_version, storage_delete, storage_batch_set,
+    http_server_serve_get_requests, http_server_serve_post_requests,
+    http_server_serve_requests, http_server_serve_on, http_server_stop
+    
+    Implicit values:
+    nil, Pool, queue, drop, n
 
 
 so: ------------------------------------------------------------
-so: 15) Common compile-time errors (not runtime-testable here)
-so:
-so: - `use` not at top-level
-so: - `run` defined outside entry module
-so: - missing return types
-so: - `break`/`continue` outside loops
-so: - `await`/`fire` on non-pending values
-so: - `fire` used in expression context is an error (statement-only)
-so: - unhandled `Result` values
-so: - immutable reassignment
-so: - shadowing outer bindings is an error
-so: - duplicate definitions (fields, methods, locals, params) are errors
-so: - undefined names are errors (use/assign)
-so: - assigning to non-variables (functions/classes/params) is an error
-so: - positional args after named args are errors
-so: - duplicate named args are errors
-so: - unknown member or calling a field is an error
-so: - actor instances forbid member access (call methods only)
-so: - invalid unary/binary operand types are errors
-so: - assignment/return type mismatch errors
-so: - `assert identity` forbids primitive operands and only allows ==/!=
-so: - `err` only allowed in Result-returning functions
-so: - `otherwise` requires a Result LHS
-so: - actor method calls must be awaited or fired
-so: - async methods require actor instances
-so: - Pool.of arg validation (size/objective/batch/min/max/weight/backpressure)
-so: - `it` is only valid inside methods (or return expressions in non-methods)
-so:
-so: Warnings (non-fatal):
-so: - unused locals/imports
-so: - unreachable code after return/break/continue
-so: - method/field name conflicts
-so:
-so: These are enforced by the parser/typechecker and are documented here.
+    15) Common compile-time errors (not runtime-testable here)
+    
+    - `use` not at top-level
+    - `run` defined outside entry module
+    - missing return types
+    - `break`/`continue` outside loops
+    - `await`/`fire` on non-pending values
+    - `fire` used in expression context is an error (statement-only)
+    - unhandled `Result` values
+    - immutable reassignment
+    - shadowing outer bindings is an error
+    - duplicate definitions (fields, methods, locals, params) are errors
+    - undefined names are errors (use/assign)
+    - assigning to non-variables (functions/classes/params) is an error
+    - positional args after named args are errors
+    - duplicate named args are errors
+    - unknown member or calling a field is an error
+    - actor instances forbid member access (call methods only)
+    - invalid unary/binary operand types are errors
+    - assignment/return type mismatch errors
+    - `assert identity` forbids primitive operands and only allows ==/!=
+    - `err` only allowed in Result-returning functions
+    - `otherwise` requires a Result LHS
+    - actor method calls must be awaited or fired
+    - async methods require actor instances
+    - Pool.of arg validation (size/objective/batch/min/max/weight/backpressure)
+    - `it` is only valid inside methods (or return expressions in non-methods)
+    
+    Warnings (non-fatal):
+    - unused locals/imports
+    - unreachable code after return/break/continue
+    - method/field name conflicts
+    
+    These are enforced by the parser/typechecker and are documented here.

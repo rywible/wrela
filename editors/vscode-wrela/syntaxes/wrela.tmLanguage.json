@@ -530,6 +530,10 @@
       "patterns": [
         {
           "name": "keyword.control.wrela",
+          "match": "\\bis\\s+a\\b"
+        },
+        {
+          "name": "keyword.control.wrela",
           "match": "\\b(?:private|mutable|derives|is|either|must|defer|if|while|for|in|return|break|continue|match|otherwise|use|from|optimize|await|detach|spawn|fire|err|crash|latency|throughput|conservation|balance)\\b"
         },
         {

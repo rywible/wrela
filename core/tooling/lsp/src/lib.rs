@@ -143,19 +143,36 @@ impl SymbolIndex {
         let root_scope = index.add_scope(ScopeKind::Root, None, root.text_range(), None);
         if let Some(ast_root) = ast::Root::cast(root.clone()) {
             for stmt in ast_root.statements() {
-                if let ast::Stmt::ClassDef(def) = stmt {
-                    if let Some(name) = def.name() {
-                        let class_name = name.text().to_string();
-                        if !index.class_scopes.contains_key(&class_name) {
-                            let class_scope = index.add_scope(
-                                ScopeKind::Class,
-                                Some(root_scope),
-                                def.syntax().text_range(),
-                                Some(class_name.clone()),
-                            );
-                            index.class_scopes.insert(class_name, class_scope);
+                match stmt {
+                    ast::Stmt::ClassDef(def) => {
+                        if let Some(name) = def.name() {
+                            let class_name = name.text().to_string();
+                            if !index.class_scopes.contains_key(&class_name) {
+                                let class_scope = index.add_scope(
+                                    ScopeKind::Class,
+                                    Some(root_scope),
+                                    def.syntax().text_range(),
+                                    Some(class_name.clone()),
+                                );
+                                index.class_scopes.insert(class_name, class_scope);
+                            }
                         }
                     }
+                    ast::Stmt::EnumDef(def) => {
+                        if let Some(name) = def.name() {
+                            let class_name = name.text().to_string();
+                            if !index.class_scopes.contains_key(&class_name) {
+                                let class_scope = index.add_scope(
+                                    ScopeKind::Class,
+                                    Some(root_scope),
+                                    def.syntax().text_range(),
+                                    Some(class_name.clone()),
+                                );
+                                index.class_scopes.insert(class_name, class_scope);
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
             for stmt in ast_root.statements() {
@@ -218,21 +235,7 @@ impl SymbolIndex {
     fn collect_stmt(&mut self, scope_id: usize, text: &str, stmt: &ast::Stmt) {
         match stmt {
             ast::Stmt::ClassDef(def) => self.collect_class(scope_id, text, def),
-            ast::Stmt::EnumDef(def) => {
-                if let Some(name) = def.name() {
-                    self.add_def(
-                        name.text().to_string(),
-                        DefKind::Class,
-                        scope_id,
-                        def.syntax().text_range(),
-                        name.text_range(),
-                        None,
-                        None,
-                        Vec::new(),
-                        None,
-                    );
-                }
-            }
+            ast::Stmt::EnumDef(def) => self.collect_enum(scope_id, text, def),
             ast::Stmt::FuncDef(def) => self.collect_function(scope_id, text, def),
             ast::Stmt::PrivateBlock(block) => {
                 for stmt in block.statements() {
@@ -430,6 +433,10 @@ impl SymbolIndex {
             self.collect_method(class_scope, text, class_name.clone(), &method);
         }
 
+        for derive in def.derives() {
+            self.collect_derive(class_scope, text, class_name.clone(), &derive);
+        }
+
         for method in def.must_methods() {
             self.collect_required_method(class_scope, text, class_name.clone(), &method);
         }
@@ -444,6 +451,110 @@ impl SymbolIndex {
                     self.collect_method(class_scope, text, class_name.clone(), &method);
                 }
             }
+        }
+    }
+
+    fn collect_enum(&mut self, scope_id: usize, _text: &str, def: &ast::EnumDef) {
+        let enum_name = def.name().map(|t| t.text().to_string());
+        if let Some(name) = def.name() {
+            self.add_def(
+                name.text().to_string(),
+                DefKind::Class,
+                scope_id,
+                def.syntax().text_range(),
+                name.text_range(),
+                None,
+                None,
+                Vec::new(),
+                None,
+            );
+        }
+        let class_scope = if let Some(name) = enum_name.as_ref() {
+            self.class_scopes.get(name).copied().unwrap_or_else(|| {
+                let scope = self.add_scope(
+                    ScopeKind::Class,
+                    Some(scope_id),
+                    def.syntax().text_range(),
+                    enum_name.clone(),
+                );
+                self.class_scopes.insert(name.clone(), scope);
+                scope
+            })
+        } else {
+            self.add_scope(
+                ScopeKind::Class,
+                Some(scope_id),
+                def.syntax().text_range(),
+                enum_name.clone(),
+            )
+        };
+
+        for variant in def.variants() {
+            if let Some(name) = variant.name() {
+                let params = params_from_iter(variant.params());
+                let ret_ty = enum_name.clone();
+                let detail = Some(format_signature(name.text(), &params, ret_ty.as_deref()));
+                let doc = extract_doc_comment(variant.syntax());
+                self.add_def(
+                    name.text().to_string(),
+                    DefKind::Method,
+                    class_scope,
+                    variant.syntax().text_range(),
+                    name.text_range(),
+                    detail,
+                    ret_ty.clone(),
+                    params.clone(),
+                    doc,
+                );
+                let variant_scope = self.add_scope(
+                    ScopeKind::Method,
+                    Some(class_scope),
+                    variant.syntax().text_range(),
+                    enum_name.clone(),
+                );
+                for param in params {
+                    let detail = param
+                        .ty
+                        .as_ref()
+                        .map(|ty| format!("{}: {}", param.name, ty));
+                    self.add_def(
+                        param.name.clone(),
+                        DefKind::Parameter,
+                        variant_scope,
+                        param.range,
+                        param.range,
+                        detail,
+                        param.ty.clone(),
+                        Vec::new(),
+                        None,
+                    );
+                }
+            }
+        }
+    }
+
+    fn collect_derive(
+        &mut self,
+        class_scope: usize,
+        _text: &str,
+        _class_name: Option<String>,
+        derive: &ast::DeriveDef,
+    ) {
+        if let Some(name) = derive.name() {
+            let ret_ty = derive.ret_type().and_then(|ty| format_type_ref(&ty));
+            let detail = ret_ty.as_ref().map(|ty| format!("{}: {}", name.text(), ty));
+            let doc = extract_doc_comment(derive.syntax());
+            self.add_def(
+                name.text().to_string(),
+                DefKind::Field,
+                class_scope,
+                derive.syntax().text_range(),
+                name.text_range(),
+                detail,
+                ret_ty,
+                Vec::new(),
+                doc,
+            );
         }
     }
 
@@ -1299,13 +1410,25 @@ fn argument_hints(state: &DocumentState, call: &ast::CallExpr) -> Vec<InlayHint>
         let mut param_idx = 0;
         for arg in call.args() {
             if let ast::Arg::Positional(expr) = arg {
+                if is_inside_defer(expr.syntax()) {
+                    param_idx += 1;
+                    continue;
+                }
                 if param_idx < def.params.len() {
                     let param_name = &def.params[param_idx].name;
+                    let hint_offset: usize =
+                        expr.syntax().text_range().start().into();
+                    if let Some(token) = token_at_offset(&syntax_root(state), hint_offset) {
+                        if token.kind() == SyntaxKind::DeferKw {
+                            param_idx += 1;
+                            continue;
+                        }
+                    }
                     hints.push(InlayHint {
                         position: offset_to_position_with_index(
                             &state.text,
                             &state.line_index,
-                            expr.syntax().text_range().start().into(),
+                            hint_offset,
                         ),
                         label: InlayHintLabel::String(format!("{}: ", param_name)),
                         kind: Some(InlayHintKind::PARAMETER),
@@ -1322,6 +1445,17 @@ fn argument_hints(state: &DocumentState, call: &ast::CallExpr) -> Vec<InlayHint>
     }
 
     hints
+}
+
+fn is_inside_defer(node: &SyntaxNode) -> bool {
+    let mut current = Some(node.clone());
+    while let Some(n) = current {
+        if ast::DeferStmt::cast(n.clone()).is_some() {
+            return true;
+        }
+        current = n.parent();
+    }
+    false
 }
 
 fn return_type_hint(state: &DocumentState, func: &ast::FuncDef) -> Option<InlayHint> {
@@ -2127,6 +2261,9 @@ pub fn check_unresolved_identifiers(
         if is_type_context_token(&token) {
             continue;
         }
+        if is_assert_mode_token(&token) {
+            continue;
+        }
         if is_member_name_token(&token) {
             continue;
         }
@@ -2313,11 +2450,36 @@ fn is_named_arg_name_token(token: &SyntaxToken) -> bool {
     false
 }
 
+fn is_assert_mode_token(token: &SyntaxToken) -> bool {
+    if token.text() != "value" && token.text() != "identity" {
+        return false;
+    }
+    let mut node = token.parent();
+    while let Some(current) = node {
+        if let Some(assert_stmt) = ast::AssertStmt::cast(current.clone()) {
+            for t in assert_stmt
+                .syntax()
+                .children_with_tokens()
+                .filter_map(|it| it.into_token())
+            {
+                if t.text_range() == token.text_range() {
+                    return true;
+                }
+            }
+            return false;
+        }
+        node = current.parent();
+    }
+    false
+}
+
 fn is_type_context_token(token: &SyntaxToken) -> bool {
     let mut node = token.parent();
     while let Some(current) = node {
         match current.kind() {
-            SyntaxKind::TypeRef | SyntaxKind::TypeArgList => return true,
+            SyntaxKind::TypeRef | SyntaxKind::TypeArgList | SyntaxKind::TypeParamList => {
+                return true
+            }
             _ => {}
         }
         node = current.parent();

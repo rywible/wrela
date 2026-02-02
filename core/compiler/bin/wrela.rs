@@ -179,7 +179,8 @@ fn main() {
                     std::process::exit(EXIT_USAGE);
                 }
             };
-            let result = compile_to_mir(&entry_path, output_format, emit_mir, emit_mir_opt);
+            let result =
+                compile_to_mir(&entry_path, output_format, emit_mir, emit_mir_opt, false);
             if let Err(code) = result {
                 std::process::exit(code);
             }
@@ -201,7 +202,7 @@ fn main() {
                 }
             };
             let mir_module =
-                match compile_to_mir(&entry_path, output_format, emit_mir, emit_mir_opt) {
+                match compile_to_mir(&entry_path, output_format, emit_mir, emit_mir_opt, true) {
                     Ok(mir) => mir,
                     Err(code) => std::process::exit(code),
                 };
@@ -242,7 +243,7 @@ fn main() {
                 }
             };
             let mir_module =
-                match compile_to_mir(&entry_path, output_format, emit_mir, emit_mir_opt) {
+                match compile_to_mir(&entry_path, output_format, emit_mir, emit_mir_opt, true) {
                     Ok(mir) => mir,
                     Err(code) => std::process::exit(code),
                 };
@@ -636,6 +637,7 @@ fn compile_to_mir_with_root(
         entry_path,
         root_dir,
         tests_dir.map(|p| p.to_path_buf()),
+        true,
     ) {
         Ok(project) => {
             for warn in project.warnings {
@@ -719,6 +721,7 @@ fn compile_to_mir(
     output_format: OutputFormat,
     emit_mir: bool,
     emit_mir_opt: bool,
+    require_entrypoint: bool,
 ) -> Result<mir::ir::MirModule, i32> {
     let trace = std::env::var("WRELA_BUILD_TRACE").is_ok();
     let stage = |name: &str, start: &Instant| {
@@ -730,7 +733,10 @@ fn compile_to_mir(
     if trace {
         eprintln!("build: start {:?}", entry_path);
     }
-    let (module, source, source_name) = match hir::project::load_project(entry_path) {
+    let (module, source, source_name) = match hir::project::load_project_with_entrypoint(
+        entry_path,
+        require_entrypoint,
+    ) {
         Ok(project) => {
             for warn in project.warnings {
                 emit_diag(
@@ -763,7 +769,7 @@ fn compile_to_mir(
                     err.source,
                 );
             }
-            if missing_run && matches!(output_format, OutputFormat::Pretty) {
+            if missing_run && require_entrypoint && matches!(output_format, OutputFormat::Pretty) {
                 eprintln!(
                     "note: add `to run()` in your entry file to define the program entrypoint"
                 );
@@ -889,7 +895,13 @@ fn run_dev_loop(
                 let _ = running.kill();
                 let _ = running.wait();
             }
-            let mir_module = match compile_to_mir(entry_path, output_format, emit_mir, emit_mir_opt)
+            let mir_module = match compile_to_mir(
+                entry_path,
+                output_format,
+                emit_mir,
+                emit_mir_opt,
+                true,
+            )
             {
                 Ok(mir) => mir,
                 Err(code) => {
