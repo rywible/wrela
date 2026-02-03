@@ -146,6 +146,49 @@ to run() -> Integer:
 }
 
 #[test]
+fn native_enum_zero_arg_variant_value_and_exhaustive_match_smoke() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = r#"
+A Status is either:
+    Pending
+    Done
+
+to run() -> Integer:
+    s = Status.Pending
+    match s:
+        Status.Pending: return 1
+        Status.Done: return 2
+"#;
+
+    let module = load_module_from_source(&source);
+    let semantic = hir::semantic::check_module(&module);
+    assert!(
+        semantic.errors.is_empty(),
+        "semantic errors: {:?}",
+        semantic.errors
+    );
+    let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+    assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
+
+    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    for func in &mut mir_module.functions {
+        mir::opt::run_function_passes(func);
+    }
+    let mir_errors = mir::validate::validate_module(&mir_module);
+    assert!(mir_errors.is_empty(), "mir errors: {mir_errors:?}");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = dir.path().join("wr_enum_zero_arg_smoke");
+    wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
+
+    let status = Command::new(&out).status().expect("run failed");
+    let expected = expected_int_exit(1);
+    assert_eq!(status.code().unwrap_or(-1), expected);
+}
+
+#[test]
 fn native_logger_smoke() {
     if std::env::var("WR_SKIP_NATIVE").is_ok() {
         return;

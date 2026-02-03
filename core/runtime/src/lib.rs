@@ -115,8 +115,8 @@ pub extern "C" fn wr_runtime_abi() -> u32 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn wr_type_id(val: Value) -> u32 {
-    value::type_id_raw(val)
+pub extern "C" fn wr_type_id(val: Value) -> i64 {
+    value::type_id_raw(val) as i64
 }
 
 #[unsafe(no_mangle)]

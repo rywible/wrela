@@ -281,17 +281,6 @@ definitions"
                     }
                 }
             }
-            SyntaxKind::MatchStmt => {
-                if !node
-                    .children()
-                    .any(|child| child.kind() == SyntaxKind::OtherwiseCase)
-                {
-                    errors.push(ValidationError {
-                        message: "match requires an otherwise case".to_string(),
-                        span: span_for_node(&node),
-                    });
-                }
-            }
             SyntaxKind::OptimizeStmt => {
                 let obj_token = node
                     .children_with_tokens()
@@ -547,16 +536,14 @@ to f() -> Integer:
     #[test]
     fn test_match_requires_otherwise() {
         let text = "\
-match x:
-    1: return 1
+to f(x: Integer) -> Integer:
+    match x:
+        1: y = 1
+    return 0
 ";
         let root = parse(text);
         let errors = validate(&root);
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.message == "match requires an otherwise case")
-        );
+        assert!(errors.is_empty());
     }
 
     #[test]

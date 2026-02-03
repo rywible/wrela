@@ -230,16 +230,16 @@ fn value_tags_roundtrip() {
     let i = Value::from_int(-42);
     assert!(i.is_int());
     assert_eq!(i.as_int(), -42);
-    assert_eq!(wr_type_id(i), TypeId::Integer as u32);
+    assert_eq!(wr_type_id(i), TypeId::Integer as i64);
 
     let b = Value::from_bool(true);
     assert!(b.is_bool());
     assert_eq!(b.as_bool(), true);
-    assert_eq!(wr_type_id(b), TypeId::Boolean as u32);
+    assert_eq!(wr_type_id(b), TypeId::Boolean as i64);
 
     let n = Value::nil();
     assert!(n.is_nil());
-    assert_eq!(wr_type_id(n), TypeId::Nil as u32);
+    assert_eq!(wr_type_id(n), TypeId::Nil as i64);
 }
 
 #[test]
@@ -248,7 +248,7 @@ fn nanbox_float_roundtrip() {
     assert!(v.is_float());
     let f = wr_unbox_float(v);
     assert!((f - 3.5).abs() < f64::EPSILON);
-    assert_eq!(wr_type_id(v), TypeId::Float as u32);
+    assert_eq!(wr_type_id(v), TypeId::Float as i64);
 }
 
 #[test]
@@ -464,7 +464,7 @@ fn boxed_int_roundtrip() {
     assert!(!v.is_int());
     assert!(v.is_ptr());
     assert_eq!(crate::value::int_value(v), Some(big));
-    assert_eq!(wr_type_id(v), TypeId::Integer as u32);
+    assert_eq!(wr_type_id(v), TypeId::Integer as i64);
     unsafe { wr_rc_dec(v) };
 }
 
@@ -4926,7 +4926,7 @@ fn class_get_set() {
         name_lens.as_ptr(),
         1,
     );
-    assert_eq!(wr_type_id(class), TypeId::UserBase as u32);
+    assert_eq!(wr_type_id(class), TypeId::UserBase as i64);
     let got = wr_class_get(class, b"x".as_ptr(), 1);
     assert!(got.is_nil());
     let val = Value::from_int(99);

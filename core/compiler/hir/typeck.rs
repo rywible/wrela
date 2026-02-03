@@ -307,6 +307,16 @@ pub enum TypeError {
         #[help]
         help: String,
     },
+
+    #[error("match must be exhaustive or include an `otherwise:` case")]
+    #[diagnostic(
+        code(lang::ty::match_non_exhaustive),
+        help("Add missing cases or add an `otherwise:` case.")
+    )]
+    MatchNonExhaustive {
+        #[label("match here")]
+        span: SourceSpan,
+    },
 }
 
 impl TypeError {
@@ -345,6 +355,7 @@ impl TypeError {
             TypeError::ActorMemberAccess { span, .. } => *span,
             TypeError::AsyncClassRequiresActor { span, .. } => *span,
             TypeError::AsyncMethodRequiresActor { span, .. } => *span,
+            TypeError::MatchNonExhaustive { span } => *span,
         }
     }
 }
@@ -2157,6 +2168,11 @@ fn check_stmt(
                 }
                 ctx.exit_scope();
             }
+            if otherwise.is_none() && !match_is_exhaustive(&subject_ty, cases, enums) {
+                errors.push(TypeError::MatchNonExhaustive {
+                    span: span_from_range(body.stmt_span(stmt_id)),
+                });
+            }
             if let Some(branch) = otherwise {
                 ctx.enter_scope();
                 for stmt in branch {
@@ -2317,6 +2333,64 @@ fn bind_pattern(pattern: &Pattern, subject_ty: &Type, ctx: &mut TypeContext, enu
                 bind_pattern(arg, &Type::Unknown, ctx, enums);
             }
         }
+    }
+}
+
+fn match_is_exhaustive(
+    subject_ty: &Type,
+    cases: &[crate::hir::MatchCase],
+    enums: &EnumIndex,
+) -> bool {
+    let mut has_wildcard = false;
+    let mut ok_covered = false;
+    let mut err_covered = false;
+    let mut enum_name: Option<&SmolStr> = None;
+    let mut enum_variants_total = 0usize;
+    let mut enum_variants_covered: HashSet<SmolStr> = HashSet::new();
+
+    if let Type::Named(name, _) = subject_ty {
+        enum_name = Some(name);
+        if let Some(en) = enums.get(name) {
+            enum_variants_total = en.variants.len();
+        }
+    }
+
+    for case in cases {
+        for label in &case.labels {
+            match label {
+                Pattern::Wildcard | Pattern::Binding(_) => {
+                    has_wildcard = true;
+                }
+                Pattern::Path { parts, .. } => {
+                    if parts.len() == 1 && parts[0].as_str() == "Ok" {
+                        ok_covered = true;
+                    } else if parts.len() == 1 && parts[0].as_str() == "Err" {
+                        err_covered = true;
+                    } else if parts.len() == 2 {
+                        if let Some(en) = enum_name {
+                            if parts[0] == *en {
+                                enum_variants_covered.insert(parts[1].clone());
+                            }
+                        }
+                    }
+                }
+                Pattern::Literal(_) => {}
+            }
+        }
+    }
+
+    if has_wildcard {
+        return true;
+    }
+
+    match subject_ty {
+        Type::Result(_, _) => ok_covered && err_covered,
+        Type::Named(name, _) => {
+            enums.get(name).is_some()
+                && enum_variants_total > 0
+                && enum_variants_covered.len() == enum_variants_total
+        }
+        _ => false,
     }
 }
 
@@ -5333,6 +5407,80 @@ mod tests {
             errors
                 .iter()
                 .any(|err| matches!(err, TypeError::InvalidBinaryOperands { .. }))
+        );
+    }
+
+    #[test]
+    fn test_match_without_otherwise_all_variants_enum_ok() {
+        let input = "\
+A Status is either:
+    Pending
+    Done
+
+to f(s: Status) -> Integer:
+    match s:
+        Status.Pending: return 1
+        Status.Done: return 2
+";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let errors = check_module(&module);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_match_without_otherwise_non_exhaustive_enum_error() {
+        let input = "\
+A Status is either:
+    Pending
+    Done
+
+to f(s: Status) -> Integer:
+    match s:
+        Status.Pending: return 1
+";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let errors = check_module(&module);
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::MatchNonExhaustive { .. }))
+        );
+    }
+
+    #[test]
+    fn test_match_without_otherwise_ok_err_result_ok() {
+        let input = "\
+to f(r: Result[Integer]) -> Integer:
+    match r:
+        Ok(x): return x
+        Err(_): return 0
+";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let errors = check_module(&module);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_match_without_otherwise_non_exhaustive_result_error() {
+        let input = "\
+to f(r: Result[Integer]) -> Integer:
+    match r:
+        Ok(x): return x
+";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let errors = check_module(&module);
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::MatchNonExhaustive { .. }))
         );
     }
 

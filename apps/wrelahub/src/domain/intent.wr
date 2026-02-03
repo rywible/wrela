@@ -1,0 +1,55 @@
+A IntentState is either:
+    Seed
+    Sharpening
+    StressTested
+    Endorsed
+    Archived
+    Realized
+
+
+A Intent:
+    has:
+        id: String
+        state: IntentState
+        problem: String
+        impact: String
+        constraints: String
+        non_goals: String
+        success_criteria: String
+
+
+A IntentTransitionError is either:
+    MissingReason
+    InvalidTransition(from_state: IntentState, to_state: IntentState, why: String)
+
+to transition(current: IntentState, target: IntentState, reason: String) -> Result[IntentState, IntentTransitionError]:
+    if reason == "":
+        return error IntentTransitionError.MissingReason
+
+    match current:
+        IntentState.Seed:
+            match target:
+                IntentState.Sharpening: return target
+                IntentState.Archived: return target
+                otherwise: return error IntentTransitionError.InvalidTransition(from_state=current, to_state=target, why="Seed may only transition to Sharpening or Archived")
+        IntentState.Sharpening:
+            match target:
+                IntentState.StressTested: return target
+                IntentState.Archived: return target
+                otherwise: return error IntentTransitionError.InvalidTransition(from_state=current, to_state=target, why="Sharpening may only transition to StressTested or Archived")
+        IntentState.StressTested:
+            match target:
+                IntentState.Endorsed: return target
+                IntentState.Archived: return target
+                otherwise: return error IntentTransitionError.InvalidTransition(from_state=current, to_state=target, why="StressTested may only transition to Endorsed or Archived")
+        IntentState.Endorsed:
+            match target:
+                IntentState.Realized: return target
+                IntentState.Archived: return target
+                otherwise: return error IntentTransitionError.InvalidTransition(from_state=current, to_state=target, why="Endorsed may only transition to Realized or Archived")
+        IntentState.Archived:
+            return error IntentTransitionError.InvalidTransition(from_state=current, to_state=target, why="Archived is terminal")
+        IntentState.Realized:
+            match target:
+                IntentState.Archived: return target
+                otherwise: return error IntentTransitionError.InvalidTransition(from_state=current, to_state=target, why="Realized may only transition to Archived")

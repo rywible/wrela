@@ -1651,6 +1651,27 @@ impl FunctionLowerer {
                 Value::Temp(temp)
             }
             Expr::Member { object, member, .. } => {
+                if let Some((class_name, class_id)) = self.resolve_class_init_target(body, expr_id)
+                {
+                    let fields = self
+                        .class_fields
+                        .get(&class_name)
+                        .cloned()
+                        .unwrap_or_default();
+                    if fields.is_empty() {
+                        let temp = self.new_temp_for_expr(expr_id);
+                        self.push_stmt(MirStmt::Assign {
+                            place: Place::Temp(temp),
+                            value: Rvalue::ClassInit {
+                                class_id: class_id.0 as u32,
+                                fields,
+                            },
+                            span,
+                        });
+                        self.maybe_call_configure(&class_name, Value::Temp(temp), span);
+                        return Value::Temp(temp);
+                    }
+                }
                 let obj_ty = self.expr_type(*object);
                 if let MirType::Named(class_name) = obj_ty {
                     if let Some(derived) = self.class_derived.get(&class_name) {
