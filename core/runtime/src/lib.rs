@@ -59,8 +59,16 @@ pub unsafe extern "C" fn wr_rc_dec(value: Value) {
     }
     metrics::inc_rc_dec();
     let header = unsafe { &*value.as_ptr() };
-    let next = header.rc.fetch_sub(1, std::sync::atomic::Ordering::Release) - 1;
-    if next == 0 {
+    let prev = header
+        .rc
+        .fetch_sub(1, std::sync::atomic::Ordering::Release);
+    if prev == 0 {
+        header
+            .rc
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+        return;
+    }
+    if prev == 1 {
         std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
         unsafe { drop_object(value.as_ptr()) };
     }
