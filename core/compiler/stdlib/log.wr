@@ -24,7 +24,7 @@ A Logger:
         return __wr_log("warn", message, __wr_map_new())
 
     so: Log an error message.
-    can error(message: String) -> Boolean:
+    can err(message: String) -> Boolean:
         return __wr_log("error", message, __wr_map_new())
 
     so: Log a debug message with fields.

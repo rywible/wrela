@@ -428,7 +428,7 @@ fn native_member_assign_smoke() {
     let source = r#"
 A Counter:
     has:
-        value: Integer
+        mutable value: Integer
 
     can add(delta: Integer) -> Nothing:
         its.value += delta
@@ -1240,7 +1240,7 @@ fn native_defer_smoke() {
     let source = r#"
 A Counter:
     has:
-        value: Integer
+        mutable value: Integer
     can add(delta: Integer) -> Nothing:
         its.value += delta
 
@@ -1289,7 +1289,7 @@ fn native_defer_nested_and_early_return() {
     let source = r#"
 A Counter:
     has:
-        value: Integer
+        mutable value: Integer
     can add(delta: Integer) -> Nothing:
         its.value += delta
 
