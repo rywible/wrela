@@ -1,0 +1,10 @@
+so:
+    Parsing helpers.
+
+so: Parse an Int from a String.
+to int(text: String) -> Result[Int]:
+    return parse_int(text)
+
+so: Parse a Float from a String.
+to float(text: String) -> Result[Float]:
+    return parse_float(text)

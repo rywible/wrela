@@ -1,0 +1,7 @@
+so:
+    Admin helpers for runtime observability.
+
+A Admin:
+    so: Enable admin endpoints with options.
+    can enable(opts: Map) -> Pending:
+        return admin_enable(opts)

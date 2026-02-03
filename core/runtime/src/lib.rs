@@ -259,6 +259,11 @@ pub extern "C" fn wr_log(level: Value, msg: Value, fields: Value) -> Value {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn wr_log_configure(config: Value) -> Value {
+    logging::log_configure(config)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn wr_assert(cond: Value, msg: Value) -> Value {
     let ok = if cond.is_bool() {
         cond.as_bool()
@@ -754,6 +759,11 @@ pub extern "C" fn wr_storage_configure(config: Value) -> Value {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn wr_runtime_configure(config: Value) -> Value {
+    config::runtime_configure(config)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn wr_storage_set(key: Value, value: Value) -> Value {
     storage::storage_set(key, value)
 }
@@ -795,6 +805,11 @@ pub extern "C" fn wr_http_server_serve_requests(
     handler: Value,
 ) -> Value {
     http::serve_requests(method, path, handler)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_http_server_configure(config: Value) -> Value {
+    http::http_server_configure(config)
 }
 
 #[unsafe(no_mangle)]
@@ -891,6 +906,11 @@ pub extern "C" fn wr_auth_oauth_login(storage: Value, provider: Value, code: Val
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn wr_auth_configure(config: Value) -> Value {
+    auth::auth_configure(config)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn wr_rbac_create_role(
     storage: Value,
     scope: Value,
@@ -975,6 +995,11 @@ pub extern "C" fn wr_jobs_dead_letter(storage: Value, queue: Value) -> Value {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn wr_jobs_configure(config: Value) -> Value {
+    jobs::jobs_configure(config)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn wr_schedule_cron(storage: Value, expr: Value, job: Value) -> Value {
     schedule::schedule_cron(storage, expr, job)
 }
@@ -1038,6 +1063,16 @@ pub extern "C" fn wr_realtime_broadcast(room: Value, message: Value) -> Value {
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_realtime_send(socket_id: Value, message: Value) -> Value {
     realtime::realtime_send(socket_id, message)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_realtime_configure(config: Value) -> Value {
+    realtime::realtime_configure(config)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_pubsub_configure(config: Value) -> Value {
+    pubsub::pubsub_configure(config)
 }
 
 #[unsafe(no_mangle)]

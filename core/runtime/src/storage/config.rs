@@ -46,7 +46,30 @@ pub struct S3Config {
 
 #[derive(Clone, Debug, Default)]
 pub struct StorageUserConfig {
+    pub enabled: Option<bool>,
     pub file_path: Option<String>,
+    pub node_id: Option<u64>,
+    pub bind_addr: Option<String>,
+    pub http_enabled: Option<bool>,
+    pub peer_token: Option<String>,
+    pub peers_raw: Option<String>,
+    pub peers: Option<HashMap<u64, String>>,
+    pub bootstrap: Option<bool>,
+    pub snapshot_interval: Option<u64>,
+    pub batch_max_ops: Option<usize>,
+    pub batch_max_ms: Option<u64>,
+    pub queue_cap: Option<usize>,
+    pub blob_threshold_bytes: Option<usize>,
+    pub blob_path: Option<String>,
+    pub backup_enabled: Option<bool>,
+    pub backup_max_age_secs: Option<u64>,
+    pub backup_max_logs: Option<usize>,
+    pub backup_retention_days: Option<u64>,
+    pub backup_max_keep: Option<usize>,
+    pub backup_prefix: Option<String>,
+    pub backup_only_leader: Option<bool>,
+    pub backup_restore_mode: Option<String>,
+    pub backup_restore_id: Option<String>,
     pub s3_bucket: Option<String>,
     pub s3_region: Option<String>,
     pub s3_access_key: Option<String>,
@@ -83,23 +106,40 @@ pub fn storage_config() -> StorageConfig {
         return config;
     }
     let user = STORAGE_USER_CONFIG.get();
-    let enabled = user.is_some() || read_env_bool("WRELA_STORE_ENABLED", false);
-    let path = std::env::var("WRELA_STORE_PATH").unwrap_or_else(|_| "./wrela.db".to_string());
-    let node_id = read_env_u64("WRELA_RAFT_NODE_ID", 1);
-    let bind_addr =
-        std::env::var("WRELA_RAFT_BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
-    let http_enabled = read_env_bool("WRELA_RAFT_HTTP_ENABLED", true);
-    let peer_token = std::env::var("WRELA_PEER_TOKEN")
-        .ok()
-        .and_then(|val| if val.trim().is_empty() { None } else { Some(val) });
-    let peers = parse_peers(std::env::var("WRELA_RAFT_PEERS").ok());
-    let bootstrap = read_env_bool("WRELA_RAFT_BOOTSTRAP", peers.is_empty());
-    let snapshot_interval = read_env_u64("WRELA_RAFT_SNAPSHOT_INTERVAL", 10_000);
-    let batch_max_ops = read_env_usize("WRELA_STORE_BATCH_MAX_OPS", 128).max(1);
-    let batch_max_ms = read_env_u64("WRELA_STORE_BATCH_MAX_MS", 5).max(1);
-    let queue_cap = read_env_usize("WRELA_STORE_QUEUE_CAP", 1024).max(1);
+    let enabled = user
+        .and_then(|cfg| cfg.enabled)
+        .unwrap_or_else(|| user.is_some());
+    let path = user
+        .and_then(|cfg| cfg.file_path.clone())
+        .unwrap_or_else(|| "./wrela.db".to_string());
+    let node_id = user.and_then(|cfg| cfg.node_id).unwrap_or(1);
+    let bind_addr = user
+        .and_then(|cfg| cfg.bind_addr.clone())
+        .unwrap_or_else(|| "127.0.0.1:8080".to_string());
+    let http_enabled = user.and_then(|cfg| cfg.http_enabled).unwrap_or(true);
+    let peer_token = user.and_then(|cfg| cfg.peer_token.clone()).and_then(|val| {
+        if val.trim().is_empty() {
+            None
+        } else {
+            Some(val)
+        }
+    });
+    let peers = user
+        .and_then(|cfg| cfg.peers.clone())
+        .or_else(|| {
+            user.and_then(|cfg| cfg.peers_raw.clone())
+                .map(|raw| parse_peers(Some(raw)))
+        })
+        .unwrap_or_default();
+    let bootstrap = user
+        .and_then(|cfg| cfg.bootstrap)
+        .unwrap_or_else(|| peers.is_empty());
+    let snapshot_interval = user.and_then(|cfg| cfg.snapshot_interval).unwrap_or(10_000);
+    let batch_max_ops = user.and_then(|cfg| cfg.batch_max_ops).unwrap_or(128).max(1);
+    let batch_max_ms = user.and_then(|cfg| cfg.batch_max_ms).unwrap_or(5).max(1);
+    let queue_cap = user.and_then(|cfg| cfg.queue_cap).unwrap_or(1024).max(1);
     let blob = blob_config(user);
-    let backup = backup_config(&blob);
+    let backup = backup_config(user, &blob);
     StorageConfig {
         enabled,
         path,
@@ -151,43 +191,32 @@ fn parse_peers(raw: Option<String>) -> HashMap<u64, String> {
     peers
 }
 
-fn read_env_bool(key: &str, default: bool) -> bool {
-    std::env::var(key)
-        .ok()
-        .map(|v| !matches!(v.as_str(), "0" | "false" | "off"))
-        .unwrap_or(default)
-}
-
-fn read_env_usize(key: &str, default: usize) -> usize {
-    std::env::var(key)
-        .ok()
-        .and_then(|val| val.parse::<usize>().ok())
-        .unwrap_or(default)
-}
-
-fn read_env_string(key: &str, default: &str) -> String {
-    std::env::var(key).unwrap_or_else(|_| default.to_string())
-}
-
-fn backup_config(blob: &BlobConfig) -> BackupConfig {
+fn backup_config(user: Option<&StorageUserConfig>, blob: &BlobConfig) -> BackupConfig {
     let enabled_default = blob.s3.is_some();
-    let enabled = std::env::var("WRELA_BACKUP_ENABLED")
-        .ok()
-        .map(|v| !matches!(v.as_str(), "0" | "false" | "off"))
+    let enabled = user
+        .and_then(|cfg| cfg.backup_enabled)
         .unwrap_or(enabled_default);
-    let max_age_secs = read_env_u64("WRELA_BACKUP_MAX_AGE_SECS", 3600).max(60);
-    let max_logs = read_env_usize("WRELA_BACKUP_MAX_LOGS", 100_000).max(1);
-    let retention_days = read_env_u64("WRELA_BACKUP_RETENTION_DAYS", 7);
-    let max_keep = read_env_usize("WRELA_BACKUP_MAX_KEEP", 0);
-    let prefix = read_env_string("WRELA_BACKUP_PREFIX", "backups");
-    let only_leader = read_env_bool("WRELA_BACKUP_ONLY_LEADER", true);
-    let restore_mode = match std::env::var("WRELA_BACKUP_RESTORE_MODE").ok().as_deref() {
-        Some("cluster") => RestoreMode::Cluster,
-        Some("single") => RestoreMode::Single,
-        Some("none") => RestoreMode::None,
+    let max_age_secs = user
+        .and_then(|cfg| cfg.backup_max_age_secs)
+        .unwrap_or(3600)
+        .max(60);
+    let max_logs = user.and_then(|cfg| cfg.backup_max_logs).unwrap_or(100_000).max(1);
+    let retention_days = user.and_then(|cfg| cfg.backup_retention_days).unwrap_or(7);
+    let max_keep = user.and_then(|cfg| cfg.backup_max_keep).unwrap_or(0);
+    let prefix = user
+        .and_then(|cfg| cfg.backup_prefix.clone())
+        .unwrap_or_else(|| "backups".to_string());
+    let only_leader = user.and_then(|cfg| cfg.backup_only_leader).unwrap_or(true);
+    let restore_mode = match user
+        .and_then(|cfg| cfg.backup_restore_mode.as_deref())
+        .unwrap_or("single")
+    {
+        "cluster" => RestoreMode::Cluster,
+        "single" => RestoreMode::Single,
+        "none" => RestoreMode::None,
         _ => RestoreMode::Single,
     };
-    let restore_id = std::env::var("WRELA_BACKUP_RESTORE_ID").ok();
+    let restore_id = user.and_then(|cfg| cfg.backup_restore_id.clone());
     BackupConfig {
         enabled,
         max_age_secs,
@@ -201,81 +230,33 @@ fn backup_config(blob: &BlobConfig) -> BackupConfig {
     }
 }
 
-fn read_env_u64(key: &str, default: u64) -> u64 {
-    std::env::var(key)
-        .ok()
-        .and_then(|val| val.parse::<u64>().ok())
-        .unwrap_or(default)
-}
-
 pub fn batch_max_delay(config: &StorageConfig) -> Duration {
     Duration::from_millis(config.batch_max_ms.max(1))
 }
 
 fn blob_config(user: Option<&StorageUserConfig>) -> BlobConfig {
-    let use_env = user.is_none();
     let file_path = user
-        .and_then(|cfg| cfg.file_path.clone())
-        .or_else(|| {
-            if use_env {
-                std::env::var("WRELA_STORE_BLOB_PATH").ok()
-            } else {
-                None
-            }
-        })
+        .and_then(|cfg| cfg.blob_path.clone())
+        .or_else(|| user.and_then(|cfg| cfg.file_path.clone()))
         .unwrap_or_else(|| "./wrela.blobs".to_string());
     let s3 = s3_config(user);
+    let threshold_bytes = user
+        .and_then(|cfg| cfg.blob_threshold_bytes)
+        .unwrap_or(256 * 1024);
     BlobConfig {
-        threshold_bytes: 256 * 1024,
+        threshold_bytes,
         file_path,
         s3,
     }
 }
 
 fn s3_config(user: Option<&StorageUserConfig>) -> Option<S3Config> {
-    let use_env = user.is_none();
-    let bucket = user.and_then(|cfg| cfg.s3_bucket.clone()).or_else(|| {
-        if use_env {
-            std::env::var("WRELA_STORE_BLOB_S3_BUCKET").ok()
-        } else {
-            None
-        }
-    });
-    let region = user.and_then(|cfg| cfg.s3_region.clone()).or_else(|| {
-        if use_env {
-            std::env::var("WRELA_STORE_BLOB_S3_REGION").ok()
-        } else {
-            None
-        }
-    });
-    let access_key = user.and_then(|cfg| cfg.s3_access_key.clone()).or_else(|| {
-        if use_env {
-            std::env::var("WRELA_STORE_BLOB_S3_ACCESS_KEY").ok()
-        } else {
-            None
-        }
-    });
-    let secret_key = user.and_then(|cfg| cfg.s3_secret_key.clone()).or_else(|| {
-        if use_env {
-            std::env::var("WRELA_STORE_BLOB_S3_SECRET_KEY").ok()
-        } else {
-            None
-        }
-    });
-    let endpoint = user.and_then(|cfg| cfg.s3_endpoint.clone()).or_else(|| {
-        if use_env {
-            std::env::var("WRELA_STORE_BLOB_S3_ENDPOINT").ok()
-        } else {
-            None
-        }
-    });
-    let prefix = user.and_then(|cfg| cfg.s3_prefix.clone()).or_else(|| {
-        if use_env {
-            std::env::var("WRELA_STORE_BLOB_S3_PREFIX").ok()
-        } else {
-            None
-        }
-    });
+    let bucket = user.and_then(|cfg| cfg.s3_bucket.clone());
+    let region = user.and_then(|cfg| cfg.s3_region.clone());
+    let access_key = user.and_then(|cfg| cfg.s3_access_key.clone());
+    let secret_key = user.and_then(|cfg| cfg.s3_secret_key.clone());
+    let endpoint = user.and_then(|cfg| cfg.s3_endpoint.clone());
+    let prefix = user.and_then(|cfg| cfg.s3_prefix.clone());
 
     let Some(bucket) = bucket else { return None };
     let Some(region) = region else { return None };

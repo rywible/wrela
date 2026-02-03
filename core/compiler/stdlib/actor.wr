@@ -1,0 +1,21 @@
+so:
+    Actor control helpers.
+
+so: Get the mailbox length for an actor handle.
+to mailbox_len(handle: Any) -> Int:
+    return actor_mailbox_len(handle)
+
+so: Pause an actor.
+to pause(handle: Any) -> Nothing:
+    actor_pause(handle)
+    return nothing
+
+so: Resume an actor.
+to resume(handle: Any) -> Nothing:
+    actor_resume(handle)
+    return nothing
+
+so: Pause an actor and wait for the pause to take effect.
+to pause_wait(handle: Any) -> Nothing:
+    actor_pause_wait(handle)
+    return nothing

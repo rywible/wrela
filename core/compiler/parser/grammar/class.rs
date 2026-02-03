@@ -1,4 +1,4 @@
-use super::{parse_block, parse_param_list, types};
+use super::{expr, parse_block, parse_param_list, types};
 use crate::parser::Parser;
 use crate::parser::kind::SyntaxKind;
 
@@ -179,6 +179,10 @@ fn field_def(p: &mut Parser) {
     p.expect_with_message(SyntaxKind::Ident, "expected field name");
     p.expect_with_message(SyntaxKind::Colon, "expected ':' after field name");
     types::parse_type(p);
+    if p.at(SyntaxKind::Equals) {
+        p.bump();
+        expr::expr(p);
+    }
     m.complete(p, SyntaxKind::FieldDef);
 }
 

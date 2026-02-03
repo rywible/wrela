@@ -1,0 +1,20 @@
+so:
+    Scheduling helpers backed by storage.
+
+use StorageClient from storage
+
+A Schedule:
+    has:
+        storage: StorageClient
+
+    so: Register a cron job.
+    can cron(expr: String, job: Any) -> Pending:
+        return schedule_cron(its.storage, expr, job)
+
+    so: Run a job every N seconds.
+    can every(seconds: Int, job: Any) -> Pending:
+        return schedule_every(its.storage, seconds, job)
+
+    so: Run a job at a timestamp (unix seconds).
+    can at(timestamp: Int, job: Any) -> Pending:
+        return schedule_at(its.storage, timestamp, job)

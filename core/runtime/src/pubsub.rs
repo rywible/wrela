@@ -2,13 +2,14 @@ use crate::actor::runtime_spawn;
 use crate::metrics;
 use crate::storage::config::storage_config;
 use crate::storage_helpers::{storage_get_json_result, storage_set_json_result};
+use crate::value::Value;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tokio::sync::RwLock;
 
@@ -24,6 +25,37 @@ pub struct PubSubMessage {
 static SUBSCRIBERS: OnceLock<Arc<RwLock<HashMap<String, Vec<Handler>>>>> = OnceLock::new();
 static CLIENT: OnceLock<Client> = OnceLock::new();
 static DLQ_WORKER: OnceLock<()> = OnceLock::new();
+static PUBSUB_CONFIG: OnceLock<Mutex<PubSubConfig>> = OnceLock::new();
+
+#[derive(Clone)]
+struct PubSubConfig {
+    dlq_retry_ms: u64,
+    dlq_max_len: usize,
+}
+
+impl Default for PubSubConfig {
+    fn default() -> Self {
+        Self {
+            dlq_retry_ms: 2000,
+            dlq_max_len: 1000,
+        }
+    }
+}
+
+fn pubsub_config() -> PubSubConfig {
+    PUBSUB_CONFIG
+        .get_or_init(|| Mutex::new(PubSubConfig::default()))
+        .lock()
+        .expect("pubsub config lock")
+        .clone()
+}
+
+fn set_pubsub_config(config: PubSubConfig) {
+    *PUBSUB_CONFIG
+        .get_or_init(|| Mutex::new(PubSubConfig::default()))
+        .lock()
+        .expect("pubsub config lock") = config;
+}
 
 fn subscribers() -> Arc<RwLock<HashMap<String, Vec<Handler>>>> {
     SUBSCRIBERS
@@ -48,19 +80,11 @@ fn peer_token() -> Option<String> {
 }
 
 fn dlq_retry_ms() -> u64 {
-    std::env::var("WRELA_PUBSUB_DLQ_RETRY_MS")
-        .ok()
-        .and_then(|val| val.parse::<u64>().ok())
-        .unwrap_or(2000)
-        .max(50)
+    pubsub_config().dlq_retry_ms.max(50)
 }
 
 fn dlq_max_len() -> usize {
-    std::env::var("WRELA_PUBSUB_DLQ_MAX")
-        .ok()
-        .and_then(|val| val.parse::<usize>().ok())
-        .unwrap_or(1000)
-        .max(1)
+    pubsub_config().dlq_max_len.max(1)
 }
 
 fn sanitize_peer_key(addr: &str) -> String {
@@ -130,6 +154,38 @@ async fn dlq_drain_peer(addr: &str) {
         }
     }
     let _ = storage_set_json_result(&key, &remaining).await;
+}
+
+pub fn pubsub_configure(config: Value) -> Value {
+    let new_config = pubsub_config_from_value(config);
+    set_pubsub_config(new_config);
+    Value::nil()
+}
+
+fn pubsub_config_from_value(config: Value) -> PubSubConfig {
+    let mut out = PubSubConfig::default();
+    if let Some(val) = config_field_u64(config, "dlq_retry_ms") {
+        out.dlq_retry_ms = val;
+    }
+    if let Some(val) = config_field_usize(config, "dlq_max_len") {
+        out.dlq_max_len = val;
+    }
+    out
+}
+
+fn config_field_u64(config: Value, field: &str) -> Option<u64> {
+    let val = crate::class::class_get(config, field.as_ptr(), field.len());
+    if val.is_nil() {
+        unsafe { crate::wr_rc_dec(val) };
+        return None;
+    }
+    let out = crate::value::int_value(val).and_then(|num| if num >= 0 { Some(num as u64) } else { None });
+    unsafe { crate::wr_rc_dec(val) };
+    out
+}
+
+fn config_field_usize(config: Value, field: &str) -> Option<usize> {
+    config_field_u64(config, field).and_then(|val| if val >= 1 { Some(val as usize) } else { None })
 }
 
 fn ensure_dlq_worker_started() {
@@ -313,10 +369,11 @@ mod tests {
             .expect("start storage");
         let service = Arc::new(service);
 
-        unsafe {
-            std::env::set_var("WRELA_PUBSUB_DLQ_RETRY_MS", "50");
-        }
+        let mut cfg_pubsub = PubSubConfig::default();
+        cfg_pubsub.dlq_retry_ms = 50;
 
+        let prev = pubsub_config();
+        set_pubsub_config(cfg_pubsub);
         crate::storage::service::StorageService::with_storage_override(
             Arc::clone(&service),
             crate::storage::config::with_storage_config_override(cfg, async move {
@@ -357,10 +414,7 @@ mod tests {
             }),
         )
         .await;
-
-        unsafe {
-            std::env::remove_var("WRELA_PUBSUB_DLQ_RETRY_MS");
-        }
+        set_pubsub_config(prev);
 
         let service = match Arc::try_unwrap(service) {
             Ok(service) => service,

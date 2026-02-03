@@ -1,5 +1,36 @@
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
+
+use crate::class::class_get;
+use crate::value::{Value, int_value};
+use crate::wr_rc_dec;
+
+fn env_i64(key: &str) -> Option<i64> {
+    std::env::var(key)
+        .ok()
+        .and_then(|val| val.trim().parse::<i64>().ok())
+}
+
+fn env_bool(key: &str) -> Option<bool> {
+    let val = std::env::var(key).ok()?;
+    match val.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "on" => Some(true),
+        "0" | "false" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn env_usize(key: &str) -> Option<usize> {
+    env_i64(key).and_then(|val| if val >= 0 { Some(val as usize) } else { None })
+}
+
+fn env_u64(key: &str) -> Option<u64> {
+    env_i64(key).and_then(|val| if val >= 0 { Some(val as u64) } else { None })
+}
+
+fn env_u32(key: &str) -> Option<u32> {
+    env_i64(key).and_then(|val| if val >= 0 { Some(val as u32) } else { None })
+}
 
 #[derive(Clone, Copy)]
 pub struct ActorConfig {
@@ -8,22 +39,278 @@ pub struct ActorConfig {
     pub batch_limit: usize,
 }
 
-static ACTOR_CONFIG: OnceLock<ActorConfig> = OnceLock::new();
+#[derive(Clone)]
+pub struct RuntimeConfig {
+    pub actor_mailbox_cap: usize,
+    pub actor_enqueue_timeout_ms: u64,
+    pub actor_batch_limit: usize,
+    pub pause_queue_cap: usize,
+    pub deterministic: bool,
+    pub debug_actor: bool,
+    pub actor_watchdog_ms: u64,
+    pub sched_watchdog_ms: u64,
+    pub sched_shards: usize,
+    pub sched_tick_ms: u64,
+    pub sched_ready_cap: usize,
+    pub sched_batch_limit: i64,
+    pub pool_min_share: u32,
+    pub pool_max_share: u32,
+    pub pool_queue_cap: usize,
+    pub pool_auto_min: i64,
+    pub pool_auto_max: i64,
+    pub diagnostics_enabled: bool,
+}
 
-pub fn actor_config() -> &'static ActorConfig {
-    ACTOR_CONFIG.get_or_init(|| ActorConfig {
-        mailbox_cap: read_env_usize("WRELA_MAILBOX_CAP", 256).max(1),
-        enqueue_timeout: Duration::from_millis(read_env_u64("WRELA_ENQUEUE_TIMEOUT_MS", 10)),
-        batch_limit: read_env_usize("WRELA_BATCH_LIMIT", 64).max(1),
-    })
+impl Default for RuntimeConfig {
+    fn default() -> Self {
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        let mut config = Self {
+            actor_mailbox_cap: 256,
+            actor_enqueue_timeout_ms: 10,
+            actor_batch_limit: 64,
+            pause_queue_cap: 128,
+            deterministic: false,
+            debug_actor: false,
+            actor_watchdog_ms: 0,
+            sched_watchdog_ms: 0,
+            sched_shards: cores,
+            sched_tick_ms: 1,
+            sched_ready_cap: 1024,
+            sched_batch_limit: 64,
+            pool_min_share: 1,
+            pool_max_share: (cores * 2).max(1) as u32,
+            pool_queue_cap: 256,
+            pool_auto_min: 1,
+            pool_auto_max: cores as i64,
+            diagnostics_enabled: false,
+        };
+        if let Some(val) = env_usize("WRELA_ACTOR_MAILBOX_CAP") {
+            config.actor_mailbox_cap = val;
+        }
+        if let Some(val) = env_u64("WRELA_ACTOR_ENQUEUE_TIMEOUT_MS") {
+            config.actor_enqueue_timeout_ms = val;
+        }
+        if let Some(val) = env_usize("WRELA_ACTOR_BATCH_LIMIT") {
+            config.actor_batch_limit = val;
+        }
+        if let Some(val) = env_usize("WRELA_PAUSE_QUEUE_CAP") {
+            config.pause_queue_cap = val;
+        }
+        if let Some(val) = env_bool("WRELA_DETERMINISTIC") {
+            config.deterministic = val;
+        }
+        if let Some(val) = env_bool("WRELA_DEBUG_ACTOR") {
+            config.debug_actor = val;
+        }
+        if let Some(val) = env_u64("WRELA_ACTOR_WATCHDOG_MS") {
+            config.actor_watchdog_ms = val;
+        }
+        if let Some(val) = env_u64("WRELA_SCHED_WATCHDOG_MS") {
+            config.sched_watchdog_ms = val;
+        }
+        if let Some(val) = env_usize("WRELA_SCHED_SHARDS") {
+            if val > 0 {
+                config.sched_shards = val;
+            }
+        }
+        if let Some(val) = env_u64("WRELA_SCHED_TICK_MS") {
+            config.sched_tick_ms = val;
+        }
+        if let Some(val) = env_usize("WRELA_SCHED_READY_CAP") {
+            config.sched_ready_cap = val;
+        }
+        if let Some(val) = env_i64("WRELA_SCHED_BATCH_LIMIT") {
+            config.sched_batch_limit = val;
+        }
+        if let Some(val) = env_u32("WRELA_POOL_MIN_SHARE") {
+            config.pool_min_share = val;
+        }
+        if let Some(val) = env_u32("WRELA_POOL_MAX_SHARE") {
+            if val > 0 {
+                config.pool_max_share = val;
+            }
+        }
+        if let Some(val) = env_usize("WRELA_POOL_QUEUE_CAP") {
+            config.pool_queue_cap = val;
+        }
+        if let Some(val) = env_i64("WRELA_POOL_AUTO_MIN") {
+            if val > 0 {
+                config.pool_auto_min = val;
+            }
+        }
+        if let Some(val) = env_i64("WRELA_POOL_AUTO_MAX") {
+            if val > 0 {
+                config.pool_auto_max = val;
+            }
+        }
+        if let Some(val) = env_bool("WRELA_DIAGNOSTICS_ENABLED") {
+            config.diagnostics_enabled = val;
+        }
+        config
+    }
+}
+
+static RUNTIME_CONFIG: OnceLock<Mutex<RuntimeConfig>> = OnceLock::new();
+
+fn runtime_config() -> RuntimeConfig {
+    RUNTIME_CONFIG
+        .get_or_init(|| Mutex::new(RuntimeConfig::default()))
+        .lock()
+        .expect("runtime config lock")
+        .clone()
+}
+
+fn set_runtime_config(config: RuntimeConfig) {
+    *RUNTIME_CONFIG
+        .get_or_init(|| Mutex::new(RuntimeConfig::default()))
+        .lock()
+        .expect("runtime config lock") = config;
+}
+
+pub fn runtime_configure(config: Value) -> Value {
+    let new_config = runtime_config_from_value(config);
+    set_runtime_config(new_config);
+    Value::nil()
+}
+
+fn runtime_config_from_value(config: Value) -> RuntimeConfig {
+    let mut out = RuntimeConfig::default();
+    if let Some(val) = config_field_usize(config, "actor_mailbox_cap") {
+        out.actor_mailbox_cap = val;
+    }
+    if let Some(val) = config_field_u64(config, "actor_enqueue_timeout_ms") {
+        out.actor_enqueue_timeout_ms = val;
+    }
+    if let Some(val) = config_field_usize(config, "actor_batch_limit") {
+        out.actor_batch_limit = val;
+    }
+    if let Some(val) = config_field_usize(config, "pause_queue_cap") {
+        out.pause_queue_cap = val;
+    }
+    if let Some(val) = config_field_bool(config, "deterministic") {
+        out.deterministic = val;
+    }
+    if let Some(val) = config_field_bool(config, "debug_actor") {
+        out.debug_actor = val;
+    }
+    if let Some(val) = config_field_u64(config, "actor_watchdog_ms") {
+        out.actor_watchdog_ms = val;
+    }
+    if let Some(val) = config_field_u64(config, "sched_watchdog_ms") {
+        out.sched_watchdog_ms = val;
+    }
+    if let Some(val) = config_field_usize(config, "sched_shards") {
+        if val > 0 {
+            out.sched_shards = val;
+        }
+    }
+    if let Some(val) = config_field_u64(config, "sched_tick_ms") {
+        out.sched_tick_ms = val;
+    }
+    if let Some(val) = config_field_usize(config, "sched_ready_cap") {
+        out.sched_ready_cap = val;
+    }
+    if let Some(val) = config_field_i64(config, "sched_batch_limit") {
+        out.sched_batch_limit = val;
+    }
+    if let Some(val) = config_field_u32(config, "pool_min_share") {
+        out.pool_min_share = val;
+    }
+    if let Some(val) = config_field_u32(config, "pool_max_share") {
+        if val > 0 {
+            out.pool_max_share = val;
+        }
+    }
+    if let Some(val) = config_field_usize(config, "pool_queue_cap") {
+        out.pool_queue_cap = val;
+    }
+    if let Some(val) = config_field_i64(config, "pool_auto_min") {
+        if val > 0 {
+            out.pool_auto_min = val;
+        }
+    }
+    if let Some(val) = config_field_i64(config, "pool_auto_max") {
+        if val > 0 {
+            out.pool_auto_max = val;
+        }
+    }
+    if let Some(val) = config_field_bool(config, "diagnostics_enabled") {
+        out.diagnostics_enabled = val;
+    }
+    out
+}
+
+fn config_field_bool(config: Value, field: &str) -> Option<bool> {
+    let val = class_get(config, field.as_ptr(), field.len());
+    if val.is_nil() {
+        unsafe { wr_rc_dec(val) };
+        return None;
+    }
+    let out = if val.is_bool() { Some(val.as_bool()) } else { None };
+    unsafe { wr_rc_dec(val) };
+    out
+}
+
+fn config_field_usize(config: Value, field: &str) -> Option<usize> {
+    config_field_i64(config, field).and_then(|val| if val >= 0 { Some(val as usize) } else { None })
+}
+
+fn config_field_u64(config: Value, field: &str) -> Option<u64> {
+    config_field_i64(config, field).and_then(|val| if val >= 0 { Some(val as u64) } else { None })
+}
+
+fn config_field_u32(config: Value, field: &str) -> Option<u32> {
+    config_field_i64(config, field).and_then(|val| if val >= 0 { Some(val as u32) } else { None })
+}
+
+fn config_field_i64(config: Value, field: &str) -> Option<i64> {
+    let val = class_get(config, field.as_ptr(), field.len());
+    if val.is_nil() {
+        unsafe { wr_rc_dec(val) };
+        return None;
+    }
+    let out = int_value(val);
+    unsafe { wr_rc_dec(val) };
+    out
+}
+
+pub fn actor_config() -> ActorConfig {
+    let config = runtime_config();
+    ActorConfig {
+        mailbox_cap: config.actor_mailbox_cap.max(1),
+        enqueue_timeout: Duration::from_millis(config.actor_enqueue_timeout_ms.max(1)),
+        batch_limit: config.actor_batch_limit.max(1),
+    }
 }
 
 pub fn pause_queue_cap() -> usize {
-    read_env_usize("WRELA_PAUSE_QUEUE_CAP", 128).max(1)
+    runtime_config().pause_queue_cap.max(1)
+}
+
+pub fn deterministic_runtime() -> bool {
+    runtime_config().deterministic
+}
+
+pub fn debug_actor_enabled() -> bool {
+    runtime_config().debug_actor
+}
+
+pub fn actor_watchdog_ms() -> u64 {
+    runtime_config().actor_watchdog_ms
+}
+
+pub fn sched_watchdog_ms() -> u64 {
+    runtime_config().sched_watchdog_ms
+}
+
+pub fn diagnostics_enabled() -> bool {
+    runtime_config().diagnostics_enabled
 }
 
 pub fn actor_config_for_objective(objective: u8) -> ActorConfig {
-    let base = *actor_config();
+    let base = actor_config();
     match objective {
         // latency
         0 => ActorConfig {
@@ -49,51 +336,46 @@ pub fn actor_config_for_objective(objective: u8) -> ActorConfig {
 }
 
 pub fn sched_shards() -> usize {
-    if std::env::var("WRELA_DETERMINISTIC")
-        .ok()
-        .map(|v| !matches!(v.as_str(), "0" | "false" | "off"))
-        .unwrap_or(false)
-    {
+    let config = runtime_config();
+    if config.deterministic {
         return 1;
     }
-    let cores = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1);
-    read_env_usize("WRELA_SCHED_SHARDS", cores).max(1)
+    config.sched_shards.max(1)
 }
 
 pub fn sched_tick_ms() -> u64 {
-    if std::env::var("WRELA_DETERMINISTIC")
-        .ok()
-        .map(|v| !matches!(v.as_str(), "0" | "false" | "off"))
-        .unwrap_or(false)
-    {
+    let config = runtime_config();
+    if config.deterministic {
         return 1;
     }
-    read_env_u64("WRELA_SCHED_TICK_MS", 1).max(1)
+    config.sched_tick_ms.max(1)
 }
 
 pub fn sched_ready_cap() -> usize {
-    read_env_usize("WRELA_SCHED_READY_CAP", 1024).max(2)
+    runtime_config().sched_ready_cap.max(2)
 }
 
 pub fn sched_batch_limit() -> i64 {
-    read_env_u64("WRELA_SCHED_BATCH", 64).max(1) as i64
+    runtime_config().sched_batch_limit.max(1)
 }
 
 pub fn pool_min_share_default() -> u32 {
-    read_env_usize("WRELA_POOL_MIN_SHARE", 1).max(1) as u32
+    runtime_config().pool_min_share.max(1)
 }
 
 pub fn pool_max_share_default() -> u32 {
-    let cores = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1);
-    read_env_usize("WRELA_POOL_MAX_SHARE", cores * 2).max(1) as u32
+    let config = runtime_config();
+    if config.pool_max_share == 0 {
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        return (cores * 2).max(1) as u32;
+    }
+    config.pool_max_share.max(1)
 }
 
 pub fn pool_queue_cap_default() -> usize {
-    read_env_usize("WRELA_POOL_QUEUE_CAP", 256).max(1)
+    runtime_config().pool_queue_cap.max(1)
 }
 
 pub fn pool_queue_cap_for_objective(objective: u8) -> usize {
@@ -152,20 +434,6 @@ pub fn normalize_objective(objective: i64) -> u8 {
     }
 }
 
-fn read_env_usize(key: &str, default: usize) -> usize {
-    std::env::var(key)
-        .ok()
-        .and_then(|val| val.parse::<usize>().ok())
-        .unwrap_or(default)
-}
-
-fn read_env_u64(key: &str, default: u64) -> u64 {
-    std::env::var(key)
-        .ok()
-        .and_then(|val| val.parse::<u64>().ok())
-        .unwrap_or(default)
-}
-
 fn scale_usize(value: usize, num: usize, den: usize, min: usize) -> usize {
     let scaled = value.saturating_mul(num).saturating_div(den.max(1));
     scaled.max(min)
@@ -191,8 +459,13 @@ fn auto_pool_size(objective: u8, min: i64, max: i64, weight: i64) -> i64 {
         // balance
         _ => cores,
     };
-    let min_default = read_env_usize("WRELA_POOL_AUTO_MIN", 1).max(1) as i64;
-    let max_default = read_env_usize("WRELA_POOL_AUTO_MAX", cores as usize).max(1) as i64;
+    let config = runtime_config();
+    let min_default = config.pool_auto_min.max(1);
+    let max_default = if config.pool_auto_max > 0 {
+        config.pool_auto_max
+    } else {
+        cores.max(1)
+    };
     let min = if min > 0 { min } else { min_default };
     let max = if max > 0 { max } else { max_default };
     let weight = if weight > 0 { weight } else { 1 };

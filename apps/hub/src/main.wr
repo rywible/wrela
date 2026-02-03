@@ -1,0 +1,138 @@
+so:
+    Wrela Hub app entrypoint.
+    Phase 1 scaffolding for Git smart HTTP endpoints and basic health checks.
+
+use:
+    HttpServer,
+    HttpRequest,
+    HttpResponse,
+from http
+
+use:
+    from_string,
+    length
+from bytes
+
+use int from parse
+
+use:
+    get_or,
+    get_as_bool
+from env
+
+
+to run() -> Nothing:
+    server = HttpServer()
+    server.serve_get_requests("/healthz", handle_health)
+    server.serve_get_requests("/info/refs", handle_info_refs)
+    server.serve_get_requests("/:repo/info/refs", handle_info_refs)
+    server.serve_post_requests("/git-upload-pack", handle_upload_pack)
+    server.serve_post_requests("/:repo/git-upload-pack", handle_upload_pack)
+    server.serve_post_requests("/git-receive-pack", handle_receive_pack)
+    server.serve_post_requests("/:repo/git-receive-pack", handle_receive_pack)
+    server.serve_on(bind_addr())
+    return nothing
+
+
+to handle_health(req: HttpRequest) -> HttpResponse:
+    resp = HttpResponse()
+    resp.header("content-type", "text/plain; charset=utf-8")
+    resp.body = from_string("ok")
+    resp.status = 200
+    return resp
+
+
+to handle_info_refs(req: HttpRequest) -> HttpResponse:
+    if not repo_allowed(req):
+        return response_text(404, "repo not found")
+
+    if not auth_allowed(req):
+        return response_text(401, "unauthorized")
+
+    service = req.query_param("service")
+    if service == nil:
+        return response_text(400, "missing service")
+
+    if service != "git-upload-pack" and service != "git-receive-pack":
+        return response_text(400, "invalid service")
+
+    return git_not_implemented(service)
+
+
+to handle_upload_pack(req: HttpRequest) -> HttpResponse:
+    if not repo_allowed(req):
+        return response_text(404, "repo not found")
+
+    if not auth_allowed(req):
+        return response_text(401, "unauthorized")
+
+    if body_too_large(req):
+        return response_text(413, "payload too large")
+
+    return git_not_implemented("git-upload-pack")
+
+
+to handle_receive_pack(req: HttpRequest) -> HttpResponse:
+    if not repo_allowed(req):
+        return response_text(404, "repo not found")
+
+    if not auth_allowed(req):
+        return response_text(401, "unauthorized")
+
+    if body_too_large(req):
+        return response_text(413, "payload too large")
+
+    return git_not_implemented("git-receive-pack")
+
+
+to bind_addr() -> String:
+    return get_or("WRELA_HUB_ADDR", "0.0.0.0:8080")
+
+
+to max_body_bytes() -> Number:
+    raw = get_or("WRELA_HUB_MAX_BODY_BYTES", "50000000")
+    return int(raw) otherwise 50000000
+
+
+to auth_allowed(req: HttpRequest) -> Bool:
+    if get_as_bool("WRELA_HUB_AUTH_DISABLED"):
+        return true
+    token = req.header("authorization")
+    if token == nil:
+        return false
+    if token == "":
+        return false
+    return true
+
+
+to repo_allowed(req: HttpRequest) -> Bool:
+    repo = req.path_param("repo")
+    if repo == nil:
+        return true
+    name = get_or("WRELA_HUB_REPO", "wrela")
+    if repo == name:
+        return true
+    if repo == "{name}.git":
+        return true
+    return false
+
+
+to body_too_large(req: HttpRequest) -> Bool:
+    return length(req.body) > max_body_bytes()
+
+
+to response_text(status: Number, text: String) -> HttpResponse:
+    resp = HttpResponse()
+    resp.status = status
+    resp.body = from_string(text)
+    resp.header("content-type", "text/plain; charset=utf-8")
+    return resp
+
+
+to git_not_implemented(service: String) -> HttpResponse:
+    resp = response_text(501, "git service not implemented")
+    resp.header("cache-control", "no-cache")
+    resp.header("pragma", "no-cache")
+    resp.header("expires", "Fri, 01 Jan 1980 00:00:00 GMT")
+    resp.header("x-git-service", service)
+    return resp

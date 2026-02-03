@@ -5,6 +5,7 @@ use axum::response::IntoResponse;
 use axum::routing::any;
 use jsonwebtoken::{DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -14,32 +15,77 @@ use tokio::sync::oneshot;
 use crate::actor::{actor_class_id, runtime_block_on};
 use crate::bytes;
 use crate::class::{class_get, class_new, class_set};
+use crate::list::as_list_ref;
 use crate::map::{as_map_ref, map_new, map_set};
 use crate::result;
 use crate::string;
 use crate::value::{Value, int_value};
 use crate::{wr_rc_dec, wr_rc_inc};
-use crate::storage_helpers::{
-    storage_get_json_result, storage_get_json_vec_result,
-    storage_set_json_result,
-};
+use crate::storage_helpers::{storage_get_json_result, storage_get_json_vec_result, storage_set_json_result};
 use crate::storage::service::StorageError;
 
+#[derive(Clone)]
+struct HttpConfig {
+    auth_token: Option<String>,
+    auth_jwt_enabled: bool,
+    jwt_secret: String,
+    rbac_permission: Option<String>,
+    rbac_scope: String,
+    rbac_skip_paths: Vec<String>,
+    rate_limit_enabled: bool,
+    rate_limit_burst: u64,
+    rate_limit_per_secs: u64,
+    rate_limit_skip_paths: Vec<String>,
+    hsts_enabled: bool,
+    csp: Option<String>,
+}
+
+impl Default for HttpConfig {
+    fn default() -> Self {
+        Self {
+            auth_token: None,
+            auth_jwt_enabled: false,
+            jwt_secret: "wrela-dev-secret".to_string(),
+            rbac_permission: None,
+            rbac_scope: "global".to_string(),
+            rbac_skip_paths: Vec::new(),
+            rate_limit_enabled: false,
+            rate_limit_burst: 60,
+            rate_limit_per_secs: 60,
+            rate_limit_skip_paths: Vec::new(),
+            hsts_enabled: false,
+            csp: None,
+        }
+    }
+}
+
+static HTTP_CONFIG: OnceLock<Mutex<HttpConfig>> = OnceLock::new();
+
+fn http_config() -> HttpConfig {
+    HTTP_CONFIG
+        .get_or_init(|| Mutex::new(HttpConfig::default()))
+        .lock()
+        .expect("http config lock")
+        .clone()
+}
+
+fn set_http_config(config: HttpConfig) {
+    *HTTP_CONFIG
+        .get_or_init(|| Mutex::new(HttpConfig::default()))
+        .lock()
+        .expect("http config lock") = config;
+}
+
 fn http_auth_token() -> Option<String> {
-    std::env::var("WRELA_HTTP_AUTH_TOKEN")
-        .ok()
-        .and_then(|val| if val.trim().is_empty() { None } else { Some(val) })
+    http_config().auth_token
 }
 
 fn http_auth_jwt_enabled() -> bool {
-    std::env::var("WRELA_HTTP_AUTH_JWT")
-        .ok()
-        .map(|v| !matches!(v.as_str(), "0" | "false" | "off"))
-        .unwrap_or(false)
+    http_config().auth_jwt_enabled
 }
 
 fn jwt_secret() -> String {
-    std::env::var("WRELA_JWT_SECRET").unwrap_or_else(|_| "wrela-dev-secret".to_string())
+    http_config().jwt_secret
 }
 
 #[derive(Deserialize)]
@@ -76,60 +122,31 @@ fn authorized(headers: &HeaderMap) -> bool {
 }
 
 fn http_rbac_permission() -> Option<String> {
-    std::env::var("WRELA_HTTP_RBAC_PERMISSION")
-        .ok()
-        .and_then(|val| if val.trim().is_empty() { None } else { Some(val) })
+    http_config().rbac_permission
 }
 
 fn http_rbac_scope() -> String {
-    std::env::var("WRELA_HTTP_RBAC_SCOPE").unwrap_or_else(|_| "global".to_string())
+    http_config().rbac_scope
 }
 
 fn http_rbac_skip_paths() -> Vec<String> {
-    std::env::var("WRELA_HTTP_RBAC_SKIP_PATHS")
-        .ok()
-        .map(|val| {
-            val.split(',')
-                .map(|entry| entry.trim().to_string())
-                .filter(|entry| !entry.is_empty())
-                .collect()
-        })
-        .unwrap_or_default()
+    http_config().rbac_skip_paths
 }
 
 fn http_rate_limit_enabled() -> bool {
-    std::env::var("WRELA_HTTP_RATE_LIMIT")
-        .ok()
-        .map(|v| !matches!(v.as_str(), "0" | "false" | "off"))
-        .unwrap_or(false)
+    http_config().rate_limit_enabled
 }
 
 fn http_rate_limit_burst() -> u64 {
-    std::env::var("WRELA_HTTP_RATE_LIMIT_BURST")
-        .ok()
-        .and_then(|val| val.parse::<u64>().ok())
-        .unwrap_or(60)
-        .max(1)
+    http_config().rate_limit_burst.max(1)
 }
 
 fn http_rate_limit_per_secs() -> u64 {
-    std::env::var("WRELA_HTTP_RATE_LIMIT_PER_SECS")
-        .ok()
-        .and_then(|val| val.parse::<u64>().ok())
-        .unwrap_or(60)
-        .max(1)
+    http_config().rate_limit_per_secs.max(1)
 }
 
 fn http_rate_limit_skip_paths() -> Vec<String> {
-    std::env::var("WRELA_HTTP_RATE_LIMIT_SKIP_PATHS")
-        .ok()
-        .map(|val| {
-            val.split(',')
-                .map(|entry| entry.trim().to_string())
-                .filter(|entry| !entry.is_empty())
-                .collect()
-        })
-        .unwrap_or_default()
+    http_config().rate_limit_skip_paths
 }
 
 fn header_value(headers: &HeaderMap, key: &str) -> Option<String> {
@@ -365,6 +382,12 @@ pub fn serve_requests(method: Value, path: Value, handler: Value) -> Value {
     add_route(method_parsed, path, handler)
 }
 
+pub fn http_server_configure(config: Value) -> Value {
+    let new_config = http_config_from_value(config);
+    set_http_config(new_config);
+    Value::nil()
+}
+
 fn add_route(method: Method, path: Value, handler: Value) -> Value {
     let Some(path_str) = string_value(path) else {
         return Value::nil();
@@ -415,17 +438,36 @@ pub fn stop() -> Value {
 
 #[derive(Clone)]
 struct HandlerState {
-    routes: Arc<HashMap<String, Vec<Route>>>,
+    patterns: Arc<Vec<RoutePattern>>,
+}
+
+struct RoutePattern {
+    pattern: String,
+    parts: Vec<PatternPart>,
+    routes: Vec<Route>,
+}
+
+enum PatternPart {
+    Static(String),
+    Param(String),
 }
 
 fn build_router(routes: HashMap<String, Vec<Route>>) -> Router {
+    let mut patterns = Vec::with_capacity(routes.len());
+    for (pattern, routes) in routes {
+        patterns.push(RoutePattern {
+            parts: split_pattern(&pattern),
+            pattern,
+            routes,
+        });
+    }
     let state = HandlerState {
-        routes: Arc::new(routes),
+        patterns: Arc::new(patterns),
     };
     let mut router = Router::new();
-    for pattern in state.routes.keys() {
+    for entry in state.patterns.iter() {
         let handler = any(handle_request);
-        router = router.route(pattern, handler);
+        router = router.route(&entry.pattern, handler);
     }
     router.with_state(state)
 }
@@ -494,7 +536,7 @@ async fn handle_request(
             }
         }
     }
-    let Some((routes, params_map)) = match_route(path, &state.routes) else {
+    let Some((routes, params_map)) = match_route(path, &state.patterns) else {
         return StatusCode::NOT_FOUND.into_response();
     };
     let Some(route) = routes.iter().find(|route| route.method == method).cloned() else {
@@ -688,7 +730,7 @@ fn build_response_headers(headers_val: Value) -> (HeaderMap, bool, bool) {
 }
 
 fn apply_default_security_headers(headers: &mut HeaderMap) {
-    if std::env::var("WRELA_HTTP_HSTS").ok().as_deref() == Some("1") {
+    if http_config().hsts_enabled {
         headers.entry("strict-transport-security").or_insert(
             HeaderValue::from_static("max-age=31536000; includeSubDomains"),
         );
@@ -696,7 +738,7 @@ fn apply_default_security_headers(headers: &mut HeaderMap) {
 }
 
 fn default_csp() -> Option<String> {
-    if let Ok(val) = std::env::var("WRELA_HTTP_CSP") {
+    if let Some(val) = http_config().csp {
         let trimmed = val.trim();
         if !trimmed.is_empty() {
             return Some(trimmed.to_string());
@@ -752,9 +794,18 @@ fn body_bytes(val: Value) -> (Bytes, BodyKind) {
 fn build_query_map(uri: &Uri) -> Value {
     let query_map = map_new();
     if let Some(query) = uri.query() {
-        for (key, val) in parse_query(query) {
-            let key_val = string::str_from_bytes(key.as_bytes());
-            let val_val = string::str_from_bytes(val.as_bytes());
+        let mut scratch = Vec::new();
+        for part in query.split('&') {
+            if part.is_empty() {
+                continue;
+            }
+            let mut iter = part.splitn(2, '=');
+            let key = iter.next().unwrap_or("");
+            let val = iter.next().unwrap_or("");
+            let key_decoded = decode_cow(key, &mut scratch);
+            let val_decoded = decode_cow(val, &mut scratch);
+            let key_val = string::str_from_bytes(key_decoded.as_bytes());
+            let val_val = string::str_from_bytes(val_decoded.as_bytes());
             map_set(query_map, key_val, val_val);
             unsafe {
                 wr_rc_dec(key_val);
@@ -767,62 +818,77 @@ fn build_query_map(uri: &Uri) -> Value {
 
 fn match_route<'a>(
     path: &str,
-    routes: &'a HashMap<String, Vec<Route>>,
+    patterns: &'a [RoutePattern],
 ) -> Option<(&'a Vec<Route>, Value)> {
     let path_parts: Vec<&str> = path.trim_matches('/').split('/').collect();
-    for (pattern, routes) in routes {
-        let pat_parts: Vec<&str> = pattern.trim_matches('/').split('/').collect();
-        if path_parts.len() != pat_parts.len() {
+    for entry in patterns {
+        if path_parts.len() != entry.parts.len() {
             continue;
         }
-        let params_map = map_new();
+        let mut params_map: Option<Value> = None;
         let mut matched = true;
-        for (pat, actual) in pat_parts.iter().zip(path_parts.iter()) {
-            let param = if let Some(param) = pat.strip_prefix(':') {
-                Some(param)
-            } else {
-                pat.strip_prefix('{').and_then(|p| p.strip_suffix('}'))
-            };
-            if let Some(param) = param {
-                let key_val = string::str_from_bytes(param.as_bytes());
-                let val_val = string::str_from_bytes(actual.as_bytes());
-                map_set(params_map, key_val, val_val);
-                unsafe {
-                    wr_rc_dec(key_val);
-                    wr_rc_dec(val_val);
+        for (part, actual) in entry.parts.iter().zip(path_parts.iter()) {
+            match part {
+                PatternPart::Static(text) => {
+                    if text != actual {
+                        matched = false;
+                        break;
+                    }
                 }
-                continue;
-            }
-            if pat != actual {
-                matched = false;
-                break;
+                PatternPart::Param(name) => {
+                    let map = params_map.get_or_insert_with(map_new);
+                    let key_val = string::str_from_bytes(name.as_bytes());
+                    let val_val = string::str_from_bytes(actual.as_bytes());
+                    map_set(*map, key_val, val_val);
+                    unsafe {
+                        wr_rc_dec(key_val);
+                        wr_rc_dec(val_val);
+                    }
+                }
             }
         }
         if matched {
-            return Some((routes, params_map));
+            let params_map = params_map.unwrap_or_else(map_new);
+            return Some((&entry.routes, params_map));
         }
-        unsafe { wr_rc_dec(params_map) };
+        if let Some(map) = params_map {
+            unsafe { wr_rc_dec(map) };
+        }
     }
     None
 }
 
-fn parse_query(query: &str) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    for part in query.split('&') {
-        if part.is_empty() {
-            continue;
+fn split_pattern(pattern: &str) -> Vec<PatternPart> {
+    let mut parts = Vec::new();
+    for part in pattern.trim_matches('/').split('/') {
+        let param = if let Some(param) = part.strip_prefix(':') {
+            Some(param)
+        } else {
+            part.strip_prefix('{').and_then(|p| p.strip_suffix('}'))
+        };
+        if let Some(name) = param {
+            parts.push(PatternPart::Param(name.to_string()));
+        } else {
+            parts.push(PatternPart::Static(part.to_string()));
         }
-        let mut iter = part.splitn(2, '=');
-        let key = iter.next().unwrap_or("");
-        let val = iter.next().unwrap_or("");
-        out.push((percent_decode(key), percent_decode(val)));
     }
-    out
+    parts
 }
 
-fn percent_decode(input: &str) -> String {
+fn decode_cow<'a>(input: &'a str, scratch: &mut Vec<u8>) -> Cow<'a, str> {
+    if !needs_decode(input) {
+        return Cow::Borrowed(input);
+    }
+    Cow::Owned(percent_decode_into(input, scratch))
+}
+
+fn needs_decode(input: &str) -> bool {
+    input.as_bytes().iter().any(|b| *b == b'%' || *b == b'+')
+}
+
+fn percent_decode_into(input: &str, scratch: &mut Vec<u8>) -> String {
+    scratch.clear();
     let bytes = input.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
         match bytes[i] {
@@ -830,18 +896,18 @@ fn percent_decode(input: &str) -> String {
                 let hi = from_hex(bytes[i + 1]);
                 let lo = from_hex(bytes[i + 2]);
                 if let (Some(hi), Some(lo)) = (hi, lo) {
-                    out.push((hi << 4) | lo);
+                    scratch.push((hi << 4) | lo);
                     i += 3;
                     continue;
                 }
-                out.push(bytes[i]);
+                scratch.push(bytes[i]);
             }
-            b'+' => out.push(b' '),
-            b => out.push(b),
+            b'+' => scratch.push(b' '),
+            b => scratch.push(b),
         }
         i += 1;
     }
-    String::from_utf8_lossy(&out).to_string()
+    String::from_utf8_lossy(scratch).to_string()
 }
 
 fn from_hex(byte: u8) -> Option<u8> {
@@ -884,6 +950,123 @@ fn path_matches(pattern: &str, path: &str) -> bool {
     pattern == path
 }
 
+fn http_config_from_value(config: Value) -> HttpConfig {
+    let mut out = HttpConfig::default();
+
+    if let Some(token) = config_field_string(config, "auth_token") {
+        out.auth_token = Some(token);
+    }
+    if let Some(enabled) = config_field_bool(config, "auth_jwt_enabled") {
+        out.auth_jwt_enabled = enabled;
+    }
+    if let Some(secret) = config_field_string(config, "jwt_secret") {
+        out.jwt_secret = secret;
+    }
+    if let Some(permission) = config_field_string(config, "rbac_permission") {
+        out.rbac_permission = Some(permission);
+    }
+    if let Some(scope) = config_field_string(config, "rbac_scope") {
+        out.rbac_scope = scope;
+    }
+    let rbac_skip = config_field_string_list(config, "rbac_skip_paths");
+    if !rbac_skip.is_empty() {
+        out.rbac_skip_paths = rbac_skip;
+    }
+    if let Some(enabled) = config_field_bool(config, "rate_limit_enabled") {
+        out.rate_limit_enabled = enabled;
+    }
+    if let Some(burst) = config_field_u64(config, "rate_limit_burst") {
+        out.rate_limit_burst = burst.max(1);
+    }
+    if let Some(per_secs) = config_field_u64(config, "rate_limit_per_secs") {
+        out.rate_limit_per_secs = per_secs.max(1);
+    }
+    let rate_skip = config_field_string_list(config, "rate_limit_skip_paths");
+    if !rate_skip.is_empty() {
+        out.rate_limit_skip_paths = rate_skip;
+    }
+    if let Some(enabled) = config_field_bool(config, "hsts_enabled") {
+        out.hsts_enabled = enabled;
+    }
+    if let Some(csp) = config_field_string(config, "csp") {
+        out.csp = Some(csp);
+    }
+
+    out
+}
+
+fn config_field_string(config: Value, field: &str) -> Option<String> {
+    let val = class_get(config, field.as_ptr(), field.len());
+    if val.is_nil() {
+        unsafe { wr_rc_dec(val) };
+        return None;
+    }
+    let out = string_value(val).and_then(|text| {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
+    unsafe { wr_rc_dec(val) };
+    out
+}
+
+fn config_field_bool(config: Value, field: &str) -> Option<bool> {
+    let val = class_get(config, field.as_ptr(), field.len());
+    if val.is_nil() {
+        unsafe { wr_rc_dec(val) };
+        return None;
+    }
+    let out = if val.is_bool() { Some(val.as_bool()) } else { None };
+    unsafe { wr_rc_dec(val) };
+    out
+}
+
+fn config_field_u64(config: Value, field: &str) -> Option<u64> {
+    let val = class_get(config, field.as_ptr(), field.len());
+    if val.is_nil() {
+        unsafe { wr_rc_dec(val) };
+        return None;
+    }
+    let out = int_value(val).and_then(|num| if num >= 0 { Some(num as u64) } else { None });
+    unsafe { wr_rc_dec(val) };
+    out
+}
+
+fn config_field_string_list(config: Value, field: &str) -> Vec<String> {
+    let val = class_get(config, field.as_ptr(), field.len());
+    if val.is_nil() {
+        unsafe { wr_rc_dec(val) };
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    if let Some(list) = as_list_ref(val) {
+        unsafe {
+            for entry in (*list).data.iter() {
+                if let Some(text) = string_value(*entry) {
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        out.push(trimmed.to_string());
+                    }
+                }
+            }
+        }
+        unsafe { wr_rc_dec(val) };
+        return out;
+    }
+    if let Some(text) = string_value(val) {
+        out.extend(
+            text.split(',')
+                .map(|entry| entry.trim().to_string())
+                .filter(|entry| !entry.is_empty()),
+        );
+    }
+    unsafe { wr_rc_dec(val) };
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -912,6 +1095,13 @@ mod tests {
     const CLASS_HANDLER_PARAMS: u32 = 204;
     const CLASS_HANDLER_ECHO: u32 = 205;
     const CLASS_HANDLER_QUERY: u32 = 206;
+
+    fn with_http_config<F: FnOnce()>(config: HttpConfig, f: F) {
+        let prev = http_config();
+        set_http_config(config);
+        f();
+        set_http_config(prev);
+    }
     const CLASS_HANDLER_EMPTY: u32 = 207;
     const CLASS_HANDLER_POOL: u32 = 208;
     const CLASS_HANDLER_HEADERS: u32 = 209;
@@ -954,12 +1144,10 @@ mod tests {
             std::mem::forget(dir);
             let user = StorageUserConfig {
                 file_path: Some(path.to_string_lossy().to_string()),
+                http_enabled: Some(false),
                 ..Default::default()
             };
             crate::storage::config::set_storage_user_config(user);
-            unsafe {
-                std::env::set_var("WRELA_RAFT_HTTP_ENABLED", "0");
-            }
         });
     }
 
@@ -1764,29 +1952,27 @@ mod tests {
         let _lock = test_lock();
         reset_registry();
         register_http_classes();
-        unsafe {
-            std::env::set_var("WRELA_HTTP_AUTH_TOKEN", "token-123");
-        }
-        let handler = spawn_handler(CLASS_HANDLER_TEXT, handle_text);
-        let addr = start_server("/secure", Method::GET, handler);
+        let mut cfg = HttpConfig::default();
+        cfg.auth_token = Some("token-123".to_string());
+        with_http_config(cfg, || {
+            let handler = spawn_handler(CLASS_HANDLER_TEXT, handle_text);
+            let addr = start_server("/secure", Method::GET, handler);
 
-        let client = Client::new();
-        let url = format!("http://{addr}/secure");
-        let resp = send_with_retry(|| client.get(&url));
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+            let client = Client::new();
+            let url = format!("http://{addr}/secure");
+            let resp = send_with_retry(|| client.get(&url));
+            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
-        let resp = send_with_retry(|| client.get(&url).header("authorization", "Bearer token-123"));
-        assert_eq!(resp.status(), StatusCode::OK);
+            let resp =
+                send_with_retry(|| client.get(&url).header("authorization", "Bearer token-123"));
+            assert_eq!(resp.status(), StatusCode::OK);
 
-        stop();
-        std::thread::sleep(Duration::from_millis(50));
-        unsafe {
-            std::env::remove_var("WRELA_HTTP_AUTH_TOKEN");
-        }
-
-        unsafe {
-            wr_rc_dec(handler);
-        }
+            stop();
+            std::thread::sleep(Duration::from_millis(50));
+            unsafe {
+                wr_rc_dec(handler);
+            }
+        });
     }
 
     #[test]
@@ -1797,46 +1983,42 @@ mod tests {
         let _lock = test_lock();
         reset_registry();
         register_http_classes();
-        unsafe {
-            std::env::set_var("WRELA_HTTP_AUTH_JWT", "1");
-            std::env::set_var("WRELA_JWT_SECRET", "test-secret");
-        }
+        let mut cfg = HttpConfig::default();
+        cfg.auth_jwt_enabled = true;
+        cfg.jwt_secret = "test-secret".to_string();
         #[derive(serde::Serialize)]
         struct Claims {
             exp: usize,
         }
-        let header = jsonwebtoken::Header::default();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        let claims = Claims { exp: (now + 60) as usize };
-        let key = jsonwebtoken::EncodingKey::from_secret(b"test-secret");
-        let token = jsonwebtoken::encode(&header, &claims, &key).expect("token");
+        with_http_config(cfg, || {
+            let header = jsonwebtoken::Header::default();
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            let claims = Claims { exp: (now + 60) as usize };
+            let key = jsonwebtoken::EncodingKey::from_secret(b"test-secret");
+            let token = jsonwebtoken::encode(&header, &claims, &key).expect("token");
 
-        let handler = spawn_handler(CLASS_HANDLER_TEXT, handle_text);
-        let addr = start_server("/secure-jwt", Method::GET, handler);
+            let handler = spawn_handler(CLASS_HANDLER_TEXT, handle_text);
+            let addr = start_server("/secure-jwt", Method::GET, handler);
 
-        let client = Client::new();
-        let url = format!("http://{addr}/secure-jwt");
-        let resp = send_with_retry(|| client.get(&url));
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+            let client = Client::new();
+            let url = format!("http://{addr}/secure-jwt");
+            let resp = send_with_retry(|| client.get(&url));
+            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
-        let resp = send_with_retry(|| {
-            client.get(&url).header("authorization", format!("Bearer {token}"))
+            let resp = send_with_retry(|| {
+                client.get(&url).header("authorization", format!("Bearer {token}"))
+            });
+            assert_eq!(resp.status(), StatusCode::OK);
+
+            stop();
+            std::thread::sleep(Duration::from_millis(50));
+            unsafe {
+                wr_rc_dec(handler);
+            }
         });
-        assert_eq!(resp.status(), StatusCode::OK);
-
-        stop();
-        std::thread::sleep(Duration::from_millis(50));
-        unsafe {
-            std::env::remove_var("WRELA_HTTP_AUTH_JWT");
-            std::env::remove_var("WRELA_JWT_SECRET");
-        }
-
-        unsafe {
-            wr_rc_dec(handler);
-        }
     }
 
     #[test]
@@ -1847,34 +2029,33 @@ mod tests {
         let _lock = test_lock();
         reset_registry();
         register_http_classes();
-        unsafe {
-            std::env::set_var("WRELA_HTTP_CSP", "default-src 'none'");
-            std::env::set_var("WRELA_HTTP_HSTS", "1");
-        }
-        let handler = spawn_handler(CLASS_HANDLER_TEXT, handle_text);
-        let addr = start_server("/csp", Method::GET, handler);
+        let mut cfg = HttpConfig::default();
+        cfg.csp = Some("default-src 'none'".to_string());
+        cfg.hsts_enabled = true;
+        with_http_config(cfg, || {
+            let handler = spawn_handler(CLASS_HANDLER_TEXT, handle_text);
+            let addr = start_server("/csp", Method::GET, handler);
 
-        let client = Client::new();
-        let resp = send_with_retry(|| client.get(format!("http://{addr}/csp")));
-        assert_eq!(resp.status(), StatusCode::OK);
-        let csp = resp
-            .headers()
-            .get("content-security-policy")
-            .and_then(|v| v.to_str().ok());
-        assert_eq!(csp, Some("default-src 'none'"));
-        let hsts = resp
-            .headers()
-            .get("strict-transport-security")
-            .and_then(|v| v.to_str().ok());
-        assert!(hsts.is_some());
+            let client = Client::new();
+            let resp = send_with_retry(|| client.get(format!("http://{addr}/csp")));
+            assert_eq!(resp.status(), StatusCode::OK);
+            let csp = resp
+                .headers()
+                .get("content-security-policy")
+                .and_then(|v| v.to_str().ok());
+            assert_eq!(csp, Some("default-src 'none'"));
+            let hsts = resp
+                .headers()
+                .get("strict-transport-security")
+                .and_then(|v| v.to_str().ok());
+            assert!(hsts.is_some());
 
-        stop();
-        std::thread::sleep(Duration::from_millis(50));
-        unsafe {
-            std::env::remove_var("WRELA_HTTP_CSP");
-            std::env::remove_var("WRELA_HTTP_HSTS");
-            wr_rc_dec(handler);
-        }
+            stop();
+            std::thread::sleep(Duration::from_millis(50));
+            unsafe {
+                wr_rc_dec(handler);
+            }
+        });
     }
 
     #[test]
@@ -1886,12 +2067,11 @@ mod tests {
         reset_registry();
         register_http_classes();
         ensure_storage_configured();
-        unsafe {
-            std::env::set_var("WRELA_HTTP_AUTH_JWT", "1");
-            std::env::set_var("WRELA_JWT_SECRET", "rbac-secret");
-            std::env::set_var("WRELA_HTTP_RBAC_PERMISSION", "admin");
-            std::env::set_var("WRELA_HTTP_RBAC_SCOPE", "scope-a");
-        }
+        let mut cfg = HttpConfig::default();
+        cfg.auth_jwt_enabled = true;
+        cfg.jwt_secret = "rbac-secret".to_string();
+        cfg.rbac_permission = Some("admin".to_string());
+        cfg.rbac_scope = "scope-a".to_string();
 
         let storage = Value::from_int(1);
         let scope = string::str_from_bytes(b"scope-a");
@@ -1938,36 +2118,35 @@ mod tests {
         )
         .expect("token user2");
 
-        let handler = spawn_handler(CLASS_HANDLER_TEXT, handle_text);
-        let addr = start_server("/secure-rbac", Method::GET, handler);
+        with_http_config(cfg, || {
+            let handler = spawn_handler(CLASS_HANDLER_TEXT, handle_text);
+            let addr = start_server("/secure-rbac", Method::GET, handler);
 
-        let client = Client::new();
-        let url = format!("http://{addr}/secure-rbac");
-        let resp = send_with_retry(|| client.get(&url));
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+            let client = Client::new();
+            let url = format!("http://{addr}/secure-rbac");
+            let resp = send_with_retry(|| client.get(&url));
+            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
-        let resp = send_with_retry(|| {
-            client
-                .get(&url)
-                .header("authorization", format!("Bearer {token_user2}"))
+            let resp = send_with_retry(|| {
+                client
+                    .get(&url)
+                    .header("authorization", format!("Bearer {token_user2}"))
+            });
+            assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+            let resp = send_with_retry(|| {
+                client
+                    .get(&url)
+                    .header("authorization", format!("Bearer {token_user1}"))
+            });
+            assert_eq!(resp.status(), StatusCode::OK);
+
+            stop();
+            std::thread::sleep(Duration::from_millis(50));
+            unsafe {
+                wr_rc_dec(handler);
+            }
         });
-        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-
-        let resp = send_with_retry(|| {
-            client
-                .get(&url)
-                .header("authorization", format!("Bearer {token_user1}"))
-        });
-        assert_eq!(resp.status(), StatusCode::OK);
-
-        stop();
-        std::thread::sleep(Duration::from_millis(50));
-        unsafe {
-            std::env::remove_var("WRELA_HTTP_AUTH_JWT");
-            std::env::remove_var("WRELA_JWT_SECRET");
-            std::env::remove_var("WRELA_HTTP_RBAC_PERMISSION");
-            std::env::remove_var("WRELA_HTTP_RBAC_SCOPE");
-        }
 
         unsafe {
             wr_rc_dec(scope);
@@ -1979,7 +2158,6 @@ mod tests {
             wr_rc_dec(user_id);
             wr_rc_dec(assign_pending);
             wr_rc_dec(assigned);
-            wr_rc_dec(handler);
         }
     }
 
@@ -1992,30 +2170,28 @@ mod tests {
         reset_registry();
         register_http_classes();
         ensure_storage_configured();
-        unsafe {
-            std::env::set_var("WRELA_HTTP_RATE_LIMIT", "1");
-            std::env::set_var("WRELA_HTTP_RATE_LIMIT_BURST", "1");
-            std::env::set_var("WRELA_HTTP_RATE_LIMIT_PER_SECS", "60");
-        }
-        let handler = spawn_handler(CLASS_HANDLER_TEXT, handle_text);
-        let addr = start_server("/limited", Method::GET, handler);
-        let client = Client::new();
-        let url = format!("http://{addr}/limited");
-        let ip = format!("test-{}", uuid::Uuid::new_v4());
-        let resp = send_with_retry(|| client.get(&url).header("x-real-ip", ip.clone()));
-        assert_eq!(resp.status(), StatusCode::OK);
+        let mut cfg = HttpConfig::default();
+        cfg.rate_limit_enabled = true;
+        cfg.rate_limit_burst = 1;
+        cfg.rate_limit_per_secs = 60;
+        with_http_config(cfg, || {
+            let handler = spawn_handler(CLASS_HANDLER_TEXT, handle_text);
+            let addr = start_server("/limited", Method::GET, handler);
+            let client = Client::new();
+            let url = format!("http://{addr}/limited");
+            let ip = format!("test-{}", uuid::Uuid::new_v4());
+            let resp = send_with_retry(|| client.get(&url).header("x-real-ip", ip.clone()));
+            assert_eq!(resp.status(), StatusCode::OK);
 
-        let resp = send_with_retry(|| client.get(&url).header("x-real-ip", ip.clone()));
-        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+            let resp = send_with_retry(|| client.get(&url).header("x-real-ip", ip.clone()));
+            assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
 
-        stop();
-        std::thread::sleep(Duration::from_millis(50));
-        unsafe {
-            std::env::remove_var("WRELA_HTTP_RATE_LIMIT");
-            std::env::remove_var("WRELA_HTTP_RATE_LIMIT_BURST");
-            std::env::remove_var("WRELA_HTTP_RATE_LIMIT_PER_SECS");
-            wr_rc_dec(handler);
-        }
+            stop();
+            std::thread::sleep(Duration::from_millis(50));
+            unsafe {
+                wr_rc_dec(handler);
+            }
+        });
     }
 
     #[test]
@@ -2027,13 +2203,12 @@ mod tests {
         reset_registry();
         register_http_classes();
         ensure_storage_configured();
-        unsafe {
-            std::env::set_var("WRELA_HTTP_AUTH_JWT", "1");
-            std::env::set_var("WRELA_JWT_SECRET", "skip-secret");
-            std::env::set_var("WRELA_HTTP_RBAC_PERMISSION", "admin");
-            std::env::set_var("WRELA_HTTP_RBAC_SCOPE", "scope-skip");
-            std::env::set_var("WRELA_HTTP_RBAC_SKIP_PATHS", "/public");
-        }
+        let mut cfg = HttpConfig::default();
+        cfg.auth_jwt_enabled = true;
+        cfg.jwt_secret = "skip-secret".to_string();
+        cfg.rbac_permission = Some("admin".to_string());
+        cfg.rbac_scope = "scope-skip".to_string();
+        cfg.rbac_skip_paths = vec!["/public".to_string()];
         #[derive(serde::Serialize)]
         struct Claims {
             exp: usize,
@@ -2055,28 +2230,25 @@ mod tests {
         )
         .expect("token");
 
-        let handler = spawn_handler(CLASS_HANDLER_TEXT, handle_text);
-        let addr = start_server("/public", Method::GET, handler);
+        with_http_config(cfg, || {
+            let handler = spawn_handler(CLASS_HANDLER_TEXT, handle_text);
+            let addr = start_server("/public", Method::GET, handler);
 
-        let client = Client::new();
-        let url = format!("http://{addr}/public");
-        let resp = send_with_retry(|| {
-            client
-                .get(&url)
-                .header("authorization", format!("Bearer {token}"))
+            let client = Client::new();
+            let url = format!("http://{addr}/public");
+            let resp = send_with_retry(|| {
+                client
+                    .get(&url)
+                    .header("authorization", format!("Bearer {token}"))
+            });
+            assert_eq!(resp.status(), StatusCode::OK);
+
+            stop();
+            std::thread::sleep(Duration::from_millis(50));
+            unsafe {
+                wr_rc_dec(handler);
+            }
         });
-        assert_eq!(resp.status(), StatusCode::OK);
-
-        stop();
-        std::thread::sleep(Duration::from_millis(50));
-        unsafe {
-            std::env::remove_var("WRELA_HTTP_AUTH_JWT");
-            std::env::remove_var("WRELA_JWT_SECRET");
-            std::env::remove_var("WRELA_HTTP_RBAC_PERMISSION");
-            std::env::remove_var("WRELA_HTTP_RBAC_SCOPE");
-            std::env::remove_var("WRELA_HTTP_RBAC_SKIP_PATHS");
-            wr_rc_dec(handler);
-        }
     }
 
     #[test]
@@ -2088,32 +2260,29 @@ mod tests {
         reset_registry();
         register_http_classes();
         ensure_storage_configured();
-        unsafe {
-            std::env::set_var("WRELA_HTTP_RATE_LIMIT", "1");
-            std::env::set_var("WRELA_HTTP_RATE_LIMIT_BURST", "1");
-            std::env::set_var("WRELA_HTTP_RATE_LIMIT_PER_SECS", "60");
-            std::env::set_var("WRELA_HTTP_RATE_LIMIT_SKIP_PATHS", "/open");
-        }
-        let handler = spawn_handler(CLASS_HANDLER_TEXT, handle_text);
-        let addr = start_server("/open", Method::GET, handler);
-        let client = Client::new();
-        let url = format!("http://{addr}/open");
-        let ip = format!("skip-{}", uuid::Uuid::new_v4());
+        let mut cfg = HttpConfig::default();
+        cfg.rate_limit_enabled = true;
+        cfg.rate_limit_burst = 1;
+        cfg.rate_limit_per_secs = 60;
+        cfg.rate_limit_skip_paths = vec!["/open".to_string()];
+        with_http_config(cfg, || {
+            let handler = spawn_handler(CLASS_HANDLER_TEXT, handle_text);
+            let addr = start_server("/open", Method::GET, handler);
+            let client = Client::new();
+            let url = format!("http://{addr}/open");
+            let ip = format!("skip-{}", uuid::Uuid::new_v4());
 
-        let resp = send_with_retry(|| client.get(&url).header("x-real-ip", ip.clone()));
-        assert_eq!(resp.status(), StatusCode::OK);
-        let resp = send_with_retry(|| client.get(&url).header("x-real-ip", ip.clone()));
-        assert_eq!(resp.status(), StatusCode::OK);
+            let resp = send_with_retry(|| client.get(&url).header("x-real-ip", ip.clone()));
+            assert_eq!(resp.status(), StatusCode::OK);
+            let resp = send_with_retry(|| client.get(&url).header("x-real-ip", ip.clone()));
+            assert_eq!(resp.status(), StatusCode::OK);
 
-        stop();
-        std::thread::sleep(Duration::from_millis(50));
-        unsafe {
-            std::env::remove_var("WRELA_HTTP_RATE_LIMIT");
-            std::env::remove_var("WRELA_HTTP_RATE_LIMIT_BURST");
-            std::env::remove_var("WRELA_HTTP_RATE_LIMIT_PER_SECS");
-            std::env::remove_var("WRELA_HTTP_RATE_LIMIT_SKIP_PATHS");
-            wr_rc_dec(handler);
-        }
+            stop();
+            std::thread::sleep(Duration::from_millis(50));
+            unsafe {
+                wr_rc_dec(handler);
+            }
+        });
     }
 
     #[test]

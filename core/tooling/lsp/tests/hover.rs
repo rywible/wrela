@@ -6,8 +6,8 @@ mod common;
 #[test]
 fn test_hover_doc_comment() {
     let code = r#"
-    /// This is a documentation comment
-    /// It has multiple lines
+    so: This is a documentation comment
+        It has multiple lines
     to foo() -> Nothing:
         return nothing
     "#;

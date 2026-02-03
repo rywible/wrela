@@ -1,3 +1,5 @@
+use crate::parser::ast;
+use crate::parser::ast::AstNode;
 use crate::parser::SyntaxKind;
 use crate::parser::SyntaxNode;
 use miette::SourceSpan;
@@ -170,6 +172,17 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                         message: "field definition requires a name".to_string(),
                         span: span_for_node(&node),
                     });
+                }
+                if let Some(field) = ast::FieldDef::cast(node.clone()) {
+                    if let Some(default_expr) = field.default_expr() {
+                        if !field_default_is_allowed(default_expr) {
+                            errors.push(ValidationError {
+                                message: "field defaults must be literals, lists, or maps"
+                                    .to_string(),
+                                span: span_for_node(&node),
+                            });
+                        }
+                    }
                 }
             }
             SyntaxKind::TypeRef => {
@@ -450,6 +463,28 @@ fn is_in_return(node: &SyntaxNode) -> bool {
         .any(|ancestor| ancestor.kind() == SyntaxKind::ReturnStmt)
 }
 
+fn field_default_is_allowed(expr: ast::Expr) -> bool {
+    match expr {
+        ast::Expr::Literal(_) => true,
+        ast::Expr::List(list) => list.items().all(field_default_is_allowed),
+        ast::Expr::Map(map) => {
+            let mut items = map.items();
+            while let Some(key) = items.next() {
+                let Some(value) = items.next() else { return false };
+                if !field_default_is_allowed(key) || !field_default_is_allowed(value) {
+                    return false;
+                }
+            }
+            true
+        }
+        ast::Expr::Paren(p) => {
+            let expr = p.syntax().children().filter_map(ast::Expr::cast).next();
+            expr.map(field_default_is_allowed).unwrap_or(false)
+        }
+        _ => false,
+    }
+}
+
 fn is_in_function(node: &SyntaxNode) -> bool {
     node.ancestors()
         .any(|ancestor| matches!(ancestor.kind(), SyntaxKind::FuncDef | SyntaxKind::MethodDef | SyntaxKind::DeriveDef))
@@ -577,6 +612,37 @@ to f():
             errors
                 .iter()
                 .any(|e| e.message == "function requires an explicit return type")
+        );
+    }
+
+    #[test]
+    fn test_field_default_literals_ok() {
+        let text = r#"
+A Defaults:
+    has:
+        name: String = "ok"
+        count: Int = 3
+        flags: List = [true, false]
+        meta: Map = {"a": 1}
+"#;
+        let root = parse(text);
+        let errors = validate(&root);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_field_default_rejects_expr() {
+        let text = r#"
+A Bad:
+    has:
+        value: Int = 1 + 2
+"#;
+        let root = parse(text);
+        let errors = validate(&root);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message == "field defaults must be literals, lists, or maps")
         );
     }
 

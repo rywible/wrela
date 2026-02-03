@@ -1466,6 +1466,10 @@ impl FieldDef {
     pub fn ty(&self) -> Option<TypeRef> {
         self.0.children().filter_map(TypeRef::cast).next()
     }
+
+    pub fn default_expr(&self) -> Option<Expr> {
+        self.0.children().filter_map(Expr::cast).next()
+    }
 }
 
 pub struct HasBlock(SyntaxNode);

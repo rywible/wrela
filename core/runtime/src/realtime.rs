@@ -16,9 +16,37 @@ use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::collections::{HashMap, HashSet};
 #[cfg(any(test, feature = "test-utils"))]
 use std::future::Future;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
+
+#[derive(Clone)]
+pub(crate) struct RealtimeConfig {
+    pub(crate) socket_ttl_secs: Option<u64>,
+}
+
+impl Default for RealtimeConfig {
+    fn default() -> Self {
+        Self { socket_ttl_secs: None }
+    }
+}
+
+static REALTIME_CONFIG: OnceLock<Mutex<RealtimeConfig>> = OnceLock::new();
+
+fn realtime_config() -> RealtimeConfig {
+    REALTIME_CONFIG
+        .get_or_init(|| Mutex::new(RealtimeConfig::default()))
+        .lock()
+        .expect("realtime config lock")
+        .clone()
+}
+
+fn set_realtime_config(config: RealtimeConfig) {
+    *REALTIME_CONFIG
+        .get_or_init(|| Mutex::new(RealtimeConfig::default()))
+        .lock()
+        .expect("realtime config lock") = config;
+}
 
 #[derive(Default)]
 pub(crate) struct RealtimeState {
@@ -202,15 +230,7 @@ fn now_secs() -> u64 {
 }
 
 fn realtime_socket_ttl_secs() -> Option<u64> {
-    let val = std::env::var("WRELA_REALTIME_SOCKET_TTL_SECS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(0);
-    if val == 0 {
-        None
-    } else {
-        Some(val)
-    }
+    realtime_config().socket_ttl_secs
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -251,6 +271,45 @@ async fn update_room_membership(room: &str, socket_id: &str, add: bool) {
         }
         tokio::task::yield_now().await;
     }
+}
+
+pub fn realtime_configure(config: Value) -> Value {
+    let new_config = realtime_config_from_value(config);
+    set_realtime_config(new_config);
+    Value::nil()
+}
+
+fn realtime_config_from_value(config: Value) -> RealtimeConfig {
+    let mut out = RealtimeConfig::default();
+    if let Some(val) = config_field_u64(config, "socket_ttl_secs") {
+        if val == 0 {
+            out.socket_ttl_secs = None;
+        } else {
+            out.socket_ttl_secs = Some(val);
+        }
+    }
+    out
+}
+
+fn config_field_u64(config: Value, field: &str) -> Option<u64> {
+    let val = crate::class::class_get(config, field.as_ptr(), field.len());
+    if val.is_nil() {
+        unsafe { wr_rc_dec(val) };
+        return None;
+    }
+    let out = crate::value::int_value(val).and_then(|num| if num >= 0 { Some(num as u64) } else { None });
+    unsafe { wr_rc_dec(val) };
+    out
+}
+
+#[cfg(test)]
+pub fn set_realtime_config_for_test(config: RealtimeConfig) {
+    set_realtime_config(config);
+}
+
+#[cfg(test)]
+pub fn realtime_config_for_test() -> RealtimeConfig {
+    realtime_config()
 }
 
 async fn update_socket_rooms(socket_id: &str, room: &str, add: bool) -> bool {

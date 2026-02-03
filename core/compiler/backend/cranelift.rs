@@ -1294,6 +1294,9 @@ fn lower_rvalue(
                                         Some(runtime_fn_assert_err(module, runtime)?)
                                     }
                                     "log" => Some(runtime_fn_log(module, runtime)?),
+                                    "log_configure" => {
+                                        Some(runtime_fn_log_configure(module, runtime)?)
+                                    }
                                     "parse_int" => Some(runtime_fn_parse_int(module, runtime)?),
                                     "parse_float" => Some(runtime_fn_parse_float(module, runtime)?),
                                     "read_file" => Some(runtime_fn_read_file(module, runtime)?),
@@ -1360,6 +1363,9 @@ fn lower_rvalue(
                                     "auth_oauth_login" => {
                                         Some(runtime_fn_auth_oauth_login(module, runtime)?)
                                     }
+                                    "auth_configure" => {
+                                        Some(runtime_fn_auth_configure(module, runtime)?)
+                                    }
                                     "rbac_create_role" => {
                                         Some(runtime_fn_rbac_create_role(module, runtime)?)
                                     }
@@ -1394,6 +1400,9 @@ fn lower_rvalue(
                                     "jobs_dead_letter" => {
                                         Some(runtime_fn_jobs_dead_letter(module, runtime)?)
                                     }
+                                    "jobs_configure" => {
+                                        Some(runtime_fn_jobs_configure(module, runtime)?)
+                                    }
                                     "schedule_cron" => {
                                         Some(runtime_fn_schedule_cron(module, runtime)?)
                                     }
@@ -1425,6 +1434,12 @@ fn lower_rvalue(
                                     "realtime_send" => {
                                         Some(runtime_fn_realtime_send(module, runtime)?)
                                     }
+                                    "realtime_configure" => {
+                                        Some(runtime_fn_realtime_configure(module, runtime)?)
+                                    }
+                                    "pubsub_configure" => {
+                                        Some(runtime_fn_pubsub_configure(module, runtime)?)
+                                    }
                                     "rate_check" => Some(runtime_fn_rate_check(module, runtime)?),
                                     "rate_ip" => Some(runtime_fn_rate_ip(module, runtime)?),
                                     "admin_enable" => {
@@ -1442,6 +1457,9 @@ fn lower_rvalue(
                                     }
                                     "storage_configure" => {
                                         Some(runtime_fn_storage_configure(module, runtime)?)
+                                    }
+                                    "runtime_configure" => {
+                                        Some(runtime_fn_runtime_configure(module, runtime)?)
                                     }
                                     "storage_set" => Some(runtime_fn_storage_set(module, runtime)?),
                                     "storage_set_if_version" => {
@@ -1474,6 +1492,9 @@ fn lower_rvalue(
                                     "http_server_serve_requests" => Some(
                                         runtime_fn_http_server_serve_requests(module, runtime)?,
                                     ),
+                                    "http_server_configure" => {
+                                        Some(runtime_fn_http_server_configure(module, runtime)?)
+                                    }
                                     "http_server_serve_on" => {
                                         Some(runtime_fn_http_server_serve_on(module, runtime)?)
                                     }
@@ -2344,6 +2365,14 @@ fn runtime_fn_auth_oauth_login(
     runtime.get_func(module, "wr_auth_oauth_login", sig)
 }
 
+fn runtime_fn_auth_configure(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_auth_configure", sig)
+}
+
 fn runtime_fn_rbac_create_role(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
@@ -2461,6 +2490,14 @@ fn runtime_fn_jobs_dead_letter(
     runtime.get_func(module, "wr_jobs_dead_letter", sig)
 }
 
+fn runtime_fn_jobs_configure(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_jobs_configure", sig)
+}
+
 fn runtime_fn_schedule_cron(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
@@ -2561,6 +2598,22 @@ fn runtime_fn_realtime_send(
     runtime.get_func(module, "wr_realtime_send", sig)
 }
 
+fn runtime_fn_realtime_configure(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_realtime_configure", sig)
+}
+
+fn runtime_fn_pubsub_configure(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_pubsub_configure", sig)
+}
+
 fn runtime_fn_rate_check(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
@@ -2627,6 +2680,14 @@ fn runtime_fn_storage_configure(
     runtime.get_func(module, "wr_storage_configure", sig)
 }
 
+fn runtime_fn_runtime_configure(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_runtime_configure", sig)
+}
+
 fn runtime_fn_storage_set(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
@@ -2691,6 +2752,14 @@ fn runtime_fn_http_server_serve_requests(
     let sig =
         RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
     runtime.get_func(module, "wr_http_server_serve_requests", sig)
+}
+
+fn runtime_fn_http_server_configure(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_http_server_configure", sig)
 }
 
 fn runtime_fn_http_server_serve_on(
@@ -2885,6 +2954,14 @@ fn runtime_fn_log(
     let sig =
         RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
     runtime.get_func(module, "wr_log", sig)
+}
+
+fn runtime_fn_log_configure(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_log_configure", sig)
 }
 
 fn runtime_fn_assert(

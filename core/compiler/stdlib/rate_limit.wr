@@ -1,0 +1,17 @@
+so:
+    Rate limiting helpers backed by storage.
+
+use StorageClient from storage
+use HttpRequest from http
+
+A RateLimit:
+    has:
+        storage: StorageClient
+
+    so: Check rate limits for a key with options.
+    can check(key: String, opts: Map) -> Pending:
+        return rate_check(its.storage, key, opts)
+
+    so: Extract the request IP for rate limiting.
+    can ip(request: HttpRequest) -> String:
+        return rate_ip(request)

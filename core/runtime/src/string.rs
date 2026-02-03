@@ -66,15 +66,12 @@ pub fn str_concat(parts_ptr: *const Value, parts_len: usize) -> Value {
     }
     let parts = unsafe { std::slice::from_raw_parts(parts_ptr, parts_len) };
     let mut total = 0usize;
-    let mut buffers: Vec<Vec<u8>> = Vec::with_capacity(parts.len());
     for part in parts {
-        let bytes = value_to_bytes(*part);
-        total = total.saturating_add(bytes.len());
-        buffers.push(bytes);
+        total = total.saturating_add(value_bytes_len(*part));
     }
     let mut out = Vec::with_capacity(total);
-    for buf in buffers {
-        out.extend_from_slice(&buf);
+    for part in parts {
+        write_value_bytes(*part, &mut out);
     }
     let s = Box::new(StrObj {
         header: header(TypeId::String),
@@ -107,28 +104,99 @@ where
     }
 }
 
-fn value_to_bytes(val: Value) -> Vec<u8> {
+fn value_bytes_len(val: Value) -> usize {
     if val.is_ptr() {
         unsafe {
             let header = &*val.as_ptr();
             if header.type_id == TypeId::String as u32 {
                 let s = &*(val.as_ptr() as *const StrObj);
-                return s.bytes.clone();
+                return s.bytes.len();
             }
         }
     }
     if let Some(i) = int_value(val) {
-        return i.to_string().into_bytes();
+        return int_len(i);
     }
     if val.is_bool() {
-        return if val.as_bool() {
-            b"true".to_vec()
-        } else {
-            b"false".to_vec()
-        };
+        return if val.as_bool() { 4 } else { 5 };
     }
     if val.is_nil() {
-        return b"nil".to_vec();
+        return 3;
     }
-    b"<obj>".to_vec()
+    5
+}
+
+fn write_value_bytes(val: Value, out: &mut Vec<u8>) {
+    if val.is_ptr() {
+        unsafe {
+            let header = &*val.as_ptr();
+            if header.type_id == TypeId::String as u32 {
+                let s = &*(val.as_ptr() as *const StrObj);
+                out.extend_from_slice(&s.bytes);
+                return;
+            }
+        }
+    }
+    if let Some(i) = int_value(val) {
+        write_int(out, i);
+        return;
+    }
+    if val.is_bool() {
+        if val.as_bool() {
+            out.extend_from_slice(b"true");
+        } else {
+            out.extend_from_slice(b"false");
+        }
+        return;
+    }
+    if val.is_nil() {
+        out.extend_from_slice(b"nil");
+        return;
+    }
+    out.extend_from_slice(b"<obj>");
+}
+
+fn int_len(mut val: i64) -> usize {
+    if val == 0 {
+        return 1;
+    }
+    if val == i64::MIN {
+        return 20;
+    }
+    let mut len = 0usize;
+    if val < 0 {
+        len += 1;
+        val = -val;
+    }
+    while val > 0 {
+        len += 1;
+        val /= 10;
+    }
+    len
+}
+
+fn write_int(out: &mut Vec<u8>, val: i64) {
+    if val == 0 {
+        out.push(b'0');
+        return;
+    }
+    if val == i64::MIN {
+        out.extend_from_slice(b"-9223372036854775808");
+        return;
+    }
+    let mut n = val;
+    if n < 0 {
+        out.push(b'-');
+        n = -n;
+    }
+    let mut buf = [0u8; 20];
+    let mut i = 0usize;
+    while n > 0 {
+        buf[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+        i += 1;
+    }
+    for idx in (0..i).rev() {
+        out.push(buf[idx]);
+    }
 }

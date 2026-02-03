@@ -8,7 +8,7 @@ Some(
         contents: Markup(
             MarkupContent {
                 kind: Markdown,
-                value: "```wrela\nfoo() -> Nothing\n```",
+                value: "```wrela\nfoo() -> Nothing\n```\n---\nThis is a documentation comment\nIt has multiple lines",
             },
         ),
         range: Some(

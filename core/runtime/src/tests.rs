@@ -93,22 +93,21 @@ fn test_storage() -> Value {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("wrela.db");
         std::mem::forget(dir);
-        unsafe {
-            std::env::set_var("WRELA_STORE_PATH", path.to_string_lossy().to_string());
-            std::env::set_var("WRELA_RAFT_HTTP_ENABLED", "0");
-        }
-        let fields = [b"file_path".as_ptr()];
-        let lens = [9usize];
-        let cfg = wr_class_new(300, fields.as_ptr(), lens.as_ptr(), 1);
+        let fields = [b"file_path".as_ptr(), b"http_enabled".as_ptr()];
+        let lens = [9usize, 12usize];
+        let cfg = wr_class_new(300, fields.as_ptr(), lens.as_ptr(), 2);
         let path_str = path.to_str().unwrap();
         let path_val = wr_str_from_utf8(path_str.as_ptr(), path_str.len());
         wr_class_set(cfg, b"file_path".as_ptr(), 9, path_val);
+        let http_enabled = Value::from_bool(false);
+        wr_class_set(cfg, b"http_enabled".as_ptr(), 12, http_enabled);
         let res = wr_storage_configure(cfg);
         let ok = wr_result_is_ok(res);
         assert!(ok.as_bool());
         let _ = wr_result_unwrap(res);
         unsafe {
             wr_rc_dec(path_val);
+            wr_rc_dec(http_enabled);
             wr_rc_dec(cfg);
             wr_rc_dec(res);
             wr_rc_dec(ok);
@@ -3989,10 +3988,10 @@ fn realtime_membership_removes_on_leave() {
 
 #[test]
 fn realtime_stale_socket_cleanup() {
-    let old = std::env::var("WRELA_REALTIME_SOCKET_TTL_SECS").ok();
-    unsafe {
-        std::env::set_var("WRELA_REALTIME_SOCKET_TTL_SECS", "1");
-    }
+    let prev = crate::realtime::realtime_config_for_test();
+    let mut cfg = crate::realtime::RealtimeConfig::default();
+    cfg.socket_ttl_secs = Some(1);
+    crate::realtime::set_realtime_config_for_test(cfg);
     let _storage = test_storage();
     let socket_id = wr_str_from_utf8(b"socket-ttl".as_ptr(), 10);
     let room = wr_str_from_utf8(b"room-ttl".as_ptr(), 8);
@@ -4035,13 +4034,7 @@ fn realtime_stale_socket_cleanup() {
         wr_rc_dec(ok);
     }
 
-    unsafe {
-        if let Some(old) = old {
-            std::env::set_var("WRELA_REALTIME_SOCKET_TTL_SECS", old);
-        } else {
-            std::env::remove_var("WRELA_REALTIME_SOCKET_TTL_SECS");
-        }
-    }
+    crate::realtime::set_realtime_config_for_test(prev);
 }
 
 #[test]

@@ -321,7 +321,30 @@ pub fn storage_batch_set(items: Value) -> Value {
 
 pub fn storage_configure(config: Value) -> Value {
     let user = StorageUserConfig {
+        enabled: config_field_bool(config, "enabled"),
         file_path: config_field_string(config, "file_path"),
+        node_id: config_field_u64(config, "node_id"),
+        bind_addr: config_field_string(config, "bind_addr"),
+        http_enabled: config_field_bool(config, "http_enabled"),
+        peer_token: config_field_string(config, "peer_token"),
+        peers_raw: config_field_string(config, "peers"),
+        peers: None,
+        bootstrap: config_field_bool(config, "bootstrap"),
+        snapshot_interval: config_field_u64(config, "snapshot_interval"),
+        batch_max_ops: config_field_usize(config, "batch_max_ops"),
+        batch_max_ms: config_field_u64(config, "batch_max_ms"),
+        queue_cap: config_field_usize(config, "queue_cap"),
+        blob_threshold_bytes: config_field_usize(config, "blob_threshold_bytes"),
+        blob_path: config_field_string(config, "blob_path"),
+        backup_enabled: config_field_bool(config, "backup_enabled"),
+        backup_max_age_secs: config_field_u64(config, "backup_max_age_secs"),
+        backup_max_logs: config_field_usize(config, "backup_max_logs"),
+        backup_retention_days: config_field_u64(config, "backup_retention_days"),
+        backup_max_keep: config_field_usize(config, "backup_max_keep"),
+        backup_prefix: config_field_string(config, "backup_prefix"),
+        backup_only_leader: config_field_bool(config, "backup_only_leader"),
+        backup_restore_mode: config_field_string(config, "backup_restore_mode"),
+        backup_restore_id: config_field_string(config, "backup_restore_id"),
         s3_bucket: config_field_string(config, "s3_bucket"),
         s3_region: config_field_string(config, "s3_region"),
         s3_access_key: config_field_string(config, "s3_access_key"),
@@ -334,9 +357,36 @@ pub fn storage_configure(config: Value) -> Value {
     ok_value(Value::nil())
 }
 
+fn config_field_bool(config: Value, field: &str) -> Option<bool> {
+    let val = class::class_get(config, field.as_ptr(), field.len());
+    if val.is_nil() {
+        unsafe { wr_rc_dec(val) };
+        return None;
+    }
+    let out = if val.is_bool() { Some(val.as_bool()) } else { None };
+    unsafe { wr_rc_dec(val) };
+    out
+}
+
+fn config_field_u64(config: Value, field: &str) -> Option<u64> {
+    let val = class::class_get(config, field.as_ptr(), field.len());
+    if val.is_nil() {
+        unsafe { wr_rc_dec(val) };
+        return None;
+    }
+    let out = crate::value::int_value(val).and_then(|num| if num >= 0 { Some(num as u64) } else { None });
+    unsafe { wr_rc_dec(val) };
+    out
+}
+
+fn config_field_usize(config: Value, field: &str) -> Option<usize> {
+    config_field_u64(config, field).and_then(|val| if val >= 1 { Some(val as usize) } else { None })
+}
+
 fn config_field_string(config: Value, field: &str) -> Option<String> {
     let val = class::class_get(config, field.as_ptr(), field.len());
     if val.is_nil() {
+        unsafe { wr_rc_dec(val) };
         return None;
     }
     let bytes = string::with_string_bytes(val, |bytes| bytes.to_vec());

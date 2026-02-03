@@ -1,0 +1,14 @@
+so:
+    Bytes convenience helpers.
+
+so: Build Bytes from a String.
+to from_string(text: String) -> Bytes:
+    return bytes_from_string(text)
+
+so: Decode Bytes into a String.
+to to_string(bytes: Bytes) -> String:
+    return bytes_to_string(bytes)
+
+so: Return the length of a Bytes value.
+to length(bytes: Bytes) -> Int:
+    return bytes_len(bytes)

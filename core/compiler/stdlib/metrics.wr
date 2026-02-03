@@ -1,0 +1,14 @@
+so:
+    Metrics helpers.
+
+so: Fetch a metric by id.
+to get(id: Int) -> Int:
+    return metrics_get(id)
+
+so: Metric id for messages dropped due to pause.
+to dropped_paused_id() -> Int:
+    return metrics_dropped_paused_id()
+
+so: Metric id for messages dropped overall.
+to messages_dropped_id() -> Int:
+    return metrics_messages_dropped_id()

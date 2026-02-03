@@ -250,10 +250,7 @@ async fn scheduler_loop(shard: Arc<SchedulerShard>) {
     let tick = Duration::from_millis(sched_tick_ms());
     let mut last_refill = Instant::now();
     let mut last_progress = Instant::now();
-    let watchdog_ms = std::env::var("WRELA_SCHED_WATCHDOG_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(0);
+    let watchdog_ms = crate::config::sched_watchdog_ms();
     loop {
         if !shard.has_work.load(Ordering::Acquire) {
             let _ = tokio::time::timeout(tick, shard.notify.notified()).await;

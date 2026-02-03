@@ -337,6 +337,48 @@ impl LoweringContext {
             name_span: f.name().map(|t| t.text_range()),
             visibility: visibility_for_node_default(f.syntax()),
             ty: f.ty().map(|t| self.lower_type_ref(t)),
+            default: f.default_expr().and_then(|expr| self.lower_field_default(expr)),
+        }
+    }
+
+    fn lower_field_default(&mut self, expr: ast::Expr) -> Option<FieldDefault> {
+        match expr {
+            ast::Expr::Literal(l) => {
+                let token = first_non_trivia_token(l.syntax())?;
+                let lit = match token.kind() {
+                    SyntaxKind::IntNumber => Literal::Int(token.text().parse().unwrap_or(0)),
+                    SyntaxKind::FloatNumber => Literal::Float(token.text().parse().unwrap_or(0.0)),
+                    SyntaxKind::StringLiteral => {
+                        Literal::String(SmolStr::new(token.text().trim_matches('\"')))
+                    }
+                    SyntaxKind::TrueKw => Literal::Bool(true),
+                    SyntaxKind::FalseKw => Literal::Bool(false),
+                    SyntaxKind::NothingKw => Literal::Nil,
+                    _ => return None,
+                };
+                Some(FieldDefault::Literal(lit))
+            }
+            ast::Expr::List(list) => {
+                let mut items = Vec::new();
+                for item in list.items() {
+                    let lowered = self.lower_field_default(item)?;
+                    items.push(lowered);
+                }
+                Some(FieldDefault::List(items))
+            }
+            ast::Expr::Map(map) => {
+                let mut items = Vec::new();
+                let mut iter = map.items();
+                while let Some(key) = iter.next() {
+                    let value = iter.next()?;
+                    let key = self.lower_field_default(key)?;
+                    let value = self.lower_field_default(value)?;
+                    items.push((key, value));
+                }
+                Some(FieldDefault::Map(items))
+            }
+            ast::Expr::Paren(p) => self.lower_field_default(p.syntax().children().filter_map(ast::Expr::cast).next()?),
+            _ => None,
         }
     }
 
@@ -1135,6 +1177,42 @@ mod tests {
         assert_eq!(ret_ty.name, "List");
         assert_eq!(ret_ty.args.len(), 1);
         assert_eq!(ret_ty.args[0].name, "String");
+    }
+
+    #[test]
+    fn test_lower_field_defaults() {
+        let input = "\
+A Defaults:
+    has:
+        name: String = \"ok\"
+        count: Int = 3
+        flags: List = [true, false]
+        meta: Map = {\"a\": 1}
+";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+
+        let class = &module.classes[Idx::new(0)];
+        assert_eq!(class.name, "Defaults");
+        assert_eq!(class.fields.len(), 4);
+
+        match class.fields[0].default.as_ref().unwrap() {
+            FieldDefault::Literal(Literal::String(val)) => assert_eq!(val.as_str(), "ok"),
+            other => panic!("unexpected default: {other:?}"),
+        }
+        match class.fields[1].default.as_ref().unwrap() {
+            FieldDefault::Literal(Literal::Int(val)) => assert_eq!(*val, 3),
+            other => panic!("unexpected default: {other:?}"),
+        }
+        match class.fields[2].default.as_ref().unwrap() {
+            FieldDefault::List(items) => assert_eq!(items.len(), 2),
+            other => panic!("unexpected default: {other:?}"),
+        }
+        match class.fields[3].default.as_ref().unwrap() {
+            FieldDefault::Map(items) => assert_eq!(items.len(), 1),
+            other => panic!("unexpected default: {other:?}"),
+        }
     }
 
     #[test]

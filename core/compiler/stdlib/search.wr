@@ -1,0 +1,20 @@
+so:
+    Full-text search helpers backed by storage.
+
+use StorageClient from storage
+
+A Search:
+    has:
+        storage: StorageClient
+
+    so: Index a document in a collection.
+    can index(collection: String, id: String, text: String, fields: Map) -> Pending:
+        return search_index(its.storage, collection, id, text, fields)
+
+    so: Remove a document from a collection.
+    can remove(collection: String, id: String) -> Pending:
+        return search_remove(its.storage, collection, id)
+
+    so: Query a collection with options.
+    can query(collection: String, query: String, opts: Map) -> Pending:
+        return search_query(its.storage, collection, query, opts)

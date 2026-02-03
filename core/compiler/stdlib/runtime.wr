@@ -1,0 +1,29 @@
+so:
+    Runtime configuration helpers.
+
+A Runtime:
+    has:
+        actor_mailbox_cap: Number = 256
+        actor_enqueue_timeout_ms: Number = 10
+        actor_batch_limit: Number = 64
+        pause_queue_cap: Number = 128
+        deterministic: Bool = false
+        debug_actor: Bool = false
+        actor_watchdog_ms: Number = 0
+        sched_watchdog_ms: Number = 0
+        sched_shards: Number = nothing
+        sched_tick_ms: Number = 1
+        sched_ready_cap: Number = 1024
+        sched_batch_limit: Number = 64
+        pool_min_share: Number = 1
+        pool_max_share: Number = nothing
+        pool_queue_cap: Number = 256
+        pool_auto_min: Number = 1
+        pool_auto_max: Number = nothing
+        diagnostics_enabled: Bool = false
+
+    so: Apply runtime configuration when fields are provided.
+    can __configure__() -> Nothing:
+        if its.actor_mailbox_cap != nil or its.actor_enqueue_timeout_ms != nil or its.actor_batch_limit != nil or its.pause_queue_cap != nil or its.deterministic != nil or its.debug_actor != nil or its.actor_watchdog_ms != nil or its.sched_watchdog_ms != nil or its.sched_shards != nil or its.sched_tick_ms != nil or its.sched_ready_cap != nil or its.sched_batch_limit != nil or its.pool_min_share != nil or its.pool_max_share != nil or its.pool_queue_cap != nil or its.pool_auto_min != nil or its.pool_auto_max != nil or its.diagnostics_enabled != nil:
+            return runtime_configure(its)
+        return nothing

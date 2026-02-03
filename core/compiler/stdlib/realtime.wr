@@ -1,0 +1,32 @@
+so:
+    Realtime socket helpers.
+
+A Realtime:
+    has:
+        socket_ttl_secs: Number = 0
+
+    so: Apply realtime configuration when fields are provided.
+    can __configure__() -> Nothing:
+        if its.socket_ttl_secs != nil:
+            return realtime_configure(its)
+        return nothing
+
+    so: Register a connection handler.
+    can on_connect(handler: Any) -> Pending:
+        return realtime_on_connect(handler)
+
+    so: Join a socket to a room.
+    can join(socket_id: String, room: String) -> Pending:
+        return realtime_join(socket_id, room)
+
+    so: Leave a room.
+    can leave(socket_id: String, room: String) -> Pending:
+        return realtime_leave(socket_id, room)
+
+    so: Broadcast to a room.
+    can broadcast(room: String, message: Any) -> Pending:
+        return realtime_broadcast(room, message)
+
+    so: Send a message to a socket.
+    can send(socket_id: String, message: Any) -> Pending:
+        return realtime_send(socket_id, message)

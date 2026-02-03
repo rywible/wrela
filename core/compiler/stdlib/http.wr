@@ -1,0 +1,128 @@
+so:
+    HTTP server helpers and request/response types.
+
+A HttpRequest:
+    has:
+        method: String
+        path: String
+        headers: Map
+        query: Map
+        params: Map
+        body: Bytes
+
+    so: Fetch a header by name.
+    can header(name: String) -> String:
+        return map_get(its.headers, name)
+
+    so: Fetch a query parameter by name.
+    can query_param(name: String) -> String:
+        return map_get(its.query, name)
+
+    so: Fetch a path parameter by name.
+    can path_param(name: String) -> String:
+        return map_get(its.params, name)
+
+    so: Decode the request body as UTF-8 text.
+    can text() -> String:
+        return bytes_to_string(its.body)
+
+    so: Decode the request body as JSON text.
+    can json() -> String:
+        return bytes_to_string(its.body)
+
+A HttpResponse:
+    has:
+        status: Number
+        headers: Map
+        body: Bytes
+
+    so: Set a header and return the response.
+    can header(name: String, value: String) -> HttpResponse:
+        if its.headers == nil:
+            its.headers = {}
+        map_set(its.headers, name, value)
+        return it
+
+    so: Respond with 200 and plain text.
+    can ok(text: String) -> HttpResponse:
+        its.status = 200
+        its.body = bytes_from_string(text)
+        if its.headers == nil:
+            its.headers = {}
+        map_set(its.headers, "content-type", "text/plain; charset=utf-8")
+        return it
+
+    so: Respond with 200 and JSON text.
+    can json(text: String) -> HttpResponse:
+        its.status = 200
+        its.body = bytes_from_string(text)
+        if its.headers == nil:
+            its.headers = {}
+        map_set(its.headers, "content-type", "application/json")
+        return it
+
+    so: Respond with 200 and plain text (alias of ok).
+    can text(text: String) -> HttpResponse:
+        return its.ok(text)
+
+    so: Respond with a status and plain text.
+    can text_with_status(text: String, status: Number) -> HttpResponse:
+        its.status = status
+        its.body = bytes_from_string(text)
+        if its.headers == nil:
+            its.headers = {}
+        map_set(its.headers, "content-type", "text/plain; charset=utf-8")
+        return it
+
+    so: Respond with an empty 204.
+    can empty() -> HttpResponse:
+        its.status = 204
+        its.body = bytes_from_string("")
+        return it
+
+    so: Respond with an empty body and status.
+    can empty_with_status(status: Number) -> HttpResponse:
+        its.status = status
+        its.body = bytes_from_string("")
+        return it
+
+A HttpServer:
+    has:
+        auth_token: String = ""
+        auth_jwt_enabled: Bool = false
+        jwt_secret: String = "wrela-dev-secret"
+        rbac_permission: String = ""
+        rbac_scope: String = "global"
+        rbac_skip_paths: List = []
+        rate_limit_enabled: Bool = false
+        rate_limit_burst: Number = 60
+        rate_limit_per_secs: Number = 60
+        rate_limit_skip_paths: List = []
+        hsts_enabled: Bool = false
+        csp: String = ""
+
+    so: Apply HTTP server configuration when fields are provided.
+    can __configure__() -> Nothing:
+        if its.auth_token != nil or its.auth_jwt_enabled != nil or its.jwt_secret != nil or its.rbac_permission != nil or its.rbac_scope != nil or its.rbac_skip_paths != nil or its.rate_limit_enabled != nil or its.rate_limit_burst != nil or its.rate_limit_per_secs != nil or its.rate_limit_skip_paths != nil or its.hsts_enabled != nil or its.csp != nil:
+            return http_server_configure(its)
+        return nothing
+
+    so: Serve GET requests for a path.
+    can serve_get_requests(path: String, handler: Any) -> Nothing:
+        http_server_serve_get_requests(path, handler)
+
+    so: Serve POST requests for a path.
+    can serve_post_requests(path: String, handler: Any) -> Nothing:
+        http_server_serve_post_requests(path, handler)
+
+    so: Serve requests by method and path.
+    can serve_requests(method: String, path: String, handler: Any) -> Nothing:
+        http_server_serve_requests(method, path, handler)
+
+    so: Start serving on an address.
+    can serve_on(addr: String) -> Nothing:
+        http_server_serve_on(addr)
+
+    so: Stop the HTTP server.
+    can stop() -> Nothing:
+        http_server_stop()

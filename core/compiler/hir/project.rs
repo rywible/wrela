@@ -799,14 +799,6 @@ impl ProjectLoader {
     }
 
     fn resolve_module_path(&self, name: &SmolStr) -> Option<PathBuf> {
-        if name.as_str() == "core" {
-            let stdlib = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("stdlib")
-                .join("core.wr");
-            if stdlib.is_file() {
-                return Some(stdlib);
-            }
-        }
         if let Some(tests_root) = &self.tests_dir {
             if let Some(test_rel) = name.as_str().strip_prefix("tests/") {
                 let mut rel = PathBuf::from(test_rel);
@@ -820,6 +812,17 @@ impl ProjectLoader {
                     return Some(candidate_sp);
                 }
             }
+        }
+        let stdlib_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stdlib");
+        let mut rel = PathBuf::from(name.as_str());
+        let candidate_wr = stdlib_root.join(rel.with_extension("wr"));
+        if candidate_wr.is_file() {
+            return Some(candidate_wr);
+        }
+        rel = PathBuf::from(name.as_str());
+        let candidate_sp = stdlib_root.join(rel.with_extension("sp"));
+        if candidate_sp.is_file() {
+            return Some(candidate_sp);
         }
         let mut rel = PathBuf::from(name.as_str());
         let candidate_wr = self.root_dir.join(rel.with_extension("wr"));
@@ -1153,6 +1156,7 @@ fn is_builtin_value_name(name: &SmolStr) -> bool {
             | "map_get"
             | "map_set"
             | "log"
+            | "log_configure"
             | "env_get"
             | "env_get_or"
             | "env_get_as_bool"
@@ -1166,6 +1170,7 @@ fn is_builtin_value_name(name: &SmolStr) -> bool {
             | "auth_issue_email_token"
             | "auth_verify_email_token"
             | "auth_oauth_login"
+            | "auth_configure"
             | "rbac_create_role"
             | "rbac_assign_role"
             | "rbac_check"
@@ -1178,6 +1183,7 @@ fn is_builtin_value_name(name: &SmolStr) -> bool {
             | "jobs_enqueue"
             | "jobs_process"
             | "jobs_dead_letter"
+            | "jobs_configure"
             | "schedule_cron"
             | "schedule_every"
             | "schedule_at"
@@ -1189,6 +1195,8 @@ fn is_builtin_value_name(name: &SmolStr) -> bool {
             | "realtime_leave"
             | "realtime_broadcast"
             | "realtime_send"
+            | "realtime_configure"
+            | "pubsub_configure"
             | "rate_check"
             | "rate_ip"
             | "admin_enable"
@@ -1202,6 +1210,7 @@ fn is_builtin_value_name(name: &SmolStr) -> bool {
             | "storage_delete"
             | "storage_batch_set"
             | "storage_configure"
+            | "runtime_configure"
             | "Pool"
             | "nil"
             | "queue"

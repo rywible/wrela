@@ -1,0 +1,15 @@
+so:
+    Map convenience helpers.
+
+so: Create a new empty map.
+to new() -> Map:
+    return map_new()
+
+so: Get a map entry by key.
+to get(map: Map, key: Any) -> Any:
+    return map_get(map, key)
+
+so: Set a map entry by key.
+to set(map: Map, key: Any, value: Any) -> Nothing:
+    map_set(map, key, value)
+    return nothing

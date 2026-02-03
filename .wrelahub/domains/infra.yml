@@ -1,0 +1,13 @@
+name: infra
+path_globs:
+  - "infra/**"
+  - "tools/**"
+  - "scripts/**"
+  - "apps/hub/**"
+  - ".github/**"
+required_approvals: 1
+reviewer_min_tier: reviewer
+merge_min_tier: maintainer
+allow_self_merge: false
+escalation_role: bdfl
+extra_checks: []

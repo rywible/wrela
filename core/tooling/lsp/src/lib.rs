@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rowan::{GreenNode, TextRange, TextSize};
 use tokio::sync::RwLock;
@@ -14,8 +14,8 @@ use tower_lsp::lsp_types::{
     ExecuteCommandParams, FoldingRange, FoldingRangeKind, FoldingRangeParams,
     FoldingRangeProviderCapability, GotoDefinitionParams, GotoDefinitionResponse, Hover,
     HoverContents, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
-    InitializedParams, InlayHint, InlayHintKind, InlayHintLabel, InlayHintOptions, InlayHintParams,
-    InlayHintServerCapabilities, Location, MarkupContent, MarkupKind, OneOf, ParameterInformation,
+    InitializedParams, InlayHint, InlayHintKind, InlayHintLabel, InlayHintParams, Location,
+    MarkupContent, MarkupKind, OneOf, ParameterInformation,
     Position, PrepareRenameResponse, Range, ReferenceParams, RenameOptions, RenameParams,
     SemanticToken, SemanticTokenType, SemanticTokens, SemanticTokensLegend, SemanticTokensParams,
     SemanticTokensResult, ServerCapabilities, SignatureHelp, SignatureHelpOptions,
@@ -35,6 +35,13 @@ use wrela::parser::{self, ParseError, SyntaxNode, SyntaxToken, ast, kind::Syntax
 struct WorkspaceIndex {
     root: Url,
     documents: HashMap<Url, DocumentState>,
+}
+
+#[derive(Clone)]
+struct ExternalModule {
+    path: PathBuf,
+    uri: Url,
+    state: DocumentState,
 }
 
 #[derive(Clone)]
@@ -71,6 +78,7 @@ pub struct DocumentState {
     green: GreenNode,
     index: SymbolIndex,
     line_index: LineIndex,
+    imports: Vec<ImportDef>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -113,6 +121,14 @@ struct Definition {
     ty: Option<String>,
     params: Vec<ParamInfo>,
     doc: Option<String>,
+    is_external: bool,
+}
+
+#[derive(Clone)]
+struct ImportDef {
+    name: String,
+    module: String,
+    name_range: TextRange,
 }
 
 #[derive(Clone)]
@@ -228,6 +244,7 @@ impl SymbolIndex {
             ty,
             params,
             doc,
+            is_external: false,
         });
         id
     }
@@ -357,13 +374,16 @@ impl SymbolIndex {
                 }
             }
             ast::Stmt::UseStmt(def) => {
-                for name in def.names() {
+                for (name, range) in use_stmt_import_names(def) {
+                    if name == "*" {
+                        continue;
+                    }
                     self.add_def(
-                        name.text().to_string(),
+                        name,
                         DefKind::Module,
                         scope_id,
                         def.syntax().text_range(),
-                        name.text_range(),
+                        range,
                         None,
                         None,
                         Vec::new(),
@@ -796,11 +816,218 @@ impl SymbolIndex {
     }
 }
 
+fn use_stmt_import_names(use_stmt: &ast::UseStmt) -> Vec<(String, TextRange)> {
+    let mut names = Vec::new();
+    let mut after_from = false;
+    for element in use_stmt.syntax().children_with_tokens() {
+        let Some(token) = element.into_token() else {
+            continue;
+        };
+        match token.kind() {
+            SyntaxKind::FromKw => after_from = true,
+            SyntaxKind::Star if !after_from => {
+                names.push(("*".to_string(), token.text_range()));
+            }
+            SyntaxKind::Ident if !after_from => {
+                names.push((token.text().to_string(), token.text_range()));
+            }
+            _ => {}
+        }
+    }
+    names
+}
+
+fn use_stmt_module_path(use_stmt: &ast::UseStmt) -> Option<String> {
+    let mut after_from = false;
+    let mut module = String::new();
+    for element in use_stmt.syntax().children_with_tokens() {
+        let Some(token) = element.into_token() else {
+            continue;
+        };
+        match token.kind() {
+            SyntaxKind::FromKw => after_from = true,
+            SyntaxKind::Ident if after_from => module.push_str(token.text()),
+            SyntaxKind::Dot | SyntaxKind::Slash if after_from => module.push_str(token.text()),
+            _ => {}
+        }
+    }
+    if module.is_empty() { None } else { Some(module) }
+}
+
+fn collect_imports(root: &SyntaxNode) -> Vec<ImportDef> {
+    let Some(ast_root) = ast::Root::cast(root.clone()) else {
+        return Vec::new();
+    };
+    let mut imports = Vec::new();
+    for stmt in ast_root.statements() {
+        let ast::Stmt::UseStmt(use_stmt) = stmt else {
+            continue;
+        };
+        let Some(module) = use_stmt_module_path(&use_stmt) else {
+            continue;
+        };
+        for (name, range) in use_stmt_import_names(&use_stmt) {
+            imports.push(ImportDef {
+                name,
+                module: module.clone(),
+                name_range: range,
+            });
+        }
+    }
+    imports
+}
+
+fn token_is_in_use_stmt(token: &SyntaxToken) -> bool {
+    let mut node = token.parent();
+    while let Some(current) = node {
+        if ast::UseStmt::cast(current.clone()).is_some() {
+            return true;
+        }
+        node = current.parent();
+    }
+    false
+}
+
+fn find_stdlib_module_path(start: &Path, module: &str) -> Option<PathBuf> {
+    let file = format!("{}.wr", module);
+    for ancestor in start.ancestors() {
+        let candidate = ancestor.join("core/compiler/stdlib").join(&file);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn find_root_definition(index: &SymbolIndex, name: &str) -> Option<Definition> {
+    let mut candidates = index
+        .defs
+        .iter()
+        .filter(|def| !def.is_external && def.name == name && is_root_def(index, def))
+        .cloned()
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return None;
+    }
+    candidates.sort_by_key(|def| def_precedence(def.kind));
+    candidates.into_iter().next()
+}
+
+fn ensure_class_scope_from_external(
+    target: &mut SymbolIndex,
+    external: &SymbolIndex,
+    class_name: &str,
+) {
+    if target.class_scopes.contains_key(class_name) {
+        return;
+    }
+    let Some(&external_scope_id) = external.class_scopes.get(class_name) else {
+        return;
+    };
+    let external_scope = match external.scopes.get(external_scope_id) {
+        Some(scope) => scope,
+        None => return,
+    };
+    let new_scope_id = target.add_scope(
+        ScopeKind::Class,
+        Some(0),
+        external_scope.range,
+        Some(class_name.to_string()),
+    );
+    target.class_scopes.insert(class_name.to_string(), new_scope_id);
+    for def in external.defs.iter().filter(|def| def.scope_id == external_scope_id) {
+        let id = target.defs.len();
+        target.defs.push(Definition {
+            id,
+            name: def.name.clone(),
+            kind: def.kind,
+            scope_id: new_scope_id,
+            range: def.range,
+            name_range: def.name_range,
+            detail: def.detail.clone(),
+            ty: def.ty.clone(),
+            params: def.params.clone(),
+            doc: def.doc.clone(),
+            is_external: true,
+        });
+    }
+}
+
+fn apply_import_overlays(state: &mut DocumentState, module: &str, external: &DocumentState) {
+    let mut applied_classes = HashSet::new();
+    let mut wildcard_range = None;
+    for import in state.imports.iter().filter(|import| import.module == module) {
+        if import.name == "*" {
+            wildcard_range = Some(import.name_range);
+            continue;
+        }
+        let Some(external_def) = find_root_definition(&external.index, &import.name) else {
+            continue;
+        };
+        if let Some(def) = state
+            .index
+            .defs
+            .iter_mut()
+            .find(|def| {
+                def.kind == DefKind::Module
+                    && def.name == import.name
+                    && def.name_range == import.name_range
+            })
+        {
+            def.kind = external_def.kind;
+            def.detail = external_def.detail.clone();
+            def.ty = external_def.ty.clone();
+            def.params = external_def.params.clone();
+            def.doc = external_def.doc.clone();
+        }
+        if external_def.kind == DefKind::Class && applied_classes.insert(external_def.name.clone()) {
+            ensure_class_scope_from_external(&mut state.index, &external.index, &external_def.name);
+        }
+    }
+    if let Some(range) = wildcard_range {
+        for external_def in external
+            .index
+            .defs
+            .iter()
+            .filter(|def| is_root_def(&external.index, def))
+        {
+            if state
+                .index
+                .defs
+                .iter()
+                .any(|def| def.scope_id == 0 && def.name == external_def.name)
+            {
+                continue;
+            }
+            let id = state.index.defs.len();
+            state.index.defs.push(Definition {
+                id,
+                name: external_def.name.clone(),
+                kind: external_def.kind,
+                scope_id: 0,
+                range,
+                name_range: range,
+                detail: external_def.detail.clone(),
+                ty: external_def.ty.clone(),
+                params: external_def.params.clone(),
+                doc: external_def.doc.clone(),
+                is_external: true,
+            });
+            if external_def.kind == DefKind::Class
+                && applied_classes.insert(external_def.name.clone())
+            {
+                ensure_class_scope_from_external(&mut state.index, &external.index, &external_def.name);
+            }
+        }
+    }
+}
+
 pub struct Backend {
     client: Client,
     documents: RwLock<HashMap<Url, DocumentState>>,
     root_uri: RwLock<Option<Url>>,
     index_cache: RwLock<Option<WorkspaceIndex>>,
+    stdlib_cache: RwLock<HashMap<String, ExternalModule>>,
 }
 
 impl Backend {
@@ -810,6 +1037,7 @@ impl Backend {
             documents: RwLock::new(HashMap::new()),
             root_uri: RwLock::new(None),
             index_cache: RwLock::new(None),
+            stdlib_cache: RwLock::new(HashMap::new()),
         }
     }
 
@@ -845,7 +1073,17 @@ impl Backend {
     }
 
     async fn update_document(&self, uri: Url, text: String) -> (Vec<ParseError>, DocumentState) {
-        let (state, errors) = build_document_state(text);
+        let (mut state, errors) = build_document_state(text);
+        let module_names = state
+            .imports
+            .iter()
+            .map(|import| import.module.clone())
+            .collect::<HashSet<_>>();
+        for module in module_names {
+            if let Some(external) = self.stdlib_module_for_uri(&module, &uri).await {
+                apply_import_overlays(&mut state, &module, &external.state);
+            }
+        }
         self.documents
             .write()
             .await
@@ -870,6 +1108,102 @@ impl Backend {
             documents: documents.clone(),
         });
         documents
+    }
+
+    async fn stdlib_module_for_uri(
+        &self,
+        module: &str,
+        uri: &Url,
+    ) -> Option<ExternalModule> {
+        if let Some(cached) = self.stdlib_cache.read().await.get(module) {
+            if cached.path.is_file() {
+                return Some(cached.clone());
+            }
+        }
+        let root_path = self
+            .root_uri
+            .read()
+            .await
+            .clone()
+            .and_then(|uri| uri.to_file_path().ok());
+        let start_path = match root_path {
+            Some(path) => path,
+            None => uri.to_file_path().ok()?,
+        };
+        let start_dir = if start_path.is_file() {
+            start_path.parent()?.to_path_buf()
+        } else {
+            start_path
+        };
+        let module_path = find_stdlib_module_path(&start_dir, module)?;
+        let text = fs::read_to_string(&module_path).ok()?;
+        let (state, _errors) = build_document_state(text);
+        let module_uri = Url::from_file_path(&module_path).ok()?;
+        let entry = ExternalModule {
+            path: module_path,
+            uri: module_uri,
+            state,
+        };
+        self.stdlib_cache
+            .write()
+            .await
+            .insert(module.to_string(), entry.clone());
+        Some(entry)
+    }
+
+    async fn hover_for_import(
+        &self,
+        state: &DocumentState,
+        uri: &Url,
+        position: Position,
+    ) -> Option<Hover> {
+        let (name, range) = {
+            let offset = position_to_offset_with_index(&state.text, &state.line_index, position);
+            let root = syntax_root(state);
+            let token =
+                token_at_offset(&root, offset).or_else(|| token_before_offset(&root, offset))?;
+            if token.kind() != SyntaxKind::Ident {
+                return None;
+            }
+            let range = text_range_to_range_with_index(
+                &state.text,
+                &state.line_index,
+                token.text_range(),
+            );
+            (token.text().to_string(), range)
+        };
+        let module = import_module_for_name(state, &name)?;
+        let external = self.stdlib_module_for_uri(module, uri).await?;
+        let def = find_root_definition(&external.state.index, &name)?;
+        let value = hover_markdown_for_definition(&external.state, &def);
+        Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value,
+            }),
+            range: Some(range),
+        })
+    }
+
+    async fn definition_for_import(
+        &self,
+        state: &DocumentState,
+        uri: &Url,
+        position: Position,
+    ) -> Option<Location> {
+        let name = identifier_at_position(state, position)?;
+        let module = import_module_for_name(state, &name)?;
+        let external = self.stdlib_module_for_uri(module, uri).await?;
+        let def = find_root_definition(&external.state.index, &name)?;
+        let range = text_range_to_range_with_index(
+            &external.state.text,
+            &external.state.line_index,
+            def.name_range,
+        );
+        Some(Location {
+            uri: external.uri.clone(),
+            range,
+        })
     }
 }
 
@@ -914,12 +1248,7 @@ impl LanguageServer for Backend {
                 code_lens_provider: None,
                 folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
                 semantic_tokens_provider: None,
-                inlay_hint_provider: Some(OneOf::Right(InlayHintServerCapabilities::Options(
-                    InlayHintOptions {
-                        resolve_provider: Some(false),
-                        work_done_progress_options: Default::default(),
-                    },
-                ))),
+                inlay_hint_provider: None,
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 document_formatting_provider: Some(OneOf::Left(true)),
                 document_range_formatting_provider: Some(OneOf::Left(true)),
@@ -997,10 +1326,64 @@ impl LanguageServer for Backend {
         let Some(state) = self.document_state(&uri).await else {
             return Ok(None);
         };
-        Ok(hover_at_position(
-            &state,
-            params.text_document_position_params.position,
-        ))
+        let position = params.text_document_position_params.position;
+        if let Some(hover) = self.hover_for_import(&state, &uri, position).await {
+            return Ok(Some(hover));
+        }
+        let offset = position_to_offset_with_index(&state.text, &state.line_index, position);
+        if let Some(def) =
+            definition_at_offset(&state, offset).or_else(|| resolve_reference_at_offset(&state, offset))
+        {
+            if def.doc.is_none() {
+                let mut external_def = None;
+                if let Some(module) = import_module_for_name(&state, &def.name) {
+                    if let Some(external) = self.stdlib_module_for_uri(module, &uri).await {
+                        external_def =
+                            find_root_definition(&external.state.index, &def.name).map(|def| {
+                                (external.state, def)
+                            });
+                    }
+                } else if matches!(def.kind, DefKind::Method | DefKind::Field) {
+                    if let Some(class_name) = class_name_for_scope(&state.index, def.scope_id) {
+                        if let Some(module) = import_module_for_name(&state, &class_name) {
+                            if let Some(external) = self.stdlib_module_for_uri(module, &uri).await {
+                                if let Some(class_scope) =
+                                    class_scope_for_name(&external.state.index, &class_name)
+                                {
+                                    let kinds = match def.kind {
+                                        DefKind::Method => &[DefKind::Method][..],
+                                        DefKind::Field => &[DefKind::Field][..],
+                                        _ => &[][..],
+                                    };
+                                    external_def = resolve_in_scope_kinds(
+                                        &external.state.index,
+                                        class_scope,
+                                        &def.name,
+                                        kinds,
+                                    )
+                                    .map(|def| (external.state, def));
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some((external_state, external_def)) = external_def {
+                    let value = hover_markdown_for_definition(&external_state, &external_def);
+                    return Ok(Some(Hover {
+                        contents: HoverContents::Markup(MarkupContent {
+                            kind: MarkupKind::Markdown,
+                            value,
+                        }),
+                        range: Some(text_range_to_range_with_index(
+                            &state.text,
+                            &state.line_index,
+                            def.name_range,
+                        )),
+                    }));
+                }
+            }
+        }
+        Ok(hover_at_position(&state, position))
     }
 
     async fn goto_definition(
@@ -1012,6 +1395,9 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
         let position = params.text_document_position_params.position;
+        if let Some(location) = self.definition_for_import(&state, &uri, position).await {
+            return Ok(Some(GotoDefinitionResponse::Scalar(location)));
+        }
         if let Some(range) = definition_location(&state, position) {
             return Ok(Some(GotoDefinitionResponse::Scalar(Location {
                 uri,
@@ -1151,11 +1537,8 @@ impl LanguageServer for Backend {
     }
 
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
-        let uri = params.text_document.uri;
-        let Some(state) = self.document_state(&uri).await else {
-            return Ok(None);
-        };
-        Ok(Some(inlay_hints(&state)))
+        let _ = params;
+        Ok(None)
     }
 
     async fn code_lens(
@@ -2199,45 +2582,48 @@ pub fn check_unused_variables(state: &DocumentState) -> Vec<Diagnostic> {
 
 pub fn check_unused_imports(state: &DocumentState) -> Vec<Diagnostic> {
     let root = syntax_root(state);
-    let mut ref_counts = HashMap::new();
-    for def in &state.index.defs {
-        if def.kind == DefKind::Module {
-            ref_counts.insert(def.id, 0);
-        }
-    }
-    if ref_counts.is_empty() {
+    if state.imports.is_empty() {
         return Vec::new();
     }
+    let mut ref_counts: HashMap<&str, usize> = state
+        .imports
+        .iter()
+        .filter(|import| import.name != "*")
+        .map(|import| (import.name.as_str(), 0))
+        .collect();
     for token in root
         .descendants_with_tokens()
         .filter_map(|it| it.into_token())
     {
         if token.kind() == SyntaxKind::Ident {
-            if let Some(def) = resolve_reference_token(&state.index, &state.text, &token) {
-                if let Some(count) = ref_counts.get_mut(&def.id) {
-                    if token.text_range() != def.name_range {
-                        *count += 1;
-                    }
-                }
+            if token_is_in_use_stmt(&token) {
+                continue;
+            }
+            if let Some(count) = ref_counts.get_mut(token.text()) {
+                *count += 1;
             }
         }
     }
     let mut diagnostics = Vec::new();
-    for (id, count) in ref_counts {
-        if count == 0 {
-            let def = &state.index.defs[id];
-            diagnostics.push(Diagnostic {
-                range: text_range_to_range_with_index(&state.text, &state.line_index, def.range),
-                severity: Some(DiagnosticSeverity::HINT),
-                code: Some(tower_lsp::lsp_types::NumberOrString::String(
-                    "unused_import".to_string(),
-                )),
-                source: Some("wrela".to_string()),
-                message: format!("Unused import: {}", def.name),
-                tags: Some(vec![tower_lsp::lsp_types::DiagnosticTag::UNNECESSARY]),
-                ..Default::default()
-            });
+    for import in &state.imports {
+        if import.name == "*" {
+            continue;
         }
+        let count = ref_counts.get(import.name.as_str()).copied().unwrap_or(0);
+        if count != 0 {
+            continue;
+        }
+        diagnostics.push(Diagnostic {
+            range: text_range_to_range_with_index(&state.text, &state.line_index, import.name_range),
+            severity: Some(DiagnosticSeverity::HINT),
+            code: Some(tower_lsp::lsp_types::NumberOrString::String(
+                "unused_import".to_string(),
+            )),
+            source: Some("wrela".to_string()),
+            message: format!("Unused import: {}", import.name),
+            tags: Some(vec![tower_lsp::lsp_types::DiagnosticTag::UNNECESSARY]),
+            ..Default::default()
+        });
     }
     diagnostics
 }
@@ -2306,6 +2692,9 @@ pub fn check_unresolved_identifiers(
 
 fn collect_def_names(index: &SymbolIndex, names: &mut HashSet<String>) {
     for def in &index.defs {
+        if def.is_external {
+            continue;
+        }
         names.insert(def.name.clone());
     }
 }
@@ -2547,12 +2936,14 @@ pub fn build_document_state(text: String) -> (DocumentState, Vec<ParseError>) {
     let (root, errors) = parser::parse_with_errors(&text);
     let index = SymbolIndex::build(&text, &root);
     let line_index = LineIndex::new(&text);
+    let imports = collect_imports(&root);
     (
         DocumentState {
             text,
             green: root.green().clone().into(),
             index,
             line_index,
+            imports,
         },
         errors,
     )
@@ -3677,15 +4068,18 @@ pub fn hover_at_position(state: &DocumentState, position: Position) -> Option<Ho
         }
     }
     let def = def?;
-    let _label = match def.kind {
-        DefKind::Class => "class",
-        DefKind::Function => "function",
-        DefKind::Method => "method",
-        DefKind::Field => "field",
-        DefKind::Variable => "variable",
-        DefKind::Parameter => "parameter",
-        DefKind::Module => "module",
-    };
+    let value = hover_markdown_for_definition(state, &def);
+
+    Some(Hover {
+        contents: HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value,
+        }),
+        range: Some(text_range_to_range(&state.text, def.name_range)),
+    })
+}
+
+fn hover_markdown_for_definition(state: &DocumentState, def: &Definition) -> String {
     let detail = match def.kind {
         DefKind::Function | DefKind::Method => {
             def.detail.clone().unwrap_or_else(|| def.name.clone())
@@ -3697,7 +4091,6 @@ pub fn hover_at_position(state: &DocumentState, position: Position) -> Option<Ho
             .or_else(|| def.detail.clone())
             .unwrap_or_else(|| def.name.clone()),
         DefKind::Class => {
-            // Get class scope and collect fields
             let mut class_detail = def.name.clone();
             if let Some(class_scope) = class_scope_for_name(&state.index, &def.name) {
                 let fields: Vec<&Definition> = state
@@ -3723,20 +4116,20 @@ pub fn hover_at_position(state: &DocumentState, position: Position) -> Option<Ho
         DefKind::Module => def.name.clone(),
     };
 
-    // Add documentation if available
     let mut value = format!("```wrela\n{}\n```", detail);
     if let Some(doc) = &def.doc {
         value.push_str("\n---\n");
         value.push_str(doc);
     }
+    value
+}
 
-    Some(Hover {
-        contents: HoverContents::Markup(MarkupContent {
-            kind: MarkupKind::Markdown,
-            value,
-        }),
-        range: Some(text_range_to_range(&state.text, def.name_range)),
-    })
+fn import_module_for_name<'a>(state: &'a DocumentState, name: &str) -> Option<&'a str> {
+    state
+        .imports
+        .iter()
+        .find(|import| import.name == name)
+        .map(|import| import.module.as_str())
 }
 
 fn definition_location(state: &DocumentState, position: Position) -> Option<Range> {
@@ -3884,6 +4277,9 @@ fn workspace_definitions(documents: &HashMap<Url, DocumentState>, name: &str) ->
     let mut locations = Vec::new();
     for (uri, state) in documents.iter() {
         for def in state.index.defs.iter() {
+            if def.is_external {
+                continue;
+            }
             if def.name != name {
                 continue;
             }
@@ -3911,6 +4307,9 @@ fn workspace_symbols(
     let mut symbols = Vec::new();
     for (uri, state) in documents.iter() {
         for def in state.index.defs.iter() {
+            if def.is_external {
+                continue;
+            }
             if !matches!(
                 def.kind,
                 DefKind::Class | DefKind::Function | DefKind::Method | DefKind::Field
@@ -4075,7 +4474,11 @@ fn workspace_rename(
 }
 
 fn document_has_definition(state: &DocumentState, name: &str) -> bool {
-    state.index.defs.iter().any(|def| def.name == name)
+    state
+        .index
+        .defs
+        .iter()
+        .any(|def| !def.is_external && def.name == name)
 }
 
 fn collect_identifier_ranges(
@@ -5005,29 +5408,38 @@ fn call_argument_index_from_tokens(root: &SyntaxNode, offset: usize) -> Option<u
 
 fn extract_doc_comment(node: &SyntaxNode) -> Option<String> {
     let mut docs = Vec::new();
-    // Look at previous siblings for comments
-    let mut prev = node.prev_sibling_or_token();
-    while let Some(element) = prev {
-        match element.kind() {
-            SyntaxKind::Whitespace => {
-                // Skip whitespace but if we see too many newlines, stop?
-                // For now just skip whitespace
-            }
-            SyntaxKind::Comment | SyntaxKind::DocComment => {
-                // element is moved by into_token, so clone it for that check,
-                // but we need element for prev_sibling_or_token later.
-                // Actually, we can just use element.as_token() if available or just check kind
-                // Since we already checked kind == DocComment, it SHOULD be a token.
-                // Let's use as_token() if it exists or clone.
-                if let Some(token) = element.as_token() {
-                    let text = token.text();
-                    let content = text.strip_prefix("so:").unwrap_or(text).trim();
-                    docs.push(content.to_string());
+    let mut newline_count = 0;
+    // Walk tokens backwards so we keep doc comments even when trivia isn't a sibling.
+    let mut prev = node.first_token();
+    let mut skipped_node_token = false;
+    while let Some(token) = prev {
+        let kind = token.kind();
+        match kind {
+            SyntaxKind::Whitespace | SyntaxKind::Indent | SyntaxKind::Dedent => {}
+            SyntaxKind::Newline => {
+                let newlines = token.text().matches('\n').count();
+                newline_count += newlines.max(1);
+                if newline_count > 1 {
+                    break;
                 }
             }
-            _ => break, // Stop at anything else
+            SyntaxKind::Comment | SyntaxKind::DocComment => {
+                let text = token.text();
+                let content = text.strip_prefix("so:").unwrap_or(text).trim();
+                docs.push(normalize_doc_comment(content));
+                newline_count = 0;
+            }
+            _ => {
+                if !skipped_node_token {
+                    skipped_node_token = true;
+                    prev = token.prev_token();
+                    continue;
+                }
+                break;
+            }
         }
-        prev = element.prev_sibling_or_token();
+        prev = token.prev_token();
+        skipped_node_token = true;
     }
 
     if docs.is_empty() {
@@ -5036,6 +5448,32 @@ fn extract_doc_comment(node: &SyntaxNode) -> Option<String> {
         docs.reverse(); // We collected them backwards
         Some(docs.join("\n"))
     }
+}
+
+fn normalize_doc_comment(text: &str) -> String {
+    let mut lines = text.lines();
+    let first = lines.next().unwrap_or("").trim().to_string();
+    let rest: Vec<&str> = lines.collect();
+    if rest.is_empty() {
+        return first;
+    }
+    let indent = rest
+        .iter()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.chars().take_while(|c| *c == ' ' || *c == '\t').count())
+        .min()
+        .unwrap_or(0);
+    let mut out = first;
+    for line in rest {
+        let trimmed = if line.len() >= indent {
+            &line[indent..]
+        } else {
+            line
+        };
+        out.push('\n');
+        out.push_str(trimmed.trim_end());
+    }
+    out
 }
 
 #[cfg(test)]

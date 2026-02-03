@@ -1,4 +1,5 @@
 use crate::actor::{pending_new, resolve_pending, runtime_spawn};
+use crate::class::class_get;
 use crate::map;
 use crate::storage_helpers::{
     storage_delete, storage_get_json, storage_get_string, storage_set_json, storage_set_string,
@@ -14,8 +15,50 @@ use password_hash::rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
+
+#[derive(Clone)]
+struct OAuthConfig {
+    client_id: String,
+    client_secret: String,
+    redirect_uri: Option<String>,
+}
+
+#[derive(Clone)]
+struct AuthConfig {
+    jwt_secret: String,
+    github: Option<OAuthConfig>,
+    google: Option<OAuthConfig>,
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            jwt_secret: "wrela-dev-secret".to_string(),
+            github: None,
+            google: None,
+        }
+    }
+}
+
+static AUTH_CONFIG: OnceLock<Mutex<AuthConfig>> = OnceLock::new();
+
+fn auth_config() -> AuthConfig {
+    AUTH_CONFIG
+        .get_or_init(|| Mutex::new(AuthConfig::default()))
+        .lock()
+        .expect("auth config lock")
+        .clone()
+}
+
+fn set_auth_config(config: AuthConfig) {
+    *AUTH_CONFIG
+        .get_or_init(|| Mutex::new(AuthConfig::default()))
+        .lock()
+        .expect("auth config lock") = config;
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 struct UserRecord {
@@ -160,7 +203,59 @@ fn verify_password_hash(hash: &str, password: &str) -> bool {
 }
 
 fn jwt_secret() -> String {
-    std::env::var("WRELA_JWT_SECRET").unwrap_or_else(|_| "wrela-dev-secret".to_string())
+    auth_config().jwt_secret
+}
+
+fn auth_config_from_value(config: Value) -> AuthConfig {
+    let jwt_secret = config_field_string(config, "jwt_secret")
+        .unwrap_or_else(|| "wrela-dev-secret".to_string());
+    let github_client_id = config_field_string(config, "github_client_id");
+    let github_client_secret = config_field_string(config, "github_client_secret");
+    let github_redirect_uri = config_field_string(config, "github_redirect_uri");
+    let google_client_id = config_field_string(config, "google_client_id");
+    let google_client_secret = config_field_string(config, "google_client_secret");
+    let google_redirect_uri = config_field_string(config, "google_redirect_uri");
+
+    let github = match (github_client_id, github_client_secret) {
+        (Some(client_id), Some(client_secret)) => Some(OAuthConfig {
+            client_id,
+            client_secret,
+            redirect_uri: github_redirect_uri,
+        }),
+        _ => None,
+    };
+    let google = match (google_client_id, google_client_secret) {
+        (Some(client_id), Some(client_secret)) => Some(OAuthConfig {
+            client_id,
+            client_secret,
+            redirect_uri: google_redirect_uri,
+        }),
+        _ => None,
+    };
+
+    AuthConfig {
+        jwt_secret,
+        github,
+        google,
+    }
+}
+
+fn config_field_string(config: Value, field: &str) -> Option<String> {
+    let val = class_get(config, field.as_ptr(), field.len());
+    if val.is_nil() {
+        unsafe { wr_rc_dec(val) };
+        return None;
+    }
+    let out = value_to_string(val).and_then(|text| {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
+    unsafe { wr_rc_dec(val) };
+    out
 }
 
 #[derive(Serialize, Deserialize)]
@@ -229,6 +324,12 @@ pub fn auth_create_user(storage: Value, email: Value, username: Value, password:
         resolve_pending(state, user_to_map(&user));
     });
     pending
+}
+
+pub fn auth_configure(config: Value) -> Value {
+    let new_config = auth_config_from_value(config);
+    set_auth_config(new_config);
+    Value::nil()
 }
 
 pub fn auth_verify_password(storage: Value, user_id: Value, password: Value) -> Value {
@@ -417,9 +518,11 @@ pub fn auth_verify_email_token(storage: Value, token: Value) -> Value {
 }
 
 async fn oauth_github(code: &str) -> Option<UserRecord> {
-    let client_id = std::env::var("GITHUB_CLIENT_ID").ok()?;
-    let client_secret = std::env::var("GITHUB_CLIENT_SECRET").ok()?;
-    let redirect_uri = std::env::var("GITHUB_REDIRECT_URI").ok();
+    let config = auth_config();
+    let oauth = config.github?;
+    let client_id = oauth.client_id;
+    let client_secret = oauth.client_secret;
+    let redirect_uri = oauth.redirect_uri;
     let client = reqwest::Client::new();
     let mut form = vec![
         ("client_id", client_id),
@@ -489,9 +592,11 @@ async fn oauth_github(code: &str) -> Option<UserRecord> {
 }
 
 async fn oauth_google(code: &str) -> Option<UserRecord> {
-    let client_id = std::env::var("GOOGLE_CLIENT_ID").ok()?;
-    let client_secret = std::env::var("GOOGLE_CLIENT_SECRET").ok()?;
-    let redirect_uri = std::env::var("GOOGLE_REDIRECT_URI").ok()?;
+    let config = auth_config();
+    let oauth = config.google?;
+    let client_id = oauth.client_id;
+    let client_secret = oauth.client_secret;
+    let redirect_uri = oauth.redirect_uri?;
     let client = reqwest::Client::new();
     let form = [
         ("client_id", client_id),

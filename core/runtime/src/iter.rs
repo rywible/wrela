@@ -17,7 +17,7 @@ pub enum IterKind {
         index: usize,
     },
     Map {
-        entries: Vec<(Value, Value)>,
+        keys: Vec<Value>,
         index: usize,
     },
 }
@@ -35,17 +35,16 @@ pub fn iter_init(iterable: Value) -> Value {
         return Value::from_ptr(Box::into_raw(obj) as *mut ObjHeader);
     }
     if let Some(map) = as_map_ref(iterable) {
-        let mut entries = Vec::new();
+        let mut keys = Vec::new();
         unsafe {
-            for (k, v) in (*map).entries.iter() {
-                entries.push((k.0, *v));
+            for (k, _) in (*map).entries.iter() {
+                keys.push(k.0);
                 wr_rc_inc(k.0);
-                wr_rc_inc(*v);
             }
         }
         let obj = Box::new(IterObj {
             header: header(TypeId::Iterator),
-            kind: IterKind::Map { entries, index: 0 },
+            kind: IterKind::Map { keys, index: 0 },
         });
         return Value::from_ptr(Box::into_raw(obj) as *mut ObjHeader);
     }
@@ -82,9 +81,9 @@ pub fn iter_next(iter_val: Value, dst_value: *mut Value, dst_done: *mut Value) {
                     }
                 }
             }
-            IterKind::Map { entries, index } => {
-                if *index < entries.len() {
-                    let (key, _val) = entries[*index];
+            IterKind::Map { keys, index } => {
+                if *index < keys.len() {
+                    let key = keys[*index];
                     wr_rc_inc(key);
                     *index += 1;
                     *dst_value = key;
@@ -103,10 +102,9 @@ pub unsafe fn drop_iter(ptr: *mut ObjHeader) {
             IterKind::List { list, .. } => {
                 wr_rc_dec(*list);
             }
-            IterKind::Map { entries, .. } => {
-                for (k, v) in entries.iter() {
-                    wr_rc_dec(*k);
-                    wr_rc_dec(*v);
+            IterKind::Map { keys, .. } => {
+                for key in keys.iter() {
+                    wr_rc_dec(*key);
                 }
             }
         }

@@ -860,6 +860,27 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
+            SmolStr::new("log"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("level"), Type::String),
+                    (SmolStr::new("message"), Type::String),
+                    (
+                        SmolStr::new("fields"),
+                        Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown)),
+                    ),
+                ],
+                ret: Type::Bool,
+            },
+        ),
+        (
+            SmolStr::new("log_configure"),
+            FunctionSig {
+                params: vec![(SmolStr::new("config"), Type::Unknown)],
+                ret: Type::Nil,
+            },
+        ),
+        (
             SmolStr::new("pool_auto_size"),
             FunctionSig {
                 params: vec![
@@ -1105,6 +1126,13 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
+            SmolStr::new("auth_configure"),
+            FunctionSig {
+                params: vec![(SmolStr::new("config"), Type::Unknown)],
+                ret: Type::Nil,
+            },
+        ),
+        (
             SmolStr::new("rbac_create_role"),
             FunctionSig {
                 params: vec![
@@ -1289,6 +1317,13 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
+            SmolStr::new("jobs_configure"),
+            FunctionSig {
+                params: vec![(SmolStr::new("config"), Type::Unknown)],
+                ret: Type::Nil,
+            },
+        ),
+        (
             SmolStr::new("schedule_cron"),
             FunctionSig {
                 params: vec![
@@ -1429,6 +1464,20 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
+            SmolStr::new("realtime_configure"),
+            FunctionSig {
+                params: vec![(SmolStr::new("config"), Type::Unknown)],
+                ret: Type::Nil,
+            },
+        ),
+        (
+            SmolStr::new("pubsub_configure"),
+            FunctionSig {
+                params: vec![(SmolStr::new("config"), Type::Unknown)],
+                ret: Type::Nil,
+            },
+        ),
+        (
             SmolStr::new("rate_check"),
             FunctionSig {
                 params: vec![
@@ -1523,6 +1572,13 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
+            SmolStr::new("runtime_configure"),
+            FunctionSig {
+                params: vec![(SmolStr::new("config"), Type::Unknown)],
+                ret: Type::Nil,
+            },
+        ),
+        (
             SmolStr::new("storage_set"),
             FunctionSig {
                 params: vec![
@@ -1613,6 +1669,13 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("path"), Type::String),
                     (SmolStr::new("handler"), Type::Unknown),
                 ],
+                ret: Type::Nil,
+            },
+        ),
+        (
+            SmolStr::new("http_server_configure"),
+            FunctionSig {
+                params: vec![(SmolStr::new("config"), Type::Unknown)],
                 ret: Type::Nil,
             },
         ),

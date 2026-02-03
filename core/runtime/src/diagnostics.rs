@@ -11,10 +11,7 @@ static DIAG_INIT: OnceLock<()> = OnceLock::new();
 static EVENTS: OnceLock<Mutex<VecDeque<String>>> = OnceLock::new();
 
 fn enabled() -> bool {
-    std::env::var("WRELA_DIAG")
-        .ok()
-        .map(|v| !matches!(v.as_str(), "0" | "false" | "off"))
-        .unwrap_or(false)
+    crate::config::diagnostics_enabled()
 }
 
 pub fn runtime_init() {

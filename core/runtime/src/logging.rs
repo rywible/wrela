@@ -3,11 +3,41 @@ use crate::map;
 use crate::string;
 use crate::value::{Value, int_value};
 use serde_json::{Map as JsonMap, Value as JsonValue};
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[derive(Clone)]
+struct LogConfig {
+    level: String,
+}
+
+impl Default for LogConfig {
+    fn default() -> Self {
+        Self {
+            level: "info".to_string(),
+        }
+    }
+}
+
+static LOG_CONFIG: OnceLock<Mutex<LogConfig>> = OnceLock::new();
+
+fn log_config() -> LogConfig {
+    LOG_CONFIG
+        .get_or_init(|| Mutex::new(LogConfig::default()))
+        .lock()
+        .expect("log config lock")
+        .clone()
+}
+
+fn set_log_config(config: LogConfig) {
+    *LOG_CONFIG
+        .get_or_init(|| Mutex::new(LogConfig::default()))
+        .lock()
+        .expect("log config lock") = config;
+}
+
 fn log_level_threshold() -> u8 {
-    let raw = std::env::var("WRELA_LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
-    match raw.to_ascii_lowercase().as_str() {
+    match log_config().level.to_ascii_lowercase().as_str() {
         "debug" => 10,
         "info" => 20,
         "warn" | "warning" => 30,
@@ -120,4 +150,36 @@ pub fn log(level: Value, msg: Value, fields: Value) -> Value {
         println!("{line}");
     }
     Value::from_bool(true)
+}
+
+pub fn log_configure(config: Value) -> Value {
+    let new_config = log_config_from_value(config);
+    set_log_config(new_config);
+    Value::nil()
+}
+
+fn log_config_from_value(config: Value) -> LogConfig {
+    let mut out = LogConfig::default();
+    if let Some(level) = config_field_string(config, "level") {
+        out.level = level;
+    }
+    out
+}
+
+fn config_field_string(config: Value, field: &str) -> Option<String> {
+    let val = crate::class::class_get(config, field.as_ptr(), field.len());
+    if val.is_nil() {
+        unsafe { crate::wr_rc_dec(val) };
+        return None;
+    }
+    let out = value_to_string(val).and_then(|text| {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
+    unsafe { crate::wr_rc_dec(val) };
+    out
 }

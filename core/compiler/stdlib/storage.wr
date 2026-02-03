@@ -1,0 +1,76 @@
+so:
+    Storage configuration and client helpers.
+
+A StorageConfig:
+    has:
+        enabled: Bool
+        s3_bucket: String
+        s3_region: String
+        s3_access_key: String
+        s3_secret_key: String
+        s3_endpoint: String
+        s3_prefix: String
+        file_path: String
+        node_id: Number
+        bind_addr: String
+        http_enabled: Bool
+        peer_token: String
+        peers: String
+        bootstrap: Bool
+        snapshot_interval: Number
+        batch_max_ops: Number
+        batch_max_ms: Number
+        queue_cap: Number
+        blob_threshold_bytes: Number
+        blob_path: String
+        backup_enabled: Bool
+        backup_max_age_secs: Number
+        backup_max_logs: Number
+        backup_retention_days: Number
+        backup_max_keep: Number
+        backup_prefix: String
+        backup_only_leader: Bool
+        backup_restore_mode: String
+        backup_restore_id: String
+
+A StorageClient:
+    so: Get a value by key.
+    can get(key: String) -> Result:
+        return await storage_get(key)
+
+    so: Get a value and its version by key.
+    can get_with_version(key: String) -> Result:
+        return await storage_get_with_version(key)
+
+    so: Scan a key range with a limit.
+    can scan(start: String, end: String, limit: Number) -> Result:
+        return await storage_scan(start, end, limit)
+
+    so: List keys with a prefix and limit.
+    can list_prefix(prefix: String, limit: Number) -> Result:
+        return await storage_list_prefix(prefix, limit)
+
+    so: Set a value by key.
+    can set(key: String, value: String) -> Result:
+        return await storage_set(key, value)
+
+    so: Set a value by key only if the version matches.
+    can set_if_version(key: String, value: String, version: Number) -> Result:
+        return await storage_set_if_version(key, value, version)
+
+    so: Delete a value only if the version matches.
+    can delete_if_version(key: String, version: Number) -> Result:
+        return await storage_delete_if_version(key, version)
+
+    so: Delete a value by key.
+    can delete(key: String) -> Result:
+        return await storage_delete(key)
+
+    so: Batch set a list of key/value maps.
+    can batch_set(items: List[Map]) -> Result:
+        return await storage_batch_set(items)
+
+so: Open a storage client actor with configuration.
+to storage_open(config: StorageConfig) -> Actor[StorageClient]:
+    storage_configure(config) otherwise nil
+    return detach StorageClient() * 1

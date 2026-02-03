@@ -1,5 +1,5 @@
 use crate::hir::arena::{Arena, Idx};
-use crate::hir::body::{Body, UseName};
+use crate::hir::body::{Body, Literal, UseName};
 use rowan::TextRange;
 use smol_str::SmolStr;
 
@@ -101,6 +101,14 @@ pub struct Field {
     pub name_span: Option<TextRange>,
     pub visibility: Visibility,
     pub ty: Option<TypeRef>,
+    pub default: Option<FieldDefault>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FieldDefault {
+    Literal(Literal),
+    List(Vec<FieldDefault>),
+    Map(Vec<(FieldDefault, FieldDefault)>),
 }
 
 #[derive(Debug, Clone, PartialEq)]

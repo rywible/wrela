@@ -138,10 +138,10 @@ pub enum SemanticError {
         span: SourceSpan,
     },
 
-    #[error("its is only valid for member access inside methods")]
+    #[error("its is only valid inside methods")]
     #[diagnostic(
         code(lang::sem::invalid_its_usage),
-        help("Use `its.<member>` inside methods, or remove this usage.")
+        help("Use `its` inside methods, or remove this usage.")
     )]
     InvalidItsUsage {
         #[label("its used here")]
@@ -288,6 +288,17 @@ pub enum SemanticError {
         #[label("detach here")]
         span: SourceSpan,
     },
+
+    #[error("method '{name}' is reserved for stdlib configuration")]
+    #[diagnostic(
+        code(lang::sem::reserved_stdlib_method),
+        help("Remove this method or choose a different name.")
+    )]
+    ReservedStdlibMethod {
+        name: SmolStr,
+        #[label("reserved method defined here")]
+        span: SourceSpan,
+    },
 }
 
 #[derive(Debug, Error, Diagnostic, Clone)]
@@ -324,6 +335,7 @@ pub enum SemanticWarning {
         #[label("unused here")]
         span: SourceSpan,
     },
+
 }
 
 impl SemanticError {
@@ -356,6 +368,7 @@ impl SemanticError {
             SemanticError::InvalidPoolWeight { span } => *span,
             SemanticError::InvalidPoolTarget { span } => *span,
             SemanticError::MatchBindingsMultiLabel { span } => *span,
+            SemanticError::ReservedStdlibMethod { span, .. } => *span,
         }
     }
 }
@@ -570,6 +583,12 @@ impl<'a> Checker<'a> {
                         span: span_from_option(method.name_span),
                     });
             }
+            if method.name.as_str() == "__configure__" && !is_stdlib_config_class(&class.name) {
+                self.errors.push(SemanticError::ReservedStdlibMethod {
+                    name: method.name.clone(),
+                    span: span_from_option(method.name_span),
+                });
+            }
             if method.kind == FunctionKind::Derived && !method.params.is_empty() {
                 let param_span = method
                     .params
@@ -636,7 +655,18 @@ impl<'a> Checker<'a> {
                 self.check_expr_with_ctx(body, *value, false, false);
                 let span = body.stmt_span(stmt_id);
                 let _ = visibility;
-                if let Some(binding) = self.resolve(name) {
+                if let Some(binding) = self
+                    .scopes
+                    .last()
+                    .and_then(|scope| scope.bindings.get(name))
+                {
+                    self.errors.push(SemanticError::DuplicateDefinition {
+                        name: name.clone(),
+                        kind: binding_kind_label(binding.kind),
+                        span: span_from_option(Some(span)),
+                        previous: binding.span.map(span_from_range),
+                    });
+                } else if let Some(binding) = self.resolve_in_outer(name) {
                     match binding.kind {
                         BindingKind::Local | BindingKind::LoopVar => {
                             if !binding.mutable {
@@ -920,6 +950,9 @@ impl<'a> Checker<'a> {
                     return;
                 }
                 if name == "its" {
+                    if self.in_method {
+                        return;
+                    }
                     self.errors.push(SemanticError::InvalidItsUsage {
                         span: span_from_range(body.expr_span(expr_id)),
                     });
@@ -1389,6 +1422,20 @@ fn unused_kind_label(kind: BindingKind) -> &'static str {
         BindingKind::Use => "import",
         _ => "variable",
     }
+}
+
+fn is_stdlib_config_class(name: &SmolStr) -> bool {
+    matches!(
+        name.as_str(),
+        "Auth"
+            | "Jobs"
+            | "Realtime"
+            | "PubSub"
+            | "Log"
+            | "Logger"
+            | "Runtime"
+            | "HttpServer"
+    )
 }
 
 fn compute_objective_requirements(
@@ -1865,6 +1912,7 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
         (SmolStr::new("map_get"), BindingKind::Function),
         (SmolStr::new("map_set"), BindingKind::Function),
         (SmolStr::new("log"), BindingKind::Function),
+        (SmolStr::new("log_configure"), BindingKind::Function),
         (SmolStr::new("env_get"), BindingKind::Function),
         (SmolStr::new("env_get_or"), BindingKind::Function),
         (SmolStr::new("env_get_as_bool"), BindingKind::Function),
@@ -1878,6 +1926,7 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
         (SmolStr::new("auth_issue_email_token"), BindingKind::Function),
         (SmolStr::new("auth_verify_email_token"), BindingKind::Function),
         (SmolStr::new("auth_oauth_login"), BindingKind::Function),
+        (SmolStr::new("auth_configure"), BindingKind::Function),
         (SmolStr::new("rbac_create_role"), BindingKind::Function),
         (SmolStr::new("rbac_assign_role"), BindingKind::Function),
         (SmolStr::new("rbac_check"), BindingKind::Function),
@@ -1890,6 +1939,7 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
         (SmolStr::new("jobs_enqueue"), BindingKind::Function),
         (SmolStr::new("jobs_process"), BindingKind::Function),
         (SmolStr::new("jobs_dead_letter"), BindingKind::Function),
+        (SmolStr::new("jobs_configure"), BindingKind::Function),
         (SmolStr::new("schedule_cron"), BindingKind::Function),
         (SmolStr::new("schedule_every"), BindingKind::Function),
         (SmolStr::new("schedule_at"), BindingKind::Function),
@@ -1901,6 +1951,8 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
         (SmolStr::new("realtime_leave"), BindingKind::Function),
         (SmolStr::new("realtime_broadcast"), BindingKind::Function),
         (SmolStr::new("realtime_send"), BindingKind::Function),
+        (SmolStr::new("realtime_configure"), BindingKind::Function),
+        (SmolStr::new("pubsub_configure"), BindingKind::Function),
         (SmolStr::new("rate_check"), BindingKind::Function),
         (SmolStr::new("rate_ip"), BindingKind::Function),
         (SmolStr::new("admin_enable"), BindingKind::Function),
@@ -1914,6 +1966,7 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
         (SmolStr::new("storage_delete"), BindingKind::Function),
         (SmolStr::new("storage_batch_set"), BindingKind::Function),
         (SmolStr::new("storage_configure"), BindingKind::Function),
+        (SmolStr::new("runtime_configure"), BindingKind::Function),
         (SmolStr::new("pool_auto_size"), BindingKind::Function),
         (SmolStr::new("pool_size"), BindingKind::Function),
         (SmolStr::new("pool_rr"), BindingKind::Function),
@@ -1943,6 +1996,10 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
         ),
         (
             SmolStr::new("http_server_serve_requests"),
+            BindingKind::Function,
+        ),
+        (
+            SmolStr::new("http_server_configure"),
             BindingKind::Function,
         ),
         (SmolStr::new("http_server_serve_on"), BindingKind::Function),

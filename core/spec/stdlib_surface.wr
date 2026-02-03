@@ -1,11 +1,30 @@
 so: Wrela Stdlib Surface (Runnable)
 so:
 so: This file captures the **public stdlib surface contract** as implemented
-so: in `core/compiler/stdlib/core.wr`. It is intentionally lightweight: it
+so: in `core/compiler/stdlib/`. It is intentionally lightweight: it
 so: checks that critical surface helpers exist and behave at a minimal level.
 so:
 so: The language spec (`core/spec/spec.wr`) does not define stdlib semantics.
 so: Stdlib surface can evolve faster than core language rules.
+
+use:
+    from_string,
+    to_string,
+    length
+from bytes
+
+use:
+    new,
+    get,
+    set
+from map
+
+use push from list
+
+use:
+    int,
+    float
+from parse
 
 
 so: ------------------------------------------------------------
@@ -13,9 +32,9 @@ so: 1) Bytes helpers
 
 
 to test_bytes_helpers() -> Nothing:
-    bytes = bytes_from_string("hi")
-    assert value bytes_len(bytes) == 2
-    assert value bytes_to_string(bytes) == "hi"
+    bytes = from_string("hi")
+    assert value length(bytes) == 2
+    assert value to_string(bytes) == "hi"
 
 
 so: ------------------------------------------------------------
@@ -23,9 +42,9 @@ so: 2) Map helpers
 
 
 to test_map_new_and_accessors() -> Nothing:
-    m = map_new()
-    map_set(m, "k", 7)
-    assert value map_get(m, "k") == 7
+    m = new()
+    set(m, "k", 7)
+    assert value get(m, "k") == 7
 
 
 so: ------------------------------------------------------------
@@ -34,7 +53,7 @@ so: 3) List helpers
 
 to test_list_push_builtin() -> Nothing:
     items = [1, 2]
-    list_push(items, 3)
+    push(items, 3)
     assert value items == [1, 2, 3]
 
 
@@ -43,8 +62,8 @@ so: 4) Parse helpers
 
 
 to test_parse_int_and_float() -> Nothing:
-    assert value (parse_int("12") otherwise 0) == 12
-    assert value (parse_float("1.5") otherwise 0.0) == 1.5
+    assert value (int("12") otherwise 0) == 12
+    assert value (float("1.5") otherwise 0.0) == 1.5
 
 
 so: ------------------------------------------------------------
@@ -54,15 +73,17 @@ so: The following types/classes are part of the public stdlib surface.
 so: This spec does not attempt to exhaustively test them.
 so:
 so: - Env: get, get_or, get_as_bool, get_as_int, set, load
-so: - Auth: create_user, verify_password, issue_jwt, verify_jwt,
+so: - Auth: configure, create_user, verify_password, issue_jwt, verify_jwt,
 so:         issue_email_token, verify_email_token, oauth_login
 so: - RBAC: create_role, assign_role, check, permissions_for
 so: - Files: upload_stream, signed_url, metadata, delete, set_acl
-so: - Jobs: enqueue, process, dead_letter
+so: - Jobs: configure, enqueue, process, dead_letter
 so: - Schedule: cron, every, at
 so: - Search: index, remove, query
-so: - Realtime: on_connect, join, leave, broadcast, send
-so: - Log / Logger (logging helpers)
+so: - Realtime: configure, on_connect, join, leave, broadcast, send
+so: - PubSub: configure
+so: - Log / Logger (logging helpers + configure)
+so: - Runtime (runtime configuration)
 so: - RateLimit: check, ip
 so: - Admin: enable
 so: - StorageConfig + StorageClient (storage_* helpers)

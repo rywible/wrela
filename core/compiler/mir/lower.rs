@@ -17,6 +17,7 @@ pub fn lower_module_with_types(module: &Module, type_info: Option<&TypeInfo>) ->
     let mut type_tags = Vec::new();
     let mut tag_map = HashMap::new();
     let mut class_fields = HashMap::new();
+    let mut class_field_defaults = HashMap::new();
     let mut classes = Vec::new();
     let mut class_method_ids = HashMap::new();
     let mut class_derived = HashMap::new();
@@ -33,7 +34,10 @@ pub fn lower_module_with_types(module: &Module, type_info: Option<&TypeInfo>) ->
             .iter()
             .map(|field| field.name.clone())
             .collect();
+        let defaults: Vec<Option<hir::FieldDefault>> =
+            class.fields.iter().map(|field| field.default.clone()).collect();
         class_fields.insert(class.name.clone(), fields);
+        class_field_defaults.insert(class.name.clone(), defaults);
         let mut methods = Vec::new();
         let mut method_map = HashMap::new();
         let mut derived = HashSet::new();
@@ -92,6 +96,7 @@ pub fn lower_module_with_types(module: &Module, type_info: Option<&TypeInfo>) ->
                 .map(|param| param.name.clone())
                 .collect();
             class_fields.insert(name.clone(), fields.clone());
+            class_field_defaults.insert(name.clone(), vec![None; fields.len()]);
             classes.push(MirClassInfo {
                 name: name.clone(),
                 id,
@@ -151,6 +156,7 @@ pub fn lower_module_with_types(module: &Module, type_info: Option<&TypeInfo>) ->
             body,
             &tag_map,
             &class_fields,
+            &class_field_defaults,
             &function_names,
             &result_functions,
             &class_method_ids,
@@ -182,6 +188,7 @@ fn lower_function(
     body: &hir::Body,
     type_tags: &HashMap<SmolStr, TypeTagId>,
     class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
+    class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
     function_names: &HashSet<SmolStr>,
     result_functions: &HashSet<SmolStr>,
     class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
@@ -194,6 +201,7 @@ fn lower_function(
         name,
         type_tags,
         class_fields,
+        class_field_defaults,
         function_names,
         result_functions,
         class_method_ids,
@@ -305,6 +313,60 @@ A Counter:
         });
         assert!(has_set_field, "expected SetField for member assign");
     }
+
+    #[test]
+    fn test_lower_field_defaults_emits_set_fields() {
+        let input = "\
+A Foo:
+    has:
+        x: Int = 1
+        y: List = [1, 2]
+        z: Map = {\"a\": 1}
+
+to run() -> Nothing:
+    a = Foo()
+    b = Foo(x=5)
+";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = hir_lower::lower(root);
+        let mir_module = lower_module(&module);
+        let func = mir_module
+            .functions
+            .iter()
+            .find(|func| func.name == "run")
+            .expect("missing run");
+
+        let mut set_x = 0usize;
+        let mut set_y = 0usize;
+        let mut set_z = 0usize;
+        let mut build_list = 0usize;
+        let mut build_map = 0usize;
+
+        for block in &func.blocks {
+            for stmt in &block.stmts {
+                match stmt {
+                    MirStmt::SetField { field, .. } if field.as_str() == "x" => set_x += 1,
+                    MirStmt::SetField { field, .. } if field.as_str() == "y" => set_y += 1,
+                    MirStmt::SetField { field, .. } if field.as_str() == "z" => set_z += 1,
+                    _ => {}
+                }
+                if let MirStmt::Assign { value, .. } = stmt {
+                    match value {
+                        Rvalue::BuildList { .. } => build_list += 1,
+                        Rvalue::BuildMap { .. } => build_map += 1,
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        assert_eq!(set_x, 2, "expected default and override for x");
+        assert_eq!(set_y, 2, "expected defaults for y in both instances");
+        assert_eq!(set_z, 2, "expected defaults for z in both instances");
+        assert!(build_list >= 1, "expected BuildList for default list");
+        assert!(build_map >= 1, "expected BuildMap for default map");
+    }
 }
 
 struct LoopTarget {
@@ -325,6 +387,7 @@ struct FunctionLowerer {
     loop_stack: Vec<LoopTarget>,
     type_tags: HashMap<SmolStr, TypeTagId>,
     class_fields: HashMap<SmolStr, Vec<SmolStr>>,
+    class_field_defaults: HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
     class_method_ids: HashMap<SmolStr, HashMap<SmolStr, u32>>,
     class_derived: HashMap<SmolStr, HashSet<SmolStr>>,
     interface_methods: HashMap<SmolStr, HashSet<SmolStr>>,
@@ -340,6 +403,7 @@ impl FunctionLowerer {
         name: SmolStr,
         type_tags: &HashMap<SmolStr, TypeTagId>,
         class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
+        class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
         function_names: &HashSet<SmolStr>,
         result_functions: &HashSet<SmolStr>,
         class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
@@ -361,6 +425,7 @@ impl FunctionLowerer {
             loop_stack: Vec::new(),
             type_tags: type_tags.clone(),
             class_fields: class_fields.clone(),
+            class_field_defaults: class_field_defaults.clone(),
             class_method_ids: class_method_ids.clone(),
             class_derived: class_derived.clone(),
             interface_methods: interface_methods.clone(),
@@ -1403,6 +1468,11 @@ impl FunctionLowerer {
                         .get(&class_name)
                         .cloned()
                         .unwrap_or_default();
+                    let field_defaults = self
+                        .class_field_defaults
+                        .get(&class_name)
+                        .cloned()
+                        .unwrap_or_else(|| vec![None; fields.len()]);
                     let mut field_values: Vec<Option<Value>> = vec![None; fields.len()];
                     let mut positional_index = 0usize;
                     for arg in args {
@@ -1431,8 +1501,8 @@ impl FunctionLowerer {
                         },
                         span,
                     });
-                    for (idx, value) in field_values.into_iter().enumerate() {
-                        if let Some(value) = value {
+                    for idx in 0..field_values.len() {
+                        if let Some(value) = field_values[idx].clone() {
                             self.push_stmt(MirStmt::SetField {
                                 base: Value::Temp(temp),
                                 field: self
@@ -1445,6 +1515,24 @@ impl FunctionLowerer {
                             });
                         }
                     }
+                    for (idx, default) in field_defaults.iter().enumerate() {
+                        if field_values.get(idx).and_then(|val| val.as_ref()).is_none() {
+                            if let Some(default) = default {
+                                let value = self.lower_field_default(default, span);
+                                self.push_stmt(MirStmt::SetField {
+                                    base: Value::Temp(temp),
+                                    field: self
+                                        .class_fields
+                                        .get(&class_name)
+                                        .and_then(|fields| fields.get(idx).cloned())
+                                        .unwrap_or_default(),
+                                    value,
+                                    span,
+                                });
+                            }
+                        }
+                    }
+                    self.maybe_call_configure(&class_name, Value::Temp(temp), span);
                     return Value::Temp(temp);
                 }
                 let (target, args) = self.lower_call_target(body, *callee, args);
@@ -1595,6 +1683,11 @@ impl FunctionLowerer {
                 if let Some(id) = self.type_tags.get(name).copied() {
                     target = Some(Value::Const(Literal::Int(id.0 as i64)));
                     let fields = self.class_fields.get(name).cloned().unwrap_or_default();
+                    let field_defaults = self
+                        .class_field_defaults
+                        .get(name)
+                        .cloned()
+                        .unwrap_or_else(|| vec![None; fields.len()]);
                     let temp = self.new_temp_for_expr(target_expr);
                     self.push_stmt(MirStmt::Assign {
                         place: Place::Temp(temp),
@@ -1604,6 +1697,22 @@ impl FunctionLowerer {
                         },
                         span,
                     });
+                    for (idx, default) in field_defaults.iter().enumerate() {
+                        if let Some(default) = default {
+                            let value = self.lower_field_default(default, span);
+                            self.push_stmt(MirStmt::SetField {
+                                base: Value::Temp(temp),
+                                field: self
+                                    .class_fields
+                                    .get(name)
+                                    .and_then(|fields| fields.get(idx).cloned())
+                                    .unwrap_or_default(),
+                                value,
+                                span,
+                            });
+                        }
+                    }
+                    self.maybe_call_configure(name, Value::Temp(temp), span);
                     instance = Some(Value::Temp(temp));
                 }
             }
@@ -1849,9 +1958,16 @@ impl FunctionLowerer {
             Expr::Variable(name) => {
                 let class_id = self.type_tags.get(name).copied()?;
                 let fields = self.class_fields.get(name).cloned().unwrap_or_default();
+                let field_defaults = self
+                    .class_field_defaults
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| vec![None; fields.len()]);
                 Some(ClassTargetInfo {
+                    name: name.clone(),
                     class_id,
                     fields,
+                    field_defaults,
                     field_values: Vec::new(),
                 })
             }
@@ -1861,6 +1977,11 @@ impl FunctionLowerer {
                 };
                 let class_id = self.type_tags.get(name).copied()?;
                 let fields = self.class_fields.get(name).cloned().unwrap_or_default();
+                let field_defaults = self
+                    .class_field_defaults
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| vec![None; fields.len()]);
                 let mut field_values: Vec<Option<Value>> = vec![None; fields.len()];
                 let mut positional_index = 0usize;
                 for arg in args {
@@ -1881,8 +2002,10 @@ impl FunctionLowerer {
                     }
                 }
                 Some(ClassTargetInfo {
+                    name: name.clone(),
                     class_id,
                     fields,
+                    field_defaults,
                     field_values,
                 })
             }
@@ -1900,6 +2023,7 @@ impl FunctionLowerer {
             },
             span,
         });
+        let has_explicit_fields = class.field_values.iter().any(|val| val.is_some());
         for (idx, value) in class.field_values.iter().enumerate() {
             if let Some(value) = value {
                 self.push_stmt(MirStmt::SetField {
@@ -1910,7 +2034,89 @@ impl FunctionLowerer {
                 });
             }
         }
+        for (idx, default) in class.field_defaults.iter().enumerate() {
+            if class.field_values.get(idx).and_then(|val| val.as_ref()).is_none() {
+                if let Some(default) = default {
+                    let value = self.lower_field_default(default, span);
+                    self.push_stmt(MirStmt::SetField {
+                        base: Value::Temp(temp),
+                        field: class.fields.get(idx).cloned().unwrap_or_default(),
+                        value,
+                        span,
+                    });
+                }
+            }
+        }
+        if has_explicit_fields {
+            self.maybe_call_configure(&class.name, Value::Temp(temp), span);
+        }
         Value::Temp(temp)
+    }
+
+    fn lower_field_default(&mut self, default: &hir::FieldDefault, span: TextRange) -> Value {
+        match default {
+            hir::FieldDefault::Literal(lit) => Value::Const(lit.clone()),
+            hir::FieldDefault::List(items) => {
+                let values = items
+                    .iter()
+                    .map(|item| self.lower_field_default(item, span))
+                    .collect();
+                let temp = self.new_temp(MirType::Unknown);
+                self.push_stmt(MirStmt::Assign {
+                    place: Place::Temp(temp),
+                    value: Rvalue::BuildList { items: values },
+                    span,
+                });
+                Value::Temp(temp)
+            }
+            hir::FieldDefault::Map(items) => {
+                let values = items
+                    .iter()
+                    .map(|(key, value)| {
+                        let key = self.lower_field_default(key, span);
+                        let value = self.lower_field_default(value, span);
+                        (key, value)
+                    })
+                    .collect();
+                let temp = self.new_temp(MirType::Unknown);
+                self.push_stmt(MirStmt::Assign {
+                    place: Place::Temp(temp),
+                    value: Rvalue::BuildMap { items: values },
+                    span,
+                });
+                Value::Temp(temp)
+            }
+        }
+    }
+
+    fn maybe_call_configure(
+        &mut self,
+        class_name: &SmolStr,
+        receiver: Value,
+        span: TextRange,
+    ) {
+        let method_id = match self
+            .class_method_ids
+            .get(class_name)
+            .and_then(|methods| methods.get(&SmolStr::new("__configure__")))
+        {
+            Some(method_id) => *method_id,
+            None => return,
+        };
+        let temp = self.new_temp(MirType::Unknown);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(temp),
+            value: Rvalue::Call {
+                kind: CallKind::Sync,
+                target: CallTarget::Method {
+                    receiver,
+                    method: SmolStr::new(format!("{}.{}", class_name, "__configure__")),
+                    method_id: Some(method_id),
+                },
+                args: Vec::new(),
+            },
+            span,
+        });
     }
 
     fn parse_pool_of(&self, body: &hir::Body, expr_id: hir::Idx<Expr>) -> Option<PoolOfSpec> {
@@ -2163,8 +2369,10 @@ struct PoolOfSpec {
 }
 
 struct ClassTargetInfo {
+    name: SmolStr,
     class_id: TypeTagId,
     fields: Vec<SmolStr>,
+    field_defaults: Vec<Option<hir::FieldDefault>>,
     field_values: Vec<Option<Value>>,
 }
 
@@ -2417,6 +2625,7 @@ fn builtin_function_names() -> Vec<SmolStr> {
         SmolStr::new("map_get"),
         SmolStr::new("map_set"),
         SmolStr::new("log"),
+        SmolStr::new("log_configure"),
         SmolStr::new("pool_auto_size"),
         SmolStr::new("pool_size"),
         SmolStr::new("pool_rr"),
@@ -2443,6 +2652,7 @@ fn builtin_function_names() -> Vec<SmolStr> {
         SmolStr::new("auth_issue_email_token"),
         SmolStr::new("auth_verify_email_token"),
         SmolStr::new("auth_oauth_login"),
+        SmolStr::new("auth_configure"),
         SmolStr::new("rbac_create_role"),
         SmolStr::new("rbac_assign_role"),
         SmolStr::new("rbac_check"),
@@ -2455,6 +2665,7 @@ fn builtin_function_names() -> Vec<SmolStr> {
         SmolStr::new("jobs_enqueue"),
         SmolStr::new("jobs_process"),
         SmolStr::new("jobs_dead_letter"),
+        SmolStr::new("jobs_configure"),
         SmolStr::new("schedule_cron"),
         SmolStr::new("schedule_every"),
         SmolStr::new("schedule_at"),
@@ -2466,6 +2677,8 @@ fn builtin_function_names() -> Vec<SmolStr> {
         SmolStr::new("realtime_leave"),
         SmolStr::new("realtime_broadcast"),
         SmolStr::new("realtime_send"),
+        SmolStr::new("realtime_configure"),
+        SmolStr::new("pubsub_configure"),
         SmolStr::new("rate_check"),
         SmolStr::new("rate_ip"),
         SmolStr::new("admin_enable"),
@@ -2474,6 +2687,7 @@ fn builtin_function_names() -> Vec<SmolStr> {
         SmolStr::new("storage_scan"),
         SmolStr::new("storage_list_prefix"),
         SmolStr::new("storage_configure"),
+        SmolStr::new("runtime_configure"),
         SmolStr::new("storage_set"),
         SmolStr::new("storage_set_if_version"),
         SmolStr::new("storage_delete_if_version"),
@@ -2482,6 +2696,7 @@ fn builtin_function_names() -> Vec<SmolStr> {
         SmolStr::new("http_server_serve_get_requests"),
         SmolStr::new("http_server_serve_post_requests"),
         SmolStr::new("http_server_serve_requests"),
+        SmolStr::new("http_server_configure"),
         SmolStr::new("http_server_serve_on"),
         SmolStr::new("http_server_stop"),
     ]

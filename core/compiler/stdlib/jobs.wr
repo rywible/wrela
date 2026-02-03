@@ -1,0 +1,27 @@
+so:
+    Background job helpers backed by storage.
+
+use StorageClient from storage
+
+A Jobs:
+    has:
+        storage: StorageClient
+        lease_ttl_secs: Number = 60
+
+    so: Apply jobs configuration when fields are provided.
+    can __configure__() -> Nothing:
+        if its.lease_ttl_secs != nil:
+            return jobs_configure(its)
+        return nothing
+
+    so: Enqueue a job into a named queue.
+    can enqueue(queue: String, payload: Map, opts: Map) -> Pending:
+        return jobs_enqueue(its.storage, queue, payload, opts)
+
+    so: Register a handler for jobs in a queue.
+    can process(queue: String, handler: Any) -> Pending:
+        return jobs_process(its.storage, queue, handler)
+
+    so: Fetch the dead-letter queue for a queue.
+    can dead_letter(queue: String) -> Pending:
+        return jobs_dead_letter(its.storage, queue)

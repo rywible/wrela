@@ -27,6 +27,34 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 #[derive(Clone)]
+struct JobsConfig {
+    lease_ttl_secs: u64,
+}
+
+impl Default for JobsConfig {
+    fn default() -> Self {
+        Self { lease_ttl_secs: 60 }
+    }
+}
+
+static JOBS_CONFIG: OnceLock<Mutex<JobsConfig>> = OnceLock::new();
+
+fn jobs_config() -> JobsConfig {
+    JOBS_CONFIG
+        .get_or_init(|| Mutex::new(JobsConfig::default()))
+        .lock()
+        .expect("jobs config lock")
+        .clone()
+}
+
+fn set_jobs_config(config: JobsConfig) {
+    *JOBS_CONFIG
+        .get_or_init(|| Mutex::new(JobsConfig::default()))
+        .lock()
+        .expect("jobs config lock") = config;
+}
+
+#[derive(Clone)]
 struct JobItem {
     id: String,
     payload: Value,
@@ -115,11 +143,7 @@ fn now_secs() -> u64 {
 }
 
 fn job_lease_ttl_secs() -> u64 {
-    std::env::var("WRELA_JOBS_LEASE_TTL_SECS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(60)
-        .max(1)
+    jobs_config().lease_ttl_secs.max(1)
 }
 
 fn map_get_int(map_val: Value, key: &str) -> Option<i64> {
@@ -145,6 +169,31 @@ fn map_set_int(map_val: Value, key: &str, value: i64) {
     let key_val = string::str_from_bytes(key.as_bytes());
     map::map_set(map_val, key_val, Value::from_int(value));
     unsafe { wr_rc_dec(key_val) };
+}
+
+pub fn jobs_configure(config: Value) -> Value {
+    let new_config = jobs_config_from_value(config);
+    set_jobs_config(new_config);
+    Value::nil()
+}
+
+fn jobs_config_from_value(config: Value) -> JobsConfig {
+    let mut out = JobsConfig::default();
+    if let Some(val) = config_field_u64(config, "lease_ttl_secs") {
+        out.lease_ttl_secs = val.max(1);
+    }
+    out
+}
+
+fn config_field_u64(config: Value, field: &str) -> Option<u64> {
+    let val = crate::class::class_get(config, field.as_ptr(), field.len());
+    if val.is_nil() {
+        unsafe { wr_rc_dec(val) };
+        return None;
+    }
+    let out = int_value(val).and_then(|num| if num >= 0 { Some(num as u64) } else { None });
+    unsafe { wr_rc_dec(val) };
+    out
 }
 
 fn json_from_map(val: Value) -> JsonValue {

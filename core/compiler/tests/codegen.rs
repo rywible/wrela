@@ -150,7 +150,7 @@ fn native_logger_smoke() {
         return;
     }
     let source = r#"
-use Logger from core
+use Logger from log
 
 to run() -> Int:
     Logger.log_info("boot")

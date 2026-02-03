@@ -210,10 +210,7 @@ const ARGS_POOL_MAX_LEN: usize = 128;
 
 fn runtime() -> &'static Runtime {
     RUNTIME.get_or_init(|| {
-        let deterministic = std::env::var("WRELA_DETERMINISTIC")
-            .ok()
-            .map(|v| !matches!(v.as_str(), "0" | "false" | "off"))
-            .unwrap_or(false);
+        let deterministic = crate::config::deterministic_runtime();
         let rt = if deterministic {
             tokio::runtime::Builder::new_current_thread()
                 .enable_time()
@@ -229,16 +226,14 @@ fn runtime() -> &'static Runtime {
                 .expect("wrela tokio runtime")
         };
         if WATCHDOG_STARTED.get().is_none() {
-            if let Ok(ms) = std::env::var("WRELA_WATCHDOG_MS") {
-                let ms: u64 = ms.parse().unwrap_or(0);
-                if ms > 0 {
-                    let _ = WATCHDOG_STARTED.set(());
-                    std::thread::spawn(move || {
-                        std::thread::sleep(Duration::from_millis(ms));
-                        eprintln!("fatal: watchdog expired after {} ms", ms);
-                        std::process::abort();
-                    });
-                }
+            let ms = crate::config::actor_watchdog_ms();
+            if ms > 0 {
+                let _ = WATCHDOG_STARTED.set(());
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(ms));
+                    eprintln!("fatal: watchdog expired after {} ms", ms);
+                    std::process::abort();
+                });
             }
         }
         rt
@@ -932,7 +927,7 @@ fn process_message(class_id: u32, msg: Message) {
             .and_then(|inner| inner.get(&msg.method_id))
             .copied()
     };
-    if func.is_none() && std::env::var("WR_DEBUG_ACTOR").is_ok() {
+    if func.is_none() && crate::config::debug_actor_enabled() {
         eprintln!(
             "actor: missing method class_id={} method_id={} argc={}",
             class_id,
@@ -951,7 +946,7 @@ fn process_message(class_id: u32, msg: Message) {
     } else {
         Value::nil()
     };
-    if std::env::var("WR_DEBUG_ACTOR").is_ok() {
+    if crate::config::debug_actor_enabled() {
         eprintln!("actor: method result raw={}", result.0);
     }
     if let Some(pending) = msg.pending {
