@@ -50,6 +50,8 @@ pub(crate) fn parse_statement(p: &mut Parser) {
         SyntaxKind::OptimizeKw => parse_optimize(p),
         SyntaxKind::AssertKw => parse_assert(p),
         SyntaxKind::DeferKw => parse_defer(p),
+        SyntaxKind::IgnoreKw => parse_ignore_result(p),
+        SyntaxKind::CaptureKw => parse_capture(p),
         SyntaxKind::MatchKw => parse_match(p),
         SyntaxKind::UseKw => parse_use(p),
         SyntaxKind::Eof => (),
@@ -219,6 +221,37 @@ fn parse_defer(p: &mut Parser) {
         p.error_with_message_no_bump("expected expression after 'defer'");
     }
     m.complete(p, SyntaxKind::DeferStmt);
+    p.expect_stmt_boundary();
+}
+
+fn parse_ignore_result(p: &mut Parser) {
+    let m = p.start();
+    p.expect(SyntaxKind::IgnoreKw);
+    if p.at_ident_text("result") {
+        p.bump();
+    } else {
+        p.error_with_message_no_bump("expected 'result' after 'ignore'");
+    }
+    if !p.at_stmt_boundary() {
+        expr::expr(p);
+    } else {
+        p.error_with_message_no_bump("expected expression after 'ignore result'");
+    }
+    m.complete(p, SyntaxKind::IgnoreResultStmt);
+    p.expect_stmt_boundary();
+}
+
+fn parse_capture(p: &mut Parser) {
+    let m = p.start();
+    p.expect(SyntaxKind::CaptureKw);
+    p.expect_with_message(SyntaxKind::Ident, "expected variable name after 'capture'");
+    p.expect_with_message(SyntaxKind::Equals, "expected '=' after capture name");
+    if !p.at_stmt_boundary() {
+        expr::expr(p);
+    } else {
+        p.error_with_message_no_bump("expected expression after 'capture'");
+    }
+    m.complete(p, SyntaxKind::CaptureStmt);
     p.expect_stmt_boundary();
 }
 

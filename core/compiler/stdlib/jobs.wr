@@ -10,7 +10,7 @@ A JobManager:
 
     so: Apply jobs configuration when fields are provided.
     can __configure__() -> Nothing:
-        if its.lease_ttl_secs != nil:
+        if its.lease_ttl_secs != nothing:
             return __wr_jobs_configure(its)
         return nothing
 

@@ -490,7 +490,7 @@ match x:
 its.name
 it
 An Apple
-err "nope"
+error "nope"
 crash("boom")
 "#;
     let mut lexer = Lexer::new(input);
@@ -546,7 +546,7 @@ crash("boom")
     // "Apple" is an identifier. It is not the keyword "A" (Class).
     assert_eq!(valid_tokens[18], Token::Identifier(SmolStr::new("Apple")));
 
-    // err "nope"
+    // error "nope"
     assert_eq!(valid_tokens[19], Token::Err);
     assert_eq!(valid_tokens[20], Token::StringLiteral(SmolStr::new("nope")));
 

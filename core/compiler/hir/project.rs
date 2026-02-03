@@ -1113,7 +1113,6 @@ fn is_builtin_type_name(name: &SmolStr) -> bool {
             | "Number"
             | "Boolean"
             | "String"
-            | "Nil"
             | "Nothing"
             | "Bytes"
             | "List"
@@ -1218,7 +1217,6 @@ fn is_builtin_value_name(name: &SmolStr) -> bool {
             | "__wr_storage_configure"
             | "__wr_runtime_configure"
             | "Pool"
-            | "nil"
             | "queue"
             | "drop"
             | "n"
@@ -1267,6 +1265,11 @@ fn collect_used_in_block(
             Stmt::Expr(expr) => collect_used_in_expr(body, *expr, scope, used),
             Stmt::Assert { expr, .. } => collect_used_in_expr(body, *expr, scope, used),
             Stmt::Defer { expr } => collect_used_in_expr(body, *expr, scope, used),
+            Stmt::IgnoreResult { expr } => collect_used_in_expr(body, *expr, scope, used),
+            Stmt::Capture { name, value } => {
+                collect_used_in_expr(body, *value, scope, used);
+                scope.insert(name.clone());
+            }
             Stmt::Let { name, value, .. } => {
                 collect_used_in_expr(body, *value, scope, used);
                 scope.insert(name.clone());

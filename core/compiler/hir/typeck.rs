@@ -57,6 +57,16 @@ pub enum TypeError {
         span: SourceSpan,
     },
 
+    #[error("cannot assign to immutable field '{member}'")]
+    #[diagnostic(code(lang::ty::immutable_field_assign))]
+    ImmutableFieldAssign {
+        member: SmolStr,
+        #[label("assignment here")]
+        span: SourceSpan,
+        #[help]
+        help: String,
+    },
+
     #[error("return type '{found}' does not match expected '{expected}'")]
     #[diagnostic(code(lang::ty::return_mismatch))]
     ReturnTypeMismatch {
@@ -95,6 +105,20 @@ pub enum TypeError {
     #[diagnostic(code(lang::ty::invalid_callee))]
     InvalidCallee {
         #[label("call target here")]
+        span: SourceSpan,
+    },
+
+    #[error("capture requires a Result value")]
+    #[diagnostic(code(lang::ty::capture_requires_result))]
+    CaptureRequiresResult {
+        #[label("capture here")]
+        span: SourceSpan,
+    },
+
+    #[error("ignore result requires a Result value")]
+    #[diagnostic(code(lang::ty::ignore_result_requires_result))]
+    IgnoreResultRequiresResult {
+        #[label("ignore result here")]
         span: SourceSpan,
     },
 
@@ -223,7 +247,7 @@ pub enum TypeError {
         help: String,
     },
 
-    #[error("result must be handled with `otherwise` or returned from a `Result` function")]
+    #[error("result must be handled with `otherwise`, `match`, `ignore result`, `capture`, or returned from a `Result` function")]
     #[diagnostic(code(lang::ty::unhandled_result))]
     UnhandledResult {
         #[label("result here")]
@@ -239,10 +263,10 @@ pub enum TypeError {
         span: SourceSpan,
     },
 
-    #[error("`err` can only be used in functions that return Result")]
+    #[error("`error` can only be used in functions that return Result")]
     #[diagnostic(code(lang::ty::err_outside_result))]
     ErrOutsideResult {
-        #[label("err here")]
+        #[label("error here")]
         span: SourceSpan,
     },
 
@@ -291,11 +315,14 @@ impl TypeError {
             TypeError::InvalidUnaryOperand { span, .. } => *span,
             TypeError::InvalidBinaryOperands { span, .. } => *span,
             TypeError::InvalidAssignment { span, .. } => *span,
+            TypeError::ImmutableFieldAssign { span, .. } => *span,
             TypeError::ReturnTypeMismatch { span, .. } => *span,
             TypeError::UnknownMember { span, .. } => *span,
             TypeError::CallField { span, .. } => *span,
             TypeError::CallDerivedProperty { span, .. } => *span,
             TypeError::InvalidCallee { span } => *span,
+            TypeError::CaptureRequiresResult { span } => *span,
+            TypeError::IgnoreResultRequiresResult { span } => *span,
             TypeError::ArgumentCountMismatch { span, .. } => *span,
             TypeError::UnknownArgument { span, .. } => *span,
             TypeError::ArgumentTypeMismatch { span, .. } => *span,
@@ -390,7 +417,6 @@ fn check_function(
     let mut fn_info = FunctionTypeInfo::default();
     let mut ctx = TypeContext::with_info(&mut fn_info);
     ctx.enter_scope();
-    ctx.declare(SmolStr::new("nil"), Type::Nil);
     if let Some(class_name) = &method_class {
         if let Some(class_sig) = classes.get(class_name) {
             let self_ty = Type::Named(
@@ -463,6 +489,7 @@ struct FunctionSig {
 struct ClassSig {
     type_params: Vec<SmolStr>,
     fields: HashMap<SmolStr, Type>,
+    field_mutable: HashMap<SmolStr, bool>,
     methods: HashMap<SmolStr, MethodSig>,
     field_order: Vec<SmolStr>,
     implements: Vec<SmolStr>,
@@ -505,6 +532,7 @@ impl ClassIndex {
             let type_params = class.type_params.clone();
             let param_set: HashSet<SmolStr> = type_params.iter().cloned().collect();
             let mut fields = HashMap::new();
+            let mut field_mutable = HashMap::new();
             let mut field_order = Vec::new();
             for field in &class.fields {
                 let ty = field
@@ -513,6 +541,7 @@ impl ClassIndex {
                     .map(|t| type_from_ref_with_params(t, &param_set))
                     .unwrap_or(Type::Unknown);
                 fields.insert(field.name.clone(), ty);
+                field_mutable.insert(field.name.clone(), field.mutable);
                 field_order.push(field.name.clone());
             }
             let mut methods = HashMap::new();
@@ -553,6 +582,7 @@ impl ClassIndex {
                     fields,
                     methods,
                     field_order,
+                    field_mutable,
                     implements: class.implements.clone(),
                     name_span: class.name_span,
                 },
@@ -1907,6 +1937,47 @@ fn check_stmt(
             );
             ctx.declare(name.clone(), value_ty);
         }
+        Stmt::IgnoreResult { expr } => {
+            let value_ty = infer_expr(
+                body,
+                *expr,
+                ctx,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+                false,
+                true,
+                returns_result,
+            );
+            if !is_result_type(&value_ty) {
+                errors.push(TypeError::IgnoreResultRequiresResult {
+                    span: span_from_range(body.stmt_span(stmt_id)),
+                });
+            }
+        }
+        Stmt::Capture { name, value } => {
+            let value_ty = infer_expr(
+                body,
+                *value,
+                ctx,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+                false,
+                true,
+                returns_result,
+            );
+            if !is_result_type(&value_ty) {
+                errors.push(TypeError::CaptureRequiresResult {
+                    span: span_from_range(body.stmt_span(stmt_id)),
+                });
+            }
+            ctx.declare(name.clone(), value_ty);
+        }
         Stmt::Assign { name, value, .. } => {
             let value_ty = infer_expr(
                 body,
@@ -2414,6 +2485,110 @@ fn infer_expr(
             rhs,
             op_span,
         } => {
+            if matches!(
+                op,
+                BinaryOp::Assign
+                    | BinaryOp::AddAssign
+                    | BinaryOp::SubAssign
+                    | BinaryOp::MulAssign
+                    | BinaryOp::DivAssign
+            ) {
+                if let Expr::Member { object, member, .. } = &body.exprs[*lhs] {
+                    let object_ty = infer_expr(
+                        body,
+                        *object,
+                        ctx,
+                        classes,
+                        enums,
+                        interfaces,
+                        functions,
+                        errors,
+                        false,
+                        allow_result,
+                        in_result_fn,
+                    );
+                    let right_ty = infer_expr(
+                        body,
+                        *rhs,
+                        ctx,
+                        classes,
+                        enums,
+                        interfaces,
+                        functions,
+                        errors,
+                        false,
+                        allow_result,
+                        in_result_fn,
+                    );
+                    if let Type::Actor(_) = object_ty {
+                        errors.push(TypeError::ActorMemberAccess {
+                            member: member.clone(),
+                            span: span_from_range(*op_span),
+                        });
+                        return Type::Unknown;
+                    }
+                    if let Type::Named(class_name, class_args) = object_ty {
+                        if interfaces.is_interface(&class_name) {
+                            errors.push(TypeError::UnknownMember {
+                                object: class_name.to_string(),
+                                member: member.clone(),
+                                span: span_from_range(*op_span),
+                            });
+                        } else if let Some(class) = classes.get(&class_name) {
+                            let subst = class_subst(class, &class_args);
+                            if let Some(field_ty) = class.fields.get(member) {
+                                let field_mutable = class
+                                    .field_mutable
+                                    .get(member)
+                                    .copied()
+                                    .unwrap_or(false);
+                                if !field_mutable {
+                                    errors.push(TypeError::ImmutableFieldAssign {
+                                        member: member.clone(),
+                                        span: span_from_range(*op_span),
+                                        help: "Mark the field as mutable in the `has` block."
+                                            .to_string(),
+                                    });
+                                }
+                                let field_ty = substitute_type(field_ty, &subst);
+                                if matches!(op, BinaryOp::Assign) {
+                                    if types_known(&field_ty, &right_ty)
+                                        && !is_assignable(&field_ty, &right_ty, classes, interfaces)
+                                    {
+                                        errors.push(TypeError::InvalidAssignment {
+                                            name: member.clone(),
+                                            expected: type_label(&field_ty),
+                                            found: type_label(&right_ty),
+                                            span: span_from_range(*op_span),
+                                        });
+                                    }
+                                } else if types_known(&field_ty, &right_ty)
+                                    && !valid_binary(binary_from_assign(*op), &field_ty, &right_ty)
+                                {
+                                    errors.push(TypeError::InvalidBinaryOperands {
+                                        op: binary_op_label(binary_from_assign(*op)),
+                                        span: span_from_range(*op_span),
+                                    });
+                                }
+                            } else if class.methods.contains_key(member) {
+                                errors.push(TypeError::InvalidAssignment {
+                                    name: member.clone(),
+                                    expected: "field".to_string(),
+                                    found: "method".to_string(),
+                                    span: span_from_range(*op_span),
+                                });
+                            } else {
+                                errors.push(TypeError::UnknownMember {
+                                    object: class_name.to_string(),
+                                    member: member.clone(),
+                                    span: span_from_range(*op_span),
+                                });
+                            }
+                        }
+                    }
+                    return Type::Unknown;
+                }
+            }
             if matches!(op, BinaryOp::Otherwise) {
                 let left = infer_expr(
                     body,
@@ -3040,8 +3215,8 @@ fn infer_expr(
     if matches!(ty, Type::Result(_, _)) && !allow_result {
         errors.push(TypeError::UnhandledResult {
             span: span_from_range(body.expr_span(expr_id)),
-            help: "Handle with `otherwise` or return the Result from a Result-returning \
-function."
+            help: "Handle with `otherwise`, `match`, `ignore result`, `capture`, or return the \
+Result from a Result-returning function."
                 .to_string(),
         });
     }
@@ -3460,7 +3635,7 @@ fn type_from_ref_with_params(ty: &TypeRef, params: &HashSet<SmolStr>) -> Type {
         "Number" => Type::Number,
         "Boolean" => Type::Boolean,
         "String" => Type::String,
-        "Nothing" | "Nil" => Type::Nil,
+        "Nothing" => Type::Nil,
         "List" => match args.as_slice() {
             [inner] => Type::List(Box::new(inner.clone())),
             _ => Type::List(Box::new(Type::Unknown)),
@@ -3655,6 +3830,16 @@ fn unary_result(op: UnaryOp, operand: &Type) -> Type {
     }
 }
 
+fn binary_from_assign(op: BinaryOp) -> BinaryOp {
+    match op {
+        BinaryOp::AddAssign => BinaryOp::Add,
+        BinaryOp::SubAssign => BinaryOp::Sub,
+        BinaryOp::MulAssign => BinaryOp::Mul,
+        BinaryOp::DivAssign => BinaryOp::Div,
+        other => other,
+    }
+}
+
 fn valid_binary(op: BinaryOp, left: &Type, right: &Type) -> bool {
     match op {
         BinaryOp::Add => {
@@ -3844,7 +4029,7 @@ fn unary_op_label(op: UnaryOp) -> &'static str {
         UnaryOp::Await => "await",
         UnaryOp::Spawn => "spawn",
         UnaryOp::Fire => "fire",
-        UnaryOp::Err => "err",
+        UnaryOp::Err => "error",
     }
 }
 
@@ -4157,16 +4342,27 @@ fn visit_stmt_for_async(
             has_await,
             calls,
         ),
-        Stmt::Let { value, .. } | Stmt::Assign { value, .. } => visit_expr_for_async(
+        Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::Capture { value, .. } => {
+            visit_expr_for_async(
+                body,
+                *value,
+                fn_info,
+                function_by_name,
+                class_method_ids,
+                has_await,
+                calls,
+            )
+        }
+        Stmt::Defer { expr } => visit_expr_for_async(
             body,
-            *value,
+            *expr,
             fn_info,
             function_by_name,
             class_method_ids,
             has_await,
             calls,
         ),
-        Stmt::Defer { expr } => visit_expr_for_async(
+        Stmt::IgnoreResult { expr } => visit_expr_for_async(
             body,
             *expr,
             fn_info,
@@ -4572,7 +4768,9 @@ fn check_stmt_async_usage(
                 in_detach,
             );
         }
-        Stmt::Let { value, .. } | Stmt::Assign { value, .. } => check_expr_async_usage(
+        Stmt::Let { value, .. }
+        | Stmt::Assign { value, .. }
+        | Stmt::Capture { value, .. } => check_expr_async_usage(
             body,
             *value,
             fn_info,
@@ -4587,6 +4785,20 @@ fn check_stmt_async_usage(
             in_detach,
         ),
         Stmt::Defer { expr } => check_expr_async_usage(
+            body,
+            *expr,
+            fn_info,
+            classes,
+            class_method_ids,
+            requires_actor,
+            class_requires_actor,
+            class_trace,
+            cause,
+            func_labels,
+            errors,
+            in_detach,
+        ),
+        Stmt::IgnoreResult { expr } => check_expr_async_usage(
             body,
             *expr,
             fn_info,
@@ -5398,8 +5610,8 @@ A Whale:\n    can swim() -> Boolean:\n        return true\n\nto f() -> Nothing:\
     }
 
     #[test]
-    fn test_err_requires_result_function() {
-        let input = "to f() -> Integer:\n    err \"nope\"";
+    fn test_error_requires_result_function() {
+        let input = "to f() -> Integer:\n    error \"nope\"";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -5413,7 +5625,7 @@ A Whale:\n    can swim() -> Boolean:\n        return true\n\nto f() -> Nothing:\
 
     #[test]
     fn test_otherwise_handles_result() {
-        let input = "to f() -> Result:\n    return err \"nope\" otherwise 0";
+        let input = "to f() -> Result:\n    return error \"nope\" otherwise 0";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);

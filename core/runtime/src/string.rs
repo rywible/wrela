@@ -150,7 +150,7 @@ fn write_value_bytes(val: Value, out: &mut Vec<u8>) {
         return;
     }
     if val.is_nil() {
-        out.extend_from_slice(b"nil");
+        out.extend_from_slice(b"nothing");
         return;
     }
     out.extend_from_slice(b"<obj>");

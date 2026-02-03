@@ -34,12 +34,12 @@ so: Wrela Language Spec (Runnable)
     - Comments use `so:` and can span indented blocks.
     - DocComment token exists but is not currently surfaced; `so:` is the only comment form.
     - Identifiers are case-sensitive and may include `_` and non-ASCII letters.
-    - Keywords are reserved (see .plans/language.md).
+    - Keywords are reserved and cannot be used as identifiers or member names; they are not escapable.
     
     Keywords (current):
-    A An has can must to if but while for in return break continue match otherwise
-    err crash true false nothing and or not await detach spawn fire optimize use
-    from private its it mutable assert derives is either defer
+    A An has can must to if while for in return break continue match otherwise
+    error crash true false nothing and or not await detach spawn fire optimize use
+    from private its it mutable assert derives is either defer ignore capture
     
     Symbols and operators:
     : ( ) [ ] { } . ... , @ ->
@@ -56,7 +56,7 @@ so: Wrela Language Spec (Runnable)
     - Radix prefixes allow uppercase: 0X, 0B, 0O.
     - Scientific notation: 1e3, 1E+3, 1.5e-2.
     Booleans: `true`, `false`.
-    Nil: `nothing` (type `Nothing` / `Nil`).
+    Nothing: `nothing` (type `Nothing`).
     Strings: "..." with escapes and interpolation.
 
 
@@ -99,6 +99,8 @@ so: ------------------------------------------------------------
     - `mutable` declares a mutable binding.
     - `+=`, `-=`, `*=`, `/=` are only valid on mutable bindings.
     - Assignment operators are parsed as infix operators but are only valid as statements.
+    - Shadowing any visible binding in the same function/method scope chain is a compile-time error,
+      including loop and match binders.
     
     The compiler rejects reassignment of immutable variables. Not testable here.
 
@@ -164,6 +166,13 @@ to test_for_loop_over_list() -> Nothing:
     assert value total == 6
 
 
+to test_for_loop_over_range() -> Nothing:
+    mutable total = 0
+    for n in 1...3:
+        total = total + n
+    assert value total == 6
+
+
 to test_match_expression_labels() -> Nothing:
     mutable out = ""
     value = 2
@@ -173,6 +182,34 @@ to test_match_expression_labels() -> Nothing:
         otherwise:
             out = "other"
     assert value out == "small"
+
+
+to test_match_pattern_wildcard() -> Nothing:
+    value = 5
+    mutable out = 0
+    match value:
+        _: out = 1
+        otherwise: out = 2
+    assert value out == 1
+
+
+to test_match_pattern_type_check() -> Nothing:
+    value = "hi"
+    mutable out = ""
+    match value:
+        String: out = "string"
+        otherwise: out = "other"
+    assert value out == "string"
+
+
+to test_match_pattern_result() -> Nothing:
+    result = returns_result(flag=true)
+    mutable out = 0
+    match result:
+        Ok(v): out = v
+        Err(_): out = 0
+        otherwise: out = 0
+    assert value out == 7
 
 
 so: ------------------------------------------------------------
@@ -197,13 +234,16 @@ so: ------------------------------------------------------------
     
     - Classes are declared with `A` or `An`.
     - Fields are declared in `has:` blocks.
+    - Fields are immutable by default; use `mutable` in `has` to allow assignment.
     - Fields may include defaults with `= expr` (literal/list/map only).
     - Methods are declared with `can` and have implicit `it` / `its`.
     - Derived properties are declared with `derives` and are accessed like fields.
-      - `it` is only allowed as `return it` inside methods.
-      - Member access must use `its.<field>` (not `it.<field>`).
+      - `its.<member>` is the only receiver member access inside methods.
+      - `it` is only allowed as `return it` inside methods (it is not a general expression).
+      - Member access must use `its.<member>` (not `it.<member>`).
     - Visibility is public by default; `private:` blocks restrict access.
     - Public definitions are the module export surface; private items are not importable.
+    - Field assignment (`its.<field> = ...`, `+=`, etc.) is only valid for fields declared `mutable`.
     
     `private:` blocks are allowed:
     - At top level (only `to` and `A`/`An` inside)
@@ -213,7 +253,7 @@ so: ------------------------------------------------------------
 
 A Whale:
     has:
-        name: String
+        mutable name: String
         age: Integer
     can greet() -> String:
         return "hi {its.name}"
@@ -223,12 +263,24 @@ A Whale:
         return its.age + 1
 
 
+A BoxSelf:
+    has:
+        value: Integer
+    can self() -> BoxSelf:
+        return it
+
+
 to test_class_fields_and_methods() -> Nothing:
     whale = Whale(name="Moby", age=7)
     assert value whale.greet() == "hi Moby"
     whale.rename(new_name="Blue")
     assert value whale.greet() == "hi Blue"
     assert value whale.next_age == 8
+
+
+to test_return_it() -> Nothing:
+    b = BoxSelf(value=1)
+    assert identity b.self() == b
 
 
 A Defaults:
@@ -258,7 +310,7 @@ so: ------------------------------------------------------------
     - Classes implement a single interface with `is a Name` as the first line of the class body.
     - Interfaces cannot define fields, derives, or method bodies.
     - Generic type parameters are declared as `A Box[T]:` and instantiated with `Box[Integer](...)`.
-    - `defer expr` runs on all return paths in LIFO order.
+    - `defer expr` runs on all return paths in LIFO order, after the return value is computed.
     
 
 A Status is either:
@@ -280,7 +332,7 @@ A Foo:
 
 A Counter:
     has:
-        value: Integer
+        mutable value: Integer
     can add(delta: Integer) -> Nothing:
         its.value += delta
 
@@ -349,6 +401,9 @@ so: ------------------------------------------------------------
     - Range: ...
     - `otherwise` handles Result fallbacks
     - `crash(expr)` requires parentheses and aborts immediately.
+    - Ranges materialize lists and are inclusive.
+      - Integer ranges support descending order (e.g., `3...1`).
+      - Float ranges step by 1.0 and stop at/over the end.
     
     Precedence (lowest to highest):
     1. otherwise
@@ -392,20 +447,37 @@ to test_range_operator() -> Nothing:
     assert value (1...3) == [1, 2, 3]
 
 
+to test_range_operator_descending() -> Nothing:
+    assert value (3...1) == [3, 2, 1]
+
+
+to test_range_operator_float() -> Nothing:
+    assert value (1.0...3.0) == [1.0, 2.0, 3.0]
+
+
 so: ------------------------------------------------------------
-    10) Results, err, otherwise, and __wr_assert_err
+    10) Results, error, otherwise, and __wr_assert_err
     
-    - `err x` constructs a Result error.
+    - `error x` constructs a Result error.
     - `Result[Ok, Err]` allows any `Err` type (including user-defined classes).
     - `Result[Ok]` defaults `Err` to `Error`.
     - `otherwise` unwraps Result or yields fallback.
+    - `ignore result expr` explicitly ignores a Result value (expression still evaluates).
+    - `capture name = expr` explicitly captures a Result value for later handling.
+    - `ignore result` and `capture` require a Result value.
     - Unhandled Result values are compile-time errors.
+      A Result is handled if it is:
+      - consumed by `otherwise`
+      - matched with `match` using Result patterns
+      - returned from a Result-returning function
+      - explicitly ignored with `ignore result expr`
+      - explicitly captured with `capture name = expr`
 
 
 to returns_result(flag: Boolean) -> Result[Integer]:
     if flag:
         return 7
-    return err "bad"
+    return error "bad"
 
 
 to test_result_otherwise_ok() -> Nothing:
@@ -416,6 +488,39 @@ to test_result_otherwise_ok() -> Nothing:
 to test_result_otherwise_err() -> Nothing:
     value = returns_result(flag=false) otherwise 9
     assert value value == 9
+
+
+to test_result_ignore_result() -> Nothing:
+    ignore result returns_result(flag=true)
+
+
+to test_result_capture() -> Nothing:
+    capture r = returns_result(flag=true)
+    match r:
+        Ok(v): assert value v == 7
+        Err(_): assert value false == true
+        otherwise: assert value false == true
+
+
+A AuthError is either:
+    MissingToken
+    InvalidToken(reason: String)
+
+to parse_token(token: String) -> Result[Integer, AuthError]:
+    if token == "":
+        return error AuthError.MissingToken
+    return 1
+
+to test_custom_error_handling() -> Nothing:
+    result = parse_token(token="")
+    match result:
+        Ok(_): assert value false == true
+        Err(e):
+            match e:
+                AuthError.MissingToken: assert value true == true
+                AuthError.InvalidToken(_): assert value false == true
+                otherwise: assert value false == true
+        otherwise: assert value false == true
 
 
 so: ------------------------------------------------------------
@@ -461,7 +566,7 @@ so: ------------------------------------------------------------
     13) Types (built-in and parameterized)
     
     Built-in types (by name):
-    Integer, Float, Number, Boolean, String, Bytes, Nothing (aka Nil), Error
+    Integer, Float, Number, Boolean, String, Bytes, Nothing, Error
     
     Generic type constructors:
     List[T]
@@ -472,9 +577,9 @@ so: ------------------------------------------------------------
     
     Type inference (high-level):
     - Numeric literals infer Integer or Float
-    - `err x` yields Result[unknown, type(x)]
+    - `error x` yields Result[unknown, type(x)]
     - `await` yields Result[Ok, Error]
-    - `nothing` has type Nothing/Nil
+    - `nothing` has type Nothing
     
     ------------------------------------------------------------
     14) Built-in bindings (compiler-recognized)
@@ -492,33 +597,37 @@ so: ------------------------------------------------------------
     - Native integrations are provided via standard packages or the runtime/stdlib.
     
     Builtin functions (core language builtins):
-    __wr_assert_err, __wr_print, __wr_parse_int, __wr_parse_float, __wr_read_file, __wr_write_file,
-    __wr_bytes_from_string, __wr_bytes_to_string, __wr_bytes_len, __wr_list_push, __wr_map_new, __wr_map_get, __wr_map_set, __wr_log, __wr_log_configure,
-    __wr_pool_auto_size, __wr_pool_size, __wr_pool_rr, __wr_pool_queue_len,
-    __wr_actor_mailbox_len, __wr_actor_pause, __wr_actor_resume, __wr_actor_pause_wait,
-    __wr_metrics_get, __wr_metrics_dropped_paused_id, __wr_metrics_messages_dropped_id,
-    __wr_clock_ns, __wr_sleep_ms,
-    __wr_env_get, __wr_env_get_or, __wr_env_get_as_bool, __wr_env_get_as_int, __wr_env_set, __wr_env_load,
-    __wr_auth_create_user, __wr_auth_verify_password, __wr_auth_issue_jwt, __wr_auth_verify_jwt,
-    __wr_auth_issue_email_token, __wr_auth_verify_email_token, __wr_auth_oauth_login, __wr_auth_configure,
-    __wr_rbac_create_role, __wr_rbac_assign_role, __wr_rbac_check, __wr_rbac_permissions_for,
-    __wr_files_upload_stream, __wr_files_signed_url, __wr_files_metadata, __wr_files_delete, __wr_files_set_acl,
-    __wr_jobs_enqueue, __wr_jobs_process, __wr_jobs_dead_letter,
-    __wr_jobs_configure,
-    __wr_schedule_cron, __wr_schedule_every, __wr_schedule_at,
-    __wr_search_index, __wr_search_remove, __wr_search_query,
-    __wr_realtime_on_connect, __wr_realtime_join, __wr_realtime_leave, __wr_realtime_broadcast, __wr_realtime_send,
-    __wr_realtime_configure,
-    __wr_pubsub_configure,
-    __wr_rate_check, __wr_rate_ip, __wr_admin_enable,
-    __wr_storage_get, __wr_storage_get_with_version, __wr_storage_scan, __wr_storage_list_prefix, __wr_storage_configure,
-    __wr_storage_set, __wr_storage_set_if_version, __wr_storage_delete_if_version, __wr_storage_delete, __wr_storage_batch_set,
-    __wr_http_server_serve_get_requests, __wr_http_server_serve_post_requests,
-    __wr_http_server_serve_requests, __wr_http_server_configure, __wr_http_server_serve_on, __wr_http_server_stop,
-    __wr_runtime_configure
+    core: __wr_assert_err, __wr_print
+    parse: __wr_parse_int, __wr_parse_float
+    io: __wr_read_file, __wr_write_file
+    bytes: __wr_bytes_from_string, __wr_bytes_to_string, __wr_bytes_len
+    list/map: __wr_list_push, __wr_map_new, __wr_map_get, __wr_map_set
+    log: __wr_log, __wr_log_configure
+    pool: __wr_pool_auto_size, __wr_pool_size, __wr_pool_rr, __wr_pool_queue_len
+    actor: __wr_actor_mailbox_len, __wr_actor_pause, __wr_actor_resume, __wr_actor_pause_wait
+    metrics: __wr_metrics_get, __wr_metrics_dropped_paused_id, __wr_metrics_messages_dropped_id
+    time: __wr_clock_ns, __wr_sleep_ms
+    env: __wr_env_get, __wr_env_get_or, __wr_env_get_as_bool, __wr_env_get_as_int, __wr_env_set, __wr_env_load
+    auth: __wr_auth_create_user, __wr_auth_verify_password, __wr_auth_issue_jwt, __wr_auth_verify_jwt,
+          __wr_auth_issue_email_token, __wr_auth_verify_email_token, __wr_auth_oauth_login, __wr_auth_configure
+    rbac: __wr_rbac_create_role, __wr_rbac_assign_role, __wr_rbac_check, __wr_rbac_permissions_for
+    files: __wr_files_upload_stream, __wr_files_signed_url, __wr_files_metadata, __wr_files_delete, __wr_files_set_acl
+    jobs: __wr_jobs_enqueue, __wr_jobs_process, __wr_jobs_dead_letter, __wr_jobs_configure
+    schedule: __wr_schedule_cron, __wr_schedule_every, __wr_schedule_at
+    search: __wr_search_index, __wr_search_remove, __wr_search_query
+    realtime: __wr_realtime_on_connect, __wr_realtime_join, __wr_realtime_leave, __wr_realtime_broadcast, __wr_realtime_send,
+              __wr_realtime_configure
+    pubsub: __wr_pubsub_configure
+    rate: __wr_rate_check, __wr_rate_ip
+    admin: __wr_admin_enable
+    storage: __wr_storage_get, __wr_storage_get_with_version, __wr_storage_scan, __wr_storage_list_prefix, __wr_storage_configure,
+             __wr_storage_set, __wr_storage_set_if_version, __wr_storage_delete_if_version, __wr_storage_delete, __wr_storage_batch_set
+    http: __wr_http_server_serve_get_requests, __wr_http_server_serve_post_requests,
+          __wr_http_server_serve_requests, __wr_http_server_configure, __wr_http_server_serve_on, __wr_http_server_stop
+    runtime: __wr_runtime_configure
     
     Implicit values:
-    nil, Pool, queue, drop, n
+    Pool, queue, drop, n
 
 
 so: ------------------------------------------------------------
@@ -543,16 +652,46 @@ so: ------------------------------------------------------------
     - invalid unary/binary operand types are errors
     - assignment/return type mismatch errors
     - `assert identity` forbids primitive operands and only allows ==/!=
-    - `err` only allowed in Result-returning functions
+    - `error` only allowed in Result-returning functions
+    - `ignore result` requires a Result value
+    - `capture` requires a Result value
     - `otherwise` requires a Result LHS
     - actor method calls must be awaited or fired
     - async methods require actor instances
     - Pool.of arg validation (size/objective/batch/min/max/weight/backpressure)
-    - `it` is only valid inside methods (or return expressions in non-methods)
+    - `it` is only valid as `return it` inside methods
     
     Warnings (non-fatal):
     - unused locals/imports
     - unreachable code after return/break/continue
     - method/field name conflicts
+
+    Example errors (canonical):
+    - unhandled Result:
+        to f() -> Nothing:
+            returns_result(flag=true)
+    - shadowing:
+        to f() -> Nothing:
+            x = 1
+            if true:
+                x = 2
+    - actor instance forbids member access:
+        to f(a: Actor[Whale]) -> Nothing:
+            a.name
+    - fire statement-only:
+        to f(p: Pending[Integer]) -> Nothing:
+            x = fire p
+    - use placement:
+        to f() -> Nothing:
+            use Foo from bar
+    - positional after named args:
+        to f() -> Nothing:
+            add(a=1, 2)
+    - ignore result requires Result:
+        to f() -> Nothing:
+            ignore result 1
+    - capture requires Result:
+        to f() -> Nothing:
+            capture r = 1
     
     These are enforced by the parser/typechecker and are documented here.

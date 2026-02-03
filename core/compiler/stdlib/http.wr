@@ -32,13 +32,13 @@ A HttpRequest:
 
 A HttpResponse:
     has:
-        status: Number
-        headers: Map
-        body: Bytes
+        mutable status: Number
+        mutable headers: Map
+        mutable body: Bytes
 
     so: Set a header and return the response.
     can header(name: String, value: String) -> HttpResponse:
-        if its.headers == nil:
+        if its.headers == nothing:
             its.headers = {}
         __wr_map_set(its.headers, name, value)
         return it
@@ -47,7 +47,7 @@ A HttpResponse:
     can ok(text: String) -> HttpResponse:
         its.status = 200
         its.body = __wr_bytes_from_string(text)
-        if its.headers == nil:
+        if its.headers == nothing:
             its.headers = {}
         __wr_map_set(its.headers, "content-type", "text/plain; charset=utf-8")
         return it
@@ -56,7 +56,7 @@ A HttpResponse:
     can json(text: String) -> HttpResponse:
         its.status = 200
         its.body = __wr_bytes_from_string(text)
-        if its.headers == nil:
+        if its.headers == nothing:
             its.headers = {}
         __wr_map_set(its.headers, "content-type", "application/json")
         return it
@@ -69,7 +69,7 @@ A HttpResponse:
     can text_with_status(text: String, status: Number) -> HttpResponse:
         its.status = status
         its.body = __wr_bytes_from_string(text)
-        if its.headers == nil:
+        if its.headers == nothing:
             its.headers = {}
         __wr_map_set(its.headers, "content-type", "text/plain; charset=utf-8")
         return it
@@ -103,7 +103,7 @@ A HttpServer:
 
     so: Apply HTTP server configuration when fields are provided.
     can __configure__() -> Nothing:
-        if its.auth_token != nil or its.auth_jwt_enabled != nil or its.jwt_secret != nil or its.rbac_permission != nil or its.rbac_scope != nil or its.rbac_skip_paths != nil or its.rate_limit_enabled != nil or its.rate_limit_burst != nil or its.rate_limit_per_secs != nil or its.rate_limit_skip_paths != nil or its.hsts_enabled != nil or its.csp != nil:
+        if its.auth_token != nothing or its.auth_jwt_enabled != nothing or its.jwt_secret != nothing or its.rbac_permission != nothing or its.rbac_scope != nothing or its.rbac_skip_paths != nothing or its.rate_limit_enabled != nothing or its.rate_limit_burst != nothing or its.rate_limit_per_secs != nothing or its.rate_limit_skip_paths != nothing or its.hsts_enabled != nothing or its.csp != nothing:
             return __wr_http_server_configure(its)
         return nothing
 

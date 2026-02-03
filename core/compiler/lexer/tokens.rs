@@ -42,7 +42,7 @@ pub enum Token {
     Match,
     #[strum(serialize = "otherwise")]
     Otherwise,
-    #[strum(serialize = "err")]
+    #[strum(serialize = "error")]
     Err,
     #[strum(serialize = "crash")]
     Crash,
@@ -88,6 +88,10 @@ pub enum Token {
     Either,
     #[strum(serialize = "defer")]
     Defer,
+    #[strum(serialize = "ignore")]
+    Ignore,
+    #[strum(serialize = "capture")]
+    Capture,
 
     // Literals
     #[strum(serialize = "Identifier")]
@@ -244,6 +248,8 @@ impl Token {
                 | Token::Is
                 | Token::Either
                 | Token::Defer
+                | Token::Ignore
+                | Token::Capture
         )
     }
 

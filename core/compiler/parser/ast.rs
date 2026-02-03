@@ -50,6 +50,8 @@ pub enum Stmt {
     OptimizeStmt(OptimizeStmt),
     AssertStmt(AssertStmt),
     DeferStmt(DeferStmt),
+    IgnoreResultStmt(IgnoreResultStmt),
+    CaptureStmt(CaptureStmt),
     PrivateBlock(PrivateBlock),
 }
 
@@ -73,6 +75,8 @@ impl AstNode for Stmt {
                 | SyntaxKind::OptimizeStmt
                 | SyntaxKind::AssertStmt
                 | SyntaxKind::DeferStmt
+                | SyntaxKind::IgnoreResultStmt
+                | SyntaxKind::CaptureStmt
                 | SyntaxKind::PrivateBlock
         )
     }
@@ -94,6 +98,8 @@ impl AstNode for Stmt {
             SyntaxKind::OptimizeStmt => OptimizeStmt::cast(node).map(Stmt::OptimizeStmt),
             SyntaxKind::AssertStmt => AssertStmt::cast(node).map(Stmt::AssertStmt),
             SyntaxKind::DeferStmt => DeferStmt::cast(node).map(Stmt::DeferStmt),
+            SyntaxKind::IgnoreResultStmt => IgnoreResultStmt::cast(node).map(Stmt::IgnoreResultStmt),
+            SyntaxKind::CaptureStmt => CaptureStmt::cast(node).map(Stmt::CaptureStmt),
             SyntaxKind::PrivateBlock => PrivateBlock::cast(node).map(Stmt::PrivateBlock),
             _ => None,
         }
@@ -116,6 +122,8 @@ impl AstNode for Stmt {
             Stmt::OptimizeStmt(it) => it.syntax(),
             Stmt::AssertStmt(it) => it.syntax(),
             Stmt::DeferStmt(it) => it.syntax(),
+            Stmt::IgnoreResultStmt(it) => it.syntax(),
+            Stmt::CaptureStmt(it) => it.syntax(),
             Stmt::PrivateBlock(it) => it.syntax(),
         }
     }
@@ -186,6 +194,59 @@ impl AstNode for DeferStmt {
 }
 
 impl DeferStmt {
+    pub fn expr(&self) -> Option<Expr> {
+        self.0.children().filter_map(Expr::cast).next()
+    }
+}
+
+pub struct IgnoreResultStmt(SyntaxNode);
+impl AstNode for IgnoreResultStmt {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::IgnoreResultStmt
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(IgnoreResultStmt(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl IgnoreResultStmt {
+    pub fn expr(&self) -> Option<Expr> {
+        self.0.children().filter_map(Expr::cast).next()
+    }
+}
+
+pub struct CaptureStmt(SyntaxNode);
+impl AstNode for CaptureStmt {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::CaptureStmt
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(CaptureStmt(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl CaptureStmt {
+    pub fn name(&self) -> Option<SyntaxToken> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .find(|it| it.kind() == SyntaxKind::Ident)
+    }
+
     pub fn expr(&self) -> Option<Expr> {
         self.0.children().filter_map(Expr::cast).next()
     }
@@ -1469,6 +1530,13 @@ impl FieldDef {
 
     pub fn default_expr(&self) -> Option<Expr> {
         self.0.children().filter_map(Expr::cast).next()
+    }
+
+    pub fn is_mutable(&self) -> bool {
+        self.0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .any(|it| it.kind() == SyntaxKind::MutableKw)
     }
 }
 

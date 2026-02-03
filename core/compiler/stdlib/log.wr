@@ -7,7 +7,7 @@ A Logger:
 
     so: Apply logging configuration when fields are provided.
     can __configure__() -> Nothing:
-        if its.level != nil:
+        if its.level != nothing:
             return __wr_log_configure(its)
         return nothing
 

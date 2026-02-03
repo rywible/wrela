@@ -67,6 +67,13 @@ pub enum Stmt {
         cases: Vec<MatchCase>,
         otherwise: Option<Vec<Idx<Stmt>>>,
     },
+    IgnoreResult {
+        expr: Idx<Expr>,
+    },
+    Capture {
+        name: SmolStr,
+        value: Idx<Expr>,
+    },
     Defer {
         expr: Idx<Expr>,
     },

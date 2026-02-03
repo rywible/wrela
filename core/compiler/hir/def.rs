@@ -101,6 +101,7 @@ pub struct Field {
     pub name_span: Option<TextRange>,
     pub visibility: Visibility,
     pub ty: Option<TypeRef>,
+    pub mutable: bool,
     pub default: Option<FieldDefault>,
 }
 

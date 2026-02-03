@@ -176,6 +176,9 @@ fn field_item(p: &mut Parser) {
 
 fn field_def(p: &mut Parser) {
     let m = p.start();
+    if p.at(SyntaxKind::MutableKw) {
+        p.bump();
+    }
     p.expect_with_message(SyntaxKind::Ident, "expected field name");
     p.expect_with_message(SyntaxKind::Colon, "expected ':' after field name");
     types::parse_type(p);

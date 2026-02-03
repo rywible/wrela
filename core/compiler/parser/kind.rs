@@ -21,7 +21,7 @@ pub enum SyntaxKind {
     ContinueKw,  // continue
     MatchKw,     // match
     OtherwiseKw, // otherwise
-    ErrKw,       // err
+    ErrKw,       // error
     CrashKw,     // crash
     TrueKw,      // true
     FalseKw,     // false
@@ -44,6 +44,8 @@ pub enum SyntaxKind {
     IsKw,       // is
     EitherKw,   // either
     DeferKw,    // defer
+    IgnoreKw,   // ignore
+    CaptureKw,  // capture
 
     // Literals
     Ident,
@@ -141,6 +143,8 @@ pub enum SyntaxKind {
     OptimizeStmt,
     AssertStmt,
     DeferStmt,
+    IgnoreResultStmt,
+    CaptureStmt,
     PrivateBlock,
 
     // Expressions
@@ -208,6 +212,8 @@ impl From<Token> for SyntaxKind {
             Token::Is => SyntaxKind::IsKw,
             Token::Either => SyntaxKind::EitherKw,
             Token::Defer => SyntaxKind::DeferKw,
+            Token::Ignore => SyntaxKind::IgnoreKw,
+            Token::Capture => SyntaxKind::CaptureKw,
             Token::Identifier(_) => SyntaxKind::Ident,
             Token::StringLiteral(_) => SyntaxKind::StringLiteral,
             Token::StringStart(_) => SyntaxKind::StringStart,

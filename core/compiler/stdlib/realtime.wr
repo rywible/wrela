@@ -7,7 +7,7 @@ A RealtimeSocketProvider:
 
     so: Apply realtime configuration when fields are provided.
     can __configure__() -> Nothing:
-        if its.socket_ttl_secs != nil:
+        if its.socket_ttl_secs != nothing:
             return __wr_realtime_configure(its)
         return nothing
 

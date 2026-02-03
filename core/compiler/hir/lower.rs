@@ -337,6 +337,7 @@ impl LoweringContext {
             name_span: f.name().map(|t| t.text_range()),
             visibility: visibility_for_node_default(f.syntax()),
             ty: f.ty().map(|t| self.lower_type_ref(t)),
+            mutable: f.is_mutable(),
             default: f.default_expr().and_then(|expr| self.lower_field_default(expr)),
         }
     }
@@ -557,6 +558,25 @@ impl BodyLoweringContext {
                     cases,
                     otherwise,
                 }
+            }
+            ast::Stmt::IgnoreResultStmt(d) => {
+                let expr = d
+                    .expr()
+                    .and_then(|e| self.lower_expr(e))
+                    .unwrap_or_else(|| {
+                        self.alloc_expr(Expr::Literal(Literal::Nil), self.empty_span())
+                    });
+                Stmt::IgnoreResult { expr }
+            }
+            ast::Stmt::CaptureStmt(c) => {
+                let name = c.name().map(|t| SmolStr::new(t.text())).unwrap_or_default();
+                let value = c
+                    .expr()
+                    .and_then(|e| self.lower_expr(e))
+                    .unwrap_or_else(|| {
+                        self.alloc_expr(Expr::Literal(Literal::Nil), self.empty_span())
+                    });
+                Stmt::Capture { name, value }
             }
             ast::Stmt::DeferStmt(d) => {
                 let expr = d

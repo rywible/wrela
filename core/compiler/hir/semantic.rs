@@ -678,6 +678,37 @@ impl<'a> Checker<'a> {
                     );
                 }
             }
+            Stmt::Capture { name, value } => {
+                if self.in_derived {
+                    self.errors.push(SemanticError::DerivedMutation {
+                        span: span_from_range(body.stmt_span(stmt_id)),
+                    });
+                }
+                self.check_expr_with_ctx(body, *value, false, false);
+                let span = body.stmt_span(stmt_id);
+                if let Some(binding) = self
+                    .scopes
+                    .last()
+                    .and_then(|scope| scope.bindings.get(name))
+                {
+                    self.errors.push(SemanticError::DuplicateDefinition {
+                        name: name.clone(),
+                        kind: binding_kind_label(binding.kind),
+                        span: span_from_option(Some(span)),
+                        previous: binding.span.map(span_from_range),
+                    });
+                } else {
+                    self.declare(
+                        name.clone(),
+                        Binding {
+                            mutable: false,
+                            kind: BindingKind::Local,
+                            span: Some(span),
+                            used: false,
+                        },
+                    );
+                }
+            }
             Stmt::Assign { name, value, .. } => {
                 if self.in_derived {
                     self.errors.push(SemanticError::DerivedMutation {
@@ -862,6 +893,9 @@ impl<'a> Checker<'a> {
             Stmt::Defer { expr } => {
                 self.check_expr_with_ctx(body, *expr, false, false);
             }
+            Stmt::IgnoreResult { expr } => {
+                self.check_expr_with_ctx(body, *expr, false, false);
+            }
         }
     }
 
@@ -1008,7 +1042,7 @@ impl<'a> Checker<'a> {
                         UnaryOp::Await => Some("await"),
                         UnaryOp::Spawn => Some("spawn"),
                         UnaryOp::Fire => Some("fire"),
-                        UnaryOp::Err => Some("err"),
+                        UnaryOp::Err => Some("error"),
                         _ => None,
                     };
                     if let Some(keyword) = keyword {
@@ -1537,6 +1571,22 @@ fn collect_stmt_calls_and_awaits(
             has_await,
             callees,
         ),
+        Stmt::IgnoreResult { expr } => collect_expr_calls_and_awaits(
+            body,
+            *expr,
+            function_ids,
+            method_name_ids,
+            has_await,
+            callees,
+        ),
+        Stmt::Capture { value, .. } => collect_expr_calls_and_awaits(
+            body,
+            *value,
+            function_ids,
+            method_name_ids,
+            has_await,
+            callees,
+        ),
         Stmt::Assert { expr, .. } => {
             collect_expr_calls_and_awaits(
                 body,
@@ -1978,7 +2028,6 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
         ),
         (SmolStr::new("__wr_http_server_serve_on"), BindingKind::Function),
         (SmolStr::new("__wr_http_server_stop"), BindingKind::Function),
-        (SmolStr::new("nil"), BindingKind::Implicit),
         (SmolStr::new("Pool"), BindingKind::Implicit),
     ]
 }

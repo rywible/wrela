@@ -72,5 +72,5 @@ A StorageClient:
 
 so: Open a storage client actor with configuration.
 to storage_open(config: StorageConfig) -> Actor[StorageClient]:
-    __wr_storage_configure(config) otherwise nil
+    __wr_storage_configure(config) otherwise nothing
     return detach StorageClient() * 1

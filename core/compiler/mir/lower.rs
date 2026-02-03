@@ -610,6 +610,17 @@ impl FunctionLowerer {
                     span,
                 });
             }
+            HirStmt::Capture { name, value } => {
+                let value = self.lower_expr(body, *value);
+                let local = self.new_local(name.clone(), false, self.local_type_for_name(name));
+                self.declare_local(name.clone(), local);
+                self.declare_resultness(name.clone(), true);
+                self.push_stmt(MirStmt::Assign {
+                    place: Place::Local(local),
+                    value: Rvalue::Use(value),
+                    span,
+                });
+            }
             HirStmt::Assign {
                 name, op, value, ..
             } => {
@@ -655,6 +666,9 @@ impl FunctionLowerer {
                         });
                     }
                 }
+            }
+            HirStmt::IgnoreResult { expr } => {
+                let _ = self.lower_expr(body, *expr);
             }
             HirStmt::Optimize {
                 body: optimize_body,

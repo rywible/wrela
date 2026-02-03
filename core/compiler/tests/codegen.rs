@@ -290,7 +290,7 @@ fn native_builtins_parse_and_io() {
     let source = format!(
         r#"
 to run() -> Integer:
-    __wr_write_file("{path}", "123") otherwise nil
+    __wr_write_file("{path}", "123") otherwise nothing
     value = __wr_read_file("{path}") otherwise "0"
     parsed = __wr_parse_int(value) otherwise 0
     parsed_float = __wr_parse_float("2.5") otherwise 0.0
@@ -1015,7 +1015,7 @@ fn native_result_otherwise_smoke() {
     let source = r#"
 to fail(flag: Boolean) -> Result:
     if flag:
-        return err "nope"
+        return error "nope"
     return 7
 
 to run() -> Integer:
@@ -1102,7 +1102,7 @@ fn native_result_match_smoke() {
 to maybe(ok: Boolean) -> Result[Integer, Integer]:
     if ok:
         return 1
-    return err 9
+    return error 9
 
 to run() -> Integer:
     match maybe(ok=false):
