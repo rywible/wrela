@@ -666,32 +666,6 @@ impl<'a> Checker<'a> {
                         span: span_from_option(Some(span)),
                         previous: binding.span.map(span_from_range),
                     });
-                } else if let Some(binding) = self.resolve_in_outer(name) {
-                    match binding.kind {
-                        BindingKind::Local | BindingKind::LoopVar => {
-                            if !binding.mutable {
-                                self.errors.push(SemanticError::ImmutableAssign {
-                                    name: name.clone(),
-                                    span: span_from_range(span),
-                                    definition: binding.span.map(span_from_range),
-                                });
-                            }
-                        }
-                        BindingKind::Param
-                        | BindingKind::Function
-                        | BindingKind::Class
-                        | BindingKind::Method
-                        | BindingKind::Field
-                        | BindingKind::Use
-                        | BindingKind::Implicit => {
-                            self.errors.push(SemanticError::InvalidAssignTarget {
-                                name: name.clone(),
-                                kind: binding_kind_label(binding.kind),
-                                span: span_from_range(span),
-                                definition: binding.span.map(span_from_range),
-                            });
-                        }
-                    }
                 } else {
                     self.declare(
                         name.clone(),
@@ -2149,7 +2123,7 @@ mod tests {
         let diagnostics = check_module(&module);
         assert!(diagnostics.errors.iter().any(|err| matches!(
             err,
-            SemanticError::ImmutableAssign { name, .. } if name == "x"
+            SemanticError::ShadowedName { name, .. } if name == "x"
         )));
     }
 
