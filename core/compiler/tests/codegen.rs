@@ -3,6 +3,7 @@ use std::process::Command;
 use wrela::hir;
 use wrela::hir::project::load_project;
 use wrela::mir;
+use wrela::mir::ir::{AllocKind, BasicBlock, BlockId, Local, MirFunction, MirType, Place, Rvalue, Stmt, Temp, TempId, Terminator, Value};
 
 fn load_module_from_source(source: &str) -> hir::Module {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -183,6 +184,108 @@ to run() -> Integer:
     let status = Command::new(&out).status().expect("run failed");
     let expected = expected_int_exit(1);
     assert_eq!(status.code().unwrap_or(-1), expected);
+}
+
+#[test]
+fn mir_alloc_annotations_preserved() {
+    let temp_escape = TempId(0);
+    let temp_local = TempId(1);
+    let block = BasicBlock {
+        stmts: vec![
+            Stmt::Assign {
+                place: Place::Temp(temp_escape),
+                value: Rvalue::BuildList {
+                    items: Vec::new(),
+                    alloc: AllocKind::LocalTemp,
+                },
+                span: rowan::TextRange::new(0.into(), 0.into()),
+            },
+            Stmt::Assign {
+                place: Place::Temp(temp_local),
+                value: Rvalue::BuildList {
+                    items: Vec::new(),
+                    alloc: AllocKind::LocalTemp,
+                },
+                span: rowan::TextRange::new(0.into(), 0.into()),
+            },
+            Stmt::RcInc {
+                value: Value::Temp(temp_local),
+                span: rowan::TextRange::new(0.into(), 0.into()),
+            },
+        ],
+        terminator: Terminator::Return {
+            value: Some(Value::Temp(temp_escape)),
+            span: rowan::TextRange::new(0.into(), 0.into()),
+        },
+    };
+    let mut func = MirFunction {
+        name: "allocs".into(),
+        params: Vec::new(),
+        locals: vec![Local {
+            name: "x".into(),
+            mutable: false,
+            ty: MirType::Unknown,
+        }],
+        temps: vec![Temp { ty: MirType::Unknown }, Temp { ty: MirType::Unknown }],
+        blocks: vec![block],
+        entry: BlockId(0),
+        suspendable: false,
+    };
+
+    mir::opt::run_function_passes(&mut func);
+
+    let mut allocs = Vec::new();
+    for stmt in &func.blocks[0].stmts {
+        if let Stmt::Assign { value, .. } = stmt {
+            if let Rvalue::BuildList { alloc, .. } = value {
+                allocs.push(*alloc);
+            }
+        }
+    }
+    assert!(allocs.contains(&AllocKind::Escaping));
+    assert!(allocs.contains(&AllocKind::LocalTemp));
+}
+
+#[test]
+fn mir_ssa_phi_inserted() {
+    let source = r#"
+to run() -> Integer:
+    mutable x = 1
+    mutable y = 0
+    if x > 0:
+        y += 1
+    otherwise:
+        y += 2
+    return y
+"#;
+
+    let module = load_module_from_source(&source);
+    let semantic = hir::semantic::check_module(&module);
+    assert!(
+        semantic.errors.is_empty(),
+        "semantic errors: {:?}",
+        semantic.errors
+    );
+    let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+    assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
+
+    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    for func in &mut mir_module.functions {
+        mir::opt::run_function_passes(func);
+    }
+
+    let func = mir_module
+        .functions
+        .iter()
+        .find(|func| func.name == "run")
+        .expect("missing run");
+    let has_phi = func.blocks.iter().any(|block| {
+        block
+            .stmts
+            .iter()
+            .any(|stmt| matches!(stmt, Stmt::Phi { .. }))
+    });
+    assert!(has_phi, "expected SSA phi insertion");
 }
 
 #[test]

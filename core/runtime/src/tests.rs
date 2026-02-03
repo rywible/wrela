@@ -71,6 +71,20 @@ fn storage_set_string_test(key: &str, value: &str) {
     }
 }
 
+#[test]
+fn storage_helpers_bytes_roundtrip() {
+    let _ = test_storage();
+    crate::actor::runtime_block_on(async {
+        assert!(crate::storage_helpers::storage_set_bytes("bytes:key", b"abc").await);
+        let got = crate::storage_helpers::storage_get_bytes("bytes:key").await;
+        assert_eq!(got.as_deref(), Some(b"abc".as_ref()));
+
+        assert!(crate::storage_helpers::storage_set_string("bytes:string", "hello").await);
+        let got = crate::storage_helpers::storage_get_bytes("bytes:string").await;
+        assert_eq!(got.as_deref(), Some(b"hello".as_ref()));
+    });
+}
+
 fn net_available() -> bool {
     use std::io::ErrorKind;
 
@@ -455,6 +469,23 @@ fn boxed_int_roundtrip() {
 }
 
 #[test]
+fn tagged_int_bounds() {
+    let max_tagged = (1i64 << 48) - 1;
+    let min_tagged = -(1i64 << 48);
+    let v_max = Value::from_int(max_tagged);
+    let v_min = Value::from_int(min_tagged);
+    assert!(v_max.is_int());
+    assert!(v_min.is_int());
+    assert_eq!(v_max.as_int(), max_tagged);
+    assert_eq!(v_min.as_int(), min_tagged);
+
+    let boxed = Value::from_int(1i64 << 48);
+    assert!(!boxed.is_int());
+    assert!(boxed.is_ptr());
+    unsafe { wr_rc_dec(boxed) };
+}
+
+#[test]
 fn string_concat_and_intern() {
     let hello = wr_str_from_utf8(b"hello".as_ptr(), 5);
     let space = wr_str_from_utf8(b" ".as_ptr(), 1);
@@ -480,6 +511,24 @@ fn string_concat_and_intern() {
     }
 }
 
+#[cfg(feature = "metrics")]
+#[test]
+fn string_concat_single_alloc() {
+    use crate::metrics::metrics_get_raw;
+
+    wr_metrics_reset();
+    let hello = wr_str_from_utf8(b"hello".as_ptr(), 5);
+    let parts = [hello, Value::from_int(123), Value::from_bool(true)];
+    let before = metrics_get_raw(crate::metrics::METRIC_ALLOC_STRING);
+    let joined = wr_str_concat(parts.as_ptr(), parts.len());
+    let after = metrics_get_raw(crate::metrics::METRIC_ALLOC_STRING);
+    assert_eq!(after, before + 1);
+    unsafe {
+        wr_rc_dec(hello);
+        wr_rc_dec(joined);
+    }
+}
+
 #[test]
 fn list_set_get() {
     let list = wr_list_new(2);
@@ -501,6 +550,59 @@ fn map_set_get() {
     let got = wr_map_get(map, key);
     assert_eq!(got.as_int(), 9);
     unsafe { wr_rc_dec(map) };
+}
+
+#[test]
+fn map_inline_storage_promotion() {
+    let map = wr_map_new();
+    for i in 0..8 {
+        wr_map_set(map, Value::from_int(i), Value::from_int(i + 100));
+    }
+    let map_ptr = crate::map::as_map_ref(map).expect("map");
+    assert!(crate::map::map_is_inline(map_ptr));
+    assert_eq!(crate::map::map_inline_len(map_ptr), 8);
+
+    for i in 0..8 {
+        let got = wr_map_get(map, Value::from_int(i));
+        assert_eq!(got.as_int(), i + 100);
+    }
+
+    wr_map_set(map, Value::from_int(8), Value::from_int(108));
+    assert!(!crate::map::map_is_inline(map_ptr));
+    assert_eq!(crate::map::map_len(map_ptr), 9);
+
+    let got = wr_map_get(map, Value::from_int(8));
+    assert_eq!(got.as_int(), 108);
+
+    unsafe { wr_rc_dec(map) };
+}
+
+#[test]
+fn arena_allocs_and_resets() {
+    let mut arena = crate::arena::Arena::new(1024);
+    let _guard = crate::arena::enter(&mut arena as *mut _);
+
+    let list = crate::list::list_new_local(2);
+    let map = crate::map::map_new_local();
+    let bytes = crate::bytes::bytes_from_slice_local(b"ok");
+    let hello = crate::string::str_from_utf8(b"hi".as_ptr(), 2);
+    let parts = [hello, Value::from_int(5)];
+    let s = crate::string::str_concat_local(parts.as_ptr(), parts.len());
+
+    assert!(crate::arena::is_arena_value(list));
+    assert!(crate::arena::is_arena_value(map));
+    assert!(crate::arena::is_arena_value(bytes));
+    assert!(crate::arena::is_arena_value(s));
+
+    unsafe {
+        wr_rc_dec(list);
+        wr_rc_dec(map);
+        wr_rc_dec(bytes);
+        wr_rc_dec(hello);
+        wr_rc_dec(s);
+    }
+
+    crate::arena::reset_current();
 }
 
 #[test]
@@ -561,6 +663,93 @@ fn iter_map_keys() {
     unsafe {
         wr_rc_dec(iter);
         wr_rc_dec(map);
+    }
+}
+
+#[test]
+fn iter_map_collects_keys() {
+    let map = wr_map_new();
+    wr_map_set(map, Value::from_int(1), Value::from_int(10));
+    wr_map_set(map, Value::from_int(2), Value::from_int(20));
+    wr_map_set(map, Value::from_int(3), Value::from_int(30));
+    let iter = wr_iter_init(map);
+    let mut out = Value::nil();
+    let mut done = Value::from_bool(false);
+    let mut keys = std::collections::HashSet::new();
+    loop {
+        wr_iter_next(iter, &mut out, &mut done);
+        if done.as_bool() {
+            break;
+        }
+        keys.insert(out.as_int());
+        if out.is_ptr() {
+            unsafe { wr_rc_dec(out) };
+        }
+    }
+    assert_eq!(keys.len(), 3);
+    assert!(keys.contains(&1));
+    assert!(keys.contains(&2));
+    assert!(keys.contains(&3));
+    unsafe {
+        wr_rc_dec(iter);
+        wr_rc_dec(map);
+    }
+}
+
+#[test]
+fn iter_map_stops_on_mutation() {
+    let map = wr_map_new();
+    wr_map_set(map, Value::from_int(1), Value::from_int(10));
+    let iter = wr_iter_init(map);
+    wr_map_set(map, Value::from_int(2), Value::from_int(20));
+    let mut out = Value::nil();
+    let mut done = Value::from_bool(false);
+    wr_iter_next(iter, &mut out, &mut done);
+    assert!(done.as_bool());
+    unsafe {
+        wr_rc_dec(iter);
+        wr_rc_dec(map);
+    }
+}
+
+#[test]
+fn arena_rejects_actor_send_args() {
+    extern "C" fn echo(argc: usize, argv: *const Value) -> Value {
+        if argc < 2 {
+            return Value::nil();
+        }
+        let args = unsafe { std::slice::from_raw_parts(argv, argc) };
+        args[1]
+    }
+
+    wr_register_method(420, 0, echo);
+    let actor = wr_actor_spawn(420, Value::nil(), 1, 3, -1, -1, -1);
+    let mut arena = crate::arena::Arena::new(1024);
+    let _guard = crate::arena::enter(&mut arena as *mut _);
+    let list = crate::list::list_new_local(0);
+    let pending = wr_actor_send(actor, 0, 1, &list as *const Value);
+    assert!(pending.is_nil());
+    unsafe {
+        wr_rc_dec(list);
+        wr_rc_dec(actor);
+    }
+}
+
+#[test]
+fn arena_rejects_actor_return() {
+    extern "C" fn make_list(_argc: usize, _argv: *const Value) -> Value {
+        crate::list::list_new_local(1)
+    }
+
+    wr_register_method(421, 0, make_list);
+    let actor = wr_actor_spawn(421, Value::nil(), 1, 3, -1, -1, -1);
+    let pending = wr_actor_send(actor, 0, 0, std::ptr::null());
+    let result = await_ok(pending);
+    assert!(result.is_nil());
+    unsafe {
+        wr_rc_dec(actor);
+        wr_rc_dec(pending);
+        wr_rc_dec(result);
     }
 }
 
@@ -4762,6 +4951,54 @@ fn metrics_counts_basic() {
     assert!(rc_dec >= 1);
 }
 
+#[cfg(feature = "metrics")]
+#[test]
+fn metrics_counts_alloc_constructors() {
+    use crate::metrics::metrics_get_raw;
+
+    wr_metrics_reset();
+
+    let before_list = metrics_get_raw(crate::metrics::METRIC_ALLOC_LIST);
+    let list = crate::list::list_new(0);
+    let after_list = metrics_get_raw(crate::metrics::METRIC_ALLOC_LIST);
+
+    let before_map = metrics_get_raw(crate::metrics::METRIC_ALLOC_MAP);
+    let map = crate::map::map_new();
+    let after_map = metrics_get_raw(crate::metrics::METRIC_ALLOC_MAP);
+
+    let before_str = metrics_get_raw(crate::metrics::METRIC_ALLOC_STRING);
+    let s = crate::string::str_from_utf8(b"ok".as_ptr(), 2);
+    let after_str = metrics_get_raw(crate::metrics::METRIC_ALLOC_STRING);
+
+    let before_bytes = metrics_get_raw(crate::metrics::METRIC_ALLOC_BYTES);
+    let bytes = crate::bytes::bytes_from_slice(b"hi");
+    let after_bytes = metrics_get_raw(crate::metrics::METRIC_ALLOC_BYTES);
+
+    let before_result = metrics_get_raw(crate::metrics::METRIC_ALLOC_RESULT);
+    let result = crate::result::result_ok(Value::from_int(5));
+    let after_result = metrics_get_raw(crate::metrics::METRIC_ALLOC_RESULT);
+
+    let before_pending = metrics_get_raw(crate::metrics::METRIC_ALLOC_PENDING);
+    let (pending, _state) = crate::actor::pending_new();
+    let after_pending = metrics_get_raw(crate::metrics::METRIC_ALLOC_PENDING);
+
+    assert_eq!(after_list, before_list + 1);
+    assert_eq!(after_map, before_map + 1);
+    assert_eq!(after_str, before_str + 1);
+    assert_eq!(after_bytes, before_bytes + 1);
+    assert_eq!(after_result, before_result + 1);
+    assert_eq!(after_pending, before_pending + 1);
+
+    unsafe {
+        wr_rc_dec(list);
+        wr_rc_dec(map);
+        wr_rc_dec(s);
+        wr_rc_dec(bytes);
+        wr_rc_dec(result);
+        wr_rc_dec(pending);
+    }
+}
+
 #[test]
 fn refcount_invariants_common_flows() {
     extern "C" fn noop(_argc: usize, _argv: *const Value) -> Value {
@@ -4810,4 +5047,177 @@ fn refcount_invariants_common_flows() {
     let released = rc_dec.saturating_sub(rc_inc);
     assert!(rc_dec >= rc_inc);
     assert!(released >= 9);
+}
+
+#[test]
+fn microbench_hot_paths_smoke() {
+    let results = run_microbench();
+    assert!(!results.is_empty());
+    for result in results {
+        println!(
+            "bench: name={} ns_per_iter={} iters={}",
+            result.name, result.ns_per_iter, result.iters
+        );
+    }
+}
+
+struct BenchResult {
+    name: &'static str,
+    ns_per_iter: u128,
+    iters: u128,
+}
+
+fn run_microbench() -> Vec<BenchResult> {
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    let mut results = Vec::new();
+
+    fn bench<F: FnMut()>(name: &'static str, iters: u128, mut f: F) -> BenchResult {
+        let start = Instant::now();
+        for _ in 0..iters {
+            f();
+        }
+        let elapsed = start.elapsed().as_nanos();
+        let per = if iters == 0 { 0 } else { elapsed / iters };
+        BenchResult {
+            name,
+            ns_per_iter: per,
+            iters,
+        }
+    }
+
+    results.push(bench("list_new", 1_000_000, || {
+        let list = crate::list::list_new(0);
+        unsafe { wr_rc_dec(list) };
+        black_box(list);
+    }));
+
+    results.push(bench("map_new", 200_000, || {
+        let map = crate::map::map_new();
+        unsafe { wr_rc_dec(map) };
+        black_box(map);
+    }));
+
+    let mut arena = crate::arena::Arena::new(64 * 1024);
+    let _guard = crate::arena::enter(&mut arena as *mut _);
+    results.push(bench("list_new_local", 1_000_000, || {
+        let list = crate::list::list_new_local(0);
+        unsafe { wr_rc_dec(list) };
+        crate::arena::reset_current();
+        black_box(list);
+    }));
+    results.push(bench("map_new_local", 200_000, || {
+        let map = crate::map::map_new_local();
+        unsafe { wr_rc_dec(map) };
+        crate::arena::reset_current();
+        black_box(map);
+    }));
+
+    let iter_map = crate::map::map_new();
+    for i in 0..16 {
+        crate::map::map_set(iter_map, Value::from_int(i), Value::from_int(i + 1));
+    }
+    results.push(bench("iter_map_keys", 50_000, || {
+        let iter = wr_iter_init(iter_map);
+        let mut out = Value::nil();
+        let mut done = Value::from_bool(false);
+        loop {
+            wr_iter_next(iter, &mut out, &mut done);
+            if done.as_bool() {
+                break;
+            }
+        }
+        unsafe { wr_rc_dec(iter) };
+    }));
+    unsafe { wr_rc_dec(iter_map) };
+
+    let parts = vec![
+        crate::string::str_from_utf8(b"foo".as_ptr(), 3),
+        Value::from_int(42),
+        crate::string::str_from_utf8(b"bar".as_ptr(), 3),
+    ];
+    results.push(bench("str_concat", 100_000, || {
+        let out = crate::string::str_concat(parts.as_ptr(), parts.len());
+        unsafe { wr_rc_dec(out) };
+        black_box(out);
+    }));
+    results.push(bench("str_concat_local", 100_000, || {
+        let out = crate::string::str_concat_local(parts.as_ptr(), parts.len());
+        unsafe { wr_rc_dec(out) };
+        crate::arena::reset_current();
+        black_box(out);
+    }));
+    unsafe {
+        for part in parts {
+            if part.is_ptr() {
+                wr_rc_dec(part);
+            }
+        }
+    }
+
+    extern "C" fn ping(argc: usize, argv: *const Value) -> Value {
+        if argc < 2 {
+            return Value::nil();
+        }
+        let args = unsafe { std::slice::from_raw_parts(argv, argc) };
+        args[1]
+    }
+
+    wr_register_method(200, 0, ping);
+    let actor = wr_actor_spawn(200, Value::nil(), 1, 3, -1, -1, -1);
+    let arg = Value::from_int(1);
+    results.push(bench("actor_send", 1_000, || {
+        let pending = wr_actor_send(actor, 0, 1, &arg as *const Value);
+        let result = wr_pending_await(pending);
+        unsafe {
+            wr_rc_dec(pending);
+            wr_rc_dec(result);
+        }
+    }));
+    unsafe {
+        wr_rc_dec(arg);
+        wr_rc_dec(actor);
+    }
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, OnceLock};
+    static FIRE_COUNTER: OnceLock<Arc<AtomicUsize>> = OnceLock::new();
+    extern "C" fn fire_bump(_argc: usize, _argv: *const Value) -> Value {
+        if let Some(counter) = FIRE_COUNTER.get() {
+            counter.fetch_add(1, Ordering::Relaxed);
+        }
+        Value::nil()
+    }
+    let counter = Arc::new(AtomicUsize::new(0));
+    let _ = FIRE_COUNTER.set(counter.clone());
+    wr_register_method(201, 0, fire_bump);
+    let fire_actor = wr_actor_spawn(201, Value::nil(), 1, 3, -1, -1, -1);
+    let fire_iters = 1_000usize;
+    let fire_result = bench("actor_fire", fire_iters as u128, || {
+        wr_actor_fire(fire_actor, 0, 0, std::ptr::null());
+    });
+    let start = Instant::now();
+    while counter.load(Ordering::Relaxed) < fire_iters {
+        if start.elapsed() > Duration::from_millis(200) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    results.push(fire_result);
+    unsafe { wr_rc_dec(fire_actor) };
+
+    let uri: axum::http::Uri = "http://example.com/users/123?foo=bar&baz=qux"
+        .parse()
+        .expect("uri");
+    results.push(bench("http_build_query_map", 20_000, || {
+        let map = crate::http::bench_build_query_map_once(&uri);
+        unsafe { wr_rc_dec(map) };
+    }));
+    results.push(bench("http_match_route", 50_000, || {
+        let matched = crate::http::bench_match_route_once("/users/123");
+        black_box(matched);
+    }));
+
+    results
 }

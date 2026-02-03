@@ -1,6 +1,9 @@
 use crate::object::ObjHeader;
 use crate::value::{TypeId, Value, header};
 use crate::{wr_rc_dec, wr_rc_inc};
+#[cfg(feature = "metrics")]
+use crate::metrics::inc_alloc_list;
+use crate::arena;
 
 const FLAG_MUTABLE: u32 = 1;
 
@@ -23,7 +26,27 @@ pub fn list_new(len: usize) -> Value {
         data,
         flags: FLAG_MUTABLE,
     });
+    #[cfg(feature = "metrics")]
+    inc_alloc_list();
     Value::from_ptr(Box::into_raw(obj) as *mut ObjHeader)
+}
+
+pub fn list_new_local(len: usize) -> Value {
+    let mut data = Vec::with_capacity(len);
+    data.resize(len, Value::nil());
+    let obj = ListObj {
+        header: header(TypeId::List),
+        len,
+        cap: len,
+        data,
+        flags: FLAG_MUTABLE,
+    };
+    if let Some(ptr) = arena::alloc_in_current(obj) {
+        #[cfg(feature = "metrics")]
+        inc_alloc_list();
+        return Value::from_ptr(ptr as *mut ObjHeader);
+    }
+    list_new(len)
 }
 
 pub fn list_get(list_val: Value, idx: usize) -> Value {
@@ -91,6 +114,16 @@ pub fn drop_list(ptr: *mut ObjHeader) {
             wr_rc_dec(*val);
         }
         drop(Box::from_raw(list));
+    }
+}
+
+pub fn drop_list_in_arena(ptr: *mut ObjHeader) {
+    let list = ptr as *mut ListObj;
+    unsafe {
+        for val in (*list).data.iter() {
+            wr_rc_dec(*val);
+        }
+        std::ptr::drop_in_place(&mut (*list).data);
     }
 }
 

@@ -2165,6 +2165,7 @@ async fn storage_linearizable_read_via_follower() {
 fn matches_ok(resp: StorageResponse) {
     match resp {
         StorageResponse::Ok(_) => {}
+        StorageResponse::Bytes(_) => {}
         StorageResponse::Err(err) => panic!("unexpected error: {err}"),
     }
 }
@@ -2172,13 +2173,20 @@ fn matches_ok(resp: StorageResponse) {
 fn expect_ok_value(resp: StorageResponse) -> Value {
     match resp {
         StorageResponse::Ok(value) => value,
+        StorageResponse::Bytes(_) => panic!("unexpected bytes response"),
         StorageResponse::Err(err) => panic!("unexpected error: {err}"),
     }
 }
 
 fn expect_ok_bytes(resp: StorageResponse) -> Vec<u8> {
-    let value = expect_ok_value(resp);
-    string::with_string_bytes(value, |b| b.to_vec()).expect("string value")
+    match resp {
+        StorageResponse::Bytes(Some(bytes)) => bytes,
+        StorageResponse::Bytes(None) => Vec::new(),
+        StorageResponse::Ok(value) => {
+            string::with_string_bytes(value, |b| b.to_vec()).expect("string value")
+        }
+        StorageResponse::Err(err) => panic!("unexpected error: {err}"),
+    }
 }
 
 async fn try_bind(addr: &str) -> Option<(TcpListener, String)> {

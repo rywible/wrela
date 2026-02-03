@@ -1,8 +1,9 @@
 use crate::list::as_list_ref;
-use crate::map::as_map_ref;
+use crate::map::{MapEntries, MapKey, as_map_ref, map_inline_entry, map_inline_len, map_is_inline, map_version};
 use crate::object::ObjHeader;
 use crate::value::{TypeId, Value, header};
 use crate::{wr_rc_dec, wr_rc_inc};
+use std::collections::hash_map;
 
 #[repr(C)]
 pub struct IterObj {
@@ -17,8 +18,10 @@ pub enum IterKind {
         index: usize,
     },
     Map {
-        keys: Vec<Value>,
+        map: Value,
         index: usize,
+        iter: Option<hash_map::Iter<'static, MapKey, Value>>,
+        version: u64,
     },
 }
 
@@ -35,16 +38,29 @@ pub fn iter_init(iterable: Value) -> Value {
         return Value::from_ptr(Box::into_raw(obj) as *mut ObjHeader);
     }
     if let Some(map) = as_map_ref(iterable) {
-        let mut keys = Vec::new();
-        unsafe {
-            for (k, _) in (*map).entries.iter() {
-                keys.push(k.0);
-                wr_rc_inc(k.0);
-            }
-        }
+        unsafe { wr_rc_inc(iterable) };
+        let version = map_version(map);
+        let iter = if map_is_inline(map) {
+            None
+        } else {
+            let iter = unsafe {
+                match &(*map).entries {
+                    MapEntries::Heap(entries) => Some(entries.iter()),
+                    _ => None,
+                }
+            };
+            iter.map(|iter| unsafe {
+                std::mem::transmute::<hash_map::Iter<'_, MapKey, Value>, hash_map::Iter<'static, MapKey, Value>>(iter)
+            })
+        };
         let obj = Box::new(IterObj {
             header: header(TypeId::Iterator),
-            kind: IterKind::Map { keys, index: 0 },
+            kind: IterKind::Map {
+                map: iterable,
+                index: 0,
+                iter,
+                version,
+            },
         });
         return Value::from_ptr(Box::into_raw(obj) as *mut ObjHeader);
     }
@@ -81,14 +97,32 @@ pub fn iter_next(iter_val: Value, dst_value: *mut Value, dst_done: *mut Value) {
                     }
                 }
             }
-            IterKind::Map { keys, index } => {
-                if *index < keys.len() {
-                    let key = keys[*index];
-                    wr_rc_inc(key);
-                    *index += 1;
-                    *dst_value = key;
-                    *dst_done = Value::from_bool(false);
+            IterKind::Map { map, index, iter, version } => {
+                let map_ptr = match as_map_ref(*map) {
+                    Some(map_ptr) => map_ptr,
+                    None => return,
+                };
+                if map_version(map_ptr) != *version {
                     return;
+                }
+                if map_is_inline(map_ptr) {
+                    let len = map_inline_len(map_ptr);
+                    if *index < len {
+                        if let Some((key, _)) = map_inline_entry(map_ptr, *index) {
+                            wr_rc_inc(key.0);
+                            *index += 1;
+                            *dst_value = key.0;
+                            *dst_done = Value::from_bool(false);
+                            return;
+                        }
+                    }
+                } else if let Some(iter) = iter.as_mut() {
+                    if let Some((key, _)) = iter.next() {
+                        wr_rc_inc(key.0);
+                        *dst_value = key.0;
+                        *dst_done = Value::from_bool(false);
+                        return;
+                    }
                 }
             }
         }
@@ -102,10 +136,8 @@ pub unsafe fn drop_iter(ptr: *mut ObjHeader) {
             IterKind::List { list, .. } => {
                 wr_rc_dec(*list);
             }
-            IterKind::Map { keys, .. } => {
-                for key in keys.iter() {
-                    wr_rc_dec(*key);
-                }
+            IterKind::Map { map, .. } => {
+                wr_rc_dec(*map);
             }
         }
         drop(Box::from_raw(iter));

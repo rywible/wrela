@@ -129,6 +129,12 @@ pub enum StringPartValue {
     Value(Value),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AllocKind {
+    LocalTemp,
+    Escaping,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Rvalue {
     Use(Value),
@@ -189,12 +195,15 @@ pub enum Rvalue {
     },
     BuildList {
         items: Vec<Value>,
+        alloc: AllocKind,
     },
     BuildMap {
         items: Vec<(Value, Value)>,
+        alloc: AllocKind,
     },
     StringInterp {
         parts: Vec<StringPartValue>,
+        alloc: AllocKind,
     },
 }
 
@@ -207,6 +216,12 @@ pub struct SpawnConfig {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
+    Phi {
+        place: Place,
+        sources: Vec<(BlockId, Value)>,
+        original: LocalId,
+        span: TextRange,
+    },
     Assign {
         place: Place,
         value: Rvalue,

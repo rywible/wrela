@@ -1,7 +1,7 @@
 #![allow(unused_assignments)]
 
 use miette::{Diagnostic, NamedSource, Report, SourceSpan};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
 use std::io::{self};
@@ -47,6 +47,7 @@ fn main() {
     let mut poll_ms: Option<u64> = None;
     let mut test_jobs: Option<usize> = None;
     let mut test_timeout_ms: Option<u64> = None;
+    let mut perf_debug = false;
     let mut seen_double_dash = false;
 
     let mut iter = args.into_iter();
@@ -92,6 +93,10 @@ fn main() {
         }
         if let Some(ms) = arg.strip_prefix("--test-timeout-ms=") {
             test_timeout_ms = ms.parse::<u64>().ok();
+            continue;
+        }
+        if arg == "--perf-debug" {
+            perf_debug = true;
             continue;
         }
         if arg == "--prefix" {
@@ -299,7 +304,7 @@ fn main() {
                     std::process::exit(EXIT_USAGE);
                 }
             };
-            let exit = run_tests(&root, jobs, timeout, output_format);
+            let exit = run_tests(&root, jobs, timeout, output_format, perf_debug);
             std::process::exit(exit);
         }
         _ => {
@@ -333,6 +338,7 @@ options:\n\
   --poll-ms=N           poll interval for dev (default: 500)\n\
   --jobs=N              test runner parallelism (default: 1)\n\
   --test-timeout-ms=N   per-test timeout in milliseconds (default: 5000)\n\
+  --perf-debug          dump perf counters after tests\n\
   --format=json         emit diagnostics as JSON\n\
   -h, --help            show this help\n\
   -V, --version         show version\n"
@@ -442,7 +448,87 @@ struct TestCase {
     func_name: String,
 }
 
-fn run_tests(root: &Path, jobs: usize, timeout: Duration, output_format: OutputFormat) -> i32 {
+#[derive(Debug, Deserialize, Clone)]
+struct MetricsDump {
+    messages_sent: u64,
+    messages_dropped: u64,
+    pending_resolved: u64,
+    pending_dropped: u64,
+    mailbox_high_water: u64,
+    rc_inc: u64,
+    rc_dec: u64,
+    alloc_list: u64,
+    alloc_map: u64,
+    alloc_string: u64,
+    alloc_bytes: u64,
+    alloc_result: u64,
+    alloc_pending: u64,
+    mailbox_enqueue_ok: u64,
+    mailbox_enqueue_fail: u64,
+    mailbox_dequeue: u64,
+}
+
+#[derive(Default, Debug, Clone)]
+struct MetricsTotals {
+    messages_sent: u64,
+    messages_dropped: u64,
+    pending_resolved: u64,
+    pending_dropped: u64,
+    mailbox_high_water: u64,
+    rc_inc: u64,
+    rc_dec: u64,
+    alloc_list: u64,
+    alloc_map: u64,
+    alloc_string: u64,
+    alloc_bytes: u64,
+    alloc_result: u64,
+    alloc_pending: u64,
+    mailbox_enqueue_ok: u64,
+    mailbox_enqueue_fail: u64,
+    mailbox_dequeue: u64,
+}
+
+impl MetricsTotals {
+    fn add(&mut self, metrics: &MetricsDump) {
+        self.messages_sent += metrics.messages_sent;
+        self.messages_dropped += metrics.messages_dropped;
+        self.pending_resolved += metrics.pending_resolved;
+        self.pending_dropped += metrics.pending_dropped;
+        self.mailbox_high_water = self.mailbox_high_water.max(metrics.mailbox_high_water);
+        self.rc_inc += metrics.rc_inc;
+        self.rc_dec += metrics.rc_dec;
+        self.alloc_list += metrics.alloc_list;
+        self.alloc_map += metrics.alloc_map;
+        self.alloc_string += metrics.alloc_string;
+        self.alloc_bytes += metrics.alloc_bytes;
+        self.alloc_result += metrics.alloc_result;
+        self.alloc_pending += metrics.alloc_pending;
+        self.mailbox_enqueue_ok += metrics.mailbox_enqueue_ok;
+        self.mailbox_enqueue_fail += metrics.mailbox_enqueue_fail;
+        self.mailbox_dequeue += metrics.mailbox_dequeue;
+    }
+
+    fn total_allocs(&self) -> u64 {
+        self.alloc_list
+            + self.alloc_map
+            + self.alloc_string
+            + self.alloc_bytes
+            + self.alloc_result
+            + self.alloc_pending
+    }
+}
+
+struct TestRun {
+    metrics: Option<MetricsDump>,
+}
+
+fn run_tests(
+    root: &Path,
+    jobs: usize,
+    timeout: Duration,
+    output_format: OutputFormat,
+    perf_debug: bool,
+) -> i32 {
     let src_root = root.join("src");
     let tests_root = root.join("tests");
     if !tests_root.is_dir() {
@@ -461,7 +547,7 @@ fn run_tests(root: &Path, jobs: usize, timeout: Duration, output_format: OutputF
     }
 
     let queue = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from(tests)));
-    let (tx, rx) = std::sync::mpsc::channel::<(String, bool, Duration, String)>();
+    let (tx, rx) = std::sync::mpsc::channel::<(String, bool, Duration, String, Option<MetricsDump>)>();
     let mut handles = Vec::new();
 
     for _ in 0..jobs {
@@ -479,11 +565,11 @@ fn run_tests(root: &Path, jobs: usize, timeout: Duration, output_format: OutputF
                 let start = Instant::now();
                 let result = run_single_test(&root, &src_root, &test, timeout, output_format);
                 let dur = start.elapsed();
-                let (ok, err) = match result {
-                    Ok(()) => (true, String::new()),
-                    Err(msg) => (false, msg),
+                let (ok, err, metrics) = match result {
+                    Ok(run) => (true, String::new(), run.metrics),
+                    Err(msg) => (false, msg, None),
                 };
-                let _ = tx.send((test.name.clone(), ok, dur, err));
+                let _ = tx.send((test.name.clone(), ok, dur, err, metrics));
             }
         }));
     }
@@ -491,7 +577,15 @@ fn run_tests(root: &Path, jobs: usize, timeout: Duration, output_format: OutputF
 
     let mut ok_count = 0usize;
     let mut fail_count = 0usize;
-    for (name, ok, dur, err) in rx.iter() {
+    let mut durations_ns: Vec<u128> = Vec::new();
+    let mut metrics_totals = MetricsTotals::default();
+    let mut metrics_count = 0usize;
+    for (name, ok, dur, err, metrics) in rx.iter() {
+        durations_ns.push(dur.as_nanos());
+        if let Some(metrics) = metrics.as_ref() {
+            metrics_totals.add(metrics);
+            metrics_count += 1;
+        }
         if ok {
             println!("ok   {:>7?}  {}", dur, name);
             ok_count += 1;
@@ -504,7 +598,51 @@ fn run_tests(root: &Path, jobs: usize, timeout: Duration, output_format: OutputF
         let _ = handle.join();
     }
     println!("tests: {} passed, {} failed", ok_count, fail_count);
+    if !durations_ns.is_empty() {
+        durations_ns.sort_unstable();
+        let p50 = percentile(&durations_ns, 0.50);
+        let p99 = percentile(&durations_ns, 0.99);
+        let allocs_per_request = if metrics_count == 0 {
+            0.0
+        } else {
+            metrics_totals.total_allocs() as f64 / metrics_count as f64
+        };
+        println!(
+            "perf: p50_ns={} p99_ns={} allocs/request={:.2}",
+            p50, p99, allocs_per_request
+        );
+        if perf_debug {
+            println!(
+                "perf-debug: rc_inc={} rc_dec={} mailbox_enqueue_ok={} mailbox_enqueue_fail={} mailbox_dequeue={} mailbox_high_water={} alloc_list={} alloc_map={} alloc_string={} alloc_bytes={} alloc_result={} alloc_pending={} messages_sent={} messages_dropped={} pending_resolved={} pending_dropped={}",
+                metrics_totals.rc_inc,
+                metrics_totals.rc_dec,
+                metrics_totals.mailbox_enqueue_ok,
+                metrics_totals.mailbox_enqueue_fail,
+                metrics_totals.mailbox_dequeue,
+                metrics_totals.mailbox_high_water,
+                metrics_totals.alloc_list,
+                metrics_totals.alloc_map,
+                metrics_totals.alloc_string,
+                metrics_totals.alloc_bytes,
+                metrics_totals.alloc_result,
+                metrics_totals.alloc_pending,
+                metrics_totals.messages_sent,
+                metrics_totals.messages_dropped,
+                metrics_totals.pending_resolved,
+                metrics_totals.pending_dropped
+            );
+        }
+    }
     if fail_count == 0 { EXIT_OK } else { EXIT_CODEGEN }
+}
+
+fn percentile(samples: &[u128], pct: f64) -> u128 {
+    if samples.is_empty() {
+        return 0;
+    }
+    let n = samples.len();
+    let rank = (pct * (n as f64 - 1.0)).ceil() as usize;
+    samples[rank.min(n - 1)]
 }
 
 fn collect_tests(
@@ -578,7 +716,7 @@ fn run_single_test(
     test: &TestCase,
     timeout: Duration,
     output_format: OutputFormat,
-) -> Result<(), String> {
+) -> Result<TestRun, String> {
     let temp_dir = root.join("target").join("wrela_tests");
     let _ = fs::create_dir_all(&temp_dir);
     let file_stem = test
@@ -604,13 +742,28 @@ fn run_single_test(
     if let Err(err) = wrela::backend::cranelift::compile_to_executable(&mir_module, &exe_path) {
         return Err(format!("codegen error: {}", err.0));
     }
-    run_with_timeout(&exe_path, timeout).map_err(|e| e)
+    let metrics_path = temp_dir.join(format!("{}_metrics.json", file_stem));
+    let _ = fs::remove_file(&metrics_path);
+    run_with_timeout(&exe_path, timeout, Some(&metrics_path)).map_err(|e| e)?;
+    let metrics = read_metrics_dump(&metrics_path);
+    Ok(TestRun { metrics })
 }
 
-fn run_with_timeout(exe: &Path, timeout: Duration) -> Result<(), String> {
-    let mut child = Command::new(exe)
-        .spawn()
-        .map_err(|e| format!("failed to run: {e}"))?;
+fn read_metrics_dump(path: &Path) -> Option<MetricsDump> {
+    let data = fs::read(path).ok()?;
+    serde_json::from_slice(&data).ok()
+}
+
+fn run_with_timeout(
+    exe: &Path,
+    timeout: Duration,
+    metrics_path: Option<&Path>,
+) -> Result<(), String> {
+    let mut command = Command::new(exe);
+    if let Some(path) = metrics_path {
+        command.env("WRELA_METRICS_PATH", path);
+    }
+    let mut child = command.spawn().map_err(|e| format!("failed to run: {e}"))?;
     let start = Instant::now();
     loop {
         if let Some(status) = child.try_wait().map_err(|e| format!("wait failed: {e}"))? {

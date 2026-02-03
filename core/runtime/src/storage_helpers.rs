@@ -13,6 +13,7 @@ pub async fn storage_get_string(key: &str) -> Option<String> {
     .ok()?;
     let value = match resp {
         StorageResponse::Ok(val) => val,
+        StorageResponse::Bytes(_) => return None,
         StorageResponse::Err(_) => return None,
     };
     if value.is_nil() {
@@ -35,12 +36,38 @@ pub async fn storage_set_string(key: &str, value: &str) -> bool {
 }
 
 pub async fn storage_set_bytes(key: &str, value: &[u8]) -> bool {
+    storage_set_bytes_owned(key, value.to_vec()).await
+}
+
+pub async fn storage_set_bytes_owned(key: &str, value: Vec<u8>) -> bool {
     StorageService::dispatch(StorageRequest::Put {
         key: key.as_bytes().to_vec(),
-        value: value.to_vec(),
+        value,
     })
     .await
     .is_ok()
+}
+
+pub async fn storage_get_bytes(key: &str) -> Option<Vec<u8>> {
+    let resp = StorageService::dispatch(StorageRequest::GetBytes {
+        key: key.as_bytes().to_vec(),
+    })
+    .await
+    .ok()?;
+    match resp {
+        StorageResponse::Bytes(bytes) => bytes,
+        StorageResponse::Ok(val) => {
+            if val.is_nil() {
+                return None;
+            }
+            let out = string::with_string_bytes(val, |bytes| bytes.to_vec());
+            if val.is_ptr() {
+                unsafe { wr_rc_dec(val) };
+            }
+            out
+        }
+        StorageResponse::Err(_) => None,
+    }
 }
 
 pub async fn storage_delete(key: &str) -> bool {
@@ -84,6 +111,7 @@ pub async fn storage_get_string_with_version(key: &str) -> Option<(String, u64)>
     .ok()?;
     let value = match resp {
         StorageResponse::Ok(val) => val,
+        StorageResponse::Bytes(_) => return None,
         StorageResponse::Err(_) => return None,
     };
     if value.is_nil() {
@@ -116,6 +144,7 @@ pub async fn storage_set_string_if_version(
     let Ok(resp) = resp else { return false };
     let value = match resp {
         StorageResponse::Ok(val) => val,
+        StorageResponse::Bytes(_) => return false,
         StorageResponse::Err(_) => return false,
     };
     let applied = value.is_bool() && value.as_bool();
@@ -135,6 +164,7 @@ pub async fn storage_delete_if_version(key: &str, expected_version: Option<u64>)
     let Ok(resp) = resp else { return false };
     let value = match resp {
         StorageResponse::Ok(val) => val,
+        StorageResponse::Bytes(_) => return false,
         StorageResponse::Err(_) => return false,
     };
     let applied = value.is_bool() && value.as_bool();
@@ -153,6 +183,7 @@ pub async fn storage_list_prefix_keys(prefix: &str, limit: usize) -> Vec<String>
     let Ok(resp) = resp else { return Vec::new() };
     let value = match resp {
         StorageResponse::Ok(val) => val,
+        StorageResponse::Bytes(_) => return Vec::new(),
         StorageResponse::Err(_) => return Vec::new(),
     };
     if value.is_nil() {
@@ -227,6 +258,7 @@ where
             };
             Ok(serde_json::from_str(&raw).ok())
         }
+        StorageResponse::Bytes(_) => Ok(None),
         StorageResponse::Err(err) => Err(StorageError::Internal(err)),
     }
 }
@@ -250,6 +282,7 @@ where
             }
             Ok(())
         }
+        StorageResponse::Bytes(_) => Err(StorageError::Internal("unexpected bytes response".to_string())),
         StorageResponse::Err(err) => Err(StorageError::Internal(err)),
     }
 }

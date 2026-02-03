@@ -31,3 +31,13 @@ jobs:
 
       - name: Run compiler tests
         run: cargo test -p wrela
+
+      - name: Run perf gate tests
+        if: matrix.os == 'macos-14'
+        run: python3 scripts/perf_gate_test.py
+
+      - name: Run perf regression gate
+        if: matrix.os == 'macos-14'
+        env:
+          WRELA_PERF_KEY: macos-aarch64
+        run: python3 scripts/perf_gate.py

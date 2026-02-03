@@ -1,6 +1,9 @@
 use crate::object::ObjHeader;
 use crate::value::{TypeId, Value, header};
 use crate::{wr_rc_dec, wr_rc_inc};
+#[cfg(feature = "metrics")]
+use crate::metrics::inc_alloc_result;
+use crate::arena;
 
 #[repr(C)]
 struct ResultObj {
@@ -10,22 +13,38 @@ struct ResultObj {
 }
 
 pub fn result_ok(value: Value) -> Value {
+    if arena::is_arena_value(value) {
+        if crate::config::debug_actor_enabled() {
+            eprintln!("arena: rejected Result.ok with arena-backed value");
+        }
+        return Value::nil();
+    }
     unsafe { wr_rc_inc(value) };
     let obj = Box::new(ResultObj {
         header: header(TypeId::Result),
         is_ok: 1,
         value,
     });
+    #[cfg(feature = "metrics")]
+    inc_alloc_result();
     Value::from_ptr(Box::into_raw(obj) as *mut ObjHeader)
 }
 
 pub fn result_err(value: Value) -> Value {
+    if arena::is_arena_value(value) {
+        if crate::config::debug_actor_enabled() {
+            eprintln!("arena: rejected Result.err with arena-backed value");
+        }
+        return Value::nil();
+    }
     unsafe { wr_rc_inc(value) };
     let obj = Box::new(ResultObj {
         header: header(TypeId::Result),
         is_ok: 0,
         value,
     });
+    #[cfg(feature = "metrics")]
+    inc_alloc_result();
     Value::from_ptr(Box::into_raw(obj) as *mut ObjHeader)
 }
 
@@ -95,4 +114,9 @@ pub fn result_parts(result: Value) -> Option<(bool, Value)> {
 pub unsafe fn drop_result(ptr: *mut ObjHeader) {
     let obj = unsafe { Box::from_raw(ptr as *mut ResultObj) };
     unsafe { wr_rc_dec(obj.value) };
+}
+
+pub fn drop_result_in_arena(ptr: *mut ObjHeader) {
+    let obj = ptr as *mut ResultObj;
+    unsafe { wr_rc_dec((*obj).value) };
 }

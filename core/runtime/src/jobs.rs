@@ -202,7 +202,8 @@ fn json_from_map(val: Value) -> JsonValue {
     };
     let mut out = serde_json::Map::new();
     unsafe {
-        for (key, value) in (&(*map_ptr).entries).iter() {
+        let mut iter = map::map_iter(map_ptr);
+        while let Some((key, value)) = iter.next() {
             let Some(key_str) = value_to_string(key.0) else {
                 continue;
             };
@@ -210,13 +211,13 @@ fn json_from_map(val: Value) -> JsonValue {
                 JsonValue::Null
             } else if value.is_bool() {
                 JsonValue::Bool(value.as_bool())
-            } else if let Some(i) = int_value(*value) {
+            } else if let Some(i) = int_value(value) {
                 JsonValue::Number(i.into())
             } else if value.is_float() {
                 serde_json::Number::from_f64(value.as_float())
                     .map(JsonValue::Number)
                     .unwrap_or(JsonValue::Null)
-            } else if let Some(s) = value_to_string(*value) {
+            } else if let Some(s) = value_to_string(value) {
                 JsonValue::String(s)
             } else {
                 JsonValue::Null

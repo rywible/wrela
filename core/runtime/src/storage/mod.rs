@@ -12,6 +12,7 @@ mod backup_tests;
 mod tests;
 
 use crate::actor::{pending_new, resolve_pending, runtime_spawn};
+use crate::bytes;
 use crate::class;
 use crate::list;
 use crate::map;
@@ -56,6 +57,8 @@ fn optional_key_bytes(val: Value) -> Result<Option<Vec<u8>>, Value> {
 fn resolve_response(resp: StorageResponse) -> Value {
     match resp {
         StorageResponse::Ok(value) => ok_value(value),
+        StorageResponse::Bytes(Some(bytes)) => ok_value(bytes::bytes_from_slice(&bytes)),
+        StorageResponse::Bytes(None) => ok_value(Value::nil()),
         StorageResponse::Err(message) => error_value(&message),
     }
 }

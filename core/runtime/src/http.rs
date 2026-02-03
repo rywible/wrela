@@ -6,6 +6,7 @@ use axum::routing::any;
 use jsonwebtoken::{DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -661,11 +662,12 @@ fn build_response_headers(headers_val: Value) -> (HeaderMap, bool, bool) {
         return (headers, has_content_type, has_server);
     };
     unsafe {
-        for (key, val) in (*map).entries.iter() {
+        let mut iter = crate::map::map_iter(map);
+        while let Some((key, val)) = iter.next() {
             let Some(name) = string_value(key.0) else {
                 continue;
             };
-            let Some(value) = string_value(*val) else {
+            let Some(value) = string_value(val) else {
                 continue;
             };
             let name_lower = name.to_ascii_lowercase();
@@ -794,24 +796,26 @@ fn body_bytes(val: Value) -> (Bytes, BodyKind) {
 fn build_query_map(uri: &Uri) -> Value {
     let query_map = map_new();
     if let Some(query) = uri.query() {
-        let mut scratch = Vec::new();
-        for part in query.split('&') {
-            if part.is_empty() {
-                continue;
+        QUERY_SCRATCH.with(|scratch| {
+            let mut scratch = scratch.borrow_mut();
+            for part in query.split('&') {
+                if part.is_empty() {
+                    continue;
+                }
+                let mut iter = part.splitn(2, '=');
+                let key = iter.next().unwrap_or("");
+                let val = iter.next().unwrap_or("");
+                let key_decoded = decode_cow(key, &mut scratch);
+                let val_decoded = decode_cow(val, &mut scratch);
+                let key_val = string::str_from_bytes(key_decoded.as_bytes());
+                let val_val = string::str_from_bytes(val_decoded.as_bytes());
+                map_set(query_map, key_val, val_val);
+                unsafe {
+                    wr_rc_dec(key_val);
+                    wr_rc_dec(val_val);
+                }
             }
-            let mut iter = part.splitn(2, '=');
-            let key = iter.next().unwrap_or("");
-            let val = iter.next().unwrap_or("");
-            let key_decoded = decode_cow(key, &mut scratch);
-            let val_decoded = decode_cow(val, &mut scratch);
-            let key_val = string::str_from_bytes(key_decoded.as_bytes());
-            let val_val = string::str_from_bytes(val_decoded.as_bytes());
-            map_set(query_map, key_val, val_val);
-            unsafe {
-                wr_rc_dec(key_val);
-                wr_rc_dec(val_val);
-            }
-        }
+        });
     }
     query_map
 }
@@ -820,14 +824,15 @@ fn match_route<'a>(
     path: &str,
     patterns: &'a [RoutePattern],
 ) -> Option<(&'a Vec<Route>, Value)> {
-    let path_parts: Vec<&str> = path.trim_matches('/').split('/').collect();
     for entry in patterns {
-        if path_parts.len() != entry.parts.len() {
-            continue;
-        }
         let mut params_map: Option<Value> = None;
         let mut matched = true;
-        for (part, actual) in entry.parts.iter().zip(path_parts.iter()) {
+        let mut segments = path.trim_matches('/').split('/');
+        for part in entry.parts.iter() {
+            let Some(actual) = segments.next() else {
+                matched = false;
+                break;
+            };
             match part {
                 PatternPart::Static(text) => {
                     if text != actual {
@@ -847,6 +852,9 @@ fn match_route<'a>(
                 }
             }
         }
+        if matched && segments.next().is_some() {
+            matched = false;
+        }
         if matched {
             let params_map = params_map.unwrap_or_else(map_new);
             return Some((&entry.routes, params_map));
@@ -856,6 +864,22 @@ fn match_route<'a>(
         }
     }
     None
+}
+
+#[cfg(test)]
+pub(crate) fn bench_build_query_map_once(uri: &Uri) -> Value {
+    build_query_map(uri)
+}
+
+#[cfg(test)]
+pub(crate) fn bench_match_route_once(path: &str) -> bool {
+    let route = Route::new(Method::GET, Value::nil(), 0);
+    let patterns = vec![RoutePattern {
+        pattern: "/users/:id".to_string(),
+        parts: split_pattern("/users/:id"),
+        routes: vec![route],
+    }];
+    match_route(path, &patterns).is_some()
 }
 
 fn split_pattern(pattern: &str) -> Vec<PatternPart> {
@@ -880,6 +904,10 @@ fn decode_cow<'a>(input: &'a str, scratch: &mut Vec<u8>) -> Cow<'a, str> {
         return Cow::Borrowed(input);
     }
     Cow::Owned(percent_decode_into(input, scratch))
+}
+
+thread_local! {
+    static QUERY_SCRATCH: RefCell<Vec<u8>> = RefCell::new(Vec::new());
 }
 
 fn needs_decode(input: &str) -> bool {
@@ -1370,7 +1398,10 @@ mod tests {
 
         let expect_x = string::str_from_bytes(b"a+b");
         let expect_y = string::str_from_bytes(b"hello world");
-        let ok = value::value_eq(x, expect_x) && value::value_eq(y, expect_y);
+        let expect_x_plain = string::str_from_bytes(b"plain");
+        let expect_y_plain = string::str_from_bytes(b"ok");
+        let ok = (value::value_eq(x, expect_x) && value::value_eq(y, expect_y))
+            || (value::value_eq(x, expect_x_plain) && value::value_eq(y, expect_y_plain));
 
         let resp = class::class_new(CLASS_HTTP_RESPONSE, std::ptr::null(), std::ptr::null(), 0);
         let body: &[u8] = if ok { b"ok" } else { b"bad" };
@@ -1392,6 +1423,8 @@ mod tests {
             wr_rc_dec(y);
             wr_rc_dec(expect_x);
             wr_rc_dec(expect_y);
+            wr_rc_dec(expect_x_plain);
+            wr_rc_dec(expect_y_plain);
             wr_rc_dec(body_bytes);
         }
 
@@ -1719,6 +1752,9 @@ mod tests {
         let url = format!("http://{addr}/query?x=a%2Bb&y=hello+world");
         let resp = send_with_retry(|| client.get(&url));
         assert_eq!(resp.status(), StatusCode::OK);
+        let url_plain = format!("http://{addr}/query?x=plain&y=ok");
+        let resp_plain = send_with_retry(|| client.get(&url_plain));
+        assert_eq!(resp_plain.status(), StatusCode::OK);
 
         let empty_resp = send_with_retry(|| client.get(format!("http://{addr}/empty")));
         assert_eq!(empty_resp.status(), StatusCode::NO_CONTENT);
