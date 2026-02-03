@@ -199,6 +199,7 @@ impl PoolQueue {
 
 static METHODS: OnceLock<Mutex<HashMap<u32, HashMap<u32, MethodFn>>>> = OnceLock::new();
 static ARGS_POOL: OnceLock<Mutex<Vec<Vec<Value>>>> = OnceLock::new();
+static PENDING_POOL: OnceLock<Mutex<Vec<Arc<PendingState>>>> = OnceLock::new();
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
 static WATCHDOG_STARTED: OnceLock<()> = OnceLock::new();
 
@@ -210,8 +211,13 @@ fn args_pool() -> &'static Mutex<Vec<Vec<Value>>> {
     ARGS_POOL.get_or_init(|| Mutex::new(Vec::new()))
 }
 
+fn pending_pool() -> &'static Mutex<Vec<Arc<PendingState>>> {
+    PENDING_POOL.get_or_init(|| Mutex::new(Vec::new()))
+}
+
 const ARGS_POOL_MAX_CAP: usize = 64;
 const ARGS_POOL_MAX_LEN: usize = 128;
+const PENDING_POOL_MAX_LEN: usize = 512;
 
 fn runtime() -> &'static Runtime {
     RUNTIME.get_or_init(|| {
@@ -277,6 +283,46 @@ fn return_args_vec(mut vec: Vec<Value>) {
     let mut pool = args_pool().lock().expect("args pool lock");
     if pool.len() < ARGS_POOL_MAX_LEN {
         pool.push(vec);
+    }
+}
+
+fn take_pending_state() -> (Arc<PendingState>, bool) {
+    let mut pool = pending_pool().lock().expect("pending pool lock");
+    let Some(state) = pool.pop() else {
+        return (
+            Arc::new(PendingState {
+                lock: Mutex::new(None),
+                notify: Notify::new(),
+                dropped: AtomicBool::new(false),
+            }),
+            true,
+        );
+    };
+    drop(pool);
+    {
+        let mut guard = state.lock.lock().expect("pending lock");
+        if let Some(val) = guard.take() {
+            unsafe { wr_rc_dec(val) };
+        }
+    }
+    state.dropped.store(false, Ordering::Release);
+    (state, false)
+}
+
+fn recycle_pending_state(state: Arc<PendingState>) {
+    if Arc::strong_count(&state) != 1 {
+        return;
+    }
+    {
+        let mut guard = state.lock.lock().expect("pending lock");
+        if let Some(val) = guard.take() {
+            unsafe { wr_rc_dec(val) };
+        }
+    }
+    state.dropped.store(false, Ordering::Release);
+    let mut pool = pending_pool().lock().expect("pending pool lock");
+    if pool.len() < PENDING_POOL_MAX_LEN {
+        pool.push(state);
     }
 }
 
@@ -511,23 +557,24 @@ pub fn actor_send(handle: Value, method_id: u32, argc: usize, argv_ptr: *const V
         inc_messages_dropped_paused();
         return Value::nil();
     }
-    let state = Arc::new(PendingState {
-        lock: Mutex::new(None),
-        notify: Notify::new(),
-        dropped: AtomicBool::new(false),
-    });
+    let (state, allocated) = take_pending_state();
+    let Some(msg) = build_message_local(actor, method_id, argc, argv_ptr, Some(state.clone()))
+    else {
+        recycle_pending_state(state);
+        return Value::nil();
+    };
+    #[cfg(feature = "metrics")]
+    if allocated {
+        inc_alloc_pending();
+    }
     let pending = Box::new(PendingObj {
         header: header(TypeId::Pending),
-        state: state.clone(),
+        state,
     });
-    #[cfg(feature = "metrics")]
-    inc_alloc_pending();
-    if let Some(msg) = build_message(actor, method_id, argc, argv_ptr, Some(state)) {
-        enqueue_message(msg.mailbox, msg.msg);
-        Value::from_ptr(Box::into_raw(pending) as *mut ObjHeader)
-    } else {
-        Value::nil()
+    unsafe {
+        enqueue_message_ref(&*(*actor).mailbox, msg);
     }
+    Value::from_ptr(Box::into_raw(pending) as *mut ObjHeader)
 }
 
 pub fn sleep_ms(ms: i64) -> Value {
@@ -556,8 +603,11 @@ pub fn actor_fire(handle: Value, method_id: u32, argc: usize, argv_ptr: *const V
         inc_messages_dropped_paused();
         return;
     }
-    if let Some(msg) = build_message(actor, method_id, argc, argv_ptr, None) {
-        enqueue_message(msg.mailbox, msg.msg);
+    let Some(msg) = build_message_local(actor, method_id, argc, argv_ptr, None) else {
+        return;
+    };
+    unsafe {
+        enqueue_message_ref(&*(*actor).mailbox, msg);
     }
 }
 
@@ -637,12 +687,15 @@ pub unsafe fn drop_pool(ptr: *mut ObjHeader) {
 
 pub unsafe fn drop_pending(ptr: *mut ObjHeader) {
     let pending = unsafe { Box::from_raw(ptr as *mut PendingObj) };
-    pending.state.dropped.store(true, Ordering::Release);
+    let state = pending.state.clone();
+    state.dropped.store(true, Ordering::Release);
     inc_pending_dropped();
-    let mut guard = pending.state.lock.lock().expect("pending lock");
+    let mut guard = state.lock.lock().expect("pending lock");
     if let Some(val) = guard.take() {
         unsafe { wr_rc_dec(val) };
     }
+    drop(guard);
+    recycle_pending_state(state);
 }
 
 fn as_actor(val: Value) -> Option<*const ActorHandle> {
@@ -696,22 +749,22 @@ fn mailbox_set_paused(actor: *const ActorHandle, paused: bool) {
     }
 }
 
-fn build_message(
-    actor: *const ActorHandle,
-    method_id: u32,
-    argc: usize,
-    argv_ptr: *const Value,
-    pending: Option<Arc<PendingState>>,
-) -> Option<PoolMessage> {
-    let mailbox = unsafe { (*actor).mailbox.clone() };
-    let instance = unsafe { (*actor).instance };
-    let args = if argc == 0 {
-        &[]
-    } else if argv_ptr.is_null() {
+unsafe fn args_from_raw<'a>(argc: usize, argv_ptr: *const Value) -> Option<&'a [Value]> {
+    if argc == 0 {
+        return Some(&[]);
+    }
+    if argv_ptr.is_null() {
         return None;
-    } else {
-        unsafe { std::slice::from_raw_parts(argv_ptr, argc) }
-    };
+    }
+    Some(unsafe { std::slice::from_raw_parts(argv_ptr, argc) })
+}
+
+fn build_message_inner(
+    instance: Value,
+    method_id: u32,
+    args: &[Value],
+    pending: Option<Arc<PendingState>>,
+) -> Option<Message> {
     let mut args_vec = take_args_vec();
     args_vec.push(instance);
     if !args.is_empty() {
@@ -733,6 +786,32 @@ fn build_message(
             wr_rc_inc(*arg);
         }
     }
+    Some(msg)
+}
+
+fn build_message_local(
+    actor: *const ActorHandle,
+    method_id: u32,
+    argc: usize,
+    argv_ptr: *const Value,
+    pending: Option<Arc<PendingState>>,
+) -> Option<Message> {
+    let instance = unsafe { (*actor).instance };
+    let args = unsafe { args_from_raw(argc, argv_ptr)? };
+    build_message_inner(instance, method_id, args, pending)
+}
+
+fn build_pool_message(
+    actor: *const ActorHandle,
+    method_id: u32,
+    argc: usize,
+    argv_ptr: *const Value,
+    pending: Option<Arc<PendingState>>,
+) -> Option<PoolMessage> {
+    let mailbox = unsafe { (*actor).mailbox.clone() };
+    let instance = unsafe { (*actor).instance };
+    let args = unsafe { args_from_raw(argc, argv_ptr)? };
+    let msg = build_message_inner(instance, method_id, args, pending)?;
     Some(PoolMessage { mailbox, msg })
 }
 
@@ -759,14 +838,13 @@ fn mailbox_wait_paused(actor: *const ActorHandle) {
 
 fn enqueue_pause_message(actor: *const ActorHandle) {
     unsafe {
-        let mailbox = (*actor).mailbox.clone();
         let args_vec = take_args_vec();
         let msg = Message {
             method_id: u32::MAX,
             args: args_vec,
             pending: None,
         };
-        enqueue_message(mailbox, msg);
+        enqueue_message_ref(&*(*actor).mailbox, msg);
     }
 }
 
@@ -803,26 +881,51 @@ fn pool_send(
             inc_messages_dropped_paused();
             return Value::nil();
         }
-        let state = Arc::new(PendingState {
-            lock: Mutex::new(None),
-            notify: Notify::new(),
-            dropped: AtomicBool::new(false),
-        });
+        let (state, allocated) = take_pending_state();
+
+        if (*pool).pool_size == 1
+            && !(*pool).drop_on_full
+            && (*pool).queue.len() == 0
+        {
+            let Some(msg) =
+                build_message_local(actor, method_id, argc, argv_ptr, Some(state.clone()))
+            else {
+                recycle_pending_state(state);
+                return Value::nil();
+            };
+            #[cfg(feature = "metrics")]
+            if allocated {
+                inc_alloc_pending();
+            }
+            let pending = Box::new(PendingObj {
+                header: header(TypeId::Pending),
+                state,
+            });
+            enqueue_message_ref(&*(*actor).mailbox, msg);
+            return Value::from_ptr(Box::into_raw(pending) as *mut ObjHeader);
+        }
+
+        let Some(msg) = build_pool_message(actor, method_id, argc, argv_ptr, Some(state.clone()))
+        else {
+            recycle_pending_state(state);
+            return Value::nil();
+        };
+
+        if let Err(msg) = scheduler::enqueue(pool, msg) {
+            drop_message(msg.msg);
+            recycle_pending_state(state);
+            return Value::nil();
+        }
+
+        #[cfg(feature = "metrics")]
+        if allocated {
+            inc_alloc_pending();
+        }
         let pending = Box::new(PendingObj {
             header: header(TypeId::Pending),
-            state: state.clone(),
+            state,
         });
-        #[cfg(feature = "metrics")]
-        inc_alloc_pending();
-        if let Some(msg) = build_message(actor, method_id, argc, argv_ptr, Some(state)) {
-            if let Err(msg) = scheduler::enqueue(pool, msg) {
-                drop_message(msg.msg);
-                return Value::nil();
-            }
-            Value::from_ptr(Box::into_raw(pending) as *mut ObjHeader)
-        } else {
-            Value::nil()
-        }
+        Value::from_ptr(Box::into_raw(pending) as *mut ObjHeader)
     }
 }
 
@@ -841,7 +944,18 @@ fn pool_fire(pool: *const PoolHandle, method_id: u32, argc: usize, argv_ptr: *co
             inc_messages_dropped_paused();
             return;
         }
-        if let Some(msg) = build_message(actor, method_id, argc, argv_ptr, None) {
+        if (*pool).pool_size == 1
+            && !(*pool).drop_on_full
+            && (*pool).queue.len() == 0
+        {
+            let Some(msg) = build_message_local(actor, method_id, argc, argv_ptr, None) else {
+                return;
+            };
+            enqueue_message_ref(&*(*actor).mailbox, msg);
+            return;
+        }
+
+        if let Some(msg) = build_pool_message(actor, method_id, argc, argv_ptr, None) {
             if let Err(msg) = scheduler::enqueue(pool, msg) {
                 drop_message(msg.msg);
             }
@@ -850,6 +964,10 @@ fn pool_fire(pool: *const PoolHandle, method_id: u32, argc: usize, argv_ptr: *co
 }
 
 fn enqueue_message(mailbox: Arc<Mailbox>, msg: Message) {
+    enqueue_message_ref(&mailbox, msg);
+}
+
+fn enqueue_message_ref(mailbox: &Mailbox, msg: Message) {
     if mailbox.closed.load(Ordering::Acquire) {
         drop_message(msg);
         inc_mailbox_enqueue_fail();
@@ -1008,12 +1126,14 @@ fn drop_message(msg: Message) {
 pub(crate) fn resolve_pending(pending: Arc<PendingState>, value: Value) {
     if pending.dropped.load(Ordering::Acquire) {
         unsafe { wr_rc_dec(value) };
+        recycle_pending_state(pending);
         return;
     }
     let mut guard = pending.lock.lock().expect("pending lock");
     if pending.dropped.load(Ordering::Acquire) {
         drop(guard);
         unsafe { wr_rc_dec(value) };
+        recycle_pending_state(pending);
         return;
     }
     *guard = Some(value);
@@ -1022,17 +1142,15 @@ pub(crate) fn resolve_pending(pending: Arc<PendingState>, value: Value) {
 }
 
 pub(crate) fn pending_new() -> (Value, Arc<PendingState>) {
-    let state = Arc::new(PendingState {
-        lock: Mutex::new(None),
-        notify: Notify::new(),
-        dropped: AtomicBool::new(false),
-    });
+    let (state, allocated) = take_pending_state();
     let pending = Box::new(PendingObj {
         header: header(TypeId::Pending),
         state: state.clone(),
     });
     #[cfg(feature = "metrics")]
-    inc_alloc_pending();
+    if allocated {
+        inc_alloc_pending();
+    }
     let val = Value::from_ptr(Box::into_raw(pending) as *mut ObjHeader);
     (val, state)
 }

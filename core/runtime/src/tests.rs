@@ -4917,6 +4917,191 @@ fn actor_fire_executes() {
 }
 
 #[test]
+fn pool_size_one_preserves_ordering() {
+    use std::sync::Arc;
+    use std::sync::OnceLock;
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    static OUT_PTR: OnceLock<Arc<Mutex<Vec<i64>>>> = OnceLock::new();
+
+    extern "C" fn push_arg(argc: usize, argv: *const Value) -> Value {
+        if argc < 2 {
+            return Value::nil();
+        }
+        let args = unsafe { std::slice::from_raw_parts(argv, argc) };
+        let v = args[1];
+        if let Some(out) = OUT_PTR.get() {
+            out.lock().expect("out lock").push(v.as_int());
+        }
+        Value::nil()
+    }
+
+    let out = Arc::new(Mutex::new(Vec::new()));
+    let _ = OUT_PTR.set(out.clone());
+
+    wr_register_method(1001, 0, push_arg);
+    let actor = wr_actor_spawn(1001, Value::nil(), 1, 3, -1, -1, -1);
+    let handles = wr_list_new(0);
+    wr_list_push(handles, actor);
+    let pool = wr_pool_new(handles, 3, 0, 0, 0, -1);
+
+    for i in 0..100i64 {
+        let arg = Value::from_int(i);
+        wr_actor_fire(pool, 0, 1, &arg as *const Value);
+    }
+
+    for _ in 0..500 {
+        if out.lock().expect("out lock").len() == 100 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    let got = out.lock().expect("out lock").clone();
+    let expected = (0..100i64).collect::<Vec<_>>();
+    assert_eq!(got, expected);
+
+    unsafe {
+        wr_rc_dec(pool);
+        wr_rc_dec(handles);
+        wr_rc_dec(actor);
+    }
+}
+
+#[test]
+fn pool_size_one_pause_blocks_until_resume() {
+    use std::sync::Arc;
+    use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    static COUNTER_PTR: OnceLock<Arc<AtomicUsize>> = OnceLock::new();
+
+    extern "C" fn bump(_argc: usize, _argv: *const Value) -> Value {
+        if let Some(counter) = COUNTER_PTR.get() {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }
+        Value::nil()
+    }
+
+    let counter = Arc::new(AtomicUsize::new(0));
+    let _ = COUNTER_PTR.set(counter.clone());
+
+    wr_register_method(1002, 0, bump);
+    let actor = wr_actor_spawn(1002, Value::nil(), 1, 3, -1, -1, -1);
+    let handles = wr_list_new(0);
+    wr_list_push(handles, actor);
+    let pool = wr_pool_new(handles, 3, 0, 0, 0, -1);
+
+    wr_actor_pause(pool);
+    wr_actor_pause_wait(pool);
+
+    wr_actor_fire(pool, 0, 0, std::ptr::null());
+
+    std::thread::sleep(Duration::from_millis(10));
+    assert_eq!(counter.load(Ordering::SeqCst), 0);
+
+    wr_actor_resume(pool);
+
+    for _ in 0..200 {
+        if counter.load(Ordering::SeqCst) == 1 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(counter.load(Ordering::SeqCst), 1);
+
+    unsafe {
+        wr_rc_dec(pool);
+        wr_rc_dec(handles);
+        wr_rc_dec(actor);
+    }
+}
+
+#[test]
+fn pool_fire_executes() {
+    use std::sync::Arc;
+    use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    static COUNTER_PTR: OnceLock<Arc<AtomicUsize>> = OnceLock::new();
+
+    extern "C" fn bump(_argc: usize, _argv: *const Value) -> Value {
+        if let Some(counter) = COUNTER_PTR.get() {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }
+        Value::nil()
+    }
+
+    let counter = Arc::new(AtomicUsize::new(0));
+    let _ = COUNTER_PTR.set(counter.clone());
+
+    wr_register_method(1003, 0, bump);
+    let actor = wr_actor_spawn(1003, Value::nil(), 1, 3, -1, -1, -1);
+    let handles = wr_list_new(0);
+    wr_list_push(handles, actor);
+    let pool = wr_pool_new(handles, 3, 0, 0, 0, -1);
+
+    wr_actor_fire(pool, 0, 0, std::ptr::null());
+
+    for _ in 0..200 {
+        if counter.load(Ordering::SeqCst) == 1 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(counter.load(Ordering::SeqCst), 1);
+
+    unsafe {
+        wr_rc_dec(pool);
+        wr_rc_dec(handles);
+        wr_rc_dec(actor);
+    }
+}
+
+#[test]
+fn pool_send_resolves_many_pendings() {
+    extern "C" fn add_one(argc: usize, argv: *const Value) -> Value {
+        if argc < 2 {
+            return Value::nil();
+        }
+        let args = unsafe { std::slice::from_raw_parts(argv, argc) };
+        let v = args[1];
+        Value::from_int(v.as_int() + 1)
+    }
+
+    wr_register_method(1004, 0, add_one);
+    let actor = wr_actor_spawn(1004, Value::nil(), 1, 3, -1, -1, -1);
+    let handles = wr_list_new(0);
+    wr_list_push(handles, actor);
+    let pool = wr_pool_new(handles, 3, 0, 0, 0, -1);
+
+    let mut pendings = Vec::new();
+    for i in 0..128i64 {
+        let arg = Value::from_int(i);
+        let pending = wr_actor_send(pool, 0, 1, &arg as *const Value);
+        pendings.push(pending);
+    }
+
+    for (i, pending) in pendings.into_iter().enumerate() {
+        let val = await_ok(pending);
+        assert!(val.is_int());
+        assert_eq!(val.as_int(), i as i64 + 1);
+        unsafe {
+            wr_rc_dec(pending);
+        }
+    }
+
+    unsafe {
+        wr_rc_dec(pool);
+        wr_rc_dec(handles);
+        wr_rc_dec(actor);
+    }
+}
+
+#[test]
 fn class_get_set() {
     let name_ptrs = [b"x".as_ptr()];
     let name_lens = [1usize];
