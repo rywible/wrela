@@ -142,7 +142,14 @@ fn parse_if(p: &mut Parser) {
     expr::expr(p);
     p.expect_with_message(SyntaxKind::Colon, "expected ':' after if condition");
     parse_block(p);
-    if p.at(SyntaxKind::OtherwiseKw) {
+    if p.at(SyntaxKind::ButKw) {
+        p.bump();
+        if p.at(SyntaxKind::IfKw) {
+            parse_if(p);
+        } else {
+            p.error_with_message_no_bump("expected 'if' after 'but'");
+        }
+    } else if p.at(SyntaxKind::OtherwiseKw) {
         p.bump();
         if p.at(SyntaxKind::IfKw) {
             parse_if(p);

@@ -24,6 +24,8 @@ pub enum Token {
     To,
     #[strum(serialize = "if")]
     If,
+    #[strum(serialize = "but")]
+    But,
     #[strum(serialize = "while")]
     While,
     #[strum(serialize = "for")]
@@ -210,6 +212,7 @@ impl Token {
                 | Token::Derives
                 | Token::To
                 | Token::If
+                | Token::But
                 | Token::While
                 | Token::For
                 | Token::In

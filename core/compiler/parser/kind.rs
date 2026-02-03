@@ -12,6 +12,7 @@ pub enum SyntaxKind {
     DerivesKw,   // derives
     ToKw,        // to
     IfKw,        // if
+    ButKw,       // but
     WhileKw,     // while
     ForKw,       // for
     InKw,        // in
@@ -175,6 +176,7 @@ impl From<Token> for SyntaxKind {
             Token::Derives => SyntaxKind::DerivesKw,
             Token::To => SyntaxKind::ToKw,
             Token::If => SyntaxKind::IfKw,
+            Token::But => SyntaxKind::ButKw,
             Token::While => SyntaxKind::WhileKw,
             Token::For => SyntaxKind::ForKw,
             Token::In => SyntaxKind::InKw,

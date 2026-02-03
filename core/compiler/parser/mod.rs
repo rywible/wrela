@@ -330,6 +330,7 @@ fn kind_label(kind: SyntaxKind) -> &'static str {
         SyntaxKind::CanKw => "'can'",
         SyntaxKind::ToKw => "'to'",
         SyntaxKind::IfKw => "'if'",
+        SyntaxKind::ButKw => "'but'",
         SyntaxKind::WhileKw => "'while'",
         SyntaxKind::ForKw => "'for'",
         SyntaxKind::InKw => "'in'",

@@ -37,7 +37,7 @@ so: Wrela Language Spec (Runnable)
     - Keywords are reserved (see .plans/language.md).
     
     Keywords (current):
-    A An has can must to if while for in return break continue match otherwise
+    A An has can must to if but while for in return break continue match otherwise
     err crash true false nothing and or not await detach spawn fire optimize use
     from private its it mutable assert derives is either defer
     
@@ -116,6 +116,7 @@ so: ------------------------------------------------------------
     5) Control flow: if / while / for / match
     
     - `if` requires a Boolean condition.
+    - Else-if chains use `but if`.
     - `while` loops while the condition is true.
     - `for x in iterable:` iterates lists, maps, and ranges.
     - `match` requires an `otherwise` case; labels are patterns:
@@ -136,11 +137,11 @@ to test_if_else() -> Nothing:
     assert value out == 1
 
 
-to test_otherwise_if_chain() -> Nothing:
+to test_but_if_chain() -> Nothing:
     mutable out = 0
     if false:
         out = 1
-    otherwise if true:
+    but if true:
         out = 2
     otherwise:
         out = 3
