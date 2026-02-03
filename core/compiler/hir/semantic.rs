@@ -190,15 +190,6 @@ pub enum SemanticError {
     },
 
 
-    #[error("match requires an otherwise case")]
-    #[diagnostic(
-        code(lang::sem::match_missing_otherwise),
-        help("Add an `otherwise:` case to this match.")
-    )]
-    MatchMissingOtherwise {
-        #[label("match here")]
-        span: SourceSpan,
-    },
     #[error("match case bindings require a single label")]
     #[diagnostic(code(lang::sem::match_bindings_multi_label))]
     MatchBindingsMultiLabel {
@@ -357,7 +348,6 @@ impl SemanticError {
             SemanticError::FireInExpression { span } => *span,
             SemanticError::DuplicateNamedArg { span, .. } => *span,
             SemanticError::PositionalAfterNamed { span } => *span,
-            SemanticError::MatchMissingOtherwise { span } => *span,
             SemanticError::MissingObjective { span } => *span,
             SemanticError::DuplicateOptimize { span } => *span,
             SemanticError::InvalidPoolObjective { span } => *span,
@@ -820,11 +810,6 @@ impl<'a> Checker<'a> {
                 otherwise,
             } => {
                 self.check_expr_with_ctx(body, *subject, false, false);
-                if otherwise.is_none() {
-                    self.errors.push(SemanticError::MatchMissingOtherwise {
-                        span: span_from_range(body.stmt_span(stmt_id)),
-                    });
-                }
                 for case in cases {
                     self.check_match_case(body, case);
                 }
@@ -2193,17 +2178,17 @@ mod tests {
 
     #[test]
     fn test_match_missing_otherwise() {
-        let input = "to f() -> Integer:\n    match x:\n        1: return 1";
+        let input = "\
+to f(x: Integer) -> Integer:
+    match x:
+        1: y = 1
+    return 0
+";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         let diagnostics = check_module(&module);
-        assert!(
-            diagnostics
-                .errors
-                .iter()
-                .any(|err| matches!(err, SemanticError::MatchMissingOtherwise { .. }))
-        );
+        assert!(diagnostics.errors.is_empty());
     }
 
     #[test]

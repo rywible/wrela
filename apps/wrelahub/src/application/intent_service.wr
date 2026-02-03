@@ -1,0 +1,4 @@
+use * from domain/intent
+
+to request_transition(current: IntentState, target: IntentState, reason: String) -> Result[IntentState, IntentTransitionError]:
+    return transition(current=current, target=target, reason=reason)

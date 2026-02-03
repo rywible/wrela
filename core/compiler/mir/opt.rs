@@ -1492,10 +1492,43 @@ fn insert_rc(func: &mut MirFunction) {
     let (block_uses, block_defs) = collect_block_uses_defs(func, locals_len);
     let (live_in, live_out) = liveness(func.blocks.len(), &succs, &block_uses, &block_defs, total);
     let (init_in, _init_out) = definite_init(func, &preds, &block_defs, total);
+    let terminator_uses_list: Vec<Vec<usize>> = func
+        .blocks
+        .iter()
+        .map(|block| terminator_uses(&block.terminator, locals_len))
+        .collect();
+    let mut edge_rcdec_prepend: Vec<Vec<Stmt>> = vec![Vec::new(); func.blocks.len()];
+    for (block_idx, term_uses) in terminator_uses_list.iter().enumerate() {
+        if term_uses.is_empty() {
+            continue;
+        }
+        let term_span = terminator_span(&func.blocks[block_idx].terminator);
+        for succ in &succs[block_idx] {
+            if preds[*succ].len() != 1 {
+                continue;
+            }
+            for idx in term_uses {
+                if *idx >= locals_len {
+                    continue;
+                }
+                if !idx_is_ref(&types, *idx) {
+                    continue;
+                }
+                if live_in[*succ][*idx] {
+                    continue;
+                }
+                edge_rcdec_prepend[*succ].push(Stmt::RcDec {
+                    value: value_from_idx(*idx, locals_len),
+                    span: term_span,
+                });
+            }
+        }
+    }
 
     let mut next_temp_id = func.temps.len();
     for (block_idx, block) in func.blocks.iter_mut().enumerate() {
         let live_out_block = &live_out[block_idx];
+        let term_uses = &terminator_uses_list[block_idx];
         let mut live_after = Vec::with_capacity(block.stmts.len());
         let mut live = live_out_block.clone();
         for stmt in block.stmts.iter().rev() {
@@ -1597,6 +1630,9 @@ fn insert_rc(func: &mut MirFunction) {
         }
         let term_span = terminator_span(&block.terminator);
         for idx in 0..total {
+            if term_uses.contains(&idx) {
+                continue;
+            }
             if init[idx] && !live_out_block[idx] && !exclude[idx] && idx_is_ref(&types, idx) {
                 new_stmts.push(Stmt::RcDec {
                     value: value_from_idx(idx, locals_len),
@@ -1605,7 +1641,16 @@ fn insert_rc(func: &mut MirFunction) {
             }
         }
 
-        block.stmts = new_stmts;
+        if !edge_rcdec_prepend[block_idx].is_empty() {
+            let mut combined = Vec::with_capacity(
+                edge_rcdec_prepend[block_idx].len() + new_stmts.len(),
+            );
+            combined.extend(edge_rcdec_prepend[block_idx].drain(..));
+            combined.extend(new_stmts);
+            block.stmts = combined;
+        } else {
+            block.stmts = new_stmts;
+        }
     }
 }
 

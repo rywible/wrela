@@ -121,7 +121,9 @@ so: ------------------------------------------------------------
     - Else-if chains use `but if`.
     - `while` loops while the condition is true.
     - `for x in iterable:` iterates lists, maps, and ranges.
-    - `match` requires an `otherwise` case; labels are patterns:
+    - `match` requires an `otherwise` case unless the match is exhaustive; labels are patterns:
+      - Exhaustive if it covers all enum variants (for enum subjects), or both `Ok` and `Err`
+        (for Result subjects), or includes `_` / a binding pattern.
       - Literals (existing)
       - Wildcard `_`
       - Enum constructors (e.g., `Status.Pending`, `Status.Processing(id)`)

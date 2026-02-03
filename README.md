@@ -8,6 +8,8 @@ Key documents:
 - CONTRIBUTING.md
 - SECURITY.md
 - core/spec/spec.wr
+- .wrelahub/policies/builder-invites.md
+- .wrelahub/policies/intents.md
 
 Repo layout (high level):
 - apps/hub: Hub service (Wrela runtime app)
