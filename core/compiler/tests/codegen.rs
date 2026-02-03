@@ -3,6 +3,7 @@ use std::process::Command;
 use wrela::hir;
 use wrela::hir::project::load_project;
 use wrela::mir;
+use wrela::mir::analysis;
 use wrela::mir::ir::{AllocKind, BasicBlock, BlockId, Local, MirFunction, MirType, Place, Rvalue, Stmt, Temp, TempId, Terminator, Value};
 
 fn load_module_from_source(source: &str) -> hir::Module {
@@ -244,6 +245,44 @@ fn mir_alloc_annotations_preserved() {
     }
     assert!(allocs.contains(&AllocKind::Escaping));
     assert!(allocs.contains(&AllocKind::LocalTemp));
+}
+
+#[test]
+fn call_graph_and_type_map_smoke() {
+    let source = r#"
+to g(x: Integer) -> Integer:
+    return x + 1
+
+to f() -> Integer:
+    return g(1)
+
+to run() -> Integer:
+    return f()
+"#;
+
+    let module = load_module_from_source(&source);
+    let semantic = hir::semantic::check_module(&module);
+    assert!(semantic.errors.is_empty(), "semantic errors: {:?}", semantic.errors);
+    let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+    assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
+
+    let mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let analysis = analysis::analyze_module(&mir_module);
+
+    let g_name = "g".into();
+    let f_name = "f".into();
+    let f_edges = analysis.call_graph.edges(&f_name);
+    assert!(f_edges.iter().any(|name| name.as_str() == "g"));
+
+    let g_func = mir_module
+        .functions
+        .iter()
+        .find(|f| f.name.as_str() == "g")
+        .expect("missing g");
+    let g_types = analysis.type_map.function(&g_name).expect("missing g types");
+    let param = g_func.params.first().expect("missing param");
+    let param_ty = g_types.locals.get(param.0).cloned().unwrap_or(MirType::Unknown);
+    assert_eq!(param_ty, MirType::Integer);
 }
 
 #[test]

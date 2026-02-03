@@ -1001,9 +1001,12 @@ fn compile_to_mir(
     if emit_mir {
         println!("{:#?}", mir_module);
     }
+    let analysis = mir::analysis::analyze_module(&mir_module);
     for func in &mut mir_module.functions {
-        mir::opt::run_function_passes(func);
+        let types = analysis.type_map.function(&func.name);
+        mir::opt::run_function_passes_with_types(func, types);
     }
+    mir::opt::run_module_passes(&mut mir_module);
     stage("mir_opt", &start);
     if emit_mir_opt {
         println!("{:#?}", mir_module);

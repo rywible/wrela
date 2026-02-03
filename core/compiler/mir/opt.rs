@@ -1,13 +1,20 @@
 use crate::hir::{BinaryOp, Literal, UnaryOp};
+use crate::mir::analysis::{CallGraph, FunctionTypes, analyze_module};
 use crate::mir::ir::{
-    AllocKind, BasicBlock, CallKind, CallTarget, Local, LocalId, MirFunction, MirType, Place,
-    Rvalue, Stmt, Terminator, Value,
+    AllocKind, BasicBlock, CallKind, CallTarget, Local, LocalId, MirFunction, MirModule, MirType,
+    Place, Rvalue, Stmt, Terminator, Value,
 };
 use rowan::TextRange;
 use smol_str::SmolStr;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 pub fn run_function_passes(func: &mut MirFunction) {
+    run_function_passes_with_types(func, None);
+}
+
+pub fn run_function_passes_with_types(func: &mut MirFunction, types: Option<&FunctionTypes>) {
+    devirtualize_calls(func, types);
+    specialize_container_ops(func, types);
     annotate_allocs(func);
     constant_fold(func);
     simplify_branches(func);
@@ -17,6 +24,192 @@ pub fn run_function_passes(func: &mut MirFunction) {
     scalar_replace_literals(func);
     strength_reduce_mods(func);
     insert_rc(func);
+}
+
+pub fn run_module_passes(module: &mut MirModule) {
+    let analysis = analyze_module(module);
+    clone_small_hot_functions(module, &analysis.call_graph);
+    let analysis = analyze_module(module);
+    tree_shake_unused_functions(module, &analysis.call_graph);
+}
+
+fn devirtualize_calls(func: &mut MirFunction, types: Option<&FunctionTypes>) {
+    let locals = types
+        .map(|t| t.locals.clone())
+        .unwrap_or_else(|| func.locals.iter().map(|l| l.ty.clone()).collect());
+    let temps = types
+        .map(|t| t.temps.clone())
+        .unwrap_or_else(|| func.temps.iter().map(|t| t.ty.clone()).collect());
+    for block in &mut func.blocks {
+        for stmt in &mut block.stmts {
+            let Stmt::Assign { value, .. } = stmt else { continue };
+            let Rvalue::Call { kind, target, args } = value else { continue };
+            if *kind != CallKind::Sync {
+                continue;
+            }
+            let CallTarget::Method {
+                receiver,
+                method,
+                method_id,
+            } = target
+            else {
+                continue;
+            };
+            if method_id.is_none() {
+                continue;
+            }
+            let recv_ty = value_ty_with_slices(receiver, &locals, &temps);
+            let MirType::Named(class_name) = recv_ty else { continue };
+            let qualified = qualify_method_name(method, &class_name);
+            let recv = receiver.clone();
+            let mut new_args = Vec::with_capacity(args.len() + 1);
+            new_args.push(recv);
+            new_args.extend(args.iter().cloned());
+            *args = new_args;
+            *target = CallTarget::Function(qualified);
+        }
+    }
+}
+
+fn specialize_container_ops(func: &mut MirFunction, types: Option<&FunctionTypes>) {
+    let locals = types
+        .map(|t| t.locals.clone())
+        .unwrap_or_else(|| func.locals.iter().map(|l| l.ty.clone()).collect());
+    let temps = types
+        .map(|t| t.temps.clone())
+        .unwrap_or_else(|| func.temps.iter().map(|t| t.ty.clone()).collect());
+    for block in &mut func.blocks {
+        for stmt in &mut block.stmts {
+            let Stmt::Assign { value, .. } = stmt else { continue };
+            let Rvalue::Call { kind, target, args } = value else { continue };
+            if *kind != CallKind::Sync {
+                continue;
+            }
+            let CallTarget::Method { receiver, method, .. } = target else { continue };
+            let recv_ty = value_ty_with_slices(receiver, &locals, &temps);
+            let MirType::Named(class_name) = recv_ty else { continue };
+            let op = unqual_method_name(method);
+            let builtin = match (class_name.as_str(), op.as_str()) {
+                ("Map", "get") => "__wr_map_get",
+                ("Map", "set") => "__wr_map_set",
+                ("List", "push") => "__wr_list_push",
+                _ => continue,
+            };
+            let recv = receiver.clone();
+            let mut new_args = Vec::with_capacity(args.len() + 1);
+            new_args.push(recv);
+            new_args.extend(args.iter().cloned());
+            *args = new_args;
+            *target = CallTarget::Function(SmolStr::new(builtin));
+        }
+    }
+}
+
+fn qualify_method_name(method: &SmolStr, class_name: &SmolStr) -> SmolStr {
+    if method.as_str().contains('.') {
+        return method.clone();
+    }
+    SmolStr::new(format!("{}.{}", class_name, method))
+}
+
+fn unqual_method_name(method: &SmolStr) -> SmolStr {
+    method
+        .as_str()
+        .rsplit('.')
+        .next()
+        .map(SmolStr::new)
+        .unwrap_or_else(|| method.clone())
+}
+
+fn value_ty_with_slices(value: &Value, locals: &[MirType], temps: &[MirType]) -> MirType {
+    match value {
+        Value::Const(lit) => match lit {
+            Literal::Integer(_) => MirType::Integer,
+            Literal::Float(_) => MirType::Float,
+            Literal::Boolean(_) => MirType::Boolean,
+            Literal::String(_) => MirType::String,
+            Literal::Nil => MirType::Nil,
+        },
+        Value::Local(local) => locals.get(local.0).cloned().unwrap_or(MirType::Unknown),
+        Value::Temp(temp) => temps.get(temp.0).cloned().unwrap_or(MirType::Unknown),
+    }
+}
+
+fn clone_small_hot_functions(module: &mut MirModule, graph: &CallGraph) {
+    let mut func_map: HashMap<SmolStr, MirFunction> = HashMap::new();
+    for func in &module.functions {
+        func_map.insert(func.name.clone(), func.clone());
+    }
+    let mut cloned = Vec::new();
+    let mut clone_names: HashMap<(SmolStr, SmolStr), SmolStr> = HashMap::new();
+    let mut counter = 0usize;
+    for func in &mut module.functions {
+        for block in &mut func.blocks {
+            for stmt in &mut block.stmts {
+                let Stmt::Assign { value, .. } = stmt else { continue };
+                let Rvalue::Call { target, .. } = value else { continue };
+                let CallTarget::Function(name) = target else { continue };
+                if graph.call_count(name) < 2 {
+                    continue;
+                }
+                let Some(callee) = func_map.get(name) else { continue };
+                if !is_small_function(callee) || callee.suspendable || callee.name == "main" {
+                    continue;
+                }
+                let key = (func.name.clone(), name.clone());
+                let clone_name = clone_names.entry(key).or_insert_with(|| {
+                    counter += 1;
+                    SmolStr::new(format!("{}__clone{}", name, counter))
+                });
+                if !func_map.contains_key(clone_name) {
+                    let mut clone = callee.clone();
+                    clone.name = clone_name.clone();
+                    cloned.push(clone);
+                }
+                *target = CallTarget::Function(clone_name.clone());
+            }
+        }
+    }
+    module.functions.extend(cloned);
+}
+
+fn is_small_function(func: &MirFunction) -> bool {
+    if func.blocks.len() > 1 {
+        return false;
+    }
+    let mut stmts = 0usize;
+    for block in &func.blocks {
+        stmts += block.stmts.len();
+    }
+    stmts <= 6
+}
+
+fn tree_shake_unused_functions(module: &mut MirModule, graph: &CallGraph) {
+    let mut roots = HashSet::new();
+    roots.insert(SmolStr::new("main"));
+    for class in &module.classes {
+        for method in &class.methods {
+            roots.insert(method.func.clone());
+        }
+    }
+
+    let mut reachable = HashSet::new();
+    let mut queue = VecDeque::new();
+    for root in roots {
+        queue.push_back(root);
+    }
+    while let Some(name) = queue.pop_front() {
+        if !reachable.insert(name.clone()) {
+            continue;
+        }
+        for callee in graph.edges(&name) {
+            queue.push_back(callee.clone());
+        }
+    }
+
+    module
+        .functions
+        .retain(|func| reachable.contains(&func.name));
 }
 
 fn annotate_allocs(func: &mut MirFunction) {
@@ -2065,5 +2258,248 @@ mod tests {
         }
         assert!(saw_temp_assign, "expected temp assignment for self-assign");
         assert!(saw_dec_old, "expected dec of old value after temp");
+    }
+
+    #[test]
+    fn devirtualize_monomorphic_method_call() {
+        let span = TextRange::new(0.into(), 0.into());
+        let mut func = MirFunction {
+            name: "caller".into(),
+            params: vec![],
+            locals: vec![Local {
+                name: "recv".into(),
+                mutable: false,
+                ty: MirType::Named("Foo".into()),
+            }],
+            temps: vec![Temp { ty: MirType::Unknown }],
+            blocks: vec![BasicBlock {
+                stmts: vec![Stmt::Assign {
+                    place: Place::Temp(TempId(0)),
+                    value: Rvalue::Call {
+                        kind: CallKind::Sync,
+                        target: CallTarget::Method {
+                            receiver: Value::Local(LocalId(0)),
+                            method: SmolStr::new("Foo.bar"),
+                            method_id: Some(1),
+                        },
+                        args: vec![Value::Const(Literal::Integer(1))],
+                    },
+                    span,
+                }],
+                terminator: Terminator::Return {
+                    value: Some(Value::Temp(TempId(0))),
+                    span,
+                },
+            }],
+            entry: BlockId(0),
+            suspendable: false,
+        };
+
+        let types = FunctionTypes {
+            locals: vec![MirType::Named("Foo".into())],
+            temps: vec![MirType::Unknown],
+        };
+        devirtualize_calls(&mut func, Some(&types));
+
+        let call = match &func.blocks[0].stmts[0] {
+            Stmt::Assign { value, .. } => value,
+            _ => panic!("expected call"),
+        };
+        let Rvalue::Call { target, args, .. } = call else {
+            panic!("expected call");
+        };
+        assert!(matches!(target, CallTarget::Function(name) if name.as_str() == "Foo.bar"));
+        assert_eq!(args.len(), 2);
+    }
+
+    #[test]
+    fn devirtualize_skips_unknown_receiver() {
+        let span = TextRange::new(0.into(), 0.into());
+        let mut func = MirFunction {
+            name: "caller".into(),
+            params: vec![],
+            locals: vec![Local {
+                name: "recv".into(),
+                mutable: false,
+                ty: MirType::Unknown,
+            }],
+            temps: vec![Temp { ty: MirType::Unknown }],
+            blocks: vec![BasicBlock {
+                stmts: vec![Stmt::Assign {
+                    place: Place::Temp(TempId(0)),
+                    value: Rvalue::Call {
+                        kind: CallKind::Sync,
+                        target: CallTarget::Method {
+                            receiver: Value::Local(LocalId(0)),
+                            method: SmolStr::new("bar"),
+                            method_id: Some(1),
+                        },
+                        args: vec![Value::Const(Literal::Integer(1))],
+                    },
+                    span,
+                }],
+                terminator: Terminator::Return {
+                    value: Some(Value::Temp(TempId(0))),
+                    span,
+                },
+            }],
+            entry: BlockId(0),
+            suspendable: false,
+        };
+
+        let types = FunctionTypes {
+            locals: vec![MirType::Unknown],
+            temps: vec![MirType::Unknown],
+        };
+        devirtualize_calls(&mut func, Some(&types));
+
+        let call = match &func.blocks[0].stmts[0] {
+            Stmt::Assign { value, .. } => value,
+            _ => panic!("expected call"),
+        };
+        let Rvalue::Call { target, .. } = call else {
+            panic!("expected call");
+        };
+        assert!(matches!(target, CallTarget::Method { .. }));
+    }
+
+    #[test]
+    fn tree_shake_removes_unreachable() {
+        let span = TextRange::new(0.into(), 0.into());
+        let mut module = MirModule {
+            functions: vec![
+                MirFunction {
+                    name: "main".into(),
+                    params: vec![],
+                    locals: vec![],
+                    temps: vec![Temp { ty: MirType::Unknown }],
+                    blocks: vec![BasicBlock {
+                        stmts: vec![Stmt::Assign {
+                            place: Place::Temp(TempId(0)),
+                            value: Rvalue::Call {
+                                kind: CallKind::Sync,
+                                target: CallTarget::Function("alive".into()),
+                                args: vec![],
+                            },
+                            span,
+                        }],
+                        terminator: Terminator::Return {
+                            value: Some(Value::Temp(TempId(0))),
+                            span,
+                        },
+                    }],
+                    entry: BlockId(0),
+                    suspendable: false,
+                },
+                MirFunction {
+                    name: "alive".into(),
+                    params: vec![],
+                    locals: vec![],
+                    temps: vec![],
+                    blocks: vec![BasicBlock {
+                        stmts: vec![],
+                        terminator: Terminator::Return { value: None, span },
+                    }],
+                    entry: BlockId(0),
+                    suspendable: false,
+                },
+                MirFunction {
+                    name: "dead".into(),
+                    params: vec![],
+                    locals: vec![],
+                    temps: vec![],
+                    blocks: vec![BasicBlock {
+                        stmts: vec![],
+                        terminator: Terminator::Return { value: None, span },
+                    }],
+                    entry: BlockId(0),
+                    suspendable: false,
+                },
+            ],
+            type_tags: vec![],
+            classes: vec![],
+        };
+
+        run_module_passes(&mut module);
+        assert!(module.functions.iter().any(|f| f.name.as_str() == "main"));
+        assert!(module.functions.iter().any(|f| f.name.as_str() == "alive"));
+        assert!(!module.functions.iter().any(|f| f.name.as_str() == "dead"));
+    }
+
+    #[test]
+    fn clone_small_hot_function_into_callers() {
+        let span = TextRange::new(0.into(), 0.into());
+        let small = MirFunction {
+            name: "small".into(),
+            params: vec![],
+            locals: vec![],
+            temps: vec![],
+            blocks: vec![BasicBlock {
+                stmts: vec![],
+                terminator: Terminator::Return { value: None, span },
+            }],
+            entry: BlockId(0),
+            suspendable: false,
+        };
+        let mut module = MirModule {
+            functions: vec![
+                MirFunction {
+                    name: "main".into(),
+                    params: vec![],
+                    locals: vec![],
+                    temps: vec![Temp { ty: MirType::Unknown }],
+                    blocks: vec![BasicBlock {
+                        stmts: vec![Stmt::Assign {
+                            place: Place::Temp(TempId(0)),
+                            value: Rvalue::Call {
+                                kind: CallKind::Sync,
+                                target: CallTarget::Function("small".into()),
+                                args: vec![],
+                            },
+                            span,
+                        }],
+                        terminator: Terminator::Return {
+                            value: Some(Value::Temp(TempId(0))),
+                            span,
+                        },
+                    }],
+                    entry: BlockId(0),
+                    suspendable: false,
+                },
+                MirFunction {
+                    name: "helper".into(),
+                    params: vec![],
+                    locals: vec![],
+                    temps: vec![Temp { ty: MirType::Unknown }],
+                    blocks: vec![BasicBlock {
+                        stmts: vec![Stmt::Assign {
+                            place: Place::Temp(TempId(0)),
+                            value: Rvalue::Call {
+                                kind: CallKind::Sync,
+                                target: CallTarget::Function("small".into()),
+                                args: vec![],
+                            },
+                            span,
+                        }],
+                        terminator: Terminator::Return {
+                            value: Some(Value::Temp(TempId(0))),
+                            span,
+                        },
+                    }],
+                    entry: BlockId(0),
+                    suspendable: false,
+                },
+                small,
+            ],
+            type_tags: vec![],
+            classes: vec![],
+        };
+
+        run_module_passes(&mut module);
+        let has_clone = module
+            .functions
+            .iter()
+            .any(|f| f.name.as_str().contains("small__clone"));
+        assert!(has_clone, "expected cloned function");
     }
 }
