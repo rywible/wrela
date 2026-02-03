@@ -1,15 +1,1011 @@
 use crate::hir::{BinaryOp, Literal, UnaryOp};
 use crate::mir::ir::{
-    CallKind, CallTarget, MirFunction, MirType, Place, Rvalue, Stmt, Terminator, Value,
+    AllocKind, BasicBlock, CallKind, CallTarget, Local, LocalId, MirFunction, MirType, Place,
+    Rvalue, Stmt, Terminator, Value,
 };
 use rowan::TextRange;
-use std::collections::HashSet;
+use smol_str::SmolStr;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 pub fn run_function_passes(func: &mut MirFunction) {
+    annotate_allocs(func);
     constant_fold(func);
     simplify_branches(func);
     dead_code_elim(func);
+    convert_to_ssa(func);
+    result_peephole(func);
+    scalar_replace_literals(func);
+    strength_reduce_mods(func);
     insert_rc(func);
+}
+
+fn annotate_allocs(func: &mut MirFunction) {
+    let mut deps: Vec<Vec<usize>> = vec![Vec::new(); func.temps.len()];
+    let mut escapes = vec![false; func.temps.len()];
+
+    for block in &func.blocks {
+        for stmt in &block.stmts {
+            if let Stmt::Assign { place, value, .. } = stmt {
+                if let Place::Temp(dst) = place {
+                    let mut used = Vec::new();
+                    collect_temp_ids_rvalue(value, &mut used);
+                    deps[dst.0].extend(used);
+                }
+            }
+            if let Stmt::SetField { value, .. } = stmt {
+                collect_temp_ids_value(value, &mut escapes);
+            }
+        }
+        match &block.terminator {
+            Terminator::Return { value: Some(value), .. } => {
+                collect_temp_ids_value(value, &mut escapes);
+            }
+            _ => {}
+        }
+    }
+
+    for block in &func.blocks {
+        for stmt in &block.stmts {
+            if let Stmt::Assign { value, .. } = stmt {
+                match value {
+                    Rvalue::Call { kind, target, args } => {
+                        if matches!(kind, CallKind::Actor) {
+                            collect_temp_ids_call_target(target, &mut escapes);
+                            for arg in args {
+                                collect_temp_ids_value(arg, &mut escapes);
+                            }
+                        }
+                    }
+                    Rvalue::Spawn { target, instance, .. } => {
+                        collect_temp_ids_value(target, &mut escapes);
+                        collect_temp_ids_value(instance, &mut escapes);
+                    }
+                    Rvalue::PoolNew { handles, .. } => {
+                        collect_temp_ids_value(handles, &mut escapes);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    let mut stack: Vec<usize> = escapes
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, flag)| if *flag { Some(idx) } else { None })
+        .collect();
+    while let Some(temp) = stack.pop() {
+        let deps_list = deps[temp].clone();
+        for dep in deps_list {
+            if !escapes[dep] {
+                escapes[dep] = true;
+                stack.push(dep);
+            }
+        }
+    }
+
+    for block in &mut func.blocks {
+        for stmt in &mut block.stmts {
+            if let Stmt::Assign { place, value, .. } = stmt {
+                if let Place::Temp(dst) = place {
+                    let alloc = if escapes[dst.0] {
+                        AllocKind::Escaping
+                    } else {
+                        AllocKind::LocalTemp
+                    };
+                    match value {
+                        Rvalue::BuildList { alloc: slot, .. }
+                        | Rvalue::BuildMap { alloc: slot, .. }
+                        | Rvalue::StringInterp { alloc: slot, .. } => {
+                            *slot = alloc;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn convert_to_ssa(func: &mut MirFunction) {
+    if func.suspendable {
+        return;
+    }
+    let locals_len = func.locals.len();
+    if locals_len == 0 || func.blocks.is_empty() {
+        return;
+    }
+
+    let succs = block_successors(func);
+    let preds = block_predecessors(func, &succs);
+    let reachable = compute_reachable(func.entry.0, &succs);
+    let doms = compute_dominators(func.blocks.len(), func.entry.0, &preds);
+    let idom = compute_idom(&doms, func.entry.0, &reachable);
+    let dom_tree = compute_dom_tree(&idom);
+    let dom_frontiers = compute_dom_frontiers(func.entry.0, &succs, &idom, &dom_tree);
+
+    let mut def_blocks: Vec<Vec<usize>> = vec![Vec::new(); locals_len];
+    for (block_idx, block) in func.blocks.iter().enumerate() {
+        if !reachable[block_idx] {
+            continue;
+        }
+        for stmt in &block.stmts {
+            for local in stmt_local_defs(stmt) {
+                def_blocks[local.0].push(block_idx);
+            }
+        }
+    }
+
+    let mut phi_locals_per_block: Vec<Vec<LocalId>> = vec![Vec::new(); func.blocks.len()];
+    for (local_idx, defs) in def_blocks.iter().enumerate() {
+        if defs.len() < 2 {
+            continue;
+        }
+        let mut work: VecDeque<usize> = defs.iter().copied().collect();
+        let mut has_phi = vec![false; func.blocks.len()];
+        while let Some(block) = work.pop_front() {
+            for frontier in &dom_frontiers[block] {
+                if !reachable[*frontier] {
+                    continue;
+                }
+                if *frontier == func.entry.0 {
+                    continue;
+                }
+                if !has_phi[*frontier] {
+                    has_phi[*frontier] = true;
+                    let local = LocalId(local_idx);
+                    phi_locals_per_block[*frontier].push(local);
+                    if !defs.contains(frontier) {
+                        work.push_back(*frontier);
+                    }
+                }
+            }
+        }
+    }
+
+    for (block_idx, block) in func.blocks.iter_mut().enumerate() {
+        if phi_locals_per_block[block_idx].is_empty() {
+            continue;
+        }
+        let mut new_stmts = Vec::with_capacity(
+            block.stmts.len() + phi_locals_per_block[block_idx].len(),
+        );
+        for local in &phi_locals_per_block[block_idx] {
+            new_stmts.push(Stmt::Phi {
+                place: Place::Local(*local),
+                sources: Vec::new(),
+                original: *local,
+                span: TextRange::empty(0.into()),
+            });
+        }
+        new_stmts.extend(block.stmts.drain(..));
+        block.stmts = new_stmts;
+    }
+
+    let mut stacks: Vec<Vec<LocalId>> = Vec::with_capacity(locals_len);
+    for idx in 0..locals_len {
+        stacks.push(vec![LocalId(idx)]);
+    }
+    let mut version_counts = vec![0usize; locals_len];
+
+    rename_block(
+        &mut func.blocks,
+        &mut func.locals,
+        func.entry.0,
+        &succs,
+        &dom_tree,
+        &reachable,
+        &mut stacks,
+        &mut version_counts,
+    );
+}
+
+fn compute_reachable(entry: usize, succs: &[Vec<usize>]) -> Vec<bool> {
+    let mut reachable = vec![false; succs.len()];
+    let mut queue = VecDeque::new();
+    queue.push_back(entry);
+    while let Some(block) = queue.pop_front() {
+        if reachable[block] {
+            continue;
+        }
+        reachable[block] = true;
+        for succ in &succs[block] {
+            if *succ < succs.len() {
+                queue.push_back(*succ);
+            }
+        }
+    }
+    reachable
+}
+
+fn compute_dominators(
+    blocks_len: usize,
+    entry: usize,
+    preds: &[Vec<usize>],
+) -> Vec<Vec<bool>> {
+    let mut doms = vec![vec![true; blocks_len]; blocks_len];
+    for b in 0..blocks_len {
+        if b == entry {
+            let mut entry_dom = vec![false; blocks_len];
+            entry_dom[entry] = true;
+            doms[b] = entry_dom;
+        }
+    }
+
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for b in 0..blocks_len {
+            if b == entry {
+                continue;
+            }
+            if preds[b].is_empty() {
+                continue;
+            }
+            let mut new_dom = vec![true; blocks_len];
+            for p in &preds[b] {
+                for i in 0..blocks_len {
+                    new_dom[i] &= doms[*p][i];
+                }
+            }
+            new_dom[b] = true;
+            if new_dom != doms[b] {
+                doms[b] = new_dom;
+                changed = true;
+            }
+        }
+    }
+    doms
+}
+
+fn compute_idom(doms: &[Vec<bool>], entry: usize, reachable: &[bool]) -> Vec<Option<usize>> {
+    let blocks_len = doms.len();
+    let mut idom = vec![None; blocks_len];
+    idom[entry] = Some(entry);
+    for b in 0..blocks_len {
+        if b == entry {
+            continue;
+        }
+        if !reachable[b] {
+            idom[b] = None;
+            continue;
+        }
+        let mut candidates: Vec<usize> = (0..blocks_len).filter(|d| doms[b][*d]).collect();
+        candidates.retain(|d| *d != b);
+        let mut best = None;
+        for d in candidates.iter().copied() {
+            let mut is_idom = true;
+            for other in candidates.iter().copied() {
+                if other != d && doms[other][d] {
+                    is_idom = false;
+                    break;
+                }
+            }
+            if is_idom {
+                best = Some(d);
+                break;
+            }
+        }
+        idom[b] = best;
+    }
+    idom
+}
+
+fn compute_dom_tree(idom: &[Option<usize>]) -> Vec<Vec<usize>> {
+    let mut tree = vec![Vec::new(); idom.len()];
+    for (block, parent) in idom.iter().enumerate() {
+        if let Some(p) = parent {
+            if *p != block {
+                tree[*p].push(block);
+            }
+        }
+    }
+    tree
+}
+
+fn compute_dom_frontiers(
+    entry: usize,
+    succs: &[Vec<usize>],
+    idom: &[Option<usize>],
+    dom_tree: &[Vec<usize>],
+) -> Vec<Vec<usize>> {
+    let mut df = vec![Vec::new(); succs.len()];
+    for b in 0..succs.len() {
+        for s in &succs[b] {
+            if idom[*s].unwrap_or(*s) != b {
+                df[b].push(*s);
+            }
+        }
+    }
+    let mut stack = vec![entry];
+    while let Some(b) = stack.pop() {
+        for child in &dom_tree[b] {
+            stack.push(*child);
+            for w in df[*child].clone() {
+                if idom[w].unwrap_or(w) != b && !df[b].contains(&w) {
+                    df[b].push(w);
+                }
+            }
+        }
+    }
+    for b in 0..df.len() {
+        df[b].sort_unstable();
+        df[b].dedup();
+    }
+    df
+}
+
+fn stmt_local_defs(stmt: &Stmt) -> Vec<LocalId> {
+    match stmt {
+        Stmt::Phi { place, .. } | Stmt::Assign { place, .. } => match place {
+            Place::Local(local) => vec![*local],
+            Place::Temp(_) => Vec::new(),
+        },
+        Stmt::Await { dst, .. } | Stmt::IterInit { dst, .. } => match dst {
+            Place::Local(local) => vec![*local],
+            Place::Temp(_) => Vec::new(),
+        },
+        Stmt::IterNext {
+            dst_value,
+            dst_done,
+            ..
+        } => {
+            let mut out = Vec::new();
+            if let Place::Local(local) = dst_value {
+                out.push(*local);
+            }
+            if let Place::Local(local) = dst_done {
+                out.push(*local);
+            }
+            out
+        }
+        Stmt::SetField { .. }
+        | Stmt::RcInc { .. }
+        | Stmt::RcDec { .. }
+        | Stmt::Fire { .. } => Vec::new(),
+    }
+}
+
+fn rename_block(
+    blocks: &mut Vec<BasicBlock>,
+    locals: &mut Vec<Local>,
+    block_idx: usize,
+    succs: &[Vec<usize>],
+    dom_tree: &[Vec<usize>],
+    reachable: &[bool],
+    stacks: &mut Vec<Vec<LocalId>>,
+    version_counts: &mut Vec<usize>,
+) {
+    if !reachable[block_idx] {
+        return;
+    }
+    let mut pushed: Vec<LocalId> = Vec::new();
+    {
+        let block = &mut blocks[block_idx];
+        for stmt in block.stmts.iter_mut() {
+            if let Stmt::Phi {
+                place,
+                original,
+                ..
+            } = stmt
+            {
+                let new_local = new_local_version(locals, *original, version_counts);
+                *place = Place::Local(new_local);
+                stacks[original.0].push(new_local);
+                pushed.push(*original);
+            } else {
+                break;
+            }
+        }
+
+        for stmt in block.stmts.iter_mut() {
+            match stmt {
+                Stmt::Phi { .. } => {}
+                Stmt::Assign { place, value, .. } => {
+                    rename_rvalue(value, stacks);
+                    if let Place::Local(local_id) = *place {
+                        let new_local = new_local_version(locals, local_id, version_counts);
+                        *place = Place::Local(new_local);
+                        stacks[local_id.0].push(new_local);
+                        pushed.push(local_id);
+                    }
+                }
+                Stmt::SetField { base, value, .. } => {
+                    rename_value(base, stacks);
+                    rename_value(value, stacks);
+                }
+                Stmt::RcInc { value, .. } | Stmt::RcDec { value, .. } => {
+                    rename_value(value, stacks);
+                }
+                Stmt::Await { dst, pending, .. } => {
+                    rename_value(pending, stacks);
+                    if let Place::Local(local_id) = *dst {
+                        let new_local = new_local_version(locals, local_id, version_counts);
+                        *dst = Place::Local(new_local);
+                        stacks[local_id.0].push(new_local);
+                        pushed.push(local_id);
+                    }
+                }
+                Stmt::Fire { pending, .. } => rename_value(pending, stacks),
+                Stmt::IterInit { dst, iterable, .. } => {
+                    rename_value(iterable, stacks);
+                    if let Place::Local(local_id) = *dst {
+                        let new_local = new_local_version(locals, local_id, version_counts);
+                        *dst = Place::Local(new_local);
+                        stacks[local_id.0].push(new_local);
+                        pushed.push(local_id);
+                    }
+                }
+                Stmt::IterNext {
+                    iter,
+                    dst_value,
+                    dst_done,
+                    ..
+                } => {
+                    rename_value(iter, stacks);
+                    if let Place::Local(local_id) = *dst_value {
+                        let new_local = new_local_version(locals, local_id, version_counts);
+                        *dst_value = Place::Local(new_local);
+                        stacks[local_id.0].push(new_local);
+                        pushed.push(local_id);
+                    }
+                    if let Place::Local(local_id) = *dst_done {
+                        let new_local = new_local_version(locals, local_id, version_counts);
+                        *dst_done = Place::Local(new_local);
+                        stacks[local_id.0].push(new_local);
+                        pushed.push(local_id);
+                    }
+                }
+            }
+        }
+
+        rename_terminator(&mut block.terminator, stacks);
+    }
+
+    for succ in &succs[block_idx] {
+        if !reachable[*succ] {
+            continue;
+        }
+        let block = &mut blocks[*succ];
+        for stmt in block.stmts.iter_mut() {
+            if let Stmt::Phi {
+                sources,
+                original,
+                ..
+            } = stmt
+            {
+                if let Some(current) = stacks[original.0].last().copied() {
+                    sources.push((crate::mir::ir::BlockId(block_idx), Value::Local(current)));
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
+    for child in &dom_tree[block_idx] {
+        rename_block(
+            blocks,
+            locals,
+            *child,
+            succs,
+            dom_tree,
+            reachable,
+            stacks,
+            version_counts,
+        );
+    }
+
+    for original in pushed.into_iter().rev() {
+        stacks[original.0].pop();
+    }
+}
+
+fn new_local_version(
+    locals: &mut Vec<Local>,
+    original: LocalId,
+    version_counts: &mut Vec<usize>,
+) -> LocalId {
+    let orig = locals
+        .get(original.0)
+        .cloned()
+        .unwrap_or(Local {
+            name: SmolStr::new("tmp"),
+            mutable: false,
+            ty: MirType::Unknown,
+        });
+    let version = version_counts[original.0];
+    version_counts[original.0] += 1;
+    let name = SmolStr::new(format!("{}#ssa{}", orig.name, version));
+    let id = LocalId(locals.len());
+    locals.push(Local {
+        name,
+        mutable: false,
+        ty: orig.ty,
+    });
+    id
+}
+
+fn rename_value(value: &mut Value, stacks: &[Vec<LocalId>]) {
+    if let Value::Local(local) = value {
+        if let Some(current) = stacks.get(local.0).and_then(|stack| stack.last()) {
+            *value = Value::Local(*current);
+        }
+    }
+}
+
+fn rename_rvalue(value: &mut Rvalue, stacks: &[Vec<LocalId>]) {
+    match value {
+        Rvalue::Use(value)
+        | Rvalue::ResultOk { value }
+        | Rvalue::ResultErr { value }
+        | Rvalue::ResultIsOk { value }
+        | Rvalue::ResultUnwrap { value }
+        | Rvalue::ResultErrUnwrap { value }
+        | Rvalue::Crash { value } => rename_value(value, stacks),
+        Rvalue::Unary { operand, .. } => rename_value(operand, stacks),
+        Rvalue::Binary { lhs, rhs, .. } => {
+            rename_value(lhs, stacks);
+            rename_value(rhs, stacks);
+        }
+        Rvalue::GetField { base, .. } => rename_value(base, stacks),
+        Rvalue::Call { target, args, .. } => {
+            rename_call_target(target, stacks);
+            for arg in args {
+                rename_value(arg, stacks);
+            }
+        }
+        Rvalue::ClassInit { .. } => {}
+        Rvalue::Spawn { target, instance, .. } => {
+            rename_value(target, stacks);
+            rename_value(instance, stacks);
+        }
+        Rvalue::PoolNew { handles, .. } => rename_value(handles, stacks),
+        Rvalue::BuildList { items, .. } => {
+            for item in items {
+                rename_value(item, stacks);
+            }
+        }
+        Rvalue::BuildMap { items, .. } => {
+            for (key, value) in items {
+                rename_value(key, stacks);
+                rename_value(value, stacks);
+            }
+        }
+        Rvalue::StringInterp { parts, .. } => {
+            for part in parts {
+                if let crate::mir::ir::StringPartValue::Value(value) = part {
+                    rename_value(value, stacks);
+                }
+            }
+        }
+    }
+}
+
+fn rename_call_target(target: &mut CallTarget, stacks: &[Vec<LocalId>]) {
+    match target {
+        CallTarget::Function(_) => {}
+        CallTarget::Method { receiver, .. } => rename_value(receiver, stacks),
+        CallTarget::Indirect(value) => rename_value(value, stacks),
+    }
+}
+
+fn rename_terminator(term: &mut Terminator, stacks: &[Vec<LocalId>]) {
+    match term {
+        Terminator::Return { value, .. } => {
+            if let Some(value) = value {
+                rename_value(value, stacks);
+            }
+        }
+        Terminator::Jump { .. } => {}
+        Terminator::Branch { cond, .. } => rename_value(cond, stacks),
+        Terminator::Switch { scrutinee, .. } => rename_value(scrutinee, stacks),
+        Terminator::Unreachable { .. } => {}
+    }
+}
+
+fn result_peephole(func: &mut MirFunction) {
+    for block in &mut func.blocks {
+        let mut result_sources: HashMap<usize, (bool, Value)> = HashMap::new();
+        for stmt in &mut block.stmts {
+            if let Stmt::Assign { place, value, .. } = stmt {
+                if let Place::Temp(temp) = place {
+                    match value {
+                        Rvalue::ResultOk { value } => {
+                            result_sources.insert(temp.0, (true, value.clone()));
+                        }
+                        Rvalue::ResultErr { value } => {
+                            result_sources.insert(temp.0, (false, value.clone()));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        for stmt in &mut block.stmts {
+            if let Stmt::Assign { value, .. } = stmt {
+                match value {
+                    Rvalue::ResultUnwrap { value: inner } => {
+                        if let Value::Temp(temp) = inner {
+                            if let Some((is_ok, src)) = result_sources.get(&temp.0) {
+                                if *is_ok {
+                                    *value = Rvalue::Use(src.clone());
+                                }
+                            }
+                        }
+                    }
+                    Rvalue::ResultErrUnwrap { value: inner } => {
+                        if let Value::Temp(temp) = inner {
+                            if let Some((is_ok, src)) = result_sources.get(&temp.0) {
+                                if !*is_ok {
+                                    *value = Rvalue::Use(src.clone());
+                                }
+                            }
+                        }
+                    }
+                    Rvalue::ResultIsOk { value: inner } => {
+                        if let Value::Temp(temp) = inner {
+                            if let Some((is_ok, _)) = result_sources.get(&temp.0) {
+                                *value =
+                                    Rvalue::Use(Value::Const(Literal::Boolean(*is_ok)));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+fn scalar_replace_literals(func: &mut MirFunction) {
+    let mut list_literals: HashMap<usize, Vec<Value>> = HashMap::new();
+    let mut map_literals: HashMap<usize, Vec<(Literal, Value)>> = HashMap::new();
+
+    for block in &func.blocks {
+        for stmt in &block.stmts {
+            if let Stmt::Assign { place, value, .. } = stmt {
+                if let Place::Temp(temp) = place {
+                    match value {
+                        Rvalue::BuildList { items, .. } => {
+                            list_literals.insert(temp.0, items.clone());
+                        }
+                        Rvalue::BuildMap { items, .. } => {
+                            let mut literal_items = Vec::new();
+                            let mut ok = true;
+                            for (key, value) in items {
+                                if let Value::Const(lit) = key {
+                                    literal_items.push((lit.clone(), value.clone()));
+                                } else {
+                                    ok = false;
+                                    break;
+                                }
+                            }
+                            if ok {
+                                map_literals.insert(temp.0, literal_items);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    let mut replaceable: HashSet<usize> = list_literals
+        .keys()
+        .chain(map_literals.keys())
+        .copied()
+        .collect();
+    if replaceable.is_empty() {
+        return;
+    }
+
+    let mut used_in_get: HashSet<usize> = HashSet::new();
+    for block in &func.blocks {
+        for stmt in &block.stmts {
+            match stmt {
+                Stmt::Assign { value, .. } => match value {
+                    Rvalue::Call { target, args, .. } => {
+                        let temp_arg = args.get(0);
+                        let key_arg = args.get(1);
+                        match (target, temp_arg, key_arg) {
+                            (
+                                CallTarget::Function(name),
+                                Some(Value::Temp(temp)),
+                                Some(Value::Const(Literal::Integer(_))),
+                            ) if name.as_str() == "__wr_list_get" => {
+                                used_in_get.insert(temp.0);
+                            }
+                            (
+                                CallTarget::Function(name),
+                                Some(Value::Temp(temp)),
+                                Some(Value::Const(key_lit)),
+                            ) if name.as_str() == "__wr_map_get" => {
+                                if !map_literals.contains_key(&temp.0)
+                                    || !matches!(
+                                        key_lit,
+                                        Literal::Integer(_)
+                                            | Literal::Boolean(_)
+                                            | Literal::String(_)
+                                            | Literal::Nil
+                                    )
+                                {
+                                    replaceable.remove(&temp.0);
+                                } else {
+                                    used_in_get.insert(temp.0);
+                                }
+                            }
+                            (CallTarget::Function(name), Some(Value::Temp(temp)), _)
+                                if name.as_str() == "__wr_list_get" =>
+                            {
+                                if !list_literals.contains_key(&temp.0) {
+                                    replaceable.remove(&temp.0);
+                                }
+                            }
+                            (CallTarget::Function(name), Some(Value::Temp(temp)), _)
+                                if name.as_str() == "__wr_map_get" =>
+                            {
+                                if !map_literals.contains_key(&temp.0) {
+                                    replaceable.remove(&temp.0);
+                                }
+                            }
+                            (_, Some(Value::Temp(temp)), _) => {
+                                replaceable.remove(&temp.0);
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ => {
+                        collect_disallowed_temp_uses(value, &mut replaceable);
+                    }
+                },
+                Stmt::SetField { base, value, .. } => {
+                    collect_disallowed_value_use(base, &mut replaceable);
+                    collect_disallowed_value_use(value, &mut replaceable);
+                }
+                Stmt::RcInc { value, .. } | Stmt::RcDec { value, .. } => {
+                    if let Value::Temp(temp) = value {
+                        if !list_literals.contains_key(&temp.0) && !map_literals.contains_key(&temp.0)
+                        {
+                            replaceable.remove(&temp.0);
+                        }
+                    }
+                }
+                Stmt::Await { pending, .. }
+                | Stmt::Fire { pending, .. }
+                | Stmt::IterInit { iterable: pending, .. } => {
+                    collect_disallowed_value_use(pending, &mut replaceable);
+                }
+                Stmt::IterNext { iter, .. } => {
+                    collect_disallowed_value_use(iter, &mut replaceable);
+                }
+                Stmt::Phi { sources, .. } => {
+                    for (_, value) in sources {
+                        collect_disallowed_value_use(value, &mut replaceable);
+                    }
+                }
+            }
+        }
+        match &block.terminator {
+            Terminator::Return { value, .. } => {
+                if let Some(value) = value {
+                    collect_disallowed_value_use(value, &mut replaceable);
+                }
+            }
+            Terminator::Branch { cond, .. } => {
+                collect_disallowed_value_use(cond, &mut replaceable);
+            }
+            Terminator::Switch { scrutinee, .. } => {
+                collect_disallowed_value_use(scrutinee, &mut replaceable);
+            }
+            Terminator::Jump { .. } | Terminator::Unreachable { .. } => {}
+        }
+    }
+
+    replaceable.retain(|temp| used_in_get.contains(temp));
+
+    if replaceable.is_empty() {
+        return;
+    }
+
+    for block in &mut func.blocks {
+        let mut new_stmts = Vec::with_capacity(block.stmts.len());
+        for mut stmt in block.stmts.drain(..) {
+            let mut skip = false;
+            match &mut stmt {
+                Stmt::Assign { place, value, .. } => {
+                    if let Place::Temp(temp) = place {
+                        if replaceable.contains(&temp.0) {
+                            if matches!(value, Rvalue::BuildList { .. } | Rvalue::BuildMap { .. }) {
+                                skip = true;
+                            }
+                        }
+                    }
+                    if let Rvalue::Call { target, args, .. } = value {
+                        if let CallTarget::Function(name) = target {
+                            let arg0 = args.get(0).cloned();
+                            let arg1 = args.get(1).cloned();
+                            let mut replacement = None;
+                            if name.as_str() == "__wr_list_get" {
+                                if let (
+                                    Some(Value::Temp(temp)),
+                                    Some(Value::Const(Literal::Integer(idx))),
+                                ) = (arg0, arg1)
+                                {
+                                    if replaceable.contains(&temp.0) {
+                                        if let Some(items) = list_literals.get(&temp.0) {
+                                            let idx = idx as isize;
+                                            let value = if idx >= 0
+                                                && (idx as usize) < items.len()
+                                            {
+                                                items[idx as usize].clone()
+                                            } else {
+                                                Value::Const(Literal::Nil)
+                                            };
+                                            replacement = Some(value);
+                                        }
+                                    }
+                                }
+                            } else if name.as_str() == "__wr_map_get" {
+                                if let (Some(Value::Temp(temp)), Some(Value::Const(key_lit))) =
+                                    (arg0, arg1)
+                                {
+                                    if replaceable.contains(&temp.0) {
+                                        if let Some(items) = map_literals.get(&temp.0) {
+                                            let mut found = None;
+                                            for (key, val) in items {
+                                                if key == &key_lit {
+                                                    found = Some(val.clone());
+                                                    break;
+                                                }
+                                            }
+                                            replacement =
+                                                Some(found.unwrap_or(Value::Const(Literal::Nil)));
+                                        }
+                                    }
+                                }
+                            }
+                            if let Some(replacement_value) = replacement {
+                                *value = Rvalue::Use(replacement_value);
+                            }
+                        }
+                    }
+                }
+                Stmt::RcInc { value, .. } | Stmt::RcDec { value, .. } => {
+                    if let Value::Temp(temp) = value {
+                        if replaceable.contains(&temp.0) {
+                            skip = true;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            if !skip {
+                new_stmts.push(stmt);
+            }
+        }
+        block.stmts = new_stmts;
+    }
+}
+
+fn collect_disallowed_temp_uses(value: &Rvalue, replaceable: &mut HashSet<usize>) {
+    let mut temps = Vec::new();
+    collect_temp_ids_rvalue(value, &mut temps);
+    for temp in temps {
+        replaceable.remove(&temp);
+    }
+}
+
+fn collect_disallowed_value_use(value: &Value, replaceable: &mut HashSet<usize>) {
+    if let Value::Temp(temp) = value {
+        replaceable.remove(&temp.0);
+    }
+}
+
+fn strength_reduce_mods(func: &mut MirFunction) {
+    for block in &mut func.blocks {
+        let mut seen: Vec<(Value, Value, Value)> = Vec::new();
+        for stmt in &mut block.stmts {
+            if let Stmt::Assign { place, value, .. } = stmt {
+                if let Rvalue::Binary {
+                    op: BinaryOp::Mod,
+                    lhs,
+                    rhs,
+                } = value
+                {
+                    if let Some((_, _, prev)) =
+                        seen.iter().find(|(l, r, _)| l == lhs && r == rhs)
+                    {
+                        *value = Rvalue::Use(prev.clone());
+                        continue;
+                    }
+                    if let Place::Temp(temp) = place {
+                        seen.push((lhs.clone(), rhs.clone(), Value::Temp(*temp)));
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn collect_temp_ids_value(value: &Value, escapes: &mut Vec<bool>) {
+    if let Value::Temp(id) = value {
+        if let Some(slot) = escapes.get_mut(id.0) {
+            *slot = true;
+        }
+    }
+}
+
+fn collect_temp_ids_call_target(target: &CallTarget, escapes: &mut Vec<bool>) {
+    match target {
+        CallTarget::Function(_) => {}
+        CallTarget::Method { receiver, .. } => collect_temp_ids_value(receiver, escapes),
+        CallTarget::Indirect(value) => collect_temp_ids_value(value, escapes),
+    }
+}
+
+fn collect_temp_ids_rvalue(value: &Rvalue, out: &mut Vec<usize>) {
+    match value {
+        Rvalue::Use(value)
+        | Rvalue::ResultOk { value }
+        | Rvalue::ResultErr { value }
+        | Rvalue::ResultIsOk { value }
+        | Rvalue::ResultUnwrap { value }
+        | Rvalue::ResultErrUnwrap { value }
+        | Rvalue::Crash { value } => collect_temp_ids_in_value(value, out),
+        Rvalue::Unary { operand, .. } => collect_temp_ids_in_value(operand, out),
+        Rvalue::Binary { lhs, rhs, .. } => {
+            collect_temp_ids_in_value(lhs, out);
+            collect_temp_ids_in_value(rhs, out);
+        }
+        Rvalue::GetField { base, .. } => collect_temp_ids_in_value(base, out),
+        Rvalue::Call { target, args, .. } => {
+            collect_temp_ids_in_call_target(target, out);
+            for arg in args {
+                collect_temp_ids_in_value(arg, out);
+            }
+        }
+        Rvalue::ClassInit { .. } => {}
+        Rvalue::Spawn { target, instance, .. } => {
+            collect_temp_ids_in_value(target, out);
+            collect_temp_ids_in_value(instance, out);
+        }
+        Rvalue::PoolNew { handles, .. } => collect_temp_ids_in_value(handles, out),
+        Rvalue::BuildList { items, .. } => {
+            for item in items {
+                collect_temp_ids_in_value(item, out);
+            }
+        }
+        Rvalue::BuildMap { items, .. } => {
+            for (key, value) in items {
+                collect_temp_ids_in_value(key, out);
+                collect_temp_ids_in_value(value, out);
+            }
+        }
+        Rvalue::StringInterp { parts, .. } => {
+            for part in parts {
+                if let crate::mir::ir::StringPartValue::Value(value) = part {
+                    collect_temp_ids_in_value(value, out);
+                }
+            }
+        }
+    }
+}
+
+fn collect_temp_ids_in_value(value: &Value, out: &mut Vec<usize>) {
+    if let Value::Temp(id) = value {
+        out.push(id.0);
+    }
+}
+
+fn collect_temp_ids_in_call_target(target: &CallTarget, out: &mut Vec<usize>) {
+    match target {
+        CallTarget::Function(_) => {}
+        CallTarget::Method { receiver, .. } => collect_temp_ids_in_value(receiver, out),
+        CallTarget::Indirect(value) => collect_temp_ids_in_value(value, out),
+    }
 }
 
 pub fn constant_fold(func: &mut MirFunction) {
@@ -77,6 +1073,7 @@ pub fn dead_code_elim(func: &mut MirFunction) {
         let mut new_stmts = Vec::with_capacity(block.stmts.len());
         for stmt in block.stmts.drain(..) {
             match &stmt {
+                Stmt::Phi { .. } => {}
                 Stmt::Assign { place, value, .. } => {
                     if is_pure_rvalue(value) {
                         if !place_is_used(place, &used) {
@@ -175,6 +1172,11 @@ fn collect_used_values(func: &MirFunction) -> HashSet<usize> {
     for block in &func.blocks {
         for stmt in &block.stmts {
             match stmt {
+                Stmt::Phi { sources, .. } => {
+                    for (_, value) in sources {
+                        collect_value(value, &mut used);
+                    }
+                }
                 Stmt::Assign { value, .. } => collect_rvalue(value, &mut used),
                 Stmt::SetField { base, value, .. } => {
                     collect_value(base, &mut used);
@@ -241,18 +1243,18 @@ fn collect_rvalue(value: &Rvalue, used: &mut HashSet<usize>) {
         Rvalue::PoolNew { handles, .. } => {
             collect_value(handles, used);
         }
-        Rvalue::BuildList { items } => {
+        Rvalue::BuildList { items, .. } => {
             for item in items {
                 collect_value(item, used);
             }
         }
-        Rvalue::BuildMap { items } => {
+        Rvalue::BuildMap { items, .. } => {
             for (key, value) in items {
                 collect_value(key, used);
                 collect_value(value, used);
             }
         }
-        Rvalue::StringInterp { parts } => {
+        Rvalue::StringInterp { parts, .. } => {
             for part in parts {
                 if let crate::mir::ir::StringPartValue::Value(value) = part {
                     collect_value(value, used);
@@ -533,6 +1535,17 @@ fn collect_block_uses_defs(
         let mut block_uses = vec![false; total];
         let mut block_defs = vec![false; total];
         for stmt in &block.stmts {
+            if let Stmt::Phi { sources, place, .. } = stmt {
+                for (_, value) in sources {
+                    if let Some(idx) = value_idx(value, locals_len) {
+                        if !block_defs[idx] {
+                            block_uses[idx] = true;
+                        }
+                    }
+                }
+                block_defs[place_idx(place, locals_len)] = true;
+                continue;
+            }
             for use_idx in stmt_uses(stmt, locals_len) {
                 if !block_defs[use_idx] {
                     block_uses[use_idx] = true;
@@ -640,6 +1653,7 @@ fn definite_init(
 
 fn stmt_defs(stmt: &Stmt, locals_len: usize) -> Vec<usize> {
     match stmt {
+        Stmt::Phi { place, .. } => vec![place_idx(place, locals_len)],
         Stmt::Assign { place, .. } => vec![place_idx(place, locals_len)],
         Stmt::Await { dst, .. } => vec![place_idx(dst, locals_len)],
         Stmt::IterInit { dst, .. } => vec![place_idx(dst, locals_len)],
@@ -662,6 +1676,13 @@ fn stmt_defs(stmt: &Stmt, locals_len: usize) -> Vec<usize> {
 fn stmt_uses(stmt: &Stmt, locals_len: usize) -> Vec<usize> {
     let mut out = Vec::new();
     match stmt {
+        Stmt::Phi { sources, .. } => {
+            for (_, value) in sources {
+                if let Some(idx) = value_idx(value, locals_len) {
+                    out.push(idx);
+                }
+            }
+        }
         Stmt::Assign { value, .. } => collect_rvalue_uses(value, locals_len, &mut out),
         Stmt::SetField { base, value, .. } => {
             if let Some(idx) = value_idx(base, locals_len) {
@@ -770,14 +1791,14 @@ fn collect_rvalue_uses(value: &Rvalue, locals_len: usize, out: &mut Vec<usize>) 
                 out.push(idx);
             }
         }
-        Rvalue::BuildList { items } => {
+        Rvalue::BuildList { items, .. } => {
             for item in items {
                 if let Some(idx) = value_idx(item, locals_len) {
                     out.push(idx);
                 }
             }
         }
-        Rvalue::BuildMap { items } => {
+        Rvalue::BuildMap { items, .. } => {
             for (key, value) in items {
                 if let Some(idx) = value_idx(key, locals_len) {
                     out.push(idx);
@@ -787,7 +1808,7 @@ fn collect_rvalue_uses(value: &Rvalue, locals_len: usize, out: &mut Vec<usize>) 
                 }
             }
         }
-        Rvalue::StringInterp { parts } => {
+        Rvalue::StringInterp { parts, .. } => {
             for part in parts {
                 if let crate::mir::ir::StringPartValue::Value(value) = part {
                     if let Some(idx) = value_idx(value, locals_len) {
@@ -858,7 +1879,8 @@ fn idx_is_ref(types: &[MirType], idx: usize) -> bool {
 
 fn stmt_span(stmt: &Stmt) -> TextRange {
     match stmt {
-        Stmt::Assign { span, .. }
+        Stmt::Phi { span, .. }
+        | Stmt::Assign { span, .. }
         | Stmt::SetField { span, .. }
         | Stmt::RcInc { span, .. }
         | Stmt::RcDec { span, .. }
@@ -884,7 +1906,7 @@ mod tests {
     use super::*;
     use crate::hir::lower as hir_lower;
     use crate::mir::ir::BlockId;
-    use crate::mir::ir::{BasicBlock, Local, LocalId};
+    use crate::mir::ir::{BasicBlock, Local, LocalId, Temp, TempId};
     use crate::mir::lower::lower_module;
     use crate::parser::ast;
     use crate::parser::ast::AstNode;
@@ -892,7 +1914,9 @@ mod tests {
 
     #[test]
     fn test_constant_folding_binary() {
-        let input = "to f() -> Nothing:\n    x = 1 + 2\n";
+        let input = "to f() -> Nothing:
+    x = 1 + 2
+";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = hir_lower::lower(root);
@@ -916,7 +1940,9 @@ mod tests {
 
     #[test]
     fn test_dead_code_elim_unused_temp() {
-        let input = "to f() -> Nothing:\n    1 + 2\n";
+        let input = "to f() -> Nothing:
+    1 + 2
+";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = hir_lower::lower(root);
@@ -933,7 +1959,65 @@ mod tests {
                 }
             }
         }
-        assert!(!has_binary);
+        assert!(!has_binary, "expected dead code elim to remove binary");
+    }
+
+    #[test]
+    fn test_scalar_replace_map_literal_get() {
+        let block = BasicBlock {
+            stmts: vec![
+                Stmt::Assign {
+                    place: Place::Temp(TempId(0)),
+                    value: Rvalue::BuildMap {
+                        items: vec![
+                            (
+                                Value::Const(Literal::String("a".into())),
+                                Value::Const(Literal::Integer(1)),
+                            ),
+                            (
+                                Value::Const(Literal::String("b".into())),
+                                Value::Const(Literal::Integer(2)),
+                            ),
+                        ],
+                        alloc: AllocKind::LocalTemp,
+                    },
+                    span: TextRange::new(0.into(), 0.into()),
+                },
+                Stmt::Assign {
+                    place: Place::Temp(TempId(1)),
+                    value: Rvalue::Call {
+                        kind: CallKind::Sync,
+                        target: CallTarget::Function("__wr_map_get".into()),
+                        args: vec![
+                            Value::Temp(TempId(0)),
+                            Value::Const(Literal::String("b".into())),
+                        ],
+                    },
+                    span: TextRange::new(0.into(), 0.into()),
+                },
+            ],
+            terminator: Terminator::Return {
+                value: Some(Value::Temp(TempId(1))),
+                span: TextRange::new(0.into(), 0.into()),
+            },
+        };
+        let mut func = MirFunction {
+            name: "map_get".into(),
+            params: Vec::new(),
+            locals: Vec::new(),
+            temps: vec![Temp { ty: MirType::Unknown }, Temp { ty: MirType::Unknown }],
+            blocks: vec![block],
+            entry: BlockId(0),
+            suspendable: false,
+        };
+
+        run_function_passes(&mut func);
+
+        let has_build_map = func.blocks[0].stmts.iter().any(|stmt| match stmt {
+            Stmt::Assign { value, .. } => matches!(value, Rvalue::BuildMap { .. }),
+            _ => false,
+        });
+        assert!(!has_build_map, "expected map literal to be replaced");
     }
 
     #[test]

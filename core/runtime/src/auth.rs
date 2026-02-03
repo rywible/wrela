@@ -119,8 +119,8 @@ fn json_from_map(val: Value) -> Option<JsonValue> {
     let map_ptr = map::as_map_ref(val)?;
     let mut out = JsonMap::new();
     unsafe {
-        let map_ref = &(*map_ptr).entries;
-        for (key, value) in map_ref.iter() {
+        let mut iter = map::map_iter(map_ptr);
+        while let Some((key, value)) = iter.next() {
             let Some(key_str) = value_to_string(key.0) else {
                 continue;
             };
@@ -132,7 +132,7 @@ fn json_from_map(val: Value) -> Option<JsonValue> {
                 out.insert(key_str, JsonValue::Bool(value.as_bool()));
                 continue;
             }
-            if let Some(i) = int_value(*value) {
+            if let Some(i) = int_value(value) {
                 out.insert(key_str, JsonValue::Number(i.into()));
                 continue;
             }
@@ -142,7 +142,7 @@ fn json_from_map(val: Value) -> Option<JsonValue> {
                 }
                 continue;
             }
-            if let Some(s) = value_to_string(*value) {
+            if let Some(s) = value_to_string(value) {
                 out.insert(key_str, JsonValue::String(s));
                 continue;
             }

@@ -80,6 +80,16 @@ pub unsafe fn drop_class(ptr: *mut ObjHeader) {
     }
 }
 
+pub fn drop_class_in_arena(ptr: *mut ObjHeader) {
+    let obj = ptr as *mut ClassObj;
+    unsafe {
+        for (_key, val) in (*obj).fields.iter() {
+            wr_rc_dec(*val);
+        }
+        std::ptr::drop_in_place(&mut (*obj).fields);
+    }
+}
+
 fn as_class(val: Value) -> Option<*mut ClassObj> {
     if !val.is_ptr() {
         return None;

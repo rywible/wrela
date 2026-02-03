@@ -41,13 +41,39 @@ fn validate_function(func: &MirFunction) -> Vec<MirValidationError> {
 
     let reachable = compute_reachable(func);
     let preds = compute_predecessors(func, &reachable);
-    let (in_states, _) = compute_definite_defs(func, &reachable, &preds);
+    let (in_states, out_states) = compute_definite_defs(func, &reachable, &preds);
     for (idx, block) in func.blocks.iter().enumerate() {
         if !reachable[idx] {
             continue;
         }
+        let mut seen_non_phi = false;
+        for stmt in &block.stmts {
+            match stmt {
+                Stmt::Phi { .. } => {
+                    if seen_non_phi {
+                        errors.push(MirValidationError {
+                            message: format!("phi after non-phi in block {idx}"),
+                        });
+                    }
+                }
+                _ => seen_non_phi = true,
+            }
+        }
         let mut defined = in_states[idx].clone();
         for stmt in &block.stmts {
+            if let Stmt::Phi { sources, .. } = stmt
+            {
+                validate_phi_sources(
+                    func,
+                    idx,
+                    &preds[idx],
+                    sources,
+                    &out_states,
+                    &mut errors,
+                );
+                apply_stmt_defs(stmt, &mut defined);
+                continue;
+            }
             check_stmt_uses(func, idx, stmt, &defined, &mut errors);
             apply_stmt_defs(stmt, &mut defined);
         }
@@ -194,6 +220,7 @@ fn apply_block_defs(block: &crate::mir::ir::BasicBlock, state: &mut DefState) {
 
 fn apply_stmt_defs(stmt: &Stmt, state: &mut DefState) {
     match stmt {
+        Stmt::Phi { place, .. } => state.set_place(place),
         Stmt::Assign { place, .. } => state.set_place(place),
         Stmt::Await { dst, .. } => state.set_place(dst),
         Stmt::IterInit { dst, .. } => state.set_place(dst),
@@ -217,7 +244,24 @@ fn check_stmt_uses(
     errors: &mut Vec<MirValidationError>,
 ) {
     match stmt {
-        Stmt::Assign { value, .. } => check_rvalue_uses(func, block_idx, value, defined, errors),
+        Stmt::Phi { .. } => {}
+        Stmt::Assign { place, value, .. } => {
+            if let Rvalue::BuildList { alloc, .. }
+            | Rvalue::BuildMap { alloc, .. }
+            | Rvalue::StringInterp { alloc, .. } = value
+            {
+                if matches!(alloc, crate::mir::ir::AllocKind::LocalTemp)
+                    && !matches!(place, Place::Temp(_))
+                {
+                    errors.push(MirValidationError {
+                        message: format!(
+                            "local-temp alloc assigned to non-temp place in block {block_idx}"
+                        ),
+                    });
+                }
+            }
+            check_rvalue_uses(func, block_idx, value, defined, errors);
+        }
         Stmt::SetField { base, value, .. } => {
             check_value_use(func, block_idx, base, defined, errors);
             check_value_use(func, block_idx, value, defined, errors);
@@ -249,6 +293,61 @@ fn check_stmt_uses(
         }
         Stmt::IterNext { iter, .. } => {
             check_value_use(func, block_idx, iter, defined, errors);
+        }
+    }
+}
+
+fn validate_phi_sources(
+    _func: &MirFunction,
+    block_idx: usize,
+    preds: &[usize],
+    sources: &[(crate::mir::ir::BlockId, Value)],
+    out_states: &[DefState],
+    errors: &mut Vec<MirValidationError>,
+) {
+    if preds.is_empty() {
+        if !sources.is_empty() {
+            errors.push(MirValidationError {
+                message: format!("phi in entry block {block_idx} has sources"),
+            });
+        }
+        return;
+    }
+    let mut seen = std::collections::HashSet::new();
+    for (pred, value) in sources {
+        if pred.0 >= out_states.len() {
+            errors.push(MirValidationError {
+                message: format!("phi source references invalid block {} in {block_idx}", pred.0),
+            });
+            continue;
+        }
+        if !preds.contains(&pred.0) {
+            errors.push(MirValidationError {
+                message: format!(
+                    "phi source from non-predecessor block {} in {block_idx}",
+                    pred.0
+                ),
+            });
+        }
+        if !seen.insert(pred.0) {
+            errors.push(MirValidationError {
+                message: format!("phi has duplicate source from block {} in {block_idx}", pred.0),
+            });
+        }
+        if !out_states[pred.0].is_defined(value) {
+            errors.push(MirValidationError {
+                message: format!(
+                    "phi source uses undefined value from block {} in {block_idx}",
+                    pred.0
+                ),
+            });
+        }
+    }
+    for pred in preds {
+        if !seen.contains(pred) {
+            errors.push(MirValidationError {
+                message: format!("phi missing source from block {} in {block_idx}", pred),
+            });
         }
     }
 }
@@ -330,18 +429,18 @@ fn check_rvalue_uses(
         Rvalue::PoolNew { handles, .. } => {
             check_value_use(func, block_idx, handles, defined, errors);
         }
-        Rvalue::BuildList { items } => {
+        Rvalue::BuildList { items, .. } => {
             for item in items {
                 check_value_use(func, block_idx, item, defined, errors);
             }
         }
-        Rvalue::BuildMap { items } => {
+        Rvalue::BuildMap { items, .. } => {
             for (key, value) in items {
                 check_value_use(func, block_idx, key, defined, errors);
                 check_value_use(func, block_idx, value, defined, errors);
             }
         }
-        Rvalue::StringInterp { parts } => {
+        Rvalue::StringInterp { parts, .. } => {
             for part in parts {
                 if let crate::mir::ir::StringPartValue::Value(value) = part {
                     check_value_use(func, block_idx, value, defined, errors);
@@ -391,6 +490,95 @@ fn check_value_use(
                 value_label(func, value)
             ),
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mir::ir::{AllocKind, BasicBlock, BlockId, Local, LocalId, MirFunction, MirType, Place, Rvalue, Stmt, Temp, Terminator, Value};
+    use rowan::TextRange;
+    use smol_str::SmolStr;
+
+    #[test]
+    fn local_temp_alloc_must_target_temp() {
+        let stmt = Stmt::Assign {
+            place: Place::Local(LocalId(0)),
+            value: Rvalue::BuildList {
+                items: Vec::new(),
+                alloc: AllocKind::LocalTemp,
+            },
+            span: TextRange::new(0.into(), 0.into()),
+        };
+        let func = MirFunction {
+            name: SmolStr::new("f"),
+            params: Vec::new(),
+            locals: vec![Local {
+                name: SmolStr::new("x"),
+                mutable: true,
+                ty: MirType::Unknown,
+            }],
+            temps: vec![Temp { ty: MirType::Unknown }],
+            blocks: vec![BasicBlock {
+                stmts: vec![stmt],
+                terminator: Terminator::Return {
+                    value: Some(Value::Const(crate::hir::Literal::Nil)),
+                    span: TextRange::new(0.into(), 0.into()),
+                },
+            }],
+            entry: BlockId(0),
+            suspendable: false,
+        };
+        let errors = validate_function(&func);
+        assert!(
+            errors
+                .iter()
+                .any(|err| err.message.contains("local-temp alloc assigned to non-temp")),
+            "expected local-temp alloc validation error"
+        );
+    }
+
+    #[test]
+    fn phi_requires_all_sources() {
+        let entry = BasicBlock {
+            stmts: vec![],
+            terminator: Terminator::Jump {
+                target: BlockId(1),
+                span: TextRange::new(0.into(), 0.into()),
+            },
+        };
+        let join = BasicBlock {
+            stmts: vec![Stmt::Phi {
+                place: Place::Local(LocalId(0)),
+                sources: Vec::new(),
+                original: LocalId(0),
+                span: TextRange::new(0.into(), 0.into()),
+            }],
+            terminator: Terminator::Return {
+                value: Some(Value::Local(LocalId(0))),
+                span: TextRange::new(0.into(), 0.into()),
+            },
+        };
+        let func = MirFunction {
+            name: SmolStr::new("f"),
+            params: Vec::new(),
+            locals: vec![Local {
+                name: SmolStr::new("x"),
+                mutable: false,
+                ty: MirType::Unknown,
+            }],
+            temps: vec![],
+            blocks: vec![entry, join],
+            entry: BlockId(0),
+            suspendable: false,
+        };
+        let errors = validate_function(&func);
+        assert!(
+            errors
+                .iter()
+                .any(|err| err.message.contains("phi missing source")),
+            "expected phi source validation error"
+        );
     }
 }
 

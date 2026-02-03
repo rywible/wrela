@@ -2,19 +2,46 @@ use crate::list;
 use crate::object::ObjHeader;
 use crate::string;
 use crate::value::{TypeId, Value, header, int_value};
+#[cfg(feature = "metrics")]
+use crate::metrics::inc_alloc_bytes;
+use crate::arena;
 
 #[repr(C)]
 pub struct BytesObj {
     header: ObjHeader,
     bytes: Vec<u8>,
+    arena_backed: bool,
 }
 
 pub fn bytes_from_slice(bytes: &[u8]) -> Value {
     let obj = Box::new(BytesObj {
         header: header(TypeId::Bytes),
         bytes: bytes.to_vec(),
+        arena_backed: false,
     });
+    #[cfg(feature = "metrics")]
+    inc_alloc_bytes();
     Value::from_ptr(Box::into_raw(obj) as *mut ObjHeader)
+}
+
+pub fn bytes_from_slice_local(bytes: &[u8]) -> Value {
+    if let Some(bytes_ptr) = arena::alloc_bytes_in_current(bytes.len(), 1) {
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), bytes_ptr, bytes.len());
+            let vec = Vec::from_raw_parts(bytes_ptr, bytes.len(), bytes.len());
+            let obj = BytesObj {
+                header: header(TypeId::Bytes),
+                bytes: vec,
+                arena_backed: true,
+            };
+            if let Some(ptr) = arena::alloc_in_current(obj) {
+                #[cfg(feature = "metrics")]
+                inc_alloc_bytes();
+                return Value::from_ptr(ptr as *mut ObjHeader);
+            }
+        }
+    }
+    bytes_from_slice(bytes)
 }
 
 pub fn bytes_from_string(val: Value) -> Value {
@@ -72,6 +99,15 @@ pub fn drop_bytes(ptr: *mut ObjHeader) {
     let bytes = ptr as *mut BytesObj;
     unsafe {
         drop(Box::from_raw(bytes));
+    }
+}
+
+pub fn drop_bytes_in_arena(ptr: *mut ObjHeader) {
+    let bytes = ptr as *mut BytesObj;
+    unsafe {
+        if !(*bytes).arena_backed {
+            std::ptr::drop_in_place(&mut (*bytes).bytes);
+        }
     }
 }
 

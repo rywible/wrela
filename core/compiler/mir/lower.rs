@@ -765,6 +765,18 @@ impl FunctionLowerer {
                 iterable,
                 body: loop_body,
             } => {
+                if let Expr::Binary {
+                    lhs,
+                    op: BinaryOp::Range,
+                    rhs,
+                    ..
+                } = &body.exprs[*iterable]
+                {
+                    if self.lower_range_for(body, name, *lhs, *rhs, loop_body, span) {
+                        return;
+                    }
+                }
+
                 let iterable_value = self.lower_expr(body, *iterable);
                 let iter_temp = self.new_temp(MirType::Unknown);
                 self.push_stmt(MirStmt::IterInit {
@@ -945,6 +957,209 @@ impl FunctionLowerer {
                 }
             }
         }
+    }
+
+    fn lower_range_for(
+        &mut self,
+        body: &hir::Body,
+        name: &SmolStr,
+        lhs: hir::Idx<Expr>,
+        rhs: hir::Idx<Expr>,
+        loop_body: &[hir::Idx<hir::Stmt>],
+        span: TextRange,
+    ) -> bool {
+        let lhs_ty = self.expr_type(lhs);
+        let rhs_ty = self.expr_type(rhs);
+        let is_numeric = matches!(lhs_ty, MirType::Integer | MirType::Float)
+            || matches!(rhs_ty, MirType::Integer | MirType::Float);
+        if !is_numeric {
+            return false;
+        }
+
+        let start_val = self.lower_expr(body, lhs);
+        let end_val = self.lower_expr(body, rhs);
+
+        let idx_local = self.new_local(
+            SmolStr::new(format!("$range_idx{}", self.locals.len())),
+            true,
+            MirType::Unknown,
+        );
+        let step_local = self.new_local(
+            SmolStr::new(format!("$range_step{}", self.locals.len())),
+            true,
+            MirType::Unknown,
+        );
+        let step_is_pos_local = self.new_local(
+            SmolStr::new(format!("$range_pos{}", self.locals.len())),
+            true,
+            MirType::Boolean,
+        );
+
+        let loop_var = self.new_local(name.clone(), false, MirType::Unknown);
+
+        let is_pos_temp = self.new_temp(MirType::Boolean);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(is_pos_temp),
+            value: Rvalue::Binary {
+                op: BinaryOp::Le,
+                lhs: start_val.clone(),
+                rhs: end_val.clone(),
+            },
+            span,
+        });
+
+        let asc_init = self.new_block();
+        let desc_init = self.new_block();
+        let head_block = self.new_block();
+        let check_pos = self.new_block();
+        let check_neg = self.new_block();
+        let body_block = self.new_block();
+        let exit_block = self.new_block();
+
+        self.set_terminator(Terminator::Branch {
+            cond: Value::Temp(is_pos_temp),
+            then_target: asc_init,
+            else_target: desc_init,
+            span,
+        });
+
+        let step_value = if matches!(lhs_ty, MirType::Float) || matches!(rhs_ty, MirType::Float) {
+            Value::Const(Literal::Float(1.0))
+        } else {
+            Value::Const(Literal::Integer(1))
+        };
+        let neg_step_value =
+            if matches!(lhs_ty, MirType::Float) || matches!(rhs_ty, MirType::Float) {
+                Value::Const(Literal::Float(-1.0))
+            } else {
+                Value::Const(Literal::Integer(-1))
+            };
+
+        self.current_block = asc_init;
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Local(step_local),
+            value: Rvalue::Use(step_value.clone()),
+            span,
+        });
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Local(step_is_pos_local),
+            value: Rvalue::Use(Value::Const(Literal::Boolean(true))),
+            span,
+        });
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Local(idx_local),
+            value: Rvalue::Use(start_val.clone()),
+            span,
+        });
+        self.set_terminator(Terminator::Jump {
+            target: head_block,
+            span,
+        });
+
+        self.current_block = desc_init;
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Local(step_local),
+            value: Rvalue::Use(neg_step_value.clone()),
+            span,
+        });
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Local(step_is_pos_local),
+            value: Rvalue::Use(Value::Const(Literal::Boolean(false))),
+            span,
+        });
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Local(idx_local),
+            value: Rvalue::Use(start_val.clone()),
+            span,
+        });
+        self.set_terminator(Terminator::Jump {
+            target: head_block,
+            span,
+        });
+
+        self.current_block = head_block;
+        self.set_terminator(Terminator::Branch {
+            cond: Value::Local(step_is_pos_local),
+            then_target: check_pos,
+            else_target: check_neg,
+            span,
+        });
+
+        self.current_block = check_pos;
+        let pos_cond = self.new_temp(MirType::Boolean);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(pos_cond),
+            value: Rvalue::Binary {
+                op: BinaryOp::Le,
+                lhs: Value::Local(idx_local),
+                rhs: end_val.clone(),
+            },
+            span,
+        });
+        self.set_terminator(Terminator::Branch {
+            cond: Value::Temp(pos_cond),
+            then_target: body_block,
+            else_target: exit_block,
+            span,
+        });
+
+        self.current_block = check_neg;
+        let neg_cond = self.new_temp(MirType::Boolean);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(neg_cond),
+            value: Rvalue::Binary {
+                op: BinaryOp::Ge,
+                lhs: Value::Local(idx_local),
+                rhs: end_val.clone(),
+            },
+            span,
+        });
+        self.set_terminator(Terminator::Branch {
+            cond: Value::Temp(neg_cond),
+            then_target: body_block,
+            else_target: exit_block,
+            span,
+        });
+
+        self.current_block = body_block;
+        self.enter_scope();
+        self.declare_local(name.clone(), loop_var);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Local(loop_var),
+            value: Rvalue::Use(Value::Local(idx_local)),
+            span,
+        });
+        self.loop_stack.push(LoopTarget {
+            break_target: exit_block,
+            continue_target: head_block,
+        });
+        self.lower_stmt_block(body, loop_body);
+        self.loop_stack.pop();
+        self.exit_scope();
+        if self.block_is_open(self.current_block) {
+            let step_temp = self.new_temp(MirType::Unknown);
+            self.push_stmt(MirStmt::Assign {
+                place: Place::Temp(step_temp),
+                value: Rvalue::Binary {
+                    op: BinaryOp::Add,
+                    lhs: Value::Local(idx_local),
+                    rhs: Value::Local(step_local),
+                },
+                span,
+            });
+            self.push_stmt(MirStmt::Assign {
+                place: Place::Local(idx_local),
+                value: Rvalue::Use(Value::Temp(step_temp)),
+                span,
+            });
+            self.set_terminator(Terminator::Jump {
+                target: head_block,
+                span,
+            });
+        }
+
+        self.current_block = exit_block;
+        true
     }
 
     fn lower_assert_expr(
@@ -1570,7 +1785,10 @@ impl FunctionLowerer {
                 let temp = self.new_temp_for_expr(expr_id);
                 self.push_stmt(MirStmt::Assign {
                     place: Place::Temp(temp),
-                    value: Rvalue::BuildList { items: values },
+                    value: Rvalue::BuildList {
+                        items: values,
+                        alloc: crate::mir::ir::AllocKind::LocalTemp,
+                    },
                     span,
                 });
                 Value::Temp(temp)
@@ -1585,7 +1803,10 @@ impl FunctionLowerer {
                 let temp = self.new_temp_for_expr(expr_id);
                 self.push_stmt(MirStmt::Assign {
                     place: Place::Temp(temp),
-                    value: Rvalue::BuildMap { items: values },
+                    value: Rvalue::BuildMap {
+                        items: values,
+                        alloc: crate::mir::ir::AllocKind::LocalTemp,
+                    },
                     span,
                 });
                 Value::Temp(temp)
@@ -1606,7 +1827,10 @@ impl FunctionLowerer {
                 let temp = self.new_temp_for_expr(expr_id);
                 self.push_stmt(MirStmt::Assign {
                     place: Place::Temp(temp),
-                    value: Rvalue::StringInterp { parts: values },
+                    value: Rvalue::StringInterp {
+                        parts: values,
+                        alloc: crate::mir::ir::AllocKind::LocalTemp,
+                    },
                     span,
                 });
                 Value::Temp(temp)
@@ -1805,7 +2029,10 @@ impl FunctionLowerer {
         let list_temp = self.new_temp_for_expr(result_expr);
         self.push_stmt(MirStmt::Assign {
             place: Place::Temp(list_temp),
-            value: Rvalue::BuildList { items: handles },
+            value: Rvalue::BuildList {
+                items: handles,
+                alloc: crate::mir::ir::AllocKind::LocalTemp,
+            },
             span,
         });
         let pool_temp = self.new_temp_for_expr(result_expr);
@@ -1860,7 +2087,10 @@ impl FunctionLowerer {
         let list_temp = self.new_temp(MirType::Unknown);
         self.push_stmt(MirStmt::Assign {
             place: Place::Temp(list_temp),
-            value: Rvalue::BuildList { items: Vec::new() },
+            value: Rvalue::BuildList {
+                items: Vec::new(),
+                alloc: crate::mir::ir::AllocKind::LocalTemp,
+            },
             span,
         });
 
@@ -2078,7 +2308,10 @@ impl FunctionLowerer {
                 let temp = self.new_temp(MirType::Unknown);
                 self.push_stmt(MirStmt::Assign {
                     place: Place::Temp(temp),
-                    value: Rvalue::BuildList { items: values },
+                    value: Rvalue::BuildList {
+                        items: values,
+                        alloc: crate::mir::ir::AllocKind::LocalTemp,
+                    },
                     span,
                 });
                 Value::Temp(temp)
@@ -2095,7 +2328,10 @@ impl FunctionLowerer {
                 let temp = self.new_temp(MirType::Unknown);
                 self.push_stmt(MirStmt::Assign {
                     place: Place::Temp(temp),
-                    value: Rvalue::BuildMap { items: values },
+                    value: Rvalue::BuildMap {
+                        items: values,
+                        alloc: crate::mir::ir::AllocKind::LocalTemp,
+                    },
                     span,
                 });
                 Value::Temp(temp)

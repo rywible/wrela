@@ -2,7 +2,8 @@ use crate::list;
 use crate::map;
 use crate::string;
 use crate::value::{Value, int_value};
-use serde_json::{Map as JsonMap, Value as JsonValue};
+use std::cell::RefCell;
+use std::io::{self, Write};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -20,6 +21,9 @@ impl Default for LogConfig {
 }
 
 static LOG_CONFIG: OnceLock<Mutex<LogConfig>> = OnceLock::new();
+thread_local! {
+    static LOG_BUFFER: RefCell<Vec<u8>> = RefCell::new(Vec::with_capacity(512));
+}
 
 fn log_config() -> LogConfig {
     LOG_CONFIG
@@ -67,61 +71,135 @@ fn value_to_string(val: Value) -> Option<String> {
     string::with_string_bytes(val, |bytes| String::from_utf8_lossy(bytes).into_owned())
 }
 
-fn map_value_to_json(val: Value) -> JsonValue {
-    let Some(map_ref) = map::as_map_ref(val) else {
-        return JsonValue::Null;
-    };
-    let mut obj = JsonMap::new();
-    unsafe {
-        for (key, value) in (&(*map_ref).entries).iter() {
-            let Some(key_str) = value_to_string(key.0) else {
-                continue;
-            };
-            obj.insert(key_str, value_to_json(*value));
+fn write_json_string(buf: &mut Vec<u8>, text: &str) {
+    buf.push(b'"');
+    for b in text.bytes() {
+        match b {
+            b'"' => buf.extend_from_slice(br#"\""#),
+            b'\\' => buf.extend_from_slice(br#"\\"#),
+            b'\n' => buf.extend_from_slice(br#"\n"#),
+            b'\r' => buf.extend_from_slice(br#"\r"#),
+            b'\t' => buf.extend_from_slice(br#"\t"#),
+            b'\x08' => buf.extend_from_slice(br#"\b"#),
+            b'\x0c' => buf.extend_from_slice(br#"\f"#),
+            0x00..=0x1f => {
+                let _ = write!(buf, "\\u{:04x}", b);
+            }
+            _ => buf.push(b),
         }
     }
-    JsonValue::Object(obj)
+    buf.push(b'"');
 }
 
-fn list_value_to_json(val: Value) -> JsonValue {
-    let Some(list_ref) = list::as_list_ref(val) else {
-        return JsonValue::Null;
-    };
-    let mut out = Vec::new();
+fn write_json_string_value(buf: &mut Vec<u8>, val: Value) -> bool {
+    string::with_string_bytes(val, |bytes| {
+        let text = String::from_utf8_lossy(bytes);
+        write_json_string(buf, text.as_ref());
+    })
+    .is_some()
+}
+
+fn write_json_list(buf: &mut Vec<u8>, list_ref: *mut list::ListObj) {
+    buf.push(b'[');
+    let mut first = true;
     unsafe {
         for item in (&(*list_ref).data).iter().take((*list_ref).len) {
-            out.push(value_to_json(*item));
+            if !first {
+                buf.push(b',');
+            }
+            first = false;
+            write_json_value(buf, *item);
         }
     }
-    JsonValue::Array(out)
+    buf.push(b']');
 }
 
-fn value_to_json(val: Value) -> JsonValue {
+fn write_json_map(buf: &mut Vec<u8>, map_ref: *mut map::MapObj) {
+    buf.push(b'{');
+    let mut first = true;
+    unsafe {
+        let mut iter = map::map_iter(map_ref);
+        while let Some((key, value)) = iter.next() {
+            if string::with_string_bytes(key.0, |bytes| {
+                let text = String::from_utf8_lossy(bytes);
+                if !first {
+                    buf.push(b',');
+                }
+                first = false;
+                write_json_string(buf, text.as_ref());
+                buf.push(b':');
+                write_json_value(buf, value);
+            })
+            .is_none() {
+                continue;
+            }
+        }
+    }
+    buf.push(b'}');
+}
+
+fn write_json_value(buf: &mut Vec<u8>, val: Value) {
     if val.is_nil() {
-        return JsonValue::Null;
+        buf.extend_from_slice(b"null");
+        return;
     }
     if val.is_bool() {
-        return JsonValue::Bool(val.as_bool());
+        if val.as_bool() {
+            buf.extend_from_slice(b"true");
+        } else {
+            buf.extend_from_slice(b"false");
+        }
+        return;
     }
     if let Some(i) = int_value(val) {
-        return JsonValue::Number(i.into());
+        let _ = write!(buf, "{}", i);
+        return;
     }
     if val.is_float() {
-        if let Some(num) = serde_json::Number::from_f64(val.as_float()) {
-            return JsonValue::Number(num);
+        let f = val.as_float();
+        if f.is_finite() {
+            let _ = write!(buf, "{}", f);
+        } else {
+            buf.extend_from_slice(b"null");
         }
-        return JsonValue::Null;
+        return;
     }
-    if let Some(s) = value_to_string(val) {
-        return JsonValue::String(s);
+    if write_json_string_value(buf, val) {
+        return;
     }
-    if list::as_list_ref(val).is_some() {
-        return list_value_to_json(val);
+    if let Some(list_ref) = list::as_list_ref(val) {
+        write_json_list(buf, list_ref);
+        return;
     }
-    if map::as_map_ref(val).is_some() {
-        return map_value_to_json(val);
+    if let Some(map_ref) = map::as_map_ref(val) {
+        write_json_map(buf, map_ref);
+        return;
     }
-    JsonValue::String("<value>".to_string())
+    buf.extend_from_slice(b"\"<value>\"");
+}
+
+fn should_emit_fields(fields: Value) -> bool {
+    if fields.is_nil() {
+        return false;
+    }
+    if fields.is_float() && !fields.as_float().is_finite() {
+        return false;
+    }
+    true
+}
+
+fn write_log_line_with_ts(buf: &mut Vec<u8>, ts: u64, level: &str, msg: &str, fields: Value) {
+    buf.extend_from_slice(br#"{"ts":"#);
+    let _ = write!(buf, "{}", ts);
+    buf.extend_from_slice(br#","level":"#);
+    write_json_string(buf, level);
+    buf.extend_from_slice(br#","msg":"#);
+    write_json_string(buf, msg);
+    if should_emit_fields(fields) {
+        buf.extend_from_slice(br#","fields":"#);
+        write_json_value(buf, fields);
+    }
+    buf.push(b'}');
 }
 
 pub fn log(level: Value, msg: Value, fields: Value) -> Value {
@@ -131,24 +209,18 @@ pub fn log(level: Value, msg: Value, fields: Value) -> Value {
         return Value::from_bool(false);
     }
     let message = value_to_string(msg).unwrap_or_else(|| "<value>".to_string());
-    let fields_json = if fields.is_nil() {
-        JsonValue::Null
-    } else {
-        value_to_json(fields)
-    };
-    let mut obj = JsonMap::new();
-    obj.insert("ts".to_string(), JsonValue::Number(now_millis().into()));
-    obj.insert("level".to_string(), JsonValue::String(level.clone()));
-    obj.insert("msg".to_string(), JsonValue::String(message));
-    if !fields_json.is_null() {
-        obj.insert("fields".to_string(), fields_json);
-    }
-    let line = JsonValue::Object(obj).to_string();
-    if level_value(&level) >= 30 {
-        eprintln!("{line}");
-    } else {
-        println!("{line}");
-    }
+    let ts = now_millis();
+    LOG_BUFFER.with(|buffer| {
+        let mut buffer = buffer.borrow_mut();
+        buffer.clear();
+        write_log_line_with_ts(&mut buffer, ts, &level, &message, fields);
+        buffer.push(b'\n');
+        if level_value(&level) >= 30 {
+            let _ = io::stderr().write_all(&buffer);
+        } else {
+            let _ = io::stdout().write_all(&buffer);
+        }
+    });
     Value::from_bool(true)
 }
 
@@ -182,4 +254,49 @@ fn config_field_string(config: Value, field: &str) -> Option<String> {
     });
     unsafe { crate::wr_rc_dec(val) };
     out
+}
+
+#[cfg(test)]
+fn test_log_line(level: &str, msg: &str, fields: Value) -> String {
+    let mut buf = Vec::new();
+    write_log_line_with_ts(&mut buf, 123, level, msg, fields);
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::string;
+    use serde_json::Value as JsonValue;
+
+    #[test]
+    fn log_line_encodes_fields() {
+        let fields = map::map_new();
+        let key = string::str_from_bytes(b"foo");
+        map::map_set(fields, key, Value::from_int(7));
+        unsafe { crate::wr_rc_dec(key) };
+
+        let line = test_log_line("info", "hello", fields);
+        let json: JsonValue = serde_json::from_str(&line).expect("json");
+        assert_eq!(json["ts"], 123);
+        assert_eq!(json["level"], "info");
+        assert_eq!(json["msg"], "hello");
+        assert_eq!(json["fields"]["foo"], 7);
+
+        unsafe { crate::wr_rc_dec(fields) };
+    }
+
+    #[test]
+    fn log_line_omits_nil_fields() {
+        let line = test_log_line("info", "hello", Value::nil());
+        let json: JsonValue = serde_json::from_str(&line).expect("json");
+        assert!(json.get("fields").is_none());
+    }
+
+    #[test]
+    fn log_line_omits_nan_fields() {
+        let line = test_log_line("info", "hello", Value::from_float(f64::NAN));
+        let json: JsonValue = serde_json::from_str(&line).expect("json");
+        assert!(json.get("fields").is_none());
+    }
 }

@@ -1,6 +1,9 @@
 use crate::object::ObjHeader;
 use crate::value::{TypeId, Value, header, int_value};
 use crate::{wr_rc_dec, wr_rc_inc};
+#[cfg(feature = "metrics")]
+use crate::metrics::inc_alloc_string;
+use crate::arena;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
@@ -8,6 +11,7 @@ use std::sync::{Mutex, OnceLock};
 pub struct StrObj {
     header: ObjHeader,
     bytes: Vec<u8>,
+    arena_backed: bool,
 }
 
 static INTERN: OnceLock<Mutex<HashMap<Vec<u8>, Value>>> = OnceLock::new();
@@ -27,7 +31,10 @@ pub fn str_from_utf8(ptr: *const u8, len: usize) -> Value {
     let s = Box::new(StrObj {
         header: header(TypeId::String),
         bytes: bytes.to_vec(),
+        arena_backed: false,
     });
+    #[cfg(feature = "metrics")]
+    inc_alloc_string();
     Value::from_ptr(Box::into_raw(s) as *mut ObjHeader)
 }
 
@@ -35,7 +42,10 @@ pub fn str_from_bytes(bytes: &[u8]) -> Value {
     let s = Box::new(StrObj {
         header: header(TypeId::String),
         bytes: bytes.to_vec(),
+        arena_backed: false,
     });
+    #[cfg(feature = "metrics")]
+    inc_alloc_string();
     Value::from_ptr(Box::into_raw(s) as *mut ObjHeader)
 }
 
@@ -76,14 +86,56 @@ pub fn str_concat(parts_ptr: *const Value, parts_len: usize) -> Value {
     let s = Box::new(StrObj {
         header: header(TypeId::String),
         bytes: out,
+        arena_backed: false,
     });
+    #[cfg(feature = "metrics")]
+    inc_alloc_string();
     Value::from_ptr(Box::into_raw(s) as *mut ObjHeader)
+}
+
+pub fn str_concat_local(parts_ptr: *const Value, parts_len: usize) -> Value {
+    if parts_ptr.is_null() && parts_len != 0 {
+        return Value::nil();
+    }
+    let parts = unsafe { std::slice::from_raw_parts(parts_ptr, parts_len) };
+    let mut total = 0usize;
+    for part in parts {
+        total = total.saturating_add(value_bytes_len(*part));
+    }
+    if let Some(bytes_ptr) = arena::alloc_bytes_in_current(total, 1) {
+        unsafe {
+            let mut out = Vec::from_raw_parts(bytes_ptr, 0, total);
+            for part in parts {
+                write_value_bytes(*part, &mut out);
+            }
+            let obj = StrObj {
+                header: header(TypeId::String),
+                bytes: out,
+                arena_backed: true,
+            };
+            if let Some(ptr) = arena::alloc_in_current(obj) {
+                #[cfg(feature = "metrics")]
+                inc_alloc_string();
+                return Value::from_ptr(ptr as *mut ObjHeader);
+            }
+        }
+    }
+    str_concat(parts_ptr, parts_len)
 }
 
 pub fn drop_string(ptr: *mut ObjHeader) {
     let s = ptr as *mut StrObj;
     unsafe {
         drop(Box::from_raw(s));
+    }
+}
+
+pub fn drop_string_in_arena(ptr: *mut ObjHeader) {
+    let s = ptr as *mut StrObj;
+    unsafe {
+        if !(*s).arena_backed {
+            std::ptr::drop_in_place(&mut (*s).bytes);
+        }
     }
 }
 

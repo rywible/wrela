@@ -1,10 +1,14 @@
 use crate::config::{
     actor_config_for_objective, normalize_objective, normalize_pool_size, pool_queue_cap_for_policy,
 };
+use crate::arena;
 use crate::metrics::{
-    inc_messages_dropped, inc_messages_dropped_paused, inc_messages_sent, inc_pending_dropped,
-    inc_pending_resolved, update_mailbox_high_water,
+    inc_mailbox_dequeue, inc_mailbox_enqueue_fail, inc_mailbox_enqueue_ok, inc_messages_dropped,
+    inc_messages_dropped_paused, inc_messages_sent, inc_pending_dropped, inc_pending_resolved,
+    update_mailbox_high_water,
 };
+#[cfg(feature = "metrics")]
+use crate::metrics::inc_alloc_pending;
 use crate::object::ObjHeader;
 use crate::result;
 use crate::scheduler;
@@ -100,6 +104,7 @@ struct Mailbox {
     pause_ack_notify: Notify,
     enqueue_timeout: Duration,
     batch_limit: usize,
+    arena: Mutex<arena::Arena>,
 }
 
 pub(crate) struct PendingState {
@@ -316,6 +321,7 @@ pub fn actor_spawn(
         pause_ack_notify: Notify::new(),
         enqueue_timeout: config.enqueue_timeout,
         batch_limit: config.batch_limit,
+        arena: Mutex::new(arena::Arena::new(64 * 1024)),
     });
     unsafe {
         wr_rc_inc(instance);
@@ -514,6 +520,8 @@ pub fn actor_send(handle: Value, method_id: u32, argc: usize, argv_ptr: *const V
         header: header(TypeId::Pending),
         state: state.clone(),
     });
+    #[cfg(feature = "metrics")]
+    inc_alloc_pending();
     if let Some(msg) = build_message(actor, method_id, argc, argv_ptr, Some(state)) {
         enqueue_message(msg.mailbox, msg.msg);
         Value::from_ptr(Box::into_raw(pending) as *mut ObjHeader)
@@ -666,7 +674,10 @@ fn mailbox_dec(mailbox: &Mailbox) {
             Ordering::AcqRel,
             Ordering::Acquire,
         ) {
-            Ok(_) => return,
+            Ok(_) => {
+                inc_mailbox_dequeue();
+                return;
+            }
             Err(next) => current = next,
         }
     }
@@ -705,6 +716,12 @@ fn build_message(
     args_vec.push(instance);
     if !args.is_empty() {
         args_vec.extend_from_slice(args);
+    }
+    for arg in &args_vec {
+        if arena::is_arena_value(*arg) {
+            return_args_vec(args_vec);
+            return None;
+        }
     }
     let msg = Message {
         method_id,
@@ -795,6 +812,8 @@ fn pool_send(
             header: header(TypeId::Pending),
             state: state.clone(),
         });
+        #[cfg(feature = "metrics")]
+        inc_alloc_pending();
         if let Some(msg) = build_message(actor, method_id, argc, argv_ptr, Some(state)) {
             if let Err(msg) = scheduler::enqueue(pool, msg) {
                 drop_message(msg.msg);
@@ -833,6 +852,7 @@ fn pool_fire(pool: *const PoolHandle, method_id: u32, argc: usize, argv_ptr: *co
 fn enqueue_message(mailbox: Arc<Mailbox>, msg: Message) {
     if mailbox.closed.load(Ordering::Acquire) {
         drop_message(msg);
+        inc_mailbox_enqueue_fail();
         inc_messages_dropped();
         return;
     }
@@ -842,6 +862,7 @@ fn enqueue_message(mailbox: Arc<Mailbox>, msg: Message) {
     };
     let Some(sender) = sender else {
         drop_message(msg);
+        inc_mailbox_enqueue_fail();
         inc_messages_dropped();
         return;
     };
@@ -851,10 +872,12 @@ fn enqueue_message(mailbox: Arc<Mailbox>, msg: Message) {
         Ok(()) => {
             let len = mailbox.len.fetch_add(1, Ordering::AcqRel) + 1;
             update_mailbox_high_water(len);
+            inc_mailbox_enqueue_ok();
             inc_messages_sent();
         }
         Err(SendTimeoutError::Timeout(msg)) | Err(SendTimeoutError::Closed(msg)) => {
             drop_message(msg);
+            inc_mailbox_enqueue_fail();
             inc_messages_dropped();
         }
     }
@@ -895,7 +918,7 @@ async fn handle_message(
             drain_messages(mailbox, rx);
             return false;
         }
-        process_message(class_id, current);
+        process_message(mailbox, class_id, current);
         mailbox_dec(mailbox);
         if idx + 1 >= batch_limit {
             break;
@@ -920,7 +943,9 @@ fn drain_messages(mailbox: &Mailbox, rx: &mut mpsc::Receiver<Message>) {
     }
 }
 
-fn process_message(class_id: u32, msg: Message) {
+fn process_message(mailbox: &Mailbox, class_id: u32, msg: Message) {
+    let mut arena_guard = mailbox.arena.lock().expect("arena lock");
+    let _guard = arena::enter(&mut *arena_guard as *mut _);
     let func = {
         let map = method_registry().lock().expect("method registry lock");
         map.get(&class_id)
@@ -946,12 +971,20 @@ fn process_message(class_id: u32, msg: Message) {
     } else {
         Value::nil()
     };
+    let result = match arena::reject_arena_escape(result, "actor return") {
+        Some(value) => value,
+        None => Value::nil(),
+    };
     if crate::config::debug_actor_enabled() {
         eprintln!("actor: method result raw={}", result.0);
     }
     if let Some(pending) = msg.pending {
         resolve_pending(pending, result);
     }
+    if arena_guard.live() != 0 && crate::config::debug_actor_enabled() {
+        eprintln!("arena: live objects after message = {}", arena_guard.live());
+    }
+    arena_guard.reset();
     unsafe {
         for arg in msg.args.iter().copied() {
             wr_rc_dec(arg);
@@ -998,6 +1031,8 @@ pub(crate) fn pending_new() -> (Value, Arc<PendingState>) {
         header: header(TypeId::Pending),
         state: state.clone(),
     });
+    #[cfg(feature = "metrics")]
+    inc_alloc_pending();
     let val = Value::from_ptr(Box::into_raw(pending) as *mut ObjHeader);
     (val, state)
 }
@@ -1022,7 +1057,71 @@ mod tests {
             pause_ack_notify: Notify::new(),
             enqueue_timeout: Duration::from_millis(1),
             batch_limit: 1,
+            arena: Mutex::new(arena::Arena::new(1024)),
         })
+    }
+
+    fn test_mailbox() -> (Arc<Mailbox>, mpsc::Receiver<Message>) {
+        let (tx, rx) = mpsc::channel(1);
+        let mailbox = Arc::new(Mailbox {
+            sender: Mutex::new(Some(tx)),
+            len: AtomicUsize::new(0),
+            closed: AtomicBool::new(false),
+            paused: AtomicBool::new(false),
+            pause_notify: Notify::new(),
+            pause_epoch: AtomicUsize::new(0),
+            pause_ack: AtomicUsize::new(0),
+            pause_ack_notify: Notify::new(),
+            enqueue_timeout: Duration::from_millis(1),
+            batch_limit: 1,
+            arena: Mutex::new(arena::Arena::new(1024)),
+        });
+        (mailbox, rx)
+    }
+
+    #[cfg(feature = "metrics")]
+    #[test]
+    fn mailbox_metrics_enqueue_dequeue() {
+        metrics::reset();
+        let (mailbox, mut rx) = test_mailbox();
+
+        let before_ok = metrics::metrics_get_raw(metrics::METRIC_MAILBOX_ENQUEUE_OK);
+        let before_dequeue = metrics::metrics_get_raw(metrics::METRIC_MAILBOX_DEQUEUE);
+
+        let msg = Message {
+            method_id: 0,
+            args: take_args_vec(),
+            pending: None,
+        };
+        enqueue_message(mailbox.clone(), msg);
+
+        let after_ok = metrics::metrics_get_raw(metrics::METRIC_MAILBOX_ENQUEUE_OK);
+        assert_eq!(after_ok, before_ok + 1);
+
+        let received = runtime_block_on(async { rx.recv().await }).expect("recv message");
+        drop_message(received);
+        mailbox_dec(mailbox.as_ref());
+
+        let after_dequeue = metrics::metrics_get_raw(metrics::METRIC_MAILBOX_DEQUEUE);
+        assert_eq!(after_dequeue, before_dequeue + 1);
+    }
+
+    #[cfg(feature = "metrics")]
+    #[test]
+    fn mailbox_metrics_enqueue_fail() {
+        metrics::reset();
+        let (mailbox, _rx) = test_mailbox();
+        mailbox.closed.store(true, Ordering::Release);
+
+        let before_fail = metrics::metrics_get_raw(metrics::METRIC_MAILBOX_ENQUEUE_FAIL);
+        let msg = Message {
+            method_id: 0,
+            args: take_args_vec(),
+            pending: None,
+        };
+        enqueue_message(mailbox, msg);
+        let after_fail = metrics::metrics_get_raw(metrics::METRIC_MAILBOX_ENQUEUE_FAIL);
+        assert_eq!(after_fail, before_fail + 1);
     }
 
     #[test]

@@ -162,11 +162,12 @@ fn value_to_json(val: Value, depth: usize) -> JsonValue {
     if let Some(map_ptr) = map::as_map_ref(val) {
         let mut out = JsonMap::new();
         unsafe {
-            for (key, value) in (&(*map_ptr).entries).iter() {
+            let mut iter = map::map_iter(map_ptr);
+            while let Some((key, value)) = iter.next() {
                 let Some(key_str) = value_to_string(key.0) else {
                     continue;
                 };
-                out.insert(key_str, value_to_json(*value, depth + 1));
+                out.insert(key_str, value_to_json(value, depth + 1));
             }
         }
         return JsonValue::Object(out);

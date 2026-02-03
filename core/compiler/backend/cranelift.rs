@@ -37,6 +37,12 @@ const RUNTIME_ABI_VERSION: i64 = 1;
 #[derive(Debug)]
 pub struct CodegenError(pub String);
 
+#[derive(Clone, Debug)]
+struct PhiNode {
+    place: Place,
+    sources: Vec<(crate::mir::ir::BlockId, Value)>,
+}
+
 fn nanbox_const(tag: u64, payload: u64) -> i64 {
     (NANBOX_QNAN | (tag << NANBOX_TAG_SHIFT) | (payload & NANBOX_PAYLOAD_MASK)) as i64
 }
@@ -641,6 +647,16 @@ fn lower_function(
     for _ in &func.blocks {
         block_map.push(builder.create_block());
     }
+    let phi_map = collect_phi_nodes(func);
+    let locals_tys: Vec<MirType> = func.locals.iter().map(|local| local.ty.clone()).collect();
+    let temps_tys: Vec<MirType> = func.temps.iter().map(|temp| temp.ty.clone()).collect();
+    for (block_idx, block_phis) in phi_map.iter().enumerate() {
+        let block_id = block_map[block_idx];
+        for phi in block_phis {
+            let ty = place_ty(&phi.place, &locals_tys, &temps_tys);
+            builder.append_block_param(block_id, ty_to_clif(&ty)?);
+        }
+    }
 
     let entry_block = block_map[func.entry.0];
     builder.append_block_params_for_function_params(entry_block);
@@ -654,19 +670,29 @@ fn lower_function(
     }
 
     for (param_idx, local_id) in func.params.iter().enumerate() {
-        let param_val = builder.block_params(entry_block)[param_idx];
+        let phi_offset = phi_map
+            .get(func.entry.0)
+            .map(|phis| phis.len())
+            .unwrap_or(0);
+        let param_val = builder.block_params(entry_block)[param_idx + phi_offset];
         if let Some(var) = locals.get(&local_id.0) {
             builder.def_var(*var, param_val);
         }
     }
 
     let mut temps: HashMap<usize, cranelift_codegen::ir::Value> = HashMap::new();
-    let locals_tys: Vec<MirType> = func.locals.iter().map(|local| local.ty.clone()).collect();
-    let temps_tys: Vec<MirType> = func.temps.iter().map(|temp| temp.ty.clone()).collect();
 
     for (block_idx, block) in func.blocks.iter().enumerate() {
         let block_id = block_map[block_idx];
         builder.switch_to_block(block_id);
+        if let Some(phis) = phi_map.get(block_idx) {
+            let params = builder.block_params(block_id).to_vec();
+            for (idx, phi) in phis.iter().enumerate() {
+                if let Some(param) = params.get(idx) {
+                    assign_place(&mut builder, &locals, &mut temps, &phi.place, *param);
+                }
+            }
+        }
         if block_idx == func.entry.0 && func.name == "main" {
             emit_runtime_init_and_check(&mut builder, module, runtime)?;
             emit_method_registrations(&mut builder, module, runtime, method_wrappers, classes)?;
@@ -686,12 +712,14 @@ fn lower_function(
         }
         lower_terminator(
             &block.terminator,
+            block_idx,
             &mut builder,
             &locals,
             &temps,
             &locals_tys,
             &temps_tys,
             &block_map,
+            &phi_map,
             func_ids,
             module,
             runtime,
@@ -715,6 +743,7 @@ fn lower_stmt(
     runtime: &mut RuntimeRegistry,
 ) -> Result<(), CodegenError> {
     match stmt {
+        Stmt::Phi { .. } => {}
         Stmt::Assign { place, value, .. } => {
             let val = lower_rvalue(
                 value, builder, locals, temps, locals_tys, temps_tys, func_ids, module, runtime,
@@ -1651,8 +1680,11 @@ fn lower_rvalue(
             let call = builder.ins().call(callee, &[obj, name_ptr, len_val]);
             Ok(builder.inst_results(call)[0])
         }
-        Rvalue::BuildList { items } => {
-            let func_id = runtime_fn_list_new(module, runtime)?;
+        Rvalue::BuildList { items, alloc } => {
+            let func_id = match alloc {
+                crate::mir::ir::AllocKind::LocalTemp => runtime_fn_list_new_local(module, runtime)?,
+                crate::mir::ir::AllocKind::Escaping => runtime_fn_list_new(module, runtime)?,
+            };
             let callee = module.declare_func_in_func(func_id, builder.func);
             let len_val = builder
                 .ins()
@@ -1670,8 +1702,11 @@ fn lower_rvalue(
             }
             Ok(list_val)
         }
-        Rvalue::BuildMap { items } => {
-            let func_id = runtime_fn_map_new(module, runtime)?;
+        Rvalue::BuildMap { items, alloc } => {
+            let func_id = match alloc {
+                crate::mir::ir::AllocKind::LocalTemp => runtime_fn_map_new_local(module, runtime)?,
+                crate::mir::ir::AllocKind::Escaping => runtime_fn_map_new(module, runtime)?,
+            };
             let callee = module.declare_func_in_func(func_id, builder.func);
             let call = builder.ins().call(callee, &[]);
             let map_val = builder.inst_results(call)[0];
@@ -1684,7 +1719,7 @@ fn lower_rvalue(
             }
             Ok(map_val)
         }
-        Rvalue::StringInterp { parts } => {
+        Rvalue::StringInterp { parts, alloc } => {
             let mut values = Vec::with_capacity(parts.len());
             for part in parts {
                 match part {
@@ -1699,7 +1734,12 @@ fn lower_rvalue(
             }
             let ptr_ty = module.target_config().pointer_type();
             let (args_ptr, args_len) = build_value_array(builder, ptr_ty, &values);
-            let func_id = runtime_fn_str_concat(module, runtime)?;
+            let func_id = match alloc {
+                crate::mir::ir::AllocKind::LocalTemp => {
+                    runtime_fn_str_concat_local(module, runtime)?
+                }
+                crate::mir::ir::AllocKind::Escaping => runtime_fn_str_concat(module, runtime)?,
+            };
             let callee = module.declare_func_in_func(func_id, builder.func);
             let call = builder.ins().call(callee, &[args_ptr, args_len]);
             Ok(builder.inst_results(call)[0])
@@ -1729,14 +1769,40 @@ fn mir_type_of_literal(lit: &crate::hir::Literal) -> MirType {
     }
 }
 
+fn collect_phi_nodes(func: &MirFunction) -> Vec<Vec<PhiNode>> {
+    let mut phi_map = vec![Vec::new(); func.blocks.len()];
+    for (idx, block) in func.blocks.iter().enumerate() {
+        for stmt in &block.stmts {
+            if let Stmt::Phi { place, sources, .. } = stmt {
+                phi_map[idx].push(PhiNode {
+                    place: place.clone(),
+                    sources: sources.clone(),
+                });
+            } else {
+                break;
+            }
+        }
+    }
+    phi_map
+}
+
+fn place_ty(place: &Place, locals_tys: &[MirType], temps_tys: &[MirType]) -> MirType {
+    match place {
+        Place::Local(local) => locals_tys.get(local.0).cloned().unwrap_or(MirType::Unknown),
+        Place::Temp(temp) => temps_tys.get(temp.0).cloned().unwrap_or(MirType::Unknown),
+    }
+}
+
 fn lower_terminator(
     term: &Terminator,
+    block_idx: usize,
     builder: &mut FunctionBuilder,
     locals: &HashMap<usize, Variable>,
     temps: &HashMap<usize, cranelift_codegen::ir::Value>,
     _locals_tys: &Vec<MirType>,
     _temps_tys: &Vec<MirType>,
     block_map: &[cranelift_codegen::ir::Block],
+    phi_map: &[Vec<PhiNode>],
     _func_ids: &HashMap<SmolStr, cranelift_module::FuncId>,
     _module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
@@ -1751,7 +1817,17 @@ fn lower_terminator(
             builder.ins().return_(&[ret]);
         }
         Terminator::Jump { target, .. } => {
-            builder.ins().jump(block_map[target.0], &[]);
+            let args = phi_args_for_target(
+                block_idx,
+                target.0,
+                phi_map,
+                builder,
+                locals,
+                temps,
+                _module,
+                runtime,
+            )?;
+            builder.ins().jump(block_map[target.0], &args);
         }
         Terminator::Branch {
             cond,
@@ -1766,12 +1842,32 @@ fn lower_terminator(
                 unboxed,
                 0,
             );
+            let then_args = phi_args_for_target(
+                block_idx,
+                then_target.0,
+                phi_map,
+                builder,
+                locals,
+                temps,
+                _module,
+                runtime,
+            )?;
+            let else_args = phi_args_for_target(
+                block_idx,
+                else_target.0,
+                phi_map,
+                builder,
+                locals,
+                temps,
+                _module,
+                runtime,
+            )?;
             builder.ins().brif(
                 cmp,
                 block_map[then_target.0],
-                &[],
+                &then_args,
                 block_map[else_target.0],
-                &[],
+                &else_args,
             );
         }
         Terminator::Switch {
@@ -1825,13 +1921,33 @@ fn lower_terminator(
                     unboxed,
                     0,
                 );
+                let args = phi_args_for_target(
+                    block_idx,
+                    target.0,
+                    phi_map,
+                    builder,
+                    locals,
+                    temps,
+                    _module,
+                    runtime,
+                )?;
                 builder
                     .ins()
-                    .brif(cmp, block_map[target.0], &[], next_block, &[]);
+                    .brif(cmp, block_map[target.0], &args, next_block, &[]);
                 builder.switch_to_block(next_block);
                 next_block = builder.create_block();
             }
-            builder.ins().jump(block_map[default.0], &[]);
+            let default_args = phi_args_for_target(
+                block_idx,
+                default.0,
+                phi_map,
+                builder,
+                locals,
+                temps,
+                _module,
+                runtime,
+            )?;
+            builder.ins().jump(block_map[default.0], &default_args);
         }
         Terminator::Unreachable { .. } => {
             builder
@@ -1840,6 +1956,34 @@ fn lower_terminator(
         }
     }
     Ok(())
+}
+
+fn phi_args_for_target(
+    pred_idx: usize,
+    target_idx: usize,
+    phi_map: &[Vec<PhiNode>],
+    builder: &mut FunctionBuilder,
+    locals: &HashMap<usize, Variable>,
+    temps: &HashMap<usize, cranelift_codegen::ir::Value>,
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<Vec<cranelift_codegen::ir::Value>, CodegenError> {
+    let mut args = Vec::new();
+    let Some(phis) = phi_map.get(target_idx) else {
+        return Ok(args);
+    };
+    for phi in phis {
+        let mut src = Value::Const(crate::hir::Literal::Nil);
+        for (pred, value) in &phi.sources {
+            if pred.0 == pred_idx {
+                src = value.clone();
+                break;
+            }
+        }
+        let lowered = lower_value(&src, builder, locals, temps, module, runtime)?;
+        args.push(lowered);
+    }
+    Ok(args)
 }
 
 fn lower_value(
@@ -2099,6 +2243,15 @@ fn runtime_fn_str_concat(
     runtime.get_func(module, "wr_str_concat", sig)
 }
 
+fn runtime_fn_str_concat_local(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let ptr_ty = module.target_config().pointer_type();
+    let sig = RuntimeRegistry::runtime_sig(module, &[ptr_ty, ptr_ty], &[types::I64]);
+    runtime.get_func(module, "wr_str_concat_local", sig)
+}
+
 fn runtime_fn_list_new(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
@@ -2106,6 +2259,15 @@ fn runtime_fn_list_new(
     let ptr_ty = module.target_config().pointer_type();
     let sig = RuntimeRegistry::runtime_sig(module, &[ptr_ty], &[types::I64]);
     runtime.get_func(module, "wr_list_new", sig)
+}
+
+fn runtime_fn_list_new_local(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let ptr_ty = module.target_config().pointer_type();
+    let sig = RuntimeRegistry::runtime_sig(module, &[ptr_ty], &[types::I64]);
+    runtime.get_func(module, "wr_list_new_local", sig)
 }
 
 fn runtime_fn_list_set(
@@ -2784,6 +2946,14 @@ fn runtime_fn_map_new(
 ) -> Result<cranelift_module::FuncId, CodegenError> {
     let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
     runtime.get_func(module, "wr_map_new", sig)
+}
+
+fn runtime_fn_map_new_local(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(module, "wr_map_new_local", sig)
 }
 
 fn runtime_fn_result_ok(

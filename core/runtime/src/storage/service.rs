@@ -57,6 +57,9 @@ pub enum StorageRequest {
     Get {
         key: Vec<u8>,
     },
+    GetBytes {
+        key: Vec<u8>,
+    },
     GetWithVersion {
         key: Vec<u8>,
     },
@@ -88,6 +91,7 @@ pub enum StorageRequest {
 
 pub enum StorageResponse {
     Ok(Value),
+    Bytes(Option<Vec<u8>>),
     Err(String),
 }
 
@@ -597,6 +601,21 @@ async fn handle_envelope(
             let resp = match resp {
                 Ok(Some(bytes)) => StorageResponse::Ok(string::str_from_bytes(&bytes)),
                 Ok(None) => StorageResponse::Ok(Value::nil()),
+                Err(err) => StorageResponse::Err(err.to_string()),
+            };
+            let _ = env.resp.send(resp);
+            metrics::inc_storage_read();
+            metrics::record_storage_read_latency(start.elapsed());
+        }
+        StorageRequest::GetBytes { key } => {
+            if !batch.is_empty() {
+                flush_batch(raft, batch, batch_start).await;
+            }
+            let start = Instant::now();
+            let resp = read_linearizable_value(raft, store, blob, key, Some(&config.peers)).await;
+            let resp = match resp {
+                Ok(Some(bytes)) => StorageResponse::Bytes(Some(bytes)),
+                Ok(None) => StorageResponse::Bytes(None),
                 Err(err) => StorageResponse::Err(err.to_string()),
             };
             let _ = env.resp.send(resp);

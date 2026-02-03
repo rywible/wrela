@@ -109,3 +109,54 @@ fn cli_check_without_run_is_ok() {
         .expect("run wrela");
     assert!(output.status.success());
 }
+
+fn write_test_project(root: &std::path::Path) {
+    let src_dir = root.join("src");
+    let tests_dir = root.join("tests");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::create_dir_all(&tests_dir).unwrap();
+    std::fs::write(
+        src_dir.join("main.wr"),
+        "to run() -> Integer:\n    return 0\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tests_dir.join("basic.wr"),
+        "to test_basic() -> Nothing:\n    assert value 1 == 1\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn cli_test_perf_summary() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_test_project(dir.path());
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("test")
+        .arg(dir.path())
+        .output()
+        .expect("run wrela");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("perf: p50_ns="));
+    assert!(stdout.contains("p99_ns="));
+    assert!(stdout.contains("allocs/request="));
+}
+
+#[test]
+fn cli_test_perf_debug() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_test_project(dir.path());
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("test")
+        .arg("--perf-debug")
+        .arg(dir.path())
+        .output()
+        .expect("run wrela");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("perf-debug:"));
+    assert!(stdout.contains("rc_inc="));
+    assert!(stdout.contains("mailbox_enqueue_ok="));
+    assert!(stdout.contains("alloc_list="));
+}

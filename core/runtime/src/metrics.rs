@@ -1,4 +1,14 @@
 #[cfg(feature = "metrics")]
+use serde::Serialize;
+#[cfg(feature = "metrics")]
+use std::fs;
+#[cfg(feature = "metrics")]
+use std::io;
+#[cfg(feature = "metrics")]
+use std::path::{Path, PathBuf};
+#[cfg(feature = "metrics")]
+use std::sync::OnceLock;
+#[cfg(feature = "metrics")]
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const METRIC_MESSAGES_SENT: u32 = 0;
@@ -29,6 +39,15 @@ pub const METRIC_PUBSUB_PUBLISH: u32 = 24;
 pub const METRIC_PUBSUB_PUBLISH_FAILURE: u32 = 25;
 pub const METRIC_SCHED_WAKEUPS: u32 = 26;
 pub const METRIC_JOBS_WAKEUPS: u32 = 27;
+pub const METRIC_ALLOC_LIST: u32 = 28;
+pub const METRIC_ALLOC_MAP: u32 = 29;
+pub const METRIC_ALLOC_STRING: u32 = 30;
+pub const METRIC_ALLOC_BYTES: u32 = 31;
+pub const METRIC_ALLOC_RESULT: u32 = 32;
+pub const METRIC_ALLOC_PENDING: u32 = 33;
+pub const METRIC_MAILBOX_ENQUEUE_OK: u32 = 34;
+pub const METRIC_MAILBOX_ENQUEUE_FAIL: u32 = 35;
+pub const METRIC_MAILBOX_DEQUEUE: u32 = 36;
 
 #[cfg(feature = "metrics")]
 struct Metrics {
@@ -60,6 +79,15 @@ struct Metrics {
     pubsub_publish_failure: AtomicU64,
     sched_wakeups: AtomicU64,
     jobs_wakeups: AtomicU64,
+    alloc_list: AtomicU64,
+    alloc_map: AtomicU64,
+    alloc_string: AtomicU64,
+    alloc_bytes: AtomicU64,
+    alloc_result: AtomicU64,
+    alloc_pending: AtomicU64,
+    mailbox_enqueue_ok: AtomicU64,
+    mailbox_enqueue_fail: AtomicU64,
+    mailbox_dequeue: AtomicU64,
 }
 
 #[cfg(feature = "metrics")]
@@ -92,7 +120,143 @@ static METRICS: Metrics = Metrics {
     pubsub_publish_failure: AtomicU64::new(0),
     sched_wakeups: AtomicU64::new(0),
     jobs_wakeups: AtomicU64::new(0),
+    alloc_list: AtomicU64::new(0),
+    alloc_map: AtomicU64::new(0),
+    alloc_string: AtomicU64::new(0),
+    alloc_bytes: AtomicU64::new(0),
+    alloc_result: AtomicU64::new(0),
+    alloc_pending: AtomicU64::new(0),
+    mailbox_enqueue_ok: AtomicU64::new(0),
+    mailbox_enqueue_fail: AtomicU64::new(0),
+    mailbox_dequeue: AtomicU64::new(0),
 };
+
+#[cfg(feature = "metrics")]
+#[derive(Serialize)]
+struct MetricsSnapshot {
+    messages_sent: u64,
+    messages_dropped: u64,
+    pending_resolved: u64,
+    pending_dropped: u64,
+    mailbox_high_water: u64,
+    rc_inc: u64,
+    rc_dec: u64,
+    messages_dropped_paused: u64,
+    sched_dispatched: u64,
+    sched_skipped_no_credit: u64,
+    pool_queue_full: u64,
+    pool_enqueue_after_retire: u64,
+    storage_batch_size: u64,
+    storage_batch_latency_ns: u64,
+    storage_commit_latency_ns: u64,
+    storage_read_latency_ns: u64,
+    storage_reads: u64,
+    storage_batches: u64,
+    storage_backup_success: u64,
+    storage_backup_failure: u64,
+    storage_backup_last_duration_ns: u64,
+    storage_backup_last_size: u64,
+    storage_backup_last_ts: u64,
+    storage_backup_restore_failure: u64,
+    pubsub_publish: u64,
+    pubsub_publish_failure: u64,
+    sched_wakeups: u64,
+    jobs_wakeups: u64,
+    alloc_list: u64,
+    alloc_map: u64,
+    alloc_string: u64,
+    alloc_bytes: u64,
+    alloc_result: u64,
+    alloc_pending: u64,
+    mailbox_enqueue_ok: u64,
+    mailbox_enqueue_fail: u64,
+    mailbox_dequeue: u64,
+}
+
+#[cfg(feature = "metrics")]
+struct MetricsDumpGuard {
+    path: Option<PathBuf>,
+}
+
+#[cfg(feature = "metrics")]
+impl MetricsDumpGuard {
+    fn new() -> Self {
+        let path = std::env::var("WRELA_METRICS_PATH")
+            .ok()
+            .filter(|p| !p.is_empty())
+            .map(PathBuf::from);
+        Self { path }
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl Drop for MetricsDumpGuard {
+    fn drop(&mut self) {
+        let Some(path) = &self.path else { return };
+        let _ = dump_to_path(path);
+    }
+}
+
+#[cfg(feature = "metrics")]
+pub fn install_dump_hook() {
+    static GUARD: OnceLock<MetricsDumpGuard> = OnceLock::new();
+    GUARD.get_or_init(MetricsDumpGuard::new);
+}
+
+#[cfg(feature = "metrics")]
+fn snapshot() -> MetricsSnapshot {
+    MetricsSnapshot {
+        messages_sent: METRICS.messages_sent.load(Ordering::Relaxed),
+        messages_dropped: METRICS.messages_dropped.load(Ordering::Relaxed),
+        pending_resolved: METRICS.pending_resolved.load(Ordering::Relaxed),
+        pending_dropped: METRICS.pending_dropped.load(Ordering::Relaxed),
+        mailbox_high_water: METRICS.mailbox_high_water.load(Ordering::Relaxed),
+        rc_inc: METRICS.rc_inc.load(Ordering::Relaxed),
+        rc_dec: METRICS.rc_dec.load(Ordering::Relaxed),
+        messages_dropped_paused: METRICS.messages_dropped_paused.load(Ordering::Relaxed),
+        sched_dispatched: METRICS.sched_dispatched.load(Ordering::Relaxed),
+        sched_skipped_no_credit: METRICS.sched_skipped_no_credit.load(Ordering::Relaxed),
+        pool_queue_full: METRICS.pool_queue_full.load(Ordering::Relaxed),
+        pool_enqueue_after_retire: METRICS.pool_enqueue_after_retire.load(Ordering::Relaxed),
+        storage_batch_size: METRICS.storage_batch_size.load(Ordering::Relaxed),
+        storage_batch_latency_ns: METRICS.storage_batch_latency_ns.load(Ordering::Relaxed),
+        storage_commit_latency_ns: METRICS.storage_commit_latency_ns.load(Ordering::Relaxed),
+        storage_read_latency_ns: METRICS.storage_read_latency_ns.load(Ordering::Relaxed),
+        storage_reads: METRICS.storage_reads.load(Ordering::Relaxed),
+        storage_batches: METRICS.storage_batches.load(Ordering::Relaxed),
+        storage_backup_success: METRICS.storage_backup_success.load(Ordering::Relaxed),
+        storage_backup_failure: METRICS.storage_backup_failure.load(Ordering::Relaxed),
+        storage_backup_last_duration_ns: METRICS
+            .storage_backup_last_duration_ns
+            .load(Ordering::Relaxed),
+        storage_backup_last_size: METRICS.storage_backup_last_size.load(Ordering::Relaxed),
+        storage_backup_last_ts: METRICS.storage_backup_last_ts.load(Ordering::Relaxed),
+        storage_backup_restore_failure: METRICS
+            .storage_backup_restore_failure
+            .load(Ordering::Relaxed),
+        pubsub_publish: METRICS.pubsub_publish.load(Ordering::Relaxed),
+        pubsub_publish_failure: METRICS.pubsub_publish_failure.load(Ordering::Relaxed),
+        sched_wakeups: METRICS.sched_wakeups.load(Ordering::Relaxed),
+        jobs_wakeups: METRICS.jobs_wakeups.load(Ordering::Relaxed),
+        alloc_list: METRICS.alloc_list.load(Ordering::Relaxed),
+        alloc_map: METRICS.alloc_map.load(Ordering::Relaxed),
+        alloc_string: METRICS.alloc_string.load(Ordering::Relaxed),
+        alloc_bytes: METRICS.alloc_bytes.load(Ordering::Relaxed),
+        alloc_result: METRICS.alloc_result.load(Ordering::Relaxed),
+        alloc_pending: METRICS.alloc_pending.load(Ordering::Relaxed),
+        mailbox_enqueue_ok: METRICS.mailbox_enqueue_ok.load(Ordering::Relaxed),
+        mailbox_enqueue_fail: METRICS.mailbox_enqueue_fail.load(Ordering::Relaxed),
+        mailbox_dequeue: METRICS.mailbox_dequeue.load(Ordering::Relaxed),
+    }
+}
+
+#[cfg(feature = "metrics")]
+fn dump_to_path(path: &Path) -> io::Result<()> {
+    let snapshot = snapshot();
+    let json = serde_json::to_vec(&snapshot)
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+    fs::write(path, json)
+}
 
 #[cfg(feature = "metrics")]
 pub fn inc_messages_sent() {
@@ -151,6 +315,51 @@ pub fn inc_sched_wakeup() {
 #[cfg(feature = "metrics")]
 pub fn inc_jobs_wakeup() {
     METRICS.jobs_wakeups.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(feature = "metrics")]
+pub fn inc_alloc_list() {
+    METRICS.alloc_list.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(feature = "metrics")]
+pub fn inc_alloc_map() {
+    METRICS.alloc_map.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(feature = "metrics")]
+pub fn inc_alloc_string() {
+    METRICS.alloc_string.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(feature = "metrics")]
+pub fn inc_alloc_bytes() {
+    METRICS.alloc_bytes.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(feature = "metrics")]
+pub fn inc_alloc_result() {
+    METRICS.alloc_result.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(feature = "metrics")]
+pub fn inc_alloc_pending() {
+    METRICS.alloc_pending.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(feature = "metrics")]
+pub fn inc_mailbox_enqueue_ok() {
+    METRICS.mailbox_enqueue_ok.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(feature = "metrics")]
+pub fn inc_mailbox_enqueue_fail() {
+    METRICS.mailbox_enqueue_fail.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(feature = "metrics")]
+pub fn inc_mailbox_dequeue() {
+    METRICS.mailbox_dequeue.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(feature = "metrics")]
@@ -277,6 +486,15 @@ pub fn metrics_get_raw(id: u32) -> u64 {
         }
         METRIC_SCHED_WAKEUPS => METRICS.sched_wakeups.load(Ordering::Relaxed),
         METRIC_JOBS_WAKEUPS => METRICS.jobs_wakeups.load(Ordering::Relaxed),
+        METRIC_ALLOC_LIST => METRICS.alloc_list.load(Ordering::Relaxed),
+        METRIC_ALLOC_MAP => METRICS.alloc_map.load(Ordering::Relaxed),
+        METRIC_ALLOC_STRING => METRICS.alloc_string.load(Ordering::Relaxed),
+        METRIC_ALLOC_BYTES => METRICS.alloc_bytes.load(Ordering::Relaxed),
+        METRIC_ALLOC_RESULT => METRICS.alloc_result.load(Ordering::Relaxed),
+        METRIC_ALLOC_PENDING => METRICS.alloc_pending.load(Ordering::Relaxed),
+        METRIC_MAILBOX_ENQUEUE_OK => METRICS.mailbox_enqueue_ok.load(Ordering::Relaxed),
+        METRIC_MAILBOX_ENQUEUE_FAIL => METRICS.mailbox_enqueue_fail.load(Ordering::Relaxed),
+        METRIC_MAILBOX_DEQUEUE => METRICS.mailbox_dequeue.load(Ordering::Relaxed),
         _ => 0,
     }
 }
@@ -365,6 +583,15 @@ pub fn get(id: u32) -> u64 {
         }
         METRIC_SCHED_WAKEUPS => METRICS.sched_wakeups.load(Ordering::Relaxed),
         METRIC_JOBS_WAKEUPS => METRICS.jobs_wakeups.load(Ordering::Relaxed),
+        METRIC_ALLOC_LIST => METRICS.alloc_list.load(Ordering::Relaxed),
+        METRIC_ALLOC_MAP => METRICS.alloc_map.load(Ordering::Relaxed),
+        METRIC_ALLOC_STRING => METRICS.alloc_string.load(Ordering::Relaxed),
+        METRIC_ALLOC_BYTES => METRICS.alloc_bytes.load(Ordering::Relaxed),
+        METRIC_ALLOC_RESULT => METRICS.alloc_result.load(Ordering::Relaxed),
+        METRIC_ALLOC_PENDING => METRICS.alloc_pending.load(Ordering::Relaxed),
+        METRIC_MAILBOX_ENQUEUE_OK => METRICS.mailbox_enqueue_ok.load(Ordering::Relaxed),
+        METRIC_MAILBOX_ENQUEUE_FAIL => METRICS.mailbox_enqueue_fail.load(Ordering::Relaxed),
+        METRIC_MAILBOX_DEQUEUE => METRICS.mailbox_dequeue.load(Ordering::Relaxed),
         _ => 0,
     }
 }
@@ -403,6 +630,15 @@ pub fn reset() {
     METRICS
         .storage_backup_restore_failure
         .store(0, Ordering::Relaxed);
+    METRICS.alloc_list.store(0, Ordering::Relaxed);
+    METRICS.alloc_map.store(0, Ordering::Relaxed);
+    METRICS.alloc_string.store(0, Ordering::Relaxed);
+    METRICS.alloc_bytes.store(0, Ordering::Relaxed);
+    METRICS.alloc_result.store(0, Ordering::Relaxed);
+    METRICS.alloc_pending.store(0, Ordering::Relaxed);
+    METRICS.mailbox_enqueue_ok.store(0, Ordering::Relaxed);
+    METRICS.mailbox_enqueue_fail.store(0, Ordering::Relaxed);
+    METRICS.mailbox_dequeue.store(0, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "metrics"))]
@@ -457,5 +693,23 @@ pub fn record_storage_backup_size(_size: usize) {}
 pub fn record_storage_backup_ts(_ts_secs: u64) {}
 #[cfg(not(feature = "metrics"))]
 pub fn inc_storage_backup_restore_failure() {}
+#[cfg(not(feature = "metrics"))]
+pub fn inc_alloc_list() {}
+#[cfg(not(feature = "metrics"))]
+pub fn inc_alloc_map() {}
+#[cfg(not(feature = "metrics"))]
+pub fn inc_alloc_string() {}
+#[cfg(not(feature = "metrics"))]
+pub fn inc_alloc_bytes() {}
+#[cfg(not(feature = "metrics"))]
+pub fn inc_alloc_result() {}
+#[cfg(not(feature = "metrics"))]
+pub fn inc_alloc_pending() {}
+#[cfg(not(feature = "metrics"))]
+pub fn inc_mailbox_enqueue_ok() {}
+#[cfg(not(feature = "metrics"))]
+pub fn inc_mailbox_enqueue_fail() {}
+#[cfg(not(feature = "metrics"))]
+pub fn inc_mailbox_dequeue() {}
 #[cfg(not(feature = "metrics"))]
 pub fn reset() {}

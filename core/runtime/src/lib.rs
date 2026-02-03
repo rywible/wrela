@@ -2,6 +2,7 @@
 
 mod actor;
 mod admin;
+pub mod arena;
 mod auth;
 mod bytes;
 mod class;
@@ -70,6 +71,10 @@ pub unsafe extern "C" fn wr_rc_dec(value: Value) {
     }
     if prev == 1 {
         std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
+        if arena::is_arena_ptr(value.as_ptr()) {
+            arena::drop_object_in_arena(value.as_ptr());
+            return;
+        }
         unsafe { drop_object(value.as_ptr()) };
     }
 }
@@ -98,6 +103,8 @@ pub extern "C" fn wr_unbox_int(val: Value) -> i64 {
 pub extern "C" fn wr_runtime_init() {
     diagnostics::runtime_init();
     env::init();
+    #[cfg(feature = "metrics")]
+    metrics::install_dump_hook();
 }
 
 #[unsafe(no_mangle)]
@@ -139,8 +146,22 @@ pub extern "C" fn wr_str_concat(parts_ptr: *const Value, parts_len: usize) -> Va
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn wr_str_concat_local(parts_ptr: *const Value, parts_len: usize) -> Value {
+    string::str_concat_local(parts_ptr, parts_len)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn wr_bytes_from_string(val: Value) -> Value {
     bytes::bytes_from_string(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_bytes_from_slice_local(ptr: *const u8, len: usize) -> Value {
+    if ptr.is_null() && len != 0 {
+        return Value::nil();
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    bytes::bytes_from_slice_local(bytes)
 }
 
 #[unsafe(no_mangle)]
@@ -156,6 +177,11 @@ pub extern "C" fn wr_bytes_len(val: Value) -> Value {
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_list_new(len: usize) -> Value {
     list::list_new(len)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_list_new_local(len: usize) -> Value {
+    list::list_new_local(len)
 }
 
 #[unsafe(no_mangle)]
@@ -231,6 +257,11 @@ pub extern "C" fn wr_num_ge(a: Value, b: Value) -> Value {
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_map_new() -> Value {
     map::map_new()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_map_new_local() -> Value {
+    map::map_new_local()
 }
 
 #[unsafe(no_mangle)]
@@ -346,14 +377,15 @@ fn deep_eq(a: Value, b: Value, depth: usize, seen: &mut HashSet<(usize, usize)>)
             if ah.type_id == TypeId::Map as u32 {
                 let Some(am) = crate::map::as_map_ref(a) else { return false };
                 let Some(bm) = crate::map::as_map_ref(b) else { return false };
-                if (*am).entries.len() != (*bm).entries.len() {
+                if crate::map::map_len(am) != crate::map::map_len(bm) {
                     return false;
                 }
-                for (key, val) in (*am).entries.iter() {
-                    let Some(other) = (*bm).entries.get(key).copied() else {
+                let mut iter = crate::map::map_iter(am);
+                while let Some((key, val)) = iter.next() {
+                    let Some(other) = crate::map::map_get_raw(bm, key) else {
                         return false;
                     };
-                    if !deep_eq(*val, other, depth + 1, seen) {
+                    if !deep_eq(val, other, depth + 1, seen) {
                         return false;
                     }
                 }
