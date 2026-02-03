@@ -3,7 +3,7 @@ so:
 
 use StorageClient from storage
 
-A Files:
+A FileSystem:
     has:
         storage: StorageClient
 
@@ -12,11 +12,11 @@ A Files:
         return __wr_files_upload_stream(its.storage, stream, opts)
 
     so: Generate a signed URL for a file.
-    can signed_url(file_id: String, opts: Map) -> Pending:
+    can generate_signed_url(file_id: String, opts: Map) -> Pending:
         return __wr_files_signed_url(its.storage, file_id, opts)
 
     so: Fetch metadata for a file.
-    can metadata(file_id: String) -> Pending:
+    can get_metadata(file_id: String) -> Pending:
         return __wr_files_metadata(its.storage, file_id)
 
     so: Delete a file by id.
@@ -24,5 +24,5 @@ A Files:
         return __wr_files_delete(its.storage, file_id)
 
     so: Set the access control list for a file.
-    can set_acl(file_id: String, acl: String) -> Pending:
+    can set_access_control_list(file_id: String, acl: String) -> Pending:
         return __wr_files_set_acl(its.storage, file_id, acl)

@@ -24,10 +24,10 @@ fn native_actor_smoke() {
     }
     let source = r#"
 A Counter:
-    can add(x: Int) -> Int:
+    can add(x: Integer) -> Integer:
         return x + 1
 
-to run() -> Int:
+to run() -> Integer:
     optimize balance:
         c = detach Counter() * 1
         v = await c.add(41) otherwise 0
@@ -66,7 +66,7 @@ fn native_numeric_and_range_smoke() {
         return;
     }
     let source = r#"
-to run() -> Int:
+to run() -> Integer:
     mutable total = 0
     for i in 1...3:
         total += i
@@ -109,7 +109,7 @@ fn native_short_circuit_smoke() {
         return;
     }
     let source = r#"
-to run() -> Int:
+to run() -> Integer:
     mutable x = 0
     if false and (1 / x == 0):
         return 0
@@ -152,7 +152,7 @@ fn native_logger_smoke() {
     let source = r#"
 use Logger from log
 
-to run() -> Int:
+to run() -> Integer:
     Logger.log_info("boot")
     Logger.log_warning("warn")
     Logger.log_error_with("err", { "code": 7 })
@@ -192,10 +192,10 @@ fn native_actor_control_flow_awaits() {
     }
     let source = r#"
 A Counter:
-    can add(x: Int) -> Int:
+    can add(x: Integer) -> Integer:
         return x + 1
 
-to run() -> Int:
+to run() -> Integer:
     optimize balance:
         c = detach Counter() * 1
         mutable total = 0
@@ -242,9 +242,9 @@ fn native_class_fields_and_collections() {
     let source = r#"
 A Box:
     has:
-        value: Int
+        value: Integer
 
-to run() -> Int:
+to run() -> Integer:
     b = Box(value=5)
     l = [1, 2, 3]
     m = {"a": 1, "b": 2}
@@ -289,7 +289,7 @@ fn native_builtins_parse_and_io() {
     let path_str = path.to_string_lossy().replace('\\', "\\\\");
     let source = format!(
         r#"
-to run() -> Int:
+to run() -> Integer:
     __wr_write_file("{path}", "123") otherwise nil
     value = __wr_read_file("{path}") otherwise "0"
     parsed = __wr_parse_int(value) otherwise 0
@@ -333,10 +333,10 @@ fn native_actor_match_await() {
     }
     let source = r#"
 A Counter:
-    can add(x: Int) -> Int:
+    can add(x: Integer) -> Integer:
         return x + 1
 
-to run() -> Int:
+to run() -> Integer:
     optimize balance:
         c = detach Counter() * 1
         mutable total = 0
@@ -384,12 +384,12 @@ fn native_class_method_call_smoke() {
     let source = r#"
 A Counter:
     has:
-        value: Int
+        value: Integer
 
-    can inc() -> Int:
+    can inc() -> Integer:
         return its.value + 1
 
-to run() -> Int:
+to run() -> Integer:
     c = Counter(value=1)
     return c.inc()
 "#;
@@ -428,12 +428,12 @@ fn native_member_assign_smoke() {
     let source = r#"
 A Counter:
     has:
-        value: Int
+        value: Integer
 
-    can add(delta: Int) -> Nothing:
+    can add(delta: Integer) -> Nothing:
         its.value += delta
 
-to run() -> Int:
+to run() -> Integer:
     c = Counter(value=1)
     c.add(2)
     return c.value
@@ -477,10 +477,10 @@ use:
 from pool
 
 A Counter:
-    can ping(x: Int) -> Int:
+    can ping(x: Integer) -> Integer:
         return x
 
-to run() -> Int:
+to run() -> Integer:
     optimize balance:
         c = detach Counter() * 2
         v1 = await c.ping(1) otherwise 0
@@ -537,10 +537,10 @@ fn native_pool_auto_size_smoke() {
 use size from pool
 
 A Counter:
-    can ping(x: Int) -> Int:
+    can ping(x: Integer) -> Integer:
         return x
 
-to run() -> Int:
+to run() -> Integer:
     optimize balance:
         c = detach Counter() * n
         return size(c)
@@ -594,23 +594,23 @@ fn native_pool_mailbox_len_smoke() {
     let source = r#"
 use queue_len from pool
 use:
-    mailbox_len,
+    get_mailbox_length,
     pause,
-    pause_wait,
+    pause_and_wait,
     resume
 from actor
 
 A Counter:
-    can ping(x: Int) -> Int:
+    can ping(x: Integer) -> Integer:
         return x
 
-to run() -> Int:
+to run() -> Integer:
     optimize balance:
         c = detach Counter() * 2
         pause(c)
-        pause_wait(c)
+        pause_and_wait(c)
         fire c.ping(1)
-        len = queue_len(c) + mailbox_len(c)
+        len = queue_len(c) + get_mailbox_length(c)
         resume(c)
         if len >= 1:
             return 1
@@ -661,26 +661,26 @@ fn native_pool_pause_drop_metrics_smoke() {
     let source = r#"
 use:
     pause,
-    pause_wait,
+    pause_and_wait,
     resume
 from actor
 use:
     get,
-    dropped_paused_id
+    get_dropped_paused_id
 from metrics
 
 A Counter:
-    can ping(x: Int) -> Int:
+    can ping(x: Integer) -> Integer:
         return x
 
-to run() -> Int:
+to run() -> Integer:
     optimize balance:
         c = detach Counter() * 2
         pause(c)
-        pause_wait(c)
+        pause_and_wait(c)
         for i in 1...4:
             fire c.ping(i)
-        dropped = get(dropped_paused_id())
+        dropped = get(get_dropped_paused_id())
         resume(c)
         if dropped > 0:
             return 1
@@ -736,10 +736,10 @@ fn native_pool_backpressure_config_smoke() {
 use size from pool
 
 A Counter:
-    can ping(x: Int) -> Int:
+    can ping(x: Integer) -> Integer:
         return x
 
-to run() -> Int:
+to run() -> Integer:
     optimize balance:
         c = detach Pool.of(Counter, size=1, backpressure=queue(1)) * 1
         return size(c)
@@ -802,10 +802,10 @@ use:
 from metrics
 
 A Counter:
-    can ping(x: Int) -> Int:
+    can ping(x: Integer) -> Integer:
         return x
 
-to run() -> Int:
+to run() -> Integer:
     optimize balance:
         c = detach Pool.of(Counter, size=1, backpressure=queue(1)) * 1
         pause(c)
@@ -864,10 +864,10 @@ fn native_pool_of_overrides_tail_smoke() {
 use size from pool
 
 A Counter:
-    can ping(x: Int) -> Int:
+    can ping(x: Integer) -> Integer:
         return x
 
-to run() -> Int:
+to run() -> Integer:
     optimize balance:
         c = detach Pool.of(Counter, size=3) * 1
         return size(c)
@@ -918,10 +918,10 @@ fn native_pool_auto_bounds_smoke() {
 use size from pool
 
 A Counter:
-    can ping(x: Int) -> Int:
+    can ping(x: Integer) -> Integer:
         return x
 
-to run() -> Int:
+to run() -> Integer:
     optimize balance:
         c = detach Pool.of(Counter, size=n, min=2, max=2) * 1
         return size(c)
@@ -970,10 +970,10 @@ fn native_actor_fire_smoke() {
     }
     let source = r#"
 A Counter:
-    can add(x: Int) -> Int:
+    can add(x: Integer) -> Integer:
         return x + 1
 
-to run() -> Int:
+to run() -> Integer:
     optimize balance:
         c = detach Counter() * 1
         fire c.add(1)
@@ -1013,12 +1013,12 @@ fn native_result_otherwise_smoke() {
         return;
     }
     let source = r#"
-to fail(flag: Bool) -> Result:
+to fail(flag: Boolean) -> Result:
     if flag:
         return err "nope"
     return 7
 
-to run() -> Int:
+to run() -> Integer:
     v = fail(true) otherwise 5
     return v
 "#;
@@ -1057,9 +1057,9 @@ fn native_enum_match_smoke() {
     let source = r#"
 A Status is either:
     Pending
-    Processing(worker_id: Int)
+    Processing(worker_id: Integer)
 
-to run() -> Int:
+to run() -> Integer:
     status = Status.Processing(worker_id=7)
     match status:
         Status.Processing(id): return id
@@ -1099,12 +1099,12 @@ fn native_result_match_smoke() {
         return;
     }
     let source = r#"
-to maybe(ok: Bool) -> Result[Int, Int]:
+to maybe(ok: Boolean) -> Result[Integer, Integer]:
     if ok:
         return 1
     return err 9
 
-to run() -> Int:
+to run() -> Integer:
     match maybe(ok=false):
         Ok(v): return v
         Err(e): return e
@@ -1147,8 +1147,8 @@ A Box[T]:
     has:
         value: T
 
-to run() -> Int:
-    b = Box[Int](value=3)
+to run() -> Integer:
+    b = Box[Integer](value=3)
     return b.value
 "#;
 
@@ -1197,12 +1197,12 @@ A Bar:
     can show() -> String:
         return "bar"
 
-to show(p: Printable) -> Int:
+to show(p: Printable) -> Integer:
     if p.show() == "foo":
         return 1
     return 2
 
-to run() -> Int:
+to run() -> Integer:
     return show(p=Bar())
 "#;
 
@@ -1240,8 +1240,8 @@ fn native_defer_smoke() {
     let source = r#"
 A Counter:
     has:
-        value: Int
-    can add(delta: Int) -> Nothing:
+        value: Integer
+    can add(delta: Integer) -> Nothing:
         its.value += delta
 
 to bump(counter: Counter) -> Nothing:
@@ -1249,7 +1249,7 @@ to bump(counter: Counter) -> Nothing:
     defer counter.add(2)
     return
 
-to run() -> Int:
+to run() -> Integer:
     c = Counter(value=0)
     bump(counter=c)
     return c.value
@@ -1289,11 +1289,11 @@ fn native_defer_nested_and_early_return() {
     let source = r#"
 A Counter:
     has:
-        value: Int
-    can add(delta: Int) -> Nothing:
+        value: Integer
+    can add(delta: Integer) -> Nothing:
         its.value += delta
 
-to bump(counter: Counter, flip: Bool) -> Nothing:
+to bump(counter: Counter, flip: Boolean) -> Nothing:
     defer counter.add(1)
     if flip:
         defer counter.add(2)
@@ -1301,7 +1301,7 @@ to bump(counter: Counter, flip: Bool) -> Nothing:
     defer counter.add(4)
     return
 
-to run() -> Int:
+to run() -> Integer:
     c = Counter(value=0)
     bump(counter=c, flip=true)
     bump(counter=c, flip=false)
@@ -1340,7 +1340,7 @@ fn native_crash_exits() {
         return;
     }
     let source = r#"
-to run() -> Int:
+to run() -> Integer:
     crash("boom")
     return 0
 "#;

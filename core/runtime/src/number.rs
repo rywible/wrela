@@ -19,7 +19,7 @@ pub fn num_mul(a: Value, b: Value) -> Value {
 
 pub fn num_div(a: Value, b: Value) -> Value {
     match (num_kind(a), num_kind(b)) {
-        (Some(NumKind::Int(x)), Some(NumKind::Int(y))) => {
+        (Some(NumKind::Integer(x)), Some(NumKind::Integer(y))) => {
             if y == 0 {
                 std::process::abort();
             }
@@ -36,7 +36,7 @@ pub fn num_div(a: Value, b: Value) -> Value {
 
 pub fn num_mod(a: Value, b: Value) -> Value {
     match (num_kind(a), num_kind(b)) {
-        (Some(NumKind::Int(x)), Some(NumKind::Int(y))) => {
+        (Some(NumKind::Integer(x)), Some(NumKind::Integer(y))) => {
             if y == 0 {
                 std::process::abort();
             }
@@ -53,7 +53,7 @@ pub fn num_mod(a: Value, b: Value) -> Value {
 
 pub fn num_neg(a: Value) -> Value {
     match num_kind(a) {
-        Some(NumKind::Int(x)) => Value::from_int(-x),
+        Some(NumKind::Integer(x)) => Value::from_int(-x),
         Some(NumKind::Float(x)) => Value::from_float(-x),
         None => Value::nil(),
     }
@@ -82,7 +82,7 @@ fn numeric_binary(
     float_op: impl FnOnce(f64, f64) -> f64,
 ) -> Value {
     match (num_kind(a), num_kind(b)) {
-        (Some(NumKind::Int(x)), Some(NumKind::Int(y))) => Value::from_int(int_op(x, y)),
+        (Some(NumKind::Integer(x)), Some(NumKind::Integer(y))) => Value::from_int(int_op(x, y)),
         (Some(x), Some(y)) => {
             let xf = num_to_f64(x);
             let yf = num_to_f64(y);
@@ -99,7 +99,7 @@ fn numeric_cmp(
     float_op: impl FnOnce(f64, f64) -> bool,
 ) -> bool {
     match (num_kind(a), num_kind(b)) {
-        (Some(NumKind::Int(x)), Some(NumKind::Int(y))) => int_op(x, y),
+        (Some(NumKind::Integer(x)), Some(NumKind::Integer(y))) => int_op(x, y),
         (Some(x), Some(y)) => {
             let xf = num_to_f64(x);
             let yf = num_to_f64(y);
@@ -111,14 +111,14 @@ fn numeric_cmp(
 
 fn num_to_f64(kind: NumKind) -> f64 {
     match kind {
-        NumKind::Int(x) => x as f64,
+        NumKind::Integer(x) => x as f64,
         NumKind::Float(x) => x,
     }
 }
 
 fn num_kind(val: Value) -> Option<NumKind> {
     if let Some(i) = int_value(val) {
-        return Some(NumKind::Int(i));
+        return Some(NumKind::Integer(i));
     }
     if is_float(val) {
         return Some(NumKind::Float(val.as_float()));
@@ -138,6 +138,6 @@ fn is_string(val: Value) -> bool {
 }
 
 enum NumKind {
-    Int(i64),
+    Integer(i64),
     Float(f64),
 }

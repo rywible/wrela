@@ -115,7 +115,7 @@ to test_assignment_mutable() -> Nothing:
 so: ------------------------------------------------------------
     5) Control flow: if / while / for / match
     
-    - `if` requires a Bool condition.
+    - `if` requires a Boolean condition.
     - `while` loops while the condition is true.
     - `for x in iterable:` iterates lists, maps, and ranges.
     - `match` requires an `otherwise` case; labels are patterns:
@@ -183,7 +183,7 @@ so: ------------------------------------------------------------
     - Parameters require type annotations.
 
 
-to add(a: Int, b: Int) -> Int:
+to add(a: Integer, b: Integer) -> Integer:
     return a + b
 
 
@@ -213,12 +213,12 @@ so: ------------------------------------------------------------
 A Whale:
     has:
         name: String
-        age: Int
+        age: Integer
     can greet() -> String:
         return "hi {its.name}"
     can rename(new_name: String) -> Nothing:
         its.name = new_name
-    derives next_age() -> Int:
+    derives next_age() -> Integer:
         return its.age + 1
 
 
@@ -233,7 +233,7 @@ to test_class_fields_and_methods() -> Nothing:
 A Defaults:
     has:
         name: String = "default"
-        count: Int = 3
+        count: Integer = 3
         flags: List = [true, false]
         meta: Map = {"a": 1}
 
@@ -256,13 +256,13 @@ so: ------------------------------------------------------------
     - Interfaces use `A Name:` with `must` method signatures only.
     - Classes implement a single interface with `is a Name` as the first line of the class body.
     - Interfaces cannot define fields, derives, or method bodies.
-    - Generic type parameters are declared as `A Box[T]:` and instantiated with `Box[Int](...)`.
+    - Generic type parameters are declared as `A Box[T]:` and instantiated with `Box[Integer](...)`.
     - `defer expr` runs on all return paths in LIFO order.
     
 
 A Status is either:
     Pending
-    Processing(worker_id: Int)
+    Processing(worker_id: Integer)
     Done(result: String)
 
 A Box[T]:
@@ -279,8 +279,8 @@ A Foo:
 
 A Counter:
     has:
-        value: Int
-    can add(delta: Int) -> Nothing:
+        value: Integer
+    can add(delta: Integer) -> Nothing:
         its.value += delta
 
 to show(p: Printable) -> String:
@@ -300,7 +300,7 @@ to test_enum_and_match_patterns() -> Nothing:
         otherwise: assert value true == true
 
 to test_generic_class_instantiation() -> Nothing:
-    b = Box[Int](value=7)
+    b = Box[Integer](value=7)
     assert value b.value == 7
 
 to test_interface_dispatch() -> Nothing:
@@ -401,7 +401,7 @@ so: ------------------------------------------------------------
     - Unhandled Result values are compile-time errors.
 
 
-to returns_result(flag: Bool) -> Result[Int]:
+to returns_result(flag: Boolean) -> Result[Integer]:
     if flag:
         return 7
     return err "bad"
@@ -460,7 +460,7 @@ so: ------------------------------------------------------------
     13) Types (built-in and parameterized)
     
     Built-in types (by name):
-    Int, Float, Number, Bool, String, Bytes, Nothing (aka Nil), Error
+    Integer, Float, Number, Boolean, String, Bytes, Nothing (aka Nil), Error
     
     Generic type constructors:
     List[T]
@@ -470,7 +470,7 @@ so: ------------------------------------------------------------
     Pending[T]
     
     Type inference (high-level):
-    - Numeric literals infer Int or Float
+    - Numeric literals infer Integer or Float
     - `err x` yields Result[unknown, type(x)]
     - `await` yields Result[Ok, Error]
     - `nothing` has type Nothing/Nil

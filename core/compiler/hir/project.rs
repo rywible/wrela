@@ -1108,10 +1108,10 @@ fn collect_type_names(
 fn is_builtin_type_name(name: &SmolStr) -> bool {
     matches!(
         name.as_str(),
-        "Int"
+        "Integer"
             | "Float"
             | "Number"
-            | "Bool"
+            | "Boolean"
             | "String"
             | "Nil"
             | "Nothing"
@@ -1453,9 +1453,9 @@ mod tests {
 
         write_temp(
             &entry_path,
-            "use foo from bar\n\nto run() -> Int:\n    return f()\n\nto f() -> Int:\n    return foo()\n",
+            "use foo from bar\n\nto run() -> Integer:\n    return f()\n\nto f() -> Integer:\n    return foo()\n",
         );
-        write_temp(&mod_path, "to foo() -> Int:\n    return 1\n");
+        write_temp(&mod_path, "to foo() -> Integer:\n    return 1\n");
 
         let project = load_project(&entry_path);
         assert!(project.is_ok());
@@ -1485,9 +1485,9 @@ mod tests {
 
         write_temp(
             &entry_path,
-            "use foo from bar\n\nto run() -> Int:\n    return foo()\n",
+            "use foo from bar\n\nto run() -> Integer:\n    return foo()\n",
         );
-        write_temp(&mod_path, "to foo() -> Int:\n    return 1\n");
+        write_temp(&mod_path, "to foo() -> Integer:\n    return 1\n");
 
         let project = load_project(&entry_path);
         assert!(project.is_ok());
@@ -1523,7 +1523,7 @@ mod tests {
         let entry_path = base.join("src").join("main.wr");
         let mod_path = base.join("src").join("bar.wr");
 
-        write_temp(&entry_path, "use * from bar\n\nto run() -> Int:\n    return 1\n");
+        write_temp(&entry_path, "use * from bar\n\nto run() -> Integer:\n    return 1\n");
         write_temp(&mod_path, "__wr_print(\"hi\")\n");
 
         let project = load_project(&entry_path);
@@ -1541,7 +1541,7 @@ mod tests {
                 .as_nanos()
         ));
         let entry_path = base.join("src").join("main.wr");
-        write_temp(&entry_path, "to run() -> Int:\n    return foo()\n");
+        write_temp(&entry_path, "to run() -> Integer:\n    return foo()\n");
 
         let project = load_project(&entry_path);
         assert!(project.is_err());
@@ -1558,7 +1558,7 @@ mod tests {
                 .as_nanos()
         ));
         let entry_path = base.join("src").join("main.wr");
-        write_temp(&entry_path, "to f() -> Int:\n    return 1\n");
+        write_temp(&entry_path, "to f() -> Integer:\n    return 1\n");
 
         let project = load_project(&entry_path);
         assert!(project.is_err());
@@ -1577,8 +1577,8 @@ mod tests {
         let entry_path = base.join("src").join("main.wr");
         let mod_path = base.join("src").join("bar.wr");
 
-        write_temp(&entry_path, "use * from bar\n\nto run() -> Int:\n    return 1\n");
-        write_temp(&mod_path, "to run() -> Int:\n    return 2\n");
+        write_temp(&entry_path, "use * from bar\n\nto run() -> Integer:\n    return 1\n");
+        write_temp(&mod_path, "to run() -> Integer:\n    return 2\n");
 
         let project = load_project(&entry_path);
         assert!(project.is_err());

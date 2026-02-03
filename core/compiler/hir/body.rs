@@ -150,10 +150,10 @@ pub enum Expr {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Literal {
-    Int(i64),
+    Integer(i64),
     Float(f64),
     String(SmolStr),
-    Bool(bool),
+    Boolean(bool),
     Nil,
 }
 

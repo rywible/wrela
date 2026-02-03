@@ -3,7 +3,7 @@ so:
 
 use StorageClient from storage
 
-A Auth:
+An AuthProvider:
     has:
         storage: StorageClient
         jwt_secret: String = "wrela-dev-secret"
@@ -29,7 +29,7 @@ A Auth:
         return __wr_auth_verify_password(its.storage, user_id, password)
 
     so: Issue a JWT for a user with claims and TTL seconds.
-    can issue_jwt(user_id: String, claims: Map, ttl_secs: Int) -> Pending:
+    can issue_jwt(user_id: String, claims: Map, ttl_secs: Integer) -> Pending:
         return __wr_auth_issue_jwt(its.storage, user_id, claims, ttl_secs)
 
     so: Verify a JWT token.
@@ -37,7 +37,7 @@ A Auth:
         return __wr_auth_verify_jwt(its.storage, token)
 
     so: Issue a one-time email token for a user.
-    can issue_email_token(user_id: String, ttl_secs: Int) -> Pending:
+    can issue_email_token(user_id: String, ttl_secs: Integer) -> Pending:
         return __wr_auth_issue_email_token(its.storage, user_id, ttl_secs)
 
     so: Verify a one-time email token.
@@ -45,5 +45,5 @@ A Auth:
         return __wr_auth_verify_email_token(its.storage, token)
 
     so: Complete an OAuth login for the provider using a code.
-    can oauth_login(provider: String, code: String) -> Pending:
+    can login_with_oauth(provider: String, code: String) -> Pending:
         return __wr_auth_oauth_login(its.storage, provider, code)

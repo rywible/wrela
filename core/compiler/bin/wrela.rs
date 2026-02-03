@@ -350,7 +350,7 @@ fn init_project(path: &str) -> io::Result<()> {
             "src/main.wr already exists",
         ));
     }
-    fs::write(main_path, "to run() -> Int:\n    return 0\n")?;
+    fs::write(main_path, "to run() -> Integer:\n    return 0\n")?;
     Ok(())
 }
 
@@ -589,7 +589,7 @@ fn run_single_test(
     let entry_path = temp_dir.join(format!("{}_entry.wr", file_stem));
     let exe_path = temp_dir.join(format!("{}_bin", file_stem));
     let entry = format!(
-        "use {func} from {module}\n\nto run() -> Int:\n    {func}()\n    return 0\n",
+        "use {func} from {module}\n\nto run() -> Integer:\n    {func}()\n    return 0\n",
         func = test.func_name,
         module = test.module_path
     );

@@ -8,13 +8,13 @@ so: The language spec (`core/spec/spec.wr`) does not define stdlib semantics.
 so: Stdlib surface can evolve faster than core language rules.
 
 use:
-    from_string,
-    to_string,
-    length
+    get_bytes_from_string,
+    get_string_from_bytes,
+    get_length
 from bytes
 
 use:
-    new,
+    create_map,
     get,
     set
 from map
@@ -22,7 +22,7 @@ from map
 use push from list
 
 use:
-    parse_int,
+    parse_integer,
     parse_float
 from parse
 
@@ -32,9 +32,9 @@ so: 1) Bytes helpers
 
 
 to test_bytes_helpers() -> Nothing:
-    bytes = from_string("hi")
-    assert value length(bytes) == 2
-    assert value to_string(bytes) == "hi"
+    bytes = get_bytes_from_string("hi")
+    assert value get_length(bytes) == 2
+    assert value get_string_from_bytes(bytes) == "hi"
 
 
 so: ------------------------------------------------------------
@@ -42,7 +42,7 @@ so: 2) Map helpers
 
 
 to test_map_new_and_accessors() -> Nothing:
-    m = new()
+    m = create_map()
     set(m, "k", 7)
     assert value get(m, "k") == 7
 
@@ -61,8 +61,8 @@ so: ------------------------------------------------------------
 so: 4) Parse helpers
 
 
-to test_parse_int_and_float() -> Nothing:
-    assert value (parse_int("12") otherwise 0) == 12
+to test_parse_integer_and_float() -> Nothing:
+    assert value (parse_integer("12") otherwise 0) == 12
     assert value (parse_float("1.5") otherwise 0.0) == 1.5
 
 
@@ -72,19 +72,22 @@ so:
 so: The following types/classes are part of the public stdlib surface.
 so: This spec does not attempt to exhaustively test them.
 so:
-so: - Env: get, get_or, get_as_bool, get_as_int, set, load
-so: - Auth: configure, create_user, verify_password, issue_jwt, verify_jwt,
-so:         issue_email_token, verify_email_token, oauth_login
-so: - RBAC: create_role, assign_role, check, permissions_for
-so: - Files: upload_stream, signed_url, metadata, delete, set_acl
-so: - Jobs: configure, enqueue, process, dead_letter
-so: - Schedule: cron, every, at
-so: - Search: index, remove, query
-so: - Realtime: configure, on_connect, join, leave, broadcast, send
+so: - Env: get_environment_variable, get_environment_variable_or_default,
+so:        get_environment_variable_as_boolean, get_environment_variable_as_integer,
+so:        set_environment_variable, load_environment_variables
+so: - AuthProvider: configure, create_user, verify_password, issue_jwt, verify_jwt,
+so:        issue_email_token, verify_email_token, login_with_oauth
+so: - RoleBasedAccessControlProvider: create_role, assign_role, check_permission, get_permissions_for
+so: - FileSystem: upload_stream, generate_signed_url, get_metadata, delete, set_access_control_list
+so: - JobManager: configure, enqueue, process, get_dead_letter
+so: - Scheduler: register_cron_job, run_every, run_at
+so: - SearchClient: index, remove, query
+so: - RealtimeSocketProvider: configure, register_connection_handler, join_room,
+so:        leave_room, broadcast_to_room, send_message
 so: - PubSub: configure
 so: - Logger (logging helpers + configure)
 so: - Runtime (runtime configuration)
-so: - RateLimit: check, ip
+so: - RateLimiter: check_limit, get_ip
 so: - Admin: enable
 so: - StorageConfig + StorageClient (storage_* helpers)
 so: - storage_open function

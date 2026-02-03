@@ -3,7 +3,7 @@ so:
 
 A StorageConfig:
     has:
-        enabled: Bool
+        enabled: Boolean
         s3_bucket: String
         s3_region: String
         s3_access_key: String
@@ -13,23 +13,23 @@ A StorageConfig:
         file_path: String
         node_id: Number
         bind_addr: String
-        http_enabled: Bool
+        http_enabled: Boolean
         peer_token: String
         peers: String
-        bootstrap: Bool
+        bootstrap: Boolean
         snapshot_interval: Number
         batch_max_ops: Number
         batch_max_ms: Number
         queue_cap: Number
         blob_threshold_bytes: Number
         blob_path: String
-        backup_enabled: Bool
+        backup_enabled: Boolean
         backup_max_age_secs: Number
         backup_max_logs: Number
         backup_retention_days: Number
         backup_max_keep: Number
         backup_prefix: String
-        backup_only_leader: Bool
+        backup_only_leader: Boolean
         backup_restore_mode: String
         backup_restore_id: String
 

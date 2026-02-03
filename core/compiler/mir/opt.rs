@@ -28,7 +28,7 @@ pub fn constant_fold(func: &mut MirFunction) {
             span,
         } = &block.terminator
         {
-            if let Value::Const(Literal::Bool(flag)) = cond {
+            if let Value::Const(Literal::Boolean(flag)) = cond {
                 block.terminator = if *flag {
                     Terminator::Jump {
                         target: *then_target,
@@ -54,7 +54,7 @@ pub fn simplify_branches(func: &mut MirFunction) {
             span,
         } = &block.terminator
         {
-            if let Value::Const(Literal::Bool(flag)) = cond {
+            if let Value::Const(Literal::Boolean(flag)) = cond {
                 block.terminator = if *flag {
                     Terminator::Jump {
                         target: *then_target,
@@ -96,9 +96,9 @@ pub fn dead_code_elim(func: &mut MirFunction) {
 fn fold_rvalue(value: &Rvalue) -> Option<Literal> {
     match value {
         Rvalue::Unary { op, operand } => match (op, operand) {
-            (UnaryOp::Neg, Value::Const(Literal::Int(v))) => Some(Literal::Int(-v)),
+            (UnaryOp::Neg, Value::Const(Literal::Integer(v))) => Some(Literal::Integer(-v)),
             (UnaryOp::Neg, Value::Const(Literal::Float(v))) => Some(Literal::Float(-v)),
-            (UnaryOp::Not, Value::Const(Literal::Bool(v))) => Some(Literal::Bool(!v)),
+            (UnaryOp::Not, Value::Const(Literal::Boolean(v))) => Some(Literal::Boolean(!v)),
             _ => None,
         },
         Rvalue::Binary { op, lhs, rhs } => fold_binary(*op, lhs, rhs),
@@ -108,18 +108,18 @@ fn fold_rvalue(value: &Rvalue) -> Option<Literal> {
 
 fn fold_binary(op: BinaryOp, lhs: &Value, rhs: &Value) -> Option<Literal> {
     match (lhs, rhs) {
-        (Value::Const(Literal::Int(a)), Value::Const(Literal::Int(b))) => match op {
-            BinaryOp::Add => Some(Literal::Int(a + b)),
-            BinaryOp::Sub => Some(Literal::Int(a - b)),
-            BinaryOp::Mul => Some(Literal::Int(a * b)),
-            BinaryOp::Div => Some(Literal::Int(a / b)),
-            BinaryOp::Mod => Some(Literal::Int(a % b)),
-            BinaryOp::Eq => Some(Literal::Bool(a == b)),
-            BinaryOp::Ne => Some(Literal::Bool(a != b)),
-            BinaryOp::Lt => Some(Literal::Bool(a < b)),
-            BinaryOp::Gt => Some(Literal::Bool(a > b)),
-            BinaryOp::Le => Some(Literal::Bool(a <= b)),
-            BinaryOp::Ge => Some(Literal::Bool(a >= b)),
+        (Value::Const(Literal::Integer(a)), Value::Const(Literal::Integer(b))) => match op {
+            BinaryOp::Add => Some(Literal::Integer(a + b)),
+            BinaryOp::Sub => Some(Literal::Integer(a - b)),
+            BinaryOp::Mul => Some(Literal::Integer(a * b)),
+            BinaryOp::Div => Some(Literal::Integer(a / b)),
+            BinaryOp::Mod => Some(Literal::Integer(a % b)),
+            BinaryOp::Eq => Some(Literal::Boolean(a == b)),
+            BinaryOp::Ne => Some(Literal::Boolean(a != b)),
+            BinaryOp::Lt => Some(Literal::Boolean(a < b)),
+            BinaryOp::Gt => Some(Literal::Boolean(a > b)),
+            BinaryOp::Le => Some(Literal::Boolean(a <= b)),
+            BinaryOp::Ge => Some(Literal::Boolean(a >= b)),
             _ => None,
         },
         (Value::Const(Literal::Float(a)), Value::Const(Literal::Float(b))) => match op {
@@ -127,24 +127,24 @@ fn fold_binary(op: BinaryOp, lhs: &Value, rhs: &Value) -> Option<Literal> {
             BinaryOp::Sub => Some(Literal::Float(a - b)),
             BinaryOp::Mul => Some(Literal::Float(a * b)),
             BinaryOp::Div => Some(Literal::Float(a / b)),
-            BinaryOp::Eq => Some(Literal::Bool(a == b)),
-            BinaryOp::Ne => Some(Literal::Bool(a != b)),
-            BinaryOp::Lt => Some(Literal::Bool(a < b)),
-            BinaryOp::Gt => Some(Literal::Bool(a > b)),
-            BinaryOp::Le => Some(Literal::Bool(a <= b)),
-            BinaryOp::Ge => Some(Literal::Bool(a >= b)),
+            BinaryOp::Eq => Some(Literal::Boolean(a == b)),
+            BinaryOp::Ne => Some(Literal::Boolean(a != b)),
+            BinaryOp::Lt => Some(Literal::Boolean(a < b)),
+            BinaryOp::Gt => Some(Literal::Boolean(a > b)),
+            BinaryOp::Le => Some(Literal::Boolean(a <= b)),
+            BinaryOp::Ge => Some(Literal::Boolean(a >= b)),
             _ => None,
         },
-        (Value::Const(Literal::Bool(a)), Value::Const(Literal::Bool(b))) => match op {
-            BinaryOp::And => Some(Literal::Bool(*a && *b)),
-            BinaryOp::Or => Some(Literal::Bool(*a || *b)),
-            BinaryOp::Eq => Some(Literal::Bool(a == b)),
-            BinaryOp::Ne => Some(Literal::Bool(a != b)),
+        (Value::Const(Literal::Boolean(a)), Value::Const(Literal::Boolean(b))) => match op {
+            BinaryOp::And => Some(Literal::Boolean(*a && *b)),
+            BinaryOp::Or => Some(Literal::Boolean(*a || *b)),
+            BinaryOp::Eq => Some(Literal::Boolean(a == b)),
+            BinaryOp::Ne => Some(Literal::Boolean(a != b)),
             _ => None,
         },
         (Value::Const(Literal::String(a)), Value::Const(Literal::String(b))) => match op {
-            BinaryOp::Eq => Some(Literal::Bool(a == b)),
-            BinaryOp::Ne => Some(Literal::Bool(a != b)),
+            BinaryOp::Eq => Some(Literal::Boolean(a == b)),
+            BinaryOp::Ne => Some(Literal::Boolean(a != b)),
             _ => None,
         },
         _ => None,
@@ -910,7 +910,7 @@ mod tests {
         assert!(
             assigns
                 .iter()
-                .any(|value| matches!(value, Rvalue::Use(Value::Const(Literal::Int(3)))))
+                .any(|value| matches!(value, Rvalue::Use(Value::Const(Literal::Integer(3)))))
         );
     }
 
@@ -954,7 +954,7 @@ mod tests {
                     value: Rvalue::Binary {
                         op: BinaryOp::Add,
                         lhs: Value::Local(LocalId(0)),
-                        rhs: Value::Const(Literal::Int(1)),
+                        rhs: Value::Const(Literal::Integer(1)),
                     },
                     span,
                 }],

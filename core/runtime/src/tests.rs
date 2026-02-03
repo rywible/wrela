@@ -216,12 +216,12 @@ fn value_tags_roundtrip() {
     let i = Value::from_int(-42);
     assert!(i.is_int());
     assert_eq!(i.as_int(), -42);
-    assert_eq!(wr_type_id(i), TypeId::Int as u32);
+    assert_eq!(wr_type_id(i), TypeId::Integer as u32);
 
     let b = Value::from_bool(true);
     assert!(b.is_bool());
     assert_eq!(b.as_bool(), true);
-    assert_eq!(wr_type_id(b), TypeId::Bool as u32);
+    assert_eq!(wr_type_id(b), TypeId::Boolean as u32);
 
     let n = Value::nil();
     assert!(n.is_nil());
@@ -450,7 +450,7 @@ fn boxed_int_roundtrip() {
     assert!(!v.is_int());
     assert!(v.is_ptr());
     assert_eq!(crate::value::int_value(v), Some(big));
-    assert_eq!(wr_type_id(v), TypeId::Int as u32);
+    assert_eq!(wr_type_id(v), TypeId::Integer as u32);
     unsafe { wr_rc_dec(v) };
 }
 

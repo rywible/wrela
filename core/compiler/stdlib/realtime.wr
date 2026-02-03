@@ -1,7 +1,7 @@
 so:
     Realtime socket helpers.
 
-A Realtime:
+A RealtimeSocketProvider:
     has:
         socket_ttl_secs: Number = 0
 
@@ -12,21 +12,21 @@ A Realtime:
         return nothing
 
     so: Register a connection handler.
-    can on_connect(handler: Any) -> Pending:
+    can register_connection_handler(handler: Any) -> Pending:
         return __wr_realtime_on_connect(handler)
 
     so: Join a socket to a room.
-    can join(socket_id: String, room: String) -> Pending:
+    can join_room(socket_id: String, room: String) -> Pending:
         return __wr_realtime_join(socket_id, room)
 
     so: Leave a room.
-    can leave(socket_id: String, room: String) -> Pending:
+    can leave_room(socket_id: String, room: String) -> Pending:
         return __wr_realtime_leave(socket_id, room)
 
     so: Broadcast to a room.
-    can broadcast(room: String, message: Any) -> Pending:
+    can broadcast_to_room(room: String, message: Any) -> Pending:
         return __wr_realtime_broadcast(room, message)
 
     so: Send a message to a socket.
-    can send(socket_id: String, message: Any) -> Pending:
+    can send_message(socket_id: String, message: Any) -> Pending:
         return __wr_realtime_send(socket_id, message)

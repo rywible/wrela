@@ -3,7 +3,7 @@ so:
 
 use StorageClient from storage
 
-A Jobs:
+A JobManager:
     has:
         storage: StorageClient
         lease_ttl_secs: Number = 60
@@ -23,5 +23,5 @@ A Jobs:
         return __wr_jobs_process(its.storage, queue, handler)
 
     so: Fetch the dead-letter queue for a queue.
-    can dead_letter(queue: String) -> Pending:
+    can get_dead_letter(queue: String) -> Pending:
         return __wr_jobs_dead_letter(its.storage, queue)

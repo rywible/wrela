@@ -111,7 +111,7 @@ otherwise:
 #[test]
 fn test_match_case_inline_otherwise_tokens() {
     let input = r#"
-to run() -> Int:
+to run() -> Integer:
     match status:
         Status.Processing(id): return id
         Status.Pending: return 0

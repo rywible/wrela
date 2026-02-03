@@ -141,8 +141,8 @@ impl Value {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TypeId {
     Unknown = 0,
-    Int = 1,
-    Bool = 2,
+    Integer = 1,
+    Boolean = 2,
     Nil = 3,
     Float = 4,
     String = 5,
@@ -154,16 +154,16 @@ pub enum TypeId {
     Result = 11,
     Pool = 12,
     Bytes = 13,
-    BoxedInt = 14,
+    BoxedInteger = 14,
     UserBase = 100,
 }
 
 pub fn type_id_raw(val: Value) -> u32 {
     if val.is_int() {
-        return TypeId::Int as u32;
+        return TypeId::Integer as u32;
     }
     if val.is_bool() {
-        return TypeId::Bool as u32;
+        return TypeId::Boolean as u32;
     }
     if val.is_nil() {
         return TypeId::Nil as u32;
@@ -174,8 +174,8 @@ pub fn type_id_raw(val: Value) -> u32 {
     if val.is_ptr() {
         unsafe {
             let header = &*val.as_ptr();
-            if header.type_id == TypeId::BoxedInt as u32 {
-                return TypeId::Int as u32;
+            if header.type_id == TypeId::BoxedInteger as u32 {
+                return TypeId::Integer as u32;
             }
             return header.type_id;
         }
@@ -290,7 +290,7 @@ struct IntBox {
 
 fn box_int(val: i64) -> Value {
     let obj = Box::new(IntBox {
-        header: header(TypeId::BoxedInt),
+        header: header(TypeId::BoxedInteger),
         val,
     });
     Value::from_ptr(Box::into_raw(obj) as *mut ObjHeader)
@@ -303,7 +303,7 @@ pub fn int_value(val: Value) -> Option<i64> {
     if val.is_ptr() {
         unsafe {
             let header = &*val.as_ptr();
-            if header.type_id == TypeId::BoxedInt as u32 {
+            if header.type_id == TypeId::BoxedInteger as u32 {
                 let boxed = val.as_ptr() as *const IntBox;
                 return Some((*boxed).val);
             }

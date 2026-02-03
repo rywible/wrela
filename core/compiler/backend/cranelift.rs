@@ -828,7 +828,7 @@ fn lower_rvalue(
                 crate::hir::UnaryOp::Neg => {
                     let ty = mir_type_of_value(operand, locals_tys, temps_tys);
                     match ty {
-                        MirType::Int => {
+                        MirType::Integer => {
                             let unboxed = untag_int(builder, module, runtime, v)?;
                             let neg = builder.ins().ineg(unboxed);
                             tag_int(builder, module, runtime, neg)
@@ -873,7 +873,7 @@ fn lower_rvalue(
                 crate::hir::BinaryOp::Add => {
                     let lty = mir_type_of_value(lhs, locals_tys, temps_tys);
                     let rty = mir_type_of_value(rhs, locals_tys, temps_tys);
-                    if matches!(lty, MirType::Int) && matches!(rty, MirType::Int) {
+                    if matches!(lty, MirType::Integer) && matches!(rty, MirType::Integer) {
                         let l = untag_int(builder, module, runtime, lhs_val)?;
                         let r = untag_int(builder, module, runtime, rhs_val)?;
                         let res = builder.ins().iadd(l, r);
@@ -908,7 +908,7 @@ fn lower_rvalue(
                 crate::hir::BinaryOp::Sub => {
                     let lty = mir_type_of_value(lhs, locals_tys, temps_tys);
                     let rty = mir_type_of_value(rhs, locals_tys, temps_tys);
-                    if matches!(lty, MirType::Int) && matches!(rty, MirType::Int) {
+                    if matches!(lty, MirType::Integer) && matches!(rty, MirType::Integer) {
                         let l = untag_int(builder, module, runtime, lhs_val)?;
                         let r = untag_int(builder, module, runtime, rhs_val)?;
                         let res = builder.ins().isub(l, r);
@@ -935,7 +935,7 @@ fn lower_rvalue(
                 crate::hir::BinaryOp::Mul => {
                     let lty = mir_type_of_value(lhs, locals_tys, temps_tys);
                     let rty = mir_type_of_value(rhs, locals_tys, temps_tys);
-                    if matches!(lty, MirType::Int) && matches!(rty, MirType::Int) {
+                    if matches!(lty, MirType::Integer) && matches!(rty, MirType::Integer) {
                         let l = untag_int(builder, module, runtime, lhs_val)?;
                         let r = untag_int(builder, module, runtime, rhs_val)?;
                         let res = builder.ins().imul(l, r);
@@ -962,7 +962,7 @@ fn lower_rvalue(
                 crate::hir::BinaryOp::Div => {
                     let lty = mir_type_of_value(lhs, locals_tys, temps_tys);
                     let rty = mir_type_of_value(rhs, locals_tys, temps_tys);
-                    if matches!(lty, MirType::Int) && matches!(rty, MirType::Int) {
+                    if matches!(lty, MirType::Integer) && matches!(rty, MirType::Integer) {
                         let l = untag_int(builder, module, runtime, lhs_val)?;
                         let r = untag_int(builder, module, runtime, rhs_val)?;
                         let zero = builder.ins().iconst(types::I64, 0);
@@ -1005,7 +1005,7 @@ fn lower_rvalue(
                 crate::hir::BinaryOp::Mod => {
                     let lty = mir_type_of_value(lhs, locals_tys, temps_tys);
                     let rty = mir_type_of_value(rhs, locals_tys, temps_tys);
-                    if matches!(lty, MirType::Int) && matches!(rty, MirType::Int) {
+                    if matches!(lty, MirType::Integer) && matches!(rty, MirType::Integer) {
                         let l = untag_int(builder, module, runtime, lhs_val)?;
                         let r = untag_int(builder, module, runtime, rhs_val)?;
                         let res = builder.ins().srem(l, r);
@@ -1058,7 +1058,7 @@ fn lower_rvalue(
                 crate::hir::BinaryOp::Lt => {
                     let lty = mir_type_of_value(lhs, locals_tys, temps_tys);
                     let rty = mir_type_of_value(rhs, locals_tys, temps_tys);
-                    if matches!(lty, MirType::Int) && matches!(rty, MirType::Int) {
+                    if matches!(lty, MirType::Integer) && matches!(rty, MirType::Integer) {
                         let l = untag_int(builder, module, runtime, lhs_val)?;
                         let r = untag_int(builder, module, runtime, rhs_val)?;
                         let cmp = builder.ins().icmp(
@@ -1092,7 +1092,7 @@ fn lower_rvalue(
                 crate::hir::BinaryOp::Gt => {
                     let lty = mir_type_of_value(lhs, locals_tys, temps_tys);
                     let rty = mir_type_of_value(rhs, locals_tys, temps_tys);
-                    if matches!(lty, MirType::Int) && matches!(rty, MirType::Int) {
+                    if matches!(lty, MirType::Integer) && matches!(rty, MirType::Integer) {
                         let l = untag_int(builder, module, runtime, lhs_val)?;
                         let r = untag_int(builder, module, runtime, rhs_val)?;
                         let cmp = builder.ins().icmp(
@@ -1126,7 +1126,7 @@ fn lower_rvalue(
                 crate::hir::BinaryOp::Le => {
                     let lty = mir_type_of_value(lhs, locals_tys, temps_tys);
                     let rty = mir_type_of_value(rhs, locals_tys, temps_tys);
-                    if matches!(lty, MirType::Int) && matches!(rty, MirType::Int) {
+                    if matches!(lty, MirType::Integer) && matches!(rty, MirType::Integer) {
                         let l = untag_int(builder, module, runtime, lhs_val)?;
                         let r = untag_int(builder, module, runtime, rhs_val)?;
                         let cmp = builder.ins().icmp(
@@ -1160,7 +1160,7 @@ fn lower_rvalue(
                 crate::hir::BinaryOp::Ge => {
                     let lty = mir_type_of_value(lhs, locals_tys, temps_tys);
                     let rty = mir_type_of_value(rhs, locals_tys, temps_tys);
-                    if matches!(lty, MirType::Int) && matches!(rty, MirType::Int) {
+                    if matches!(lty, MirType::Integer) && matches!(rty, MirType::Integer) {
                         let l = untag_int(builder, module, runtime, lhs_val)?;
                         let r = untag_int(builder, module, runtime, rhs_val)?;
                         let cmp = builder.ins().icmp(
@@ -1721,9 +1721,9 @@ fn mir_type_of_value(
 
 fn mir_type_of_literal(lit: &crate::hir::Literal) -> MirType {
     match lit {
-        crate::hir::Literal::Int(_) => MirType::Int,
+        crate::hir::Literal::Integer(_) => MirType::Integer,
         crate::hir::Literal::Float(_) => MirType::Float,
-        crate::hir::Literal::Bool(_) => MirType::Bool,
+        crate::hir::Literal::Boolean(_) => MirType::Boolean,
         crate::hir::Literal::Nil => MirType::Nil,
         crate::hir::Literal::String(_) => MirType::String,
     }
@@ -1869,11 +1869,11 @@ fn lower_literal(
     runtime: &mut RuntimeRegistry,
 ) -> Result<cranelift_codegen::ir::Value, CodegenError> {
     match lit {
-        crate::hir::Literal::Int(v) => {
+        crate::hir::Literal::Integer(v) => {
             let val = builder.ins().iconst(types::I64, *v as i64);
             tag_int(builder, module, runtime, val)
         }
-        crate::hir::Literal::Bool(v) => Ok(builder.ins().iconst(types::I64, nanbox_bool_const(*v))),
+        crate::hir::Literal::Boolean(v) => Ok(builder.ins().iconst(types::I64, nanbox_bool_const(*v))),
         crate::hir::Literal::Nil => Ok(builder.ins().iconst(types::I64, nanbox_nil_const())),
         crate::hir::Literal::Float(v) => {
             let func_id = runtime_fn_box_float(module, runtime)?;
@@ -3422,7 +3422,7 @@ fn build_bytes_arrays(
 
 fn ty_to_clif(ty: &MirType) -> Result<cranelift_codegen::ir::Type, CodegenError> {
     match ty {
-        MirType::Int | MirType::Bool | MirType::Nil | MirType::Unknown => Ok(types::I64),
+        MirType::Integer | MirType::Boolean | MirType::Nil | MirType::Unknown => Ok(types::I64),
         MirType::Float => Ok(types::I64),
         MirType::String
         | MirType::Named(_)

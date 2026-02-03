@@ -346,13 +346,13 @@ impl LoweringContext {
             ast::Expr::Literal(l) => {
                 let token = first_non_trivia_token(l.syntax())?;
                 let lit = match token.kind() {
-                    SyntaxKind::IntNumber => Literal::Int(token.text().parse().unwrap_or(0)),
+                    SyntaxKind::IntNumber => Literal::Integer(token.text().parse().unwrap_or(0)),
                     SyntaxKind::FloatNumber => Literal::Float(token.text().parse().unwrap_or(0.0)),
                     SyntaxKind::StringLiteral => {
                         Literal::String(SmolStr::new(token.text().trim_matches('\"')))
                     }
-                    SyntaxKind::TrueKw => Literal::Bool(true),
-                    SyntaxKind::FalseKw => Literal::Bool(false),
+                    SyntaxKind::TrueKw => Literal::Boolean(true),
+                    SyntaxKind::FalseKw => Literal::Boolean(false),
                     SyntaxKind::NothingKw => Literal::Nil,
                     _ => return None,
                 };
@@ -495,7 +495,7 @@ impl BodyLoweringContext {
                     .condition()
                     .and_then(|e| self.lower_expr(e))
                     .unwrap_or_else(|| {
-                        self.alloc_expr(Expr::Literal(Literal::Bool(false)), self.empty_span())
+                        self.alloc_expr(Expr::Literal(Literal::Boolean(false)), self.empty_span())
                     });
                 let body = self.lower_block(w.body());
                 Stmt::While { condition, body }
@@ -580,7 +580,7 @@ impl BodyLoweringContext {
                     .expr()
                     .and_then(|e| self.lower_expr(e))
                     .unwrap_or_else(|| {
-                        self.alloc_expr(Expr::Literal(Literal::Bool(false)), self.empty_span())
+                        self.alloc_expr(Expr::Literal(Literal::Boolean(false)), self.empty_span())
                     });
                 let kind = match a.mode() {
                     ast::AssertMode::Value => crate::hir::AssertKind::Value,
@@ -618,7 +618,7 @@ impl BodyLoweringContext {
         let condition = i
             .condition()
             .and_then(|e| self.lower_expr(e))
-            .unwrap_or_else(|| self.alloc_expr(Expr::Literal(Literal::Bool(false)), self.empty_span()));
+            .unwrap_or_else(|| self.alloc_expr(Expr::Literal(Literal::Boolean(false)), self.empty_span()));
         let then_branch = self.lower_block(i.then_block());
         let else_branch = if let Some(block) = i.else_block() {
             Some(self.lower_block(Some(block)))
@@ -645,14 +645,14 @@ impl BodyLoweringContext {
                 }
                 SyntaxKind::IntNumber => {
                     let text = token.text().replace('_', "");
-                    Literal::Int(text.parse::<i64>().unwrap_or_default())
+                    Literal::Integer(text.parse::<i64>().unwrap_or_default())
                 }
                 SyntaxKind::FloatNumber => {
                     let text = token.text().replace('_', "");
                     Literal::Float(text.parse::<f64>().unwrap_or_default())
                 }
-                SyntaxKind::TrueKw => Literal::Bool(true),
-                SyntaxKind::FalseKw => Literal::Bool(false),
+                SyntaxKind::TrueKw => Literal::Boolean(true),
+                SyntaxKind::FalseKw => Literal::Boolean(false),
                 SyntaxKind::NothingKw => Literal::Nil,
                 _ => Literal::Nil,
             };
@@ -684,13 +684,13 @@ impl BodyLoweringContext {
             ast::Expr::Literal(l) => {
                 let token = first_non_trivia_token(l.syntax())?;
                 let lit = match token.kind() {
-                    SyntaxKind::IntNumber => Literal::Int(token.text().parse().unwrap_or(0)),
+                    SyntaxKind::IntNumber => Literal::Integer(token.text().parse().unwrap_or(0)),
                     SyntaxKind::FloatNumber => Literal::Float(token.text().parse().unwrap_or(0.0)),
                     SyntaxKind::StringLiteral => {
                         Literal::String(SmolStr::new(token.text().trim_matches('"')))
                     }
-                    SyntaxKind::TrueKw => Literal::Bool(true),
-                    SyntaxKind::FalseKw => Literal::Bool(false),
+                    SyntaxKind::TrueKw => Literal::Boolean(true),
+                    SyntaxKind::FalseKw => Literal::Boolean(false),
                     SyntaxKind::NothingKw => Literal::Nil,
                     _ => return None,
                 };
@@ -1142,7 +1142,7 @@ mod tests {
 
     #[test]
     fn test_lower_basic() {
-        let input = "to add(a: Int, b: Int) -> Int:\n    return a + b";
+        let input = "to add(a: Integer, b: Integer) -> Integer:\n    return a + b";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -1161,7 +1161,7 @@ mod tests {
 
     #[test]
     fn test_lower_type_args() {
-        let input = "to f(x: Result[Int, Error]) -> List[String]:\n    return []";
+        let input = "to f(x: Result[Integer, Error]) -> List[String]:\n    return []";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -1170,7 +1170,7 @@ mod tests {
         let param_ty = func.params[0].ty.as_ref().unwrap();
         assert_eq!(param_ty.name, "Result");
         assert_eq!(param_ty.args.len(), 2);
-        assert_eq!(param_ty.args[0].name, "Int");
+        assert_eq!(param_ty.args[0].name, "Integer");
         assert_eq!(param_ty.args[1].name, "Error");
 
         let ret_ty = func.ret_type.as_ref().unwrap();
@@ -1185,7 +1185,7 @@ mod tests {
 A Defaults:
     has:
         name: String = \"ok\"
-        count: Int = 3
+        count: Integer = 3
         flags: List = [true, false]
         meta: Map = {\"a\": 1}
 ";
@@ -1202,7 +1202,7 @@ A Defaults:
             other => panic!("unexpected default: {other:?}"),
         }
         match class.fields[1].default.as_ref().unwrap() {
-            FieldDefault::Literal(Literal::Int(val)) => assert_eq!(*val, 3),
+            FieldDefault::Literal(Literal::Integer(val)) => assert_eq!(*val, 3),
             other => panic!("unexpected default: {other:?}"),
         }
         match class.fields[2].default.as_ref().unwrap() {
@@ -1223,7 +1223,7 @@ use:
     io
 from core
 
-to f() -> Int:
+to f() -> Integer:
     for i in [1, 2]:
         if i == 1:
             break
@@ -1405,8 +1405,8 @@ to f() -> Nothing:
         let input = "\
 A Counter:
     has:
-        value: Int
-    can add(delta: Int) -> Nothing:
+        value: Integer
+    can add(delta: Integer) -> Nothing:
         its.value += delta
 ";
         let node = parse(input);

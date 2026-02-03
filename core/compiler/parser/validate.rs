@@ -524,7 +524,7 @@ mod tests {
     fn test_it_only_in_return() {
         let text = "\
 it
-to f() -> Int:
+to f() -> Integer:
     return 1
 ";
         let root = parse(text);
@@ -536,7 +536,7 @@ to f() -> Int:
     #[test]
     fn test_it_inside_return_expr() {
         let text = "\
-to f() -> Int:
+to f() -> Integer:
     return 1
 ";
         let root = parse(text);
@@ -621,7 +621,7 @@ to f():
 A Defaults:
     has:
         name: String = "ok"
-        count: Int = 3
+        count: Integer = 3
         flags: List = [true, false]
         meta: Map = {"a": 1}
 "#;
@@ -635,7 +635,7 @@ A Defaults:
         let text = r#"
 A Bad:
     has:
-        value: Int = 1 + 2
+        value: Integer = 1 + 2
 "#;
         let root = parse(text);
         let errors = validate(&root);
@@ -650,7 +650,7 @@ A Bad:
     fn test_private_block_top_level_restricts_members() {
         let text = "\
 private:
-    to f() -> Int:
+    to f() -> Integer:
         return 1
     mutable x = 1
 ";
@@ -668,7 +668,7 @@ private:
         let text = "\
 A Foo:
     private:
-        to f() -> Int:
+        to f() -> Integer:
             return 1
 ";
         let root = parse(text);
@@ -709,7 +709,7 @@ A Foo:
     #[test]
     fn test_missing_function_name() {
         let text = "\
-to () -> Int:
+to () -> Integer:
     return 1
 ";
         let root = parse(text);
@@ -724,7 +724,7 @@ to () -> Int:
     #[test]
     fn test_invalid_numeric_literal() {
         let text = "\
-to f() -> Int:
+to f() -> Integer:
     return 1e
 ";
         let root = parse(text);

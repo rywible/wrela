@@ -638,7 +638,7 @@ w /= 4
     #[test]
     fn test_types_parsing() {
         let text = "\
-to f(x: Int) -> Bool:
+to f(x: Integer) -> Boolean:
     return true
 ";
         let (_node, errors) = parse_with_errors(text);
@@ -649,7 +649,7 @@ to f(x: Int) -> Bool:
     fn test_function_block_contains_statements() {
         use ast::{AstNode, Stmt};
         let text = "\
-to f() -> Int:
+to f() -> Integer:
     return 1
 ";
         let node = parse(text);

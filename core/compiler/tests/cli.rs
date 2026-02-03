@@ -39,7 +39,7 @@ fn cli_init_creates_project() {
 fn cli_json_diagnostics() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("main.wr");
-    std::fs::write(&path, "to run() -> Int:\n    return 1 +\n").unwrap();
+    std::fs::write(&path, "to run() -> Integer:\n    return 1 +\n").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
         .arg("--format=json")
         .arg(&path)
@@ -58,7 +58,7 @@ fn cli_exit_code_parse_error() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("src").join("main.wr");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(&path, "to run() -> Int:\n    return 1 +\n").unwrap();
+    std::fs::write(&path, "to run() -> Integer:\n    return 1 +\n").unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
         .arg(&path)
@@ -72,7 +72,7 @@ fn cli_exit_code_type_error() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("src").join("main.wr");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(&path, "to run() -> Int:\n    return 1 + true\n").unwrap();
+    std::fs::write(&path, "to run() -> Integer:\n    return 1 + true\n").unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
         .arg(&path)
@@ -86,7 +86,7 @@ fn cli_check_success() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("src").join("main.wr");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(&path, "to run() -> Int:\n    return 1\n").unwrap();
+    std::fs::write(&path, "to run() -> Integer:\n    return 1\n").unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
         .arg("check")
@@ -100,7 +100,7 @@ fn cli_check_success() {
 fn cli_check_without_run_is_ok() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("spec.wr");
-    std::fs::write(&path, "to helper() -> Int:\n    return 1\n").unwrap();
+    std::fs::write(&path, "to helper() -> Integer:\n    return 1\n").unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
         .arg("check")

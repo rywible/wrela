@@ -2,11 +2,11 @@ so:
     Actor pool helpers.
 
 so: Compute an automatic pool size for an objective and bounds.
-to auto_size(objective: Int, min: Int, max: Int, weight: Int) -> Int:
+to auto_size(objective: Integer, min: Integer, max: Integer, weight: Integer) -> Integer:
     return __wr_pool_auto_size(objective, min, max, weight)
 
 so: Return the current pool size.
-to size(handle: Any) -> Int:
+to size(handle: Any) -> Integer:
     return __wr_pool_size(handle)
 
 so: Return the next handle in round-robin order.
@@ -14,5 +14,5 @@ to round_robin(handle: Any) -> Any:
     return __wr_pool_rr(handle)
 
 so: Return the current pool queue length.
-to queue_len(handle: Any) -> Int:
+to queue_len(handle: Any) -> Integer:
     return __wr_pool_queue_len(handle)

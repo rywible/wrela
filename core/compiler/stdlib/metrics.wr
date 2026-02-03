@@ -2,13 +2,13 @@ so:
     Metrics helpers.
 
 so: Fetch a metric by id.
-to get(id: Int) -> Int:
+to get(id: Integer) -> Integer:
     return __wr_metrics_get(id)
 
 so: Metric id for messages dropped due to pause.
-to dropped_paused_id() -> Int:
+to get_dropped_paused_id() -> Integer:
     return __wr_metrics_dropped_paused_id()
 
 so: Metric id for messages dropped overall.
-to messages_dropped_id() -> Int:
+to get_messages_dropped_id() -> Integer:
     return __wr_metrics_messages_dropped_id()

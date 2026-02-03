@@ -2,7 +2,7 @@ so:
     Map convenience helpers.
 
 so: Create a new empty map.
-to new() -> Map:
+to create_map() -> Map:
     return __wr_map_new()
 
 so: Get a map entry by key.

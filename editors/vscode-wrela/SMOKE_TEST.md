@@ -22,8 +22,8 @@ to main():
 
 A Foo:
     has:
-        value: Int
-    can bar(x: Int) -> Int:
+        value: Integer
+    can bar(x: Integer) -> Integer:
         return x
 ```
 

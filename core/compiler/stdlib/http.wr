@@ -89,16 +89,16 @@ A HttpResponse:
 A HttpServer:
     has:
         auth_token: String = ""
-        auth_jwt_enabled: Bool = false
+        auth_jwt_enabled: Boolean = false
         jwt_secret: String = "wrela-dev-secret"
         rbac_permission: String = ""
         rbac_scope: String = "global"
         rbac_skip_paths: List = []
-        rate_limit_enabled: Bool = false
+        rate_limit_enabled: Boolean = false
         rate_limit_burst: Number = 60
         rate_limit_per_secs: Number = 60
         rate_limit_skip_paths: List = []
-        hsts_enabled: Bool = false
+        hsts_enabled: Boolean = false
         csp: String = ""
 
     so: Apply HTTP server configuration when fields are provided.

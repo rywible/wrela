@@ -269,7 +269,7 @@ mod tests {
     #[test]
     fn test_lower_marks_suspendable() {
         let input = "\
-A Whale:\n    can swim() -> Bool:\n        return true\n\nto f() -> Result[Bool]:\n    w = detach Whale() * 1\n    return await w.swim()\n";
+A Whale:\n    can swim() -> Boolean:\n        return true\n\nto f() -> Result[Boolean]:\n    w = detach Whale() * 1\n    return await w.swim()\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = hir_lower::lower(root);
@@ -294,8 +294,8 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f() -> Result[Bool]
         let input = "\
 A Counter:
     has:
-        value: Int
-    can add(delta: Int) -> Nothing:
+        value: Integer
+    can add(delta: Integer) -> Nothing:
         its.value += delta
 ";
         let node = parse(input);
@@ -319,7 +319,7 @@ A Counter:
         let input = "\
 A Foo:
     has:
-        x: Int = 1
+        x: Integer = 1
         y: List = [1, 2]
         z: Map = {\"a\": 1}
 
@@ -770,7 +770,7 @@ impl FunctionLowerer {
 
                 self.current_block = head_block;
                 let value_temp = self.new_temp(MirType::Unknown);
-                let done_temp = self.new_temp(MirType::Bool);
+                let done_temp = self.new_temp(MirType::Boolean);
                 self.push_stmt(MirStmt::IterNext {
                     iter: Value::Temp(iter_temp),
                     dst_value: Place::Temp(value_temp),
@@ -948,7 +948,7 @@ impl FunctionLowerer {
                     hir::AssertKind::Value => SmolStr::new("value_deep_eq"),
                     hir::AssertKind::Identity => SmolStr::new("identity_eq"),
                 };
-                let temp = self.new_temp(MirType::Bool);
+                let temp = self.new_temp(MirType::Boolean);
                 self.push_stmt(MirStmt::Assign {
                     place: Place::Temp(temp),
                     value: Rvalue::Call {
@@ -960,7 +960,7 @@ impl FunctionLowerer {
                 });
                 let mut result = Value::Temp(temp);
                 if matches!(op, BinaryOp::Ne) {
-                    let not_temp = self.new_temp(MirType::Bool);
+                    let not_temp = self.new_temp(MirType::Boolean);
                     self.push_stmt(MirStmt::Assign {
                         place: Place::Temp(not_temp),
                         value: Rvalue::Unary {
@@ -1033,7 +1033,7 @@ impl FunctionLowerer {
             let label = case.labels.first();
             if let Some(label) = label {
                 if let Some(is_ok) = self.result_pattern_kind(label) {
-                    let is_ok_temp = self.new_temp(MirType::Bool);
+                    let is_ok_temp = self.new_temp(MirType::Boolean);
                     self.push_stmt(MirStmt::Assign {
                         place: Place::Temp(is_ok_temp),
                         value: Rvalue::ResultIsOk {
@@ -1043,7 +1043,7 @@ impl FunctionLowerer {
                     });
                     let mut cond_val = Value::Temp(is_ok_temp);
                     if !is_ok {
-                        let not_temp = self.new_temp(MirType::Bool);
+                        let not_temp = self.new_temp(MirType::Boolean);
                         self.push_stmt(MirStmt::Assign {
                             place: Place::Temp(not_temp),
                             value: Rvalue::Unary {
@@ -1293,7 +1293,7 @@ impl FunctionLowerer {
                 }
                 if matches!(op, BinaryOp::Otherwise) {
                     let result_val = self.lower_expr(body, *lhs);
-                    let ok_flag = self.new_temp(MirType::Bool);
+                    let ok_flag = self.new_temp(MirType::Boolean);
                     self.push_stmt(MirStmt::Assign {
                         place: Place::Temp(ok_flag),
                         value: Rvalue::ResultIsOk {
@@ -1681,7 +1681,7 @@ impl FunctionLowerer {
         match &body.exprs[target_expr] {
             Expr::Variable(name) => {
                 if let Some(id) = self.type_tags.get(name).copied() {
-                    target = Some(Value::Const(Literal::Int(id.0 as i64)));
+                    target = Some(Value::Const(Literal::Integer(id.0 as i64)));
                     let fields = self.class_fields.get(name).cloned().unwrap_or_default();
                     let field_defaults = self
                         .class_field_defaults
@@ -1719,7 +1719,7 @@ impl FunctionLowerer {
             Expr::Call { callee, .. } => {
                 if let Expr::Variable(name) = &body.exprs[*callee] {
                     if let Some(id) = self.type_tags.get(name).copied() {
-                        target = Some(Value::Const(Literal::Int(id.0 as i64)));
+                        target = Some(Value::Const(Literal::Integer(id.0 as i64)));
                     }
                 }
                 let value = self.lower_expr(body, target_expr);
@@ -1773,7 +1773,7 @@ impl FunctionLowerer {
         let mut handles = Vec::with_capacity(count);
         for _ in 0..count {
             let instance = self.build_class_instance(&class, span);
-            let target = Value::Const(Literal::Int(class.class_id.0 as i64));
+            let target = Value::Const(Literal::Integer(class.class_id.0 as i64));
             let temp = self.new_temp_for_expr(result_expr);
             self.push_stmt(MirStmt::Assign {
                 place: Place::Temp(temp),
@@ -1827,17 +1827,17 @@ impl FunctionLowerer {
         let objective = objective.unwrap_or(hir::Objective::Balance);
         let obj_code = objective_code(objective);
 
-        let size_temp = self.new_temp(MirType::Int);
+        let size_temp = self.new_temp(MirType::Integer);
         self.push_stmt(MirStmt::Assign {
             place: Place::Temp(size_temp),
             value: Rvalue::Call {
                 kind: CallKind::Sync,
                 target: CallTarget::Function(SmolStr::new("__wr_pool_auto_size")),
                 args: vec![
-                    Value::Const(Literal::Int(obj_code)),
-                    Value::Const(Literal::Int(min_size.unwrap_or(0))),
-                    Value::Const(Literal::Int(max_size.unwrap_or(0))),
-                    Value::Const(Literal::Int(weight.unwrap_or(0))),
+                    Value::Const(Literal::Integer(obj_code)),
+                    Value::Const(Literal::Integer(min_size.unwrap_or(0))),
+                    Value::Const(Literal::Integer(max_size.unwrap_or(0))),
+                    Value::Const(Literal::Integer(weight.unwrap_or(0))),
                 ],
             },
             span,
@@ -1853,7 +1853,7 @@ impl FunctionLowerer {
         let idx_local = self.new_temp_local();
         self.push_stmt(MirStmt::Assign {
             place: Place::Local(idx_local),
-            value: Rvalue::Use(Value::Const(Literal::Int(0))),
+            value: Rvalue::Use(Value::Const(Literal::Integer(0))),
             span,
         });
 
@@ -1867,7 +1867,7 @@ impl FunctionLowerer {
         });
 
         self.current_block = head_block;
-        let cond_temp = self.new_temp(MirType::Bool);
+        let cond_temp = self.new_temp(MirType::Boolean);
         self.push_stmt(MirStmt::Assign {
             place: Place::Temp(cond_temp),
             value: Rvalue::Binary {
@@ -1886,7 +1886,7 @@ impl FunctionLowerer {
 
         self.current_block = body_block;
         let instance = self.build_class_instance(&class, span);
-        let target = Value::Const(Literal::Int(class.class_id.0 as i64));
+        let target = Value::Const(Literal::Integer(class.class_id.0 as i64));
         let handle_temp = self.new_temp_for_expr(result_expr);
         self.push_stmt(MirStmt::Assign {
             place: Place::Temp(handle_temp),
@@ -1910,13 +1910,13 @@ impl FunctionLowerer {
             span,
         });
 
-        let next_temp = self.new_temp(MirType::Int);
+        let next_temp = self.new_temp(MirType::Integer);
         self.push_stmt(MirStmt::Assign {
             place: Place::Temp(next_temp),
             value: Rvalue::Binary {
                 op: BinaryOp::Add,
                 lhs: Value::Local(idx_local),
-                rhs: Value::Const(Literal::Int(1)),
+                rhs: Value::Const(Literal::Integer(1)),
             },
             span,
         });
@@ -2378,7 +2378,7 @@ struct ClassTargetInfo {
 
 fn pool_size_from_expr(body: &hir::Body, expr_id: hir::Idx<Expr>) -> Option<hir::PoolSize> {
     match &body.exprs[expr_id] {
-        Expr::Literal(hir::Literal::Int(value)) => Some(hir::PoolSize::Fixed(*value)),
+        Expr::Literal(hir::Literal::Integer(value)) => Some(hir::PoolSize::Fixed(*value)),
         Expr::Variable(name) if name.as_str() == "n" => Some(hir::PoolSize::Auto),
         _ => None,
     }
@@ -2393,7 +2393,7 @@ fn objective_from_expr(body: &hir::Body, expr_id: hir::Idx<Expr>) -> Option<hir:
 
 fn int_literal_from_expr(body: &hir::Body, expr_id: hir::Idx<Expr>) -> Option<i64> {
     match &body.exprs[expr_id] {
-        Expr::Literal(hir::Literal::Int(value)) => Some(*value),
+        Expr::Literal(hir::Literal::Integer(value)) => Some(*value),
         _ => None,
     }
 }
@@ -2427,7 +2427,7 @@ fn backpressure_from_expr(body: &hir::Body, expr_id: hir::Idx<Expr>) -> Option<B
                 hir::Arg::Named { value, .. } => *value,
             };
             match &body.exprs[arg] {
-                Expr::Literal(hir::Literal::Int(value)) => Some(BackpressureSpec {
+                Expr::Literal(hir::Literal::Integer(value)) => Some(BackpressureSpec {
                     mailbox_cap: Some(*value),
                     enqueue_timeout_ms: None,
                     queue_cap: Some(*value),
@@ -2451,9 +2451,9 @@ fn objective_code(objective: hir::Objective) -> i64 {
 fn mir_type_from_type(ty: &Type) -> MirType {
     match ty {
         Type::Unknown => MirType::Unknown,
-        Type::Int => MirType::Int,
+        Type::Integer => MirType::Integer,
         Type::Float => MirType::Float,
-        Type::Bool => MirType::Bool,
+        Type::Boolean => MirType::Boolean,
         Type::String => MirType::String,
         Type::Nil => MirType::Nil,
         Type::Named(name, _) => MirType::Named(name.clone()),

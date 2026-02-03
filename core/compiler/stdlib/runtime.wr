@@ -7,8 +7,8 @@ A Runtime:
         actor_enqueue_timeout_ms: Number = 10
         actor_batch_limit: Number = 64
         pause_queue_cap: Number = 128
-        deterministic: Bool = false
-        debug_actor: Bool = false
+        deterministic: Boolean = false
+        debug_actor: Boolean = false
         actor_watchdog_ms: Number = 0
         sched_watchdog_ms: Number = 0
         sched_shards: Number = nothing
@@ -20,7 +20,7 @@ A Runtime:
         pool_queue_cap: Number = 256
         pool_auto_min: Number = 1
         pool_auto_max: Number = nothing
-        diagnostics_enabled: Bool = false
+        diagnostics_enabled: Boolean = false
 
     so: Apply runtime configuration when fields are provided.
     can __configure__() -> Nothing:

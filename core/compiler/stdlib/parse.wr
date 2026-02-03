@@ -1,8 +1,8 @@
 so:
     Parsing helpers.
 
-so: Parse an Int from a String.
-to parse_int(text: String) -> Result[Int]:
+so: Parse an Integer from a String.
+to parse_integer(text: String) -> Result[Integer]:
     return __wr_parse_int(text)
 
 so: Parse a Float from a String.

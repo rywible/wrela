@@ -4,14 +4,14 @@ so:
 use StorageClient from storage
 use HttpRequest from http
 
-A RateLimit:
+A RateLimiter:
     has:
         storage: StorageClient
 
     so: Check rate limits for a key with options.
-    can check(key: String, opts: Map) -> Pending:
+    can check_limit(key: String, opts: Map) -> Pending:
         return __wr_rate_check(its.storage, key, opts)
 
     so: Extract the request IP for rate limiting.
-    can ip(request: HttpRequest) -> String:
+    can get_ip(request: HttpRequest) -> String:
         return __wr_rate_ip(request)

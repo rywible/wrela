@@ -9,15 +9,15 @@ use:
 from http
 
 use:
-    from_string,
-    length
+    get_bytes_from_string,
+    get_length
 from bytes
 
-use parse_int from parse
+use parse_integer from parse
 
 use:
-    get_or,
-    get_as_bool
+    get_environment_variable_or_default,
+    get_environment_variable_as_boolean
 from env
 
 
@@ -37,7 +37,7 @@ to run() -> Nothing:
 to handle_health(req: HttpRequest) -> HttpResponse:
     resp = HttpResponse()
     resp.header("content-type", "text/plain; charset=utf-8")
-    resp.body = from_string("ok")
+    resp.body = get_bytes_from_string("ok")
     resp.status = 200
     return resp
 
@@ -86,16 +86,16 @@ to handle_receive_pack(req: HttpRequest) -> HttpResponse:
 
 
 to bind_addr() -> String:
-    return get_or("WRELA_HUB_ADDR", "0.0.0.0:8080")
+    return get_environment_variable_or_default("WRELA_HUB_ADDR", "0.0.0.0:8080")
 
 
 to max_body_bytes() -> Number:
-    raw = get_or("WRELA_HUB_MAX_BODY_BYTES", "50000000")
-    return parse_int(raw) otherwise 50000000
+    raw = get_environment_variable_or_default("WRELA_HUB_MAX_BODY_BYTES", "50000000")
+    return parse_integer(raw) otherwise 50000000
 
 
-to auth_allowed(req: HttpRequest) -> Bool:
-    if get_as_bool("WRELA_HUB_AUTH_DISABLED"):
+to auth_allowed(req: HttpRequest) -> Boolean:
+    if get_environment_variable_as_boolean("WRELA_HUB_AUTH_DISABLED"):
         return true
     token = req.header("authorization")
     if token == nil:
@@ -105,11 +105,11 @@ to auth_allowed(req: HttpRequest) -> Bool:
     return true
 
 
-to repo_allowed(req: HttpRequest) -> Bool:
+to repo_allowed(req: HttpRequest) -> Boolean:
     repo = req.path_param("repo")
     if repo == nil:
         return true
-    name = get_or("WRELA_HUB_REPO", "wrela")
+    name = get_environment_variable_or_default("WRELA_HUB_REPO", "wrela")
     if repo == name:
         return true
     if repo == "{name}.git":
@@ -117,14 +117,14 @@ to repo_allowed(req: HttpRequest) -> Bool:
     return false
 
 
-to body_too_large(req: HttpRequest) -> Bool:
-    return length(req.body) > max_body_bytes()
+to body_too_large(req: HttpRequest) -> Boolean:
+    return get_length(req.body) > max_body_bytes()
 
 
 to response_text(status: Number, text: String) -> HttpResponse:
     resp = HttpResponse()
     resp.status = status
-    resp.body = from_string(text)
+    resp.body = get_bytes_from_string(text)
     resp.header("content-type", "text/plain; charset=utf-8")
     return resp
 

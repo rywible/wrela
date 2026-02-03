@@ -30,7 +30,7 @@ pub unsafe fn drop_object(ptr: *mut ObjHeader) {
         x if x == TypeId::Result as u32 => unsafe { drop_result(ptr) },
         x if x == TypeId::Pool as u32 => unsafe { drop_pool(ptr) },
         x if x == TypeId::Bytes as u32 => drop_bytes(ptr),
-        x if x == TypeId::BoxedInt as u32 => unsafe { drop_boxed_int(ptr) },
+        x if x == TypeId::BoxedInteger as u32 => unsafe { drop_boxed_int(ptr) },
         _ => {
             if type_id >= TypeId::UserBase as u32 {
                 unsafe { drop_class(ptr) };

@@ -72,9 +72,9 @@ pub struct BasicBlock {
 #[derive(Debug, Clone, PartialEq)]
 pub enum MirType {
     Unknown,
-    Int,
+    Integer,
     Float,
-    Bool,
+    Boolean,
     String,
     Nil,
     Named(SmolStr),
@@ -86,8 +86,8 @@ pub enum MirType {
 impl MirType {
     pub fn is_ref(&self) -> bool {
         match self {
-            MirType::Float | MirType::Bool | MirType::Nil => false,
-            MirType::Int => true,
+            MirType::Float | MirType::Boolean | MirType::Nil => false,
+            MirType::Integer => true,
             _ => true,
         }
     }

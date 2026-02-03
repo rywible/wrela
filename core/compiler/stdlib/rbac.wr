@@ -3,7 +3,7 @@ so:
 
 use StorageClient from storage
 
-A RBAC:
+A RoleBasedAccessControlProvider:
     has:
         storage: StorageClient
 
@@ -16,9 +16,9 @@ A RBAC:
         return __wr_rbac_assign_role(its.storage, user_id, role_id, scope_id)
 
     so: Check if a user has a permission in a scope.
-    can check(user_id: String, permission: String, scope_id: String) -> Pending:
+    can check_permission(user_id: String, permission: String, scope_id: String) -> Pending:
         return __wr_rbac_check(its.storage, user_id, permission, scope_id)
 
     so: Fetch all permissions for a user in a scope.
-    can permissions_for(user_id: String, scope_id: String) -> Pending:
+    can get_permissions_for(user_id: String, scope_id: String) -> Pending:
         return __wr_rbac_permissions_for(its.storage, user_id, scope_id)

@@ -1229,7 +1229,7 @@ impl<'a> Checker<'a> {
                 match name.as_str() {
                     "size" => {
                         let ok = match &body.exprs[*value] {
-                            Expr::Literal(Literal::Int(_)) => true,
+                            Expr::Literal(Literal::Integer(_)) => true,
                             Expr::Variable(var) => var.as_str() == "n",
                             _ => false,
                         };
@@ -1251,7 +1251,7 @@ impl<'a> Checker<'a> {
                         }
                     }
                     "batch" => {
-                        let ok = matches!(&body.exprs[*value], Expr::Literal(Literal::Int(_)));
+                        let ok = matches!(&body.exprs[*value], Expr::Literal(Literal::Integer(_)));
                         if !ok {
                             self.errors.push(SemanticError::InvalidPoolBatch {
                                 span: span_from_range(body.expr_span(*value)),
@@ -1259,7 +1259,7 @@ impl<'a> Checker<'a> {
                         }
                     }
                     "min" | "max" => {
-                        let ok = matches!(&body.exprs[*value], Expr::Literal(Literal::Int(_)));
+                        let ok = matches!(&body.exprs[*value], Expr::Literal(Literal::Integer(_)));
                         if !ok {
                             self.errors.push(SemanticError::InvalidPoolBound {
                                 span: span_from_range(body.expr_span(*value)),
@@ -1267,7 +1267,7 @@ impl<'a> Checker<'a> {
                         }
                     }
                     "weight" => {
-                        let ok = matches!(&body.exprs[*value], Expr::Literal(Literal::Int(_)));
+                        let ok = matches!(&body.exprs[*value], Expr::Literal(Literal::Integer(_)));
                         if !ok {
                             self.errors.push(SemanticError::InvalidPoolWeight {
                                 span: span_from_range(body.expr_span(*value)),
@@ -1286,7 +1286,7 @@ impl<'a> Checker<'a> {
                                             Arg::Positional { value, .. } => *value,
                                             Arg::Named { value, .. } => *value,
                                         };
-                                        matches!(&body.exprs[arg], Expr::Literal(Literal::Int(_)))
+                                        matches!(&body.exprs[arg], Expr::Literal(Literal::Integer(_)))
                                     }
                                 } else {
                                     false
@@ -1993,7 +1993,7 @@ mod tests {
 
     #[test]
     fn test_undefined_name() {
-        let input = "to f() -> Int:\n    return x";
+        let input = "to f() -> Integer:\n    return x";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -2090,7 +2090,7 @@ mod tests {
 
     #[test]
     fn test_invalid_assign_target() {
-        let input = "to f(a: Int) -> Nothing:\n    a += 1";
+        let input = "to f(a: Integer) -> Nothing:\n    a += 1";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -2103,7 +2103,7 @@ mod tests {
 
     #[test]
     fn test_duplicate_param() {
-        let input = "to f(a: Int, a: Int) -> Int:\n    return a";
+        let input = "to f(a: Integer, a: Integer) -> Integer:\n    return a";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -2144,7 +2144,7 @@ mod tests {
 
     #[test]
     fn test_match_missing_otherwise() {
-        let input = "to f() -> Int:\n    match x:\n        1: return 1";
+        let input = "to f() -> Integer:\n    match x:\n        1: return 1";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -2160,7 +2160,7 @@ mod tests {
     #[test]
     fn test_derived_property_no_params() {
         let input = "\
-A Whale:\n    has:\n        age: Int\n    derives next_age(step: Int) -> Int:\n        return its.age + step\n";
+A Whale:\n    has:\n        age: Integer\n    derives next_age(step: Integer) -> Integer:\n        return its.age + step\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -2176,7 +2176,7 @@ A Whale:\n    has:\n        age: Int\n    derives next_age(step: Int) -> Int:\n 
     #[test]
     fn test_derived_property_no_mutation() {
         let input = "\
-A Whale:\n    has:\n        age: Int\n    derives bump() -> Int:\n        mutable tmp = its.age\n        tmp += 1\n        return tmp\n";
+A Whale:\n    has:\n        age: Integer\n    derives bump() -> Integer:\n        mutable tmp = its.age\n        tmp += 1\n        return tmp\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -2192,7 +2192,7 @@ A Whale:\n    has:\n        age: Int\n    derives bump() -> Int:\n        mutabl
     #[test]
     fn test_derived_property_no_async_keywords() {
         let input = "\
-A Whale:\n    has:\n        age: Int\n    derives load() -> Int:\n        return await 1\n";
+A Whale:\n    has:\n        age: Integer\n    derives load() -> Integer:\n        return await 1\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -2223,7 +2223,7 @@ A Whale:\n    has:\n        name: String\n    can name() -> String:\n        ret
 
     #[test]
     fn test_unreachable_code() {
-        let input = "to f() -> Int:\n    return 1\n    x = 2";
+        let input = "to f() -> Integer:\n    return 1\n    x = 2";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -2238,7 +2238,7 @@ A Whale:\n    has:\n        name: String\n    can name() -> String:\n        ret
 
     #[test]
     fn test_unused_local() {
-        let input = "to f() -> Int:\n    x = 1\n    return 2";
+        let input = "to f() -> Integer:\n    x = 1\n    return 2";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -2255,9 +2255,9 @@ A Whale:\n    has:\n        name: String\n    can name() -> String:\n        ret
         let input = r#"
 A Whale:
     has:
-        value: Int
+        value: Integer
 
-to run() -> Int:
+to run() -> Integer:
     whale = detach Whale() * 1
     return 1
 "#;
@@ -2278,12 +2278,12 @@ to run() -> Int:
         let input = r#"
 A Whale:
     has:
-        value: Int
+        value: Integer
 
-to run() -> Int:
+to run() -> Integer:
     return f()
 
-to f() -> Int:
+to f() -> Integer:
     await 1
     whale = detach Whale() * 1
     return 1
@@ -2303,7 +2303,7 @@ to f() -> Int:
     #[test]
     fn test_duplicate_optimize_in_scope() {
         let input = r#"
-to run() -> Int:
+to run() -> Integer:
     optimize balance:
         x = 1
     optimize latency:
@@ -2327,12 +2327,12 @@ to run() -> Int:
         let input = r#"
 A Whale:
     has:
-        value: Int
+        value: Integer
 
-to run() -> Int:
+to run() -> Integer:
     return f()
 
-to f() -> Int:
+to f() -> Integer:
     await 1
     whale = detach Pool.of(Whale, objective=latency) * 1
     return 1
@@ -2354,9 +2354,9 @@ to f() -> Int:
         let input = r#"
 A Whale:
     has:
-        value: Int
+        value: Integer
 
-to run() -> Int:
+to run() -> Integer:
     optimize balance:
         pool = Pool.of(Whale, size=foo)
     return 0
@@ -2378,9 +2378,9 @@ to run() -> Int:
         let input = r#"
 A Whale:
     has:
-        value: Int
+        value: Integer
 
-to run() -> Int:
+to run() -> Integer:
     optimize balance:
         pool = Pool.of(Whale, size=1, objective=balance, batch=8, backpressure=queue(4))
         pool2 = Pool.of(Whale, size=1, backpressure=drop)
@@ -2402,9 +2402,9 @@ to run() -> Int:
         let input = r#"
 A Whale:
     has:
-        value: Int
+        value: Integer
 
-to run() -> Int:
+to run() -> Integer:
     optimize balance:
         pool = Pool.of(Whale, backpressure=queue(foo))
     return 0
@@ -2426,9 +2426,9 @@ to run() -> Int:
         let input = r#"
 A Whale:
     has:
-        value: Int
+        value: Integer
 
-to run() -> Int:
+to run() -> Integer:
     optimize balance:
         pool = Pool.of(Whale, min=foo, max=bar, weight=baz)
     return 0
@@ -2454,7 +2454,7 @@ to run() -> Int:
     #[test]
     fn test_invalid_pool_target_for_fixed_size() {
         let input = r#"
-to run() -> Int:
+to run() -> Integer:
     optimize balance:
         x = 1
         worker = detach x * 2
@@ -2475,7 +2475,7 @@ to run() -> Int:
     #[test]
     fn test_invalid_pool_target_for_auto_size() {
         let input = r#"
-to run() -> Int:
+to run() -> Integer:
     optimize balance:
         x = 1
         worker = detach x * n

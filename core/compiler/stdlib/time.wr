@@ -2,9 +2,9 @@ so:
     Time helpers.
 
 so: Return a monotonic clock value in nanoseconds.
-to now_ns() -> Int:
+to get_current_nanoseconds_since_epoch() -> Integer:
     return __wr_clock_ns()
 
 so: Sleep for the given duration in milliseconds.
-to sleep(ms: Int) -> Pending[Nothing]:
+to sleep(milliseconds: Integer) -> Pending[Nothing]:
     return __wr_sleep_ms(ms)

@@ -14,10 +14,10 @@ use thiserror::Error;
 pub enum Type {
     Unknown,
     Never,
-    Int,
+    Integer,
     Float,
     Number,
-    Bool,
+    Boolean,
     String,
     Nil,
     List(Box<Type>),
@@ -774,7 +774,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             SmolStr::new("__wr_parse_int"),
             FunctionSig {
                 params: vec![(SmolStr::new("value"), Type::String)],
-                ret: Type::Result(Box::new(Type::Int), Box::new(err.clone())),
+                ret: Type::Result(Box::new(Type::Integer), Box::new(err.clone())),
             },
         ),
         (
@@ -809,7 +809,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             SmolStr::new("__wr_bytes_len"),
             FunctionSig {
                 params: vec![(SmolStr::new("value"), Type::Named(SmolStr::new("Bytes"), Vec::new()))],
-                ret: Type::Int,
+                ret: Type::Integer,
             },
         ),
         (
@@ -870,7 +870,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                         Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown)),
                     ),
                 ],
-                ret: Type::Bool,
+                ret: Type::Boolean,
             },
         ),
         (
@@ -884,40 +884,40 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             SmolStr::new("__wr_pool_auto_size"),
             FunctionSig {
                 params: vec![
-                    (SmolStr::new("objective"), Type::Int),
-                    (SmolStr::new("min"), Type::Int),
-                    (SmolStr::new("max"), Type::Int),
-                    (SmolStr::new("weight"), Type::Int),
+                    (SmolStr::new("objective"), Type::Integer),
+                    (SmolStr::new("min"), Type::Integer),
+                    (SmolStr::new("max"), Type::Integer),
+                    (SmolStr::new("weight"), Type::Integer),
                 ],
-                ret: Type::Int,
+                ret: Type::Integer,
             },
         ),
         (
             SmolStr::new("__wr_pool_size"),
             FunctionSig {
                 params: vec![(SmolStr::new("handle"), Type::Unknown)],
-                ret: Type::Int,
+                ret: Type::Integer,
             },
         ),
         (
             SmolStr::new("__wr_pool_rr"),
             FunctionSig {
                 params: vec![(SmolStr::new("handle"), Type::Unknown)],
-                ret: Type::Int,
+                ret: Type::Integer,
             },
         ),
         (
             SmolStr::new("__wr_pool_queue_len"),
             FunctionSig {
                 params: vec![(SmolStr::new("handle"), Type::Unknown)],
-                ret: Type::Int,
+                ret: Type::Integer,
             },
         ),
         (
             SmolStr::new("__wr_actor_mailbox_len"),
             FunctionSig {
                 params: vec![(SmolStr::new("handle"), Type::Unknown)],
-                ret: Type::Int,
+                ret: Type::Integer,
             },
         ),
         (
@@ -944,35 +944,35 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
         (
             SmolStr::new("__wr_metrics_get"),
             FunctionSig {
-                params: vec![(SmolStr::new("id"), Type::Int)],
-                ret: Type::Int,
+                params: vec![(SmolStr::new("id"), Type::Integer)],
+                ret: Type::Integer,
             },
         ),
         (
             SmolStr::new("__wr_metrics_dropped_paused_id"),
             FunctionSig {
                 params: vec![],
-                ret: Type::Int,
+                ret: Type::Integer,
             },
         ),
         (
             SmolStr::new("__wr_metrics_messages_dropped_id"),
             FunctionSig {
                 params: vec![],
-                ret: Type::Int,
+                ret: Type::Integer,
             },
         ),
         (
             SmolStr::new("__wr_clock_ns"),
             FunctionSig {
                 params: vec![],
-                ret: Type::Int,
+                ret: Type::Integer,
             },
         ),
         (
             SmolStr::new("__wr_sleep_ms"),
             FunctionSig {
-                params: vec![(SmolStr::new("ms"), Type::Int)],
+                params: vec![(SmolStr::new("ms"), Type::Integer)],
                 ret: Type::Pending(Box::new(Type::Nil)),
             },
         ),
@@ -1014,14 +1014,14 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("key"), Type::String),
                     (SmolStr::new("value"), Type::String),
                 ],
-                ret: Type::Bool,
+                ret: Type::Boolean,
             },
         ),
         (
             SmolStr::new("__wr_env_load"),
             FunctionSig {
                 params: vec![(SmolStr::new("path"), Type::String)],
-                ret: Type::Bool,
+                ret: Type::Boolean,
             },
         ),
         (
@@ -1050,7 +1050,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("user_id"), Type::String),
                     (SmolStr::new("password"), Type::String),
                 ],
-                ret: Type::Pending(Box::new(Type::Bool)),
+                ret: Type::Pending(Box::new(Type::Boolean)),
             },
         ),
         (
@@ -1066,7 +1066,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                         SmolStr::new("claims"),
                         Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown)),
                     ),
-                    (SmolStr::new("ttl_secs"), Type::Int),
+                    (SmolStr::new("ttl_secs"), Type::Integer),
                 ],
                 ret: Type::Pending(Box::new(Type::String)),
             },
@@ -1093,7 +1093,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                         Type::Named(SmolStr::new("StorageClient"), Vec::new()),
                     ),
                     (SmolStr::new("user_id"), Type::String),
-                    (SmolStr::new("ttl_secs"), Type::Int),
+                    (SmolStr::new("ttl_secs"), Type::Integer),
                 ],
                 ret: Type::Pending(Box::new(Type::String)),
             },
@@ -1162,7 +1162,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("role_id"), Type::String),
                     (SmolStr::new("scope_id"), Type::String),
                 ],
-                ret: Type::Pending(Box::new(Type::Bool)),
+                ret: Type::Pending(Box::new(Type::Boolean)),
             },
         ),
         (
@@ -1177,7 +1177,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("permission"), Type::String),
                     (SmolStr::new("scope_id"), Type::String),
                 ],
-                ret: Type::Pending(Box::new(Type::Bool)),
+                ret: Type::Pending(Box::new(Type::Boolean)),
             },
         ),
         (
@@ -1251,7 +1251,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     ),
                     (SmolStr::new("file_id"), Type::String),
                 ],
-                ret: Type::Pending(Box::new(Type::Bool)),
+                ret: Type::Pending(Box::new(Type::Boolean)),
             },
         ),
         (
@@ -1265,7 +1265,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("file_id"), Type::String),
                     (SmolStr::new("acl"), Type::String),
                 ],
-                ret: Type::Pending(Box::new(Type::Bool)),
+                ret: Type::Pending(Box::new(Type::Boolean)),
             },
         ),
         (
@@ -1300,7 +1300,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("queue"), Type::String),
                     (SmolStr::new("handler"), Type::Unknown),
                 ],
-                ret: Type::Pending(Box::new(Type::Bool)),
+                ret: Type::Pending(Box::new(Type::Boolean)),
             },
         ),
         (
@@ -1334,7 +1334,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("expr"), Type::String),
                     (SmolStr::new("job"), Type::Unknown),
                 ],
-                ret: Type::Pending(Box::new(Type::Bool)),
+                ret: Type::Pending(Box::new(Type::Boolean)),
             },
         ),
         (
@@ -1345,10 +1345,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                         SmolStr::new("storage"),
                         Type::Named(SmolStr::new("StorageClient"), Vec::new()),
                     ),
-                    (SmolStr::new("seconds"), Type::Int),
+                    (SmolStr::new("seconds"), Type::Integer),
                     (SmolStr::new("job"), Type::Unknown),
                 ],
-                ret: Type::Pending(Box::new(Type::Bool)),
+                ret: Type::Pending(Box::new(Type::Boolean)),
             },
         ),
         (
@@ -1359,10 +1359,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                         SmolStr::new("storage"),
                         Type::Named(SmolStr::new("StorageClient"), Vec::new()),
                     ),
-                    (SmolStr::new("timestamp"), Type::Int),
+                    (SmolStr::new("timestamp"), Type::Integer),
                     (SmolStr::new("job"), Type::Unknown),
                 ],
-                ret: Type::Pending(Box::new(Type::Bool)),
+                ret: Type::Pending(Box::new(Type::Boolean)),
             },
         ),
         (
@@ -1381,7 +1381,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                         Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown)),
                     ),
                 ],
-                ret: Type::Pending(Box::new(Type::Bool)),
+                ret: Type::Pending(Box::new(Type::Boolean)),
             },
         ),
         (
@@ -1395,7 +1395,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("collection"), Type::String),
                     (SmolStr::new("id"), Type::String),
                 ],
-                ret: Type::Pending(Box::new(Type::Bool)),
+                ret: Type::Pending(Box::new(Type::Boolean)),
             },
         ),
         (
@@ -1420,7 +1420,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             SmolStr::new("__wr_realtime_on_connect"),
             FunctionSig {
                 params: vec![(SmolStr::new("handler"), Type::Unknown)],
-                ret: Type::Pending(Box::new(Type::Bool)),
+                ret: Type::Pending(Box::new(Type::Boolean)),
             },
         ),
         (
@@ -1430,7 +1430,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("socket_id"), Type::String),
                     (SmolStr::new("room"), Type::String),
                 ],
-                ret: Type::Pending(Box::new(Type::Bool)),
+                ret: Type::Pending(Box::new(Type::Boolean)),
             },
         ),
         (
@@ -1440,7 +1440,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("socket_id"), Type::String),
                     (SmolStr::new("room"), Type::String),
                 ],
-                ret: Type::Pending(Box::new(Type::Bool)),
+                ret: Type::Pending(Box::new(Type::Boolean)),
             },
         ),
         (
@@ -1450,7 +1450,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("room"), Type::String),
                     (SmolStr::new("message"), Type::Unknown),
                 ],
-                ret: Type::Pending(Box::new(Type::Bool)),
+                ret: Type::Pending(Box::new(Type::Boolean)),
             },
         ),
         (
@@ -1460,7 +1460,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("socket_id"), Type::String),
                     (SmolStr::new("message"), Type::Unknown),
                 ],
-                ret: Type::Pending(Box::new(Type::Bool)),
+                ret: Type::Pending(Box::new(Type::Boolean)),
             },
         ),
         (
@@ -1491,7 +1491,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                         Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown)),
                     ),
                 ],
-                ret: Type::Pending(Box::new(Type::Bool)),
+                ret: Type::Pending(Box::new(Type::Boolean)),
             },
         ),
         (
@@ -1511,7 +1511,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     SmolStr::new("opts"),
                     Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown)),
                 )],
-                ret: Type::Pending(Box::new(Type::Bool)),
+                ret: Type::Pending(Box::new(Type::Boolean)),
             },
         ),
         (
@@ -1600,7 +1600,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("version"), Type::Number),
                 ],
                 ret: Type::Pending(Box::new(Type::Result(
-                    Box::new(Type::Bool),
+                    Box::new(Type::Boolean),
                     Box::new(err.clone()),
                 ))),
             },
@@ -1613,7 +1613,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("version"), Type::Number),
                 ],
                 ret: Type::Pending(Box::new(Type::Result(
-                    Box::new(Type::Bool),
+                    Box::new(Type::Boolean),
                     Box::new(err.clone()),
                 ))),
             },
@@ -1638,7 +1638,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                         Box::new(Type::Unknown),
                     ))),
                 )],
-                ret: Type::Pending(Box::new(Type::Result(Box::new(Type::Bool), Box::new(err)))),
+                ret: Type::Pending(Box::new(Type::Result(Box::new(Type::Boolean), Box::new(err)))),
             },
         ),
         (
@@ -3417,9 +3417,9 @@ fn infer_map(
 
 fn literal_type(lit: &Literal) -> Type {
     match lit {
-        Literal::Int(_) => Type::Int,
+        Literal::Integer(_) => Type::Integer,
         Literal::Float(_) => Type::Float,
-        Literal::Bool(_) => Type::Bool,
+        Literal::Boolean(_) => Type::Boolean,
         Literal::String(_) => Type::String,
         Literal::Nil => Type::Nil,
     }
@@ -3454,11 +3454,11 @@ fn type_from_ref_with_params(ty: &TypeRef, params: &HashSet<SmolStr>) -> Type {
         return Type::Param(ty.name.clone());
     }
     match ty.name.as_str() {
-        "Int" => Type::Int,
+        "Integer" => Type::Integer,
         "Any" => Type::Unknown,
         "Float" => Type::Float,
         "Number" => Type::Number,
-        "Bool" => Type::Bool,
+        "Boolean" => Type::Boolean,
         "String" => Type::String,
         "Nothing" | "Nil" => Type::Nil,
         "List" => match args.as_slice() {
@@ -3638,8 +3638,8 @@ fn instantiate_method_ret(
 fn valid_unary(op: UnaryOp, operand: &Type) -> bool {
     match op {
         UnaryOp::Neg => is_numeric(operand),
-        UnaryOp::Not => *operand == Type::Bool,
-        UnaryOp::BitNot => *operand == Type::Int,
+        UnaryOp::Not => *operand == Type::Boolean,
+        UnaryOp::BitNot => *operand == Type::Integer,
         UnaryOp::Err => !matches!(operand, Type::Never),
         UnaryOp::Await | UnaryOp::Spawn | UnaryOp::Fire => true,
     }
@@ -3648,8 +3648,8 @@ fn valid_unary(op: UnaryOp, operand: &Type) -> bool {
 fn unary_result(op: UnaryOp, operand: &Type) -> Type {
     match op {
         UnaryOp::Neg => operand.clone(),
-        UnaryOp::Not => Type::Bool,
-        UnaryOp::BitNot => Type::Int,
+        UnaryOp::Not => Type::Boolean,
+        UnaryOp::BitNot => Type::Integer,
         UnaryOp::Err => Type::Result(Box::new(Type::Unknown), Box::new(operand.clone())),
         UnaryOp::Await | UnaryOp::Spawn | UnaryOp::Fire => Type::Unknown,
     }
@@ -3668,10 +3668,10 @@ fn valid_binary(op: BinaryOp, left: &Type, right: &Type) -> bool {
         BinaryOp::Lt | BinaryOp::Gt | BinaryOp::Le | BinaryOp::Ge => {
             is_numeric(left) && is_numeric(right)
         }
-        BinaryOp::And | BinaryOp::Or => *left == Type::Bool && *right == Type::Bool,
+        BinaryOp::And | BinaryOp::Or => *left == Type::Boolean && *right == Type::Boolean,
         BinaryOp::Otherwise => true,
         BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor | BinaryOp::Shl | BinaryOp::Shr => {
-            *left == Type::Int && *right == Type::Int
+            *left == Type::Integer && *right == Type::Integer
         }
         BinaryOp::Range => is_numeric(left) && is_numeric(right),
         BinaryOp::Assign
@@ -3694,12 +3694,12 @@ fn binary_result(op: BinaryOp, left: &Type, right: &Type) -> Type {
         BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => {
             numeric_result(left, right)
         }
-        BinaryOp::Eq | BinaryOp::Ne => Type::Bool,
-        BinaryOp::Lt | BinaryOp::Gt | BinaryOp::Le | BinaryOp::Ge => Type::Bool,
-        BinaryOp::And | BinaryOp::Or => Type::Bool,
+        BinaryOp::Eq | BinaryOp::Ne => Type::Boolean,
+        BinaryOp::Lt | BinaryOp::Gt | BinaryOp::Le | BinaryOp::Ge => Type::Boolean,
+        BinaryOp::And | BinaryOp::Or => Type::Boolean,
         BinaryOp::Otherwise => Type::Unknown,
         BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor | BinaryOp::Shl | BinaryOp::Shr => {
-            Type::Int
+            Type::Integer
         }
         BinaryOp::Range => Type::Unknown,
         BinaryOp::Assign
@@ -3715,15 +3715,15 @@ fn numeric_result(left: &Type, right: &Type) -> Type {
         Type::Float
     } else if *left == Type::Number || *right == Type::Number {
         Type::Number
-    } else if *left == Type::Int && *right == Type::Int {
-        Type::Int
+    } else if *left == Type::Integer && *right == Type::Integer {
+        Type::Integer
     } else {
         Type::Unknown
     }
 }
 
 fn is_numeric(ty: &Type) -> bool {
-    matches!(ty, Type::Int | Type::Float | Type::Number)
+    matches!(ty, Type::Integer | Type::Float | Type::Number)
 }
 
 fn is_assignable(
@@ -3772,7 +3772,7 @@ fn is_assignable(
                 .all(|(exp, found)| is_assignable(exp, found, classes, interfaces))
         }
         (Type::Number, ty) if is_numeric(ty) => true,
-        (Type::Float, Type::Int) => true,
+        (Type::Float, Type::Integer) => true,
         _ => false,
     }
 }
@@ -3783,10 +3783,10 @@ fn types_known(left: &Type, right: &Type) -> bool {
 
 fn is_identity_primitive(ty: &Type) -> bool {
     match ty {
-        Type::Int
+        Type::Integer
         | Type::Float
         | Type::Number
-        | Type::Bool
+        | Type::Boolean
         | Type::String
         | Type::Nil => true,
         Type::Named(name, _) => name.as_str() == "Bytes",
@@ -3810,10 +3810,10 @@ fn type_label(ty: &Type) -> String {
     match ty {
         Type::Unknown => "unknown".to_string(),
         Type::Never => "never".to_string(),
-        Type::Int => "Int".to_string(),
+        Type::Integer => "Integer".to_string(),
         Type::Float => "Float".to_string(),
         Type::Number => "Number".to_string(),
-        Type::Bool => "Bool".to_string(),
+        Type::Boolean => "Boolean".to_string(),
         Type::String => "String".to_string(),
         Type::Nil => "Nothing".to_string(),
         Type::List(inner) => format!("List[{}]", type_label(inner)),
@@ -5074,7 +5074,7 @@ mod tests {
 
     #[test]
     fn test_type_error_binary() {
-        let input = "to f() -> Int:\n    return 1 + true";
+        let input = "to f() -> Integer:\n    return 1 + true";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -5088,7 +5088,7 @@ mod tests {
 
     #[test]
     fn test_type_error_unary() {
-        let input = "to f() -> Bool:\n    return not 1";
+        let input = "to f() -> Boolean:\n    return not 1";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -5102,7 +5102,7 @@ mod tests {
 
     #[test]
     fn test_param_type_used() {
-        let input = "to f(x: Int) -> Int:\n    return x + 1";
+        let input = "to f(x: Integer) -> Integer:\n    return x + 1";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -5112,7 +5112,7 @@ mod tests {
 
     #[test]
     fn test_param_type_mismatch() {
-        let input = "to f(x: Int) -> Int:\n    return x + true";
+        let input = "to f(x: Integer) -> Integer:\n    return x + true";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -5150,7 +5150,7 @@ mod tests {
 
     #[test]
     fn test_return_type_mismatch() {
-        let input = "to f() -> Bool:\n    return 1";
+        let input = "to f() -> Boolean:\n    return 1";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -5176,7 +5176,7 @@ A Whale:\n    has:\n        name: String\n\nto f(w: Whale) -> String:\n    retur
     #[test]
     fn test_unknown_member() {
         let input = "\
-A Whale:\n    has:\n        name: String\n\nto f(w: Whale) -> Int:\n    return w.age\n";
+A Whale:\n    has:\n        name: String\n\nto f(w: Whale) -> Integer:\n    return w.age\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -5191,7 +5191,7 @@ A Whale:\n    has:\n        name: String\n\nto f(w: Whale) -> Int:\n    return w
     #[test]
     fn test_method_call_checked() {
         let input = "\
-A Whale:\n    can swim(distance: Int) -> Bool:\n        return true\n\nto f(w: Whale) -> Bool:\n    return w.swim(true)\n";
+A Whale:\n    can swim(distance: Integer) -> Boolean:\n        return true\n\nto f(w: Whale) -> Boolean:\n    return w.swim(true)\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -5206,7 +5206,7 @@ A Whale:\n    can swim(distance: Int) -> Bool:\n        return true\n\nto f(w: W
     #[test]
     fn test_missing_type_args_on_class_init() {
         let input = "\
-A Box[T]:\n    has:\n        value: T\n\nto f() -> Int:\n    b = Box(value=1)\n    return b.value\n";
+A Box[T]:\n    has:\n        value: T\n\nto f() -> Integer:\n    b = Box(value=1)\n    return b.value\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -5221,7 +5221,7 @@ A Box[T]:\n    has:\n        value: T\n\nto f() -> Int:\n    b = Box(value=1)\n 
     #[test]
     fn test_unexpected_type_args_on_class_init() {
         let input = "\
-A Box:\n    has:\n        value: Int\n\nto f() -> Int:\n    b = Box[Int](value=1)\n    return b.value\n";
+A Box:\n    has:\n        value: Integer\n\nto f() -> Integer:\n    b = Box[Integer](value=1)\n    return b.value\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -5282,7 +5282,7 @@ to f(p: Printable) -> String:
     #[test]
     fn test_match_result_bindings_flow() {
         let input = r#"
-to f() -> Int:
+to f() -> Integer:
     match __wr_parse_int("1"):
         Ok(v): return v
         Err(e): return 0
@@ -5318,7 +5318,7 @@ to f(s: Status) -> String:
     #[test]
     fn test_function_call_checked() {
         let input = "\
-to add(a: Int, b: Int) -> Int:\n    return a + b\n\nto f() -> Int:\n    return add(1, true)\n";
+to add(a: Integer, b: Integer) -> Integer:\n    return a + b\n\nto f() -> Integer:\n    return add(1, true)\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -5348,7 +5348,7 @@ to f() -> Nothing:\n    x = 1\n    x(2)\n";
     #[test]
     fn test_method_return_type_flow() {
         let input = "\
-A Ocean:\n    has:\n        depth: Int\n\nA Whale:\n    can ocean() -> Ocean:\n        return Ocean()\n\nto f(w: Whale) -> Int:\n    return w.ocean().depth\n";
+A Ocean:\n    has:\n        depth: Integer\n\nA Whale:\n    can ocean() -> Ocean:\n        return Ocean()\n\nto f(w: Whale) -> Integer:\n    return w.ocean().depth\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -5359,7 +5359,7 @@ A Ocean:\n    has:\n        depth: Int\n\nA Whale:\n    can ocean() -> Ocean:\n 
     #[test]
     fn test_derived_property_access_type_ok() {
         let input = "\
-A Whale:\n    has:\n        age: Int\n    derives next_age() -> Int:\n        return its.age + 1\n\nto f(w: Whale) -> Int:\n    return w.next_age\n";
+A Whale:\n    has:\n        age: Integer\n    derives next_age() -> Integer:\n        return its.age + 1\n\nto f(w: Whale) -> Integer:\n    return w.next_age\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -5370,7 +5370,7 @@ A Whale:\n    has:\n        age: Int\n    derives next_age() -> Int:\n        re
     #[test]
     fn test_calling_derived_property_errors() {
         let input = "\
-A Whale:\n    has:\n        age: Int\n    derives next_age() -> Int:\n        return its.age + 1\n\nto f(w: Whale) -> Int:\n    return w.next_age()\n";
+A Whale:\n    has:\n        age: Integer\n    derives next_age() -> Integer:\n        return its.age + 1\n\nto f(w: Whale) -> Integer:\n    return w.next_age()\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -5385,7 +5385,7 @@ A Whale:\n    has:\n        age: Int\n    derives next_age() -> Int:\n        re
     #[test]
     fn test_actor_call_requires_await_or_fire() {
         let input = "\
-A Whale:\n    can swim() -> Bool:\n        return true\n\nto f() -> Nothing:\n    w = detach Whale() * 1\n    w.swim()\n";
+A Whale:\n    can swim() -> Boolean:\n        return true\n\nto f() -> Nothing:\n    w = detach Whale() * 1\n    w.swim()\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -5399,7 +5399,7 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f() -> Nothing:\n  
 
     #[test]
     fn test_err_requires_result_function() {
-        let input = "to f() -> Int:\n    err \"nope\"";
+        let input = "to f() -> Integer:\n    err \"nope\"";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -5423,7 +5423,7 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f() -> Nothing:\n  
 
     #[test]
     fn test_invalid_otherwise_operand() {
-        let input = "to f() -> Int:\n    return 1 otherwise 0";
+        let input = "to f() -> Integer:\n    return 1 otherwise 0";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -5437,7 +5437,7 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f() -> Nothing:\n  
 
     #[test]
     fn test_invalid_unary_operand_span() {
-        let input = "to f() -> Int:\n    -true";
+        let input = "to f() -> Integer:\n    -true";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -5455,7 +5455,7 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f() -> Nothing:\n  
 
     #[test]
     fn test_invalid_binary_operand_span() {
-        let input = "to f() -> Int:\n    true + 1";
+        let input = "to f() -> Integer:\n    true + 1";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -5474,7 +5474,7 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f() -> Nothing:\n  
     #[test]
     fn test_unknown_member_span() {
         let input = "\
-A Foo:\n    has:\n        x: Int\n\nto f() -> Nothing:\n    foo = Foo(x=1)\n    foo.bar\n";
+A Foo:\n    has:\n        x: Integer\n\nto f() -> Nothing:\n    foo = Foo(x=1)\n    foo.bar\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -5493,7 +5493,7 @@ A Foo:\n    has:\n        x: Int\n\nto f() -> Nothing:\n    foo = Foo(x=1)\n    
     #[test]
     fn test_actor_call_with_await_ok() {
         let input = "\
-A Whale:\n    can swim() -> Bool:\n        return true\n\nto f() -> Result:\n    w = detach Whale() * 1\n    return await w.swim()\n";
+A Whale:\n    can swim() -> Boolean:\n        return true\n\nto f() -> Result:\n    w = detach Whale() * 1\n    return await w.swim()\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -5517,7 +5517,7 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f() -> Result:\n   
 
     #[test]
     fn test_builtin_fallible_otherwise_ok() {
-        let input = "to f() -> Int:\n    return __wr_parse_int(\"1\") otherwise 0";
+        let input = "to f() -> Integer:\n    return __wr_parse_int(\"1\") otherwise 0";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -5528,7 +5528,7 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f() -> Result:\n   
     #[test]
     fn test_await_on_non_actor_call_errors() {
         let input = "\
-A Whale:\n    can swim() -> Bool:\n        return true\n\nto f(w: Whale) -> Result[Bool]:\n    return await w.swim()\n";
+A Whale:\n    can swim() -> Boolean:\n        return true\n\nto f(w: Whale) -> Result[Boolean]:\n    return await w.swim()\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -5543,7 +5543,7 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f(w: Whale) -> Resu
     #[test]
     fn test_fire_actor_call_ok() {
         let input = "\
-A Whale:\n    can swim() -> Bool:\n        return true\n\nto f() -> Nothing:\n    w = detach Whale() * 1\n    fire w.swim()\n";
+A Whale:\n    can swim() -> Boolean:\n        return true\n\nto f() -> Nothing:\n    w = detach Whale() * 1\n    fire w.swim()\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -5554,7 +5554,7 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f() -> Nothing:\n  
     #[test]
     fn test_fire_non_actor_call_errors() {
         let input = "\
-A Whale:\n    can swim() -> Bool:\n        return true\n\nto f(w: Whale) -> Nothing:\n    fire w.swim()\n";
+A Whale:\n    can swim() -> Boolean:\n        return true\n\nto f(w: Whale) -> Nothing:\n    fire w.swim()\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -5601,7 +5601,7 @@ to f() -> Nothing:\n    Whale(age=\"old\")\n";
     #[test]
     fn test_await_on_actor_value_errors() {
         let input = "\
-A Whale:\n    can swim() -> Bool:\n        return true\n\nto f() -> Result:\n    w = detach Whale() * 1\n    return await w\n";
+A Whale:\n    can swim() -> Boolean:\n        return true\n\nto f() -> Result:\n    w = detach Whale() * 1\n    return await w\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -5616,7 +5616,7 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f() -> Result:\n   
     #[test]
     fn test_fire_on_actor_value_errors() {
         let input = "\
-A Whale:\n    can swim() -> Bool:\n        return true\n\nto f() -> Nothing:\n    w = detach Whale() * 1\n    fire w\n";
+A Whale:\n    can swim() -> Boolean:\n        return true\n\nto f() -> Nothing:\n    w = detach Whale() * 1\n    fire w\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -5631,8 +5631,8 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f() -> Nothing:\n  
     #[test]
     fn test_async_class_requires_actor() {
         let input = "\
-A Whale:\n    can swim() -> Bool:\n        return true\n\n\
-A Boat:\n    can ride() -> Bool:\n        return await Whale().swim()\n\n\
+A Whale:\n    can swim() -> Boolean:\n        return true\n\n\
+A Boat:\n    can ride() -> Boolean:\n        return await Whale().swim()\n\n\
 to f() -> Nothing:\n    Boat()\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
@@ -5648,9 +5648,9 @@ to f() -> Nothing:\n    Boat()\n";
     #[test]
     fn test_async_method_requires_actor() {
         let input = "\
-A Whale:\n    can swim() -> Bool:\n        return true\n\n\
-A Boat:\n    can ride() -> Bool:\n        return await Whale().swim()\n\n\
-to f() -> Bool:\n    b = Boat()\n    return b.ride()\n";
+A Whale:\n    can swim() -> Boolean:\n        return true\n\n\
+A Boat:\n    can ride() -> Boolean:\n        return await Whale().swim()\n\n\
+to f() -> Boolean:\n    b = Boat()\n    return b.ride()\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -5665,9 +5665,9 @@ to f() -> Bool:\n    b = Boat()\n    return b.ride()\n";
     #[test]
     fn test_async_chain_requires_actor() {
         let input = "\
-A Whale:\n    can swim() -> Bool:\n        return true\n\n\
-to helper() -> Bool:\n    return await Whale().swim()\n\n\
-A Boat:\n    can ride() -> Bool:\n        return helper()\n\n\
+A Whale:\n    can swim() -> Boolean:\n        return true\n\n\
+to helper() -> Boolean:\n    return await Whale().swim()\n\n\
+A Boat:\n    can ride() -> Boolean:\n        return helper()\n\n\
 to f() -> Nothing:\n    Boat()\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
@@ -5683,10 +5683,10 @@ to f() -> Nothing:\n    Boat()\n";
     #[test]
     fn test_async_error_includes_chain_hint() {
         let input = "\
-A Whale:\n    can swim() -> Bool:\n        return true\n\n\
-to helper() -> Bool:\n    return await Whale().swim()\n\n\
-A Boat:\n    can ride() -> Bool:\n        return helper()\n\n\
-to f() -> Bool:\n    b = Boat()\n    return b.ride()\n";
+A Whale:\n    can swim() -> Boolean:\n        return true\n\n\
+to helper() -> Boolean:\n    return await Whale().swim()\n\n\
+A Boat:\n    can ride() -> Boolean:\n        return helper()\n\n\
+to f() -> Boolean:\n    b = Boat()\n    return b.ride()\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -5707,9 +5707,9 @@ to f() -> Bool:\n    b = Boat()\n    return b.ride()\n";
     #[test]
     fn test_fire_chain_requires_actor() {
         let input = "\
-A Whale:\n    can swim() -> Bool:\n        return true\n\n\
-to helper() -> Bool:\n    fire Whale().swim()\n    return true\n\n\
-A Boat:\n    can ride() -> Bool:\n        return helper()\n\n\
+A Whale:\n    can swim() -> Boolean:\n        return true\n\n\
+to helper() -> Boolean:\n    fire Whale().swim()\n    return true\n\n\
+A Boat:\n    can ride() -> Boolean:\n        return helper()\n\n\
 to f() -> Nothing:\n    Boat()\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
@@ -5725,8 +5725,8 @@ to f() -> Nothing:\n    Boat()\n";
     #[test]
     fn test_async_class_allowed_with_detach() {
         let input = "\
-A Whale:\n    can swim() -> Bool:\n        return true\n\n\
-A Boat:\n    can ride() -> Bool:\n        return await Whale().swim()\n\n\
+A Whale:\n    can swim() -> Boolean:\n        return true\n\n\
+A Boat:\n    can ride() -> Boolean:\n        return await Whale().swim()\n\n\
 to f() -> Result:\n    b = detach Boat() * 1\n    return await b.ride()\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();

@@ -231,7 +231,7 @@ fn check_stmt_uses(
                     });
                 }
             } else if matches!(value, Value::Const(_)) {
-                if matches!(value, Value::Const(crate::hir::Literal::Bool(_)))
+                if matches!(value, Value::Const(crate::hir::Literal::Boolean(_)))
                     || matches!(value, Value::Const(crate::hir::Literal::Nil))
                     || matches!(value, Value::Const(crate::hir::Literal::Float(_)))
                 {
@@ -409,9 +409,9 @@ fn value_label(func: &MirFunction, value: &Value) -> String {
 fn value_type(func: &MirFunction, value: &Value) -> Option<MirType> {
     match value {
         Value::Const(lit) => Some(match lit {
-            crate::hir::Literal::Int(_) => MirType::Int,
+            crate::hir::Literal::Integer(_) => MirType::Integer,
             crate::hir::Literal::Float(_) => MirType::Float,
-            crate::hir::Literal::Bool(_) => MirType::Bool,
+            crate::hir::Literal::Boolean(_) => MirType::Boolean,
             crate::hir::Literal::String(_) => MirType::String,
             crate::hir::Literal::Nil => MirType::Nil,
         }),

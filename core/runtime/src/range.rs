@@ -3,7 +3,7 @@ use crate::value::{Value, int_value};
 
 pub fn range_new(start: Value, end: Value) -> Value {
     match (num_kind(start), num_kind(end)) {
-        (Some(NumKind::Int(a)), Some(NumKind::Int(b))) => range_int(a, b),
+        (Some(NumKind::Integer(a)), Some(NumKind::Integer(b))) => range_int(a, b),
         (Some(a), Some(b)) => range_float(num_to_f64(a), num_to_f64(b)),
         _ => list::list_new(0),
     }
@@ -45,14 +45,14 @@ fn range_float(start: f64, end: f64) -> Value {
 
 fn num_to_f64(kind: NumKind) -> f64 {
     match kind {
-        NumKind::Int(x) => x as f64,
+        NumKind::Integer(x) => x as f64,
         NumKind::Float(x) => x,
     }
 }
 
 fn num_kind(val: Value) -> Option<NumKind> {
     if let Some(i) = int_value(val) {
-        return Some(NumKind::Int(i));
+        return Some(NumKind::Integer(i));
     }
     if is_float(val) {
         return Some(NumKind::Float(val.as_float()));
@@ -65,6 +65,6 @@ fn is_float(val: Value) -> bool {
 }
 
 enum NumKind {
-    Int(i64),
+    Integer(i64),
     Float(f64),
 }
