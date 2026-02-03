@@ -9,12 +9,12 @@ A Search:
 
     so: Index a document in a collection.
     can index(collection: String, id: String, text: String, fields: Map) -> Pending:
-        return search_index(its.storage, collection, id, text, fields)
+        return __wr_search_index(its.storage, collection, id, text, fields)
 
     so: Remove a document from a collection.
     can remove(collection: String, id: String) -> Pending:
-        return search_remove(its.storage, collection, id)
+        return __wr_search_remove(its.storage, collection, id)
 
     so: Query a collection with options.
     can query(collection: String, query: String, opts: Map) -> Pending:
-        return search_query(its.storage, collection, query, opts)
+        return __wr_search_query(its.storage, collection, query, opts)

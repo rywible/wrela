@@ -1273,7 +1273,7 @@ fn lower_rvalue(
                                 Some(id)
                             } else {
                                 match name.as_str() {
-                                    "print" => Some(runtime_fn_print(module, runtime)?),
+                                    "__wr_print" => Some(runtime_fn_print(module, runtime)?),
                                     "assert" => Some(runtime_fn_assert(module, runtime)?),
                                     "assert_eq" => {
                                         Some(runtime_fn_assert_eq(module, runtime)?)
@@ -1290,215 +1290,215 @@ fn lower_rvalue(
                                     "assert_identity" => {
                                         Some(runtime_fn_assert_identity(module, runtime)?)
                                     }
-                                    "assert_err" => {
+                                    "__wr_assert_err" => {
                                         Some(runtime_fn_assert_err(module, runtime)?)
                                     }
-                                    "log" => Some(runtime_fn_log(module, runtime)?),
-                                    "log_configure" => {
+                                    "__wr_log" => Some(runtime_fn_log(module, runtime)?),
+                                    "__wr_log_configure" => {
                                         Some(runtime_fn_log_configure(module, runtime)?)
                                     }
-                                    "parse_int" => Some(runtime_fn_parse_int(module, runtime)?),
-                                    "parse_float" => Some(runtime_fn_parse_float(module, runtime)?),
-                                    "read_file" => Some(runtime_fn_read_file(module, runtime)?),
-                                    "write_file" => Some(runtime_fn_write_file(module, runtime)?),
-                                    "list_push" => Some(runtime_fn_list_push(module, runtime)?),
-                                    "map_new" => Some(runtime_fn_map_new(module, runtime)?),
-                                    "map_get" => Some(runtime_fn_map_get(module, runtime)?),
-                                    "map_set" => Some(runtime_fn_map_set(module, runtime)?),
-                                    "pool_auto_size" => {
+                                    "__wr_parse_int" => Some(runtime_fn_parse_int(module, runtime)?),
+                                    "__wr_parse_float" => Some(runtime_fn_parse_float(module, runtime)?),
+                                    "__wr_read_file" => Some(runtime_fn_read_file(module, runtime)?),
+                                    "__wr_write_file" => Some(runtime_fn_write_file(module, runtime)?),
+                                    "__wr_list_push" => Some(runtime_fn_list_push(module, runtime)?),
+                                    "__wr_map_new" => Some(runtime_fn_map_new(module, runtime)?),
+                                    "__wr_map_get" => Some(runtime_fn_map_get(module, runtime)?),
+                                    "__wr_map_set" => Some(runtime_fn_map_set(module, runtime)?),
+                                    "__wr_pool_auto_size" => {
                                         Some(runtime_fn_pool_auto_size(module, runtime)?)
                                     }
-                                    "pool_size" => Some(runtime_fn_pool_size(module, runtime)?),
-                                    "pool_rr" => Some(runtime_fn_pool_rr(module, runtime)?),
-                                    "pool_queue_len" => {
+                                    "__wr_pool_size" => Some(runtime_fn_pool_size(module, runtime)?),
+                                    "__wr_pool_rr" => Some(runtime_fn_pool_rr(module, runtime)?),
+                                    "__wr_pool_queue_len" => {
                                         Some(runtime_fn_pool_queue_len(module, runtime)?)
                                     }
-                                    "actor_mailbox_len" => {
+                                    "__wr_actor_mailbox_len" => {
                                         Some(runtime_fn_actor_mailbox_len(module, runtime)?)
                                     }
-                                    "actor_pause" => Some(runtime_fn_actor_pause(module, runtime)?),
-                                    "actor_resume" => {
+                                    "__wr_actor_pause" => Some(runtime_fn_actor_pause(module, runtime)?),
+                                    "__wr_actor_resume" => {
                                         Some(runtime_fn_actor_resume(module, runtime)?)
                                     }
-                                    "actor_pause_wait" => {
+                                    "__wr_actor_pause_wait" => {
                                         Some(runtime_fn_actor_pause_wait(module, runtime)?)
                                     }
-                                    "metrics_get" => Some(runtime_fn_metrics_get(module, runtime)?),
-                                    "metrics_dropped_paused_id" => {
+                                    "__wr_metrics_get" => Some(runtime_fn_metrics_get(module, runtime)?),
+                                    "__wr_metrics_dropped_paused_id" => {
                                         Some(runtime_fn_metrics_dropped_paused_id(module, runtime)?)
                                     }
-                                    "metrics_messages_dropped_id" => Some(
+                                    "__wr_metrics_messages_dropped_id" => Some(
                                         runtime_fn_metrics_messages_dropped_id(module, runtime)?,
                                     ),
-                                    "clock_ns" => Some(runtime_fn_clock_ns(module, runtime)?),
-                                    "sleep_ms" => Some(runtime_fn_sleep_ms(module, runtime)?),
-                                    "env_get" => Some(runtime_fn_env_get(module, runtime)?),
-                                    "env_get_or" => Some(runtime_fn_env_get_or(module, runtime)?),
-                                    "env_get_as_bool" => {
+                                    "__wr_clock_ns" => Some(runtime_fn_clock_ns(module, runtime)?),
+                                    "__wr_sleep_ms" => Some(runtime_fn_sleep_ms(module, runtime)?),
+                                    "__wr_env_get" => Some(runtime_fn_env_get(module, runtime)?),
+                                    "__wr_env_get_or" => Some(runtime_fn_env_get_or(module, runtime)?),
+                                    "__wr_env_get_as_bool" => {
                                         Some(runtime_fn_env_get_as_bool(module, runtime)?)
                                     }
-                                    "env_get_as_int" => {
+                                    "__wr_env_get_as_int" => {
                                         Some(runtime_fn_env_get_as_int(module, runtime)?)
                                     }
-                                    "env_set" => Some(runtime_fn_env_set(module, runtime)?),
-                                    "env_load" => Some(runtime_fn_env_load(module, runtime)?),
-                                    "auth_create_user" => {
+                                    "__wr_env_set" => Some(runtime_fn_env_set(module, runtime)?),
+                                    "__wr_env_load" => Some(runtime_fn_env_load(module, runtime)?),
+                                    "__wr_auth_create_user" => {
                                         Some(runtime_fn_auth_create_user(module, runtime)?)
                                     }
-                                    "auth_verify_password" => {
+                                    "__wr_auth_verify_password" => {
                                         Some(runtime_fn_auth_verify_password(module, runtime)?)
                                     }
-                                    "auth_issue_jwt" => {
+                                    "__wr_auth_issue_jwt" => {
                                         Some(runtime_fn_auth_issue_jwt(module, runtime)?)
                                     }
-                                    "auth_verify_jwt" => {
+                                    "__wr_auth_verify_jwt" => {
                                         Some(runtime_fn_auth_verify_jwt(module, runtime)?)
                                     }
-                                    "auth_issue_email_token" => {
+                                    "__wr_auth_issue_email_token" => {
                                         Some(runtime_fn_auth_issue_email_token(module, runtime)?)
                                     }
-                                    "auth_verify_email_token" => {
+                                    "__wr_auth_verify_email_token" => {
                                         Some(runtime_fn_auth_verify_email_token(module, runtime)?)
                                     }
-                                    "auth_oauth_login" => {
+                                    "__wr_auth_oauth_login" => {
                                         Some(runtime_fn_auth_oauth_login(module, runtime)?)
                                     }
-                                    "auth_configure" => {
+                                    "__wr_auth_configure" => {
                                         Some(runtime_fn_auth_configure(module, runtime)?)
                                     }
-                                    "rbac_create_role" => {
+                                    "__wr_rbac_create_role" => {
                                         Some(runtime_fn_rbac_create_role(module, runtime)?)
                                     }
-                                    "rbac_assign_role" => {
+                                    "__wr_rbac_assign_role" => {
                                         Some(runtime_fn_rbac_assign_role(module, runtime)?)
                                     }
-                                    "rbac_check" => Some(runtime_fn_rbac_check(module, runtime)?),
-                                    "rbac_permissions_for" => {
+                                    "__wr_rbac_check" => Some(runtime_fn_rbac_check(module, runtime)?),
+                                    "__wr_rbac_permissions_for" => {
                                         Some(runtime_fn_rbac_permissions_for(module, runtime)?)
                                     }
-                                    "files_upload_stream" => {
+                                    "__wr_files_upload_stream" => {
                                         Some(runtime_fn_files_upload_stream(module, runtime)?)
                                     }
-                                    "files_signed_url" => {
+                                    "__wr_files_signed_url" => {
                                         Some(runtime_fn_files_signed_url(module, runtime)?)
                                     }
-                                    "files_metadata" => {
+                                    "__wr_files_metadata" => {
                                         Some(runtime_fn_files_metadata(module, runtime)?)
                                     }
-                                    "files_delete" => {
+                                    "__wr_files_delete" => {
                                         Some(runtime_fn_files_delete(module, runtime)?)
                                     }
-                                    "files_set_acl" => {
+                                    "__wr_files_set_acl" => {
                                         Some(runtime_fn_files_set_acl(module, runtime)?)
                                     }
-                                    "jobs_enqueue" => {
+                                    "__wr_jobs_enqueue" => {
                                         Some(runtime_fn_jobs_enqueue(module, runtime)?)
                                     }
-                                    "jobs_process" => {
+                                    "__wr_jobs_process" => {
                                         Some(runtime_fn_jobs_process(module, runtime)?)
                                     }
-                                    "jobs_dead_letter" => {
+                                    "__wr_jobs_dead_letter" => {
                                         Some(runtime_fn_jobs_dead_letter(module, runtime)?)
                                     }
-                                    "jobs_configure" => {
+                                    "__wr_jobs_configure" => {
                                         Some(runtime_fn_jobs_configure(module, runtime)?)
                                     }
-                                    "schedule_cron" => {
+                                    "__wr_schedule_cron" => {
                                         Some(runtime_fn_schedule_cron(module, runtime)?)
                                     }
-                                    "schedule_every" => {
+                                    "__wr_schedule_every" => {
                                         Some(runtime_fn_schedule_every(module, runtime)?)
                                     }
-                                    "schedule_at" => Some(runtime_fn_schedule_at(module, runtime)?),
-                                    "search_index" => {
+                                    "__wr_schedule_at" => Some(runtime_fn_schedule_at(module, runtime)?),
+                                    "__wr_search_index" => {
                                         Some(runtime_fn_search_index(module, runtime)?)
                                     }
-                                    "search_remove" => {
+                                    "__wr_search_remove" => {
                                         Some(runtime_fn_search_remove(module, runtime)?)
                                     }
-                                    "search_query" => {
+                                    "__wr_search_query" => {
                                         Some(runtime_fn_search_query(module, runtime)?)
                                     }
-                                    "realtime_on_connect" => {
+                                    "__wr_realtime_on_connect" => {
                                         Some(runtime_fn_realtime_on_connect(module, runtime)?)
                                     }
-                                    "realtime_join" => {
+                                    "__wr_realtime_join" => {
                                         Some(runtime_fn_realtime_join(module, runtime)?)
                                     }
-                                    "realtime_leave" => {
+                                    "__wr_realtime_leave" => {
                                         Some(runtime_fn_realtime_leave(module, runtime)?)
                                     }
-                                    "realtime_broadcast" => {
+                                    "__wr_realtime_broadcast" => {
                                         Some(runtime_fn_realtime_broadcast(module, runtime)?)
                                     }
-                                    "realtime_send" => {
+                                    "__wr_realtime_send" => {
                                         Some(runtime_fn_realtime_send(module, runtime)?)
                                     }
-                                    "realtime_configure" => {
+                                    "__wr_realtime_configure" => {
                                         Some(runtime_fn_realtime_configure(module, runtime)?)
                                     }
-                                    "pubsub_configure" => {
+                                    "__wr_pubsub_configure" => {
                                         Some(runtime_fn_pubsub_configure(module, runtime)?)
                                     }
-                                    "rate_check" => Some(runtime_fn_rate_check(module, runtime)?),
-                                    "rate_ip" => Some(runtime_fn_rate_ip(module, runtime)?),
-                                    "admin_enable" => {
+                                    "__wr_rate_check" => Some(runtime_fn_rate_check(module, runtime)?),
+                                    "__wr_rate_ip" => Some(runtime_fn_rate_ip(module, runtime)?),
+                                    "__wr_admin_enable" => {
                                         Some(runtime_fn_admin_enable(module, runtime)?)
                                     }
-                                    "storage_get" => Some(runtime_fn_storage_get(module, runtime)?),
-                                    "storage_get_with_version" => {
+                                    "__wr_storage_get" => Some(runtime_fn_storage_get(module, runtime)?),
+                                    "__wr_storage_get_with_version" => {
                                         Some(runtime_fn_storage_get_with_version(module, runtime)?)
                                     }
-                                    "storage_scan" => {
+                                    "__wr_storage_scan" => {
                                         Some(runtime_fn_storage_scan(module, runtime)?)
                                     }
-                                    "storage_list_prefix" => {
+                                    "__wr_storage_list_prefix" => {
                                         Some(runtime_fn_storage_list_prefix(module, runtime)?)
                                     }
-                                    "storage_configure" => {
+                                    "__wr_storage_configure" => {
                                         Some(runtime_fn_storage_configure(module, runtime)?)
                                     }
-                                    "runtime_configure" => {
+                                    "__wr_runtime_configure" => {
                                         Some(runtime_fn_runtime_configure(module, runtime)?)
                                     }
-                                    "storage_set" => Some(runtime_fn_storage_set(module, runtime)?),
-                                    "storage_set_if_version" => {
+                                    "__wr_storage_set" => Some(runtime_fn_storage_set(module, runtime)?),
+                                    "__wr_storage_set_if_version" => {
                                         Some(runtime_fn_storage_set_if_version(module, runtime)?)
                                     }
-                                    "storage_delete_if_version" => {
+                                    "__wr_storage_delete_if_version" => {
                                         Some(runtime_fn_storage_delete_if_version(module, runtime)?)
                                     }
-                                    "storage_delete" => {
+                                    "__wr_storage_delete" => {
                                         Some(runtime_fn_storage_delete(module, runtime)?)
                                     }
-                                    "storage_batch_set" => {
+                                    "__wr_storage_batch_set" => {
                                         Some(runtime_fn_storage_batch_set(module, runtime)?)
                                     }
-                                    "bytes_from_string" => {
+                                    "__wr_bytes_from_string" => {
                                         Some(runtime_fn_bytes_from_string(module, runtime)?)
                                     }
-                                    "bytes_to_string" => {
+                                    "__wr_bytes_to_string" => {
                                         Some(runtime_fn_bytes_to_string(module, runtime)?)
                                     }
-                                    "bytes_len" => Some(runtime_fn_bytes_len(module, runtime)?),
-                                    "http_server_serve_get_requests" => Some(
+                                    "__wr_bytes_len" => Some(runtime_fn_bytes_len(module, runtime)?),
+                                    "__wr_http_server_serve_get_requests" => Some(
                                         runtime_fn_http_server_serve_get_requests(module, runtime)?,
                                     ),
-                                    "http_server_serve_post_requests" => {
+                                    "__wr_http_server_serve_post_requests" => {
                                         Some(runtime_fn_http_server_serve_post_requests(
                                             module, runtime,
                                         )?)
                                     }
-                                    "http_server_serve_requests" => Some(
+                                    "__wr_http_server_serve_requests" => Some(
                                         runtime_fn_http_server_serve_requests(module, runtime)?,
                                     ),
-                                    "http_server_configure" => {
+                                    "__wr_http_server_configure" => {
                                         Some(runtime_fn_http_server_configure(module, runtime)?)
                                     }
-                                    "http_server_serve_on" => {
+                                    "__wr_http_server_serve_on" => {
                                         Some(runtime_fn_http_server_serve_on(module, runtime)?)
                                     }
-                                    "http_server_stop" => {
+                                    "__wr_http_server_stop" => {
                                         Some(runtime_fn_http_server_stop(module, runtime)?)
                                     }
                                     _ => None,
@@ -1562,7 +1562,7 @@ fn lower_rvalue(
             let class_val = lower_value(target, builder, locals, temps, module, runtime)?;
             let class_id = untag_int(builder, module, runtime, class_val)?;
             let instance_val = lower_value(instance, builder, locals, temps, module, runtime)?;
-            let pool_size = match size {
+            let __wr_pool_size = match size {
                 PoolSize::Fixed(value) => *value,
                 PoolSize::Auto => -1,
             };
@@ -1574,7 +1574,7 @@ fn lower_rvalue(
             };
             let func_id = runtime_fn_actor_spawn(module, runtime)?;
             let callee = module.declare_func_in_func(func_id, builder.func);
-            let pool_size_val = builder.ins().iconst(types::I64, pool_size);
+            let pool_size_val = builder.ins().iconst(types::I64, __wr_pool_size);
             let objective_val = builder.ins().iconst(types::I64, objective);
             let mailbox_cap = config.mailbox_cap.unwrap_or(-1);
             let enqueue_timeout_ms = config.enqueue_timeout_ms.unwrap_or(-1);

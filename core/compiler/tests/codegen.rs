@@ -290,10 +290,10 @@ fn native_builtins_parse_and_io() {
     let source = format!(
         r#"
 to run() -> Int:
-    write_file("{path}", "123") otherwise nil
-    value = read_file("{path}") otherwise "0"
-    parsed = parse_int(value) otherwise 0
-    parsed_float = parse_float("2.5") otherwise 0.0
+    __wr_write_file("{path}", "123") otherwise nil
+    value = __wr_read_file("{path}") otherwise "0"
+    parsed = __wr_parse_int(value) otherwise 0
+    parsed_float = __wr_parse_float("2.5") otherwise 0.0
     if parsed == 123 and parsed_float == 2.5:
         return 1
     return 0
@@ -471,6 +471,11 @@ fn native_pool_round_robin_smoke() {
         return;
     }
     let source = r#"
+use:
+    size,
+    round_robin
+from pool
+
 A Counter:
     can ping(x: Int) -> Int:
         return x
@@ -482,9 +487,9 @@ to run() -> Int:
         v2 = await c.ping(1) otherwise 0
         v3 = await c.ping(1) otherwise 0
         v4 = await c.ping(1) otherwise 0
-        size = pool_size(c)
-        rr = pool_rr(c)
-        return size * 10 + rr
+        pool_count = size(c)
+        rr = round_robin(c)
+        return pool_count * 10 + rr
 "#;
 
     let module = load_module_from_source(source);
@@ -529,6 +534,8 @@ fn native_pool_auto_size_smoke() {
         return;
     }
     let source = r#"
+use size from pool
+
 A Counter:
     can ping(x: Int) -> Int:
         return x
@@ -536,7 +543,7 @@ A Counter:
 to run() -> Int:
     optimize balance:
         c = detach Counter() * n
-        return pool_size(c)
+        return size(c)
 "#;
 
     let module = load_module_from_source(source);
@@ -585,6 +592,14 @@ fn native_pool_mailbox_len_smoke() {
         return;
     }
     let source = r#"
+use queue_len from pool
+use:
+    mailbox_len,
+    pause,
+    pause_wait,
+    resume
+from actor
+
 A Counter:
     can ping(x: Int) -> Int:
         return x
@@ -592,11 +607,11 @@ A Counter:
 to run() -> Int:
     optimize balance:
         c = detach Counter() * 2
-        actor_pause(c)
-        actor_pause_wait(c)
+        pause(c)
+        pause_wait(c)
         fire c.ping(1)
-        len = pool_queue_len(c) + actor_mailbox_len(c)
-        actor_resume(c)
+        len = queue_len(c) + mailbox_len(c)
+        resume(c)
         if len >= 1:
             return 1
         return 0
@@ -644,6 +659,16 @@ fn native_pool_pause_drop_metrics_smoke() {
         return;
     }
     let source = r#"
+use:
+    pause,
+    pause_wait,
+    resume
+from actor
+use:
+    get,
+    dropped_paused_id
+from metrics
+
 A Counter:
     can ping(x: Int) -> Int:
         return x
@@ -651,12 +676,12 @@ A Counter:
 to run() -> Int:
     optimize balance:
         c = detach Counter() * 2
-        actor_pause(c)
-        actor_pause_wait(c)
+        pause(c)
+        pause_wait(c)
         for i in 1...4:
             fire c.ping(i)
-        dropped = metrics_get(metrics_dropped_paused_id())
-        actor_resume(c)
+        dropped = get(dropped_paused_id())
+        resume(c)
         if dropped > 0:
             return 1
         return 0
@@ -708,6 +733,8 @@ fn native_pool_backpressure_config_smoke() {
     }
     let source = format!(
         r#"
+use size from pool
+
 A Counter:
     can ping(x: Int) -> Int:
         return x
@@ -715,7 +742,7 @@ A Counter:
 to run() -> Int:
     optimize balance:
         c = detach Pool.of(Counter, size=1, backpressure=queue(1)) * 1
-        return pool_size(c)
+        return size(c)
 "#
     );
 
@@ -764,6 +791,16 @@ fn native_pool_backpressure_stress() {
         return;
     }
     let source = r#"
+use:
+    pause,
+    pause_wait,
+    resume
+from actor
+use:
+    get,
+    messages_dropped_id
+from metrics
+
 A Counter:
     can ping(x: Int) -> Int:
         return x
@@ -771,12 +808,12 @@ A Counter:
 to run() -> Int:
     optimize balance:
         c = detach Pool.of(Counter, size=1, backpressure=queue(1)) * 1
-        actor_pause(c)
-        actor_pause_wait(c)
+        pause(c)
+        pause_wait(c)
         for i in 1...400:
             fire c.ping(i)
-        dropped = metrics_get(metrics_messages_dropped_id())
-        actor_resume(c)
+        dropped = get(messages_dropped_id())
+        resume(c)
         if dropped > 0:
             return 1
         return 0
@@ -824,6 +861,8 @@ fn native_pool_of_overrides_tail_smoke() {
         return;
     }
     let source = r#"
+use size from pool
+
 A Counter:
     can ping(x: Int) -> Int:
         return x
@@ -831,7 +870,7 @@ A Counter:
 to run() -> Int:
     optimize balance:
         c = detach Pool.of(Counter, size=3) * 1
-        return pool_size(c)
+        return size(c)
 "#;
 
     let module = load_module_from_source(source);
@@ -876,6 +915,8 @@ fn native_pool_auto_bounds_smoke() {
         return;
     }
     let source = r#"
+use size from pool
+
 A Counter:
     can ping(x: Int) -> Int:
         return x
@@ -883,7 +924,7 @@ A Counter:
 to run() -> Int:
     optimize balance:
         c = detach Pool.of(Counter, size=n, min=2, max=2) * 1
-        return pool_size(c)
+        return size(c)
 "#;
 
     let module = load_module_from_source(source);

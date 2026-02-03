@@ -3,5 +3,5 @@ so:
 
 so: Print a line to stdout.
 to print_line(text: String) -> Nothing:
-    print(text)
+    __wr_print(text)
     return nothing

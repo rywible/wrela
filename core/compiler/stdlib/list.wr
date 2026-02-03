@@ -3,5 +3,5 @@ so:
 
 so: Append a value to the end of a list.
 to push(list: List, value: Any) -> Nothing:
-    list_push(list, value)
+    __wr_list_push(list, value)
     return nothing

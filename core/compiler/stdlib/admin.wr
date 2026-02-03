@@ -4,4 +4,4 @@ so:
 A Admin:
     so: Enable admin endpoints with options.
     can enable(opts: Map) -> Pending:
-        return admin_enable(opts)
+        return __wr_admin_enable(opts)

@@ -3,16 +3,16 @@ so:
 
 so: Compute an automatic pool size for an objective and bounds.
 to auto_size(objective: Int, min: Int, max: Int, weight: Int) -> Int:
-    return pool_auto_size(objective, min, max, weight)
+    return __wr_pool_auto_size(objective, min, max, weight)
 
 so: Return the current pool size.
 to size(handle: Any) -> Int:
-    return pool_size(handle)
+    return __wr_pool_size(handle)
 
 so: Return the next handle in round-robin order.
 to round_robin(handle: Any) -> Any:
-    return pool_rr(handle)
+    return __wr_pool_rr(handle)
 
 so: Return the current pool queue length.
 to queue_len(handle: Any) -> Int:
-    return pool_queue_len(handle)
+    return __wr_pool_queue_len(handle)

@@ -754,7 +754,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
     let err = error_type();
     vec![
         (
-            SmolStr::new("assert_err"),
+            SmolStr::new("__wr_assert_err"),
             FunctionSig {
                 params: vec![(
                     SmolStr::new("value"),
@@ -764,56 +764,56 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("print"),
+            SmolStr::new("__wr_print"),
             FunctionSig {
                 params: vec![(SmolStr::new("value"), Type::String)],
                 ret: Type::Nil,
             },
         ),
         (
-            SmolStr::new("parse_int"),
+            SmolStr::new("__wr_parse_int"),
             FunctionSig {
                 params: vec![(SmolStr::new("value"), Type::String)],
                 ret: Type::Result(Box::new(Type::Int), Box::new(err.clone())),
             },
         ),
         (
-            SmolStr::new("parse_float"),
+            SmolStr::new("__wr_parse_float"),
             FunctionSig {
                 params: vec![(SmolStr::new("value"), Type::String)],
                 ret: Type::Result(Box::new(Type::Float), Box::new(err.clone())),
             },
         ),
         (
-            SmolStr::new("read_file"),
+            SmolStr::new("__wr_read_file"),
             FunctionSig {
                 params: vec![(SmolStr::new("path"), Type::String)],
                 ret: Type::Result(Box::new(Type::String), Box::new(err.clone())),
             },
         ),
         (
-            SmolStr::new("bytes_from_string"),
+            SmolStr::new("__wr_bytes_from_string"),
             FunctionSig {
                 params: vec![(SmolStr::new("value"), Type::String)],
                 ret: Type::Named(SmolStr::new("Bytes"), Vec::new()),
             },
         ),
         (
-            SmolStr::new("bytes_to_string"),
+            SmolStr::new("__wr_bytes_to_string"),
             FunctionSig {
                 params: vec![(SmolStr::new("value"), Type::Named(SmolStr::new("Bytes"), Vec::new()))],
                 ret: Type::String,
             },
         ),
         (
-            SmolStr::new("bytes_len"),
+            SmolStr::new("__wr_bytes_len"),
             FunctionSig {
                 params: vec![(SmolStr::new("value"), Type::Named(SmolStr::new("Bytes"), Vec::new()))],
                 ret: Type::Int,
             },
         ),
         (
-            SmolStr::new("write_file"),
+            SmolStr::new("__wr_write_file"),
             FunctionSig {
                 params: vec![
                     (SmolStr::new("path"), Type::String),
@@ -823,7 +823,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("list_push"),
+            SmolStr::new("__wr_list_push"),
             FunctionSig {
                 params: vec![
                     (SmolStr::new("list"), Type::List(Box::new(Type::Unknown))),
@@ -833,7 +833,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("map_get"),
+            SmolStr::new("__wr_map_get"),
             FunctionSig {
                 params: vec![
                     (
@@ -846,7 +846,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("map_set"),
+            SmolStr::new("__wr_map_set"),
             FunctionSig {
                 params: vec![
                     (
@@ -860,7 +860,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("log"),
+            SmolStr::new("__wr_log"),
             FunctionSig {
                 params: vec![
                     (SmolStr::new("level"), Type::String),
@@ -874,14 +874,14 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("log_configure"),
+            SmolStr::new("__wr_log_configure"),
             FunctionSig {
                 params: vec![(SmolStr::new("config"), Type::Unknown)],
                 ret: Type::Nil,
             },
         ),
         (
-            SmolStr::new("pool_auto_size"),
+            SmolStr::new("__wr_pool_auto_size"),
             FunctionSig {
                 params: vec![
                     (SmolStr::new("objective"), Type::Int),
@@ -893,98 +893,98 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("pool_size"),
+            SmolStr::new("__wr_pool_size"),
             FunctionSig {
                 params: vec![(SmolStr::new("handle"), Type::Unknown)],
                 ret: Type::Int,
             },
         ),
         (
-            SmolStr::new("pool_rr"),
+            SmolStr::new("__wr_pool_rr"),
             FunctionSig {
                 params: vec![(SmolStr::new("handle"), Type::Unknown)],
                 ret: Type::Int,
             },
         ),
         (
-            SmolStr::new("pool_queue_len"),
+            SmolStr::new("__wr_pool_queue_len"),
             FunctionSig {
                 params: vec![(SmolStr::new("handle"), Type::Unknown)],
                 ret: Type::Int,
             },
         ),
         (
-            SmolStr::new("actor_mailbox_len"),
+            SmolStr::new("__wr_actor_mailbox_len"),
             FunctionSig {
                 params: vec![(SmolStr::new("handle"), Type::Unknown)],
                 ret: Type::Int,
             },
         ),
         (
-            SmolStr::new("actor_pause"),
+            SmolStr::new("__wr_actor_pause"),
             FunctionSig {
                 params: vec![(SmolStr::new("handle"), Type::Unknown)],
                 ret: Type::Nil,
             },
         ),
         (
-            SmolStr::new("actor_resume"),
+            SmolStr::new("__wr_actor_resume"),
             FunctionSig {
                 params: vec![(SmolStr::new("handle"), Type::Unknown)],
                 ret: Type::Nil,
             },
         ),
         (
-            SmolStr::new("actor_pause_wait"),
+            SmolStr::new("__wr_actor_pause_wait"),
             FunctionSig {
                 params: vec![(SmolStr::new("handle"), Type::Unknown)],
                 ret: Type::Nil,
             },
         ),
         (
-            SmolStr::new("metrics_get"),
+            SmolStr::new("__wr_metrics_get"),
             FunctionSig {
                 params: vec![(SmolStr::new("id"), Type::Int)],
                 ret: Type::Int,
             },
         ),
         (
-            SmolStr::new("metrics_dropped_paused_id"),
+            SmolStr::new("__wr_metrics_dropped_paused_id"),
             FunctionSig {
                 params: vec![],
                 ret: Type::Int,
             },
         ),
         (
-            SmolStr::new("metrics_messages_dropped_id"),
+            SmolStr::new("__wr_metrics_messages_dropped_id"),
             FunctionSig {
                 params: vec![],
                 ret: Type::Int,
             },
         ),
         (
-            SmolStr::new("clock_ns"),
+            SmolStr::new("__wr_clock_ns"),
             FunctionSig {
                 params: vec![],
                 ret: Type::Int,
             },
         ),
         (
-            SmolStr::new("sleep_ms"),
+            SmolStr::new("__wr_sleep_ms"),
             FunctionSig {
                 params: vec![(SmolStr::new("ms"), Type::Int)],
                 ret: Type::Pending(Box::new(Type::Nil)),
             },
         ),
         (
-            SmolStr::new("env_get"),
+            SmolStr::new("__wr_env_get"),
             FunctionSig {
                 params: vec![(SmolStr::new("key"), Type::String)],
                 ret: Type::Unknown,
             },
         ),
         (
-            SmolStr::new("env_get_or"),
+            SmolStr::new("__wr_env_get_or"),
             FunctionSig {
                 params: vec![
                     (SmolStr::new("key"), Type::String),
@@ -994,21 +994,21 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("env_get_as_bool"),
+            SmolStr::new("__wr_env_get_as_bool"),
             FunctionSig {
                 params: vec![(SmolStr::new("key"), Type::String)],
                 ret: Type::Unknown,
             },
         ),
         (
-            SmolStr::new("env_get_as_int"),
+            SmolStr::new("__wr_env_get_as_int"),
             FunctionSig {
                 params: vec![(SmolStr::new("key"), Type::String)],
                 ret: Type::Unknown,
             },
         ),
         (
-            SmolStr::new("env_set"),
+            SmolStr::new("__wr_env_set"),
             FunctionSig {
                 params: vec![
                     (SmolStr::new("key"), Type::String),
@@ -1018,14 +1018,14 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("env_load"),
+            SmolStr::new("__wr_env_load"),
             FunctionSig {
                 params: vec![(SmolStr::new("path"), Type::String)],
                 ret: Type::Bool,
             },
         ),
         (
-            SmolStr::new("auth_create_user"),
+            SmolStr::new("__wr_auth_create_user"),
             FunctionSig {
                 params: vec![
                     (
@@ -1040,7 +1040,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("auth_verify_password"),
+            SmolStr::new("__wr_auth_verify_password"),
             FunctionSig {
                 params: vec![
                     (
@@ -1054,7 +1054,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("auth_issue_jwt"),
+            SmolStr::new("__wr_auth_issue_jwt"),
             FunctionSig {
                 params: vec![
                     (
@@ -1072,7 +1072,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("auth_verify_jwt"),
+            SmolStr::new("__wr_auth_verify_jwt"),
             FunctionSig {
                 params: vec![
                     (
@@ -1085,7 +1085,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("auth_issue_email_token"),
+            SmolStr::new("__wr_auth_issue_email_token"),
             FunctionSig {
                 params: vec![
                     (
@@ -1099,7 +1099,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("auth_verify_email_token"),
+            SmolStr::new("__wr_auth_verify_email_token"),
             FunctionSig {
                 params: vec![
                     (
@@ -1112,7 +1112,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("auth_oauth_login"),
+            SmolStr::new("__wr_auth_oauth_login"),
             FunctionSig {
                 params: vec![
                     (
@@ -1126,14 +1126,14 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("auth_configure"),
+            SmolStr::new("__wr_auth_configure"),
             FunctionSig {
                 params: vec![(SmolStr::new("config"), Type::Unknown)],
                 ret: Type::Nil,
             },
         ),
         (
-            SmolStr::new("rbac_create_role"),
+            SmolStr::new("__wr_rbac_create_role"),
             FunctionSig {
                 params: vec![
                     (
@@ -1151,7 +1151,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("rbac_assign_role"),
+            SmolStr::new("__wr_rbac_assign_role"),
             FunctionSig {
                 params: vec![
                     (
@@ -1166,7 +1166,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("rbac_check"),
+            SmolStr::new("__wr_rbac_check"),
             FunctionSig {
                 params: vec![
                     (
@@ -1181,7 +1181,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("rbac_permissions_for"),
+            SmolStr::new("__wr_rbac_permissions_for"),
             FunctionSig {
                 params: vec![
                     (
@@ -1195,7 +1195,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("files_upload_stream"),
+            SmolStr::new("__wr_files_upload_stream"),
             FunctionSig {
                 params: vec![
                     (
@@ -1212,7 +1212,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("files_signed_url"),
+            SmolStr::new("__wr_files_signed_url"),
             FunctionSig {
                 params: vec![
                     (
@@ -1229,7 +1229,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("files_metadata"),
+            SmolStr::new("__wr_files_metadata"),
             FunctionSig {
                 params: vec![
                     (
@@ -1242,7 +1242,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("files_delete"),
+            SmolStr::new("__wr_files_delete"),
             FunctionSig {
                 params: vec![
                     (
@@ -1255,7 +1255,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("files_set_acl"),
+            SmolStr::new("__wr_files_set_acl"),
             FunctionSig {
                 params: vec![
                     (
@@ -1269,7 +1269,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("jobs_enqueue"),
+            SmolStr::new("__wr_jobs_enqueue"),
             FunctionSig {
                 params: vec![
                     (
@@ -1290,7 +1290,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("jobs_process"),
+            SmolStr::new("__wr_jobs_process"),
             FunctionSig {
                 params: vec![
                     (
@@ -1304,7 +1304,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("jobs_dead_letter"),
+            SmolStr::new("__wr_jobs_dead_letter"),
             FunctionSig {
                 params: vec![
                     (
@@ -1317,14 +1317,14 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("jobs_configure"),
+            SmolStr::new("__wr_jobs_configure"),
             FunctionSig {
                 params: vec![(SmolStr::new("config"), Type::Unknown)],
                 ret: Type::Nil,
             },
         ),
         (
-            SmolStr::new("schedule_cron"),
+            SmolStr::new("__wr_schedule_cron"),
             FunctionSig {
                 params: vec![
                     (
@@ -1338,7 +1338,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("schedule_every"),
+            SmolStr::new("__wr_schedule_every"),
             FunctionSig {
                 params: vec![
                     (
@@ -1352,7 +1352,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("schedule_at"),
+            SmolStr::new("__wr_schedule_at"),
             FunctionSig {
                 params: vec![
                     (
@@ -1366,7 +1366,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("search_index"),
+            SmolStr::new("__wr_search_index"),
             FunctionSig {
                 params: vec![
                     (
@@ -1385,7 +1385,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("search_remove"),
+            SmolStr::new("__wr_search_remove"),
             FunctionSig {
                 params: vec![
                     (
@@ -1399,7 +1399,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("search_query"),
+            SmolStr::new("__wr_search_query"),
             FunctionSig {
                 params: vec![
                     (
@@ -1417,14 +1417,14 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("realtime_on_connect"),
+            SmolStr::new("__wr_realtime_on_connect"),
             FunctionSig {
                 params: vec![(SmolStr::new("handler"), Type::Unknown)],
                 ret: Type::Pending(Box::new(Type::Bool)),
             },
         ),
         (
-            SmolStr::new("realtime_join"),
+            SmolStr::new("__wr_realtime_join"),
             FunctionSig {
                 params: vec![
                     (SmolStr::new("socket_id"), Type::String),
@@ -1434,7 +1434,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("realtime_leave"),
+            SmolStr::new("__wr_realtime_leave"),
             FunctionSig {
                 params: vec![
                     (SmolStr::new("socket_id"), Type::String),
@@ -1444,7 +1444,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("realtime_broadcast"),
+            SmolStr::new("__wr_realtime_broadcast"),
             FunctionSig {
                 params: vec![
                     (SmolStr::new("room"), Type::String),
@@ -1454,7 +1454,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("realtime_send"),
+            SmolStr::new("__wr_realtime_send"),
             FunctionSig {
                 params: vec![
                     (SmolStr::new("socket_id"), Type::String),
@@ -1464,21 +1464,21 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("realtime_configure"),
+            SmolStr::new("__wr_realtime_configure"),
             FunctionSig {
                 params: vec![(SmolStr::new("config"), Type::Unknown)],
                 ret: Type::Nil,
             },
         ),
         (
-            SmolStr::new("pubsub_configure"),
+            SmolStr::new("__wr_pubsub_configure"),
             FunctionSig {
                 params: vec![(SmolStr::new("config"), Type::Unknown)],
                 ret: Type::Nil,
             },
         ),
         (
-            SmolStr::new("rate_check"),
+            SmolStr::new("__wr_rate_check"),
             FunctionSig {
                 params: vec![
                     (
@@ -1495,7 +1495,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("rate_ip"),
+            SmolStr::new("__wr_rate_ip"),
             FunctionSig {
                 params: vec![(
                     SmolStr::new("request"),
@@ -1505,7 +1505,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("admin_enable"),
+            SmolStr::new("__wr_admin_enable"),
             FunctionSig {
                 params: vec![(
                     SmolStr::new("opts"),
@@ -1515,7 +1515,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("storage_get"),
+            SmolStr::new("__wr_storage_get"),
             FunctionSig {
                 params: vec![(SmolStr::new("key"), Type::String)],
                 ret: Type::Pending(Box::new(Type::Result(
@@ -1525,7 +1525,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("storage_get_with_version"),
+            SmolStr::new("__wr_storage_get_with_version"),
             FunctionSig {
                 params: vec![(SmolStr::new("key"), Type::String)],
                 ret: Type::Pending(Box::new(Type::Result(
@@ -1535,7 +1535,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("storage_scan"),
+            SmolStr::new("__wr_storage_scan"),
             FunctionSig {
                 params: vec![
                     (SmolStr::new("start"), Type::Unknown),
@@ -1549,7 +1549,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("storage_list_prefix"),
+            SmolStr::new("__wr_storage_list_prefix"),
             FunctionSig {
                 params: vec![
                     (SmolStr::new("prefix"), Type::String),
@@ -1562,7 +1562,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("storage_configure"),
+            SmolStr::new("__wr_storage_configure"),
             FunctionSig {
                 params: vec![(
                     SmolStr::new("config"),
@@ -1572,14 +1572,14 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("runtime_configure"),
+            SmolStr::new("__wr_runtime_configure"),
             FunctionSig {
                 params: vec![(SmolStr::new("config"), Type::Unknown)],
                 ret: Type::Nil,
             },
         ),
         (
-            SmolStr::new("storage_set"),
+            SmolStr::new("__wr_storage_set"),
             FunctionSig {
                 params: vec![
                     (SmolStr::new("key"), Type::String),
@@ -1592,7 +1592,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("storage_set_if_version"),
+            SmolStr::new("__wr_storage_set_if_version"),
             FunctionSig {
                 params: vec![
                     (SmolStr::new("key"), Type::String),
@@ -1606,7 +1606,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("storage_delete_if_version"),
+            SmolStr::new("__wr_storage_delete_if_version"),
             FunctionSig {
                 params: vec![
                     (SmolStr::new("key"), Type::String),
@@ -1619,7 +1619,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("storage_delete"),
+            SmolStr::new("__wr_storage_delete"),
             FunctionSig {
                 params: vec![(SmolStr::new("key"), Type::String)],
                 ret: Type::Pending(Box::new(Type::Result(
@@ -1629,7 +1629,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("storage_batch_set"),
+            SmolStr::new("__wr_storage_batch_set"),
             FunctionSig {
                 params: vec![(
                     SmolStr::new("items"),
@@ -1642,7 +1642,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("http_server_serve_get_requests"),
+            SmolStr::new("__wr_http_server_serve_get_requests"),
             FunctionSig {
                 params: vec![
                     (SmolStr::new("path"), Type::String),
@@ -1652,7 +1652,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("http_server_serve_post_requests"),
+            SmolStr::new("__wr_http_server_serve_post_requests"),
             FunctionSig {
                 params: vec![
                     (SmolStr::new("path"), Type::String),
@@ -1662,7 +1662,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("http_server_serve_requests"),
+            SmolStr::new("__wr_http_server_serve_requests"),
             FunctionSig {
                 params: vec![
                     (SmolStr::new("method"), Type::String),
@@ -1673,21 +1673,21 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("http_server_configure"),
+            SmolStr::new("__wr_http_server_configure"),
             FunctionSig {
                 params: vec![(SmolStr::new("config"), Type::Unknown)],
                 ret: Type::Nil,
             },
         ),
         (
-            SmolStr::new("http_server_serve_on"),
+            SmolStr::new("__wr_http_server_serve_on"),
             FunctionSig {
                 params: vec![(SmolStr::new("addr"), Type::String)],
                 ret: Type::Nil,
             },
         ),
         (
-            SmolStr::new("http_server_stop"),
+            SmolStr::new("__wr_http_server_stop"),
             FunctionSig {
                 params: vec![],
                 ret: Type::Nil,
@@ -3455,6 +3455,7 @@ fn type_from_ref_with_params(ty: &TypeRef, params: &HashSet<SmolStr>) -> Type {
     }
     match ty.name.as_str() {
         "Int" => Type::Int,
+        "Any" => Type::Unknown,
         "Float" => Type::Float,
         "Number" => Type::Number,
         "Bool" => Type::Bool,
@@ -5282,7 +5283,7 @@ to f(p: Printable) -> String:
     fn test_match_result_bindings_flow() {
         let input = r#"
 to f() -> Int:
-    match parse_int("1"):
+    match __wr_parse_int("1"):
         Ok(v): return v
         Err(e): return 0
         otherwise: return 2
@@ -5502,7 +5503,7 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f() -> Result:\n   
 
     #[test]
     fn test_builtin_fallible_requires_handling() {
-        let input = "to f() -> Nothing:\n    parse_int(\"1\")";
+        let input = "to f() -> Nothing:\n    __wr_parse_int(\"1\")";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -5516,7 +5517,7 @@ A Whale:\n    can swim() -> Bool:\n        return true\n\nto f() -> Result:\n   
 
     #[test]
     fn test_builtin_fallible_otherwise_ok() {
-        let input = "to f() -> Int:\n    return parse_int(\"1\") otherwise 0";
+        let input = "to f() -> Int:\n    return __wr_parse_int(\"1\") otherwise 0";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);

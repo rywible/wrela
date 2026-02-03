@@ -2,9 +2,9 @@ so:
     Parsing helpers.
 
 so: Parse an Int from a String.
-to int(text: String) -> Result[Int]:
-    return parse_int(text)
+to parse_int(text: String) -> Result[Int]:
+    return __wr_parse_int(text)
 
 so: Parse a Float from a String.
-to float(text: String) -> Result[Float]:
-    return parse_float(text)
+to parse_float(text: String) -> Result[Float]:
+    return __wr_parse_float(text)

@@ -641,6 +641,7 @@ impl ProjectLoader {
             used_external.insert(name.clone(), collect_used_external_names(&module.module));
         }
 
+        let stdlib_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stdlib");
         for module in self.modules.values() {
             let mut imported_names: HashMap<SmolStr, (SmolStr, TextRange)> = HashMap::new();
             let mut imported_set: HashSet<SmolStr> = HashSet::new();
@@ -648,6 +649,7 @@ impl ProjectLoader {
             let used = used_external.get(&module.name).cloned().unwrap_or_default();
             let locals = local_defs.get(&module.name).cloned().unwrap_or_default();
             let skip_import_checks = module.name.as_str() == "core";
+            let allow_any_type = module.path.starts_with(&stdlib_root);
 
             for use_site in &module.uses {
                 let target = use_site.module.clone();
@@ -773,6 +775,9 @@ impl ProjectLoader {
                     continue;
                 }
                 if name.as_str() == "Any" {
+                    if allow_any_type {
+                        continue;
+                    }
                     self.errors.push(ProjectError {
                         path: module.path.clone(),
                         source: module.source.clone(),
@@ -1130,87 +1135,88 @@ fn record_used(used: &mut HashMap<SmolStr, TextRange>, name: SmolStr, span: Text
 fn is_builtin_value_name(name: &SmolStr) -> bool {
     matches!(
         name.as_str(),
-        "print"
-            | "parse_int"
-            | "parse_float"
-            | "read_file"
-            | "write_file"
-            | "list_push"
-            | "map_new"
-            | "pool_auto_size"
-            | "pool_size"
-            | "pool_rr"
-            | "pool_queue_len"
-            | "actor_mailbox_len"
-            | "actor_pause"
-            | "actor_resume"
-            | "actor_pause_wait"
-            | "metrics_get"
-            | "metrics_dropped_paused_id"
-            | "metrics_messages_dropped_id"
-            | "clock_ns"
-            | "sleep_ms"
-            | "bytes_from_string"
-            | "bytes_to_string"
-            | "bytes_len"
-            | "map_get"
-            | "map_set"
-            | "log"
-            | "log_configure"
-            | "env_get"
-            | "env_get_or"
-            | "env_get_as_bool"
-            | "env_get_as_int"
-            | "env_set"
-            | "env_load"
-            | "auth_create_user"
-            | "auth_verify_password"
-            | "auth_issue_jwt"
-            | "auth_verify_jwt"
-            | "auth_issue_email_token"
-            | "auth_verify_email_token"
-            | "auth_oauth_login"
-            | "auth_configure"
-            | "rbac_create_role"
-            | "rbac_assign_role"
-            | "rbac_check"
-            | "rbac_permissions_for"
-            | "files_upload_stream"
-            | "files_signed_url"
-            | "files_metadata"
-            | "files_delete"
-            | "files_set_acl"
-            | "jobs_enqueue"
-            | "jobs_process"
-            | "jobs_dead_letter"
-            | "jobs_configure"
-            | "schedule_cron"
-            | "schedule_every"
-            | "schedule_at"
-            | "search_index"
-            | "search_remove"
-            | "search_query"
-            | "realtime_on_connect"
-            | "realtime_join"
-            | "realtime_leave"
-            | "realtime_broadcast"
-            | "realtime_send"
-            | "realtime_configure"
-            | "pubsub_configure"
-            | "rate_check"
-            | "rate_ip"
-            | "admin_enable"
-            | "storage_get"
-            | "storage_get_with_version"
-            | "storage_scan"
-            | "storage_list_prefix"
-            | "storage_set"
-            | "storage_set_if_version"
-            | "storage_delete_if_version"
-            | "storage_delete"
-            | "storage_batch_set"
-            | "storage_configure"
-            | "runtime_configure"
+        "__wr_assert_err"
+            | "__wr_print"
+            | "__wr_parse_int"
+            | "__wr_parse_float"
+            | "__wr_read_file"
+            | "__wr_write_file"
+            | "__wr_list_push"
+            | "__wr_map_new"
+            | "__wr_pool_auto_size"
+            | "__wr_pool_size"
+            | "__wr_pool_rr"
+            | "__wr_pool_queue_len"
+            | "__wr_actor_mailbox_len"
+            | "__wr_actor_pause"
+            | "__wr_actor_resume"
+            | "__wr_actor_pause_wait"
+            | "__wr_metrics_get"
+            | "__wr_metrics_dropped_paused_id"
+            | "__wr_metrics_messages_dropped_id"
+            | "__wr_clock_ns"
+            | "__wr_sleep_ms"
+            | "__wr_bytes_from_string"
+            | "__wr_bytes_to_string"
+            | "__wr_bytes_len"
+            | "__wr_map_get"
+            | "__wr_map_set"
+            | "__wr_log"
+            | "__wr_log_configure"
+            | "__wr_env_get"
+            | "__wr_env_get_or"
+            | "__wr_env_get_as_bool"
+            | "__wr_env_get_as_int"
+            | "__wr_env_set"
+            | "__wr_env_load"
+            | "__wr_auth_create_user"
+            | "__wr_auth_verify_password"
+            | "__wr_auth_issue_jwt"
+            | "__wr_auth_verify_jwt"
+            | "__wr_auth_issue_email_token"
+            | "__wr_auth_verify_email_token"
+            | "__wr_auth_oauth_login"
+            | "__wr_auth_configure"
+            | "__wr_rbac_create_role"
+            | "__wr_rbac_assign_role"
+            | "__wr_rbac_check"
+            | "__wr_rbac_permissions_for"
+            | "__wr_files_upload_stream"
+            | "__wr_files_signed_url"
+            | "__wr_files_metadata"
+            | "__wr_files_delete"
+            | "__wr_files_set_acl"
+            | "__wr_jobs_enqueue"
+            | "__wr_jobs_process"
+            | "__wr_jobs_dead_letter"
+            | "__wr_jobs_configure"
+            | "__wr_schedule_cron"
+            | "__wr_schedule_every"
+            | "__wr_schedule_at"
+            | "__wr_search_index"
+            | "__wr_search_remove"
+            | "__wr_search_query"
+            | "__wr_realtime_on_connect"
+            | "__wr_realtime_join"
+            | "__wr_realtime_leave"
+            | "__wr_realtime_broadcast"
+            | "__wr_realtime_send"
+            | "__wr_realtime_configure"
+            | "__wr_pubsub_configure"
+            | "__wr_rate_check"
+            | "__wr_rate_ip"
+            | "__wr_admin_enable"
+            | "__wr_storage_get"
+            | "__wr_storage_get_with_version"
+            | "__wr_storage_scan"
+            | "__wr_storage_list_prefix"
+            | "__wr_storage_set"
+            | "__wr_storage_set_if_version"
+            | "__wr_storage_delete_if_version"
+            | "__wr_storage_delete"
+            | "__wr_storage_batch_set"
+            | "__wr_storage_configure"
+            | "__wr_runtime_configure"
             | "Pool"
             | "nil"
             | "queue"
@@ -1498,7 +1504,7 @@ mod tests {
                 .as_nanos()
         ));
         let entry_path = base.join("src").join("main.wr");
-        write_temp(&entry_path, "print(\"hi\")\n");
+        write_temp(&entry_path, "__wr_print(\"hi\")\n");
 
         let project = load_project(&entry_path);
         assert!(project.is_err());
@@ -1518,7 +1524,7 @@ mod tests {
         let mod_path = base.join("src").join("bar.wr");
 
         write_temp(&entry_path, "use * from bar\n\nto run() -> Int:\n    return 1\n");
-        write_temp(&mod_path, "print(\"hi\")\n");
+        write_temp(&mod_path, "__wr_print(\"hi\")\n");
 
         let project = load_project(&entry_path);
         assert!(project.is_err());

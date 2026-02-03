@@ -9,16 +9,16 @@ A RBAC:
 
     so: Create a role with permissions in a scope.
     can create_role(scope: String, name: String, permissions: List[String]) -> Pending:
-        return rbac_create_role(its.storage, scope, name, permissions)
+        return __wr_rbac_create_role(its.storage, scope, name, permissions)
 
     so: Assign a role to a user within a scope.
     can assign_role(user_id: String, role_id: String, scope_id: String) -> Pending:
-        return rbac_assign_role(its.storage, user_id, role_id, scope_id)
+        return __wr_rbac_assign_role(its.storage, user_id, role_id, scope_id)
 
     so: Check if a user has a permission in a scope.
     can check(user_id: String, permission: String, scope_id: String) -> Pending:
-        return rbac_check(its.storage, user_id, permission, scope_id)
+        return __wr_rbac_check(its.storage, user_id, permission, scope_id)
 
     so: Fetch all permissions for a user in a scope.
     can permissions_for(user_id: String, scope_id: String) -> Pending:
-        return rbac_permissions_for(its.storage, user_id, scope_id)
+        return __wr_rbac_permissions_for(its.storage, user_id, scope_id)

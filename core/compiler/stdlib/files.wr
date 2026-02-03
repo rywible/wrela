@@ -9,20 +9,20 @@ A Files:
 
     so: Upload a byte stream to storage.
     can upload_stream(stream: Bytes, opts: Map) -> Pending:
-        return files_upload_stream(its.storage, stream, opts)
+        return __wr_files_upload_stream(its.storage, stream, opts)
 
     so: Generate a signed URL for a file.
     can signed_url(file_id: String, opts: Map) -> Pending:
-        return files_signed_url(its.storage, file_id, opts)
+        return __wr_files_signed_url(its.storage, file_id, opts)
 
     so: Fetch metadata for a file.
     can metadata(file_id: String) -> Pending:
-        return files_metadata(its.storage, file_id)
+        return __wr_files_metadata(its.storage, file_id)
 
     so: Delete a file by id.
     can delete(file_id: String) -> Pending:
-        return files_delete(its.storage, file_id)
+        return __wr_files_delete(its.storage, file_id)
 
     so: Set the access control list for a file.
     can set_acl(file_id: String, acl: String) -> Pending:
-        return files_set_acl(its.storage, file_id, acl)
+        return __wr_files_set_acl(its.storage, file_id, acl)

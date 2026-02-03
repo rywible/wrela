@@ -22,8 +22,8 @@ from map
 use push from list
 
 use:
-    int,
-    float
+    parse_int,
+    parse_float
 from parse
 
 
@@ -62,8 +62,8 @@ so: 4) Parse helpers
 
 
 to test_parse_int_and_float() -> Nothing:
-    assert value (int("12") otherwise 0) == 12
-    assert value (float("1.5") otherwise 0.0) == 1.5
+    assert value (parse_int("12") otherwise 0) == 12
+    assert value (parse_float("1.5") otherwise 0.0) == 1.5
 
 
 so: ------------------------------------------------------------
@@ -82,7 +82,7 @@ so: - Schedule: cron, every, at
 so: - Search: index, remove, query
 so: - Realtime: configure, on_connect, join, leave, broadcast, send
 so: - PubSub: configure
-so: - Log / Logger (logging helpers + configure)
+so: - Logger (logging helpers + configure)
 so: - Runtime (runtime configuration)
 so: - RateLimit: check, ip
 so: - Admin: enable

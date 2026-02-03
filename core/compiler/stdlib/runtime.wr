@@ -25,5 +25,5 @@ A Runtime:
     so: Apply runtime configuration when fields are provided.
     can __configure__() -> Nothing:
         if its.actor_mailbox_cap != nil or its.actor_enqueue_timeout_ms != nil or its.actor_batch_limit != nil or its.pause_queue_cap != nil or its.deterministic != nil or its.debug_actor != nil or its.actor_watchdog_ms != nil or its.sched_watchdog_ms != nil or its.sched_shards != nil or its.sched_tick_ms != nil or its.sched_ready_cap != nil or its.sched_batch_limit != nil or its.pool_min_share != nil or its.pool_max_share != nil or its.pool_queue_cap != nil or its.pool_auto_min != nil or its.pool_auto_max != nil or its.diagnostics_enabled != nil:
-            return runtime_configure(its)
+            return __wr_runtime_configure(its)
         return nothing

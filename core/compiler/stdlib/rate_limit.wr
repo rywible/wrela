@@ -10,8 +10,8 @@ A RateLimit:
 
     so: Check rate limits for a key with options.
     can check(key: String, opts: Map) -> Pending:
-        return rate_check(its.storage, key, opts)
+        return __wr_rate_check(its.storage, key, opts)
 
     so: Extract the request IP for rate limiting.
     can ip(request: HttpRequest) -> String:
-        return rate_ip(request)
+        return __wr_rate_ip(request)

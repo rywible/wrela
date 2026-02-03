@@ -17,33 +17,33 @@ A Auth:
     so: Apply auth configuration when fields are provided.
     can __configure__() -> Nothing:
         if its.jwt_secret != nil or its.github_client_id != nil or its.github_client_secret != nil or its.github_redirect_uri != nil or its.google_client_id != nil or its.google_client_secret != nil or its.google_redirect_uri != nil:
-            return auth_configure(its)
+            return __wr_auth_configure(its)
         return nothing
 
     so: Create a user with email, username, and password.
     can create_user(email: String, username: String, password: String) -> Pending:
-        return auth_create_user(its.storage, email, username, password)
+        return __wr_auth_create_user(its.storage, email, username, password)
 
     so: Verify a user's password.
     can verify_password(user_id: String, password: String) -> Pending:
-        return auth_verify_password(its.storage, user_id, password)
+        return __wr_auth_verify_password(its.storage, user_id, password)
 
     so: Issue a JWT for a user with claims and TTL seconds.
     can issue_jwt(user_id: String, claims: Map, ttl_secs: Int) -> Pending:
-        return auth_issue_jwt(its.storage, user_id, claims, ttl_secs)
+        return __wr_auth_issue_jwt(its.storage, user_id, claims, ttl_secs)
 
     so: Verify a JWT token.
     can verify_jwt(token: String) -> Pending:
-        return auth_verify_jwt(its.storage, token)
+        return __wr_auth_verify_jwt(its.storage, token)
 
     so: Issue a one-time email token for a user.
     can issue_email_token(user_id: String, ttl_secs: Int) -> Pending:
-        return auth_issue_email_token(its.storage, user_id, ttl_secs)
+        return __wr_auth_issue_email_token(its.storage, user_id, ttl_secs)
 
     so: Verify a one-time email token.
     can verify_email_token(token: String) -> Pending:
-        return auth_verify_email_token(its.storage, token)
+        return __wr_auth_verify_email_token(its.storage, token)
 
     so: Complete an OAuth login for the provider using a code.
     can oauth_login(provider: String, code: String) -> Pending:
-        return auth_oauth_login(its.storage, provider, code)
+        return __wr_auth_oauth_login(its.storage, provider, code)

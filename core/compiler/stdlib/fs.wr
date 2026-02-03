@@ -3,8 +3,8 @@ so:
 
 so: Read a UTF-8 text file into a String.
 to read_text(path: String) -> Result[String]:
-    return read_file(path)
+    return __wr_read_file(path)
 
 so: Write a String to a UTF-8 text file.
 to write_text(path: String, contents: String) -> Result[Nothing]:
-    return write_file(path, contents)
+    return __wr_write_file(path, contents)

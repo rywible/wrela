@@ -13,7 +13,7 @@ use:
     length
 from bytes
 
-use int from parse
+use parse_int from parse
 
 use:
     get_or,
@@ -91,7 +91,7 @@ to bind_addr() -> String:
 
 to max_body_bytes() -> Number:
     raw = get_or("WRELA_HUB_MAX_BODY_BYTES", "50000000")
-    return int(raw) otherwise 50000000
+    return parse_int(raw) otherwise 50000000
 
 
 to auth_allowed(req: HttpRequest) -> Bool:

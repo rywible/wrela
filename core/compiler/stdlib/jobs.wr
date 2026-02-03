@@ -11,17 +11,17 @@ A Jobs:
     so: Apply jobs configuration when fields are provided.
     can __configure__() -> Nothing:
         if its.lease_ttl_secs != nil:
-            return jobs_configure(its)
+            return __wr_jobs_configure(its)
         return nothing
 
     so: Enqueue a job into a named queue.
     can enqueue(queue: String, payload: Map, opts: Map) -> Pending:
-        return jobs_enqueue(its.storage, queue, payload, opts)
+        return __wr_jobs_enqueue(its.storage, queue, payload, opts)
 
     so: Register a handler for jobs in a queue.
     can process(queue: String, handler: Any) -> Pending:
-        return jobs_process(its.storage, queue, handler)
+        return __wr_jobs_process(its.storage, queue, handler)
 
     so: Fetch the dead-letter queue for a queue.
     can dead_letter(queue: String) -> Pending:
-        return jobs_dead_letter(its.storage, queue)
+        return __wr_jobs_dead_letter(its.storage, queue)

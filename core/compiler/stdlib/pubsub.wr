@@ -9,5 +9,5 @@ A PubSub:
     so: Apply pubsub configuration when fields are provided.
     can __configure__() -> Nothing:
         if its.dlq_retry_ms != nil or its.dlq_max_len != nil:
-            return pubsub_configure(its)
+            return __wr_pubsub_configure(its)
         return nothing
