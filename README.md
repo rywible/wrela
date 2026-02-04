@@ -2,6 +2,7 @@
 
 Wrela Hub is the canonical repository and governance surface for the Wrela language.
 This repo hosts the compiler, runtime, spec, tooling, and Hub service.
+<!-- Tiny doc note: keep this README short and welcoming for newcomers. -->
 
 Key documents:
 - CHARTER.md
