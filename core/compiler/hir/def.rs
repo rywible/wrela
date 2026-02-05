@@ -23,6 +23,8 @@ pub enum FunctionKind {
     Function,
     Method,
     Derived,
+    Check,
+    CheckMethod,
 }
 
 #[derive(Debug, Clone, PartialEq)]

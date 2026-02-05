@@ -3,6 +3,7 @@ use crate::parser::ast::{self, AstNode};
 use crate::parser::kind::SyntaxKind;
 use rowan::{TextRange, TextSize};
 use smol_str::SmolStr;
+use std::collections::HashSet;
 
 pub fn lower(root: ast::Root) -> Module {
     let mut ctx = LoweringContext::default();
@@ -15,6 +16,7 @@ pub fn lower_root_body(root: ast::Root) -> Option<Body> {
     for stmt in root.statements() {
         match stmt {
             ast::Stmt::FuncDef(_)
+            | ast::Stmt::CheckDef(_)
             | ast::Stmt::ClassDef(_)
             | ast::Stmt::EnumDef(_)
             | ast::Stmt::UseStmt(_)
@@ -60,6 +62,10 @@ impl LoweringContext {
                     let func = self.lower_func(f);
                     self.module.functions.alloc(func);
                 }
+                ast::Stmt::CheckDef(c) => {
+                    let func = self.lower_check(c);
+                    self.module.functions.alloc(func);
+                }
                 ast::Stmt::ClassDef(c) => {
                     if self.class_is_interface(&c) {
                         let interface = self.lower_interface_from_class(c);
@@ -78,6 +84,10 @@ impl LoweringContext {
                         match stmt {
                             ast::Stmt::FuncDef(f) => {
                                 let func = self.lower_func(f);
+                                self.module.functions.alloc(func);
+                            }
+                            ast::Stmt::CheckDef(c) => {
+                                let func = self.lower_check(c);
                                 self.module.functions.alloc(func);
                             }
                             ast::Stmt::ClassDef(c) => {
@@ -138,6 +148,30 @@ impl LoweringContext {
         }
     }
 
+    fn lower_check(&mut self, c: ast::CheckDef) -> Function {
+        let name = c.name().map(|t| SmolStr::new(t.text())).unwrap_or_default();
+        let name_span = c.name().map(|t| t.text_range());
+        let visibility = visibility_for_node_default(c.syntax());
+        let params = c.params().map(|p| self.lower_param(p)).collect();
+        let ret_type = c.ret_type().map(|t| self.lower_type_ref(t));
+
+        let mut body_ctx = BodyLoweringContext::new();
+        for stmt in c.statements() {
+            let s = body_ctx.lower_stmt(stmt);
+            body_ctx.body.root_stmts.push(s);
+        }
+
+        Function {
+            name,
+            name_span,
+            visibility,
+            kind: FunctionKind::Check,
+            params,
+            ret_type,
+            body: Some(body_ctx.body),
+        }
+    }
+
     fn lower_class(&mut self, c: ast::ClassDef) -> Class {
         let name = c.name().map(|t| SmolStr::new(t.text())).unwrap_or_default();
         let name_span = c.name().map(|t| t.text_range());
@@ -161,6 +195,12 @@ impl LoweringContext {
             methods.push(id);
         }
 
+        for check in c.checks() {
+            let func = self.lower_check_method(check);
+            let id = self.module.functions.alloc(func);
+            methods.push(id);
+        }
+
         for derive in c.derives() {
             let func = self.lower_derive(derive);
             let id = self.module.functions.alloc(func);
@@ -175,6 +215,12 @@ impl LoweringContext {
                 }
                 if let Some(method) = ast::MethodDef::cast(child.clone()) {
                     let func = self.lower_method(method);
+                    let id = self.module.functions.alloc(func);
+                    methods.push(id);
+                    continue;
+                }
+                if let Some(check) = ast::CheckMethodDef::cast(child.clone()) {
+                    let func = self.lower_check_method(check);
                     let id = self.module.functions.alloc(func);
                     methods.push(id);
                     continue;
@@ -278,6 +324,30 @@ impl LoweringContext {
             name_span,
             visibility,
             kind: FunctionKind::Method,
+            params,
+            ret_type,
+            body: Some(body_ctx.body),
+        }
+    }
+
+    fn lower_check_method(&mut self, m: ast::CheckMethodDef) -> Function {
+        let name = m.name().map(|t| SmolStr::new(t.text())).unwrap_or_default();
+        let name_span = m.name().map(|t| t.text_range());
+        let visibility = visibility_for_node_default(m.syntax());
+        let params = m.params().map(|p| self.lower_param(p)).collect();
+        let ret_type = m.ret_type().map(|t| self.lower_type_ref(t));
+
+        let mut body_ctx = BodyLoweringContext::new();
+        for stmt in m.statements() {
+            let s = body_ctx.lower_stmt(stmt);
+            body_ctx.body.root_stmts.push(s);
+        }
+
+        Function {
+            name,
+            name_span,
+            visibility,
+            kind: FunctionKind::CheckMethod,
             params,
             ret_type,
             body: Some(body_ctx.body),
@@ -401,6 +471,7 @@ impl LoweringContext {
 
 struct BodyLoweringContext {
     body: Body,
+    scopes: Vec<HashSet<SmolStr>>,
 }
 
 impl BodyLoweringContext {
@@ -413,6 +484,7 @@ impl BodyLoweringContext {
                 expr_spans: Vec::new(),
                 stmt_spans: Vec::new(),
             },
+            scopes: vec![HashSet::new()],
         }
     }
 
@@ -430,6 +502,24 @@ impl BodyLoweringContext {
 
     fn empty_span(&self) -> TextRange {
         TextRange::empty(TextSize::from(0))
+    }
+
+    fn enter_scope(&mut self) {
+        self.scopes.push(HashSet::new());
+    }
+
+    fn exit_scope(&mut self) {
+        self.scopes.pop();
+    }
+
+    fn declare_name(&mut self, name: &SmolStr) {
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(name.clone());
+        }
+    }
+
+    fn name_exists(&self, name: &SmolStr) -> bool {
+        self.scopes.iter().rev().any(|scope| scope.contains(name))
     }
 
     fn lower_type_ref(&mut self, t: ast::TypeRef) -> TypeRef {
@@ -472,12 +562,26 @@ impl BodyLoweringContext {
                         self.alloc_expr(Expr::Literal(Literal::Nil), self.empty_span())
                     });
                 match assign_op_for_node(v.syntax()) {
-                    Some(AssignOp::Assign) | None => Stmt::Let {
-                        name,
-                        value,
-                        mutable,
-                        visibility,
-                    },
+                    Some(AssignOp::Assign) | None => {
+                        let exists = self.name_exists(&name);
+                        if !mutable && exists {
+                            Stmt::Assign {
+                                name,
+                                op: AssignOp::Assign,
+                                value,
+                                mutable: false,
+                                visibility,
+                            }
+                        } else {
+                            self.declare_name(&name);
+                            Stmt::Let {
+                                name,
+                                value,
+                                mutable,
+                                visibility,
+                            }
+                        }
+                    }
                     Some(op) => Stmt::Assign {
                         name,
                         op,
@@ -608,6 +712,21 @@ impl BodyLoweringContext {
                 };
                 Stmt::Assert { kind, expr }
             }
+            ast::Stmt::RequireStmt(r) => {
+                let condition = r
+                    .condition()
+                    .and_then(|e| self.lower_expr(e))
+                    .unwrap_or_else(|| {
+                        self.alloc_expr(Expr::Literal(Literal::Boolean(false)), self.empty_span())
+                    });
+                let message = r
+                    .message()
+                    .and_then(|e| self.lower_expr(e))
+                    .unwrap_or_else(|| {
+                        self.alloc_expr(Expr::Literal(Literal::String(SmolStr::new(""))), self.empty_span())
+                    });
+                Stmt::Require { condition, message }
+            }
             ast::Stmt::UseStmt(u) => {
                 let (names, module, _module_span) = parse_use_stmt(&u);
                 Stmt::Use { names, module }
@@ -627,9 +746,11 @@ impl BodyLoweringContext {
     fn lower_block(&mut self, block: Option<ast::Block>) -> Vec<Idx<Stmt>> {
         let mut stmts = Vec::new();
         if let Some(b) = block {
+            self.enter_scope();
             for stmt in b.statements() {
                 stmts.push(self.lower_stmt(stmt));
             }
+            self.exit_scope();
         }
         stmts
     }
@@ -660,16 +781,12 @@ impl BodyLoweringContext {
     fn lower_pattern(&mut self, pattern: ast::Pattern) -> Pattern {
         if let Some(token) = pattern.literals().next() {
             let lit = match token.kind() {
-                SyntaxKind::StringLiteral => {
-                    Literal::String(SmolStr::new(token.text().trim_matches('"')))
-                }
+                SyntaxKind::StringLiteral => Literal::String(parse_string_literal(token.text())),
                 SyntaxKind::IntNumber => {
-                    let text = token.text().replace('_', "");
-                    Literal::Integer(text.parse::<i64>().unwrap_or_default())
+                    Literal::Integer(parse_int_literal(token.text()))
                 }
                 SyntaxKind::FloatNumber => {
-                    let text = token.text().replace('_', "");
-                    Literal::Float(text.parse::<f64>().unwrap_or_default())
+                    Literal::Float(parse_float_literal(token.text()))
                 }
                 SyntaxKind::TrueKw => Literal::Boolean(true),
                 SyntaxKind::FalseKw => Literal::Boolean(false),
@@ -704,10 +821,10 @@ impl BodyLoweringContext {
             ast::Expr::Literal(l) => {
                 let token = first_non_trivia_token(l.syntax())?;
                 let lit = match token.kind() {
-                    SyntaxKind::IntNumber => Literal::Integer(token.text().parse().unwrap_or(0)),
-                    SyntaxKind::FloatNumber => Literal::Float(token.text().parse().unwrap_or(0.0)),
+                    SyntaxKind::IntNumber => Literal::Integer(parse_int_literal(token.text())),
+                    SyntaxKind::FloatNumber => Literal::Float(parse_float_literal(token.text())),
                     SyntaxKind::StringLiteral => {
-                        Literal::String(SmolStr::new(token.text().trim_matches('"')))
+                        Literal::String(parse_string_literal(token.text()))
                     }
                     SyntaxKind::TrueKw => Literal::Boolean(true),
                     SyntaxKind::FalseKw => Literal::Boolean(false),
@@ -777,6 +894,26 @@ impl BodyLoweringContext {
                 };
                 let args = c.args().filter_map(|a| self.lower_arg(a)).collect();
                 Expr::Call {
+                    callee,
+                    args,
+                    type_args,
+                }
+            }
+            ast::Expr::Given(g) => {
+                let mut type_args = Vec::new();
+                let callee_expr = g.callee()?;
+                let callee = if let ast::Expr::TypeApply(t) = callee_expr {
+                    type_args = t
+                        .args()
+                        .into_iter()
+                        .map(|arg| self.lower_type_ref(arg))
+                        .collect();
+                    self.lower_expr(t.callee()?)?
+                } else {
+                    self.lower_expr(callee_expr)?
+                };
+                let args = g.args().filter_map(|a| self.lower_arg(a)).collect();
+                Expr::GivenCall {
                     callee,
                     args,
                     type_args,
@@ -948,15 +1085,18 @@ impl BodyLoweringContext {
                     SyntaxKind::StringStart => {
                         let text = token.text();
                         let text = text.strip_prefix('"').unwrap_or(text);
-                        parts.push(StringPart::Literal(SmolStr::new(text)));
+                        let text = text.strip_suffix('{').unwrap_or(text);
+                        parts.push(StringPart::Literal(parse_string_fragment(text)));
                     }
                     SyntaxKind::StringPart => {
-                        parts.push(StringPart::Literal(SmolStr::new(token.text())));
+                        let text = token.text();
+                        let text = text.strip_suffix('{').unwrap_or(text);
+                        parts.push(StringPart::Literal(parse_string_fragment(text)));
                     }
                     SyntaxKind::StringEnd => {
                         let text = token.text();
                         let text = text.strip_suffix('"').unwrap_or(text);
-                        parts.push(StringPart::Literal(SmolStr::new(text)));
+                        parts.push(StringPart::Literal(parse_string_fragment(text)));
                     }
                     _ => {}
                 }
@@ -1146,6 +1286,62 @@ fn assign_op_for_node(node: &crate::parser::SyntaxNode) -> Option<AssignOp> {
         SyntaxKind::SlashEq => Some(AssignOp::DivAssign),
         _ => None,
     }
+}
+
+fn parse_int_literal(text: &str) -> i64 {
+    let cleaned = text.replace('_', "");
+    if let Some(hex) = cleaned.strip_prefix("0x").or_else(|| cleaned.strip_prefix("0X")) {
+        return i64::from_str_radix(hex, 16).unwrap_or_default();
+    }
+    if let Some(bin) = cleaned.strip_prefix("0b").or_else(|| cleaned.strip_prefix("0B")) {
+        return i64::from_str_radix(bin, 2).unwrap_or_default();
+    }
+    if let Some(oct) = cleaned.strip_prefix("0o").or_else(|| cleaned.strip_prefix("0O")) {
+        return i64::from_str_radix(oct, 8).unwrap_or_default();
+    }
+    cleaned.parse::<i64>().unwrap_or_default()
+}
+
+fn parse_float_literal(text: &str) -> f64 {
+    let cleaned = text.replace('_', "");
+    cleaned.parse::<f64>().unwrap_or_default()
+}
+
+fn parse_string_literal(text: &str) -> SmolStr {
+    let mut raw = text;
+    if let Some(stripped) = raw.strip_prefix('"') {
+        raw = stripped;
+    }
+    if let Some(stripped) = raw.strip_suffix('"') {
+        raw = stripped;
+    }
+    parse_string_fragment(raw)
+}
+
+fn parse_string_fragment(text: &str) -> SmolStr {
+    let mut out = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            while matches!(chars.peek(), Some('\\')) {
+                chars.next();
+            }
+            match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('r') => out.push('\r'),
+                Some('t') => out.push('\t'),
+                Some('"') => out.push('"'),
+                Some('\\') => out.push('\\'),
+                Some('{') => out.push('{'),
+                Some('}') => out.push('}'),
+                Some(other) => out.push(other),
+                None => {}
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    SmolStr::new(out)
 }
 
 #[cfg(test)]

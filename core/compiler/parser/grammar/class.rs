@@ -37,6 +37,8 @@ pub fn class_def(p: &mut Parser) {
                     parse_has(p);
                 } else if p.at(SyntaxKind::CanKw) {
                     method_def(p);
+                } else if p.at(SyntaxKind::ChecksKw) {
+                    check_method_def(p);
                 } else if p.at(SyntaxKind::MustKw) {
                     must_method_def(p);
                 } else if p.at(SyntaxKind::DerivesKw) {
@@ -227,6 +229,23 @@ fn method_def(p: &mut Parser) {
     m.complete(p, SyntaxKind::MethodDef);
 }
 
+fn check_method_def(p: &mut Parser) {
+    let m = p.start();
+    p.expect_with_message(
+        SyntaxKind::ChecksKw,
+        "expected 'checks' to start a check definition",
+    );
+    p.expect_with_message(SyntaxKind::Ident, "expected check name after 'checks'");
+    p.expect_with_message(SyntaxKind::LParen, "expected '(' after check name");
+    parse_param_list(p);
+    p.expect_with_message(SyntaxKind::RParen, "expected ')' after check parameters");
+    p.expect_with_message(SyntaxKind::Arrow, "expected '->' and a return type");
+    types::parse_type(p);
+    p.expect_with_message(SyntaxKind::Colon, "expected ':' after check signature");
+    parse_block(p);
+    m.complete(p, SyntaxKind::CheckMethodDef);
+}
+
 fn derive_def(p: &mut Parser) {
     let m = p.start();
     p.expect_with_message(
@@ -251,6 +270,7 @@ fn derive_def(p: &mut Parser) {
 fn is_class_item_start(p: &mut Parser) -> bool {
     if p.at(SyntaxKind::HasKw)
         || p.at(SyntaxKind::CanKw)
+        || p.at(SyntaxKind::ChecksKw)
         || p.at(SyntaxKind::MustKw)
         || p.at(SyntaxKind::DerivesKw)
     {
@@ -273,6 +293,8 @@ fn parse_private_block(p: &mut Parser) {
                 parse_has(p);
             } else if p.at(SyntaxKind::CanKw) {
                 method_def(p);
+            } else if p.at(SyntaxKind::ChecksKw) {
+                check_method_def(p);
             } else if p.at(SyntaxKind::DerivesKw) {
                 derive_def(p);
             } else {

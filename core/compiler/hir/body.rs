@@ -35,6 +35,10 @@ pub enum Stmt {
         kind: AssertKind,
         expr: Idx<Expr>,
     },
+    Require {
+        condition: Idx<Expr>,
+        message: Idx<Expr>,
+    },
     Let {
         name: SmolStr,
         value: Idx<Expr>,
@@ -141,6 +145,11 @@ pub enum Expr {
         expr: Idx<Expr>,
     },
     Call {
+        callee: Idx<Expr>,
+        args: Vec<Arg>,
+        type_args: Vec<TypeRef>,
+    },
+    GivenCall {
         callee: Idx<Expr>,
         args: Vec<Arg>,
         type_args: Vec<TypeRef>,

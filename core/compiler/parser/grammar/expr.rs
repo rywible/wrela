@@ -7,6 +7,14 @@ pub fn expr(p: &mut Parser) {
 }
 
 fn expr_binding_power(p: &mut Parser, min_bp: u8) {
+    expr_binding_power_until(p, min_bp, None);
+}
+
+pub fn expr_until_otherwise(p: &mut Parser) {
+    expr_binding_power_until(p, 0, Some(SyntaxKind::OtherwiseKw));
+}
+
+fn expr_binding_power_until(p: &mut Parser, min_bp: u8, stop: Option<SyntaxKind>) {
     let mut lhs = match lhs(p) {
         Some(m) => m,
         None => return,
@@ -15,6 +23,9 @@ fn expr_binding_power(p: &mut Parser, min_bp: u8) {
 
     loop {
         let op = p.peek();
+        if stop == Some(op) {
+            break;
+        }
         if op == SyntaxKind::OtherwiseKw && p.has_newline_before_next_token() {
             break;
         }
@@ -164,9 +175,47 @@ fn parse_postfixes(
             lhs = parse_member(p, lhs);
             continue;
         }
+        if p.at(SyntaxKind::GivenKw) {
+            lhs = parse_given(p, lhs);
+            continue;
+        }
         break;
     }
     lhs
+}
+
+fn parse_given(
+    p: &mut Parser,
+    lhs: crate::parser::CompletedMarker,
+) -> crate::parser::CompletedMarker {
+    let m = lhs.precede(p);
+    p.expect(SyntaxKind::GivenKw);
+    if p.at_stmt_boundary()
+        || p.at(SyntaxKind::Colon)
+        || p.at(SyntaxKind::RParen)
+        || p.at(SyntaxKind::RBracket)
+        || p.at(SyntaxKind::Comma)
+    {
+        return m.complete(p, SyntaxKind::GivenExpr);
+    }
+    let mut first = true;
+    while !p.at_stmt_boundary() && !p.is_at_eof() {
+        if !first {
+            if p.at(SyntaxKind::Comma) {
+                p.bump();
+            } else {
+                break;
+            }
+        }
+        parse_arg(p);
+        first = false;
+        if !p.at(SyntaxKind::Comma) {
+            if p.at_stmt_boundary() {
+                break;
+            }
+        }
+    }
+    m.complete(p, SyntaxKind::GivenExpr)
 }
 
 fn parse_type_apply(

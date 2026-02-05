@@ -36,6 +36,10 @@ pub(crate) fn parse_statement(p: &mut Parser) {
         func::func_def(p);
         return;
     }
+    if is_check_start(p) {
+        func::check_def(p);
+        return;
+    }
     if is_var_assign_start(p) {
         parse_var_assign(p);
         return;
@@ -49,6 +53,7 @@ pub(crate) fn parse_statement(p: &mut Parser) {
         SyntaxKind::ContinueKw => parse_continue(p),
         SyntaxKind::OptimizeKw => parse_optimize(p),
         SyntaxKind::AssertKw => parse_assert(p),
+        SyntaxKind::RequireKw => parse_require(p),
         SyntaxKind::DeferKw => parse_defer(p),
         SyntaxKind::IgnoreKw => parse_ignore_result(p),
         SyntaxKind::CaptureKw => parse_capture(p),
@@ -494,6 +499,33 @@ fn is_func_start(p: &mut Parser) -> bool {
         return true;
     }
     false
+}
+
+fn is_check_start(p: &mut Parser) -> bool {
+    if p.at(SyntaxKind::CheckKw) {
+        return true;
+    }
+    false
+}
+
+fn parse_require(p: &mut Parser) {
+    let m = p.start();
+    p.expect(SyntaxKind::RequireKw);
+    if p.at_stmt_boundary() {
+        p.error_with_message_no_bump("expected expression after 'require'");
+        m.complete(p, SyntaxKind::RequireStmt);
+        p.expect_stmt_boundary();
+        return;
+    }
+    expr::expr_until_otherwise(p);
+    if p.at(SyntaxKind::OtherwiseKw) {
+        p.bump();
+        expr::expr(p);
+    } else {
+        p.error_with_message_no_bump("expected 'otherwise' after require condition");
+    }
+    m.complete(p, SyntaxKind::RequireStmt);
+    p.expect_stmt_boundary();
 }
 
 fn is_var_assign_start(p: &mut Parser) -> bool {

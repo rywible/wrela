@@ -26,7 +26,7 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
     }
     for node in root.descendants() {
         match node.kind() {
-            SyntaxKind::FuncDef => {
+            SyntaxKind::FuncDef | SyntaxKind::CheckDef => {
                 if !has_token(&node, SyntaxKind::Ident) {
                     errors.push(ValidationError {
                         message: "function definition requires a name".to_string(),
@@ -72,6 +72,7 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                         }
                         SyntaxKind::HasBlock
                         | SyntaxKind::MethodDef
+                        | SyntaxKind::CheckMethodDef
                         | SyntaxKind::MustMethodDef
                         | SyntaxKind::DeriveDef
                         | SyntaxKind::PrivateBlock => {
@@ -96,6 +97,7 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                             SyntaxKind::Ident => {}
                             SyntaxKind::HasBlock
                             | SyntaxKind::MethodDef
+                            | SyntaxKind::CheckMethodDef
                             | SyntaxKind::DeriveDef
                             | SyntaxKind::PrivateBlock => {
                                 errors.push(ValidationError {
@@ -110,7 +112,7 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                     }
                 }
             }
-            SyntaxKind::MethodDef => {
+            SyntaxKind::MethodDef | SyntaxKind::CheckMethodDef => {
                 if !has_token(&node, SyntaxKind::Ident) {
                     errors.push(ValidationError {
                         message: "method definition requires a name".to_string(),
@@ -219,11 +221,11 @@ or inside 'has' blocks"
                             for stmt in child.children() {
                                 if !matches!(
                                     stmt.kind(),
-                                    SyntaxKind::ClassDef | SyntaxKind::FuncDef
+                                    SyntaxKind::ClassDef | SyntaxKind::FuncDef | SyntaxKind::CheckDef
                                 ) {
                                     errors.push(ValidationError {
                                         message: "private blocks at the top level may only \
-contain functions and classes"
+contain functions, checks, and classes"
                                             .to_string(),
                                         span: span_for_node(&stmt),
                                     });
@@ -235,11 +237,14 @@ contain functions and classes"
                     for child in node.children() {
                         if !matches!(
                             child.kind(),
-                            SyntaxKind::HasBlock | SyntaxKind::MethodDef | SyntaxKind::DeriveDef
+                            SyntaxKind::HasBlock
+                                | SyntaxKind::MethodDef
+                                | SyntaxKind::CheckMethodDef
+                                | SyntaxKind::DeriveDef
                         ) {
                             errors.push(ValidationError {
                                 message: "private blocks in classes may only contain 'has' \
-blocks, methods, or derives"
+blocks, methods, checks, or derives"
                                     .to_string(),
                                 span: span_for_node(&child),
                             });
@@ -476,7 +481,16 @@ fn field_default_is_allowed(expr: ast::Expr) -> bool {
 
 fn is_in_function(node: &SyntaxNode) -> bool {
     node.ancestors()
-        .any(|ancestor| matches!(ancestor.kind(), SyntaxKind::FuncDef | SyntaxKind::MethodDef | SyntaxKind::DeriveDef))
+        .any(|ancestor| {
+            matches!(
+                ancestor.kind(),
+                SyntaxKind::FuncDef
+                    | SyntaxKind::CheckDef
+                    | SyntaxKind::MethodDef
+                    | SyntaxKind::CheckMethodDef
+                    | SyntaxKind::DeriveDef
+            )
+        })
 }
 
 fn is_in_loop(node: &SyntaxNode) -> bool {

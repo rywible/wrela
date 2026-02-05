@@ -37,9 +37,9 @@ so: Wrela Language Spec (Runnable)
     - Keywords are reserved and cannot be used as identifiers or member names; they are not escapable.
     
     Keywords (current):
-    A An has can must to if while for in return break continue match otherwise
+    A An has can checks must to check if while for in return break continue match otherwise
     error crash true false nothing and or not await detach spawn fire optimize use
-    from private its it mutable assert derives is either defer ignore capture
+    from private its it mutable assert derives is either defer ignore capture given require
     
     Symbols and operators:
     : ( ) [ ] { } . ... , @ ->
@@ -229,6 +229,41 @@ to add(a: Integer, b: Integer) -> Integer:
 
 to test_functions_and_return() -> Nothing:
     assert value add(a=2, b=3) == 5
+
+
+so: ------------------------------------------------------------
+    6b) Checks and given bindings
+
+    - Checks are declared with `check name(...) -> Boolean:`.
+    - Check methods are declared with `checks name(...) -> Boolean:` inside classes.
+    - Checks are pure (no mutation, `await`, `spawn`, `detach`, `fire`, `error`, `assert`, or `require`).
+    - Checks are evaluated with `given` (positional or named):
+      - `if can_edit given user, post: ...`
+      - `if can_edit given user=current_user, post=draft: ...`
+    - Calling checks with normal `(...)` call syntax is invalid.
+
+
+check is_positive(value: Integer) -> Boolean:
+    return value > 0
+
+check is_between(value: Integer, min: Integer, max: Integer) -> Boolean:
+    return value >= min and value <= max
+
+A EvenCounter:
+    has:
+        value: Integer
+    checks is_even() -> Boolean:
+        return its.value % 2 == 0
+
+to test_checks_and_given() -> Nothing:
+    assert value (is_positive given 3) == true
+    assert value (is_positive given -2) == false
+    assert value (is_between given value=2, min=1, max=3) == true
+    c = EvenCounter(value=2)
+    assert value (c.is_even given) == true
+
+to test_require_statement() -> Nothing:
+    require true otherwise "must be true"
 
 
 so: ------------------------------------------------------------

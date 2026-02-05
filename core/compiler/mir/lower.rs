@@ -545,7 +545,7 @@ impl FunctionLowerer {
             Expr::Unary { op, .. } => matches!(op, UnaryOp::Await | UnaryOp::Err),
             Expr::Binary { .. } => false,
             Expr::Crash { .. } => false,
-            Expr::Call { callee, .. } => {
+            Expr::Call { callee, .. } | Expr::GivenCall { callee, .. } => {
                 if let Expr::Variable(name) = &body.exprs[*callee] {
                     return self.result_functions.contains(name);
                 }
@@ -582,6 +582,22 @@ impl FunctionLowerer {
                 let cond = self.lower_assert_expr(body, *expr, *kind);
                 let func = SmolStr::new("assert");
                 let args = vec![cond, Value::Const(Literal::Nil)];
+                let temp = self.new_temp(MirType::Nil);
+                self.push_stmt(MirStmt::Assign {
+                    place: Place::Temp(temp),
+                    value: Rvalue::Call {
+                        kind: CallKind::Sync,
+                        target: CallTarget::Function(func),
+                        args,
+                    },
+                    span,
+                });
+            }
+            HirStmt::Require { condition, message } => {
+                let cond = self.lower_expr(body, *condition);
+                let msg = self.lower_expr(body, *message);
+                let func = SmolStr::new("assert");
+                let args = vec![cond, msg];
                 let temp = self.new_temp(MirType::Nil);
                 self.push_stmt(MirStmt::Assign {
                     place: Place::Temp(temp),
@@ -847,9 +863,17 @@ impl FunctionLowerer {
                     let switch_block = self.current_block;
                     let join_block = self.new_block();
                     let default_block = self.new_block();
+                    let default_case_idx = cases.iter().position(|case| {
+                        case.labels
+                            .iter()
+                            .any(|label| self.is_default_match_pattern(label))
+                    });
                     let mut switch_cases = Vec::new();
 
-                    for case in cases {
+                    for (idx, case) in cases.iter().enumerate() {
+                        if Some(idx) == default_case_idx {
+                            continue;
+                        }
                         let case_block = self.new_block();
                         for label in &case.labels {
                             if let Some(case_label) = self.lower_case_label(label) {
@@ -872,7 +896,15 @@ impl FunctionLowerer {
                     }
 
                     self.current_block = default_block;
-                    if let Some(branch) = otherwise {
+                    if let Some(idx) = default_case_idx {
+                        let case = &cases[idx];
+                        self.enter_scope();
+                        if let Some(label) = case.labels.first() {
+                            self.bind_pattern(body, label, scrutinee.clone(), span);
+                        }
+                        self.lower_stmt_block(body, &case.body);
+                        self.exit_scope();
+                    } else if let Some(branch) = otherwise {
                         self.enter_scope();
                         self.lower_stmt_block(body, branch);
                         self.exit_scope();
@@ -1209,13 +1241,23 @@ impl FunctionLowerer {
     fn lower_case_label(&mut self, pattern: &hir::Pattern) -> Option<SwitchCase> {
         match pattern {
             hir::Pattern::Literal(lit) => Some(SwitchCase::Literal(lit.clone())),
+            hir::Pattern::Binding(name) => {
+                if let Some(tag) = self.type_tags.get(name).copied() {
+                    return Some(SwitchCase::Type(tag));
+                }
+                if let Some(tag) = builtin_type_tag(name) {
+                    return Some(SwitchCase::Type(tag));
+                }
+                None
+            }
             hir::Pattern::Path { parts, args: _ } => {
                 if parts.len() == 1 {
-                    return self
-                        .type_tags
-                        .get(&parts[0])
-                        .copied()
-                        .map(SwitchCase::Type);
+                    if let Some(tag) = self.type_tags.get(&parts[0]).copied() {
+                        return Some(SwitchCase::Type(tag));
+                    }
+                    if let Some(tag) = builtin_type_tag(&parts[0]) {
+                        return Some(SwitchCase::Type(tag));
+                    }
                 }
                 if parts.len() == 2 {
                     let name = SmolStr::new(format!("{}.{}", parts[0], parts[1]));
@@ -1709,7 +1751,7 @@ impl FunctionLowerer {
                 });
                 Value::Temp(temp)
             }
-            Expr::Call { callee, args, .. } => {
+            Expr::Call { callee, args, .. } | Expr::GivenCall { callee, args, .. } => {
                 if let Some((class_name, class_id)) =
                     self.resolve_class_init_target(body, *callee)
                 {
@@ -1975,7 +2017,7 @@ impl FunctionLowerer {
                     instance = Some(Value::Temp(temp));
                 }
             }
-            Expr::Call { callee, .. } => {
+            Expr::Call { callee, .. } | Expr::GivenCall { callee, .. } => {
                 if let Expr::Variable(name) = &body.exprs[*callee] {
                     if let Some(id) = self.type_tags.get(name).copied() {
                         target = Some(Value::Const(Literal::Integer(id.0 as i64)));
@@ -2236,7 +2278,7 @@ impl FunctionLowerer {
                     field_values: Vec::new(),
                 })
             }
-            Expr::Call { callee, args, .. } => {
+            Expr::Call { callee, args, .. } | Expr::GivenCall { callee, args, .. } => {
                 let Expr::Variable(name) = &body.exprs[*callee] else {
                     return None;
                 };
@@ -2391,8 +2433,10 @@ impl FunctionLowerer {
     }
 
     fn parse_pool_of(&self, body: &hir::Body, expr_id: hir::Idx<Expr>) -> Option<PoolOfSpec> {
-        let Expr::Call { callee, args, .. } = &body.exprs[expr_id] else {
-            return None;
+        let (callee, args) = match &body.exprs[expr_id] {
+            Expr::Call { callee, args, .. } => (callee, args),
+            Expr::GivenCall { callee, args, .. } => (callee, args),
+            _ => return None,
         };
         let Expr::Member { object, member, .. } = &body.exprs[*callee] else {
             return None;
@@ -2483,7 +2527,9 @@ impl FunctionLowerer {
         expr_id: hir::Idx<Expr>,
         span: TextRange,
     ) -> Value {
-        if let Expr::Call { callee, args, .. } = &body.exprs[expr_id] {
+        if let Expr::Call { callee, args, .. } | Expr::GivenCall { callee, args, .. } =
+            &body.exprs[expr_id]
+        {
             let kind = if self.is_actor_call(body, *callee) {
                 CallKind::Actor
             } else {
@@ -2626,6 +2672,34 @@ impl FunctionLowerer {
             _ => None,
         }
     }
+    fn is_default_match_pattern(&self, pattern: &hir::Pattern) -> bool {
+        match pattern {
+            hir::Pattern::Wildcard => true,
+            hir::Pattern::Binding(name) => {
+                !self.type_tags.contains_key(name) && builtin_type_tag(name).is_none()
+            }
+            _ => false,
+        }
+    }
+}
+
+fn builtin_type_tag(name: &SmolStr) -> Option<TypeTagId> {
+    match name.as_str() {
+        "Integer" => Some(TypeTagId(1)),
+        "Boolean" => Some(TypeTagId(2)),
+        "Nothing" | "Nil" => Some(TypeTagId(3)),
+        "Float" => Some(TypeTagId(4)),
+        "String" => Some(TypeTagId(5)),
+        "List" => Some(TypeTagId(6)),
+        "Map" => Some(TypeTagId(7)),
+        "Actor" => Some(TypeTagId(8)),
+        "Pending" => Some(TypeTagId(9)),
+        "Iterator" => Some(TypeTagId(10)),
+        "Result" => Some(TypeTagId(11)),
+        "Pool" => Some(TypeTagId(12)),
+        "Bytes" => Some(TypeTagId(13)),
+        _ => None,
+    }
 }
 
 struct PoolOfSpec {
@@ -2686,7 +2760,7 @@ fn backpressure_from_expr(body: &hir::Body, expr_id: hir::Idx<Expr>) -> Option<B
             enqueue_timeout_ms: Some(0),
             queue_cap: Some(0),
         }),
-        Expr::Call { callee, args, .. } => {
+        Expr::Call { callee, args, .. } | Expr::GivenCall { callee, args, .. } => {
             let Expr::Variable(name) = &body.exprs[*callee] else {
                 return None;
             };

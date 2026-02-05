@@ -92,6 +92,14 @@ pub enum Token {
     Ignore,
     #[strum(serialize = "capture")]
     Capture,
+    #[strum(serialize = "check")]
+    Check,
+    #[strum(serialize = "checks")]
+    Checks,
+    #[strum(serialize = "given")]
+    Given,
+    #[strum(serialize = "require")]
+    Require,
 
     // Literals
     #[strum(serialize = "Identifier")]
@@ -250,6 +258,10 @@ impl Token {
                 | Token::Defer
                 | Token::Ignore
                 | Token::Capture
+                | Token::Check
+                | Token::Checks
+                | Token::Given
+                | Token::Require
         )
     }
 

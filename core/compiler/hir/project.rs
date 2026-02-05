@@ -1264,6 +1264,13 @@ fn collect_used_in_block(
         match stmt {
             Stmt::Expr(expr) => collect_used_in_expr(body, *expr, scope, used),
             Stmt::Assert { expr, .. } => collect_used_in_expr(body, *expr, scope, used),
+            Stmt::Require {
+                condition,
+                message,
+            } => {
+                collect_used_in_expr(body, *condition, scope, used);
+                collect_used_in_expr(body, *message, scope, used);
+            }
             Stmt::Defer { expr } => collect_used_in_expr(body, *expr, scope, used),
             Stmt::IgnoreResult { expr } => collect_used_in_expr(body, *expr, scope, used),
             Stmt::Capture { name, value } => {
@@ -1383,6 +1390,17 @@ fn collect_used_in_expr(
             collect_used_in_expr(body, *expr, scope, used);
         }
         Expr::Call { callee, args, .. } => {
+            collect_used_in_expr(body, *callee, scope, used);
+            for arg in args {
+                match arg {
+                    crate::hir::Arg::Positional { value, .. }
+                    | crate::hir::Arg::Named { value, .. } => {
+                        collect_used_in_expr(body, *value, scope, used);
+                    }
+                }
+            }
+        }
+        Expr::GivenCall { callee, args, .. } => {
             collect_used_in_expr(body, *callee, scope, used);
             for arg in args {
                 match arg {

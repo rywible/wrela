@@ -108,6 +108,40 @@ pub enum TypeError {
         span: SourceSpan,
     },
 
+    #[error("checks must be evaluated with `given`")]
+    #[diagnostic(
+        code(lang::ty::check_requires_given),
+        help("Use `<check> given ...` instead of a normal call.")
+    )]
+    CheckRequiresGiven {
+        #[label("check call here")]
+        span: SourceSpan,
+    },
+
+    #[error("`given` can only be used with checks")]
+    #[diagnostic(
+        code(lang::ty::given_requires_check),
+        help("Use a normal call for non-check functions or methods.")
+    )]
+    GivenRequiresCheck {
+        #[label("given usage here")]
+        span: SourceSpan,
+    },
+
+    #[error("require condition must be Boolean")]
+    #[diagnostic(code(lang::ty::require_condition_boolean))]
+    RequireConditionNotBoolean {
+        #[label("condition here")]
+        span: SourceSpan,
+    },
+
+    #[error("require message must be a String")]
+    #[diagnostic(code(lang::ty::require_message_string))]
+    RequireMessageNotString {
+        #[label("message here")]
+        span: SourceSpan,
+    },
+
     #[error("capture requires a Result value")]
     #[diagnostic(code(lang::ty::capture_requires_result))]
     CaptureRequiresResult {
@@ -331,6 +365,10 @@ impl TypeError {
             TypeError::CallField { span, .. } => *span,
             TypeError::CallDerivedProperty { span, .. } => *span,
             TypeError::InvalidCallee { span } => *span,
+            TypeError::CheckRequiresGiven { span } => *span,
+            TypeError::GivenRequiresCheck { span } => *span,
+            TypeError::RequireConditionNotBoolean { span } => *span,
+            TypeError::RequireMessageNotString { span } => *span,
             TypeError::CaptureRequiresResult { span } => *span,
             TypeError::IgnoreResultRequiresResult { span } => *span,
             TypeError::ArgumentCountMismatch { span, .. } => *span,
@@ -494,6 +532,7 @@ struct MethodSig {
 struct FunctionSig {
     params: Vec<(SmolStr, Type)>,
     ret: Type,
+    kind: FunctionKind,
 }
 
 #[derive(Debug, Clone)]
@@ -778,7 +817,14 @@ impl FunctionIndex {
                 .as_ref()
                 .map(type_from_ref)
                 .unwrap_or(Type::Unknown);
-            functions.insert(func.name.clone(), FunctionSig { params, ret });
+            functions.insert(
+                func.name.clone(),
+                FunctionSig {
+                    params,
+                    ret,
+                    kind: func.kind,
+                },
+            );
         }
         for (name, sig) in builtin_functions() {
             functions.entry(name).or_insert(sig);
@@ -802,6 +848,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     Type::Result(Box::new(Type::Unknown), Box::new(Type::Unknown)),
                 )],
                 ret: Type::Nil,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -809,6 +856,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![(SmolStr::new("value"), Type::String)],
                 ret: Type::Nil,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -816,6 +864,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![(SmolStr::new("value"), Type::String)],
                 ret: Type::Result(Box::new(Type::Integer), Box::new(err.clone())),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -823,6 +872,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![(SmolStr::new("value"), Type::String)],
                 ret: Type::Result(Box::new(Type::Float), Box::new(err.clone())),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -830,6 +880,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![(SmolStr::new("path"), Type::String)],
                 ret: Type::Result(Box::new(Type::String), Box::new(err.clone())),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -837,6 +888,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![(SmolStr::new("value"), Type::String)],
                 ret: Type::Named(SmolStr::new("Bytes"), Vec::new()),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -844,6 +896,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![(SmolStr::new("value"), Type::Named(SmolStr::new("Bytes"), Vec::new()))],
                 ret: Type::String,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -851,6 +904,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![(SmolStr::new("value"), Type::Named(SmolStr::new("Bytes"), Vec::new()))],
                 ret: Type::Integer,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -861,6 +915,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("contents"), Type::String),
                 ],
                 ret: Type::Result(Box::new(Type::Nil), Box::new(err.clone())),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -871,6 +926,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("value"), Type::Unknown),
                 ],
                 ret: Type::Nil,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -884,6 +940,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("key"), Type::Unknown),
                 ],
                 ret: Type::Unknown,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -898,6 +955,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("value"), Type::Unknown),
                 ],
                 ret: Type::Nil,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -912,6 +970,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     ),
                 ],
                 ret: Type::Boolean,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -919,6 +978,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![(SmolStr::new("config"), Type::Unknown)],
                 ret: Type::Nil,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -931,6 +991,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("weight"), Type::Integer),
                 ],
                 ret: Type::Integer,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -938,6 +999,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![(SmolStr::new("handle"), Type::Unknown)],
                 ret: Type::Integer,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -945,6 +1007,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![(SmolStr::new("handle"), Type::Unknown)],
                 ret: Type::Integer,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -952,6 +1015,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![(SmolStr::new("handle"), Type::Unknown)],
                 ret: Type::Integer,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -959,6 +1023,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![(SmolStr::new("handle"), Type::Unknown)],
                 ret: Type::Integer,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -966,6 +1031,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![(SmolStr::new("handle"), Type::Unknown)],
                 ret: Type::Nil,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -973,6 +1039,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![(SmolStr::new("handle"), Type::Unknown)],
                 ret: Type::Nil,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -980,6 +1047,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![(SmolStr::new("handle"), Type::Unknown)],
                 ret: Type::Nil,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -987,6 +1055,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![(SmolStr::new("id"), Type::Integer)],
                 ret: Type::Integer,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -994,6 +1063,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![],
                 ret: Type::Integer,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1001,6 +1071,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![],
                 ret: Type::Integer,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1008,6 +1079,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![],
                 ret: Type::Integer,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1015,6 +1087,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![(SmolStr::new("ms"), Type::Integer)],
                 ret: Type::Pending(Box::new(Type::Nil)),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1022,6 +1095,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![(SmolStr::new("key"), Type::String)],
                 ret: Type::Unknown,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1032,6 +1106,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("default"), Type::String),
                 ],
                 ret: Type::String,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1039,6 +1114,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![(SmolStr::new("key"), Type::String)],
                 ret: Type::Unknown,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1046,6 +1122,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![(SmolStr::new("key"), Type::String)],
                 ret: Type::Unknown,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1056,6 +1133,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("value"), Type::String),
                 ],
                 ret: Type::Boolean,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1063,6 +1141,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![(SmolStr::new("path"), Type::String)],
                 ret: Type::Boolean,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1078,6 +1157,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("password"), Type::String),
                 ],
                 ret: Type::Pending(Box::new(Type::Unknown)),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1092,6 +1172,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("password"), Type::String),
                 ],
                 ret: Type::Pending(Box::new(Type::Boolean)),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1110,6 +1191,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("ttl_secs"), Type::Integer),
                 ],
                 ret: Type::Pending(Box::new(Type::String)),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1123,6 +1205,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("token"), Type::String),
                 ],
                 ret: Type::Pending(Box::new(Type::Unknown)),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1137,6 +1220,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("ttl_secs"), Type::Integer),
                 ],
                 ret: Type::Pending(Box::new(Type::String)),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1150,6 +1234,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("token"), Type::String),
                 ],
                 ret: Type::Pending(Box::new(Type::Unknown)),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1164,6 +1249,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("code"), Type::String),
                 ],
                 ret: Type::Pending(Box::new(Type::Unknown)),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1171,6 +1257,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![(SmolStr::new("config"), Type::Unknown)],
                 ret: Type::Nil,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1189,6 +1276,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     ),
                 ],
                 ret: Type::Pending(Box::new(Type::String)),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1204,6 +1292,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("scope_id"), Type::String),
                 ],
                 ret: Type::Pending(Box::new(Type::Boolean)),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1219,6 +1308,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("scope_id"), Type::String),
                 ],
                 ret: Type::Pending(Box::new(Type::Boolean)),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1233,6 +1323,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("scope_id"), Type::String),
                 ],
                 ret: Type::Pending(Box::new(Type::List(Box::new(Type::String)))),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1250,6 +1341,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     ),
                 ],
                 ret: Type::Pending(Box::new(Type::String)),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1267,6 +1359,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     ),
                 ],
                 ret: Type::Pending(Box::new(Type::String)),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1280,6 +1373,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("file_id"), Type::String),
                 ],
                 ret: Type::Pending(Box::new(Type::Unknown)),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1293,6 +1387,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("file_id"), Type::String),
                 ],
                 ret: Type::Pending(Box::new(Type::Boolean)),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1307,6 +1402,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("acl"), Type::String),
                 ],
                 ret: Type::Pending(Box::new(Type::Boolean)),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1328,6 +1424,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     ),
                 ],
                 ret: Type::Pending(Box::new(Type::String)),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1342,6 +1439,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("handler"), Type::Unknown),
                 ],
                 ret: Type::Pending(Box::new(Type::Boolean)),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1355,6 +1453,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("queue"), Type::String),
                 ],
                 ret: Type::Pending(Box::new(Type::List(Box::new(Type::Unknown)))),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1362,6 +1461,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![(SmolStr::new("config"), Type::Unknown)],
                 ret: Type::Nil,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1376,6 +1476,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("job"), Type::Unknown),
                 ],
                 ret: Type::Pending(Box::new(Type::Boolean)),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1390,6 +1491,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("job"), Type::Unknown),
                 ],
                 ret: Type::Pending(Box::new(Type::Boolean)),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1404,6 +1506,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("job"), Type::Unknown),
                 ],
                 ret: Type::Pending(Box::new(Type::Boolean)),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1423,6 +1526,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     ),
                 ],
                 ret: Type::Pending(Box::new(Type::Boolean)),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1437,6 +1541,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("id"), Type::String),
                 ],
                 ret: Type::Pending(Box::new(Type::Boolean)),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1455,6 +1560,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     ),
                 ],
                 ret: Type::Pending(Box::new(Type::List(Box::new(Type::Unknown)))),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1462,6 +1568,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![(SmolStr::new("handler"), Type::Unknown)],
                 ret: Type::Pending(Box::new(Type::Boolean)),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1472,6 +1579,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("room"), Type::String),
                 ],
                 ret: Type::Pending(Box::new(Type::Boolean)),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1482,6 +1590,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("room"), Type::String),
                 ],
                 ret: Type::Pending(Box::new(Type::Boolean)),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1492,6 +1601,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("message"), Type::Unknown),
                 ],
                 ret: Type::Pending(Box::new(Type::Boolean)),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1502,6 +1612,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("message"), Type::Unknown),
                 ],
                 ret: Type::Pending(Box::new(Type::Boolean)),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1509,6 +1620,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![(SmolStr::new("config"), Type::Unknown)],
                 ret: Type::Nil,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1516,6 +1628,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![(SmolStr::new("config"), Type::Unknown)],
                 ret: Type::Nil,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1533,6 +1646,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     ),
                 ],
                 ret: Type::Pending(Box::new(Type::Boolean)),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1543,6 +1657,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     Type::Named(SmolStr::new("HttpRequest"), Vec::new()),
                 )],
                 ret: Type::String,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1553,6 +1668,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown)),
                 )],
                 ret: Type::Pending(Box::new(Type::Boolean)),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1563,6 +1679,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     Box::new(Type::Unknown),
                     Box::new(err.clone()),
                 ))),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1573,6 +1690,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     Box::new(Type::Unknown),
                     Box::new(err.clone()),
                 ))),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1587,6 +1705,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     Box::new(Type::List(Box::new(Type::Unknown))),
                     Box::new(err.clone()),
                 ))),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1600,6 +1719,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     Box::new(Type::List(Box::new(Type::String))),
                     Box::new(err.clone()),
                 ))),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1610,6 +1730,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     Type::Named(SmolStr::new("StorageConfig"), Vec::new()),
                 )],
                 ret: Type::Result(Box::new(Type::Nil), Box::new(err.clone())),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1617,6 +1738,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![(SmolStr::new("config"), Type::Unknown)],
                 ret: Type::Nil,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1630,6 +1752,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     Box::new(Type::Nil),
                     Box::new(err.clone()),
                 ))),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1644,6 +1767,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     Box::new(Type::Boolean),
                     Box::new(err.clone()),
                 ))),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1657,6 +1781,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     Box::new(Type::Boolean),
                     Box::new(err.clone()),
                 ))),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1667,6 +1792,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     Box::new(Type::Nil),
                     Box::new(err.clone()),
                 ))),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1680,6 +1806,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     ))),
                 )],
                 ret: Type::Pending(Box::new(Type::Result(Box::new(Type::Boolean), Box::new(err)))),
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1690,6 +1817,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("handler"), Type::Unknown),
                 ],
                 ret: Type::Nil,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1700,6 +1828,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("handler"), Type::Unknown),
                 ],
                 ret: Type::Nil,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1711,6 +1840,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("handler"), Type::Unknown),
                 ],
                 ret: Type::Nil,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1718,6 +1848,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![(SmolStr::new("config"), Type::Unknown)],
                 ret: Type::Nil,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1725,6 +1856,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![(SmolStr::new("addr"), Type::String)],
                 ret: Type::Nil,
+                kind: FunctionKind::Function,
             },
         ),
         (
@@ -1732,6 +1864,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![],
                 ret: Type::Nil,
+                kind: FunctionKind::Function,
             },
         ),
     ]
@@ -1932,6 +2065,44 @@ fn check_stmt(
                 }
             }
         }
+        Stmt::Require { condition, message } => {
+            let cond_ty = infer_expr(
+                body,
+                *condition,
+                ctx,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+                false,
+                returns_result,
+                returns_result,
+            );
+            if types_known(&Type::Boolean, &cond_ty) && !matches!(cond_ty, Type::Boolean) {
+                errors.push(TypeError::RequireConditionNotBoolean {
+                    span: span_from_range(body.expr_span(*condition)),
+                });
+            }
+            let msg_ty = infer_expr(
+                body,
+                *message,
+                ctx,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+                false,
+                returns_result,
+                returns_result,
+            );
+            if types_known(&Type::String, &msg_ty) && !matches!(msg_ty, Type::String) {
+                errors.push(TypeError::RequireMessageNotString {
+                    span: span_from_range(body.expr_span(*message)),
+                });
+            }
+        }
         Stmt::Let { name, value, .. } => {
             let value_ty = infer_expr(
                 body,
@@ -1943,7 +2114,7 @@ fn check_stmt(
                 functions,
                 errors,
                 false,
-                returns_result,
+                true,
                 returns_result,
             );
             ctx.declare(name.clone(), value_ty);
@@ -2000,7 +2171,7 @@ fn check_stmt(
                 functions,
                 errors,
                 false,
-                returns_result,
+                true,
                 returns_result,
             );
             let span = body.stmt_span(stmt_id);
@@ -2789,7 +2960,20 @@ fn infer_expr(
             );
             Type::Never
         }
-        Expr::Call { callee, args, type_args } => {
+        Expr::Call { .. } | Expr::GivenCall { .. } => {
+            let (callee, args, type_args, is_given) = match &body.exprs[expr_id] {
+                Expr::Call {
+                    callee,
+                    args,
+                    type_args,
+                } => (callee, args, type_args, false),
+                Expr::GivenCall {
+                    callee,
+                    args,
+                    type_args,
+                } => (callee, args, type_args, true),
+                _ => unreachable!(),
+            };
             for arg in args {
                 match arg {
                     crate::hir::Arg::Positional { value, .. } => {
@@ -2829,9 +3013,19 @@ fn infer_expr(
             if is_pool_of_call(body, *callee) {
                 ret_ty = Some(Type::Unknown);
                 valid_callee = true;
+                if is_given {
+                    errors.push(TypeError::GivenRequiresCheck {
+                        span: span_from_range(body.expr_span(expr_id)),
+                    });
+                }
             }
             if let Expr::Variable(name) = &body.exprs[*callee] {
                 if classes.is_class(name) {
+                    if is_given {
+                        errors.push(TypeError::GivenRequiresCheck {
+                            span: span_from_range(body.expr_span(expr_id)),
+                        });
+                    }
                     if let Some(class) = classes.get(name) {
                         let class_args = resolve_type_args(
                             name,
@@ -2864,6 +3058,16 @@ fn infer_expr(
                     }
                 }
                 if let Some(function) = functions.get(name) {
+                    if function.kind == FunctionKind::Check && !is_given {
+                        errors.push(TypeError::CheckRequiresGiven {
+                            span: span_from_range(body.expr_span(expr_id)),
+                        });
+                    }
+                    if function.kind != FunctionKind::Check && is_given {
+                        errors.push(TypeError::GivenRequiresCheck {
+                            span: span_from_range(body.expr_span(expr_id)),
+                        });
+                    }
                     if !type_args.is_empty() {
                         errors.push(TypeError::UnexpectedTypeArgs {
                             span: span_from_range(body.expr_span(expr_id)),
@@ -2939,6 +3143,11 @@ fn infer_expr(
                     if let Some(enum_name) = enum_name_opt {
                         if let Some(en) = enums.get(&enum_name) {
                             if let Some(params) = en.variants.get(member) {
+                                if is_given {
+                                    errors.push(TypeError::GivenRequiresCheck {
+                                        span: span_from_range(body.expr_span(expr_id)),
+                                    });
+                                }
                                 let resolved_args = resolve_type_args(
                                     &enum_name,
                                     &en.type_params,
@@ -3006,6 +3215,22 @@ fn infer_expr(
                                                 });
                                                 ret_ty = Some(Type::Unknown);
                                                 valid_callee = true;
+                                            } else if method.kind == FunctionKind::CheckMethod
+                                                && !is_given
+                                            {
+                                                errors.push(TypeError::CheckRequiresGiven {
+                                                    span: span_from_range(body.expr_span(expr_id)),
+                                                });
+                                                ret_ty = Some(Type::Unknown);
+                                                valid_callee = true;
+                                            } else if method.kind != FunctionKind::CheckMethod
+                                                && is_given
+                                            {
+                                                errors.push(TypeError::GivenRequiresCheck {
+                                                    span: span_from_range(body.expr_span(expr_id)),
+                                                });
+                                                ret_ty = Some(Type::Unknown);
+                                                valid_callee = true;
                                             } else {
                                                 let params =
                                                     method_params.unwrap_or(method.params.clone());
@@ -3044,6 +3269,11 @@ fn infer_expr(
                             Type::Named(class_name, class_args) if interfaces.is_interface(&class_name) => {
                                 if let Some(interface) = interfaces.get(&class_name) {
                                     if let Some(method) = interface.methods.get(member) {
+                                        if is_given {
+                                            errors.push(TypeError::GivenRequiresCheck {
+                                                span: span_from_range(body.expr_span(expr_id)),
+                                            });
+                                        }
                                         let params = method.params.clone();
                                         check_call_args(
                                             body,
@@ -3082,6 +3312,22 @@ fn infer_expr(
                                             errors.push(TypeError::CallDerivedProperty {
                                                 member: member.clone(),
                                                 span: span_from_range(*member_span),
+                                            });
+                                            ret_ty = Some(Type::Unknown);
+                                            valid_callee = true;
+                                        } else if method.kind == FunctionKind::CheckMethod
+                                            && !is_given
+                                        {
+                                            errors.push(TypeError::CheckRequiresGiven {
+                                                span: span_from_range(body.expr_span(expr_id)),
+                                            });
+                                            ret_ty = Some(Type::Unknown);
+                                            valid_callee = true;
+                                        } else if method.kind != FunctionKind::CheckMethod
+                                            && is_given
+                                        {
+                                            errors.push(TypeError::GivenRequiresCheck {
+                                                span: span_from_range(body.expr_span(expr_id)),
                                             });
                                             ret_ty = Some(Type::Unknown);
                                             valid_callee = true;
@@ -4168,6 +4414,22 @@ fn actor_type_for_detach_target(body: &Body, target: Idx<Expr>, classes: &ClassI
                 Type::Unknown
             }
         }
+        Expr::GivenCall { callee, args, .. } => {
+            if is_pool_of_call(body, *callee) {
+                if let Some(class_name) = pool_of_class_name(body, args, classes) {
+                    return Type::Actor(Box::new(Type::Named(class_name, Vec::new())));
+                }
+            }
+            if let Expr::Variable(name) = &body.exprs[*callee] {
+                if classes.is_class(name) {
+                    Type::Actor(Box::new(Type::Named(name.clone(), Vec::new())))
+                } else {
+                    Type::Unknown
+                }
+            } else {
+                Type::Unknown
+            }
+        }
         _ => Type::Unknown,
     }
 }
@@ -4416,6 +4678,29 @@ fn visit_stmt_for_async(
             has_await,
             calls,
         ),
+        Stmt::Require {
+            condition,
+            message,
+        } => {
+            visit_expr_for_async(
+                body,
+                *condition,
+                fn_info,
+                function_by_name,
+                class_method_ids,
+                has_await,
+                calls,
+            );
+            visit_expr_for_async(
+                body,
+                *message,
+                fn_info,
+                function_by_name,
+                class_method_ids,
+                has_await,
+                calls,
+            );
+        }
         Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::Capture { value, .. } => {
             visit_expr_for_async(
                 body,
@@ -4666,6 +4951,56 @@ fn visit_expr_for_async(
                 }
             }
         }
+        Expr::GivenCall { callee, args, .. } => {
+            if let Expr::Variable(name) = &body.exprs[*callee] {
+                if let Some(target) = function_by_name.get(name) {
+                    calls.push(*target);
+                }
+            } else if let Expr::Member { object, member, .. } = &body.exprs[*callee] {
+                if let Some(fn_info) = fn_info {
+                    if let Some(obj_ty) = fn_info.expr_types.get(&object.into_raw()) {
+                        if let Type::Named(class_name, _) = obj_ty {
+                            if let Some(methods) = class_method_ids.get(class_name) {
+                                if let Some(method_id) = methods.get(member) {
+                                    calls.push(*method_id);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            visit_expr_for_async(
+                body,
+                *callee,
+                fn_info,
+                function_by_name,
+                class_method_ids,
+                has_await,
+                calls,
+            );
+            for arg in args {
+                match arg {
+                    crate::hir::Arg::Positional { value, .. } => visit_expr_for_async(
+                        body,
+                        *value,
+                        fn_info,
+                        function_by_name,
+                        class_method_ids,
+                        has_await,
+                        calls,
+                    ),
+                    crate::hir::Arg::Named { value, .. } => visit_expr_for_async(
+                        body,
+                        *value,
+                        fn_info,
+                        function_by_name,
+                        class_method_ids,
+                        has_await,
+                        calls,
+                    ),
+                }
+            }
+        }
         Expr::Binary { lhs, rhs, .. } => {
             visit_expr_for_async(
                 body,
@@ -4830,6 +5165,39 @@ fn check_stmt_async_usage(
             check_expr_async_usage(
                 body,
                 *expr,
+                fn_info,
+                classes,
+                class_method_ids,
+                requires_actor,
+                class_requires_actor,
+                class_trace,
+                cause,
+                func_labels,
+                errors,
+                in_detach,
+            );
+        }
+        Stmt::Require {
+            condition,
+            message,
+        } => {
+            check_expr_async_usage(
+                body,
+                *condition,
+                fn_info,
+                classes,
+                class_method_ids,
+                requires_actor,
+                class_requires_actor,
+                class_trace,
+                cause,
+                func_labels,
+                errors,
+                in_detach,
+            );
+            check_expr_async_usage(
+                body,
+                *message,
                 fn_info,
                 classes,
                 class_method_ids,
@@ -5088,6 +5456,96 @@ fn check_expr_async_usage(
 ) {
     match &body.exprs[expr_id] {
         Expr::Call { callee, args, .. } => {
+            if let Expr::Variable(name) = &body.exprs[*callee] {
+                if !in_detach && classes.is_class(name) {
+                    if class_requires_actor.get(name).copied().unwrap_or(false) {
+                        errors.push(TypeError::AsyncClassRequiresActor {
+                            class: name.clone(),
+                            span: span_from_range(body.expr_span(*callee)),
+                            help: class_trace.get(name).cloned().unwrap_or_else(|| {
+                                "Use `detach` or `Pool.of(...)` to create an actor instance."
+                                    .to_string()
+                            }),
+                        });
+                    }
+                }
+            } else if let Expr::Member {
+                object,
+                member,
+                member_span,
+            } = &body.exprs[*callee]
+            {
+                if let Some(fn_info) = fn_info {
+                    if let Some(obj_ty) = fn_info.expr_types.get(&object.into_raw()) {
+                        if let Type::Named(class_name, _) = obj_ty {
+                            if let Some(methods) = class_method_ids.get(class_name) {
+                                if let Some(method_id) = methods.get(member) {
+                                    if *requires_actor.get(&method_id.into_raw()).unwrap_or(&false)
+                                    {
+                                        let hint = "Call this method on a detached or pooled actor instance.";
+                                        let trace =
+                                            build_call_chain(*method_id, cause, func_labels, hint);
+                                        errors.push(TypeError::AsyncMethodRequiresActor {
+                                            class: class_name.clone(),
+                                            member: member.clone(),
+                                            span: span_from_range(*member_span),
+                                            help: trace,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            check_expr_async_usage(
+                body,
+                *callee,
+                fn_info,
+                classes,
+                class_method_ids,
+                requires_actor,
+                class_requires_actor,
+                class_trace,
+                cause,
+                func_labels,
+                errors,
+                in_detach,
+            );
+            for arg in args {
+                match arg {
+                    crate::hir::Arg::Positional { value, .. } => check_expr_async_usage(
+                        body,
+                        *value,
+                        fn_info,
+                        classes,
+                        class_method_ids,
+                        requires_actor,
+                        class_requires_actor,
+                        class_trace,
+                        cause,
+                        func_labels,
+                        errors,
+                        in_detach,
+                    ),
+                    crate::hir::Arg::Named { value, .. } => check_expr_async_usage(
+                        body,
+                        *value,
+                        fn_info,
+                        classes,
+                        class_method_ids,
+                        requires_actor,
+                        class_requires_actor,
+                        class_trace,
+                        cause,
+                        func_labels,
+                        errors,
+                        in_detach,
+                    ),
+                }
+            }
+        }
+        Expr::GivenCall { callee, args, .. } => {
             if let Expr::Variable(name) = &body.exprs[*callee] {
                 if !in_detach && classes.is_class(name) {
                     if class_requires_actor.get(name).copied().unwrap_or(false) {

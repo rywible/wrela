@@ -1,0 +1,147 @@
+A Role is either:
+    Reader
+    Observer
+    Proposer
+    Shaper
+    Reviewer
+    Steward
+    BDFL
+
+
+A ContributionType is either:
+    Constraint
+    Counterargument
+    Clarification
+    Conflict
+    Simplification
+    EscalationRequest
+
+
+An IntentOperation is either:
+    CreateIntent
+    EditIntent
+    AdvanceIntent
+    BlockIntent
+    EndorseIntent
+
+
+to can_role_perform_intent_operation(role: Role, operation: IntentOperation) -> Boolean:
+    match role:
+        Role.Reader(): return false
+        Role.Observer():
+            match operation:
+                IntentOperation.CreateIntent(): return false
+                IntentOperation.EditIntent(): return false
+                IntentOperation.AdvanceIntent(): return false
+                IntentOperation.BlockIntent(): return false
+                IntentOperation.EndorseIntent(): return false
+                otherwise: return false
+        Role.Proposer():
+            match operation:
+                IntentOperation.CreateIntent(): return true
+                IntentOperation.EditIntent(): return false
+                IntentOperation.AdvanceIntent(): return false
+                IntentOperation.BlockIntent(): return false
+                IntentOperation.EndorseIntent(): return false
+                otherwise: return false
+        Role.Shaper():
+            match operation:
+                IntentOperation.CreateIntent(): return true
+                IntentOperation.EditIntent(): return true
+                IntentOperation.AdvanceIntent(): return false
+                IntentOperation.BlockIntent(): return false
+                IntentOperation.EndorseIntent(): return false
+                otherwise: return false
+        Role.Reviewer():
+            match operation:
+                IntentOperation.CreateIntent(): return true
+                IntentOperation.EditIntent(): return true
+                IntentOperation.AdvanceIntent(): return true
+                IntentOperation.BlockIntent(): return true
+                IntentOperation.EndorseIntent(): return false
+                otherwise: return false
+        Role.Steward():
+            match operation:
+                IntentOperation.CreateIntent(): return true
+                IntentOperation.EditIntent(): return true
+                IntentOperation.AdvanceIntent(): return true
+                IntentOperation.BlockIntent(): return true
+                IntentOperation.EndorseIntent(): return true
+                otherwise: return false
+        Role.BDFL():
+            return true
+        otherwise:
+            return false
+
+
+to can_role_submit_contribution(role: Role, contribution: ContributionType) -> Boolean:
+    match role:
+        Role.Reader(): return false
+        Role.Observer():
+            match contribution:
+                ContributionType.Clarification(): return true
+                ContributionType.EscalationRequest(): return true
+                otherwise: return false
+        Role.Proposer():
+            match contribution:
+                ContributionType.Constraint(): return true
+                ContributionType.Clarification(): return true
+                ContributionType.Simplification(): return true
+                ContributionType.EscalationRequest(): return true
+                otherwise: return false
+        Role.Shaper():
+            match contribution:
+                ContributionType.Constraint(): return true
+                ContributionType.Counterargument(): return true
+                ContributionType.Clarification(): return true
+                ContributionType.Conflict(): return true
+                ContributionType.Simplification(): return true
+                ContributionType.EscalationRequest(): return true
+                otherwise: return false
+        Role.Reviewer():
+            return true
+        Role.Steward():
+            return true
+        Role.BDFL():
+            return true
+        otherwise:
+            return false
+
+
+to is_contribution_allowed_for_operation(
+    contribution: ContributionType,
+    operation: IntentOperation
+) -> Boolean:
+    match operation:
+        IntentOperation.CreateIntent():
+            match contribution:
+                ContributionType.Constraint(): return true
+                ContributionType.Clarification(): return true
+                ContributionType.Simplification(): return true
+                otherwise: return false
+        IntentOperation.EditIntent():
+            match contribution:
+                ContributionType.Constraint(): return true
+                ContributionType.Clarification(): return true
+                ContributionType.Simplification(): return true
+                ContributionType.Counterargument(): return true
+                otherwise: return false
+        IntentOperation.AdvanceIntent():
+            match contribution:
+                ContributionType.Clarification(): return true
+                ContributionType.Simplification(): return true
+                ContributionType.Counterargument(): return true
+                otherwise: return false
+        IntentOperation.BlockIntent():
+            match contribution:
+                ContributionType.Conflict(): return true
+                ContributionType.EscalationRequest(): return true
+                ContributionType.Counterargument(): return true
+                otherwise: return false
+        IntentOperation.EndorseIntent():
+            match contribution:
+                ContributionType.Constraint(): return true
+                ContributionType.Simplification(): return true
+                otherwise: return false
+        otherwise:
+            return false

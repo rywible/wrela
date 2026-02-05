@@ -189,6 +189,37 @@ pub enum SemanticError {
         span: SourceSpan,
     },
 
+    #[error("check definitions must return Boolean")]
+    #[diagnostic(
+        code(lang::sem::check_return_type),
+        help("Declare the return type as Boolean.")
+    )]
+    CheckMustReturnBoolean {
+        #[label("return type here")]
+        span: SourceSpan,
+    },
+
+    #[error("checks must be pure; mutation is not allowed")]
+    #[diagnostic(
+        code(lang::sem::check_mutation),
+        help("Remove mutation or compute a new value instead.")
+    )]
+    CheckMutation {
+        #[label("mutation here")]
+        span: SourceSpan,
+    },
+
+    #[error("checks must be pure; '{keyword}' is not allowed")]
+    #[diagnostic(
+        code(lang::sem::check_invalid_keyword),
+        help("Move this out of the check or use a regular function.")
+    )]
+    CheckInvalidKeyword {
+        keyword: &'static str,
+        #[label("invalid usage here")]
+        span: SourceSpan,
+    },
+
 
     #[error("match case bindings require a single label")]
     #[diagnostic(code(lang::sem::match_bindings_multi_label))]
@@ -344,6 +375,9 @@ impl SemanticError {
             SemanticError::DerivedHasParams { span } => *span,
             SemanticError::DerivedInvalidKeyword { span, .. } => *span,
             SemanticError::DerivedMutation { span } => *span,
+            SemanticError::CheckMustReturnBoolean { span } => *span,
+            SemanticError::CheckMutation { span } => *span,
+            SemanticError::CheckInvalidKeyword { span, .. } => *span,
             SemanticError::ShadowedName { span, .. } => *span,
             SemanticError::FireInExpression { span } => *span,
             SemanticError::DuplicateNamedArg { span, .. } => *span,
@@ -422,6 +456,7 @@ struct Checker<'a> {
     class_names: HashSet<SmolStr>,
     in_method: bool,
     in_derived: bool,
+    in_check: bool,
 }
 
 pub struct SemanticDiagnostics {
@@ -463,6 +498,7 @@ impl<'a> Checker<'a> {
             class_names,
             in_method: false,
             in_derived: false,
+            in_check: false,
         }
     }
 
@@ -595,6 +631,7 @@ impl<'a> Checker<'a> {
     fn check_function(&mut self, func_id: Idx<Function>, func: &Function, is_method: bool) {
         let prev_method = self.in_method;
         let prev_derived = self.in_derived;
+        let prev_check = self.in_check;
         let prev_require_objective = self.current_objective_required;
         self.current_objective_required = self
             .objective_required_by_fn
@@ -603,6 +640,24 @@ impl<'a> Checker<'a> {
             .unwrap_or(false);
         self.in_method = is_method;
         self.in_derived = func.kind == FunctionKind::Derived;
+        self.in_check = matches!(func.kind, FunctionKind::Check | FunctionKind::CheckMethod);
+
+        if self.in_check {
+            let ret_span = func
+                .ret_type
+                .as_ref()
+                .and_then(|t| t.name_span)
+                .map(span_from_range)
+                .unwrap_or_else(|| span_from_option(func.name_span));
+            let is_boolean = func
+                .ret_type
+                .as_ref()
+                .map(|t| t.name.as_str() == "Boolean")
+                .unwrap_or(false);
+            if !is_boolean {
+                self.errors.push(SemanticError::CheckMustReturnBoolean { span: ret_span });
+            }
+        }
         self.enter_scope();
         for param in &func.params {
             self.declare(
@@ -621,6 +676,7 @@ impl<'a> Checker<'a> {
         self.exit_scope();
         self.in_derived = prev_derived;
         self.in_method = prev_method;
+        self.in_check = prev_check;
         self.current_objective_required = prev_require_objective;
     }
 
@@ -629,7 +685,23 @@ impl<'a> Checker<'a> {
         match stmt {
             Stmt::Expr(expr) => self.check_expr_with_ctx(body, *expr, false, true),
             Stmt::Assert { expr, .. } => {
+                if self.in_check {
+                    self.errors.push(SemanticError::CheckInvalidKeyword {
+                        keyword: "assert",
+                        span: span_from_range(body.stmt_span(stmt_id)),
+                    });
+                }
                 self.check_expr_with_ctx(body, *expr, false, true);
+            }
+            Stmt::Require { condition, message } => {
+                if self.in_check {
+                    self.errors.push(SemanticError::CheckInvalidKeyword {
+                        keyword: "require",
+                        span: span_from_range(body.stmt_span(stmt_id)),
+                    });
+                }
+                self.check_expr_with_ctx(body, *condition, false, false);
+                self.check_expr_with_ctx(body, *message, false, false);
             }
             Stmt::Let {
                 name,
@@ -639,6 +711,11 @@ impl<'a> Checker<'a> {
             } => {
                 if self.in_derived {
                     self.errors.push(SemanticError::DerivedMutation {
+                        span: span_from_range(body.stmt_span(stmt_id)),
+                    });
+                }
+                if self.in_check && *mutable {
+                    self.errors.push(SemanticError::CheckMutation {
                         span: span_from_range(body.stmt_span(stmt_id)),
                     });
                 }
@@ -702,6 +779,11 @@ impl<'a> Checker<'a> {
             Stmt::Assign { name, value, .. } => {
                 if self.in_derived {
                     self.errors.push(SemanticError::DerivedMutation {
+                        span: span_from_range(body.stmt_span(stmt_id)),
+                    });
+                }
+                if self.in_check {
+                    self.errors.push(SemanticError::CheckMutation {
                         span: span_from_range(body.stmt_span(stmt_id)),
                     });
                 }
@@ -907,6 +989,9 @@ impl<'a> Checker<'a> {
         match pattern {
             Pattern::Wildcard | Pattern::Literal(_) => {}
             Pattern::Binding(name) => {
+                if self.is_type_name(name) {
+                    return;
+                }
                 self.declare(
                     name.clone(),
                     Binding {
@@ -981,6 +1066,22 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
+                if self.in_check {
+                    if let Expr::Binary { op, .. } = &body.exprs[expr_id] {
+                        if matches!(
+                            op,
+                            BinaryOp::Assign
+                                | BinaryOp::AddAssign
+                                | BinaryOp::SubAssign
+                                | BinaryOp::MulAssign
+                                | BinaryOp::DivAssign
+                        ) {
+                            self.errors.push(SemanticError::CheckMutation {
+                                span: span_from_range(body.expr_span(expr_id)),
+                            });
+                        }
+                    }
+                }
                 self.check_expr_with_ctx(body, *lhs, allow_it, false);
                 self.check_expr_with_ctx(body, *rhs, allow_it, false);
             }
@@ -991,6 +1092,12 @@ impl<'a> Checker<'a> {
             } => {
                 if self.in_derived {
                     self.errors.push(SemanticError::DerivedInvalidKeyword {
+                        keyword: "detach",
+                        span: span_from_range(body.expr_span(expr_id)),
+                    });
+                }
+                if self.in_check {
+                    self.errors.push(SemanticError::CheckInvalidKeyword {
                         keyword: "detach",
                         span: span_from_range(body.expr_span(expr_id)),
                     });
@@ -1037,6 +1144,21 @@ impl<'a> Checker<'a> {
                         });
                     }
                 }
+                if self.in_check {
+                    let keyword = match op {
+                        UnaryOp::Await => Some("await"),
+                        UnaryOp::Spawn => Some("spawn"),
+                        UnaryOp::Fire => Some("fire"),
+                        UnaryOp::Err => Some("error"),
+                        _ => None,
+                    };
+                    if let Some(keyword) = keyword {
+                        self.errors.push(SemanticError::CheckInvalidKeyword {
+                            keyword,
+                            span: span_from_range(body.expr_span(expr_id)),
+                        });
+                    }
+                }
                 self.check_expr_with_ctx(body, *expr, allow_it, false);
             }
             Expr::Call { callee, args, .. } => {
@@ -1055,6 +1177,59 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
+                if self.in_check {
+                    if let Expr::Variable(name) = &body.exprs[*callee] {
+                        let keyword = match name.as_str() {
+                            "detach" => Some("detach"),
+                            "spawn" => Some("spawn"),
+                            _ => None,
+                        };
+                        if let Some(keyword) = keyword {
+                            self.errors.push(SemanticError::CheckInvalidKeyword {
+                                keyword,
+                                span: span_from_range(body.expr_span(expr_id)),
+                            });
+                        }
+                    }
+                }
+                let is_pool_of = self.is_pool_of_call(body, *callee);
+                if is_pool_of {
+                    self.validate_pool_of_args(body, args);
+                }
+                self.check_expr_with_ctx(body, *callee, allow_it, false);
+                let mut seen_named = false;
+                let mut named_args = HashSet::new();
+                for arg in args {
+                    match arg {
+                        Arg::Positional { value, span } => {
+                            if seen_named {
+                                self.errors.push(SemanticError::PositionalAfterNamed {
+                                    span: span_from_range(*span),
+                                });
+                            }
+                            self.check_expr_with_ctx(body, *value, allow_it, false);
+                        }
+                        Arg::Named {
+                            name,
+                            value,
+                            span: _,
+                            name_span,
+                        } => {
+                            if !named_args.insert(name.clone()) {
+                                self.errors.push(SemanticError::DuplicateNamedArg {
+                                    name: name.clone(),
+                                    span: span_from_range(*name_span),
+                                });
+                            }
+                            seen_named = true;
+                            if !is_pool_of {
+                                self.check_expr_with_ctx(body, *value, allow_it, false);
+                            }
+                        }
+                    }
+                }
+            }
+            Expr::GivenCall { callee, args, .. } => {
                 let is_pool_of = self.is_pool_of_call(body, *callee);
                 if is_pool_of {
                     self.validate_pool_of_args(body, args);
@@ -1326,8 +1501,10 @@ impl<'a> Checker<'a> {
     }
 
     fn pool_of_objective(&self, body: &Body, expr_id: Idx<Expr>) -> Option<Objective> {
-        let Expr::Call { callee, args, .. } = &body.exprs[expr_id] else {
-            return None;
+        let (callee, args) = match &body.exprs[expr_id] {
+            Expr::Call { callee, args, .. } => (callee, args),
+            Expr::GivenCall { callee, args, .. } => (callee, args),
+            _ => return None,
         };
         if !self.is_pool_of_call(body, *callee) {
             return None;
@@ -1357,15 +1534,50 @@ impl<'a> Checker<'a> {
                 },
                 _ => false,
             },
+            Expr::GivenCall { callee, .. } => match &body.exprs[*callee] {
+                Expr::Variable(name) => self.class_names.contains(name),
+                Expr::TypeApply { callee, .. } => match &body.exprs[*callee] {
+                    Expr::Variable(name) => self.class_names.contains(name),
+                    _ => false,
+                },
+                _ => false,
+            },
             _ => false,
         }
     }
 
     fn pool_of_target(&self, body: &Body, expr_id: Idx<Expr>) -> bool {
-        let Expr::Call { callee, .. } = &body.exprs[expr_id] else {
-            return false;
+        let callee = match &body.exprs[expr_id] {
+            Expr::Call { callee, .. } => callee,
+            Expr::GivenCall { callee, .. } => callee,
+            _ => return false,
         };
         self.is_pool_of_call(body, *callee)
+    }
+}
+
+impl<'a> Checker<'a> {
+    fn is_type_name(&self, name: &SmolStr) -> bool {
+        if self.class_names.contains(name) {
+            return true;
+        }
+        matches!(
+            name.as_str(),
+            "Integer"
+                | "Boolean"
+                | "Nothing"
+                | "Nil"
+                | "Float"
+                | "String"
+                | "List"
+                | "Map"
+                | "Actor"
+                | "Pending"
+                | "Iterator"
+                | "Result"
+                | "Pool"
+                | "Bytes"
+        )
     }
 }
 
@@ -1576,6 +1788,27 @@ fn collect_stmt_calls_and_awaits(
             collect_expr_calls_and_awaits(
                 body,
                 *expr,
+                function_ids,
+                method_name_ids,
+                has_await,
+                callees,
+            );
+        }
+        Stmt::Require {
+            condition,
+            message,
+        } => {
+            collect_expr_calls_and_awaits(
+                body,
+                *condition,
+                function_ids,
+                method_name_ids,
+                has_await,
+                callees,
+            );
+            collect_expr_calls_and_awaits(
+                body,
+                *message,
                 function_ids,
                 method_name_ids,
                 has_await,
@@ -1805,6 +2038,50 @@ fn collect_expr_calls_and_awaits(
             callees,
         ),
         Expr::Call { callee, args, .. } => {
+            match &body.exprs[*callee] {
+                Expr::Variable(name) => {
+                    if let Some(id) = function_ids.get(name) {
+                        callees.insert(*id);
+                    }
+                }
+                Expr::Member { member, .. } => {
+                    if !matches!(&body.exprs[*callee], Expr::Member { object, member, .. }
+                        if member.as_str() == "of"
+                            && matches!(&body.exprs[*object], Expr::Variable(name) if name.as_str() == "Pool"))
+                    {
+                        if let Some(methods) = method_name_ids.get(member) {
+                            for method in methods {
+                                callees.insert(*method);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+            collect_expr_calls_and_awaits(
+                body,
+                *callee,
+                function_ids,
+                method_name_ids,
+                has_await,
+                callees,
+            );
+            for arg in args {
+                let value = match arg {
+                    Arg::Positional { value, .. } => value,
+                    Arg::Named { value, .. } => value,
+                };
+                collect_expr_calls_and_awaits(
+                    body,
+                    *value,
+                    function_ids,
+                    method_name_ids,
+                    has_await,
+                    callees,
+                );
+            }
+        }
+        Expr::GivenCall { callee, args, .. } => {
             match &body.exprs[*callee] {
                 Expr::Variable(name) => {
                     if let Some(id) = function_ids.get(name) {

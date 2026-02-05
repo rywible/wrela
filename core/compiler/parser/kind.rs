@@ -46,6 +46,10 @@ pub enum SyntaxKind {
     DeferKw,    // defer
     IgnoreKw,   // ignore
     CaptureKw,  // capture
+    CheckKw,    // check
+    ChecksKw,   // checks
+    GivenKw,    // given
+    RequireKw,  // require
 
     // Literals
     Ident,
@@ -114,7 +118,9 @@ pub enum SyntaxKind {
     EnumDef,
     EnumVariant,
     FuncDef,
+    CheckDef,
     MethodDef,
+    CheckMethodDef,
     MustMethodDef,
     DeriveDef,
     FieldDef,
@@ -145,6 +151,7 @@ pub enum SyntaxKind {
     DeferStmt,
     IgnoreResultStmt,
     CaptureStmt,
+    RequireStmt,
     PrivateBlock,
 
     // Expressions
@@ -161,6 +168,7 @@ pub enum SyntaxKind {
     StringInterp,
     ItsExpr,
     ItExpr,
+    GivenExpr,
     NamedArg,
     CrashExpr,
     Pattern,
@@ -214,6 +222,10 @@ impl From<Token> for SyntaxKind {
             Token::Defer => SyntaxKind::DeferKw,
             Token::Ignore => SyntaxKind::IgnoreKw,
             Token::Capture => SyntaxKind::CaptureKw,
+            Token::Check => SyntaxKind::CheckKw,
+            Token::Checks => SyntaxKind::ChecksKw,
+            Token::Given => SyntaxKind::GivenKw,
+            Token::Require => SyntaxKind::RequireKw,
             Token::Identifier(_) => SyntaxKind::Ident,
             Token::StringLiteral(_) => SyntaxKind::StringLiteral,
             Token::StringStart(_) => SyntaxKind::StringStart,
