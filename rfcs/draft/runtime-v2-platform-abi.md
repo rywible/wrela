@@ -34,19 +34,19 @@ Define a small, stable platform ABI implemented in a minimal shim, then rewrite 
 The platform ABI is the only boundary between Wrela runtime code and the OS. It must remain small, versioned, and stable.
 
 ### Memory
-- `page_alloc(size, flags) -> Ptr`
-- `page_free(ptr, size)`
-- `page_protect(ptr, size, prot)`
-- `page_advise(ptr, size, advice)` (optional)
+- `allocate_pages(size, flags) -> Pointer`
+- `release_pages(pointer, size)`
+- `protect_pages(pointer, size, protection)`
+- `advise_pages(pointer, size, advice)` (optional)
 
 ### Threads and Sync
-- `spawn_os_thread(entry, arg) -> ThreadId`
-- `park(addr, expected, timeout_ns)`
-- `unpark(addr, count)`
+- `spawn_system_thread(entry, argument) -> ThreadIdentifier`
+- `park_on_address(address, expected, timeout_nanoseconds)`
+- `unpark_on_address(address, count)`
 
 ### Time
-- `monotonic_now_ns() -> u64`
-- `sleep_ns(ns)`
+- `get_monotonic_time_in_nanoseconds() -> Unsigned64`
+- `sleep_for_nanoseconds(nanoseconds)`
 
 ### IO and Eventing
 The runtime IO layer uses two backends with the same high-level semantics.
@@ -60,24 +60,24 @@ macOS arm64:
 - The runtime performs nonblocking syscalls after readiness events.
 
 Platform surface:
-- `io_submit(op) -> Token`
-- `io_wait(timeout_ns, events_ptr, max) -> n`
-- `io_cancel(token)` (optional)
-- `fd_openat(dirfd, path, flags, mode) -> fd`
-- `fd_close(fd)`
-- `fd_read(fd, buf_ptr, len) -> n`
-- `fd_write(fd, buf_ptr, len) -> n`
-- `net_socket(domain, type, proto) -> fd`
-- `net_bind(fd, addr)`
-- `net_listen(fd, backlog)`
-- `net_accept(fd) -> fd`
-- `net_connect(fd, addr)`
+- `submit_input_output_operation(operation) -> Token`
+- `wait_for_input_output_events(timeout_nanoseconds, events_pointer, maximum) -> Integer`
+- `cancel_input_output_token(token)` (optional)
+- `open_file_at(directory, path, flags, mode) -> Integer`
+- `close_file(file_descriptor)`
+- `read_from_file(file_descriptor, buffer_pointer, length) -> Integer`
+- `write_to_file(file_descriptor, buffer_pointer, length) -> Integer`
+- `create_socket(domain, type, protocol) -> Integer`
+- `bind_socket(file_descriptor, address_pointer, length)`
+- `listen_on_socket(file_descriptor, backlog)`
+- `accept_connection(file_descriptor) -> Integer`
+- `connect_socket(file_descriptor, address_pointer, length)`
 
 Note:
 On macOS, `io_submit` is implemented as readiness registration plus nonblocking operations in the runtime. The platform ABI stays constant even though backend strategy differs.
 
 ### Process
-- `process_exit(code)`
+- `exit_process(code)`
 
 ## Runtime v2 Core (Wrela)
 

@@ -845,6 +845,11 @@ impl<'a> Checker<'a> {
                 self.objective_stack.pop();
                 self.exit_scope();
             }
+            Stmt::Unsafe { body: unsafe_body } => {
+                self.enter_scope();
+                self.check_block(body, unsafe_body);
+                self.exit_scope();
+            }
             Stmt::If {
                 condition,
                 then_branch,
@@ -1823,7 +1828,7 @@ fn collect_stmt_calls_and_awaits(
             has_await,
             callees,
         ),
-        Stmt::Optimize { body: inner, .. } => {
+        Stmt::Optimize { body: inner, .. } | Stmt::Unsafe { body: inner } => {
             for stmt in inner {
                 collect_stmt_calls_and_awaits(
                     body,
@@ -2331,7 +2336,7 @@ mod tests {
 
     #[test]
     fn test_duplicate_local() {
-        let input = "to f() -> Nothing:\n    x = 1\n    x = 2";
+        let input = "to f() -> Nothing:\n    mutable x = 1\n    mutable x = 2";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -2427,7 +2432,7 @@ mod tests {
 
     #[test]
     fn test_shadowing_local() {
-        let input = "to f() -> Nothing:\n    x = 1\n    if true:\n        x = 2";
+        let input = "to f() -> Nothing:\n    mutable x = 1\n    if true:\n        mutable x = 2";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);

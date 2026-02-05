@@ -24,6 +24,8 @@ pub enum Type {
     Map(Box<Type>, Box<Type>),
     Named(SmolStr, Vec<Type>),
     Param(SmolStr),
+    Pointer(Box<Type>),
+    Atomic(Box<Type>),
     Result(Box<Type>, Box<Type>),
     Actor(Box<Type>),
     Pending(Box<Type>),
@@ -115,6 +117,21 @@ pub enum TypeError {
     )]
     CheckRequiresGiven {
         #[label("check call here")]
+        span: SourceSpan,
+    },
+
+    #[error("unsafe operation requires an unsafe block")]
+    #[diagnostic(code(lang::ty::unsafe_required))]
+    UnsafeRequired {
+        #[label("unsafe call here")]
+        span: SourceSpan,
+    },
+
+    #[error("invalid operand for intrinsic '{name}'")]
+    #[diagnostic(code(lang::ty::invalid_intrinsic_operand))]
+    InvalidIntrinsicOperand {
+        name: SmolStr,
+        #[label("invalid operand")]
         span: SourceSpan,
     },
 
@@ -366,6 +383,8 @@ impl TypeError {
             TypeError::CallDerivedProperty { span, .. } => *span,
             TypeError::InvalidCallee { span } => *span,
             TypeError::CheckRequiresGiven { span } => *span,
+            TypeError::UnsafeRequired { span } => *span,
+            TypeError::InvalidIntrinsicOperand { span, .. } => *span,
             TypeError::GivenRequiresCheck { span } => *span,
             TypeError::RequireConditionNotBoolean { span } => *span,
             TypeError::RequireMessageNotString { span } => *span,
@@ -856,6 +875,223 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![(SmolStr::new("value"), Type::String)],
                 ret: Type::Nil,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_convert_integer_to_pointer"),
+            FunctionSig {
+                params: vec![(SmolStr::new("value"), Type::Integer)],
+                ret: Type::Pointer(Box::new(Type::Unknown)),
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_convert_pointer_to_integer"),
+            FunctionSig {
+                params: vec![(SmolStr::new("value"), Type::Pointer(Box::new(Type::Unknown)))],
+                ret: Type::Integer,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_offset_pointer"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("pointer"), Type::Pointer(Box::new(Type::Unknown))),
+                    (SmolStr::new("offset"), Type::Integer),
+                ],
+                ret: Type::Pointer(Box::new(Type::Unknown)),
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_get_size_of"),
+            FunctionSig {
+                params: vec![(SmolStr::new("value"), Type::Unknown)],
+                ret: Type::Integer,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_get_alignment_of"),
+            FunctionSig {
+                params: vec![(SmolStr::new("value"), Type::Unknown)],
+                ret: Type::Integer,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_get_address_of"),
+            FunctionSig {
+                params: vec![(SmolStr::new("value"), Type::Unknown)],
+                ret: Type::Pointer(Box::new(Type::Unknown)),
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_copy_memory"),
+            FunctionSig {
+                params: vec![
+                    (
+                        SmolStr::new("destination_pointer"),
+                        Type::Pointer(Box::new(Type::Unknown)),
+                    ),
+                    (
+                        SmolStr::new("source_pointer"),
+                        Type::Pointer(Box::new(Type::Unknown)),
+                    ),
+                    (SmolStr::new("length_in_bytes"), Type::Integer),
+                ],
+                ret: Type::Nil,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_fill_memory"),
+            FunctionSig {
+                params: vec![
+                    (
+                        SmolStr::new("pointer"),
+                        Type::Pointer(Box::new(Type::Unknown)),
+                    ),
+                    (SmolStr::new("byte_value"), Type::Integer),
+                    (SmolStr::new("length_in_bytes"), Type::Integer),
+                ],
+                ret: Type::Nil,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_compare_memory"),
+            FunctionSig {
+                params: vec![
+                    (
+                        SmolStr::new("left_pointer"),
+                        Type::Pointer(Box::new(Type::Unknown)),
+                    ),
+                    (
+                        SmolStr::new("right_pointer"),
+                        Type::Pointer(Box::new(Type::Unknown)),
+                    ),
+                    (SmolStr::new("length_in_bytes"), Type::Integer),
+                ],
+                ret: Type::Integer,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_allocator_new"),
+            FunctionSig {
+                params: vec![(SmolStr::new("capacity_in_bytes"), Type::Integer)],
+                ret: Type::Pointer(Box::new(Type::Unknown)),
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_allocator_enter"),
+            FunctionSig {
+                params: vec![(SmolStr::new("arena"), Type::Pointer(Box::new(Type::Unknown)))],
+                ret: Type::Pointer(Box::new(Type::Unknown)),
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_allocator_enter_global"),
+            FunctionSig {
+                params: vec![],
+                ret: Type::Pointer(Box::new(Type::Unknown)),
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_allocator_exit"),
+            FunctionSig {
+                params: vec![(SmolStr::new("previous"), Type::Pointer(Box::new(Type::Unknown)))],
+                ret: Type::Nil,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_is_arena_value"),
+            FunctionSig {
+                params: vec![(SmolStr::new("value"), Type::Unknown)],
+                ret: Type::Boolean,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_atomic_from_pointer"),
+            FunctionSig {
+                params: vec![(
+                    SmolStr::new("pointer"),
+                    Type::Pointer(Box::new(Type::Unknown)),
+                )],
+                ret: Type::Atomic(Box::new(Type::Unknown)),
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_atomic_load"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("atomic"), Type::Atomic(Box::new(Type::Unknown))),
+                    (
+                        SmolStr::new("order"),
+                        Type::Named(SmolStr::new("MemoryOrder"), Vec::new()),
+                    ),
+                ],
+                ret: Type::Integer,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_atomic_store"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("atomic"), Type::Atomic(Box::new(Type::Unknown))),
+                    (SmolStr::new("value"), Type::Integer),
+                    (
+                        SmolStr::new("order"),
+                        Type::Named(SmolStr::new("MemoryOrder"), Vec::new()),
+                    ),
+                ],
+                ret: Type::Nil,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_atomic_fetch_add"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("atomic"), Type::Atomic(Box::new(Type::Unknown))),
+                    (SmolStr::new("value"), Type::Integer),
+                    (
+                        SmolStr::new("order"),
+                        Type::Named(SmolStr::new("MemoryOrder"), Vec::new()),
+                    ),
+                ],
+                ret: Type::Integer,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_atomic_compare_exchange"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("atomic"), Type::Atomic(Box::new(Type::Unknown))),
+                    (SmolStr::new("expected"), Type::Integer),
+                    (SmolStr::new("desired"), Type::Integer),
+                    (
+                        SmolStr::new("success_order"),
+                        Type::Named(SmolStr::new("MemoryOrder"), Vec::new()),
+                    ),
+                    (
+                        SmolStr::new("failure_order"),
+                        Type::Named(SmolStr::new("MemoryOrder"), Vec::new()),
+                    ),
+                ],
+                ret: Type::Boolean,
                 kind: FunctionKind::Function,
             },
         ),
@@ -1902,9 +2138,39 @@ fn pool_of_class_name(
     None
 }
 
+fn is_unsafe_call_name(name: &SmolStr) -> bool {
+    matches!(
+        name.as_str(),
+        "__wr_convert_integer_to_pointer"
+            | "__wr_convert_pointer_to_integer"
+            | "__wr_offset_pointer"
+            | "__wr_get_size_of"
+            | "__wr_get_alignment_of"
+            | "__wr_get_address_of"
+            | "__wr_copy_memory"
+            | "__wr_fill_memory"
+            | "__wr_compare_memory"
+            | "__wr_atomic_from_pointer"
+            | "__wr_atomic_load"
+            | "__wr_atomic_store"
+            | "__wr_atomic_fetch_add"
+            | "__wr_atomic_compare_exchange"
+            | "convert_integer_to_pointer"
+            | "convert_pointer_to_integer"
+            | "offset_pointer"
+            | "get_size_of"
+            | "get_alignment_of"
+            | "get_address_of"
+            | "copy_memory"
+            | "fill_memory"
+            | "compare_memory"
+    )
+}
+
 struct TypeContext {
     scopes: Vec<HashMap<SmolStr, Type>>,
     type_params: Vec<HashSet<SmolStr>>,
+    unsafe_depth: usize,
     info: Option<*mut FunctionTypeInfo>,
 }
 
@@ -1913,6 +2179,7 @@ impl TypeContext {
         Self {
             scopes: Vec::new(),
             type_params: Vec::new(),
+            unsafe_depth: 0,
             info: Some(info as *mut FunctionTypeInfo),
         }
     }
@@ -1932,6 +2199,18 @@ impl TypeContext {
 
     fn exit_type_params(&mut self) {
         self.type_params.pop();
+    }
+
+    fn enter_unsafe(&mut self) {
+        self.unsafe_depth = self.unsafe_depth.saturating_add(1);
+    }
+
+    fn exit_unsafe(&mut self) {
+        self.unsafe_depth = self.unsafe_depth.saturating_sub(1);
+    }
+
+    fn is_in_unsafe(&self) -> bool {
+        self.unsafe_depth > 0
     }
 
     fn declare(&mut self, name: SmolStr, ty: Type) {
@@ -2206,6 +2485,27 @@ fn check_stmt(
                     func_span,
                 );
             }
+            ctx.exit_scope();
+        }
+        Stmt::Unsafe { body: unsafe_body } => {
+            ctx.enter_scope();
+            ctx.enter_unsafe();
+            for stmt in unsafe_body {
+                check_stmt(
+                    body,
+                    *stmt,
+                    ctx,
+                    classes,
+                    enums,
+                    interfaces,
+                    functions,
+                    errors,
+                    ret_type,
+                    returns_result,
+                    func_span,
+                );
+            }
+            ctx.exit_unsafe();
             ctx.exit_scope();
         }
         Stmt::If {
@@ -2974,10 +3274,11 @@ fn infer_expr(
                 } => (callee, args, type_args, true),
                 _ => unreachable!(),
             };
+            let mut arg_types = Vec::with_capacity(args.len());
             for arg in args {
                 match arg {
                     crate::hir::Arg::Positional { value, .. } => {
-                        infer_expr(
+                        let ty = infer_expr(
                             body,
                             *value,
                             ctx,
@@ -2990,9 +3291,10 @@ fn infer_expr(
                             allow_result,
                             in_result_fn,
                         );
+                        arg_types.push(ty);
                     }
                     crate::hir::Arg::Named { value, .. } => {
-                        infer_expr(
+                        let ty = infer_expr(
                             body,
                             *value,
                             ctx,
@@ -3005,6 +3307,7 @@ fn infer_expr(
                             allow_result,
                             in_result_fn,
                         );
+                        arg_types.push(ty);
                     }
                 }
             }
@@ -3020,6 +3323,24 @@ fn infer_expr(
                 }
             }
             if let Expr::Variable(name) = &body.exprs[*callee] {
+                if is_unsafe_call_name(name) && !ctx.is_in_unsafe() {
+                    errors.push(TypeError::UnsafeRequired {
+                        span: span_from_range(body.expr_span(expr_id)),
+                    });
+                }
+                if (name.as_str() == "__wr_get_size_of"
+                    || name.as_str() == "__wr_get_alignment_of")
+                    && arg_types.len() == 1
+                {
+                    if let Some(arg_ty) = arg_types.first() {
+                        if !supports_size_or_alignment(arg_ty) {
+                            errors.push(TypeError::InvalidIntrinsicOperand {
+                                name: name.clone(),
+                                span: span_from_range(body.expr_span(expr_id)),
+                            });
+                        }
+                    }
+                }
                 if classes.is_class(name) {
                     if is_given {
                         errors.push(TypeError::GivenRequiresCheck {
@@ -3058,6 +3379,11 @@ fn infer_expr(
                     }
                 }
                 if let Some(function) = functions.get(name) {
+                    if function.kind == FunctionKind::Extern && !ctx.is_in_unsafe() {
+                        errors.push(TypeError::UnsafeRequired {
+                            span: span_from_range(body.expr_span(expr_id)),
+                        });
+                    }
                     if function.kind == FunctionKind::Check && !is_given {
                         errors.push(TypeError::CheckRequiresGiven {
                             span: span_from_range(body.expr_span(expr_id)),
@@ -3956,6 +4282,14 @@ fn type_from_ref_with_params(ty: &TypeRef, params: &HashSet<SmolStr>) -> Type {
         "Boolean" => Type::Boolean,
         "String" => Type::String,
         "Nothing" => Type::Nil,
+        "Pointer" => match args.as_slice() {
+            [inner] => Type::Pointer(Box::new(inner.clone())),
+            _ => Type::Pointer(Box::new(Type::Unknown)),
+        },
+        "Atomic" => match args.as_slice() {
+            [inner] => Type::Atomic(Box::new(inner.clone())),
+            _ => Type::Atomic(Box::new(Type::Unknown)),
+        },
         "List" => match args.as_slice() {
             [inner] => Type::List(Box::new(inner.clone())),
             _ => Type::List(Box::new(Type::Unknown)),
@@ -3977,6 +4311,14 @@ fn type_from_ref_with_params(ty: &TypeRef, params: &HashSet<SmolStr>) -> Type {
             [ok] => Type::Result(Box::new(ok.clone()), Box::new(error_type())),
             _ => Type::Result(Box::new(Type::Unknown), Box::new(error_type())),
         },
+        "Unsigned8"
+        | "Unsigned16"
+        | "Unsigned32"
+        | "Unsigned64"
+        | "Signed8"
+        | "Signed16"
+        | "Signed32"
+        | "Signed64" => Type::Named(ty.name.clone(), args),
         _ => Type::Named(ty.name.clone(), args),
     }
 }
@@ -3999,6 +4341,8 @@ fn substitute_type(ty: &Type, subst: &HashMap<SmolStr, Type>) -> Type {
             Box::new(substitute_type(key, subst)),
             Box::new(substitute_type(value, subst)),
         ),
+        Type::Pointer(inner) => Type::Pointer(Box::new(substitute_type(inner, subst))),
+        Type::Atomic(inner) => Type::Atomic(Box::new(substitute_type(inner, subst))),
         Type::Result(ok, err) => Type::Result(
             Box::new(substitute_type(ok, subst)),
             Box::new(substitute_type(err, subst)),
@@ -4076,6 +4420,7 @@ fn interface_type_compatible(expected: &Type, actual: &Type) -> bool {
         (Type::Map(ak, av), Type::Map(bk, bv)) => {
             interface_type_compatible(ak, bk) && interface_type_compatible(av, bv)
         }
+        (Type::Pointer(a), Type::Pointer(b)) => interface_type_compatible(a, b),
         (Type::Result(aok, aerr), Type::Result(bok, berr)) => {
             interface_type_compatible(aok, bok) && interface_type_compatible(aerr, berr)
         }
@@ -4134,7 +4479,7 @@ fn valid_unary(op: UnaryOp, operand: &Type) -> bool {
     match op {
         UnaryOp::Neg => is_numeric(operand),
         UnaryOp::Not => *operand == Type::Boolean,
-        UnaryOp::BitNot => *operand == Type::Integer,
+        UnaryOp::BitNot => is_integer_like(operand),
         UnaryOp::Err => !matches!(operand, Type::Never),
         UnaryOp::Await | UnaryOp::Spawn | UnaryOp::Fire => true,
     }
@@ -4176,7 +4521,7 @@ fn valid_binary(op: BinaryOp, left: &Type, right: &Type) -> bool {
         BinaryOp::And | BinaryOp::Or => *left == Type::Boolean && *right == Type::Boolean,
         BinaryOp::Otherwise => true,
         BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor | BinaryOp::Shl | BinaryOp::Shr => {
-            *left == Type::Integer && *right == Type::Integer
+            is_integer_like(left) && is_integer_like(right)
         }
         BinaryOp::Range => is_numeric(left) && is_numeric(right),
         BinaryOp::Assign
@@ -4220,7 +4565,7 @@ fn numeric_result(left: &Type, right: &Type) -> Type {
         Type::Float
     } else if *left == Type::Number || *right == Type::Number {
         Type::Number
-    } else if *left == Type::Integer && *right == Type::Integer {
+    } else if is_integer_like(left) && is_integer_like(right) {
         Type::Integer
     } else {
         Type::Unknown
@@ -4228,7 +4573,34 @@ fn numeric_result(left: &Type, right: &Type) -> Type {
 }
 
 fn is_numeric(ty: &Type) -> bool {
-    matches!(ty, Type::Integer | Type::Float | Type::Number)
+    matches!(ty, Type::Float | Type::Number) || is_integer_like(ty)
+}
+
+fn is_integer_like(ty: &Type) -> bool {
+    matches!(ty, Type::Integer) || is_fixed_width_integer_type(ty)
+}
+
+fn is_fixed_width_integer_type(ty: &Type) -> bool {
+    matches!(ty, Type::Named(name, _) if is_fixed_width_integer_name(name))
+}
+
+fn is_fixed_width_integer_name(name: &SmolStr) -> bool {
+    matches!(
+        name.as_str(),
+        "Unsigned8"
+            | "Unsigned16"
+            | "Unsigned32"
+            | "Unsigned64"
+            | "Signed8"
+            | "Signed16"
+            | "Signed32"
+            | "Signed64"
+    )
+}
+
+fn supports_size_or_alignment(ty: &Type) -> bool {
+    matches!(ty, Type::Unknown | Type::Pointer(_) | Type::Atomic(_) | Type::Boolean)
+        || is_fixed_width_integer_type(ty)
 }
 
 fn is_assignable(
@@ -4244,6 +4616,8 @@ fn is_assignable(
         (_, Type::Never) => true,
         (Type::Param(_), _) => true,
         (_, Type::Param(_)) => true,
+        (Type::Pointer(exp), Type::Pointer(found)) => is_assignable(exp, found, classes, interfaces),
+        (Type::Atomic(exp), Type::Atomic(found)) => is_assignable(exp, found, classes, interfaces),
         (Type::Result(ok_e, err_e), Type::Result(ok_f, err_f)) => {
             is_assignable(ok_e, ok_f, classes, interfaces)
                 && is_assignable(err_e, err_f, classes, interfaces)
@@ -4276,6 +4650,9 @@ fn is_assignable(
                 .zip(found_args.iter())
                 .all(|(exp, found)| is_assignable(exp, found, classes, interfaces))
         }
+        (Type::Integer, Type::Named(name, _)) if is_fixed_width_integer_name(name) => true,
+        (Type::Number, Type::Named(name, _)) if is_fixed_width_integer_name(name) => true,
+        (Type::Named(name, _), Type::Integer) if is_fixed_width_integer_name(name) => true,
         (Type::Number, ty) if is_numeric(ty) => true,
         (Type::Float, Type::Integer) => true,
         _ => false,
@@ -4294,7 +4671,9 @@ fn is_identity_primitive(ty: &Type) -> bool {
         | Type::Boolean
         | Type::String
         | Type::Nil => true,
-        Type::Named(name, _) => name.as_str() == "Bytes",
+        Type::Named(name, _) => {
+            name.as_str() == "Bytes" || is_fixed_width_integer_name(name)
+        }
         _ => false,
     }
 }
@@ -4303,6 +4682,8 @@ fn is_known(ty: &Type) -> bool {
     match ty {
         Type::Unknown => false,
         Type::Result(ok, err) => is_known(ok) && is_known(err),
+        Type::Pointer(inner) => is_known(inner),
+        Type::Atomic(inner) => is_known(inner),
         _ => true,
     }
 }
@@ -4323,6 +4704,8 @@ fn type_label(ty: &Type) -> String {
         Type::Nil => "Nothing".to_string(),
         Type::List(inner) => format!("List[{}]", type_label(inner)),
         Type::Map(key, value) => format!("Map[{}, {}]", type_label(key), type_label(value)),
+        Type::Pointer(inner) => format!("Pointer[{}]", type_label(inner)),
+        Type::Atomic(inner) => format!("Atomic[{}]", type_label(inner)),
         Type::Named(name, args) => {
             if args.is_empty() {
                 name.to_string()
@@ -4730,7 +5113,9 @@ fn visit_stmt_for_async(
             has_await,
             calls,
         ),
-        Stmt::Optimize { body: stmts, .. } | Stmt::While { body: stmts, .. } => {
+        Stmt::Optimize { body: stmts, .. }
+        | Stmt::Unsafe { body: stmts }
+        | Stmt::While { body: stmts, .. } => {
             for stmt in stmts {
                 visit_stmt_for_async(
                     body,
@@ -5254,7 +5639,9 @@ fn check_stmt_async_usage(
             errors,
             in_detach,
         ),
-        Stmt::Optimize { body: stmts, .. } | Stmt::While { body: stmts, .. } => {
+        Stmt::Optimize { body: stmts, .. }
+        | Stmt::Unsafe { body: stmts }
+        | Stmt::While { body: stmts, .. } => {
             for stmt in stmts {
                 check_stmt_async_usage(
                     body,
@@ -6146,6 +6533,32 @@ to add(a: Integer, b: Integer) -> Integer:\n    return a + b\n\nto f() -> Intege
                 .iter()
                 .any(|err| matches!(err, TypeError::ArgumentTypeMismatch { .. }))
         );
+    }
+
+    #[test]
+    fn test_extern_call_requires_unsafe() {
+        let input = "\
+extern to read_time() -> Unsigned64\n\nto f() -> Unsigned64:\n    return read_time()\n";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let errors = check_module(&module);
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::UnsafeRequired { .. }))
+        );
+    }
+
+    #[test]
+    fn test_extern_call_inside_unsafe_ok() {
+        let input = "\
+extern to read_time() -> Unsigned64\n\nto f() -> Unsigned64:\n    unsafe:\n        return read_time()\n";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let errors = check_module(&module);
+        assert!(errors.is_empty());
     }
 
     #[test]

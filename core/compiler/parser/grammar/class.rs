@@ -33,7 +33,9 @@ pub fn class_def(p: &mut Parser) {
         }
         while !p.at(SyntaxKind::Dedent) && !p.is_at_eof() {
             if is_class_item_start(p) {
-                if p.at(SyntaxKind::HasKw) {
+                if is_layout_clause_start(p) {
+                    parse_layout_clause(p);
+                } else if p.at(SyntaxKind::HasKw) {
                     parse_has(p);
                 } else if p.at(SyntaxKind::CanKw) {
                     method_def(p);
@@ -267,8 +269,24 @@ fn derive_def(p: &mut Parser) {
     m.complete(p, SyntaxKind::DeriveDef);
 }
 
+fn parse_layout_clause(p: &mut Parser) {
+    let m = p.start();
+    expect_ident_text(p, "laid", "expected 'laid' to start a layout clause");
+    expect_ident_text(p, "out", "expected 'out' after 'laid'");
+    p.expect_with_message(SyntaxKind::InKw, "expected 'in' after 'laid out'");
+    expect_ident_text(p, "memory", "expected 'memory' after 'laid out in'");
+    expect_ident_text(p, "as", "expected 'as' after 'laid out in memory'");
+    p.expect_with_message(
+        SyntaxKind::StringLiteral,
+        "expected layout ABI string after 'as'",
+    );
+    m.complete(p, SyntaxKind::LayoutClause);
+    p.expect_stmt_boundary();
+}
+
 fn is_class_item_start(p: &mut Parser) -> bool {
-    if p.at(SyntaxKind::HasKw)
+    if is_layout_clause_start(p)
+        || p.at(SyntaxKind::HasKw)
         || p.at(SyntaxKind::CanKw)
         || p.at(SyntaxKind::ChecksKw)
         || p.at(SyntaxKind::MustKw)
@@ -280,6 +298,18 @@ fn is_class_item_start(p: &mut Parser) -> bool {
         return true;
     }
     false
+}
+
+fn is_layout_clause_start(p: &mut Parser) -> bool {
+    p.at_ident_text("laid")
+}
+
+fn expect_ident_text(p: &mut Parser, text: &str, message: &str) {
+    if p.at_ident_text(text) {
+        p.bump();
+    } else {
+        p.error_with_message(message, true);
+    }
 }
 
 fn parse_private_block(p: &mut Parser) {

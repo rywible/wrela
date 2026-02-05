@@ -2463,6 +2463,7 @@ mod tests {
             ],
             type_tags: vec![],
             classes: vec![],
+            extern_functions: vec![],
         };
 
         run_module_passes(&mut module);
@@ -2538,6 +2539,7 @@ mod tests {
             ],
             type_tags: vec![],
             classes: vec![],
+            extern_functions: vec![],
         };
 
         run_module_passes(&mut module);

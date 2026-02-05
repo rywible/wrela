@@ -42,6 +42,7 @@ use object::drop_object;
 use std::sync::OnceLock;
 use std::time::Instant;
 use std::collections::HashSet;
+use std::cmp::Ordering;
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wr_rc_inc(value: Value) {
@@ -151,6 +152,38 @@ pub extern "C" fn wr_str_concat_local(parts_ptr: *const Value, parts_len: usize)
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn wr_allocator_new(capacity_val: Value) -> Value {
+    let capacity = int_value(capacity_val).unwrap_or(0).max(0) as usize;
+    let arena = arena::new_arena(capacity);
+    Value::from_int(arena as i64)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_allocator_enter(arena_val: Value) -> Value {
+    let ptr = int_value(arena_val).unwrap_or(0) as *mut arena::Arena;
+    let prev = arena::set_current(ptr);
+    Value::from_int(prev as i64)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_allocator_enter_global() -> Value {
+    let prev = arena::set_current(std::ptr::null_mut());
+    Value::from_int(prev as i64)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_allocator_exit(prev_val: Value) -> Value {
+    let ptr = int_value(prev_val).unwrap_or(0) as *mut arena::Arena;
+    arena::set_current(ptr);
+    Value::nil()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_is_arena_value(val: Value) -> Value {
+    Value::from_bool(arena::is_arena_value(val))
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn wr_bytes_from_string(val: Value) -> Value {
     bytes::bytes_from_string(val)
 }
@@ -202,6 +235,64 @@ pub extern "C" fn wr_list_push(list_val: Value, val: Value) {
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_list_len(list_val: Value) -> Value {
     list::list_len(list_val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_memory_copy(
+    destination_pointer: Value,
+    source_pointer: Value,
+    length_in_bytes: Value,
+) -> Value {
+    let len = length_in_bytes.as_int();
+    if len <= 0 {
+        return Value::nil();
+    }
+    let dst = destination_pointer.as_int() as usize as *mut u8;
+    let src = source_pointer.as_int() as usize as *const u8;
+    unsafe {
+        std::ptr::copy_nonoverlapping(src, dst, len as usize);
+    }
+    Value::nil()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_memory_fill(
+    pointer: Value,
+    byte_value: Value,
+    length_in_bytes: Value,
+) -> Value {
+    let len = length_in_bytes.as_int();
+    if len <= 0 {
+        return Value::nil();
+    }
+    let dst = pointer.as_int() as usize as *mut u8;
+    let value = (byte_value.as_int() & 0xFF) as u8;
+    unsafe {
+        std::ptr::write_bytes(dst, value, len as usize);
+    }
+    Value::nil()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_memory_compare(
+    left_pointer: Value,
+    right_pointer: Value,
+    length_in_bytes: Value,
+) -> Value {
+    let len = length_in_bytes.as_int();
+    if len <= 0 {
+        return Value::from_int(0);
+    }
+    let left = left_pointer.as_int() as usize as *const u8;
+    let right = right_pointer.as_int() as usize as *const u8;
+    let left_slice = unsafe { std::slice::from_raw_parts(left, len as usize) };
+    let right_slice = unsafe { std::slice::from_raw_parts(right, len as usize) };
+    let result = match left_slice.cmp(right_slice) {
+        Ordering::Less => -1,
+        Ordering::Equal => 0,
+        Ordering::Greater => 1,
+    };
+    Value::from_int(result)
 }
 
 #[unsafe(no_mangle)]

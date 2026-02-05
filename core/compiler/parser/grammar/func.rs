@@ -22,6 +22,26 @@ pub fn func_def(p: &mut Parser) {
     m.complete(p, SyntaxKind::FuncDef);
 }
 
+pub fn extern_func_def(p: &mut Parser) {
+    let m = p.start();
+    p.expect_with_message(
+        SyntaxKind::ExternKw,
+        "expected 'extern' to start an extern function declaration",
+    );
+    p.expect_with_message(
+        SyntaxKind::ToKw,
+        "expected 'to' after 'extern' in function declaration",
+    );
+    p.expect_with_message(SyntaxKind::Ident, "expected function name after 'extern to'");
+    p.expect_with_message(SyntaxKind::LParen, "expected '(' after function name");
+    parse_param_list(p);
+    p.expect_with_message(SyntaxKind::RParen, "expected ')' after function parameters");
+    p.expect_with_message(SyntaxKind::Arrow, "expected '->' and a return type");
+    types::parse_type(p);
+    m.complete(p, SyntaxKind::ExternFuncDef);
+    p.expect_stmt_boundary();
+}
+
 pub fn check_def(p: &mut Parser) {
     let m = p.start();
     p.expect_with_message(

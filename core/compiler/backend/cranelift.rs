@@ -1,6 +1,7 @@
 use crate::hir::{Objective, PoolSize};
 use crate::mir::ir::{
-    CallKind, CallTarget, MirFunction, MirModule, MirType, Place, Rvalue, Stmt, Terminator, Value,
+    CallKind, CallTarget, ExternType, MirExternFunction, MirFunction, MirModule, MirType, Place,
+    Rvalue, Stmt, Terminator, Value,
 };
 use cranelift_codegen::ir::{
     AbiParam, Function, InstBuilder, MemFlags, Signature, StackSlotData, StackSlotKind, types,
@@ -223,7 +224,7 @@ pub fn compile_to_object(mir: &MirModule) -> Result<Vec<u8>, CodegenError> {
         eprintln!("codegen: start");
     }
     let mut module = create_object_module()?;
-    let func_ids = declare_functions(&mut module, mir)?;
+    let (func_ids, extern_functions) = declare_functions(&mut module, mir)?;
     let method_wrappers = declare_method_wrappers(&mut module, mir, &func_ids)?;
     let mut runtime = RuntimeRegistry::new();
 
@@ -241,6 +242,7 @@ pub fn compile_to_object(mir: &MirModule) -> Result<Vec<u8>, CodegenError> {
         lower_function(
             func,
             &func_ids,
+            &extern_functions,
             &mut ctx.func,
             &mut fb_ctx,
             &mut module,
@@ -605,7 +607,13 @@ fn create_object_module() -> Result<ObjectModule, CodegenError> {
 fn declare_functions(
     module: &mut ObjectModule,
     mir: &MirModule,
-) -> Result<HashMap<SmolStr, cranelift_module::FuncId>, CodegenError> {
+) -> Result<
+    (
+        HashMap<SmolStr, cranelift_module::FuncId>,
+        HashMap<SmolStr, MirExternFunction>,
+    ),
+    CodegenError,
+> {
     let mut ids = HashMap::new();
     for func in &mir.functions {
         let sig = function_signature(module, func);
@@ -619,7 +627,16 @@ fn declare_functions(
             .map_err(|err| CodegenError(format!("declare_function failed: {err}")))?;
         ids.insert(func.name.clone(), id);
     }
-    Ok(ids)
+    let mut externs = HashMap::new();
+    for func in &mir.extern_functions {
+        let sig = extern_signature(module, func);
+        let id = module
+            .declare_function(func.name.as_str(), Linkage::Import, &sig)
+            .map_err(|err| CodegenError(format!("declare_function failed: {err}")))?;
+        ids.insert(func.name.clone(), id);
+        externs.insert(func.name.clone(), func.clone());
+    }
+    Ok((ids, externs))
 }
 
 fn function_signature(module: &ObjectModule, func: &MirFunction) -> Signature {
@@ -632,9 +649,132 @@ fn function_signature(module: &ObjectModule, func: &MirFunction) -> Signature {
     sig
 }
 
+fn extern_signature(module: &ObjectModule, func: &MirExternFunction) -> Signature {
+    let mut sig = module.make_signature();
+    sig.call_conv = module.target_config().default_call_conv;
+    for param in &func.params {
+        sig.params.push(AbiParam::new(extern_type_to_clif(module, param)));
+    }
+    if func.ret != ExternType::Void {
+        sig.returns.push(AbiParam::new(extern_type_to_clif(module, &func.ret)));
+    }
+    sig
+}
+
+fn extern_type_to_clif(module: &ObjectModule, ty: &ExternType) -> types::Type {
+    match ty {
+        ExternType::Unsigned8 | ExternType::Signed8 => types::I8,
+        ExternType::Unsigned16 | ExternType::Signed16 => types::I16,
+        ExternType::Unsigned32 | ExternType::Signed32 => types::I32,
+        ExternType::Unsigned64 | ExternType::Signed64 => types::I64,
+        ExternType::Boolean => types::I8,
+        ExternType::Pointer => module.target_config().pointer_type(),
+        ExternType::Void | ExternType::Unknown => types::I64,
+    }
+}
+
+fn lower_extern_arg(
+    builder: &mut FunctionBuilder,
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+    value: cranelift_codegen::ir::Value,
+    ty: &ExternType,
+) -> Result<cranelift_codegen::ir::Value, CodegenError> {
+    match ty {
+        ExternType::Unsigned8 | ExternType::Signed8 => {
+            let unboxed = untag_int(builder, module, runtime, value)?;
+            Ok(builder.ins().ireduce(types::I8, unboxed))
+        }
+        ExternType::Unsigned16 | ExternType::Signed16 => {
+            let unboxed = untag_int(builder, module, runtime, value)?;
+            Ok(builder.ins().ireduce(types::I16, unboxed))
+        }
+        ExternType::Unsigned32 | ExternType::Signed32 => {
+            let unboxed = untag_int(builder, module, runtime, value)?;
+            Ok(builder.ins().ireduce(types::I32, unboxed))
+        }
+        ExternType::Unsigned64 | ExternType::Signed64 => {
+            let unboxed = untag_int(builder, module, runtime, value)?;
+            Ok(unboxed)
+        }
+        ExternType::Boolean => {
+            let unboxed = untag_bool(builder, value);
+            Ok(builder.ins().ireduce(types::I8, unboxed))
+        }
+        ExternType::Pointer => {
+            let unboxed = untag_int(builder, module, runtime, value)?;
+            let ptr_ty = module.target_config().pointer_type();
+            if ptr_ty == types::I64 {
+                Ok(unboxed)
+            } else {
+                Ok(builder.ins().ireduce(ptr_ty, unboxed))
+            }
+        }
+        ExternType::Unknown | ExternType::Void => Ok(value),
+    }
+}
+
+fn extend_to_i64(
+    builder: &mut FunctionBuilder,
+    value: cranelift_codegen::ir::Value,
+    signed: bool,
+) -> cranelift_codegen::ir::Value {
+    let value_ty = builder.func.dfg.value_type(value);
+    if value_ty == types::I64 {
+        value
+    } else if signed {
+        builder.ins().sextend(types::I64, value)
+    } else {
+        builder.ins().uextend(types::I64, value)
+    }
+}
+
+fn box_extern_return(
+    builder: &mut FunctionBuilder,
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+    value: cranelift_codegen::ir::Value,
+    ty: &ExternType,
+) -> Result<cranelift_codegen::ir::Value, CodegenError> {
+    match ty {
+        ExternType::Unsigned8
+        | ExternType::Unsigned16
+        | ExternType::Unsigned32
+        | ExternType::Unsigned64 => {
+            let extended = extend_to_i64(builder, value, false);
+            tag_int(builder, module, runtime, extended)
+        }
+        ExternType::Signed8
+        | ExternType::Signed16
+        | ExternType::Signed32
+        | ExternType::Signed64 => {
+            let extended = extend_to_i64(builder, value, true);
+            tag_int(builder, module, runtime, extended)
+        }
+        ExternType::Pointer => {
+            let extended = extend_to_i64(builder, value, false);
+            tag_int(builder, module, runtime, extended)
+        }
+        ExternType::Boolean => {
+            let value_ty = builder.func.dfg.value_type(value);
+            let zero = builder.ins().iconst(value_ty, 0);
+            let is_true = builder.ins().icmp(
+                cranelift_codegen::ir::condcodes::IntCC::NotEqual,
+                value,
+                zero,
+            );
+            let bool_int = bool_to_int(builder, is_true);
+            Ok(tag_bool(builder, bool_int))
+        }
+        ExternType::Unknown => Ok(value),
+        ExternType::Void => Ok(builder.ins().iconst(types::I64, nanbox_nil_const())),
+    }
+}
+
 fn lower_function(
     func: &MirFunction,
     func_ids: &HashMap<SmolStr, cranelift_module::FuncId>,
+    extern_functions: &HashMap<SmolStr, MirExternFunction>,
     clif: &mut Function,
     fb_ctx: &mut FunctionBuilderContext,
     module: &mut ObjectModule,
@@ -706,6 +846,7 @@ fn lower_function(
                 &locals_tys,
                 &temps_tys,
                 func_ids,
+                extern_functions,
                 module,
                 runtime,
             )?;
@@ -721,6 +862,7 @@ fn lower_function(
             &block_map,
             &phi_map,
             func_ids,
+            extern_functions,
             module,
             runtime,
         )?;
@@ -739,6 +881,7 @@ fn lower_stmt(
     locals_tys: &Vec<MirType>,
     temps_tys: &Vec<MirType>,
     func_ids: &HashMap<SmolStr, cranelift_module::FuncId>,
+    extern_functions: &HashMap<SmolStr, MirExternFunction>,
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
 ) -> Result<(), CodegenError> {
@@ -746,7 +889,16 @@ fn lower_stmt(
         Stmt::Phi { .. } => {}
         Stmt::Assign { place, value, .. } => {
             let val = lower_rvalue(
-                value, builder, locals, temps, locals_tys, temps_tys, func_ids, module, runtime,
+                value,
+                builder,
+                locals,
+                temps,
+                locals_tys,
+                temps_tys,
+                func_ids,
+                extern_functions,
+                module,
+                runtime,
             )?;
             match place {
                 Place::Local(local) => {
@@ -846,6 +998,7 @@ fn lower_rvalue(
     locals_tys: &Vec<MirType>,
     temps_tys: &Vec<MirType>,
     func_ids: &HashMap<SmolStr, cranelift_module::FuncId>,
+    extern_functions: &HashMap<SmolStr, MirExternFunction>,
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
 ) -> Result<cranelift_codegen::ir::Value, CodegenError> {
@@ -1291,6 +1444,144 @@ fn lower_rvalue(
             }
             match kind {
                 CallKind::Sync => {
+                    if let CallTarget::Function(name) = &target {
+                        if let Some(extern_func) = extern_functions.get(name) {
+                            let func_id = func_ids.get(name).copied().ok_or_else(|| {
+                                CodegenError(format!("missing extern function id for {}", name))
+                            })?;
+                            let mut extern_args = Vec::with_capacity(call_args.len());
+                            for (idx, arg) in call_args.iter().enumerate() {
+                                let ty = extern_func
+                                    .params
+                                    .get(idx)
+                                    .unwrap_or(&ExternType::Unknown);
+                                extern_args.push(lower_extern_arg(
+                                    builder,
+                                    module,
+                                    runtime,
+                                    *arg,
+                                    ty,
+                                )?);
+                            }
+                            let callee = module.declare_func_in_func(func_id, builder.func);
+                            let call_inst = builder.ins().call(callee, &extern_args);
+                            if extern_func.ret == ExternType::Void {
+                                let nil = builder.ins().iconst(types::I64, nanbox_nil_const());
+                                return Ok(nil);
+                            }
+                            let raw = builder.inst_results(call_inst)[0];
+                            return box_extern_return(
+                                builder,
+                                module,
+                                runtime,
+                                raw,
+                                &extern_func.ret,
+                            );
+                        }
+                    }
+                    if let CallTarget::Function(name) = &target {
+                        match name.as_str() {
+                            "__wr_convert_integer_to_pointer" | "__wr_convert_pointer_to_integer" => {
+                                return Ok(call_args
+                                    .get(0)
+                                    .copied()
+                                    .unwrap_or_else(|| builder.ins().iconst(types::I64, 0)));
+                            }
+                            "__wr_atomic_from_pointer" => {
+                                return Ok(call_args
+                                    .get(0)
+                                    .copied()
+                                    .unwrap_or_else(|| builder.ins().iconst(types::I64, 0)));
+                            }
+                            "__wr_offset_pointer" => {
+                                let base = call_args
+                                    .get(0)
+                                    .copied()
+                                    .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
+                                let offset = call_args
+                                    .get(1)
+                                    .copied()
+                                    .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
+                                let base_val = untag_int(builder, module, runtime, base)?;
+                                let offset_val = untag_int(builder, module, runtime, offset)?;
+                                let res = builder.ins().iadd(base_val, offset_val);
+                                return tag_int(builder, module, runtime, res);
+                            }
+                            "__wr_get_address_of" => {
+                                let value = call_args
+                                    .get(0)
+                                    .copied()
+                                    .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
+                                let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                                    StackSlotKind::ExplicitSlot,
+                                    8u32,
+                                    3,
+                                ));
+                                builder.ins().stack_store(value, slot, 0);
+                                let ptr_ty = module.target_config().pointer_type();
+                                let addr = builder.ins().stack_addr(ptr_ty, slot, 0);
+                                return tag_int(builder, module, runtime, addr);
+                            }
+                            "__wr_atomic_load" => {
+                                let ptr_val = call_args
+                                    .get(0)
+                                    .copied()
+                                    .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
+                                return lower_atomic_load(builder, module, runtime, ptr_val);
+                            }
+                            "__wr_atomic_store" => {
+                                let ptr_val = call_args
+                                    .get(0)
+                                    .copied()
+                                    .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
+                                let value = call_args
+                                    .get(1)
+                                    .copied()
+                                    .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
+                                lower_atomic_store(builder, module, runtime, ptr_val, value)?;
+                                let nil = builder.ins().iconst(types::I64, nanbox_nil_const());
+                                return Ok(nil);
+                            }
+                            "__wr_atomic_fetch_add" => {
+                                let ptr_val = call_args
+                                    .get(0)
+                                    .copied()
+                                    .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
+                                let value = call_args
+                                    .get(1)
+                                    .copied()
+                                    .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
+                                return lower_atomic_fetch_add(builder, module, runtime, ptr_val, value);
+                            }
+                            "__wr_atomic_compare_exchange" => {
+                                let ptr_val = call_args
+                                    .get(0)
+                                    .copied()
+                                    .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
+                                let expected = call_args
+                                    .get(1)
+                                    .copied()
+                                    .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
+                                let desired = call_args
+                                    .get(2)
+                                    .copied()
+                                    .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
+                                return lower_atomic_compare_exchange(
+                                    builder,
+                                    module,
+                                    runtime,
+                                    ptr_val,
+                                    expected,
+                                    desired,
+                                );
+                            }
+                            "__wr_get_size_of" | "__wr_get_alignment_of" => {
+                                let zero = builder.ins().iconst(types::I64, 0);
+                                return tag_int(builder, module, runtime, zero);
+                            }
+                            _ => {}
+                        }
+                    }
                     let target_name = match &target {
                         CallTarget::Function(name) => name.as_str().to_string(),
                         CallTarget::Method { method, .. } => method.as_str().to_string(),
@@ -1510,6 +1801,30 @@ fn lower_rvalue(
                                         Some(runtime_fn_bytes_to_string(module, runtime)?)
                                     }
                                     "__wr_bytes_len" => Some(runtime_fn_bytes_len(module, runtime)?),
+                                    "__wr_allocator_new" => {
+                                        Some(runtime_fn_allocator_new(module, runtime)?)
+                                    }
+                                    "__wr_allocator_enter" => {
+                                        Some(runtime_fn_allocator_enter(module, runtime)?)
+                                    }
+                                    "__wr_allocator_enter_global" => {
+                                        Some(runtime_fn_allocator_enter_global(module, runtime)?)
+                                    }
+                                    "__wr_allocator_exit" => {
+                                        Some(runtime_fn_allocator_exit(module, runtime)?)
+                                    }
+                                    "__wr_is_arena_value" => {
+                                        Some(runtime_fn_is_arena_value(module, runtime)?)
+                                    }
+                                    "__wr_copy_memory" => {
+                                        Some(runtime_fn_memory_copy(module, runtime)?)
+                                    }
+                                    "__wr_fill_memory" => {
+                                        Some(runtime_fn_memory_fill(module, runtime)?)
+                                    }
+                                    "__wr_compare_memory" => {
+                                        Some(runtime_fn_memory_compare(module, runtime)?)
+                                    }
                                     "__wr_http_server_serve_get_requests" => Some(
                                         runtime_fn_http_server_serve_get_requests(module, runtime)?,
                                     ),
@@ -1804,6 +2119,7 @@ fn lower_terminator(
     block_map: &[cranelift_codegen::ir::Block],
     phi_map: &[Vec<PhiNode>],
     _func_ids: &HashMap<SmolStr, cranelift_module::FuncId>,
+    _extern_functions: &HashMap<SmolStr, MirExternFunction>,
     _module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
 ) -> Result<(), CodegenError> {
@@ -2232,6 +2548,70 @@ fn runtime_fn_bytes_len(
 ) -> Result<cranelift_module::FuncId, CodegenError> {
     let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
     runtime.get_func(module, "wr_bytes_len", sig)
+}
+
+fn runtime_fn_allocator_new(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_allocator_new", sig)
+}
+
+fn runtime_fn_allocator_enter(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_allocator_enter", sig)
+}
+
+fn runtime_fn_allocator_enter_global(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(module, "wr_allocator_enter_global", sig)
+}
+
+fn runtime_fn_allocator_exit(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_allocator_exit", sig)
+}
+
+fn runtime_fn_is_arena_value(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_is_arena_value", sig)
+}
+
+fn runtime_fn_memory_copy(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_memory_copy", sig)
+}
+
+fn runtime_fn_memory_fill(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_memory_fill", sig)
+}
+
+fn runtime_fn_memory_compare(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_memory_compare", sig)
 }
 
 fn runtime_fn_str_concat(
@@ -3389,6 +3769,100 @@ fn untag_int(
 
     builder.switch_to_block(done_block);
     Ok(done_param)
+}
+
+fn lower_atomic_address(
+    builder: &mut FunctionBuilder,
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+    pointer: cranelift_codegen::ir::Value,
+) -> Result<cranelift_codegen::ir::Value, CodegenError> {
+    untag_int(builder, module, runtime, pointer)
+}
+
+fn lower_atomic_load(
+    builder: &mut FunctionBuilder,
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+    pointer: cranelift_codegen::ir::Value,
+) -> Result<cranelift_codegen::ir::Value, CodegenError> {
+    let addr = lower_atomic_address(builder, module, runtime, pointer)?;
+    Ok(builder
+        .ins()
+        .atomic_load(types::I64, MemFlags::new(), addr))
+}
+
+fn lower_atomic_store(
+    builder: &mut FunctionBuilder,
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+    pointer: cranelift_codegen::ir::Value,
+    value: cranelift_codegen::ir::Value,
+) -> Result<(), CodegenError> {
+    let addr = lower_atomic_address(builder, module, runtime, pointer)?;
+    builder.ins().atomic_store(MemFlags::new(), value, addr);
+    Ok(())
+}
+
+fn lower_atomic_fetch_add(
+    builder: &mut FunctionBuilder,
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+    pointer: cranelift_codegen::ir::Value,
+    value: cranelift_codegen::ir::Value,
+) -> Result<cranelift_codegen::ir::Value, CodegenError> {
+    let addr = lower_atomic_address(builder, module, runtime, pointer)?;
+    let addend = untag_int(builder, module, runtime, value)?;
+
+    let loop_block = builder.create_block();
+    let done_block = builder.create_block();
+    builder.append_block_param(done_block, types::I64);
+    let done_param = builder.block_params(done_block)[0];
+
+    builder.ins().jump(loop_block, &[]);
+    builder.switch_to_block(loop_block);
+
+    let loaded = builder
+        .ins()
+        .atomic_load(types::I64, MemFlags::new(), addr);
+    let loaded_int = untag_int(builder, module, runtime, loaded)?;
+    let sum_int = builder.ins().iadd(loaded_int, addend);
+    let sum_boxed = tag_int(builder, module, runtime, sum_int)?;
+    let old = builder
+        .ins()
+        .atomic_cas(MemFlags::new(), addr, loaded, sum_boxed);
+    let success = builder.ins().icmp(
+        cranelift_codegen::ir::condcodes::IntCC::Equal,
+        old,
+        loaded,
+    );
+    builder
+        .ins()
+        .brif(success, done_block, &[old], loop_block, &[]);
+
+    builder.switch_to_block(done_block);
+    Ok(done_param)
+}
+
+fn lower_atomic_compare_exchange(
+    builder: &mut FunctionBuilder,
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+    pointer: cranelift_codegen::ir::Value,
+    expected: cranelift_codegen::ir::Value,
+    desired: cranelift_codegen::ir::Value,
+) -> Result<cranelift_codegen::ir::Value, CodegenError> {
+    let addr = lower_atomic_address(builder, module, runtime, pointer)?;
+    let old = builder
+        .ins()
+        .atomic_cas(MemFlags::new(), addr, expected, desired);
+    let success = builder.ins().icmp(
+        cranelift_codegen::ir::condcodes::IntCC::Equal,
+        old,
+        expected,
+    );
+    let as_int = bool_to_int(builder, success);
+    Ok(tag_bool(builder, as_int))
 }
 
 fn tag_bool(

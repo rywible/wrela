@@ -81,6 +81,9 @@ pub enum Stmt {
     Defer {
         expr: Idx<Expr>,
     },
+    Unsafe {
+        body: Vec<Idx<Stmt>>,
+    },
     Use {
         names: Vec<UseName>,
         module: SmolStr,

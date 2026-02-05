@@ -50,6 +50,8 @@ pub enum SyntaxKind {
     ChecksKw,   // checks
     GivenKw,    // given
     RequireKw,  // require
+    UnsafeKw,   // unsafe
+    ExternKw,   // extern
 
     // Literals
     Ident,
@@ -119,6 +121,7 @@ pub enum SyntaxKind {
     EnumVariant,
     FuncDef,
     CheckDef,
+    ExternFuncDef,
     MethodDef,
     CheckMethodDef,
     MustMethodDef,
@@ -132,6 +135,7 @@ pub enum SyntaxKind {
     IsAClause,
     Block,
     HasBlock,
+    LayoutClause,
 
     // Statements
     StmtExpr,
@@ -152,6 +156,7 @@ pub enum SyntaxKind {
     IgnoreResultStmt,
     CaptureStmt,
     RequireStmt,
+    UnsafeStmt,
     PrivateBlock,
 
     // Expressions
@@ -226,6 +231,8 @@ impl From<Token> for SyntaxKind {
             Token::Checks => SyntaxKind::ChecksKw,
             Token::Given => SyntaxKind::GivenKw,
             Token::Require => SyntaxKind::RequireKw,
+            Token::Unsafe => SyntaxKind::UnsafeKw,
+            Token::Extern => SyntaxKind::ExternKw,
             Token::Identifier(_) => SyntaxKind::Ident,
             Token::StringLiteral(_) => SyntaxKind::StringLiteral,
             Token::StringStart(_) => SyntaxKind::StringStart,

@@ -1,0 +1,26 @@
+name: Platform v2
+
+on:
+  workflow_dispatch:
+
+jobs:
+  platform-v2:
+    name: Platform v2 tests (${{ matrix.os }} / ${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04-arm64
+            arch: aarch64
+          - os: macos-14
+            arch: aarch64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run platform v2 tests
+        run: cargo test -p wrela_platform_v2

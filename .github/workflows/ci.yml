@@ -32,6 +32,10 @@ jobs:
       - name: Run compiler tests
         run: cargo test -p wrela
 
+      - name: Run platform v2 tests
+        if: matrix.os == 'ubuntu-22.04-arm64'
+        run: cargo test -p wrela_platform_v2
+
       - name: Run perf gate tests
         if: matrix.os == 'macos-14'
         run: python3 scripts/perf_gate_test.py

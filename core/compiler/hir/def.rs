@@ -25,6 +25,7 @@ pub enum FunctionKind {
     Derived,
     Check,
     CheckMethod,
+    Extern,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -44,9 +45,16 @@ pub struct Class {
     pub name_span: Option<TextRange>,
     pub visibility: Visibility,
     pub type_params: Vec<SmolStr>,
+    pub layout: Option<ClassLayout>,
     pub fields: Vec<Field>,
     pub methods: Vec<Idx<Function>>,
     pub implements: Vec<SmolStr>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClassLayout {
+    pub abi: SmolStr,
+    pub abi_span: Option<TextRange>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

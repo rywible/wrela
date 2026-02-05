@@ -32,6 +32,10 @@ pub(crate) fn parse_statement(p: &mut Parser) {
         class::class_def(p);
         return;
     }
+    if is_extern_func_start(p) {
+        func::extern_func_def(p);
+        return;
+    }
     if is_func_start(p) {
         func::func_def(p);
         return;
@@ -57,6 +61,7 @@ pub(crate) fn parse_statement(p: &mut Parser) {
         SyntaxKind::DeferKw => parse_defer(p),
         SyntaxKind::IgnoreKw => parse_ignore_result(p),
         SyntaxKind::CaptureKw => parse_capture(p),
+        SyntaxKind::UnsafeKw => parse_unsafe(p),
         SyntaxKind::MatchKw => parse_match(p),
         SyntaxKind::UseKw => parse_use(p),
         SyntaxKind::Eof => (),
@@ -501,11 +506,26 @@ fn is_func_start(p: &mut Parser) -> bool {
     false
 }
 
+fn is_extern_func_start(p: &mut Parser) -> bool {
+    if p.at(SyntaxKind::ExternKw) {
+        return true;
+    }
+    false
+}
+
 fn is_check_start(p: &mut Parser) -> bool {
     if p.at(SyntaxKind::CheckKw) {
         return true;
     }
     false
+}
+
+fn parse_unsafe(p: &mut Parser) {
+    let m = p.start();
+    p.expect(SyntaxKind::UnsafeKw);
+    p.expect_with_message(SyntaxKind::Colon, "expected ':' after unsafe");
+    parse_block(p);
+    m.complete(p, SyntaxKind::UnsafeStmt);
 }
 
 fn parse_require(p: &mut Parser) {

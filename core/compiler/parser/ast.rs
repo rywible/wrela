@@ -38,6 +38,7 @@ pub enum Stmt {
     ClassDef(ClassDef),
     EnumDef(EnumDef),
     FuncDef(FuncDef),
+    ExternFuncDef(ExternFuncDef),
     CheckDef(CheckDef),
     VarAssign(VarAssign),
     IfStmt(IfStmt),
@@ -54,6 +55,7 @@ pub enum Stmt {
     IgnoreResultStmt(IgnoreResultStmt),
     CaptureStmt(CaptureStmt),
     RequireStmt(RequireStmt),
+    UnsafeStmt(UnsafeStmt),
     PrivateBlock(PrivateBlock),
 }
 
@@ -65,6 +67,7 @@ impl AstNode for Stmt {
                 | SyntaxKind::ClassDef
                 | SyntaxKind::EnumDef
                 | SyntaxKind::FuncDef
+                | SyntaxKind::ExternFuncDef
                 | SyntaxKind::CheckDef
                 | SyntaxKind::VarAssign
                 | SyntaxKind::IfStmt
@@ -81,6 +84,7 @@ impl AstNode for Stmt {
                 | SyntaxKind::IgnoreResultStmt
                 | SyntaxKind::CaptureStmt
                 | SyntaxKind::RequireStmt
+                | SyntaxKind::UnsafeStmt
                 | SyntaxKind::PrivateBlock
         )
     }
@@ -90,6 +94,7 @@ impl AstNode for Stmt {
             SyntaxKind::ClassDef => ClassDef::cast(node).map(Stmt::ClassDef),
             SyntaxKind::EnumDef => EnumDef::cast(node).map(Stmt::EnumDef),
             SyntaxKind::FuncDef => FuncDef::cast(node).map(Stmt::FuncDef),
+            SyntaxKind::ExternFuncDef => ExternFuncDef::cast(node).map(Stmt::ExternFuncDef),
             SyntaxKind::CheckDef => CheckDef::cast(node).map(Stmt::CheckDef),
             SyntaxKind::VarAssign => VarAssign::cast(node).map(Stmt::VarAssign),
             SyntaxKind::IfStmt => IfStmt::cast(node).map(Stmt::IfStmt),
@@ -106,6 +111,7 @@ impl AstNode for Stmt {
             SyntaxKind::IgnoreResultStmt => IgnoreResultStmt::cast(node).map(Stmt::IgnoreResultStmt),
             SyntaxKind::CaptureStmt => CaptureStmt::cast(node).map(Stmt::CaptureStmt),
             SyntaxKind::RequireStmt => RequireStmt::cast(node).map(Stmt::RequireStmt),
+            SyntaxKind::UnsafeStmt => UnsafeStmt::cast(node).map(Stmt::UnsafeStmt),
             SyntaxKind::PrivateBlock => PrivateBlock::cast(node).map(Stmt::PrivateBlock),
             _ => None,
         }
@@ -116,6 +122,7 @@ impl AstNode for Stmt {
             Stmt::ClassDef(it) => it.syntax(),
             Stmt::EnumDef(it) => it.syntax(),
             Stmt::FuncDef(it) => it.syntax(),
+            Stmt::ExternFuncDef(it) => it.syntax(),
             Stmt::CheckDef(it) => it.syntax(),
             Stmt::VarAssign(it) => it.syntax(),
             Stmt::IfStmt(it) => it.syntax(),
@@ -132,6 +139,7 @@ impl AstNode for Stmt {
             Stmt::IgnoreResultStmt(it) => it.syntax(),
             Stmt::CaptureStmt(it) => it.syntax(),
             Stmt::RequireStmt(it) => it.syntax(),
+            Stmt::UnsafeStmt(it) => it.syntax(),
             Stmt::PrivateBlock(it) => it.syntax(),
         }
     }
@@ -319,6 +327,29 @@ impl OptimizeStmt {
     }
 }
 
+pub struct UnsafeStmt(SyntaxNode);
+impl AstNode for UnsafeStmt {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::UnsafeStmt
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(UnsafeStmt(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl UnsafeStmt {
+    pub fn block(&self) -> Option<Block> {
+        self.0.children().find_map(Block::cast)
+    }
+}
+
 pub struct PrivateBlock(SyntaxNode);
 impl AstNode for PrivateBlock {
     fn can_cast(kind: SyntaxKind) -> bool {
@@ -414,6 +445,10 @@ impl ClassDef {
             })
     }
 
+    pub fn layout_clause(&self) -> Option<LayoutClause> {
+        self.0.children().filter_map(LayoutClause::cast).next()
+    }
+
     pub fn has_blocks(&self) -> impl Iterator<Item = HasBlock> {
         self.0.children().filter_map(HasBlock::cast)
     }
@@ -432,6 +467,32 @@ impl ClassDef {
 
     pub fn derives(&self) -> impl Iterator<Item = DeriveDef> {
         self.0.children().filter_map(DeriveDef::cast)
+    }
+}
+
+pub struct LayoutClause(SyntaxNode);
+impl AstNode for LayoutClause {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::LayoutClause
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(LayoutClause(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl LayoutClause {
+    pub fn abi_string(&self) -> Option<SyntaxToken> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .find(|it| it.kind() == SyntaxKind::StringLiteral)
     }
 }
 
@@ -557,6 +618,44 @@ impl FuncDef {
                     .collect::<Vec<_>>()
                     .into_iter()
             })
+    }
+}
+
+pub struct ExternFuncDef(SyntaxNode);
+impl AstNode for ExternFuncDef {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::ExternFuncDef
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(ExternFuncDef(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl ExternFuncDef {
+    pub fn name(&self) -> Option<SyntaxToken> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .find(|it| it.kind() == SyntaxKind::Ident)
+    }
+
+    pub fn params(&self) -> impl Iterator<Item = Param> {
+        self.0
+            .children()
+            .filter(|it| it.kind() == SyntaxKind::ParamList)
+            .flat_map(|node| node.children())
+            .filter_map(Param::cast)
+    }
+
+    pub fn ret_type(&self) -> Option<TypeRef> {
+        self.0.children().filter_map(TypeRef::cast).next()
     }
 }
 

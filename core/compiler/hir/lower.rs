@@ -16,6 +16,7 @@ pub fn lower_root_body(root: ast::Root) -> Option<Body> {
     for stmt in root.statements() {
         match stmt {
             ast::Stmt::FuncDef(_)
+            | ast::Stmt::ExternFuncDef(_)
             | ast::Stmt::CheckDef(_)
             | ast::Stmt::ClassDef(_)
             | ast::Stmt::EnumDef(_)
@@ -62,6 +63,10 @@ impl LoweringContext {
                     let func = self.lower_func(f);
                     self.module.functions.alloc(func);
                 }
+                ast::Stmt::ExternFuncDef(f) => {
+                    let func = self.lower_extern_func(f);
+                    self.module.functions.alloc(func);
+                }
                 ast::Stmt::CheckDef(c) => {
                     let func = self.lower_check(c);
                     self.module.functions.alloc(func);
@@ -84,6 +89,10 @@ impl LoweringContext {
                         match stmt {
                             ast::Stmt::FuncDef(f) => {
                                 let func = self.lower_func(f);
+                                self.module.functions.alloc(func);
+                            }
+                            ast::Stmt::ExternFuncDef(f) => {
+                                let func = self.lower_extern_func(f);
                                 self.module.functions.alloc(func);
                             }
                             ast::Stmt::CheckDef(c) => {
@@ -177,6 +186,15 @@ impl LoweringContext {
         let name_span = c.name().map(|t| t.text_range());
         let visibility = visibility_for_node_default(c.syntax());
         let type_params = c.type_params().map(|t| SmolStr::new(t.text())).collect();
+        let layout = c.layout_clause().and_then(|clause| {
+            clause.abi_string().map(|token| {
+                let abi = token.text().trim_matches('"');
+                ClassLayout {
+                    abi: SmolStr::new(abi),
+                    abi_span: Some(token.text_range()),
+                }
+            })
+        });
         let implements = c
             .is_a()
             .map(|t| SmolStr::new(t.text()))
@@ -238,9 +256,28 @@ impl LoweringContext {
             name_span,
             visibility,
             type_params,
+            layout,
             fields,
             methods,
             implements,
+        }
+    }
+
+    fn lower_extern_func(&mut self, f: ast::ExternFuncDef) -> Function {
+        let name = f.name().map(|t| SmolStr::new(t.text())).unwrap_or_default();
+        let name_span = f.name().map(|t| t.text_range());
+        let visibility = visibility_for_node_default(f.syntax());
+        let params = f.params().map(|p| self.lower_param(p)).collect();
+        let ret_type = f.ret_type().map(|t| self.lower_type_ref(t));
+
+        Function {
+            name,
+            name_span,
+            visibility,
+            kind: FunctionKind::Extern,
+            params,
+            ret_type,
+            body: None,
         }
     }
 
@@ -690,6 +727,10 @@ impl BodyLoweringContext {
                         self.alloc_expr(Expr::Literal(Literal::Nil), self.empty_span())
                     });
                 Stmt::Defer { expr }
+            }
+            ast::Stmt::UnsafeStmt(u) => {
+                let body = self.lower_block(u.block());
+                Stmt::Unsafe { body }
             }
             ast::Stmt::OptimizeStmt(o) => {
                 let objective = o

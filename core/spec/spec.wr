@@ -39,7 +39,7 @@ so: Wrela Language Spec (Runnable)
     Keywords (current):
     A An has can checks must to check if while for in return break continue match otherwise
     error crash true false nothing and or not await detach spawn fire optimize use
-    from private its it mutable assert derives is either defer ignore capture given require
+    from private its it mutable assert derives is either defer ignore capture given require unsafe extern
     
     Symbols and operators:
     : ( ) [ ] { } . ... , @ ->
@@ -339,7 +339,7 @@ to test_class_field_defaults() -> Nothing:
 
 
 so: ------------------------------------------------------------
-    7b) Enums, interfaces, generics, and defer
+    7b) Enums, interfaces, generics, defer, and unsafe
     
     - Enums use `A Name is either:` with variants as identifiers or constructors.
     - Enum constructor syntax: `Name.Variant(...)` or `Name.Variant` for zero-arg variants.
@@ -348,12 +348,28 @@ so: ------------------------------------------------------------
     - Interfaces cannot define fields, derives, or method bodies.
     - Generic type parameters are declared as `A Box[T]:` and instantiated with `Box[Integer](...)`.
     - `defer expr` runs on all return paths in LIFO order, after the return value is computed.
+    - `unsafe:` opens a block where unsafe intrinsics are permitted.
+    - `extern to name(...) -> Type` declares a foreign function without a body.
+    - `extern` calls are only permitted inside `unsafe:` blocks.
+    - A layout clause of `laid out in memory as "c"` may appear in a class body
+      before any `has` blocks and only once per class.
+    - Allocation contexts are selected with `__wr_allocator_new`,
+      `__wr_allocator_enter`, `__wr_allocator_exit`, and `__wr_allocator_enter_global`.
+      List/map/string/bytes allocations use the current arena when one is set,
+      otherwise they fall back to the global allocator.
+    - `__wr_get_size_of` and `__wr_get_alignment_of` are defined only for
+      Pointer values, fixed-width integers, and Boolean.
     
 
 A Status is either:
     Pending
     Processing(worker_id: Integer)
     Done(result: String)
+
+A MemoryOrder is either:
+    Acquire
+    Release
+    Relaxed
 
 A Box[T]:
     has:
@@ -400,6 +416,117 @@ to test_defer_lifo() -> Nothing:
     c = Counter(value=0)
     bump(counter=c)
     assert value c.value == 3
+
+to test_unsafe_pointer_intrinsics() -> Nothing:
+    unsafe:
+        ptr = __wr_convert_integer_to_pointer(64)
+        ptr2 = __wr_offset_pointer(ptr, 8)
+        val = __wr_convert_pointer_to_integer(ptr2)
+        assert value val == 72
+        size = __wr_get_size_of(ptr)
+        align = __wr_get_alignment_of(ptr)
+        assert value size == 8
+        assert value align == 8
+
+to test_unsafe_memory_intrinsics() -> Nothing:
+    unsafe:
+        left = 111
+        right = 222
+        left_ptr = __wr_get_address_of(left)
+        right_ptr = __wr_get_address_of(right)
+        __wr_copy_memory(right_ptr, left_ptr, 8)
+        cmp1 = __wr_compare_memory(left_ptr, right_ptr, 8)
+        assert value cmp1 == 0
+        __wr_fill_memory(left_ptr, 0, 8)
+        cmp2 = __wr_compare_memory(left_ptr, right_ptr, 8)
+        assert value cmp2 != 0
+
+A SocketAddress:
+    laid out in memory as "c"
+    has:
+        family: Unsigned16
+        port: Unsigned16
+        address: Unsigned32
+
+extern to read_clock_ns() -> Unsigned64
+
+to test_allocator_context_default_arena() -> Nothing:
+    arena = __wr_allocator_new(1024)
+    prev = __wr_allocator_enter(arena)
+    list = [1, 2, 3]
+    assert value __wr_is_arena_value(list) == true
+    __wr_allocator_exit(prev)
+
+to test_allocator_context_global_escape() -> Nothing:
+    arena = __wr_allocator_new(1024)
+    prev = __wr_allocator_enter(arena)
+    global_prev = __wr_allocator_enter_global()
+    list = [1, 2, 3]
+    assert value __wr_is_arena_value(list) == false
+    __wr_allocator_exit(global_prev)
+    __wr_allocator_exit(prev)
+
+to atomic_ops_unsigned32(start: Unsigned32) -> Nothing:
+    unsafe:
+        value = start
+        ptr = __wr_get_address_of(value)
+        atomic = __wr_atomic_from_pointer(ptr)
+        __wr_atomic_store(atomic, start, MemoryOrder.Release)
+        loaded = __wr_atomic_load(atomic, MemoryOrder.Acquire)
+        assert value loaded == start
+        prev = __wr_atomic_fetch_add(atomic, 41, MemoryOrder.Relaxed)
+        assert value prev == start
+        updated = __wr_atomic_load(atomic, MemoryOrder.Acquire)
+        assert value updated == 42
+        swapped = __wr_atomic_compare_exchange(
+            atomic,
+            42,
+            7,
+            MemoryOrder.Acquire,
+            MemoryOrder.Relaxed
+        )
+        assert value swapped == true
+        failed = __wr_atomic_compare_exchange(
+            atomic,
+            42,
+            9,
+            MemoryOrder.Acquire,
+            MemoryOrder.Relaxed
+        )
+        assert value failed == false
+
+to atomic_ops_unsigned64(start: Unsigned64) -> Nothing:
+    unsafe:
+        value = start
+        ptr = __wr_get_address_of(value)
+        atomic = __wr_atomic_from_pointer(ptr)
+        __wr_atomic_store(atomic, start, MemoryOrder.Release)
+        loaded = __wr_atomic_load(atomic, MemoryOrder.Acquire)
+        assert value loaded == start
+        prev = __wr_atomic_fetch_add(atomic, 41, MemoryOrder.Relaxed)
+        assert value prev == start
+        updated = __wr_atomic_load(atomic, MemoryOrder.Acquire)
+        assert value updated == 42
+        swapped = __wr_atomic_compare_exchange(
+            atomic,
+            42,
+            7,
+            MemoryOrder.Acquire,
+            MemoryOrder.Relaxed
+        )
+        assert value swapped == true
+        failed = __wr_atomic_compare_exchange(
+            atomic,
+            42,
+            9,
+            MemoryOrder.Acquire,
+            MemoryOrder.Relaxed
+        )
+        assert value failed == false
+
+to test_atomic_operations() -> Nothing:
+    atomic_ops_unsigned32(1)
+    atomic_ops_unsigned64(1)
 
 
 so: ------------------------------------------------------------
@@ -603,7 +730,11 @@ so: ------------------------------------------------------------
     13) Types (built-in and parameterized)
     
     Built-in types (by name):
-    Integer, Float, Number, Boolean, String, Bytes, Nothing, Error
+    Integer, Float, Number, Boolean, String, Bytes, Nothing, Error,
+    Pointer,
+    Unsigned8, Unsigned16, Unsigned32, Unsigned64,
+    Signed8, Signed16, Signed32, Signed64,
+    MemoryOrder
     
     Generic type constructors:
     List[T]
@@ -611,6 +742,8 @@ so: ------------------------------------------------------------
     Result[Ok, Err]  (Result[Ok] defaults Err to Error)
     Actor[T]
     Pending[T]
+    Pointer[T]
+    Atomic[T]
     
     Type inference (high-level):
     - Numeric literals infer Integer or Float
@@ -630,11 +763,21 @@ so: ------------------------------------------------------------
     stdlib provides ergonomic wrappers.
     
     FFI note:
-    - The language does not support user-defined foreign function interfaces.
-    - Native integrations are provided via standard packages or the runtime/stdlib.
+    - `extern` declarations define foreign functions with the platform C ABI.
+    - `extern` calls must occur inside `unsafe:` blocks.
+    - Use fixed-width integers (`Unsigned8`/`Signed8` through `Unsigned64`/`Signed64`),
+      `Boolean`, and `Pointer` for ABI-stable signatures.
+    - On Linux and macOS, the calling convention is the system C ABI.
     
     Builtin functions (core language builtins):
-    core: __wr_assert_err, __wr_print
+    core: __wr_assert_err, __wr_print,
+          __wr_convert_integer_to_pointer, __wr_convert_pointer_to_integer,
+          __wr_offset_pointer, __wr_get_size_of, __wr_get_alignment_of, __wr_get_address_of,
+          __wr_copy_memory, __wr_fill_memory, __wr_compare_memory,
+          __wr_allocator_new, __wr_allocator_enter, __wr_allocator_enter_global,
+          __wr_allocator_exit, __wr_is_arena_value,
+          __wr_atomic_from_pointer, __wr_atomic_load, __wr_atomic_store,
+          __wr_atomic_fetch_add, __wr_atomic_compare_exchange
     parse: __wr_parse_int, __wr_parse_float
     io: __wr_read_file, __wr_write_file
     bytes: __wr_bytes_from_string, __wr_bytes_to_string, __wr_bytes_len
@@ -692,6 +835,8 @@ so: ------------------------------------------------------------
     - `error` only allowed in Result-returning functions
     - `ignore result` requires a Result value
     - `capture` requires a Result value
+    - unsafe intrinsics require an `unsafe:` block
+    - `extern` calls require an `unsafe:` block
     - `otherwise` requires a Result LHS
     - actor method calls must be awaited or fired
     - async methods require actor instances

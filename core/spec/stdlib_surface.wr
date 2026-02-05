@@ -26,6 +26,18 @@ use:
     parse_float
 from parse
 
+use:
+    convert_integer_to_pointer,
+    convert_pointer_to_integer,
+    offset_pointer,
+    get_size_of,
+    get_alignment_of,
+    get_address_of,
+    copy_memory,
+    fill_memory,
+    compare_memory
+from memory
+
 
 so: ------------------------------------------------------------
 so: 1) Bytes helpers
@@ -67,7 +79,25 @@ to test_parse_integer_and_float() -> Nothing:
 
 
 so: ------------------------------------------------------------
-so: 5) Stdlib types and classes
+so: 5) Memory helpers (unsafe)
+
+
+to test_memory_helpers() -> Nothing:
+    unsafe:
+        left = 111
+        right = 222
+        left_ptr = get_address_of(left)
+        right_ptr = get_address_of(right)
+        copy_memory(right_ptr, left_ptr, 8)
+        assert value compare_memory(left_ptr, right_ptr, 8) == 0
+        fill_memory(left_ptr, 0, 8)
+        assert value compare_memory(left_ptr, right_ptr, 8) != 0
+        assert value get_size_of(left_ptr) == 8
+        assert value get_alignment_of(left_ptr) == 8
+
+
+so: ------------------------------------------------------------
+so: 6) Stdlib types and classes
 so:
 so: The following types/classes are part of the public stdlib surface.
 so: This spec does not attempt to exhaustively test them.

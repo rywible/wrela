@@ -1115,6 +1115,17 @@ fn is_builtin_type_name(name: &SmolStr) -> bool {
             | "String"
             | "Nothing"
             | "Bytes"
+            | "Pointer"
+            | "Atomic"
+            | "Unsigned8"
+            | "Unsigned16"
+            | "Unsigned32"
+            | "Unsigned64"
+            | "Signed8"
+            | "Signed16"
+            | "Signed32"
+            | "Signed64"
+            | "MemoryOrder"
             | "List"
             | "Map"
             | "Result"
@@ -1136,6 +1147,25 @@ fn is_builtin_value_name(name: &SmolStr) -> bool {
         name.as_str(),
         "__wr_assert_err"
             | "__wr_print"
+            | "__wr_convert_integer_to_pointer"
+            | "__wr_convert_pointer_to_integer"
+            | "__wr_offset_pointer"
+            | "__wr_get_size_of"
+            | "__wr_get_alignment_of"
+            | "__wr_get_address_of"
+            | "__wr_copy_memory"
+            | "__wr_fill_memory"
+            | "__wr_compare_memory"
+            | "__wr_allocator_new"
+            | "__wr_allocator_enter"
+            | "__wr_allocator_enter_global"
+            | "__wr_allocator_exit"
+            | "__wr_is_arena_value"
+            | "__wr_atomic_from_pointer"
+            | "__wr_atomic_load"
+            | "__wr_atomic_store"
+            | "__wr_atomic_fetch_add"
+            | "__wr_atomic_compare_exchange"
             | "__wr_parse_int"
             | "__wr_parse_float"
             | "__wr_read_file"
@@ -1287,7 +1317,7 @@ fn collect_used_in_block(
                 }
                 collect_used_in_expr(body, *value, scope, used);
             }
-            Stmt::Optimize { body: opt_body, .. } => {
+            Stmt::Optimize { body: opt_body, .. } | Stmt::Unsafe { body: opt_body } => {
                 scope.enter();
                 collect_used_in_block(body, opt_body, scope, used);
                 scope.exit();

@@ -1,0 +1,46 @@
+to convert_integer_to_pointer(value: Integer) -> Pointer[Nothing]:
+    return __wr_convert_integer_to_pointer(value)
+
+
+to convert_pointer_to_integer(value: Pointer[Nothing]) -> Integer:
+    return __wr_convert_pointer_to_integer(value)
+
+
+to offset_pointer(pointer: Pointer[Nothing], offset_in_bytes: Integer) -> Pointer[Nothing]:
+    return __wr_offset_pointer(pointer, offset_in_bytes)
+
+
+to get_size_of(value: Any) -> Integer:
+    return __wr_get_size_of(value)
+
+
+to get_alignment_of(value: Any) -> Integer:
+    return __wr_get_alignment_of(value)
+
+
+to get_address_of(value: Any) -> Pointer[Nothing]:
+    return __wr_get_address_of(value)
+
+
+to copy_memory(
+    destination_pointer: Pointer[Nothing],
+    source_pointer: Pointer[Nothing],
+    length_in_bytes: Integer
+) -> Nothing:
+    __wr_copy_memory(destination_pointer, source_pointer, length_in_bytes)
+
+
+to fill_memory(
+    pointer: Pointer[Nothing],
+    byte_value: Integer,
+    length_in_bytes: Integer
+) -> Nothing:
+    __wr_fill_memory(pointer, byte_value, length_in_bytes)
+
+
+to compare_memory(
+    left_pointer: Pointer[Nothing],
+    right_pointer: Pointer[Nothing],
+    length_in_bytes: Integer
+) -> Integer:
+    return __wr_compare_memory(left_pointer, right_pointer, length_in_bytes)

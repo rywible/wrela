@@ -107,6 +107,7 @@ pub fn lower_module_with_types(module: &Module, type_info: Option<&TypeInfo>) ->
     }
 
     let mut functions = Vec::new();
+    let mut extern_functions = Vec::new();
     let mut function_names: HashSet<SmolStr> = module
         .functions
         .iter()
@@ -137,6 +138,18 @@ pub fn lower_module_with_types(module: &Module, type_info: Option<&TypeInfo>) ->
         })
         .collect();
     for (_idx, func) in module.functions.iter() {
+        if func.kind == FunctionKind::Extern {
+            extern_functions.push(MirExternFunction {
+                name: func.name.clone(),
+                params: func
+                    .params
+                    .iter()
+                    .map(|param| extern_type_from_ref(param.ty.as_ref()))
+                    .collect(),
+                ret: extern_type_from_ref(func.ret_type.as_ref()),
+            });
+            continue;
+        }
         let Some(body) = &func.body else {
             continue;
         };
@@ -179,6 +192,27 @@ pub fn lower_module_with_types(module: &Module, type_info: Option<&TypeInfo>) ->
         functions,
         type_tags,
         classes,
+        extern_functions,
+    }
+}
+
+fn extern_type_from_ref(ty: Option<&hir::TypeRef>) -> ExternType {
+    let Some(ty) = ty else {
+        return ExternType::Unknown;
+    };
+    match ty.name.as_str() {
+        "Unsigned8" => ExternType::Unsigned8,
+        "Unsigned16" => ExternType::Unsigned16,
+        "Unsigned32" => ExternType::Unsigned32,
+        "Unsigned64" => ExternType::Unsigned64,
+        "Signed8" => ExternType::Signed8,
+        "Signed16" => ExternType::Signed16,
+        "Signed32" => ExternType::Signed32,
+        "Signed64" => ExternType::Signed64,
+        "Boolean" => ExternType::Boolean,
+        "Pointer" => ExternType::Pointer,
+        "Nothing" => ExternType::Void,
+        _ => ExternType::Unknown,
     }
 }
 
@@ -479,6 +513,13 @@ impl FunctionLowerer {
             .unwrap_or(MirType::Unknown)
     }
 
+    fn expr_type_info(&self, expr_id: hir::Idx<Expr>) -> Option<Type> {
+        self.type_info
+            .as_ref()
+            .and_then(|info| info.expr_types.get(&expr_id.into_raw()))
+            .cloned()
+    }
+
     fn new_temp_for_expr(&mut self, expr_id: hir::Idx<Expr>) -> TempId {
         let ty = self.expr_type(expr_id);
         self.new_temp(ty)
@@ -692,6 +733,11 @@ impl FunctionLowerer {
             } => {
                 self.enter_scope();
                 self.lower_stmt_block(body, optimize_body);
+                self.exit_scope();
+            }
+            HirStmt::Unsafe { body: unsafe_body } => {
+                self.enter_scope();
+                self.lower_stmt_block(body, unsafe_body);
                 self.exit_scope();
             }
             HirStmt::If {
@@ -1752,6 +1798,32 @@ impl FunctionLowerer {
                 Value::Temp(temp)
             }
             Expr::Call { callee, args, .. } | Expr::GivenCall { callee, args, .. } => {
+                if let Expr::Variable(name) = &body.exprs[*callee] {
+                    if name.as_str() == "__wr_get_size_of" || name.as_str() == "__wr_get_alignment_of"
+                    {
+                        let mut target_expr = None;
+                        for arg in args {
+                            match arg {
+                                hir::Arg::Positional { value, .. }
+                                | hir::Arg::Named { value, .. } => {
+                                    target_expr = Some(*value);
+                                    break;
+                                }
+                            }
+                        }
+                        let size = target_expr
+                            .and_then(|expr_id| self.expr_type_info(expr_id))
+                            .and_then(|ty| {
+                                if name.as_str() == "__wr_get_size_of" {
+                                    size_of_type(&ty)
+                                } else {
+                                    alignment_of_type(&ty)
+                                }
+                            })
+                            .unwrap_or(0);
+                        return Value::Const(Literal::Integer(size));
+                    }
+                }
                 if let Some((class_name, class_id)) =
                     self.resolve_class_init_target(body, *callee)
                 {
@@ -2801,6 +2873,8 @@ fn mir_type_from_type(ty: &Type) -> MirType {
         Type::Boolean => MirType::Boolean,
         Type::String => MirType::String,
         Type::Nil => MirType::Nil,
+        Type::Pointer(_) => MirType::Integer,
+        Type::Atomic(_) => MirType::Integer,
         Type::Named(name, _) => MirType::Named(name.clone()),
         Type::Param(_) => MirType::Unknown,
         Type::Result(ok, err) => MirType::Result(
@@ -2958,6 +3032,25 @@ fn builtin_function_names() -> Vec<SmolStr> {
     vec![
         SmolStr::new("__wr_assert_err"),
         SmolStr::new("__wr_print"),
+        SmolStr::new("__wr_convert_integer_to_pointer"),
+        SmolStr::new("__wr_convert_pointer_to_integer"),
+        SmolStr::new("__wr_offset_pointer"),
+        SmolStr::new("__wr_get_size_of"),
+        SmolStr::new("__wr_get_alignment_of"),
+        SmolStr::new("__wr_get_address_of"),
+        SmolStr::new("__wr_copy_memory"),
+        SmolStr::new("__wr_fill_memory"),
+        SmolStr::new("__wr_compare_memory"),
+        SmolStr::new("__wr_allocator_new"),
+        SmolStr::new("__wr_allocator_enter"),
+        SmolStr::new("__wr_allocator_enter_global"),
+        SmolStr::new("__wr_allocator_exit"),
+        SmolStr::new("__wr_is_arena_value"),
+        SmolStr::new("__wr_atomic_from_pointer"),
+        SmolStr::new("__wr_atomic_load"),
+        SmolStr::new("__wr_atomic_store"),
+        SmolStr::new("__wr_atomic_fetch_add"),
+        SmolStr::new("__wr_atomic_compare_exchange"),
         SmolStr::new("__wr_parse_int"),
         SmolStr::new("__wr_parse_float"),
         SmolStr::new("__wr_read_file"),
@@ -3045,4 +3138,34 @@ fn builtin_function_names() -> Vec<SmolStr> {
         SmolStr::new("__wr_http_server_serve_on"),
         SmolStr::new("__wr_http_server_stop"),
     ]
+}
+
+fn size_of_type(ty: &Type) -> Option<i64> {
+    match ty {
+        Type::Pointer(_) => Some(8),
+        Type::Atomic(_) => Some(8),
+        Type::Boolean => Some(1),
+        Type::Named(name, _) => fixed_width_integer_size(name),
+        _ => None,
+    }
+}
+
+fn alignment_of_type(ty: &Type) -> Option<i64> {
+    match ty {
+        Type::Pointer(_) => Some(8),
+        Type::Atomic(_) => Some(8),
+        Type::Boolean => Some(1),
+        Type::Named(name, _) => fixed_width_integer_size(name),
+        _ => None,
+    }
+}
+
+fn fixed_width_integer_size(name: &SmolStr) -> Option<i64> {
+    match name.as_str() {
+        "Unsigned8" | "Signed8" => Some(1),
+        "Unsigned16" | "Signed16" => Some(2),
+        "Unsigned32" | "Signed32" => Some(4),
+        "Unsigned64" | "Signed64" => Some(8),
+        _ => None,
+    }
 }

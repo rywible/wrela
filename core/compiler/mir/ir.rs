@@ -22,6 +22,7 @@ pub struct MirModule {
     pub functions: Vec<MirFunction>,
     pub type_tags: Vec<SmolStr>,
     pub classes: Vec<MirClassInfo>,
+    pub extern_functions: Vec<MirExternFunction>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -49,6 +50,29 @@ pub struct MirFunction {
     pub blocks: Vec<BasicBlock>,
     pub entry: BlockId,
     pub suspendable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MirExternFunction {
+    pub name: SmolStr,
+    pub params: Vec<ExternType>,
+    pub ret: ExternType,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExternType {
+    Unsigned8,
+    Unsigned16,
+    Unsigned32,
+    Unsigned64,
+    Signed8,
+    Signed16,
+    Signed32,
+    Signed64,
+    Boolean,
+    Pointer,
+    Void,
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq)]

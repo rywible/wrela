@@ -94,6 +94,18 @@ pub fn enter(arena: *mut Arena) -> ArenaGuard {
     ArenaGuard { prev }
 }
 
+pub fn set_current(arena: *mut Arena) -> *mut Arena {
+    CURRENT_ARENA.with(|cell| {
+        let prev = cell.get();
+        cell.set(arena);
+        prev
+    })
+}
+
+pub fn new_arena(capacity: usize) -> *mut Arena {
+    Box::into_raw(Box::new(Arena::new(capacity)))
+}
+
 pub fn current() -> Option<*mut Arena> {
     CURRENT_ARENA.with(|cell| {
         let ptr = cell.get();

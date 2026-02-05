@@ -54,3 +54,6 @@
 - Use correct English articles in Wrela identifiers and docs. Choose `A` vs `An` based on pronunciation, not the letter.
 - Prefer explicit imports over wildcard imports. Import only the names you use.
 - Tests should be run with sane timeouts. If a test is hanging, it is most likely not slow, there is most likely an infinite loop in the code that you've produced. Err on finding bugs rather than just thinking tests are slow.
+- If you change the spec, before exiting, you must verify that spec tests pass by running: `cargo run -p wrela -- test`
+- Before exiting, you must verify that the program still compiles and that any rust tests pass with `cargo test`
+- When you are executing a linear issue, don't come back and ask me my opinion. Execute the AC as written. Don't cheat or take shortcuts. If it's bigger scope, that's ok. The AC's are written as intended.

@@ -100,6 +100,10 @@ pub enum Token {
     Given,
     #[strum(serialize = "require")]
     Require,
+    #[strum(serialize = "unsafe")]
+    Unsafe,
+    #[strum(serialize = "extern")]
+    Extern,
 
     // Literals
     #[strum(serialize = "Identifier")]
@@ -260,8 +264,10 @@ impl Token {
                 | Token::Capture
                 | Token::Check
                 | Token::Checks
-                | Token::Given
-                | Token::Require
+            | Token::Given
+            | Token::Require
+            | Token::Unsafe
+            | Token::Extern
         )
     }
 

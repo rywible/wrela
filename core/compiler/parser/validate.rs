@@ -26,7 +26,7 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
     }
     for node in root.descendants() {
         match node.kind() {
-            SyntaxKind::FuncDef | SyntaxKind::CheckDef => {
+            SyntaxKind::FuncDef | SyntaxKind::ExternFuncDef | SyntaxKind::CheckDef => {
                 if !has_token(&node, SyntaxKind::Ident) {
                     errors.push(ValidationError {
                         message: "function definition requires a name".to_string(),
@@ -52,6 +52,8 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                 let mut has_must = false;
                 let mut has_is_a = false;
                 let mut saw_class_item = false;
+                let mut layout_clause_count = 0;
+                let mut saw_has = false;
                 for child in node.children() {
                     match child.kind() {
                         SyntaxKind::IsAClause => {
@@ -70,12 +72,25 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                             }
                             has_is_a = true;
                         }
+                        SyntaxKind::LayoutClause => {
+                            layout_clause_count += 1;
+                            if saw_has {
+                                errors.push(ValidationError {
+                                    message: "layout clause must appear before 'has'".to_string(),
+                                    span: span_for_node(&child),
+                                });
+                            }
+                            saw_class_item = true;
+                        }
                         SyntaxKind::HasBlock
                         | SyntaxKind::MethodDef
                         | SyntaxKind::CheckMethodDef
                         | SyntaxKind::MustMethodDef
                         | SyntaxKind::DeriveDef
                         | SyntaxKind::PrivateBlock => {
+                            if child.kind() == SyntaxKind::HasBlock {
+                                saw_has = true;
+                            }
                             saw_class_item = true;
                             if child.kind() == SyntaxKind::MustMethodDef {
                                 has_must = true;
@@ -83,6 +98,12 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                         }
                         _ => {}
                     }
+                }
+                if layout_clause_count > 1 {
+                    errors.push(ValidationError {
+                        message: "only one layout clause is allowed".to_string(),
+                        span: span_for_node(&node),
+                    });
                 }
                 if has_must {
                     if has_is_a {
@@ -99,6 +120,7 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                             | SyntaxKind::MethodDef
                             | SyntaxKind::CheckMethodDef
                             | SyntaxKind::DeriveDef
+                            | SyntaxKind::LayoutClause
                             | SyntaxKind::PrivateBlock => {
                                 errors.push(ValidationError {
                                     message:
@@ -221,7 +243,10 @@ or inside 'has' blocks"
                             for stmt in child.children() {
                                 if !matches!(
                                     stmt.kind(),
-                                    SyntaxKind::ClassDef | SyntaxKind::FuncDef | SyntaxKind::CheckDef
+                                    SyntaxKind::ClassDef
+                                        | SyntaxKind::FuncDef
+                                        | SyntaxKind::ExternFuncDef
+                                        | SyntaxKind::CheckDef
                                 ) {
                                     errors.push(ValidationError {
                                         message: "private blocks at the top level may only \
@@ -734,6 +759,54 @@ to f() -> Integer:
             errors
                 .iter()
                 .any(|e| e.message == "invalid numeric literal")
+        );
+    }
+
+    #[test]
+    fn test_layout_clause_before_has_ok() {
+        let text = "\
+A SocketAddress:
+    laid out in memory as \"c\"
+    has:
+        family: Unsigned16
+";
+        let root = parse(text);
+        let errors = validate(&root);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_layout_clause_after_has_errors() {
+        let text = "\
+A SocketAddress:
+    has:
+        family: Unsigned16
+    laid out in memory as \"c\"
+";
+        let root = parse(text);
+        let errors = validate(&root);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message == "layout clause must appear before 'has'")
+        );
+    }
+
+    #[test]
+    fn test_multiple_layout_clause_errors() {
+        let text = "\
+A SocketAddress:
+    laid out in memory as \"c\"
+    laid out in memory as \"c\"
+    has:
+        family: Unsigned16
+";
+        let root = parse(text);
+        let errors = validate(&root);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message == "only one layout clause is allowed")
         );
     }
 }
