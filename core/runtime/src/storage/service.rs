@@ -126,6 +126,26 @@ tokio::task_local! {
     static STORAGE_OVERRIDE: Arc<StorageService>;
 }
 
+#[cfg(any(test, feature = "test-utils"))]
+pub(crate) fn capture_storage_override() -> Option<Arc<StorageService>> {
+    STORAGE_OVERRIDE.try_with(Arc::clone).ok()
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+pub(crate) async fn with_storage_override_if_present<F, R>(
+    service: Option<Arc<StorageService>>,
+    fut: F,
+) -> R
+where
+    F: Future<Output = R>,
+{
+    if let Some(service) = service {
+        STORAGE_OVERRIDE.scope(service, fut).await
+    } else {
+        fut.await
+    }
+}
+
 impl StorageService {
     pub async fn dispatch(req: StorageRequest) -> Result<StorageResponse, StorageError> {
         #[cfg(any(test, feature = "test-utils"))]
@@ -331,7 +351,7 @@ impl StorageService {
                 realtime,
                 config.peer_token.clone(),
             )
-                .await?;
+            .await?;
             handle
         } else {
             tokio::spawn(async {})
@@ -1156,7 +1176,9 @@ async fn forward_read(addr: String, key: Vec<u8>) -> Result<Option<Vec<u8>>, Sto
     if let Some(token) = storage_config().peer_token {
         request = request.header("x-wrela-peer-token", token);
     }
-    let resp = request.send().await
+    let resp = request
+        .send()
+        .await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
     let envelope: RpcEnvelope<StorageReadResponse> = resp
         .json()
@@ -1184,7 +1206,9 @@ async fn forward_read_version(
     if let Some(token) = storage_config().peer_token {
         request = request.header("x-wrela-peer-token", token);
     }
-    let resp = request.send().await
+    let resp = request
+        .send()
+        .await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
     let envelope: RpcEnvelope<StorageReadVersionResponse> = resp
         .json()
@@ -1221,7 +1245,9 @@ async fn forward_scan(
     if let Some(token) = storage_config().peer_token {
         request = request.header("x-wrela-peer-token", token);
     }
-    let resp = request.send().await
+    let resp = request
+        .send()
+        .await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
     let envelope: RpcEnvelope<StorageScanResponse> = resp
         .json()
@@ -1260,7 +1286,9 @@ async fn forward_prefix(
     if let Some(token) = storage_config().peer_token {
         request = request.header("x-wrela-peer-token", token);
     }
-    let resp = request.send().await
+    let resp = request
+        .send()
+        .await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
     let envelope: RpcEnvelope<StoragePrefixResponse> = resp
         .json()

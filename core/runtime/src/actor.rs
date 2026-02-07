@@ -1,14 +1,14 @@
+use crate::arena;
 use crate::config::{
     actor_config_for_objective, normalize_objective, normalize_pool_size, pool_queue_cap_for_policy,
 };
-use crate::arena;
+#[cfg(feature = "metrics")]
+use crate::metrics::inc_alloc_pending;
 use crate::metrics::{
     inc_mailbox_dequeue, inc_mailbox_enqueue_fail, inc_mailbox_enqueue_ok, inc_messages_dropped,
     inc_messages_dropped_paused, inc_messages_sent, inc_pending_dropped, inc_pending_resolved,
     update_mailbox_high_water,
 };
-#[cfg(feature = "metrics")]
-use crate::metrics::inc_alloc_pending;
 use crate::object::ObjHeader;
 use crate::result;
 use crate::scheduler;
@@ -255,6 +255,28 @@ pub(crate) fn runtime_spawn<F>(fut: F)
 where
     F: Future<Output = ()> + Send + 'static,
 {
+    #[cfg(any(test, feature = "test-utils"))]
+    {
+        let storage_config = crate::storage::config::capture_storage_config_override();
+        let storage_service = crate::storage::service::capture_storage_override();
+        runtime().spawn(async move {
+            crate::storage::config::with_storage_config_override_if_present(
+                storage_config,
+                async move {
+                    crate::storage::service::with_storage_override_if_present(
+                        storage_service,
+                        async move {
+                            fut.await;
+                        },
+                    )
+                    .await;
+                },
+            )
+            .await;
+        });
+        return;
+    }
+    #[cfg(not(any(test, feature = "test-utils")))]
     runtime().spawn(fut);
 }
 
@@ -883,10 +905,7 @@ fn pool_send(
         }
         let (state, allocated) = take_pending_state();
 
-        if (*pool).pool_size == 1
-            && !(*pool).drop_on_full
-            && (*pool).queue.len() == 0
-        {
+        if (*pool).pool_size == 1 && !(*pool).drop_on_full && (*pool).queue.len() == 0 {
             let Some(msg) =
                 build_message_local(actor, method_id, argc, argv_ptr, Some(state.clone()))
             else {
@@ -944,10 +963,7 @@ fn pool_fire(pool: *const PoolHandle, method_id: u32, argc: usize, argv_ptr: *co
             inc_messages_dropped_paused();
             return;
         }
-        if (*pool).pool_size == 1
-            && !(*pool).drop_on_full
-            && (*pool).queue.len() == 0
-        {
+        if (*pool).pool_size == 1 && !(*pool).drop_on_full && (*pool).queue.len() == 0 {
             let Some(msg) = build_message_local(actor, method_id, argc, argv_ptr, None) else {
                 return;
             };

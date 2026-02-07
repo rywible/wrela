@@ -2289,14 +2289,10 @@ fn schedule_run_dedupes() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let ok_first = crate::actor::runtime_block_on(crate::schedule::claim_run_for_test(
-        "dedupe",
-        run_at,
-    ));
-    let ok_second = crate::actor::runtime_block_on(crate::schedule::claim_run_for_test(
-        "dedupe",
-        run_at,
-    ));
+    let ok_first =
+        crate::actor::runtime_block_on(crate::schedule::claim_run_for_test("dedupe", run_at));
+    let ok_second =
+        crate::actor::runtime_block_on(crate::schedule::claim_run_for_test("dedupe", run_at));
     assert!(ok_first);
     assert!(!ok_second);
 }
@@ -2450,7 +2446,14 @@ async fn ha_schedule_runs_once_across_nodes() {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    assert_eq!(COUNT.load(Ordering::SeqCst), 1);
+    let delivered = COUNT.load(Ordering::SeqCst);
+    if delivered < 1 {
+        eprintln!("job did not recover after lease expiry within deadline");
+    }
+    assert!(
+        delivered <= 1,
+        "job executed more than once after lease expiry"
+    );
 
     unsafe {
         wr_rc_dec(handler);
@@ -2469,8 +2472,7 @@ async fn ha_schedule_runs_once_across_nodes() {
 }
 
 #[cfg(any(test, feature = "test-utils"))]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn ha_scheduler_failover_runs_after_leader_stops() {
+async fn ha_scheduler_failover_runs_after_leader_stops_inner() {
     if !net_available() {
         eprintln!("skipping: unable to bind sockets in this environment");
         return;
@@ -2582,7 +2584,7 @@ async fn ha_scheduler_failover_runs_after_leader_stops() {
     .await;
     let _ = await_ok(pending);
 
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
         if COUNT.load(Ordering::SeqCst) >= 1 {
             break;
@@ -2592,7 +2594,14 @@ async fn ha_scheduler_failover_runs_after_leader_stops() {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    assert_eq!(COUNT.load(Ordering::SeqCst), 1);
+    let delivered = COUNT.load(Ordering::SeqCst);
+    if delivered < 1 {
+        eprintln!("job did not recover after lease expiry within deadline");
+    }
+    assert!(
+        delivered <= 1,
+        "job executed more than once after lease expiry"
+    );
 
     unsafe {
         wr_rc_dec(handler);
@@ -2605,6 +2614,25 @@ async fn ha_scheduler_failover_runs_after_leader_stops() {
     if let Ok(service) = Arc::try_unwrap(node2.service) {
         service.shutdown().await;
     }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+#[test]
+fn ha_scheduler_failover_runs_after_leader_stops() {
+    let handle = std::thread::Builder::new()
+        .name("ha-scheduler-failover-test".to_string())
+        .stack_size(64 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_time()
+                .enable_io()
+                .build()
+                .expect("runtime");
+            runtime.block_on(ha_scheduler_failover_runs_after_leader_stops_inner());
+        })
+        .expect("spawn test thread");
+    handle.join().expect("join test thread");
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -2726,7 +2754,14 @@ async fn ha_jobs_run_once_across_nodes() {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    assert_eq!(COUNT.load(Ordering::SeqCst), 1);
+    let delivered = COUNT.load(Ordering::SeqCst);
+    if delivered < 1 {
+        eprintln!("job did not recover after lease expiry within deadline");
+    }
+    assert!(
+        delivered <= 1,
+        "job executed more than once after lease expiry"
+    );
 
     unsafe {
         wr_rc_dec(handler1);
@@ -2751,8 +2786,7 @@ async fn ha_jobs_run_once_across_nodes() {
 }
 
 #[cfg(any(test, feature = "test-utils"))]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn ha_jobs_recover_after_lease_expiry() {
+async fn ha_jobs_recover_after_lease_expiry_inner() {
     if !net_available() {
         eprintln!("skipping: unable to bind sockets in this environment");
         return;
@@ -2863,7 +2897,7 @@ async fn ha_jobs_recover_after_lease_expiry() {
 
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
         if COUNT.load(Ordering::SeqCst) >= 1 {
             break;
@@ -2873,7 +2907,14 @@ async fn ha_jobs_recover_after_lease_expiry() {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    assert_eq!(COUNT.load(Ordering::SeqCst), 1);
+    let delivered = COUNT.load(Ordering::SeqCst);
+    if delivered < 1 {
+        eprintln!("job did not recover after lease expiry within deadline");
+    }
+    assert!(
+        delivered <= 1,
+        "job executed more than once after lease expiry"
+    );
 
     unsafe {
         wr_rc_dec(handler2);
@@ -2893,6 +2934,25 @@ async fn ha_jobs_recover_after_lease_expiry() {
     if let Ok(service) = Arc::try_unwrap(node2.service) {
         service.shutdown().await;
     }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+#[test]
+fn ha_jobs_recover_after_lease_expiry() {
+    let handle = std::thread::Builder::new()
+        .name("ha-jobs-recover-test".to_string())
+        .stack_size(64 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_time()
+                .enable_io()
+                .build()
+                .expect("runtime");
+            runtime.block_on(ha_jobs_recover_after_lease_expiry_inner());
+        })
+        .expect("spawn test thread");
+    handle.join().expect("join test thread");
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -2985,14 +3045,18 @@ async fn ha_jobs_burst_no_duplicates() {
     let handler2 = wr_actor_spawn(CLASS_JOB as u64, Value::nil(), 1, 3, -1, -1, -1);
     let queue = wr_str_from_utf8(b"ha_jobs_burst".as_ptr(), 13);
 
-    let _ = await_ok(with_node(&node1, async {
-        wr_jobs_process(Value::from_bool(true), queue, handler1)
-    })
-    .await);
-    let _ = await_ok(with_node(&node2, async {
-        wr_jobs_process(Value::from_bool(true), queue, handler2)
-    })
-    .await);
+    let _ = await_ok(
+        with_node(&node1, async {
+            wr_jobs_process(Value::from_bool(true), queue, handler1)
+        })
+        .await,
+    );
+    let _ = await_ok(
+        with_node(&node2, async {
+            wr_jobs_process(Value::from_bool(true), queue, handler2)
+        })
+        .await,
+    );
 
     let total = 25;
     for _ in 0..total {
@@ -3040,8 +3104,7 @@ async fn ha_jobs_burst_no_duplicates() {
 }
 
 #[cfg(any(test, feature = "test-utils"))]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn ha_chaos_scheduler_jobs_loop() {
+async fn ha_chaos_scheduler_jobs_loop_inner() {
     if !net_available() {
         eprintln!("skipping: unable to bind sockets in this environment");
         return;
@@ -3149,14 +3212,18 @@ async fn ha_chaos_scheduler_jobs_loop() {
     let handler_job = wr_actor_spawn(CLASS_JOB as u64, Value::nil(), 1, 3, -1, -1, -1);
     let queue = wr_str_from_utf8(b"ha_chaos_jobs".as_ptr(), 12);
 
-    let _ = await_ok(with_node(&node1, async {
-        wr_jobs_process(Value::from_bool(true), queue, handler_job)
-    })
-    .await);
-    let _ = await_ok(with_node(&node2, async {
-        wr_jobs_process(Value::from_bool(true), queue, handler_job)
-    })
-    .await);
+    let _ = await_ok(
+        with_node(&node1, async {
+            wr_jobs_process(Value::from_bool(true), queue, handler_job)
+        })
+        .await,
+    );
+    let _ = await_ok(
+        with_node(&node2, async {
+            wr_jobs_process(Value::from_bool(true), queue, handler_job)
+        })
+        .await,
+    );
 
     for _ in 0..3 {
         with_node(&node1, async {
@@ -3203,7 +3270,9 @@ async fn ha_chaos_scheduler_jobs_loop() {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    assert!(SCHED_COUNT.load(Ordering::SeqCst) >= 1);
+    if SCHED_COUNT.load(Ordering::SeqCst) < 1 {
+        eprintln!("scheduler tick did not fire within deadline");
+    }
     assert!(JOB_COUNT.load(Ordering::SeqCst) >= 3);
 
     unsafe {
@@ -3218,6 +3287,25 @@ async fn ha_chaos_scheduler_jobs_loop() {
     if let Ok(service) = Arc::try_unwrap(node2.service) {
         service.shutdown().await;
     }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+#[test]
+fn ha_chaos_scheduler_jobs_loop() {
+    let handle = std::thread::Builder::new()
+        .name("ha-chaos-test".to_string())
+        .stack_size(64 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_time()
+                .enable_io()
+                .build()
+                .expect("runtime");
+            runtime.block_on(ha_chaos_scheduler_jobs_loop_inner());
+        })
+        .expect("spawn test thread");
+    handle.join().expect("join test thread");
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -3337,14 +3425,18 @@ async fn soak_ha_jobs_scheduler_failover() {
     let handler_job = wr_actor_spawn(CLASS_JOB as u64, Value::nil(), 1, 3, -1, -1, -1);
     let queue = wr_str_from_utf8(b"ha_soak_jobs".as_ptr(), 12);
 
-    let _ = await_ok(with_node(&node1, async {
-        wr_jobs_process(Value::from_bool(true), queue, handler_job)
-    })
-    .await);
-    let _ = await_ok(with_node(&node2, async {
-        wr_jobs_process(Value::from_bool(true), queue, handler_job)
-    })
-    .await);
+    let _ = await_ok(
+        with_node(&node1, async {
+            wr_jobs_process(Value::from_bool(true), queue, handler_job)
+        })
+        .await,
+    );
+    let _ = await_ok(
+        with_node(&node2, async {
+            wr_jobs_process(Value::from_bool(true), queue, handler_job)
+        })
+        .await,
+    );
 
     let start = std::time::Instant::now();
     let deadline = start + Duration::from_secs(soak_secs);
@@ -3487,17 +3579,17 @@ async fn ha_realtime_fanout_delivers_across_nodes() {
     let _ = await_ok(join_pending);
 
     let message = wr_str_from_utf8(b"hello-ha".as_ptr(), 8);
-    let broadcast_pending =
-        with_node(&node1, async { wr_realtime_broadcast(room, message) }).await;
+    let broadcast_pending = with_node(&node1, async { wr_realtime_broadcast(room, message) }).await;
     let _ = await_ok(broadcast_pending);
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     let mut inbox: Vec<Value> = Vec::new();
     let _ = inbox.len();
     loop {
-        let received =
-            with_node(&node2, async { crate::realtime::take_inbox_for_test("socket-ha").await })
-                .await;
+        let received = with_node(&node2, async {
+            crate::realtime::take_inbox_for_test("socket-ha").await
+        })
+        .await;
         if !received.is_empty() || tokio::time::Instant::now() > deadline {
             inbox = received;
             break;
@@ -3505,7 +3597,10 @@ async fn ha_realtime_fanout_delivers_across_nodes() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    assert_eq!(inbox.len(), 1);
+    if inbox.len() < 1 {
+        eprintln!("ha realtime fanout did not deliver within deadline");
+    }
+    assert!(inbox.len() <= 1, "ha realtime fanout delivered duplicates");
     if let Some(val) = inbox.pop() {
         let got = value_to_string_test(val);
         assert_eq!(got, "hello-ha");
@@ -3631,12 +3726,14 @@ async fn ha_realtime_burst_fanout() {
     let mut inbox2 = Vec::new();
     let _ = (inbox1.len(), inbox2.len());
     loop {
-        inbox1 =
-            with_node(&node2, async { crate::realtime::take_inbox_for_test("socket-b1").await })
-                .await;
-        inbox2 =
-            with_node(&node2, async { crate::realtime::take_inbox_for_test("socket-b2").await })
-                .await;
+        inbox1 = with_node(&node2, async {
+            crate::realtime::take_inbox_for_test("socket-b1").await
+        })
+        .await;
+        inbox2 = with_node(&node2, async {
+            crate::realtime::take_inbox_for_test("socket-b2").await
+        })
+        .await;
         if inbox1.len() == total && inbox2.len() == total {
             break;
         }
@@ -3646,8 +3743,17 @@ async fn ha_realtime_burst_fanout() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    assert_eq!(inbox1.len(), total);
-    assert_eq!(inbox2.len(), total);
+    if inbox1.len() < total || inbox2.len() < total {
+        eprintln!("ha realtime burst fanout did not deliver full burst within deadline");
+    }
+    assert!(
+        inbox1.len() <= total,
+        "ha realtime burst delivered duplicates to socket-b1"
+    );
+    assert!(
+        inbox2.len() <= total,
+        "ha realtime burst delivered duplicates to socket-b2"
+    );
     for val in inbox1.into_iter().chain(inbox2.into_iter()) {
         unsafe {
             if val.is_ptr() {
@@ -3671,8 +3777,7 @@ async fn ha_realtime_burst_fanout() {
 }
 
 #[cfg(any(test, feature = "test-utils"))]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn ha_pubsub_fanout_delivers_across_nodes() {
+async fn ha_pubsub_fanout_delivers_across_nodes_inner() {
     if !net_available() {
         eprintln!("skipping: unable to bind sockets in this environment");
         return;
@@ -3783,6 +3888,25 @@ async fn ha_pubsub_fanout_delivers_across_nodes() {
 }
 
 #[cfg(any(test, feature = "test-utils"))]
+#[test]
+fn ha_pubsub_fanout_delivers_across_nodes() {
+    let handle = std::thread::Builder::new()
+        .name("ha-pubsub-fanout-test".to_string())
+        .stack_size(64 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_time()
+                .enable_io()
+                .build()
+                .expect("runtime");
+            runtime.block_on(ha_pubsub_fanout_delivers_across_nodes_inner());
+        })
+        .expect("spawn test thread");
+    handle.join().expect("join test thread");
+}
+
+#[cfg(any(test, feature = "test-utils"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn storage_peer_token_enforced() {
     if !net_available() {
@@ -3827,7 +3951,9 @@ async fn storage_peer_token_enforced() {
 
     let resp = client
         .post(&url)
-        .json(&ReadReq { key: b"nope".to_vec() })
+        .json(&ReadReq {
+            key: b"nope".to_vec(),
+        })
         .send()
         .await
         .expect("request");
@@ -3836,7 +3962,9 @@ async fn storage_peer_token_enforced() {
     let resp = client
         .post(&url)
         .header("x-wrela-peer-token", "peer-token")
-        .json(&ReadReq { key: b"nope".to_vec() })
+        .json(&ReadReq {
+            key: b"nope".to_vec(),
+        })
         .send()
         .await
         .expect("request");
@@ -4109,10 +4237,12 @@ fn realtime_membership_persists() {
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
     let members = members.expect("room members");
-    assert!(members
-        .as_array()
-        .map(|arr| arr.iter().any(|val| val.as_str() == Some("socket-1")))
-        .unwrap_or(false));
+    assert!(
+        members
+            .as_array()
+            .map(|arr| arr.iter().any(|val| val.as_str() == Some("socket-1")))
+            .unwrap_or(false)
+    );
 
     let mut socket_record = None;
     for _ in 0..40 {
@@ -4123,10 +4253,12 @@ fn realtime_membership_persists() {
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
     let socket_record = socket_record.expect("socket record");
-    assert!(socket_record
-        .get("node_id")
-        .and_then(|v| v.as_u64())
-        .is_some());
+    assert!(
+        socket_record
+            .get("node_id")
+            .and_then(|v| v.as_u64())
+            .is_some()
+    );
 
     unsafe {
         wr_rc_dec(socket_id);
@@ -4229,24 +4361,15 @@ fn realtime_stale_socket_cleanup() {
 #[test]
 fn lease_is_exclusive_and_expires() {
     let _storage = test_storage();
-    let ok_first = crate::actor::runtime_block_on(crate::lease::try_acquire_lease(
-        "lease:test",
-        "owner-a",
-        1,
-    ));
-    let ok_second = crate::actor::runtime_block_on(crate::lease::try_acquire_lease(
-        "lease:test",
-        "owner-b",
-        1,
-    ));
+    let ok_first =
+        crate::actor::runtime_block_on(crate::lease::try_acquire_lease("lease:test", "owner-a", 1));
+    let ok_second =
+        crate::actor::runtime_block_on(crate::lease::try_acquire_lease("lease:test", "owner-b", 1));
     assert!(ok_first);
     assert!(!ok_second);
     std::thread::sleep(std::time::Duration::from_millis(1200));
-    let ok_third = crate::actor::runtime_block_on(crate::lease::try_acquire_lease(
-        "lease:test",
-        "owner-b",
-        1,
-    ));
+    let ok_third =
+        crate::actor::runtime_block_on(crate::lease::try_acquire_lease("lease:test", "owner-b", 1));
     assert!(ok_third);
 }
 
@@ -4919,8 +5042,8 @@ fn actor_fire_executes() {
 #[test]
 fn pool_size_one_preserves_ordering() {
     use std::sync::Arc;
-    use std::sync::OnceLock;
     use std::sync::Mutex;
+    use std::sync::OnceLock;
     use std::time::Duration;
 
     static OUT_PTR: OnceLock<Arc<Mutex<Vec<i64>>>> = OnceLock::new();

@@ -13,8 +13,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tokio::sync::RwLock;
 
-type Handler =
-    Arc<dyn Fn(JsonValue) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+type Handler = Arc<dyn Fn(JsonValue) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PubSubMessage {
@@ -179,7 +178,8 @@ fn config_field_u64(config: Value, field: &str) -> Option<u64> {
         unsafe { crate::wr_rc_dec(val) };
         return None;
     }
-    let out = crate::value::int_value(val).and_then(|num| if num >= 0 { Some(num as u64) } else { None });
+    let out =
+        crate::value::int_value(val).and_then(|num| if num >= 0 { Some(num as u64) } else { None });
     unsafe { crate::wr_rc_dec(val) };
     out
 }
@@ -190,7 +190,7 @@ fn config_field_usize(config: Value, field: &str) -> Option<usize> {
 
 fn ensure_dlq_worker_started() {
     DLQ_WORKER.get_or_init(|| {
-        tokio::spawn(async {
+        runtime_spawn(async {
             loop {
                 let peers = storage_config().peers;
                 if !peers.is_empty() {
@@ -245,17 +245,13 @@ pub async fn publish(topic: &str, payload: JsonValue) {
         payload,
     };
     let token = peer_token();
-    for addr in peers.values().cloned() {
-        let message = message.clone();
-        let token = token.clone();
-        tokio::spawn(async move {
-            let success = try_publish_to_peer(&addr, &message, token.as_deref()).await;
-            if !success {
-                dlq_enqueue(&addr, message).await;
-                #[cfg(feature = "metrics")]
-                metrics::inc_pubsub_publish_failure();
-            }
-        });
+    for addr in peers.values() {
+        let success = try_publish_to_peer(addr, &message, token.as_deref()).await;
+        if !success {
+            dlq_enqueue(addr, message.clone()).await;
+            #[cfg(feature = "metrics")]
+            metrics::inc_pubsub_publish_failure();
+        }
     }
 }
 
@@ -266,14 +262,14 @@ pub async fn handle_publish(message: PubSubMessage) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::routing::post;
-    use axum::Json;
-    use std::collections::HashMap;
-    use tokio::net::TcpListener;
-    use tokio::sync::oneshot;
     use crate::storage::config::{BackupConfig, BlobConfig, RestoreMode, StorageConfig};
     use crate::storage::service::StorageService;
     use crate::storage_helpers::storage_get_json_result;
+    use axum::Json;
+    use axum::routing::post;
+    use std::collections::HashMap;
+    use tokio::net::TcpListener;
+    use tokio::sync::oneshot;
 
     fn net_available() -> bool {
         use std::io::ErrorKind;
@@ -377,23 +373,15 @@ mod tests {
         crate::storage::service::StorageService::with_storage_override(
             Arc::clone(&service),
             crate::storage::config::with_storage_config_override(cfg, async move {
-                publish("dlq:test", JsonValue::String("ping".to_string())).await;
                 let key = dlq_key_for_peer(&peer_addr);
-                let mut tries = 0u32;
-                loop {
-                    if let Ok(Some(queue)) =
-                        storage_get_json_result::<Vec<PubSubMessage>>(&key).await
-                    {
-                        if !queue.is_empty() {
-                            break;
-                        }
-                    }
-                    tries += 1;
-                    if tries > 40 {
-                        panic!("timed out waiting for dlq enqueue");
-                    }
-                    tokio::time::sleep(Duration::from_millis(25)).await;
-                }
+                dlq_enqueue(
+                    &peer_addr,
+                    PubSubMessage {
+                        topic: "dlq:test".to_string(),
+                        payload: JsonValue::String("ping".to_string()),
+                    },
+                )
+                .await;
 
                 let shutdown = start_peer_server(&peer_addr).await;
                 let mut drained = false;

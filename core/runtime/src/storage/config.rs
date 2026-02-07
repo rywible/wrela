@@ -170,6 +170,26 @@ where
     STORAGE_CONFIG_OVERRIDE.scope(config, fut).await
 }
 
+#[cfg(any(test, feature = "test-utils"))]
+pub(crate) fn capture_storage_config_override() -> Option<StorageConfig> {
+    STORAGE_CONFIG_OVERRIDE.try_with(Clone::clone).ok()
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+pub(crate) async fn with_storage_config_override_if_present<F, R>(
+    config: Option<StorageConfig>,
+    fut: F,
+) -> R
+where
+    F: Future<Output = R>,
+{
+    if let Some(config) = config {
+        STORAGE_CONFIG_OVERRIDE.scope(config, fut).await
+    } else {
+        fut.await
+    }
+}
+
 fn parse_peers(raw: Option<String>) -> HashMap<u64, String> {
     let mut peers = HashMap::new();
     let Some(raw) = raw else { return peers };
@@ -200,7 +220,10 @@ fn backup_config(user: Option<&StorageUserConfig>, blob: &BlobConfig) -> BackupC
         .and_then(|cfg| cfg.backup_max_age_secs)
         .unwrap_or(3600)
         .max(60);
-    let max_logs = user.and_then(|cfg| cfg.backup_max_logs).unwrap_or(100_000).max(1);
+    let max_logs = user
+        .and_then(|cfg| cfg.backup_max_logs)
+        .unwrap_or(100_000)
+        .max(1);
     let retention_days = user.and_then(|cfg| cfg.backup_retention_days).unwrap_or(7);
     let max_keep = user.and_then(|cfg| cfg.backup_max_keep).unwrap_or(0);
     let prefix = user

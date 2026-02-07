@@ -1,7 +1,7 @@
 #![allow(unused_assignments)]
 
 use crate::hir::{
-    Arg, Body, BinaryOp, Class, Expr, Function, FunctionKind, Idx, Literal, MatchCase, Module,
+    Arg, BinaryOp, Body, Class, Expr, Function, FunctionKind, Idx, Literal, MatchCase, Module,
     Objective, Pattern, Stmt, UnaryOp,
 };
 use miette::{Diagnostic, SourceSpan};
@@ -220,7 +220,6 @@ pub enum SemanticError {
         span: SourceSpan,
     },
 
-
     #[error("match case bindings require a single label")]
     #[diagnostic(code(lang::sem::match_bindings_multi_label))]
     MatchBindingsMultiLabel {
@@ -357,7 +356,6 @@ pub enum SemanticWarning {
         #[label("unused here")]
         span: SourceSpan,
     },
-
 }
 
 impl SemanticError {
@@ -622,7 +620,8 @@ impl<'a> Checker<'a> {
                     .and_then(|param| param.name_span)
                     .map(span_from_range)
                     .unwrap_or_else(|| span_from_option(method.name_span));
-                self.errors.push(SemanticError::DerivedHasParams { span: param_span });
+                self.errors
+                    .push(SemanticError::DerivedHasParams { span: param_span });
             }
             self.check_function(*method_id, method, true);
         }
@@ -655,7 +654,8 @@ impl<'a> Checker<'a> {
                 .map(|t| t.name.as_str() == "Boolean")
                 .unwrap_or(false);
             if !is_boolean {
-                self.errors.push(SemanticError::CheckMustReturnBoolean { span: ret_span });
+                self.errors
+                    .push(SemanticError::CheckMustReturnBoolean { span: ret_span });
             }
         }
         self.enter_scope();
@@ -776,7 +776,9 @@ impl<'a> Checker<'a> {
                     );
                 }
             }
-            Stmt::Assign { name, value, .. } => {
+            Stmt::Assign {
+                name, op, value, ..
+            } => {
                 if self.in_derived {
                     self.errors.push(SemanticError::DerivedMutation {
                         span: span_from_range(body.stmt_span(stmt_id)),
@@ -792,15 +794,37 @@ impl<'a> Checker<'a> {
                 if let Stmt::Assign { visibility, .. } = stmt {
                     let _ = visibility;
                 }
+                let in_current_scope = self
+                    .scopes
+                    .last()
+                    .and_then(|scope| scope.bindings.get(name))
+                    .is_some();
                 match self.resolve(name) {
                     Some(binding) => match binding.kind {
                         BindingKind::Local | BindingKind::LoopVar => {
                             if !binding.mutable {
-                                self.errors.push(SemanticError::ImmutableAssign {
-                                    name: name.clone(),
-                                    span: span_from_range(span),
-                                    definition: binding.span.map(span_from_range),
-                                });
+                                if matches!(op, crate::hir::AssignOp::Assign) {
+                                    if in_current_scope {
+                                        self.errors.push(SemanticError::DuplicateDefinition {
+                                            name: name.clone(),
+                                            kind: binding_kind_label(binding.kind),
+                                            span: span_from_range(span),
+                                            previous: binding.span.map(span_from_range),
+                                        });
+                                    } else {
+                                        self.errors.push(SemanticError::ShadowedName {
+                                            name: name.clone(),
+                                            span: span_from_range(span),
+                                            previous: binding.span.map(span_from_range),
+                                        });
+                                    }
+                                } else {
+                                    self.errors.push(SemanticError::ImmutableAssign {
+                                        name: name.clone(),
+                                        span: span_from_range(span),
+                                        definition: binding.span.map(span_from_range),
+                                    });
+                                }
                             }
                         }
                         BindingKind::Param
@@ -974,9 +998,8 @@ impl<'a> Checker<'a> {
                 .first()
                 .map(|id| span_from_range(body.stmt_span(*id)))
                 .unwrap_or_else(|| span_from_range(TextRange::empty(0.into())));
-            self.errors.push(SemanticError::MatchBindingsMultiLabel {
-                span,
-            });
+            self.errors
+                .push(SemanticError::MatchBindingsMultiLabel { span });
         }
         for label in &case.labels {
             self.check_pattern(body, label);
@@ -1480,7 +1503,10 @@ impl<'a> Checker<'a> {
                                             Arg::Positional { value, .. } => *value,
                                             Arg::Named { value, .. } => *value,
                                         };
-                                        matches!(&body.exprs[arg], Expr::Literal(Literal::Integer(_)))
+                                        matches!(
+                                            &body.exprs[arg],
+                                            Expr::Literal(Literal::Integer(_))
+                                        )
                                     }
                                 } else {
                                     false
@@ -1632,13 +1658,7 @@ fn unused_kind_label(kind: BindingKind) -> &'static str {
 fn is_stdlib_config_class(name: &SmolStr) -> bool {
     matches!(
         name.as_str(),
-        "Auth"
-            | "Jobs"
-            | "Realtime"
-            | "PubSub"
-            | "Logger"
-            | "Runtime"
-            | "HttpServer"
+        "Auth" | "Jobs" | "Realtime" | "PubSub" | "Logger" | "Runtime" | "HttpServer"
     )
 }
 
@@ -1794,10 +1814,7 @@ fn collect_stmt_calls_and_awaits(
                 callees,
             );
         }
-        Stmt::Require {
-            condition,
-            message,
-        } => {
+        Stmt::Require { condition, message } => {
             collect_expr_calls_and_awaits(
                 body,
                 *condition,
@@ -2190,7 +2207,10 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
         (SmolStr::new("__wr_parse_float"), BindingKind::Function),
         (SmolStr::new("__wr_read_file"), BindingKind::Function),
         (SmolStr::new("__wr_write_file"), BindingKind::Function),
-        (SmolStr::new("__wr_bytes_from_string"), BindingKind::Function),
+        (
+            SmolStr::new("__wr_bytes_from_string"),
+            BindingKind::Function,
+        ),
         (SmolStr::new("__wr_bytes_to_string"), BindingKind::Function),
         (SmolStr::new("__wr_bytes_len"), BindingKind::Function),
         (SmolStr::new("__wr_list_push"), BindingKind::Function),
@@ -2206,18 +2226,33 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
         (SmolStr::new("__wr_env_set"), BindingKind::Function),
         (SmolStr::new("__wr_env_load"), BindingKind::Function),
         (SmolStr::new("__wr_auth_create_user"), BindingKind::Function),
-        (SmolStr::new("__wr_auth_verify_password"), BindingKind::Function),
+        (
+            SmolStr::new("__wr_auth_verify_password"),
+            BindingKind::Function,
+        ),
         (SmolStr::new("__wr_auth_issue_jwt"), BindingKind::Function),
         (SmolStr::new("__wr_auth_verify_jwt"), BindingKind::Function),
-        (SmolStr::new("__wr_auth_issue_email_token"), BindingKind::Function),
-        (SmolStr::new("__wr_auth_verify_email_token"), BindingKind::Function),
+        (
+            SmolStr::new("__wr_auth_issue_email_token"),
+            BindingKind::Function,
+        ),
+        (
+            SmolStr::new("__wr_auth_verify_email_token"),
+            BindingKind::Function,
+        ),
         (SmolStr::new("__wr_auth_oauth_login"), BindingKind::Function),
         (SmolStr::new("__wr_auth_configure"), BindingKind::Function),
         (SmolStr::new("__wr_rbac_create_role"), BindingKind::Function),
         (SmolStr::new("__wr_rbac_assign_role"), BindingKind::Function),
         (SmolStr::new("__wr_rbac_check"), BindingKind::Function),
-        (SmolStr::new("__wr_rbac_permissions_for"), BindingKind::Function),
-        (SmolStr::new("__wr_files_upload_stream"), BindingKind::Function),
+        (
+            SmolStr::new("__wr_rbac_permissions_for"),
+            BindingKind::Function,
+        ),
+        (
+            SmolStr::new("__wr_files_upload_stream"),
+            BindingKind::Function,
+        ),
         (SmolStr::new("__wr_files_signed_url"), BindingKind::Function),
         (SmolStr::new("__wr_files_metadata"), BindingKind::Function),
         (SmolStr::new("__wr_files_delete"), BindingKind::Function),
@@ -2232,32 +2267,65 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
         (SmolStr::new("__wr_search_index"), BindingKind::Function),
         (SmolStr::new("__wr_search_remove"), BindingKind::Function),
         (SmolStr::new("__wr_search_query"), BindingKind::Function),
-        (SmolStr::new("__wr_realtime_on_connect"), BindingKind::Function),
+        (
+            SmolStr::new("__wr_realtime_on_connect"),
+            BindingKind::Function,
+        ),
         (SmolStr::new("__wr_realtime_join"), BindingKind::Function),
         (SmolStr::new("__wr_realtime_leave"), BindingKind::Function),
-        (SmolStr::new("__wr_realtime_broadcast"), BindingKind::Function),
+        (
+            SmolStr::new("__wr_realtime_broadcast"),
+            BindingKind::Function,
+        ),
         (SmolStr::new("__wr_realtime_send"), BindingKind::Function),
-        (SmolStr::new("__wr_realtime_configure"), BindingKind::Function),
+        (
+            SmolStr::new("__wr_realtime_configure"),
+            BindingKind::Function,
+        ),
         (SmolStr::new("__wr_pubsub_configure"), BindingKind::Function),
         (SmolStr::new("__wr_rate_check"), BindingKind::Function),
         (SmolStr::new("__wr_rate_ip"), BindingKind::Function),
         (SmolStr::new("__wr_admin_enable"), BindingKind::Function),
         (SmolStr::new("__wr_storage_get"), BindingKind::Function),
-        (SmolStr::new("__wr_storage_get_with_version"), BindingKind::Function),
+        (
+            SmolStr::new("__wr_storage_get_with_version"),
+            BindingKind::Function,
+        ),
         (SmolStr::new("__wr_storage_scan"), BindingKind::Function),
-        (SmolStr::new("__wr_storage_list_prefix"), BindingKind::Function),
+        (
+            SmolStr::new("__wr_storage_list_prefix"),
+            BindingKind::Function,
+        ),
         (SmolStr::new("__wr_storage_set"), BindingKind::Function),
-        (SmolStr::new("__wr_storage_set_if_version"), BindingKind::Function),
-        (SmolStr::new("__wr_storage_delete_if_version"), BindingKind::Function),
+        (
+            SmolStr::new("__wr_storage_set_if_version"),
+            BindingKind::Function,
+        ),
+        (
+            SmolStr::new("__wr_storage_delete_if_version"),
+            BindingKind::Function,
+        ),
         (SmolStr::new("__wr_storage_delete"), BindingKind::Function),
-        (SmolStr::new("__wr_storage_batch_set"), BindingKind::Function),
-        (SmolStr::new("__wr_storage_configure"), BindingKind::Function),
-        (SmolStr::new("__wr_runtime_configure"), BindingKind::Function),
+        (
+            SmolStr::new("__wr_storage_batch_set"),
+            BindingKind::Function,
+        ),
+        (
+            SmolStr::new("__wr_storage_configure"),
+            BindingKind::Function,
+        ),
+        (
+            SmolStr::new("__wr_runtime_configure"),
+            BindingKind::Function,
+        ),
         (SmolStr::new("__wr_pool_auto_size"), BindingKind::Function),
         (SmolStr::new("__wr_pool_size"), BindingKind::Function),
         (SmolStr::new("__wr_pool_rr"), BindingKind::Function),
         (SmolStr::new("__wr_pool_queue_len"), BindingKind::Function),
-        (SmolStr::new("__wr_actor_mailbox_len"), BindingKind::Function),
+        (
+            SmolStr::new("__wr_actor_mailbox_len"),
+            BindingKind::Function,
+        ),
         (SmolStr::new("__wr_actor_pause"), BindingKind::Function),
         (SmolStr::new("__wr_actor_resume"), BindingKind::Function),
         (SmolStr::new("__wr_actor_pause_wait"), BindingKind::Function),
@@ -2288,7 +2356,10 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
             SmolStr::new("__wr_http_server_configure"),
             BindingKind::Function,
         ),
-        (SmolStr::new("__wr_http_server_serve_on"), BindingKind::Function),
+        (
+            SmolStr::new("__wr_http_server_serve_on"),
+            BindingKind::Function,
+        ),
         (SmolStr::new("__wr_http_server_stop"), BindingKind::Function),
         (SmolStr::new("Pool"), BindingKind::Implicit),
     ]

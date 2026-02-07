@@ -19,11 +19,13 @@ use crate::class::{class_get, class_new, class_set};
 use crate::list::as_list_ref;
 use crate::map::{as_map_ref, map_new, map_set};
 use crate::result;
+use crate::storage::service::StorageError;
+use crate::storage_helpers::{
+    storage_get_json_result, storage_get_json_vec_result, storage_set_json_result,
+};
 use crate::string;
 use crate::value::{Value, int_value};
 use crate::{wr_rc_dec, wr_rc_inc};
-use crate::storage_helpers::{storage_get_json_result, storage_get_json_vec_result, storage_set_json_result};
-use crate::storage::service::StorageError;
 
 #[derive(Clone)]
 struct HttpConfig {
@@ -110,14 +112,22 @@ fn authorized(headers: &HeaderMap) -> bool {
         .get("authorization")
         .and_then(|h| h.to_str().ok())
         .unwrap_or("");
-    if let Some(token) = http_auth_token() {
+    let token = http_auth_token();
+    let token_required = token.is_some();
+    let jwt_enabled = http_auth_jwt_enabled();
+    if let Some(token) = token.as_deref() {
         if auth == token || auth == format!("Bearer {token}") {
             return true;
         }
     }
-    if http_auth_jwt_enabled() {
+    if jwt_enabled {
         let bearer = auth.strip_prefix("Bearer ").unwrap_or(auth);
-        return !bearer.is_empty() && decode_jwt(bearer).is_some();
+        if !bearer.is_empty() && decode_jwt(bearer).is_some() {
+            return true;
+        }
+    }
+    if token_required || jwt_enabled {
+        return false;
     }
     true
 }
@@ -223,11 +233,7 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-async fn rate_limit_allowed(
-    key: &str,
-    burst: u64,
-    per_secs: u64,
-) -> Result<bool, StorageError> {
+async fn rate_limit_allowed(key: &str, burst: u64, per_secs: u64) -> Result<bool, StorageError> {
     let bucket_key = format!("rate:{key}");
     let burst = burst as f64;
     let per_secs = per_secs as f64;
@@ -713,7 +719,10 @@ fn build_response_headers(headers_val: Value) -> (HeaderMap, bool, bool) {
         }
     }
     if !has_xcto {
-        headers.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+        headers.insert(
+            "x-content-type-options",
+            HeaderValue::from_static("nosniff"),
+        );
     }
     if !has_xfo {
         headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
@@ -733,9 +742,11 @@ fn build_response_headers(headers_val: Value) -> (HeaderMap, bool, bool) {
 
 fn apply_default_security_headers(headers: &mut HeaderMap) {
     if http_config().hsts_enabled {
-        headers.entry("strict-transport-security").or_insert(
-            HeaderValue::from_static("max-age=31536000; includeSubDomains"),
-        );
+        headers
+            .entry("strict-transport-security")
+            .or_insert(HeaderValue::from_static(
+                "max-age=31536000; includeSubDomains",
+            ));
     }
 }
 
@@ -820,10 +831,7 @@ fn build_query_map(uri: &Uri) -> Value {
     query_map
 }
 
-fn match_route<'a>(
-    path: &str,
-    patterns: &'a [RoutePattern],
-) -> Option<(&'a Vec<Route>, Value)> {
+fn match_route<'a>(path: &str, patterns: &'a [RoutePattern]) -> Option<(&'a Vec<Route>, Value)> {
     for entry in patterns {
         let mut params_map: Option<Value> = None;
         let mut matched = true;
@@ -1047,7 +1055,11 @@ fn config_field_bool(config: Value, field: &str) -> Option<bool> {
         unsafe { wr_rc_dec(val) };
         return None;
     }
-    let out = if val.is_bool() { Some(val.as_bool()) } else { None };
+    let out = if val.is_bool() {
+        Some(val.as_bool())
+    } else {
+        None
+    };
     unsafe { wr_rc_dec(val) };
     out
 }
@@ -1101,16 +1113,16 @@ mod tests {
     use crate::class;
     use crate::list;
     use crate::map;
+    use crate::storage::config::StorageUserConfig;
+    use crate::storage::config::{BackupConfig, BlobConfig, RestoreMode, StorageConfig};
     use crate::string;
     use crate::value;
     use crate::wr_actor_spawn;
     use crate::wr_pending_await;
-    use crate::wr_result_is_ok;
-    use crate::wr_result_unwrap;
-    use crate::storage::config::StorageUserConfig;
-    use crate::storage::config::{BackupConfig, BlobConfig, RestoreMode, StorageConfig};
     use crate::wr_rc_dec;
     use crate::wr_register_method;
+    use crate::wr_result_is_ok;
+    use crate::wr_result_unwrap;
     use reqwest::Client;
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
@@ -1141,7 +1153,7 @@ mod tests {
         TEST_LOCK
             .get_or_init(|| Mutex::new(()))
             .lock()
-            .expect("test lock")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn reset_registry() {
@@ -2032,7 +2044,9 @@ mod tests {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_secs();
-            let claims = Claims { exp: (now + 60) as usize };
+            let claims = Claims {
+                exp: (now + 60) as usize,
+            };
             let key = jsonwebtoken::EncodingKey::from_secret(b"test-secret");
             let token = jsonwebtoken::encode(&header, &claims, &key).expect("token");
 
@@ -2045,7 +2059,9 @@ mod tests {
             assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
             let resp = send_with_retry(|| {
-                client.get(&url).header("authorization", format!("Bearer {token}"))
+                client
+                    .get(&url)
+                    .header("authorization", format!("Bearer {token}"))
             });
             assert_eq!(resp.status(), StatusCode::OK);
 
