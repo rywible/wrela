@@ -75,21 +75,10 @@ so:
 so: - Env: get_environment_variable, get_environment_variable_or_default,
 so:        get_environment_variable_as_boolean, get_environment_variable_as_integer,
 so:        set_environment_variable, load_environment_variables
-so: - AuthProvider: configure, create_user, verify_password, issue_jwt, verify_jwt,
-so:        issue_email_token, verify_email_token, login_with_oauth
-so: - RoleBasedAccessControlProvider: create_role, assign_role, check_permission, get_permissions_for
-so: - FileSystem: upload_stream, generate_signed_url, get_metadata, delete, set_access_control_list
-so: - JobManager: configure, enqueue, process, get_dead_letter
-so: - Scheduler: register_cron_job, run_every, run_at
-so: - SearchClient: index, remove, query
-so: - RealtimeSocketProvider: configure, register_connection_handler, join_room,
-so:        leave_room, broadcast_to_room, send_message
-so: - PubSub: configure
 so: - Logger (logging helpers + configure)
 so: - Runtime (runtime configuration)
-so: - RateLimiter: check_limit, get_ip
-so: - Admin: enable
-so: - StorageConfig + StorageClient (storage_* helpers)
-so: - storage_open function
-so: - HttpRequest + HttpResponse helpers
-so: - HttpServer helpers
+so: - Pool helpers: auto_size, size, round_robin, queue_length
+so: - Actor helpers: mailbox_length, pause, resume, wait_until_resumed
+so: - Metrics helpers
+so: - Filesystem text helpers: read_text_file, write_text_file
+so: - Time helpers: now_nanoseconds, sleep_milliseconds

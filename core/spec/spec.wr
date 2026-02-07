@@ -645,22 +645,6 @@ so: ------------------------------------------------------------
     metrics: __wr_metrics_get, __wr_metrics_dropped_paused_id, __wr_metrics_messages_dropped_id
     time: __wr_clock_ns, __wr_sleep_ms
     env: __wr_env_get, __wr_env_get_or, __wr_env_get_as_bool, __wr_env_get_as_int, __wr_env_set, __wr_env_load
-    auth: __wr_auth_create_user, __wr_auth_verify_password, __wr_auth_issue_jwt, __wr_auth_verify_jwt,
-          __wr_auth_issue_email_token, __wr_auth_verify_email_token, __wr_auth_oauth_login, __wr_auth_configure
-    rbac: __wr_rbac_create_role, __wr_rbac_assign_role, __wr_rbac_check, __wr_rbac_permissions_for
-    files: __wr_files_upload_stream, __wr_files_signed_url, __wr_files_metadata, __wr_files_delete, __wr_files_set_acl
-    jobs: __wr_jobs_enqueue, __wr_jobs_process, __wr_jobs_dead_letter, __wr_jobs_configure
-    schedule: __wr_schedule_cron, __wr_schedule_every, __wr_schedule_at
-    search: __wr_search_index, __wr_search_remove, __wr_search_query
-    realtime: __wr_realtime_on_connect, __wr_realtime_join, __wr_realtime_leave, __wr_realtime_broadcast, __wr_realtime_send,
-              __wr_realtime_configure
-    pubsub: __wr_pubsub_configure
-    rate: __wr_rate_check, __wr_rate_ip
-    admin: __wr_admin_enable
-    storage: __wr_storage_get, __wr_storage_get_with_version, __wr_storage_scan, __wr_storage_list_prefix, __wr_storage_configure,
-             __wr_storage_set, __wr_storage_set_if_version, __wr_storage_delete_if_version, __wr_storage_delete, __wr_storage_batch_set
-    http: __wr_http_server_serve_get_requests, __wr_http_server_serve_post_requests,
-          __wr_http_server_serve_requests, __wr_http_server_configure, __wr_http_server_serve_on, __wr_http_server_stop
     runtime: __wr_runtime_configure
     
     Implicit values:

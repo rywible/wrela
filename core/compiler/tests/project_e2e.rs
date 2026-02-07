@@ -50,6 +50,25 @@ fn project_missing_module_has_span() {
 }
 
 #[test]
+fn project_removed_core_stdlib_module_has_migration_hint() {
+    let base = tempfile::tempdir().expect("tempdir");
+    let entry_path = base.path().join("src").join("main.wr");
+
+    write_temp(
+        &entry_path,
+        "use AuthProvider from auth\n\nto run() -> Integer:\n    return 1\n",
+    );
+
+    let err = match load_project(&entry_path) {
+        Ok(_) => panic!("expected error"),
+        Err(err) => err,
+    };
+    let msg = err[0].message.clone();
+    assert!(msg.contains("removed from core stdlib"));
+    assert_ne!(err[0].span, miette::SourceSpan::from((0usize, 0usize)));
+}
+
+#[test]
 fn project_missing_type_import_has_span() {
     let base = tempfile::tempdir().expect("tempdir");
     let entry_path = base.path().join("src").join("main.wr");

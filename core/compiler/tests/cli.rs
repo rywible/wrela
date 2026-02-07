@@ -160,3 +160,66 @@ fn cli_test_perf_debug() {
     assert!(stdout.contains("mailbox_enqueue_ok="));
     assert!(stdout.contains("alloc_list="));
 }
+
+#[test]
+fn cli_thin_core_bootstrap_matrix() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let src = dir.path().join("src");
+    let tests = dir.path().join("tests");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::create_dir_all(&tests).unwrap();
+
+    std::fs::write(
+        src.join("main.wr"),
+        "to run() -> Integer:\n    return 0\n",
+    )
+    .unwrap();
+    let entry = src.join("main.wr");
+    std::fs::write(
+        tests.join("basic.wr"),
+        "to test_basic() -> Nothing:\n    assert value 1 == 1\n",
+    )
+    .unwrap();
+
+    let check = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("check")
+        .arg(&entry)
+        .output()
+        .expect("run check");
+    assert!(
+        check.status.success(),
+        "check failed: code={:?}\nstdout={}\nstderr={}",
+        check.status.code(),
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr)
+    );
+
+    let bin = dir.path().join("thin_core_matrix_bin");
+    let build = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("build")
+        .arg(&entry)
+        .arg("-o")
+        .arg(bin.as_os_str())
+        .output()
+        .expect("run build");
+    assert!(
+        build.status.success(),
+        "build failed: {:?}",
+        build.status.code()
+    );
+    assert!(bin.exists());
+
+    let run_status = Command::new(&bin).status().expect("run built binary");
+    assert_eq!(run_status.code(), Some(0));
+
+    let test = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("test")
+        .arg(dir.path())
+        .output()
+        .expect("run test");
+    assert!(
+        test.status.success(),
+        "test failed: {:?}",
+        test.status.code()
+    );
+}

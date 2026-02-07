@@ -1,6 +1,6 @@
 use std::sync::Once;
 
-pub const RUNTIME_ABI_VERSION: u32 = 1;
+pub const RUNTIME_ABI_VERSION: u32 = 2;
 
 static INIT: Once = Once::new();
 

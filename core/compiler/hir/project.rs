@@ -867,10 +867,12 @@ impl ProjectLoader {
         for module in self.modules.values() {
             for use_site in &module.uses {
                 let Some(target_exports) = exports.get(&use_site.module) else {
+                    let message = removed_core_stdlib_module_message(use_site.module.as_str())
+                        .unwrap_or_else(|| format!("module '{}' not found", use_site.module));
                     self.errors.push(ProjectError {
                         path: module.path.clone(),
                         source: module.source.clone(),
-                        message: format!("module '{}' not found", use_site.module),
+                        message,
                         span: span_from_range(
                             use_site.module_span.unwrap_or_else(|| use_site.span),
                         ),
@@ -927,6 +929,32 @@ impl ProjectLoader {
                 }
             }
         }
+    }
+}
+
+fn removed_core_stdlib_module_message(module_name: &str) -> Option<String> {
+    let removed = matches!(
+        module_name,
+        "admin"
+            | "auth"
+            | "files"
+            | "http"
+            | "jobs"
+            | "pubsub"
+            | "rate_limit"
+            | "rbac"
+            | "realtime"
+            | "schedule"
+            | "search"
+            | "storage"
+    );
+    if removed {
+        Some(format!(
+            "module '{}' was removed from core stdlib during thin-core reset",
+            module_name
+        ))
+    } else {
+        None
     }
 }
 
@@ -1162,53 +1190,6 @@ fn is_builtin_value_name(name: &SmolStr) -> bool {
             | "__wr_env_get_as_int"
             | "__wr_env_set"
             | "__wr_env_load"
-            | "__wr_auth_create_user"
-            | "__wr_auth_verify_password"
-            | "__wr_auth_issue_jwt"
-            | "__wr_auth_verify_jwt"
-            | "__wr_auth_issue_email_token"
-            | "__wr_auth_verify_email_token"
-            | "__wr_auth_oauth_login"
-            | "__wr_auth_configure"
-            | "__wr_rbac_create_role"
-            | "__wr_rbac_assign_role"
-            | "__wr_rbac_check"
-            | "__wr_rbac_permissions_for"
-            | "__wr_files_upload_stream"
-            | "__wr_files_signed_url"
-            | "__wr_files_metadata"
-            | "__wr_files_delete"
-            | "__wr_files_set_acl"
-            | "__wr_jobs_enqueue"
-            | "__wr_jobs_process"
-            | "__wr_jobs_dead_letter"
-            | "__wr_jobs_configure"
-            | "__wr_schedule_cron"
-            | "__wr_schedule_every"
-            | "__wr_schedule_at"
-            | "__wr_search_index"
-            | "__wr_search_remove"
-            | "__wr_search_query"
-            | "__wr_realtime_on_connect"
-            | "__wr_realtime_join"
-            | "__wr_realtime_leave"
-            | "__wr_realtime_broadcast"
-            | "__wr_realtime_send"
-            | "__wr_realtime_configure"
-            | "__wr_pubsub_configure"
-            | "__wr_rate_check"
-            | "__wr_rate_ip"
-            | "__wr_admin_enable"
-            | "__wr_storage_get"
-            | "__wr_storage_get_with_version"
-            | "__wr_storage_scan"
-            | "__wr_storage_list_prefix"
-            | "__wr_storage_set"
-            | "__wr_storage_set_if_version"
-            | "__wr_storage_delete_if_version"
-            | "__wr_storage_delete"
-            | "__wr_storage_batch_set"
-            | "__wr_storage_configure"
             | "__wr_runtime_configure"
             | "Pool"
             | "queue"

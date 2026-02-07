@@ -36,3 +36,7 @@ To install a specific release:
 ```sh
 WRELA_TAG=v0.1.0-alpha.1 curl -fsSL https://raw.githubusercontent.com/rywible/wrela/main/scripts/install.sh | bash
 ```
+
+Thin-core note:
+- Current core build ships a minimal stdlib/runtime surface.
+- High-level modules such as auth/storage/http/jobs/realtime are not part of core and are expected to live in packages later.

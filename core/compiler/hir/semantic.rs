@@ -1656,10 +1656,7 @@ fn unused_kind_label(kind: BindingKind) -> &'static str {
 }
 
 fn is_stdlib_config_class(name: &SmolStr) -> bool {
-    matches!(
-        name.as_str(),
-        "Auth" | "Jobs" | "Realtime" | "PubSub" | "Logger" | "Runtime" | "HttpServer"
-    )
+    matches!(name.as_str(), "Logger" | "Runtime")
 }
 
 fn compute_objective_requirements(
@@ -2225,95 +2222,6 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
         (SmolStr::new("__wr_env_get_as_int"), BindingKind::Function),
         (SmolStr::new("__wr_env_set"), BindingKind::Function),
         (SmolStr::new("__wr_env_load"), BindingKind::Function),
-        (SmolStr::new("__wr_auth_create_user"), BindingKind::Function),
-        (
-            SmolStr::new("__wr_auth_verify_password"),
-            BindingKind::Function,
-        ),
-        (SmolStr::new("__wr_auth_issue_jwt"), BindingKind::Function),
-        (SmolStr::new("__wr_auth_verify_jwt"), BindingKind::Function),
-        (
-            SmolStr::new("__wr_auth_issue_email_token"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_auth_verify_email_token"),
-            BindingKind::Function,
-        ),
-        (SmolStr::new("__wr_auth_oauth_login"), BindingKind::Function),
-        (SmolStr::new("__wr_auth_configure"), BindingKind::Function),
-        (SmolStr::new("__wr_rbac_create_role"), BindingKind::Function),
-        (SmolStr::new("__wr_rbac_assign_role"), BindingKind::Function),
-        (SmolStr::new("__wr_rbac_check"), BindingKind::Function),
-        (
-            SmolStr::new("__wr_rbac_permissions_for"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_files_upload_stream"),
-            BindingKind::Function,
-        ),
-        (SmolStr::new("__wr_files_signed_url"), BindingKind::Function),
-        (SmolStr::new("__wr_files_metadata"), BindingKind::Function),
-        (SmolStr::new("__wr_files_delete"), BindingKind::Function),
-        (SmolStr::new("__wr_files_set_acl"), BindingKind::Function),
-        (SmolStr::new("__wr_jobs_enqueue"), BindingKind::Function),
-        (SmolStr::new("__wr_jobs_process"), BindingKind::Function),
-        (SmolStr::new("__wr_jobs_dead_letter"), BindingKind::Function),
-        (SmolStr::new("__wr_jobs_configure"), BindingKind::Function),
-        (SmolStr::new("__wr_schedule_cron"), BindingKind::Function),
-        (SmolStr::new("__wr_schedule_every"), BindingKind::Function),
-        (SmolStr::new("__wr_schedule_at"), BindingKind::Function),
-        (SmolStr::new("__wr_search_index"), BindingKind::Function),
-        (SmolStr::new("__wr_search_remove"), BindingKind::Function),
-        (SmolStr::new("__wr_search_query"), BindingKind::Function),
-        (
-            SmolStr::new("__wr_realtime_on_connect"),
-            BindingKind::Function,
-        ),
-        (SmolStr::new("__wr_realtime_join"), BindingKind::Function),
-        (SmolStr::new("__wr_realtime_leave"), BindingKind::Function),
-        (
-            SmolStr::new("__wr_realtime_broadcast"),
-            BindingKind::Function,
-        ),
-        (SmolStr::new("__wr_realtime_send"), BindingKind::Function),
-        (
-            SmolStr::new("__wr_realtime_configure"),
-            BindingKind::Function,
-        ),
-        (SmolStr::new("__wr_pubsub_configure"), BindingKind::Function),
-        (SmolStr::new("__wr_rate_check"), BindingKind::Function),
-        (SmolStr::new("__wr_rate_ip"), BindingKind::Function),
-        (SmolStr::new("__wr_admin_enable"), BindingKind::Function),
-        (SmolStr::new("__wr_storage_get"), BindingKind::Function),
-        (
-            SmolStr::new("__wr_storage_get_with_version"),
-            BindingKind::Function,
-        ),
-        (SmolStr::new("__wr_storage_scan"), BindingKind::Function),
-        (
-            SmolStr::new("__wr_storage_list_prefix"),
-            BindingKind::Function,
-        ),
-        (SmolStr::new("__wr_storage_set"), BindingKind::Function),
-        (
-            SmolStr::new("__wr_storage_set_if_version"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_storage_delete_if_version"),
-            BindingKind::Function,
-        ),
-        (SmolStr::new("__wr_storage_delete"), BindingKind::Function),
-        (
-            SmolStr::new("__wr_storage_batch_set"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_storage_configure"),
-            BindingKind::Function,
-        ),
         (
             SmolStr::new("__wr_runtime_configure"),
             BindingKind::Function,
@@ -2340,27 +2248,6 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
         ),
         (SmolStr::new("__wr_clock_ns"), BindingKind::Function),
         (SmolStr::new("__wr_sleep_ms"), BindingKind::Function),
-        (
-            SmolStr::new("__wr_http_server_serve_get_requests"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_http_server_serve_post_requests"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_http_server_serve_requests"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_http_server_configure"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_http_server_serve_on"),
-            BindingKind::Function,
-        ),
-        (SmolStr::new("__wr_http_server_stop"), BindingKind::Function),
         (SmolStr::new("Pool"), BindingKind::Implicit),
     ]
 }
