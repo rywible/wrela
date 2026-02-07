@@ -1,8 +1,0 @@
-use * from domain/intent
-use IntentOperation, Role, role_may_perform_intent_operation from domain/intent_policy
-
-to request_transition(current: IntentState, target: IntentState, reason: String) -> Result[IntentState, IntentTransitionError]:
-    return transition(current=current, target=target, reason=reason)
-
-to role_is_allowed_to_perform_operation(role: Role, operation: IntentOperation) -> Boolean:
-    return role_may_perform_intent_operation(role=role, operation=operation)
