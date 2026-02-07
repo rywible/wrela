@@ -74,7 +74,10 @@ fn project_private_import_has_span() {
     let entry_path = base.path().join("src").join("main.wr");
     let mod_path = base.path().join("src").join("bar.wr");
 
-    write_temp(&entry_path, "use foo from bar\n\nto run() -> Integer:\n    return 1\n");
+    write_temp(
+        &entry_path,
+        "use foo from bar\n\nto run() -> Integer:\n    return 1\n",
+    );
     write_temp(
         &mod_path,
         "private:\n    to foo() -> Integer:\n        return 1\n",
@@ -95,7 +98,10 @@ fn project_unused_import_has_span() {
     let entry_path = base.path().join("src").join("main.wr");
     let mod_path = base.path().join("src").join("bar.wr");
 
-    write_temp(&entry_path, "use foo from bar\n\nto run() -> Integer:\n    return 1\n");
+    write_temp(
+        &entry_path,
+        "use foo from bar\n\nto run() -> Integer:\n    return 1\n",
+    );
     write_temp(&mod_path, "to foo() -> Integer:\n    return 1\n");
 
     let project = load_project(&entry_path).expect("load project");
@@ -113,7 +119,10 @@ fn project_unused_glob_import_has_span() {
     let entry_path = base.path().join("src").join("main.wr");
     let mod_path = base.path().join("src").join("bar.wr");
 
-    write_temp(&entry_path, "use * from bar\n\nto run() -> Integer:\n    return 1\n");
+    write_temp(
+        &entry_path,
+        "use * from bar\n\nto run() -> Integer:\n    return 1\n",
+    );
     write_temp(&mod_path, "to foo() -> Integer:\n    return 1\n");
 
     let project = load_project(&entry_path).expect("load project");

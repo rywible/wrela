@@ -42,8 +42,12 @@ fn devirtualize_calls(func: &mut MirFunction, types: Option<&FunctionTypes>) {
         .unwrap_or_else(|| func.temps.iter().map(|t| t.ty.clone()).collect());
     for block in &mut func.blocks {
         for stmt in &mut block.stmts {
-            let Stmt::Assign { value, .. } = stmt else { continue };
-            let Rvalue::Call { kind, target, args } = value else { continue };
+            let Stmt::Assign { value, .. } = stmt else {
+                continue;
+            };
+            let Rvalue::Call { kind, target, args } = value else {
+                continue;
+            };
             if *kind != CallKind::Sync {
                 continue;
             }
@@ -59,7 +63,9 @@ fn devirtualize_calls(func: &mut MirFunction, types: Option<&FunctionTypes>) {
                 continue;
             }
             let recv_ty = value_ty_with_slices(receiver, &locals, &temps);
-            let MirType::Named(class_name) = recv_ty else { continue };
+            let MirType::Named(class_name) = recv_ty else {
+                continue;
+            };
             let qualified = qualify_method_name(method, &class_name);
             let recv = receiver.clone();
             let mut new_args = Vec::with_capacity(args.len() + 1);
@@ -80,14 +86,25 @@ fn specialize_container_ops(func: &mut MirFunction, types: Option<&FunctionTypes
         .unwrap_or_else(|| func.temps.iter().map(|t| t.ty.clone()).collect());
     for block in &mut func.blocks {
         for stmt in &mut block.stmts {
-            let Stmt::Assign { value, .. } = stmt else { continue };
-            let Rvalue::Call { kind, target, args } = value else { continue };
+            let Stmt::Assign { value, .. } = stmt else {
+                continue;
+            };
+            let Rvalue::Call { kind, target, args } = value else {
+                continue;
+            };
             if *kind != CallKind::Sync {
                 continue;
             }
-            let CallTarget::Method { receiver, method, .. } = target else { continue };
+            let CallTarget::Method {
+                receiver, method, ..
+            } = target
+            else {
+                continue;
+            };
             let recv_ty = value_ty_with_slices(receiver, &locals, &temps);
-            let MirType::Named(class_name) = recv_ty else { continue };
+            let MirType::Named(class_name) = recv_ty else {
+                continue;
+            };
             let op = unqual_method_name(method);
             let builtin = match (class_name.as_str(), op.as_str()) {
                 ("Map", "get") => "__wr_map_get",
@@ -146,13 +163,21 @@ fn clone_small_hot_functions(module: &mut MirModule, graph: &CallGraph) {
     for func in &mut module.functions {
         for block in &mut func.blocks {
             for stmt in &mut block.stmts {
-                let Stmt::Assign { value, .. } = stmt else { continue };
-                let Rvalue::Call { target, .. } = value else { continue };
-                let CallTarget::Function(name) = target else { continue };
+                let Stmt::Assign { value, .. } = stmt else {
+                    continue;
+                };
+                let Rvalue::Call { target, .. } = value else {
+                    continue;
+                };
+                let CallTarget::Function(name) = target else {
+                    continue;
+                };
                 if graph.call_count(name) < 2 {
                     continue;
                 }
-                let Some(callee) = func_map.get(name) else { continue };
+                let Some(callee) = func_map.get(name) else {
+                    continue;
+                };
                 if !is_small_function(callee) || callee.suspendable || callee.name == "main" {
                     continue;
                 }
@@ -230,7 +255,9 @@ fn annotate_allocs(func: &mut MirFunction) {
             }
         }
         match &block.terminator {
-            Terminator::Return { value: Some(value), .. } => {
+            Terminator::Return {
+                value: Some(value), ..
+            } => {
                 collect_temp_ids_value(value, &mut escapes);
             }
             _ => {}
@@ -249,7 +276,9 @@ fn annotate_allocs(func: &mut MirFunction) {
                             }
                         }
                     }
-                    Rvalue::Spawn { target, instance, .. } => {
+                    Rvalue::Spawn {
+                        target, instance, ..
+                    } => {
                         collect_temp_ids_value(target, &mut escapes);
                         collect_temp_ids_value(instance, &mut escapes);
                     }
@@ -360,9 +389,8 @@ fn convert_to_ssa(func: &mut MirFunction) {
         if phi_locals_per_block[block_idx].is_empty() {
             continue;
         }
-        let mut new_stmts = Vec::with_capacity(
-            block.stmts.len() + phi_locals_per_block[block_idx].len(),
-        );
+        let mut new_stmts =
+            Vec::with_capacity(block.stmts.len() + phi_locals_per_block[block_idx].len());
         for local in &phi_locals_per_block[block_idx] {
             new_stmts.push(Stmt::Phi {
                 place: Place::Local(*local),
@@ -411,11 +439,7 @@ fn compute_reachable(entry: usize, succs: &[Vec<usize>]) -> Vec<bool> {
     reachable
 }
 
-fn compute_dominators(
-    blocks_len: usize,
-    entry: usize,
-    preds: &[Vec<usize>],
-) -> Vec<Vec<bool>> {
+fn compute_dominators(blocks_len: usize, entry: usize, preds: &[Vec<usize>]) -> Vec<Vec<bool>> {
     let mut doms = vec![vec![true; blocks_len]; blocks_len];
     for b in 0..blocks_len {
         if b == entry {
@@ -552,10 +576,9 @@ fn stmt_local_defs(stmt: &Stmt) -> Vec<LocalId> {
             }
             out
         }
-        Stmt::SetField { .. }
-        | Stmt::RcInc { .. }
-        | Stmt::RcDec { .. }
-        | Stmt::Fire { .. } => Vec::new(),
+        Stmt::SetField { .. } | Stmt::RcInc { .. } | Stmt::RcDec { .. } | Stmt::Fire { .. } => {
+            Vec::new()
+        }
     }
 }
 
@@ -577,9 +600,7 @@ fn rename_block(
         let block = &mut blocks[block_idx];
         for stmt in block.stmts.iter_mut() {
             if let Stmt::Phi {
-                place,
-                original,
-                ..
+                place, original, ..
             } = stmt
             {
                 let new_local = new_local_version(locals, *original, version_counts);
@@ -662,9 +683,7 @@ fn rename_block(
         let block = &mut blocks[*succ];
         for stmt in block.stmts.iter_mut() {
             if let Stmt::Phi {
-                sources,
-                original,
-                ..
+                sources, original, ..
             } = stmt
             {
                 if let Some(current) = stacks[original.0].last().copied() {
@@ -699,14 +718,11 @@ fn new_local_version(
     original: LocalId,
     version_counts: &mut Vec<usize>,
 ) -> LocalId {
-    let orig = locals
-        .get(original.0)
-        .cloned()
-        .unwrap_or(Local {
-            name: SmolStr::new("tmp"),
-            mutable: false,
-            ty: MirType::Unknown,
-        });
+    let orig = locals.get(original.0).cloned().unwrap_or(Local {
+        name: SmolStr::new("tmp"),
+        mutable: false,
+        ty: MirType::Unknown,
+    });
     let version = version_counts[original.0];
     version_counts[original.0] += 1;
     let name = SmolStr::new(format!("{}#ssa{}", orig.name, version));
@@ -749,7 +765,9 @@ fn rename_rvalue(value: &mut Rvalue, stacks: &[Vec<LocalId>]) {
             }
         }
         Rvalue::ClassInit { .. } => {}
-        Rvalue::Spawn { target, instance, .. } => {
+        Rvalue::Spawn {
+            target, instance, ..
+        } => {
             rename_value(target, stacks);
             rename_value(instance, stacks);
         }
@@ -840,8 +858,7 @@ fn result_peephole(func: &mut MirFunction) {
                     Rvalue::ResultIsOk { value: inner } => {
                         if let Value::Temp(temp) = inner {
                             if let Some((is_ok, _)) = result_sources.get(&temp.0) {
-                                *value =
-                                    Rvalue::Use(Value::Const(Literal::Boolean(*is_ok)));
+                                *value = Rvalue::Use(Value::Const(Literal::Boolean(*is_ok)));
                             }
                         }
                     }
@@ -960,7 +977,8 @@ fn scalar_replace_literals(func: &mut MirFunction) {
                 }
                 Stmt::RcInc { value, .. } | Stmt::RcDec { value, .. } => {
                     if let Value::Temp(temp) = value {
-                        if !list_literals.contains_key(&temp.0) && !map_literals.contains_key(&temp.0)
+                        if !list_literals.contains_key(&temp.0)
+                            && !map_literals.contains_key(&temp.0)
                         {
                             replaceable.remove(&temp.0);
                         }
@@ -968,7 +986,9 @@ fn scalar_replace_literals(func: &mut MirFunction) {
                 }
                 Stmt::Await { pending, .. }
                 | Stmt::Fire { pending, .. }
-                | Stmt::IterInit { iterable: pending, .. } => {
+                | Stmt::IterInit {
+                    iterable: pending, ..
+                } => {
                     collect_disallowed_value_use(pending, &mut replaceable);
                 }
                 Stmt::IterNext { iter, .. } => {
@@ -1030,8 +1050,7 @@ fn scalar_replace_literals(func: &mut MirFunction) {
                                     if replaceable.contains(&temp.0) {
                                         if let Some(items) = list_literals.get(&temp.0) {
                                             let idx = idx as isize;
-                                            let value = if idx >= 0
-                                                && (idx as usize) < items.len()
+                                            let value = if idx >= 0 && (idx as usize) < items.len()
                                             {
                                                 items[idx as usize].clone()
                                             } else {
@@ -1108,9 +1127,7 @@ fn strength_reduce_mods(func: &mut MirFunction) {
                     rhs,
                 } = value
                 {
-                    if let Some((_, _, prev)) =
-                        seen.iter().find(|(l, r, _)| l == lhs && r == rhs)
-                    {
+                    if let Some((_, _, prev)) = seen.iter().find(|(l, r, _)| l == lhs && r == rhs) {
                         *value = Rvalue::Use(prev.clone());
                         continue;
                     }
@@ -1161,7 +1178,9 @@ fn collect_temp_ids_rvalue(value: &Rvalue, out: &mut Vec<usize>) {
             }
         }
         Rvalue::ClassInit { .. } => {}
-        Rvalue::Spawn { target, instance, .. } => {
+        Rvalue::Spawn {
+            target, instance, ..
+        } => {
             collect_temp_ids_in_value(target, out);
             collect_temp_ids_in_value(instance, out);
         }
@@ -1642,9 +1661,8 @@ fn insert_rc(func: &mut MirFunction) {
         }
 
         if !edge_rcdec_prepend[block_idx].is_empty() {
-            let mut combined = Vec::with_capacity(
-                edge_rcdec_prepend[block_idx].len() + new_stmts.len(),
-            );
+            let mut combined =
+                Vec::with_capacity(edge_rcdec_prepend[block_idx].len() + new_stmts.len());
             combined.extend(edge_rcdec_prepend[block_idx].drain(..));
             combined.extend(new_stmts);
             block.stmts = combined;
@@ -2243,7 +2261,14 @@ mod tests {
             name: "map_get".into(),
             params: Vec::new(),
             locals: Vec::new(),
-            temps: vec![Temp { ty: MirType::Unknown }, Temp { ty: MirType::Unknown }],
+            temps: vec![
+                Temp {
+                    ty: MirType::Unknown,
+                },
+                Temp {
+                    ty: MirType::Unknown,
+                },
+            ],
             blocks: vec![block],
             entry: BlockId(0),
             suspendable: false,
@@ -2316,7 +2341,9 @@ mod tests {
                 mutable: false,
                 ty: MirType::Named("Foo".into()),
             }],
-            temps: vec![Temp { ty: MirType::Unknown }],
+            temps: vec![Temp {
+                ty: MirType::Unknown,
+            }],
             blocks: vec![BasicBlock {
                 stmts: vec![Stmt::Assign {
                     place: Place::Temp(TempId(0)),
@@ -2368,7 +2395,9 @@ mod tests {
                 mutable: false,
                 ty: MirType::Unknown,
             }],
-            temps: vec![Temp { ty: MirType::Unknown }],
+            temps: vec![Temp {
+                ty: MirType::Unknown,
+            }],
             blocks: vec![BasicBlock {
                 stmts: vec![Stmt::Assign {
                     place: Place::Temp(TempId(0)),
@@ -2417,7 +2446,9 @@ mod tests {
                     name: "main".into(),
                     params: vec![],
                     locals: vec![],
-                    temps: vec![Temp { ty: MirType::Unknown }],
+                    temps: vec![Temp {
+                        ty: MirType::Unknown,
+                    }],
                     blocks: vec![BasicBlock {
                         stmts: vec![Stmt::Assign {
                             place: Place::Temp(TempId(0)),
@@ -2492,7 +2523,9 @@ mod tests {
                     name: "main".into(),
                     params: vec![],
                     locals: vec![],
-                    temps: vec![Temp { ty: MirType::Unknown }],
+                    temps: vec![Temp {
+                        ty: MirType::Unknown,
+                    }],
                     blocks: vec![BasicBlock {
                         stmts: vec![Stmt::Assign {
                             place: Place::Temp(TempId(0)),
@@ -2515,7 +2548,9 @@ mod tests {
                     name: "helper".into(),
                     params: vec![],
                     locals: vec![],
-                    temps: vec![Temp { ty: MirType::Unknown }],
+                    temps: vec![Temp {
+                        ty: MirType::Unknown,
+                    }],
                     blocks: vec![BasicBlock {
                         stmts: vec![Stmt::Assign {
                             place: Place::Temp(TempId(0)),

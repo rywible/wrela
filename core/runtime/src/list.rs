@@ -1,9 +1,9 @@
+use crate::arena;
+#[cfg(feature = "metrics")]
+use crate::metrics::inc_alloc_list;
 use crate::object::ObjHeader;
 use crate::value::{TypeId, Value, header};
 use crate::{wr_rc_dec, wr_rc_inc};
-#[cfg(feature = "metrics")]
-use crate::metrics::inc_alloc_list;
-use crate::arena;
 
 const FLAG_MUTABLE: u32 = 1;
 

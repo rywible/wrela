@@ -4,7 +4,10 @@ use wrela::hir;
 use wrela::hir::project::load_project;
 use wrela::mir;
 use wrela::mir::analysis;
-use wrela::mir::ir::{AllocKind, BasicBlock, BlockId, Local, MirFunction, MirType, Place, Rvalue, Stmt, Temp, TempId, Terminator, Value};
+use wrela::mir::ir::{
+    AllocKind, BasicBlock, BlockId, Local, MirFunction, MirType, Place, Rvalue, Stmt, Temp, TempId,
+    Terminator, Value,
+};
 
 fn load_module_from_source(source: &str) -> hir::Module {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -270,7 +273,14 @@ fn mir_alloc_annotations_preserved() {
             mutable: false,
             ty: MirType::Unknown,
         }],
-        temps: vec![Temp { ty: MirType::Unknown }, Temp { ty: MirType::Unknown }],
+        temps: vec![
+            Temp {
+                ty: MirType::Unknown,
+            },
+            Temp {
+                ty: MirType::Unknown,
+            },
+        ],
         blocks: vec![block],
         entry: BlockId(0),
         suspendable: false,
@@ -305,7 +315,11 @@ to run() -> Integer:
 
     let module = load_module_from_source(&source);
     let semantic = hir::semantic::check_module(&module);
-    assert!(semantic.errors.is_empty(), "semantic errors: {:?}", semantic.errors);
+    assert!(
+        semantic.errors.is_empty(),
+        "semantic errors: {:?}",
+        semantic.errors
+    );
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
@@ -322,9 +336,16 @@ to run() -> Integer:
         .iter()
         .find(|f| f.name.as_str() == "g")
         .expect("missing g");
-    let g_types = analysis.type_map.function(&g_name).expect("missing g types");
+    let g_types = analysis
+        .type_map
+        .function(&g_name)
+        .expect("missing g types");
     let param = g_func.params.first().expect("missing param");
-    let param_ty = g_types.locals.get(param.0).cloned().unwrap_or(MirType::Unknown);
+    let param_ty = g_types
+        .locals
+        .get(param.0)
+        .cloned()
+        .unwrap_or(MirType::Unknown);
     assert_eq!(param_ty, MirType::Integer);
 }
 

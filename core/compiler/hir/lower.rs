@@ -387,7 +387,11 @@ impl LoweringContext {
             .children()
             .filter_map(ast::PrivateBlock::cast)
         {
-            for field in private_block.syntax().children().filter_map(ast::FieldDef::cast) {
+            for field in private_block
+                .syntax()
+                .children()
+                .filter_map(ast::FieldDef::cast)
+            {
                 fields.push(self.lower_field(field));
             }
         }
@@ -408,7 +412,9 @@ impl LoweringContext {
             visibility: visibility_for_node_default(f.syntax()),
             ty: f.ty().map(|t| self.lower_type_ref(t)),
             mutable: f.is_mutable(),
-            default: f.default_expr().and_then(|expr| self.lower_field_default(expr)),
+            default: f
+                .default_expr()
+                .and_then(|expr| self.lower_field_default(expr)),
         }
     }
 
@@ -448,7 +454,9 @@ impl LoweringContext {
                 }
                 Some(FieldDefault::Map(items))
             }
-            ast::Expr::Paren(p) => self.lower_field_default(p.syntax().children().filter_map(ast::Expr::cast).next()?),
+            ast::Expr::Paren(p) => {
+                self.lower_field_default(p.syntax().children().filter_map(ast::Expr::cast).next()?)
+            }
             _ => None,
         }
     }
@@ -632,10 +640,7 @@ impl BodyLoweringContext {
                 for case in m.cases() {
                     match case {
                         ast::MatchCaseItem::Case(c) => {
-                            let labels = c
-                                .labels()
-                                .map(|p| self.lower_pattern(p))
-                                .collect();
+                            let labels = c.labels().map(|p| self.lower_pattern(p)).collect();
                             let body = if let Some(block) = c.block() {
                                 self.lower_block(Some(block))
                             } else {
@@ -723,7 +728,10 @@ impl BodyLoweringContext {
                     .message()
                     .and_then(|e| self.lower_expr(e))
                     .unwrap_or_else(|| {
-                        self.alloc_expr(Expr::Literal(Literal::String(SmolStr::new(""))), self.empty_span())
+                        self.alloc_expr(
+                            Expr::Literal(Literal::String(SmolStr::new(""))),
+                            self.empty_span(),
+                        )
                     });
                 Stmt::Require { condition, message }
             }
@@ -759,7 +767,9 @@ impl BodyLoweringContext {
         let condition = i
             .condition()
             .and_then(|e| self.lower_expr(e))
-            .unwrap_or_else(|| self.alloc_expr(Expr::Literal(Literal::Boolean(false)), self.empty_span()));
+            .unwrap_or_else(|| {
+                self.alloc_expr(Expr::Literal(Literal::Boolean(false)), self.empty_span())
+            });
         let then_branch = self.lower_block(i.then_block());
         let else_branch = if let Some(block) = i.else_block() {
             Some(self.lower_block(Some(block)))
@@ -782,12 +792,8 @@ impl BodyLoweringContext {
         if let Some(token) = pattern.literals().next() {
             let lit = match token.kind() {
                 SyntaxKind::StringLiteral => Literal::String(parse_string_literal(token.text())),
-                SyntaxKind::IntNumber => {
-                    Literal::Integer(parse_int_literal(token.text()))
-                }
-                SyntaxKind::FloatNumber => {
-                    Literal::Float(parse_float_literal(token.text()))
-                }
+                SyntaxKind::IntNumber => Literal::Integer(parse_int_literal(token.text())),
+                SyntaxKind::FloatNumber => Literal::Float(parse_float_literal(token.text())),
                 SyntaxKind::TrueKw => Literal::Boolean(true),
                 SyntaxKind::FalseKw => Literal::Boolean(false),
                 SyntaxKind::NothingKw => Literal::Nil,
@@ -876,7 +882,11 @@ impl BodyLoweringContext {
             }
             ast::Expr::TypeApply(t) => {
                 let callee = self.lower_expr(t.callee()?)?;
-                let type_args = t.args().into_iter().map(|arg| self.lower_type_ref(arg)).collect();
+                let type_args = t
+                    .args()
+                    .into_iter()
+                    .map(|arg| self.lower_type_ref(arg))
+                    .collect();
                 Expr::TypeApply { callee, type_args }
             }
             ast::Expr::Call(c) => {
@@ -1290,13 +1300,22 @@ fn assign_op_for_node(node: &crate::parser::SyntaxNode) -> Option<AssignOp> {
 
 fn parse_int_literal(text: &str) -> i64 {
     let cleaned = text.replace('_', "");
-    if let Some(hex) = cleaned.strip_prefix("0x").or_else(|| cleaned.strip_prefix("0X")) {
+    if let Some(hex) = cleaned
+        .strip_prefix("0x")
+        .or_else(|| cleaned.strip_prefix("0X"))
+    {
         return i64::from_str_radix(hex, 16).unwrap_or_default();
     }
-    if let Some(bin) = cleaned.strip_prefix("0b").or_else(|| cleaned.strip_prefix("0B")) {
+    if let Some(bin) = cleaned
+        .strip_prefix("0b")
+        .or_else(|| cleaned.strip_prefix("0B"))
+    {
         return i64::from_str_radix(bin, 2).unwrap_or_default();
     }
-    if let Some(oct) = cleaned.strip_prefix("0o").or_else(|| cleaned.strip_prefix("0O")) {
+    if let Some(oct) = cleaned
+        .strip_prefix("0o")
+        .or_else(|| cleaned.strip_prefix("0O"))
+    {
         return i64::from_str_radix(oct, 8).unwrap_or_default();
     }
     cleaned.parse::<i64>().unwrap_or_default()

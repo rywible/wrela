@@ -1,9 +1,9 @@
+use crate::arena;
+#[cfg(feature = "metrics")]
+use crate::metrics::inc_alloc_map;
 use crate::object::ObjHeader;
 use crate::value::{TypeId, Value, header, int_value, value_eq, value_hash as hash_value};
 use crate::{wr_rc_dec, wr_rc_inc};
-#[cfg(feature = "metrics")]
-use crate::metrics::inc_alloc_map;
-use crate::arena;
 use std::collections::HashMap;
 use std::collections::hash_map::{Entry, Iter as HashIter};
 use std::hash::{Hash, Hasher};
@@ -55,7 +55,11 @@ pub(crate) enum MapIter<'a> {
 impl<'a> MapIter<'a> {
     pub(crate) fn next(&mut self) -> Option<(MapKey, Value)> {
         match self {
-            MapIter::Inline { entries, index, len } => {
+            MapIter::Inline {
+                entries,
+                index,
+                len,
+            } => {
                 if *index >= *len {
                     return None;
                 }
@@ -298,7 +302,10 @@ pub(crate) fn map_iter(map: *mut MapObj) -> MapIter<'static> {
             },
             MapEntries::Heap(entries) => {
                 let iter = entries.iter();
-                MapIter::Heap(std::mem::transmute::<HashIter<'_, MapKey, Value>, HashIter<'static, MapKey, Value>>(iter))
+                MapIter::Heap(std::mem::transmute::<
+                    HashIter<'_, MapKey, Value>,
+                    HashIter<'static, MapKey, Value>,
+                >(iter))
             }
         }
     }

@@ -130,7 +130,8 @@ fn write_json_map(buf: &mut Vec<u8>, map_ref: *mut map::MapObj) {
                 buf.push(b':');
                 write_json_value(buf, value);
             })
-            .is_none() {
+            .is_none()
+            {
                 continue;
             }
         }

@@ -1,5 +1,5 @@
-use crate::hir::arena::{Arena, Idx};
 use crate::hir::TypeRef;
+use crate::hir::arena::{Arena, Idx};
 use rowan::TextRange;
 use smol_str::SmolStr;
 

@@ -248,7 +248,11 @@ fn config_field_bool(config: Value, field: &str) -> Option<bool> {
         unsafe { wr_rc_dec(val) };
         return None;
     }
-    let out = if val.is_bool() { Some(val.as_bool()) } else { None };
+    let out = if val.is_bool() {
+        Some(val.as_bool())
+    } else {
+        None
+    };
     unsafe { wr_rc_dec(val) };
     out
 }

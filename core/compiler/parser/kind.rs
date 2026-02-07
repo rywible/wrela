@@ -40,16 +40,16 @@ pub enum SyntaxKind {
     PrivateKw,   // private
     ItsKw,       // its
     ItKw,        // it
-    MutableKw,  // mutable
-    IsKw,       // is
-    EitherKw,   // either
-    DeferKw,    // defer
-    IgnoreKw,   // ignore
-    CaptureKw,  // capture
-    CheckKw,    // check
-    ChecksKw,   // checks
-    GivenKw,    // given
-    RequireKw,  // require
+    MutableKw,   // mutable
+    IsKw,        // is
+    EitherKw,    // either
+    DeferKw,     // defer
+    IgnoreKw,    // ignore
+    CaptureKw,   // capture
+    CheckKw,     // check
+    ChecksKw,    // checks
+    GivenKw,     // given
+    RequireKw,   // require
 
     // Literals
     Ident,

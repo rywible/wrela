@@ -281,7 +281,9 @@ pub enum TypeError {
         help: String,
     },
 
-    #[error("result must be handled with `otherwise`, `match`, `ignore result`, `capture`, or returned from a `Result` function")]
+    #[error(
+        "result must be handled with `otherwise`, `match`, `ignore result`, `capture`, or returned from a `Result` function"
+    )]
     #[diagnostic(code(lang::ty::unhandled_result))]
     UnhandledResult {
         #[label("result here")]
@@ -482,9 +484,18 @@ fn check_function(
             ctx.declare(SmolStr::new("it"), self_ty.clone());
             ctx.declare(SmolStr::new("its"), self_ty);
         } else {
-            ctx.declare(class_name.clone(), Type::Named(class_name.clone(), Vec::new()));
-            ctx.declare(SmolStr::new("it"), Type::Named(class_name.clone(), Vec::new()));
-            ctx.declare(SmolStr::new("its"), Type::Named(class_name.clone(), Vec::new()));
+            ctx.declare(
+                class_name.clone(),
+                Type::Named(class_name.clone(), Vec::new()),
+            );
+            ctx.declare(
+                SmolStr::new("it"),
+                Type::Named(class_name.clone(), Vec::new()),
+            );
+            ctx.declare(
+                SmolStr::new("its"),
+                Type::Named(class_name.clone(), Vec::new()),
+            );
         }
     }
     for param in &func.params {
@@ -495,7 +506,10 @@ fn check_function(
             .unwrap_or(Type::Unknown);
         ctx.declare(param.name.clone(), ty);
     }
-    let ret_type = func.ret_type.as_ref().map(|t| type_from_ref_in_ctx(t, &ctx));
+    let ret_type = func
+        .ret_type
+        .as_ref()
+        .map(|t| type_from_ref_in_ctx(t, &ctx));
     let returns_result = matches!(ret_type, Some(Type::Result(_, _)));
     if let Some(body) = &func.body {
         for stmt in &body.root_stmts {
@@ -717,17 +731,9 @@ impl InterfaceIndex {
                     .as_ref()
                     .map(|t| type_from_ref_with_params(t, &param_set))
                     .unwrap_or(Type::Unknown);
-                methods.insert(
-                    method.name.clone(),
-                    InterfaceMethodSig { params, ret },
-                );
+                methods.insert(method.name.clone(), InterfaceMethodSig { params, ret });
             }
-            interfaces.insert(
-                interface.name.clone(),
-                InterfaceSig {
-                    methods,
-                },
-            );
+            interfaces.insert(interface.name.clone(), InterfaceSig { methods });
         }
         Self { interfaces }
     }
@@ -751,7 +757,11 @@ fn check_interface_conformance(
             let Some(iface) = interfaces.get(iface_name) else {
                 errors.push(TypeError::UnknownInterface {
                     name: iface_name.clone(),
-                    span: span_from_range(class.name_span.unwrap_or_else(|| TextRange::empty(0.into()))),
+                    span: span_from_range(
+                        class
+                            .name_span
+                            .unwrap_or_else(|| TextRange::empty(0.into())),
+                    ),
                 });
                 continue;
             };
@@ -761,7 +771,11 @@ fn check_interface_conformance(
                         class: class_name.clone(),
                         interface: iface_name.clone(),
                         method: method_name.clone(),
-                        span: span_from_range(class.name_span.unwrap_or_else(|| TextRange::empty(0.into()))),
+                        span: span_from_range(
+                            class
+                                .name_span
+                                .unwrap_or_else(|| TextRange::empty(0.into())),
+                        ),
                     });
                     continue;
                 };
@@ -772,7 +786,11 @@ fn check_interface_conformance(
                         class: class_name.clone(),
                         interface: iface_name.clone(),
                         method: method_name.clone(),
-                        span: span_from_range(class.name_span.unwrap_or_else(|| TextRange::empty(0.into()))),
+                        span: span_from_range(
+                            class
+                                .name_span
+                                .unwrap_or_else(|| TextRange::empty(0.into())),
+                        ),
                     });
                 }
             }
@@ -894,7 +912,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
         (
             SmolStr::new("__wr_bytes_to_string"),
             FunctionSig {
-                params: vec![(SmolStr::new("value"), Type::Named(SmolStr::new("Bytes"), Vec::new()))],
+                params: vec![(
+                    SmolStr::new("value"),
+                    Type::Named(SmolStr::new("Bytes"), Vec::new()),
+                )],
                 ret: Type::String,
                 kind: FunctionKind::Function,
             },
@@ -902,7 +923,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
         (
             SmolStr::new("__wr_bytes_len"),
             FunctionSig {
-                params: vec![(SmolStr::new("value"), Type::Named(SmolStr::new("Bytes"), Vec::new()))],
+                params: vec![(
+                    SmolStr::new("value"),
+                    Type::Named(SmolStr::new("Bytes"), Vec::new()),
+                )],
                 ret: Type::Integer,
                 kind: FunctionKind::Function,
             },
@@ -1334,7 +1358,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                         SmolStr::new("storage"),
                         Type::Named(SmolStr::new("StorageClient"), Vec::new()),
                     ),
-                    (SmolStr::new("stream"), Type::Named(SmolStr::new("Bytes"), Vec::new())),
+                    (
+                        SmolStr::new("stream"),
+                        Type::Named(SmolStr::new("Bytes"), Vec::new()),
+                    ),
                     (
                         SmolStr::new("opts"),
                         Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown)),
@@ -1805,7 +1832,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                         Box::new(Type::Unknown),
                     ))),
                 )],
-                ret: Type::Pending(Box::new(Type::Result(Box::new(Type::Boolean), Box::new(err)))),
+                ret: Type::Pending(Box::new(Type::Result(
+                    Box::new(Type::Boolean),
+                    Box::new(err),
+                ))),
                 kind: FunctionKind::Function,
             },
         ),
@@ -2598,8 +2628,15 @@ fn check_assert_expr(
             let allowed = match mode {
                 AssertEqualityMode::Identity => matches!(op, BinaryOp::Eq | BinaryOp::Ne),
                 AssertEqualityMode::Value => {
-                    matches!(op, BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le
-                        | BinaryOp::Gt | BinaryOp::Ge)
+                    matches!(
+                        op,
+                        BinaryOp::Eq
+                            | BinaryOp::Ne
+                            | BinaryOp::Lt
+                            | BinaryOp::Le
+                            | BinaryOp::Gt
+                            | BinaryOp::Ge
+                    )
                 }
             };
             if !allowed {
@@ -2782,11 +2819,8 @@ fn infer_expr(
                         } else if let Some(class) = classes.get(&class_name) {
                             let subst = class_subst(class, &class_args);
                             if let Some(field_ty) = class.fields.get(member) {
-                                let field_mutable = class
-                                    .field_mutable
-                                    .get(member)
-                                    .copied()
-                                    .unwrap_or(false);
+                                let field_mutable =
+                                    class.field_mutable.get(member).copied().unwrap_or(false);
                                 if !field_mutable {
                                     errors.push(TypeError::ImmutableFieldAssign {
                                         member: member.clone(),
@@ -3249,10 +3283,11 @@ fn infer_expr(
                                                     in_result_fn,
                                                 );
                                                 let ret = method_ret.unwrap_or(method.ret.clone());
-                                                ret_ty = Some(Type::Pending(Box::new(Type::Result(
-                                                    Box::new(ret),
-                                                    Box::new(error_type()),
-                                                ))));
+                                                ret_ty =
+                                                    Some(Type::Pending(Box::new(Type::Result(
+                                                        Box::new(ret),
+                                                        Box::new(error_type()),
+                                                    ))));
                                                 valid_callee = true;
                                             }
                                         } else {
@@ -3266,7 +3301,9 @@ fn infer_expr(
                                     }
                                 }
                             }
-                            Type::Named(class_name, class_args) if interfaces.is_interface(&class_name) => {
+                            Type::Named(class_name, class_args)
+                                if interfaces.is_interface(&class_name) =>
+                            {
                                 if let Some(interface) = interfaces.get(&class_name) {
                                     if let Some(method) = interface.methods.get(member) {
                                         if is_given {
@@ -4117,11 +4154,7 @@ fn instantiate_method_params(
     )
 }
 
-fn instantiate_method_ret(
-    class: &ClassSig,
-    class_args: &[Type],
-    member: &SmolStr,
-) -> Option<Type> {
+fn instantiate_method_ret(class: &ClassSig, class_args: &[Type], member: &SmolStr) -> Option<Type> {
     let method = class.methods.get(member)?;
     if class.type_params.is_empty() {
         return Some(method.ret.clone());
@@ -4288,12 +4321,9 @@ fn types_known(left: &Type, right: &Type) -> bool {
 
 fn is_identity_primitive(ty: &Type) -> bool {
     match ty {
-        Type::Integer
-        | Type::Float
-        | Type::Number
-        | Type::Boolean
-        | Type::String
-        | Type::Nil => true,
+        Type::Integer | Type::Float | Type::Number | Type::Boolean | Type::String | Type::Nil => {
+            true
+        }
         Type::Named(name, _) => name.as_str() == "Bytes",
         _ => false,
     }
@@ -4678,10 +4708,7 @@ fn visit_stmt_for_async(
             has_await,
             calls,
         ),
-        Stmt::Require {
-            condition,
-            message,
-        } => {
+        Stmt::Require { condition, message } => {
             visit_expr_for_async(
                 body,
                 *condition,
@@ -5177,10 +5204,7 @@ fn check_stmt_async_usage(
                 in_detach,
             );
         }
-        Stmt::Require {
-            condition,
-            message,
-        } => {
+        Stmt::Require { condition, message } => {
             check_expr_async_usage(
                 body,
                 *condition,
@@ -5210,22 +5234,22 @@ fn check_stmt_async_usage(
                 in_detach,
             );
         }
-        Stmt::Let { value, .. }
-        | Stmt::Assign { value, .. }
-        | Stmt::Capture { value, .. } => check_expr_async_usage(
-            body,
-            *value,
-            fn_info,
-            classes,
-            class_method_ids,
-            requires_actor,
-            class_requires_actor,
-            class_trace,
-            cause,
-            func_labels,
-            errors,
-            in_detach,
-        ),
+        Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::Capture { value, .. } => {
+            check_expr_async_usage(
+                body,
+                *value,
+                fn_info,
+                classes,
+                class_method_ids,
+                requires_actor,
+                class_requires_actor,
+                class_trace,
+                cause,
+                func_labels,
+                errors,
+                in_detach,
+            )
+        }
         Stmt::Defer { expr } => check_expr_async_usage(
             body,
             *expr,

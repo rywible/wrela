@@ -1304,18 +1304,14 @@ fn lower_rvalue(
                                 match name.as_str() {
                                     "__wr_print" => Some(runtime_fn_print(module, runtime)?),
                                     "assert" => Some(runtime_fn_assert(module, runtime)?),
-                                    "assert_eq" => {
-                                        Some(runtime_fn_assert_eq(module, runtime)?)
-                                    }
+                                    "assert_eq" => Some(runtime_fn_assert_eq(module, runtime)?),
                                     "value_deep_eq" => {
                                         Some(runtime_fn_value_deep_eq(module, runtime)?)
                                     }
-                                    "identity_eq" => {
-                                        Some(runtime_fn_identity_eq(module, runtime)?)
+                                    "identity_eq" => Some(runtime_fn_identity_eq(module, runtime)?),
+                                    "assert_value_equality" => {
+                                        Some(runtime_fn_assert_value_equality(module, runtime)?)
                                     }
-                                    "assert_value_equality" => Some(
-                                        runtime_fn_assert_value_equality(module, runtime)?,
-                                    ),
                                     "assert_identity" => {
                                         Some(runtime_fn_assert_identity(module, runtime)?)
                                     }
@@ -1326,18 +1322,30 @@ fn lower_rvalue(
                                     "__wr_log_configure" => {
                                         Some(runtime_fn_log_configure(module, runtime)?)
                                     }
-                                    "__wr_parse_int" => Some(runtime_fn_parse_int(module, runtime)?),
-                                    "__wr_parse_float" => Some(runtime_fn_parse_float(module, runtime)?),
-                                    "__wr_read_file" => Some(runtime_fn_read_file(module, runtime)?),
-                                    "__wr_write_file" => Some(runtime_fn_write_file(module, runtime)?),
-                                    "__wr_list_push" => Some(runtime_fn_list_push(module, runtime)?),
+                                    "__wr_parse_int" => {
+                                        Some(runtime_fn_parse_int(module, runtime)?)
+                                    }
+                                    "__wr_parse_float" => {
+                                        Some(runtime_fn_parse_float(module, runtime)?)
+                                    }
+                                    "__wr_read_file" => {
+                                        Some(runtime_fn_read_file(module, runtime)?)
+                                    }
+                                    "__wr_write_file" => {
+                                        Some(runtime_fn_write_file(module, runtime)?)
+                                    }
+                                    "__wr_list_push" => {
+                                        Some(runtime_fn_list_push(module, runtime)?)
+                                    }
                                     "__wr_map_new" => Some(runtime_fn_map_new(module, runtime)?),
                                     "__wr_map_get" => Some(runtime_fn_map_get(module, runtime)?),
                                     "__wr_map_set" => Some(runtime_fn_map_set(module, runtime)?),
                                     "__wr_pool_auto_size" => {
                                         Some(runtime_fn_pool_auto_size(module, runtime)?)
                                     }
-                                    "__wr_pool_size" => Some(runtime_fn_pool_size(module, runtime)?),
+                                    "__wr_pool_size" => {
+                                        Some(runtime_fn_pool_size(module, runtime)?)
+                                    }
                                     "__wr_pool_rr" => Some(runtime_fn_pool_rr(module, runtime)?),
                                     "__wr_pool_queue_len" => {
                                         Some(runtime_fn_pool_queue_len(module, runtime)?)
@@ -1345,14 +1353,18 @@ fn lower_rvalue(
                                     "__wr_actor_mailbox_len" => {
                                         Some(runtime_fn_actor_mailbox_len(module, runtime)?)
                                     }
-                                    "__wr_actor_pause" => Some(runtime_fn_actor_pause(module, runtime)?),
+                                    "__wr_actor_pause" => {
+                                        Some(runtime_fn_actor_pause(module, runtime)?)
+                                    }
                                     "__wr_actor_resume" => {
                                         Some(runtime_fn_actor_resume(module, runtime)?)
                                     }
                                     "__wr_actor_pause_wait" => {
                                         Some(runtime_fn_actor_pause_wait(module, runtime)?)
                                     }
-                                    "__wr_metrics_get" => Some(runtime_fn_metrics_get(module, runtime)?),
+                                    "__wr_metrics_get" => {
+                                        Some(runtime_fn_metrics_get(module, runtime)?)
+                                    }
                                     "__wr_metrics_dropped_paused_id" => {
                                         Some(runtime_fn_metrics_dropped_paused_id(module, runtime)?)
                                     }
@@ -1362,7 +1374,9 @@ fn lower_rvalue(
                                     "__wr_clock_ns" => Some(runtime_fn_clock_ns(module, runtime)?),
                                     "__wr_sleep_ms" => Some(runtime_fn_sleep_ms(module, runtime)?),
                                     "__wr_env_get" => Some(runtime_fn_env_get(module, runtime)?),
-                                    "__wr_env_get_or" => Some(runtime_fn_env_get_or(module, runtime)?),
+                                    "__wr_env_get_or" => {
+                                        Some(runtime_fn_env_get_or(module, runtime)?)
+                                    }
                                     "__wr_env_get_as_bool" => {
                                         Some(runtime_fn_env_get_as_bool(module, runtime)?)
                                     }
@@ -1401,7 +1415,9 @@ fn lower_rvalue(
                                     "__wr_rbac_assign_role" => {
                                         Some(runtime_fn_rbac_assign_role(module, runtime)?)
                                     }
-                                    "__wr_rbac_check" => Some(runtime_fn_rbac_check(module, runtime)?),
+                                    "__wr_rbac_check" => {
+                                        Some(runtime_fn_rbac_check(module, runtime)?)
+                                    }
                                     "__wr_rbac_permissions_for" => {
                                         Some(runtime_fn_rbac_permissions_for(module, runtime)?)
                                     }
@@ -1438,7 +1454,9 @@ fn lower_rvalue(
                                     "__wr_schedule_every" => {
                                         Some(runtime_fn_schedule_every(module, runtime)?)
                                     }
-                                    "__wr_schedule_at" => Some(runtime_fn_schedule_at(module, runtime)?),
+                                    "__wr_schedule_at" => {
+                                        Some(runtime_fn_schedule_at(module, runtime)?)
+                                    }
                                     "__wr_search_index" => {
                                         Some(runtime_fn_search_index(module, runtime)?)
                                     }
@@ -1469,12 +1487,16 @@ fn lower_rvalue(
                                     "__wr_pubsub_configure" => {
                                         Some(runtime_fn_pubsub_configure(module, runtime)?)
                                     }
-                                    "__wr_rate_check" => Some(runtime_fn_rate_check(module, runtime)?),
+                                    "__wr_rate_check" => {
+                                        Some(runtime_fn_rate_check(module, runtime)?)
+                                    }
                                     "__wr_rate_ip" => Some(runtime_fn_rate_ip(module, runtime)?),
                                     "__wr_admin_enable" => {
                                         Some(runtime_fn_admin_enable(module, runtime)?)
                                     }
-                                    "__wr_storage_get" => Some(runtime_fn_storage_get(module, runtime)?),
+                                    "__wr_storage_get" => {
+                                        Some(runtime_fn_storage_get(module, runtime)?)
+                                    }
                                     "__wr_storage_get_with_version" => {
                                         Some(runtime_fn_storage_get_with_version(module, runtime)?)
                                     }
@@ -1490,7 +1512,9 @@ fn lower_rvalue(
                                     "__wr_runtime_configure" => {
                                         Some(runtime_fn_runtime_configure(module, runtime)?)
                                     }
-                                    "__wr_storage_set" => Some(runtime_fn_storage_set(module, runtime)?),
+                                    "__wr_storage_set" => {
+                                        Some(runtime_fn_storage_set(module, runtime)?)
+                                    }
                                     "__wr_storage_set_if_version" => {
                                         Some(runtime_fn_storage_set_if_version(module, runtime)?)
                                     }
@@ -1509,7 +1533,9 @@ fn lower_rvalue(
                                     "__wr_bytes_to_string" => {
                                         Some(runtime_fn_bytes_to_string(module, runtime)?)
                                     }
-                                    "__wr_bytes_len" => Some(runtime_fn_bytes_len(module, runtime)?),
+                                    "__wr_bytes_len" => {
+                                        Some(runtime_fn_bytes_len(module, runtime)?)
+                                    }
                                     "__wr_http_server_serve_get_requests" => Some(
                                         runtime_fn_http_server_serve_get_requests(module, runtime)?,
                                     ),
@@ -1818,14 +1844,7 @@ fn lower_terminator(
         }
         Terminator::Jump { target, .. } => {
             let args = phi_args_for_target(
-                block_idx,
-                target.0,
-                phi_map,
-                builder,
-                locals,
-                temps,
-                _module,
-                runtime,
+                block_idx, target.0, phi_map, builder, locals, temps, _module, runtime,
             )?;
             builder.ins().jump(block_map[target.0], &args);
         }
@@ -1922,14 +1941,7 @@ fn lower_terminator(
                     0,
                 );
                 let args = phi_args_for_target(
-                    block_idx,
-                    target.0,
-                    phi_map,
-                    builder,
-                    locals,
-                    temps,
-                    _module,
-                    runtime,
+                    block_idx, target.0, phi_map, builder, locals, temps, _module, runtime,
                 )?;
                 builder
                     .ins()
@@ -1938,14 +1950,7 @@ fn lower_terminator(
                 next_block = builder.create_block();
             }
             let default_args = phi_args_for_target(
-                block_idx,
-                default.0,
-                phi_map,
-                builder,
-                locals,
-                temps,
-                _module,
-                runtime,
+                block_idx, default.0, phi_map, builder, locals, temps, _module, runtime,
             )?;
             builder.ins().jump(block_map[default.0], &default_args);
         }
@@ -2017,7 +2022,9 @@ fn lower_literal(
             let val = builder.ins().iconst(types::I64, *v as i64);
             tag_int(builder, module, runtime, val)
         }
-        crate::hir::Literal::Boolean(v) => Ok(builder.ins().iconst(types::I64, nanbox_bool_const(*v))),
+        crate::hir::Literal::Boolean(v) => {
+            Ok(builder.ins().iconst(types::I64, nanbox_bool_const(*v)))
+        }
         crate::hir::Literal::Nil => Ok(builder.ins().iconst(types::I64, nanbox_nil_const())),
         crate::hir::Literal::Float(v) => {
             let func_id = runtime_fn_box_float(module, runtime)?;

@@ -1,5 +1,7 @@
 use crate::list::as_list_ref;
-use crate::map::{MapEntries, MapKey, as_map_ref, map_inline_entry, map_inline_len, map_is_inline, map_version};
+use crate::map::{
+    MapEntries, MapKey, as_map_ref, map_inline_entry, map_inline_len, map_is_inline, map_version,
+};
 use crate::object::ObjHeader;
 use crate::value::{TypeId, Value, header};
 use crate::{wr_rc_dec, wr_rc_inc};
@@ -50,7 +52,10 @@ pub fn iter_init(iterable: Value) -> Value {
                 }
             };
             iter.map(|iter| unsafe {
-                std::mem::transmute::<hash_map::Iter<'_, MapKey, Value>, hash_map::Iter<'static, MapKey, Value>>(iter)
+                std::mem::transmute::<
+                    hash_map::Iter<'_, MapKey, Value>,
+                    hash_map::Iter<'static, MapKey, Value>,
+                >(iter)
             })
         };
         let obj = Box::new(IterObj {
@@ -97,7 +102,12 @@ pub fn iter_next(iter_val: Value, dst_value: *mut Value, dst_done: *mut Value) {
                     }
                 }
             }
-            IterKind::Map { map, index, iter, version } => {
+            IterKind::Map {
+                map,
+                index,
+                iter,
+                version,
+            } => {
                 let map_ptr = match as_map_ref(*map) {
                     Some(map_ptr) => map_ptr,
                     None => return,

@@ -299,7 +299,10 @@ fn parse_pattern(p: &mut Parser) {
         p.bump();
         while p.at(SyntaxKind::Dot) {
             p.bump();
-            p.expect_with_message(SyntaxKind::Ident, "expected identifier after '.' in pattern");
+            p.expect_with_message(
+                SyntaxKind::Ident,
+                "expected identifier after '.' in pattern",
+            );
         }
         if p.at(SyntaxKind::LParen) {
             parse_pattern_arg_list(p);

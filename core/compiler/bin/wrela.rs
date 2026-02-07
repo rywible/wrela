@@ -184,8 +184,7 @@ fn main() {
                     std::process::exit(EXIT_USAGE);
                 }
             };
-            let result =
-                compile_to_mir(&entry_path, output_format, emit_mir, emit_mir_opt, false);
+            let result = compile_to_mir(&entry_path, output_format, emit_mir, emit_mir_opt, false);
             if let Err(code) = result {
                 std::process::exit(code);
             }
@@ -546,8 +545,11 @@ fn run_tests(
         return EXIT_OK;
     }
 
-    let queue = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from(tests)));
-    let (tx, rx) = std::sync::mpsc::channel::<(String, bool, Duration, String, Option<MetricsDump>)>();
+    let queue = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from(
+        tests,
+    )));
+    let (tx, rx) =
+        std::sync::mpsc::channel::<(String, bool, Duration, String, Option<MetricsDump>)>();
     let mut handles = Vec::new();
 
     for _ in 0..jobs {
@@ -633,7 +635,11 @@ fn run_tests(
             );
         }
     }
-    if fail_count == 0 { EXIT_OK } else { EXIT_CODEGEN }
+    if fail_count == 0 {
+        EXIT_OK
+    } else {
+        EXIT_CODEGEN
+    }
 }
 
 fn percentile(samples: &[u128], pct: f64) -> u128 {
@@ -735,10 +741,11 @@ fn run_single_test(
         return Err(format!("failed to write test entry: {err}"));
     }
     let tests_root = root.join("tests");
-    let mir_module = match compile_to_mir_with_root(&entry_path, src_root, Some(&tests_root), output_format) {
-        Ok(mir) => mir,
-        Err(_) => return Err("compile failed".to_string()),
-    };
+    let mir_module =
+        match compile_to_mir_with_root(&entry_path, src_root, Some(&tests_root), output_format) {
+            Ok(mir) => mir,
+            Err(_) => return Err("compile failed".to_string()),
+        };
     if let Err(err) = wrela::backend::cranelift::compile_to_executable(&mir_module, &exe_path) {
         return Err(format!("codegen error: {}", err.0));
     }
@@ -803,7 +810,11 @@ fn compile_to_mir_with_root(
                     warn.source,
                 );
             }
-            (project.module, project.entry_source, entry_path.display().to_string())
+            (
+                project.module,
+                project.entry_source,
+                entry_path.display().to_string(),
+            )
         }
         Err(errors) => {
             for err in errors {
@@ -886,50 +897,51 @@ fn compile_to_mir(
     if trace {
         eprintln!("build: start {:?}", entry_path);
     }
-    let (module, source, source_name) = match hir::project::load_project_with_entrypoint(
-        entry_path,
-        require_entrypoint,
-    ) {
-        Ok(project) => {
-            for warn in project.warnings {
-                emit_diag(
-                    output_format,
-                    "warning",
-                    warn.message,
-                    warn.span,
-                    warn.path.display().to_string(),
-                    warn.source,
-                );
-            }
-            (
-                project.module,
-                project.entry_source,
-                entry_path.display().to_string(),
-            )
-        }
-        Err(errors) => {
-            let mut missing_run = false;
-            for err in errors {
-                if err.message.contains("define 'to run()'") {
-                    missing_run = true;
+    let (module, source, source_name) =
+        match hir::project::load_project_with_entrypoint(entry_path, require_entrypoint) {
+            Ok(project) => {
+                for warn in project.warnings {
+                    emit_diag(
+                        output_format,
+                        "warning",
+                        warn.message,
+                        warn.span,
+                        warn.path.display().to_string(),
+                        warn.source,
+                    );
                 }
-                emit_diag(
-                    output_format,
-                    "error",
-                    err.message,
-                    err.span,
-                    err.path.display().to_string(),
-                    err.source,
-                );
+                (
+                    project.module,
+                    project.entry_source,
+                    entry_path.display().to_string(),
+                )
             }
-            if missing_run && require_entrypoint && matches!(output_format, OutputFormat::Pretty) {
-                eprintln!(
-                    "note: add `to run()` in your entry file to define the program entrypoint"
-                );
+            Err(errors) => {
+                let mut missing_run = false;
+                for err in errors {
+                    if err.message.contains("define 'to run()'") {
+                        missing_run = true;
+                    }
+                    emit_diag(
+                        output_format,
+                        "error",
+                        err.message,
+                        err.span,
+                        err.path.display().to_string(),
+                        err.source,
+                    );
+                }
+                if missing_run
+                    && require_entrypoint
+                    && matches!(output_format, OutputFormat::Pretty)
+                {
+                    eprintln!(
+                        "note: add `to run()` in your entry file to define the program entrypoint"
+                    );
+                }
+                return Err(EXIT_PARSE);
             }
-            return Err(EXIT_PARSE);
-        }
-    };
+        };
     stage("load_project", &start);
 
     let mut had_errors = false;
@@ -1051,23 +1063,17 @@ fn run_dev_loop(
                 let _ = running.kill();
                 let _ = running.wait();
             }
-            let mir_module = match compile_to_mir(
-                entry_path,
-                output_format,
-                emit_mir,
-                emit_mir_opt,
-                true,
-            )
-            {
-                Ok(mir) => mir,
-                Err(code) => {
-                    if code != EXIT_USAGE {
-                        eprintln!("dev: build failed (exit {code})");
+            let mir_module =
+                match compile_to_mir(entry_path, output_format, emit_mir, emit_mir_opt, true) {
+                    Ok(mir) => mir,
+                    Err(code) => {
+                        if code != EXIT_USAGE {
+                            eprintln!("dev: build failed (exit {code})");
+                        }
+                        sleep_ms(poll_ms);
+                        continue;
                     }
-                    sleep_ms(poll_ms);
-                    continue;
-                }
-            };
+                };
             let output = temp_exe_path();
             if let Err(err) =
                 wrela::backend::cranelift::compile_to_executable(&mir_module, output.as_ref())

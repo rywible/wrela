@@ -255,28 +255,6 @@ pub(crate) fn runtime_spawn<F>(fut: F)
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    #[cfg(any(test, feature = "test-utils"))]
-    {
-        let storage_config = crate::storage::config::capture_storage_config_override();
-        let storage_service = crate::storage::service::capture_storage_override();
-        runtime().spawn(async move {
-            crate::storage::config::with_storage_config_override_if_present(
-                storage_config,
-                async move {
-                    crate::storage::service::with_storage_override_if_present(
-                        storage_service,
-                        async move {
-                            fut.await;
-                        },
-                    )
-                    .await;
-                },
-            )
-            .await;
-        });
-        return;
-    }
-    #[cfg(not(any(test, feature = "test-utils")))]
     runtime().spawn(fut);
 }
 

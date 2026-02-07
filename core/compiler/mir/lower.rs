@@ -34,8 +34,11 @@ pub fn lower_module_with_types(module: &Module, type_info: Option<&TypeInfo>) ->
             .iter()
             .map(|field| field.name.clone())
             .collect();
-        let defaults: Vec<Option<hir::FieldDefault>> =
-            class.fields.iter().map(|field| field.default.clone()).collect();
+        let defaults: Vec<Option<hir::FieldDefault>> = class
+            .fields
+            .iter()
+            .map(|field| field.default.clone())
+            .collect();
         class_fields.insert(class.name.clone(), fields);
         class_field_defaults.insert(class.name.clone(), defaults);
         let mut methods = Vec::new();
@@ -68,9 +71,7 @@ pub fn lower_module_with_types(module: &Module, type_info: Option<&TypeInfo>) ->
     }
 
     for (_idx, interface) in module.interfaces.iter() {
-        let method_set = interface_methods
-            .entry(interface.name.clone())
-            .or_default();
+        let method_set = interface_methods.entry(interface.name.clone()).or_default();
         for method in &interface.methods {
             method_set.insert(method.name.clone());
         }
@@ -167,11 +168,7 @@ pub fn lower_module_with_types(module: &Module, type_info: Option<&TypeInfo>) ->
         ));
     }
 
-    let dispatch_functions = build_interface_dispatch_functions(
-        module,
-        &interface_impls,
-        &tag_map,
-    );
+    let dispatch_functions = build_interface_dispatch_functions(module, &interface_impls, &tag_map);
     for func in dispatch_functions {
         functions.push(func);
     }
@@ -280,7 +277,8 @@ A Whale:\n    can swim() -> Boolean:\n        return true\n\nto f() -> Result[Bo
 
     #[test]
     fn test_lower_if_creates_blocks() {
-        let input = "to f() -> Nothing:\n    if true:\n        x = 1\n    otherwise:\n        x = 2\n";
+        let input =
+            "to f() -> Nothing:\n    if true:\n        x = 1\n    otherwise:\n        x = 2\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = hir_lower::lower(root);
@@ -309,7 +307,9 @@ A Counter:
             .find(|func| func.name == "Counter.add")
             .expect("missing Counter.add");
         let has_set_field = func.blocks.iter().any(|block| {
-            block.stmts.iter().any(|stmt| matches!(stmt, MirStmt::SetField { field, .. } if field.as_str() == "value"))
+            block.stmts.iter().any(
+                |stmt| matches!(stmt, MirStmt::SetField { field, .. } if field.as_str() == "value"),
+            )
         });
         assert!(has_set_field, "expected SetField for member assign");
     }
@@ -1060,12 +1060,12 @@ impl FunctionLowerer {
         } else {
             Value::Const(Literal::Integer(1))
         };
-        let neg_step_value =
-            if matches!(lhs_ty, MirType::Float) || matches!(rhs_ty, MirType::Float) {
-                Value::Const(Literal::Float(-1.0))
-            } else {
-                Value::Const(Literal::Integer(-1))
-            };
+        let neg_step_value = if matches!(lhs_ty, MirType::Float) || matches!(rhs_ty, MirType::Float)
+        {
+            Value::Const(Literal::Float(-1.0))
+        } else {
+            Value::Const(Literal::Integer(-1))
+        };
 
         self.current_block = asc_init;
         self.push_stmt(MirStmt::Assign {
@@ -1271,7 +1271,9 @@ impl FunctionLowerer {
 
     fn match_has_result_patterns(&self, cases: &[hir::MatchCase]) -> bool {
         cases.iter().any(|case| {
-            case.labels.iter().any(|label| matches!(self.result_pattern_kind(label), Some(_)))
+            case.labels
+                .iter()
+                .any(|label| matches!(self.result_pattern_kind(label), Some(_)))
         })
     }
 
@@ -1752,8 +1754,7 @@ impl FunctionLowerer {
                 Value::Temp(temp)
             }
             Expr::Call { callee, args, .. } | Expr::GivenCall { callee, args, .. } => {
-                if let Some((class_name, class_id)) =
-                    self.resolve_class_init_target(body, *callee)
+                if let Some((class_name, class_id)) = self.resolve_class_init_target(body, *callee)
                 {
                     let fields = self
                         .class_fields
@@ -2342,7 +2343,12 @@ impl FunctionLowerer {
             }
         }
         for (idx, default) in class.field_defaults.iter().enumerate() {
-            if class.field_values.get(idx).and_then(|val| val.as_ref()).is_none() {
+            if class
+                .field_values
+                .get(idx)
+                .and_then(|val| val.as_ref())
+                .is_none()
+            {
                 if let Some(default) = default {
                     let value = self.lower_field_default(default, span);
                     self.push_stmt(MirStmt::SetField {
@@ -2402,12 +2408,7 @@ impl FunctionLowerer {
         }
     }
 
-    fn maybe_call_configure(
-        &mut self,
-        class_name: &SmolStr,
-        receiver: Value,
-        span: TextRange,
-    ) {
+    fn maybe_call_configure(&mut self, class_name: &SmolStr, receiver: Value, span: TextRange) {
         let method_id = match self
             .class_method_ids
             .get(class_name)
@@ -2652,7 +2653,11 @@ impl FunctionLowerer {
         callee: hir::Idx<Expr>,
     ) -> Option<(SmolStr, TypeTagId)> {
         match &body.exprs[callee] {
-            Expr::Variable(name) => self.type_tags.get(name).copied().map(|id| (name.clone(), id)),
+            Expr::Variable(name) => self
+                .type_tags
+                .get(name)
+                .copied()
+                .map(|id| (name.clone(), id)),
             Expr::Member { object, member, .. } => {
                 let enum_name = match &body.exprs[*object] {
                     Expr::Variable(name) => Some(name.clone()),
@@ -2910,7 +2915,9 @@ fn build_interface_dispatch_function(
             continue;
         }
         let temp_id = TempId(temps.len());
-        temps.push(Temp { ty: MirType::Unknown });
+        temps.push(Temp {
+            ty: MirType::Unknown,
+        });
         let func_name = SmolStr::new(format!("{}.{}", class, method));
         blocks[block_id.0].stmts.push(MirStmt::Assign {
             place: Place::Temp(temp_id),
@@ -2928,13 +2935,13 @@ fn build_interface_dispatch_function(
     }
 
     let crash_temp = TempId(temps.len());
-    temps.push(Temp { ty: MirType::Unknown });
+    temps.push(Temp {
+        ty: MirType::Unknown,
+    });
     blocks[default_block.0].stmts.push(MirStmt::Assign {
         place: Place::Temp(crash_temp),
         value: Rvalue::Crash {
-            value: Value::Const(Literal::String(SmolStr::new(
-                "interface dispatch failed",
-            ))),
+            value: Value::Const(Literal::String(SmolStr::new("interface dispatch failed"))),
         },
         span,
     });

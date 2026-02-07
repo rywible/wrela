@@ -356,10 +356,8 @@ impl<'a> Lexer<'a> {
 
         if let Some(token) = self.keywords.get(text) {
             // Check for DocComment promotion
-            if matches!(
-                token,
-                Token::Class | Token::To | Token::Can | Token::Has
-            ) && let Some((_comment, _span)) = self.last_comment.take()
+            if matches!(token, Token::Class | Token::To | Token::Can | Token::Has)
+                && let Some((_comment, _span)) = self.last_comment.take()
             {
                 // Promotion logic can go here if needed later
             }

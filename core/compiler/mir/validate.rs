@@ -61,16 +61,8 @@ fn validate_function(func: &MirFunction) -> Vec<MirValidationError> {
         }
         let mut defined = in_states[idx].clone();
         for stmt in &block.stmts {
-            if let Stmt::Phi { sources, .. } = stmt
-            {
-                validate_phi_sources(
-                    func,
-                    idx,
-                    &preds[idx],
-                    sources,
-                    &out_states,
-                    &mut errors,
-                );
+            if let Stmt::Phi { sources, .. } = stmt {
+                validate_phi_sources(func, idx, &preds[idx], sources, &out_states, &mut errors);
                 apply_stmt_defs(stmt, &mut defined);
                 continue;
             }
@@ -317,7 +309,10 @@ fn validate_phi_sources(
     for (pred, value) in sources {
         if pred.0 >= out_states.len() {
             errors.push(MirValidationError {
-                message: format!("phi source references invalid block {} in {block_idx}", pred.0),
+                message: format!(
+                    "phi source references invalid block {} in {block_idx}",
+                    pred.0
+                ),
             });
             continue;
         }
@@ -331,7 +326,10 @@ fn validate_phi_sources(
         }
         if !seen.insert(pred.0) {
             errors.push(MirValidationError {
-                message: format!("phi has duplicate source from block {} in {block_idx}", pred.0),
+                message: format!(
+                    "phi has duplicate source from block {} in {block_idx}",
+                    pred.0
+                ),
             });
         }
         if !out_states[pred.0].is_defined(value) {
@@ -496,7 +494,10 @@ fn check_value_use(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mir::ir::{AllocKind, BasicBlock, BlockId, Local, LocalId, MirFunction, MirType, Place, Rvalue, Stmt, Temp, Terminator, Value};
+    use crate::mir::ir::{
+        AllocKind, BasicBlock, BlockId, Local, LocalId, MirFunction, MirType, Place, Rvalue, Stmt,
+        Temp, Terminator, Value,
+    };
     use rowan::TextRange;
     use smol_str::SmolStr;
 
@@ -518,7 +519,9 @@ mod tests {
                 mutable: true,
                 ty: MirType::Unknown,
             }],
-            temps: vec![Temp { ty: MirType::Unknown }],
+            temps: vec![Temp {
+                ty: MirType::Unknown,
+            }],
             blocks: vec![BasicBlock {
                 stmts: vec![stmt],
                 terminator: Terminator::Return {
@@ -531,9 +534,9 @@ mod tests {
         };
         let errors = validate_function(&func);
         assert!(
-            errors
-                .iter()
-                .any(|err| err.message.contains("local-temp alloc assigned to non-temp")),
+            errors.iter().any(|err| err
+                .message
+                .contains("local-temp alloc assigned to non-temp")),
             "expected local-temp alloc validation error"
         );
     }

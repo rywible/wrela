@@ -63,10 +63,18 @@ pub fn analyze_module(module: &MirModule) -> ModuleAnalysis {
 fn record_calls(func: &MirFunction, graph: &mut CallGraph) {
     for block in &func.blocks {
         for stmt in &block.stmts {
-            let Stmt::Assign { value, .. } = stmt else { continue };
-            let Rvalue::Call { target, .. } = value else { continue };
+            let Stmt::Assign { value, .. } = stmt else {
+                continue;
+            };
+            let Rvalue::Call { target, .. } = value else {
+                continue;
+            };
             if let Some(name) = call_target_name(target) {
-                graph.edges.entry(func.name.clone()).or_default().push(name.clone());
+                graph
+                    .edges
+                    .entry(func.name.clone())
+                    .or_default()
+                    .push(name.clone());
                 *graph.counts.entry(name).or_insert(0) += 1;
             }
         }

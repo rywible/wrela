@@ -1,10 +1,10 @@
+use crate::arena;
 use crate::list;
+#[cfg(feature = "metrics")]
+use crate::metrics::inc_alloc_bytes;
 use crate::object::ObjHeader;
 use crate::string;
 use crate::value::{TypeId, Value, header, int_value};
-#[cfg(feature = "metrics")]
-use crate::metrics::inc_alloc_bytes;
-use crate::arena;
 
 #[repr(C)]
 pub struct BytesObj {

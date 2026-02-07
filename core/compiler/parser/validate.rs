@@ -1,7 +1,7 @@
-use crate::parser::ast;
-use crate::parser::ast::AstNode;
 use crate::parser::SyntaxKind;
 use crate::parser::SyntaxNode;
+use crate::parser::ast;
+use crate::parser::ast::AstNode;
 use miette::SourceSpan;
 
 #[derive(Debug, Clone)]
@@ -34,7 +34,9 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                     });
                 }
                 let has_arrow = has_token(&node, SyntaxKind::Arrow);
-                let has_return_type = node.children().any(|child| child.kind() == SyntaxKind::TypeRef);
+                let has_return_type = node
+                    .children()
+                    .any(|child| child.kind() == SyntaxKind::TypeRef);
                 if !has_arrow || !has_return_type {
                     errors.push(ValidationError {
                         message: "function requires an explicit return type".to_string(),
@@ -101,9 +103,8 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                             | SyntaxKind::DeriveDef
                             | SyntaxKind::PrivateBlock => {
                                 errors.push(ValidationError {
-                                    message:
-                                        "interfaces may only contain 'must' method signatures"
-                                            .to_string(),
+                                    message: "interfaces may only contain 'must' method signatures"
+                                        .to_string(),
                                     span: span_for_node(&child),
                                 });
                             }
@@ -120,7 +121,9 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                     });
                 }
                 let has_arrow = has_token(&node, SyntaxKind::Arrow);
-                let has_return_type = node.children().any(|child| child.kind() == SyntaxKind::TypeRef);
+                let has_return_type = node
+                    .children()
+                    .any(|child| child.kind() == SyntaxKind::TypeRef);
                 if !has_arrow || !has_return_type {
                     errors.push(ValidationError {
                         message: "method requires an explicit return type".to_string(),
@@ -136,7 +139,9 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                     });
                 }
                 let has_arrow = has_token(&node, SyntaxKind::Arrow);
-                let has_return_type = node.children().any(|child| child.kind() == SyntaxKind::TypeRef);
+                let has_return_type = node
+                    .children()
+                    .any(|child| child.kind() == SyntaxKind::TypeRef);
                 if !has_arrow || !has_return_type {
                     errors.push(ValidationError {
                         message: "interface method requires an explicit return type".to_string(),
@@ -152,7 +157,9 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                     });
                 }
                 let has_arrow = has_token(&node, SyntaxKind::Arrow);
-                let has_return_type = node.children().any(|child| child.kind() == SyntaxKind::TypeRef);
+                let has_return_type = node
+                    .children()
+                    .any(|child| child.kind() == SyntaxKind::TypeRef);
                 if !has_arrow || !has_return_type {
                     errors.push(ValidationError {
                         message: "derived definition requires an explicit return type".to_string(),
@@ -221,7 +228,9 @@ or inside 'has' blocks"
                             for stmt in child.children() {
                                 if !matches!(
                                     stmt.kind(),
-                                    SyntaxKind::ClassDef | SyntaxKind::FuncDef | SyntaxKind::CheckDef
+                                    SyntaxKind::ClassDef
+                                        | SyntaxKind::FuncDef
+                                        | SyntaxKind::CheckDef
                                 ) {
                                     errors.push(ValidationError {
                                         message: "private blocks at the top level may only \
@@ -464,7 +473,9 @@ fn field_default_is_allowed(expr: ast::Expr) -> bool {
         ast::Expr::Map(map) => {
             let mut items = map.items();
             while let Some(key) = items.next() {
-                let Some(value) = items.next() else { return false };
+                let Some(value) = items.next() else {
+                    return false;
+                };
                 if !field_default_is_allowed(key) || !field_default_is_allowed(value) {
                     return false;
                 }
@@ -480,17 +491,16 @@ fn field_default_is_allowed(expr: ast::Expr) -> bool {
 }
 
 fn is_in_function(node: &SyntaxNode) -> bool {
-    node.ancestors()
-        .any(|ancestor| {
-            matches!(
-                ancestor.kind(),
-                SyntaxKind::FuncDef
-                    | SyntaxKind::CheckDef
-                    | SyntaxKind::MethodDef
-                    | SyntaxKind::CheckMethodDef
-                    | SyntaxKind::DeriveDef
-            )
-        })
+    node.ancestors().any(|ancestor| {
+        matches!(
+            ancestor.kind(),
+            SyntaxKind::FuncDef
+                | SyntaxKind::CheckDef
+                | SyntaxKind::MethodDef
+                | SyntaxKind::CheckMethodDef
+                | SyntaxKind::DeriveDef
+        )
+    })
 }
 
 fn is_in_loop(node: &SyntaxNode) -> bool {

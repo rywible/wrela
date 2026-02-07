@@ -103,7 +103,9 @@ impl AstNode for Stmt {
             SyntaxKind::OptimizeStmt => OptimizeStmt::cast(node).map(Stmt::OptimizeStmt),
             SyntaxKind::AssertStmt => AssertStmt::cast(node).map(Stmt::AssertStmt),
             SyntaxKind::DeferStmt => DeferStmt::cast(node).map(Stmt::DeferStmt),
-            SyntaxKind::IgnoreResultStmt => IgnoreResultStmt::cast(node).map(Stmt::IgnoreResultStmt),
+            SyntaxKind::IgnoreResultStmt => {
+                IgnoreResultStmt::cast(node).map(Stmt::IgnoreResultStmt)
+            }
             SyntaxKind::CaptureStmt => CaptureStmt::cast(node).map(Stmt::CaptureStmt),
             SyntaxKind::RequireStmt => RequireStmt::cast(node).map(Stmt::RequireStmt),
             SyntaxKind::PrivateBlock => PrivateBlock::cast(node).map(Stmt::PrivateBlock),
@@ -905,17 +907,20 @@ impl Pattern {
     }
 
     pub fn literals(&self) -> impl Iterator<Item = SyntaxToken> {
-        self.0.children_with_tokens().filter_map(|it| it.into_token()).filter(|it| {
-            matches!(
-                it.kind(),
-                SyntaxKind::StringLiteral
-                    | SyntaxKind::IntNumber
-                    | SyntaxKind::FloatNumber
-                    | SyntaxKind::TrueKw
-                    | SyntaxKind::FalseKw
-                    | SyntaxKind::NothingKw
-            )
-        })
+        self.0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .filter(|it| {
+                matches!(
+                    it.kind(),
+                    SyntaxKind::StringLiteral
+                        | SyntaxKind::IntNumber
+                        | SyntaxKind::FloatNumber
+                        | SyntaxKind::TrueKw
+                        | SyntaxKind::FalseKw
+                        | SyntaxKind::NothingKw
+                )
+            })
     }
 
     pub fn args(&self) -> impl Iterator<Item = Pattern> {

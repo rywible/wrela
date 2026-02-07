@@ -1,9 +1,9 @@
+use crate::arena;
+#[cfg(feature = "metrics")]
+use crate::metrics::inc_alloc_result;
 use crate::object::ObjHeader;
 use crate::value::{TypeId, Value, header};
 use crate::{wr_rc_dec, wr_rc_inc};
-#[cfg(feature = "metrics")]
-use crate::metrics::inc_alloc_result;
-use crate::arena;
 
 #[repr(C)]
 struct ResultObj {

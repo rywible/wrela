@@ -1,9 +1,9 @@
+use crate::arena;
+#[cfg(feature = "metrics")]
+use crate::metrics::inc_alloc_string;
 use crate::object::ObjHeader;
 use crate::value::{TypeId, Value, header, int_value};
 use crate::{wr_rc_dec, wr_rc_inc};
-#[cfg(feature = "metrics")]
-use crate::metrics::inc_alloc_string;
-use crate::arena;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 

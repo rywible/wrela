@@ -39,9 +39,9 @@ use value::int_value;
 pub use value::{TypeId, Value};
 
 use object::drop_object;
+use std::collections::HashSet;
 use std::sync::OnceLock;
 use std::time::Instant;
-use std::collections::HashSet;
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wr_rc_inc(value: Value) {
@@ -60,13 +60,9 @@ pub unsafe extern "C" fn wr_rc_dec(value: Value) {
     }
     metrics::inc_rc_dec();
     let header = unsafe { &*value.as_ptr() };
-    let prev = header
-        .rc
-        .fetch_sub(1, std::sync::atomic::Ordering::Release);
+    let prev = header.rc.fetch_sub(1, std::sync::atomic::Ordering::Release);
     if prev == 0 {
-        header
-            .rc
-            .store(0, std::sync::atomic::Ordering::Relaxed);
+        header.rc.store(0, std::sync::atomic::Ordering::Relaxed);
         return;
     }
     if prev == 1 {
@@ -360,8 +356,12 @@ fn deep_eq(a: Value, b: Value, depth: usize, seen: &mut HashSet<(usize, usize)>)
                 return false;
             }
             if ah.type_id == TypeId::List as u32 {
-                let Some(al) = crate::list::as_list_ref(a) else { return false };
-                let Some(bl) = crate::list::as_list_ref(b) else { return false };
+                let Some(al) = crate::list::as_list_ref(a) else {
+                    return false;
+                };
+                let Some(bl) = crate::list::as_list_ref(b) else {
+                    return false;
+                };
                 if (*al).len != (*bl).len {
                     return false;
                 }
@@ -375,8 +375,12 @@ fn deep_eq(a: Value, b: Value, depth: usize, seen: &mut HashSet<(usize, usize)>)
                 return true;
             }
             if ah.type_id == TypeId::Map as u32 {
-                let Some(am) = crate::map::as_map_ref(a) else { return false };
-                let Some(bm) = crate::map::as_map_ref(b) else { return false };
+                let Some(am) = crate::map::as_map_ref(a) else {
+                    return false;
+                };
+                let Some(bm) = crate::map::as_map_ref(b) else {
+                    return false;
+                };
                 if crate::map::map_len(am) != crate::map::map_len(bm) {
                     return false;
                 }
@@ -392,8 +396,12 @@ fn deep_eq(a: Value, b: Value, depth: usize, seen: &mut HashSet<(usize, usize)>)
                 return true;
             }
             if ah.type_id == TypeId::Result as u32 {
-                let Some((a_ok, a_val)) = result::result_parts(a) else { return false };
-                let Some((b_ok, b_val)) = result::result_parts(b) else { return false };
+                let Some((a_ok, a_val)) = result::result_parts(a) else {
+                    return false;
+                };
+                let Some((b_ok, b_val)) = result::result_parts(b) else {
+                    return false;
+                };
                 if a_ok != b_ok {
                     return false;
                 }

@@ -520,7 +520,7 @@ impl ProjectLoader {
             self.errors.push(ProjectError {
                 path: entry_module.path.clone(),
                 source: entry_module.source.clone(),
-                    message: "entry module must define 'to run() -> Type'".to_string(),
+                message: "entry module must define 'to run() -> Type'".to_string(),
                 span: SourceSpan::from((0usize, 0usize)),
             });
             return;
@@ -799,7 +799,6 @@ impl ProjectLoader {
                     span: span_from_range(*span),
                 });
             }
-
         }
     }
 
@@ -1014,10 +1013,7 @@ fn module_name_for_entry_path(path: &Path, root: &Path) -> SmolStr {
     if let Some(name) = module_name_for_path(path, root) {
         return name;
     }
-    let stem = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("entry");
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("entry");
     SmolStr::new(format!("__entry__{stem}"))
 }
 
@@ -1063,9 +1059,7 @@ fn collect_used_external_names(module: &Module) -> HashMap<SmolStr, TextRange> {
     }
     let empty_type_params: HashSet<SmolStr> = HashSet::new();
     for (idx, func) in module.functions.iter() {
-        let type_params = method_type_params
-            .get(&idx)
-            .unwrap_or(&empty_type_params);
+        let type_params = method_type_params.get(&idx).unwrap_or(&empty_type_params);
         for param in &func.params {
             collect_type_names(param.ty.as_ref(), &mut used, type_params);
         }
@@ -1264,10 +1258,7 @@ fn collect_used_in_block(
         match stmt {
             Stmt::Expr(expr) => collect_used_in_expr(body, *expr, scope, used),
             Stmt::Assert { expr, .. } => collect_used_in_expr(body, *expr, scope, used),
-            Stmt::Require {
-                condition,
-                message,
-            } => {
+            Stmt::Require { condition, message } => {
                 collect_used_in_expr(body, *condition, scope, used);
                 collect_used_in_expr(body, *message, scope, used);
             }
@@ -1544,7 +1535,10 @@ mod tests {
         let entry_path = base.join("src").join("main.wr");
         let mod_path = base.join("src").join("bar.wr");
 
-        write_temp(&entry_path, "use * from bar\n\nto run() -> Integer:\n    return 1\n");
+        write_temp(
+            &entry_path,
+            "use * from bar\n\nto run() -> Integer:\n    return 1\n",
+        );
         write_temp(&mod_path, "__wr_print(\"hi\")\n");
 
         let project = load_project(&entry_path);
@@ -1598,7 +1592,10 @@ mod tests {
         let entry_path = base.join("src").join("main.wr");
         let mod_path = base.join("src").join("bar.wr");
 
-        write_temp(&entry_path, "use * from bar\n\nto run() -> Integer:\n    return 1\n");
+        write_temp(
+            &entry_path,
+            "use * from bar\n\nto run() -> Integer:\n    return 1\n",
+        );
         write_temp(&mod_path, "to run() -> Integer:\n    return 2\n");
 
         let project = load_project(&entry_path);
