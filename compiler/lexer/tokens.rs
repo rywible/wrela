@@ -100,6 +100,8 @@ pub enum Token {
     Given,
     #[strum(serialize = "require")]
     Require,
+    #[strum(serialize = "resolve")]
+    Resolve,
 
     // Literals
     #[strum(serialize = "Identifier")]
@@ -262,6 +264,7 @@ impl Token {
                 | Token::Checks
                 | Token::Given
                 | Token::Require
+                | Token::Resolve
         )
     }
 

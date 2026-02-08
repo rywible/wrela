@@ -15,18 +15,21 @@ to create_reactor() -> Integer:
 
 
 so: Drop a reactor handle.
-to drop_reactor(reactor_handle: Integer) -> Boolean:
-    return __wr_reactor_drop(reactor_handle)
+to drop_reactor(reactor_handle: Integer) -> Nothing:
+    __wr_reactor_drop(reactor_handle)
+    return nothing
 
 
 so: Register a token with a reactor handle.
-to register_token(reactor_handle: Integer, token: Integer) -> Boolean:
-    return __wr_reactor_register(reactor_handle, token)
+to register_token(reactor_handle: Integer, token: Integer) -> Nothing:
+    __wr_reactor_register(reactor_handle, token)
+    return nothing
 
 
 so: Deregister a token from a reactor handle.
-to deregister_token(reactor_handle: Integer, token: Integer) -> Boolean:
-    return __wr_reactor_deregister(reactor_handle, token)
+to deregister_token(reactor_handle: Integer, token: Integer) -> Nothing:
+    __wr_reactor_deregister(reactor_handle, token)
+    return nothing
 
 
 so: Arm a timer for a token on the reactor handle.
@@ -34,8 +37,9 @@ to arm_timer(
     reactor_handle: Integer,
     token: Integer,
     timeout_milliseconds: Integer
-) -> Boolean:
-    return __wr_reactor_arm_timer(reactor_handle, token, timeout_milliseconds)
+) -> Nothing:
+    __wr_reactor_arm_timer(reactor_handle, token, timeout_milliseconds)
+    return nothing
 
 
 so: Resolve reactor timer timeout policy in Wrela.
@@ -50,11 +54,11 @@ so:
     - arm timer
     - deregister token
     - drop reactor
-to example_reactor_flow() -> Boolean:
+to example_reactor_flow() -> Integer:
     reactor_handle = create_reactor()
-    registered = register_token(reactor_handle, 101)
+    register_token(reactor_handle, 101)
     timeout_milliseconds = normalize_timer_timeout_milliseconds(5)
-    timer_armed = arm_timer(reactor_handle, 101, timeout_milliseconds)
-    deregistered = deregister_token(reactor_handle, 101)
-    dropped = drop_reactor(reactor_handle)
-    return registered and timer_armed and deregistered and dropped
+    arm_timer(reactor_handle, 101, timeout_milliseconds)
+    deregister_token(reactor_handle, 101)
+    drop_reactor(reactor_handle)
+    return 1

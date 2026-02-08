@@ -746,4 +746,15 @@ to f() -> Integer:
                 .any(|e| e.message == "invalid numeric literal")
         );
     }
+
+    #[test]
+    fn test_interface_must_check_signature_valid() {
+        let text = "\
+A Predicate:
+    must check ready(value: Integer) -> Boolean
+";
+        let root = parse(text);
+        let errors = validate(&root);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
 }

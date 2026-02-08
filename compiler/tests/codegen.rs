@@ -1144,8 +1144,8 @@ to run() -> Integer:
     shard_a = choose_next_shard(11, 4, false)
     shard_b = choose_next_shard(11, 4, true)
     budget = compute_dispatch_budget(12, 4, 9)
-    steal_a = should_steal_work(0, 3, false)
-    steal_b = should_steal_work(0, 3, true)
+    steal_a = should_steal_work given 0, 3, false
+    steal_b = should_steal_work given 0, 3, true
     credits = refill_credits(1, 5, 2, 2)
 
     if shard_a == 3 and shard_b == 0 and budget == 8 and steal_a and not steal_b and credits == 5:

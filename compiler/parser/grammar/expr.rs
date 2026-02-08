@@ -52,6 +52,7 @@ fn lhs(p: &mut Parser) -> Option<crate::parser::CompletedMarker> {
         | SyntaxKind::NotKw
         | SyntaxKind::ErrKw
         | SyntaxKind::AwaitKw
+        | SyntaxKind::ResolveKw
         | SyntaxKind::FireKw
         | SyntaxKind::BitwiseNot => {
             p.bump();

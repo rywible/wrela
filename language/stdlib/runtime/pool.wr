@@ -82,7 +82,7 @@ to normalize_queue_capacity(
 
 
 so: Resolve drop-on-full policy from the backpressure request.
-to should_drop_on_full(requested_queue_capacity: Integer) -> Boolean:
+check should_drop_on_full(requested_queue_capacity: Integer) -> Boolean:
     return requested_queue_capacity == 0
 
 

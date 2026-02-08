@@ -8,8 +8,8 @@ pub mod reactor;
 pub(crate) use data::{arena, bytes, class, iter, list, map, object, result, string, value};
 pub(crate) use kernel::{actor, config, diagnostics, metrics, scheduler};
 
-use data::value::int_value;
 use data::object::drop_object;
+use data::value::int_value;
 pub use data::value::{TypeId, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};

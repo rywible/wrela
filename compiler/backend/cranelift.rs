@@ -404,9 +404,7 @@ fn ensure_runtime_built() -> Result<PathBuf, CodegenError> {
     let workspace_root = manifest_dir.join("..");
     let profile = env::var("WRELA_RUNTIME_PROFILE").unwrap_or_else(|_| "debug".to_string());
     let lib_path = workspace_root.join("target").join(&profile).join(lib_name);
-    if lib_path.exists()
-        && !runtime_needs_rebuild(&lib_path, &workspace_root.join("runtime"))
-    {
+    if lib_path.exists() && !runtime_needs_rebuild(&lib_path, &workspace_root.join("runtime")) {
         return Ok(lib_path);
     }
 
@@ -892,6 +890,7 @@ fn lower_rvalue(
                     let toggled = builder.ins().bxor(unboxed, one);
                     Ok(tag_bool(builder, toggled))
                 }
+                crate::hir::UnaryOp::Resolve => Ok(v),
                 _ => Err(CodegenError("unsupported unary op in codegen".to_string())),
             }
         }
@@ -2272,11 +2271,8 @@ fn runtime_fn_reactor_arm_timer(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
 ) -> Result<cranelift_module::FuncId, CodegenError> {
-    let sig = RuntimeRegistry::runtime_sig(
-        module,
-        &[types::I64, types::I64, types::I64],
-        &[types::I64],
-    );
+    let sig =
+        RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
     runtime.get_func(module, "wr_reactor_arm_timer", sig)
 }
 

@@ -806,11 +806,11 @@ fn run_single_test(
     if let Err(err) = fs::write(&entry_path, entry) {
         return Err(format!("failed to write test entry: {err}"));
     }
-    let mir_module = match compile_to_mir_with_root(&entry_path, compile_root, tests_root, output_format)
-    {
-        Ok(mir) => mir,
-        Err(_) => return Err("compile failed".to_string()),
-    };
+    let mir_module =
+        match compile_to_mir_with_root(&entry_path, compile_root, tests_root, output_format) {
+            Ok(mir) => mir,
+            Err(_) => return Err("compile failed".to_string()),
+        };
     if let Err(err) = wrela::backend::cranelift::compile_to_executable(&mir_module, &exe_path) {
         return Err(format!("codegen error: {}", err.0));
     }

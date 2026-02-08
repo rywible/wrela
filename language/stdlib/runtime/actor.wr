@@ -55,7 +55,7 @@ to normalize_batch_limit(
 so:
     Decide paused-mailbox drop behavior in Wrela.
     This stays deterministic because it only reads explicit inputs.
-to should_drop_when_paused(
+check should_drop_when_paused(
     is_paused: Boolean,
     mailbox_length: Integer,
     pause_queue_capacity: Integer

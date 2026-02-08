@@ -62,7 +62,7 @@ to compute_dispatch_budget(
 so:
     Decide whether local shard should steal from another shard.
     Deterministic mode keeps stealing disabled for reproducible ordering.
-to should_steal_work(
+check should_steal_work(
     local_ready_count: Integer,
     remote_ready_count: Integer,
     deterministic_mode: Boolean

@@ -1,8 +1,8 @@
 #![allow(unused_assignments)]
 
 use crate::hir::{
-    BinaryOp, Body, Expr, Function, FunctionKind, Idx, Literal, Module, Pattern, Stmt, TypeRef,
-    UnaryOp,
+    BinaryOp, Body, Expr, Function, FunctionKind, Idx, InterfaceMethodKind, Literal, Module,
+    Pattern, Stmt, TypeRef, UnaryOp,
 };
 use miette::{Diagnostic, SourceSpan};
 use rowan::TextRange;
@@ -579,6 +579,7 @@ struct InterfaceSig {
 struct InterfaceMethodSig {
     params: Vec<(SmolStr, Type)>,
     ret: Type,
+    kind: InterfaceMethodKind,
 }
 
 struct EnumIndex {
@@ -731,7 +732,14 @@ impl InterfaceIndex {
                     .as_ref()
                     .map(|t| type_from_ref_with_params(t, &param_set))
                     .unwrap_or(Type::Unknown);
-                methods.insert(method.name.clone(), InterfaceMethodSig { params, ret });
+                methods.insert(
+                    method.name.clone(),
+                    InterfaceMethodSig {
+                        params,
+                        ret,
+                        kind: method.kind,
+                    },
+                );
             }
             interfaces.insert(interface.name.clone(), InterfaceSig { methods });
         }
@@ -2698,28 +2706,39 @@ fn infer_expr(
                             {
                                 if let Some(interface) = interfaces.get(&class_name) {
                                     if let Some(method) = interface.methods.get(member) {
-                                        if is_given {
+                                        if method.kind == InterfaceMethodKind::Check && !is_given {
+                                            errors.push(TypeError::CheckRequiresGiven {
+                                                span: span_from_range(body.expr_span(expr_id)),
+                                            });
+                                            ret_ty = Some(Type::Unknown);
+                                            valid_callee = true;
+                                        } else if method.kind != InterfaceMethodKind::Check
+                                            && is_given
+                                        {
                                             errors.push(TypeError::GivenRequiresCheck {
                                                 span: span_from_range(body.expr_span(expr_id)),
                                             });
+                                            ret_ty = Some(Type::Unknown);
+                                            valid_callee = true;
+                                        } else {
+                                            let params = method.params.clone();
+                                            check_call_args(
+                                                body,
+                                                expr_id,
+                                                args,
+                                                &params,
+                                                ctx,
+                                                classes,
+                                                enums,
+                                                interfaces,
+                                                functions,
+                                                errors,
+                                                allow_result,
+                                                in_result_fn,
+                                            );
+                                            ret_ty = Some(method.ret.clone());
+                                            valid_callee = true;
                                         }
-                                        let params = method.params.clone();
-                                        check_call_args(
-                                            body,
-                                            expr_id,
-                                            args,
-                                            &params,
-                                            ctx,
-                                            classes,
-                                            enums,
-                                            interfaces,
-                                            functions,
-                                            errors,
-                                            allow_result,
-                                            in_result_fn,
-                                        );
-                                        ret_ty = Some(method.ret.clone());
-                                        valid_callee = true;
                                     } else {
                                         errors.push(TypeError::UnknownMember {
                                             object: class_name.to_string(),
@@ -3485,6 +3504,9 @@ fn resolve_type_args(
 }
 
 fn interface_method_matches(iface: &InterfaceMethodSig, class: &MethodSig) -> bool {
+    if (iface.kind == InterfaceMethodKind::Check) != (class.kind == FunctionKind::CheckMethod) {
+        return false;
+    }
     if iface.params.len() != class.params.len() {
         return false;
     }
@@ -3560,6 +3582,7 @@ fn valid_unary(op: UnaryOp, operand: &Type) -> bool {
         UnaryOp::Neg => is_numeric(operand),
         UnaryOp::Not => *operand == Type::Boolean,
         UnaryOp::BitNot => *operand == Type::Integer,
+        UnaryOp::Resolve => is_stored_boolean(operand),
         UnaryOp::Err => !matches!(operand, Type::Never),
         UnaryOp::Await | UnaryOp::Spawn | UnaryOp::Fire => true,
     }
@@ -3570,9 +3593,14 @@ fn unary_result(op: UnaryOp, operand: &Type) -> Type {
         UnaryOp::Neg => operand.clone(),
         UnaryOp::Not => Type::Boolean,
         UnaryOp::BitNot => Type::Integer,
+        UnaryOp::Resolve => Type::Boolean,
         UnaryOp::Err => Type::Result(Box::new(Type::Unknown), Box::new(operand.clone())),
         UnaryOp::Await | UnaryOp::Spawn | UnaryOp::Fire => Type::Unknown,
     }
+}
+
+fn is_stored_boolean(operand: &Type) -> bool {
+    matches!(operand, Type::Named(name, args) if name.as_str() == "StoredBoolean" && args.is_empty())
 }
 
 fn binary_from_assign(op: BinaryOp) -> BinaryOp {
@@ -3665,6 +3693,9 @@ fn is_assignable(
     if expected == found {
         return true;
     }
+    if is_stored_boolean_named(expected) && *found == Type::Boolean {
+        return true;
+    }
     match (expected, found) {
         (_, Type::Never) => true,
         (Type::Param(_), _) => true,
@@ -3705,6 +3736,10 @@ fn is_assignable(
         (Type::Float, Type::Integer) => true,
         _ => false,
     }
+}
+
+fn is_stored_boolean_named(ty: &Type) -> bool {
+    matches!(ty, Type::Named(name, args) if name.as_str() == "StoredBoolean" && args.is_empty())
 }
 
 fn types_known(left: &Type, right: &Type) -> bool {
@@ -3768,6 +3803,7 @@ fn unary_op_label(op: UnaryOp) -> &'static str {
         UnaryOp::Neg => "-",
         UnaryOp::Not => "not",
         UnaryOp::BitNot => "~",
+        UnaryOp::Resolve => "resolve",
         UnaryOp::Await => "await",
         UnaryOp::Spawn => "spawn",
         UnaryOp::Fire => "fire",
@@ -5261,6 +5297,35 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_requires_stored_boolean_operand() {
+        let input = "to f() -> Boolean:\n    return resolve true";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let errors = check_module(&module);
+        assert!(errors.iter().any(
+            |err| matches!(err, TypeError::InvalidUnaryOperand { op, .. } if *op == "resolve")
+        ));
+    }
+
+    #[test]
+    fn test_resolve_accepts_stored_boolean_value() {
+        let input = "\
+to fetch_flag() -> StoredBoolean:
+    return true
+
+to f() -> Boolean:
+    flag = fetch_flag()
+    return resolve flag
+";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let errors = check_module(&module);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
     fn test_param_type_used() {
         let input = "to f(x: Integer) -> Integer:\n    return x + 1";
         let node = parse(input);
@@ -5511,6 +5576,74 @@ to f(p: Printable) -> String:
         let module = lower(root);
         let (errors, _info) = check_module_with_info(&module);
         assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_interface_must_check_requires_given() {
+        let input = "\
+A Pred:
+    must check ready() -> Boolean
+
+A Foo:
+    is a Pred
+    checks ready() -> Boolean:
+        return true
+
+to f(p: Pred) -> Boolean:
+    return p.ready()
+";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let errors = check_module(&module);
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::CheckRequiresGiven { .. }))
+        );
+    }
+
+    #[test]
+    fn test_interface_must_check_allows_given() {
+        let input = "\
+A Pred:
+    must check ready() -> Boolean
+
+A Foo:
+    is a Pred
+    checks ready() -> Boolean:
+        return true
+
+to f(p: Pred) -> Boolean:
+    return p.ready given
+";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let errors = check_module(&module);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_interface_must_check_requires_checks_impl() {
+        let input = "\
+A Pred:
+    must check ready() -> Boolean
+
+A Foo:
+    is a Pred
+    can ready() -> Boolean:
+        return true
+";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let errors = check_module(&module);
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::InterfaceMethodMismatch { .. }))
+        );
     }
 
     #[test]

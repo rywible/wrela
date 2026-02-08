@@ -70,7 +70,7 @@ A Runtime:
         return value * sign
 
     so: Resolve a boolean field from environment, defaulting to explicit value.
-    can resolve_boolean_from_environment(explicit_value: Boolean, env_key: String) -> Boolean:
+    checks resolve_boolean_from_environment(explicit_value: Boolean, env_key: String) -> Boolean:
         raw = __wr_env_get(env_key)
         match raw:
             String(text):
@@ -95,22 +95,10 @@ A Runtime:
     can from_environment() -> Runtime:
         cpu_count = __wr_runtime_cpu_count()
 
-        deterministic_value = its.resolve_boolean_from_environment(
-            its.deterministic,
-            "WRELA_RUNTIME_DETERMINISTIC"
-        )
-        debug_actor_value = its.resolve_boolean_from_environment(
-            its.debug_actor,
-            "WRELA_RUNTIME_DEBUG_ACTOR"
-        )
-        diagnostics_enabled_value = its.resolve_boolean_from_environment(
-            its.diagnostics_enabled,
-            "WRELA_RUNTIME_DIAGNOSTICS_ENABLED"
-        )
-        reactor_disable_io_uring_value = its.resolve_boolean_from_environment(
-            its.reactor_disable_io_uring,
-            "WRELA_DISABLE_IO_URING"
-        )
+        deterministic_value = its.resolve_boolean_from_environment given its.deterministic, "WRELA_RUNTIME_DETERMINISTIC"
+        debug_actor_value = its.resolve_boolean_from_environment given its.debug_actor, "WRELA_RUNTIME_DEBUG_ACTOR"
+        diagnostics_enabled_value = its.resolve_boolean_from_environment given its.diagnostics_enabled, "WRELA_RUNTIME_DIAGNOSTICS_ENABLED"
+        reactor_disable_io_uring_value = its.resolve_boolean_from_environment given its.reactor_disable_io_uring, "WRELA_DISABLE_IO_URING"
 
         actor_mailbox_cap_value = at_least(
             its.resolve_number_from_environment(

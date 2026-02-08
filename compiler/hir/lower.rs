@@ -291,6 +291,11 @@ impl LoweringContext {
                 name_span: m_name_span,
                 params,
                 ret_type,
+                kind: if method.is_check() {
+                    InterfaceMethodKind::Check
+                } else {
+                    InterfaceMethodKind::Method
+                },
             });
         }
         Interface {
@@ -1066,6 +1071,7 @@ impl BodyLoweringContext {
                         | SyntaxKind::NotKw
                         | SyntaxKind::BitwiseNot
                         | SyntaxKind::AwaitKw
+                        | SyntaxKind::ResolveKw
                         | SyntaxKind::DetachKw
                         | SyntaxKind::SpawnKw
                         | SyntaxKind::FireKw
@@ -1078,6 +1084,7 @@ impl BodyLoweringContext {
             SyntaxKind::NotKw => UnaryOp::Not,
             SyntaxKind::BitwiseNot => UnaryOp::BitNot,
             SyntaxKind::AwaitKw => UnaryOp::Await,
+            SyntaxKind::ResolveKw => UnaryOp::Resolve,
             SyntaxKind::DetachKw => UnaryOp::Spawn,
             SyntaxKind::SpawnKw => UnaryOp::Spawn,
             SyntaxKind::FireKw => UnaryOp::Fire,

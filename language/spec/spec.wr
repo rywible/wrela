@@ -235,11 +235,19 @@ so: ------------------------------------------------------------
 
     - Checks are declared with `check name(...) -> Boolean:`.
     - Check methods are declared with `checks name(...) -> Boolean:` inside classes.
+    - Interface predicates use `must check name(...) -> Boolean`.
     - Checks are pure (no mutation, `await`, `spawn`, `detach`, `fire`, `error`, `assert`, or `require`).
+      This purity rule is unchanged even when a detached check call is awaited.
     - Checks are evaluated with `given` (positional or named):
       - `if can_edit given user, post: ...`
       - `if can_edit given user=current_user, post=draft: ...`
     - Calling checks with normal `(...)` call syntax is invalid.
+    - Non-check declarations (`to`, `can`, and non-check `must`) cannot return:
+      - `Boolean`
+      - `Result[Boolean]`
+      - `Pending[Boolean]`
+      - `Pending[Result[Boolean]]`
+    - Use `StoredBoolean` for retrieved truth data and convert with `resolve <expr>` when you need branch-ready `Boolean`.
 
 
 check is_positive(value: Integer) -> Boolean:
@@ -263,6 +271,18 @@ to test_checks_and_given() -> Nothing:
 
 to test_require_statement() -> Nothing:
     require true otherwise "must be true"
+
+A StoredBoolean:
+    has:
+        value: Boolean = false
+
+to read_flag() -> StoredBoolean:
+    return true
+
+to test_resolve_stored_boolean() -> Nothing:
+    flag = read_flag()
+    if resolve flag:
+        assert value true == true
 
 
 so: ------------------------------------------------------------

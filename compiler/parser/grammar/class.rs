@@ -132,6 +132,9 @@ fn must_method_def(p: &mut Parser) {
         SyntaxKind::MustKw,
         "expected 'must' to start an interface method signature",
     );
+    if p.at(SyntaxKind::CheckKw) {
+        p.bump();
+    }
     p.expect_with_message(SyntaxKind::Ident, "expected method name after 'must'");
     p.expect_with_message(SyntaxKind::LParen, "expected '(' after method name");
     parse_param_list(p);

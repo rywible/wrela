@@ -50,6 +50,7 @@ pub enum SyntaxKind {
     ChecksKw,    // checks
     GivenKw,     // given
     RequireKw,   // require
+    ResolveKw,   // resolve
 
     // Literals
     Ident,
@@ -226,6 +227,7 @@ impl From<Token> for SyntaxKind {
             Token::Checks => SyntaxKind::ChecksKw,
             Token::Given => SyntaxKind::GivenKw,
             Token::Require => SyntaxKind::RequireKw,
+            Token::Resolve => SyntaxKind::ResolveKw,
             Token::Identifier(_) => SyntaxKind::Ident,
             Token::StringLiteral(_) => SyntaxKind::StringLiteral,
             Token::StringStart(_) => SyntaxKind::StringStart,

@@ -9,7 +9,7 @@ from bytes
 use push from list
 
 
-to is_ascii_space(byte_value: Integer) -> Boolean:
+check is_ascii_space(byte_value: Integer) -> Boolean:
     return byte_value == 9 or byte_value == 10 or byte_value == 13 or byte_value == 32
 
 
@@ -26,7 +26,7 @@ to trim_bytes(text: String) -> List[Integer]:
     mutable pending_whitespace = []
 
     for byte_value in raw_bytes:
-        if is_ascii_space(byte_value):
+        if is_ascii_space given byte_value:
             if started:
                 push(pending_whitespace, byte_value)
         otherwise:

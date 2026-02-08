@@ -20,18 +20,21 @@ to create_task_signal() -> Integer:
 
 
 so: Drop a task signal handle.
-to drop_task_signal(task_signal: Integer) -> Boolean:
-    return __wr_task_signal_drop(task_signal)
+to drop_task_signal(task_signal: Integer) -> Nothing:
+    __wr_task_signal_drop(task_signal)
+    return nothing
 
 
 so: Wake one waiter for a task signal handle.
-to unpark_one(task_signal: Integer) -> Boolean:
-    return __wr_task_unpark_one(task_signal)
+to unpark_one(task_signal: Integer) -> Nothing:
+    __wr_task_unpark_one(task_signal)
+    return nothing
 
 
 so: Wake all waiters for a task signal handle.
-to unpark_all(task_signal: Integer) -> Boolean:
-    return __wr_task_unpark_all(task_signal)
+to unpark_all(task_signal: Integer) -> Nothing:
+    __wr_task_unpark_all(task_signal)
+    return nothing
 
 
 so: Snapshot the signal epoch from runtime primitive.
@@ -45,8 +48,9 @@ to create_atomic_counter(initial_value: Integer) -> Integer:
 
 
 so: Drop an atomic i64 handle.
-to drop_atomic_counter(atomic_counter: Integer) -> Boolean:
-    return __wr_atomic_i64_drop(atomic_counter)
+to drop_atomic_counter(atomic_counter: Integer) -> Nothing:
+    __wr_atomic_i64_drop(atomic_counter)
+    return nothing
 
 
 so: Load the current value from an atomic i64 handle.
@@ -55,8 +59,9 @@ to load_atomic_counter(atomic_counter: Integer) -> Integer:
 
 
 so: Store a value into an atomic i64 handle.
-to store_atomic_counter(atomic_counter: Integer, value: Integer) -> Boolean:
-    return __wr_atomic_i64_store(atomic_counter, value)
+to store_atomic_counter(atomic_counter: Integer, value: Integer) -> Nothing:
+    __wr_atomic_i64_store(atomic_counter, value)
+    return nothing
 
 
 so: Add delta and return previous value from atomic i64 handle.
@@ -130,7 +135,7 @@ to mark_action_as_deferred(action: Map, delay_milliseconds: Integer) -> Map:
 
 
 so: Decide whether a wake action should wake now.
-to should_wake_task(action: Map) -> Boolean:
+check should_wake_task(action: Map) -> Boolean:
     value = get(action, "should_wake")
     match value:
         Boolean(flag):
@@ -152,7 +157,7 @@ to example_task_wake_flow() -> Integer:
     register_waiter(state)
     next_epoch = notify_waiters(state)
     action = create_wake_action(7, "readable")
-    if initial_epoch == 0 and next_epoch == 1 and should_wake_task(action):
+    if initial_epoch == 0 and next_epoch == 1 and (should_wake_task given action):
         return 1
     return 0
 
@@ -170,14 +175,12 @@ to example_task_primitive_flow() -> Integer:
     epoch_after_unpark = read_signal_epoch(task_signal)
     previous_value = fetch_add_atomic_counter(counter, 3)
     current_value = load_atomic_counter(counter)
-    dropped_counter = drop_atomic_counter(counter)
-    dropped_signal = drop_task_signal(task_signal)
+    drop_atomic_counter(counter)
+    drop_task_signal(task_signal)
     if (
         epoch_after_unpark >= 1 and
         previous_value == 0 and
-        current_value == 3 and
-        dropped_counter and
-        dropped_signal
+        current_value == 3
     ):
         return 1
     return 0

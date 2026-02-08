@@ -1824,6 +1824,13 @@ impl AstNode for MustMethodDef {
 }
 
 impl MustMethodDef {
+    pub fn is_check(&self) -> bool {
+        self.0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .any(|it| it.kind() == SyntaxKind::CheckKw)
+    }
+
     pub fn name(&self) -> Option<SyntaxToken> {
         self.0
             .children_with_tokens()

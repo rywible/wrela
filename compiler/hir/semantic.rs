@@ -1,8 +1,8 @@
 #![allow(unused_assignments)]
 
 use crate::hir::{
-    Arg, BinaryOp, Body, Class, Expr, Function, FunctionKind, Idx, Literal, MatchCase, Module,
-    Objective, Pattern, Stmt, UnaryOp,
+    Arg, BinaryOp, Body, Class, Expr, Function, FunctionKind, Idx, InterfaceMethodKind, Literal,
+    MatchCase, Module, Objective, Pattern, Stmt, TypeRef, UnaryOp,
 };
 use miette::{Diagnostic, SourceSpan};
 use rowan::TextRange;
@@ -220,6 +220,40 @@ pub enum SemanticError {
         span: SourceSpan,
     },
 
+    #[error("function '{name}' returns forbidden boolean predicate type")]
+    #[diagnostic(code(lang::sem::boolean_function_should_be_check))]
+    BooleanFunctionShouldBeCheck {
+        name: SmolStr,
+        #[label("forbidden boolean return type here")]
+        span: SourceSpan,
+        #[help]
+        help: String,
+    },
+
+    #[error(
+        "function '{name}' returns forbidden boolean predicate type and cannot be converted to check"
+    )]
+    #[diagnostic(code(lang::sem::boolean_function_impure))]
+    BooleanFunctionImpure {
+        name: SmolStr,
+        #[label("forbidden boolean return type here")]
+        span: SourceSpan,
+        #[label("first impure operation here")]
+        impure_span: SourceSpan,
+        #[help]
+        help: String,
+    },
+
+    #[error("interface method '{name}' returns forbidden boolean predicate type")]
+    #[diagnostic(code(lang::sem::boolean_interface_must_check))]
+    BooleanInterfaceMethodShouldBeMustCheck {
+        name: SmolStr,
+        #[label("forbidden boolean return type here")]
+        span: SourceSpan,
+        #[help]
+        help: String,
+    },
+
     #[error("match case bindings require a single label")]
     #[diagnostic(code(lang::sem::match_bindings_multi_label))]
     MatchBindingsMultiLabel {
@@ -376,6 +410,9 @@ impl SemanticError {
             SemanticError::CheckMustReturnBoolean { span } => *span,
             SemanticError::CheckMutation { span } => *span,
             SemanticError::CheckInvalidKeyword { span, .. } => *span,
+            SemanticError::BooleanFunctionShouldBeCheck { span, .. } => *span,
+            SemanticError::BooleanFunctionImpure { span, .. } => *span,
+            SemanticError::BooleanInterfaceMethodShouldBeMustCheck { span, .. } => *span,
             SemanticError::ShadowedName { span, .. } => *span,
             SemanticError::FireInExpression { span } => *span,
             SemanticError::DuplicateNamedArg { span, .. } => *span,
@@ -568,6 +605,37 @@ impl<'a> Checker<'a> {
             self.check_class(class);
         }
 
+        for (_idx, interface) in self.module.interfaces.iter() {
+            for method in &interface.methods {
+                if method.kind == InterfaceMethodKind::Check {
+                    continue;
+                }
+                if let Some(shape) = forbidden_boolean_return_shape(method.ret_type.as_ref()) {
+                    let span = method
+                        .ret_type
+                        .as_ref()
+                        .and_then(|t| t.name_span)
+                        .map(span_from_range)
+                        .unwrap_or_else(|| span_from_option(method.name_span));
+                    let help = if matches!(shape, ForbiddenBooleanReturnShape::Boolean) {
+                        format!("Use `must check {}(...) -> Boolean`.", method.name)
+                    } else {
+                        format!(
+                            "Interface predicates must use `must check {}(...) -> Boolean`. If this is retrieved truth data, use `{}` and convert with `resolve` at call sites.",
+                            method.name,
+                            shape.stored_boolean_replacement()
+                        )
+                    };
+                    self.errors
+                        .push(SemanticError::BooleanInterfaceMethodShouldBeMustCheck {
+                            name: method.name.clone(),
+                            span,
+                            help,
+                        });
+                }
+            }
+        }
+
         for (idx, func) in self.module.functions.iter() {
             if self.method_ids.contains(&idx.into_raw()) {
                 continue;
@@ -656,6 +724,69 @@ impl<'a> Checker<'a> {
             if !is_boolean {
                 self.errors
                     .push(SemanticError::CheckMustReturnBoolean { span: ret_span });
+            }
+        } else if matches!(func.kind, FunctionKind::Function | FunctionKind::Method) {
+            if let Some(shape) = forbidden_boolean_return_shape(func.ret_type.as_ref()) {
+                let ret_span = func
+                    .ret_type
+                    .as_ref()
+                    .and_then(|t| t.name_span)
+                    .map(span_from_range)
+                    .unwrap_or_else(|| span_from_option(func.name_span));
+                if let Some(cause) = func
+                    .body
+                    .as_ref()
+                    .and_then(|body| first_boolean_impurity(body, &body.root_stmts))
+                {
+                    let (impure_span, reason) = match cause {
+                        BooleanImpurity::Keyword { keyword, span } => {
+                            (span, format!("`{keyword}`"))
+                        }
+                        BooleanImpurity::Mutation { span } => (span, "mutation".to_string()),
+                    };
+                    self.errors.push(SemanticError::BooleanFunctionImpure {
+                        name: func.name.clone(),
+                        span: ret_span,
+                        impure_span,
+                        help: format!(
+                            "`check/checks` must be pure; this body uses {reason}. Non-check declarations cannot return `{}`. Return `{}` or `Nothing` instead.",
+                            shape.label(),
+                            shape.stored_boolean_replacement()
+                        ),
+                    });
+                } else {
+                    let suggestion = if matches!(shape, ForbiddenBooleanReturnShape::Boolean) {
+                        if func.kind == FunctionKind::Method {
+                            format!(
+                                "This looks like a predicate. Use `checks {}(...) -> Boolean:`. Call sites should use `object.{} given ...`.",
+                                func.name, func.name
+                            )
+                        } else {
+                            format!(
+                                "This looks like a predicate. Use `check {}(...) -> Boolean:`. Call sites should use `{} given ...`.",
+                                func.name, func.name
+                            )
+                        }
+                    } else {
+                        format!(
+                            "This looks like a predicate. Use `{} {}(...) -> Boolean:`. Call sites should use `{} given ...`. If this is retrieved truth data, return `{}` and convert with `resolve` where branch-ready `Boolean` is required.",
+                            if func.kind == FunctionKind::Method {
+                                "checks"
+                            } else {
+                                "check"
+                            },
+                            func.name,
+                            func.name,
+                            shape.stored_boolean_replacement()
+                        )
+                    };
+                    self.errors
+                        .push(SemanticError::BooleanFunctionShouldBeCheck {
+                            name: func.name.clone(),
+                            span: ret_span,
+                            help: suggestion,
+                        });
+                }
             }
         }
         self.enter_scope();
@@ -1582,6 +1713,260 @@ impl<'a> Checker<'a> {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum BooleanImpurity {
+    Keyword {
+        keyword: &'static str,
+        span: SourceSpan,
+    },
+    Mutation {
+        span: SourceSpan,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ForbiddenBooleanReturnShape {
+    Boolean,
+    ResultBoolean,
+    PendingBoolean,
+    PendingResultBoolean,
+}
+
+impl ForbiddenBooleanReturnShape {
+    fn label(self) -> &'static str {
+        match self {
+            ForbiddenBooleanReturnShape::Boolean => "Boolean",
+            ForbiddenBooleanReturnShape::ResultBoolean => "Result[Boolean]",
+            ForbiddenBooleanReturnShape::PendingBoolean => "Pending[Boolean]",
+            ForbiddenBooleanReturnShape::PendingResultBoolean => "Pending[Result[Boolean]]",
+        }
+    }
+
+    fn stored_boolean_replacement(self) -> &'static str {
+        match self {
+            ForbiddenBooleanReturnShape::Boolean => "Boolean",
+            ForbiddenBooleanReturnShape::ResultBoolean => "Result[StoredBoolean]",
+            ForbiddenBooleanReturnShape::PendingBoolean => "Pending[StoredBoolean]",
+            ForbiddenBooleanReturnShape::PendingResultBoolean => "Pending[Result[StoredBoolean]]",
+        }
+    }
+}
+
+fn forbidden_boolean_return_shape(ret: Option<&TypeRef>) -> Option<ForbiddenBooleanReturnShape> {
+    let ret = ret?;
+    if type_ref_is_boolean(ret) {
+        return Some(ForbiddenBooleanReturnShape::Boolean);
+    }
+    if ret.name == "Result" {
+        if let Some(ok) = ret.args.first()
+            && type_ref_is_boolean(ok)
+        {
+            return Some(ForbiddenBooleanReturnShape::ResultBoolean);
+        }
+        return None;
+    }
+    if ret.name == "Pending" {
+        let Some(inner) = ret.args.first() else {
+            return None;
+        };
+        if type_ref_is_boolean(inner) {
+            return Some(ForbiddenBooleanReturnShape::PendingBoolean);
+        }
+        if inner.name == "Result"
+            && let Some(ok) = inner.args.first()
+            && type_ref_is_boolean(ok)
+        {
+            return Some(ForbiddenBooleanReturnShape::PendingResultBoolean);
+        }
+    }
+    None
+}
+
+fn type_ref_is_boolean(ty: &TypeRef) -> bool {
+    ty.name.as_str() == "Boolean" && ty.args.is_empty()
+}
+
+fn first_boolean_impurity(body: &Body, stmts: &[Idx<Stmt>]) -> Option<BooleanImpurity> {
+    for stmt in stmts {
+        if let Some(cause) = impurity_in_stmt(body, *stmt) {
+            return Some(cause);
+        }
+    }
+    None
+}
+
+fn impurity_in_stmt(body: &Body, stmt_id: Idx<Stmt>) -> Option<BooleanImpurity> {
+    match &body.stmts[stmt_id] {
+        Stmt::Expr(expr) => impurity_in_expr(body, *expr),
+        Stmt::Assert { .. } => Some(BooleanImpurity::Keyword {
+            keyword: "assert",
+            span: span_from_range(body.stmt_span(stmt_id)),
+        }),
+        Stmt::Require { .. } => Some(BooleanImpurity::Keyword {
+            keyword: "require",
+            span: span_from_range(body.stmt_span(stmt_id)),
+        }),
+        Stmt::Let { value, mutable, .. } => {
+            if *mutable {
+                Some(BooleanImpurity::Mutation {
+                    span: span_from_range(body.stmt_span(stmt_id)),
+                })
+            } else {
+                impurity_in_expr(body, *value)
+            }
+        }
+        Stmt::Assign { .. } => Some(BooleanImpurity::Mutation {
+            span: span_from_range(body.stmt_span(stmt_id)),
+        }),
+        Stmt::Optimize { body: opt_body, .. } => first_boolean_impurity(body, opt_body),
+        Stmt::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => impurity_in_expr(body, *condition)
+            .or_else(|| first_boolean_impurity(body, then_branch))
+            .or_else(|| {
+                else_branch
+                    .as_ref()
+                    .and_then(|branch| first_boolean_impurity(body, branch))
+            }),
+        Stmt::For {
+            iterable,
+            body: loop_body,
+            ..
+        } => impurity_in_expr(body, *iterable).or_else(|| first_boolean_impurity(body, loop_body)),
+        Stmt::Match {
+            subject,
+            cases,
+            otherwise,
+        } => impurity_in_expr(body, *subject)
+            .or_else(|| {
+                for case in cases {
+                    if let Some(cause) = first_boolean_impurity(body, &case.body) {
+                        return Some(cause);
+                    }
+                }
+                None
+            })
+            .or_else(|| {
+                otherwise
+                    .as_ref()
+                    .and_then(|branch| first_boolean_impurity(body, branch))
+            }),
+        Stmt::IgnoreResult { expr } => impurity_in_expr(body, *expr),
+        Stmt::Capture { value, .. } => impurity_in_expr(body, *value),
+        Stmt::Defer { expr } => impurity_in_expr(body, *expr),
+        Stmt::Use { .. } | Stmt::Break | Stmt::Continue => None,
+        Stmt::While {
+            condition,
+            body: loop_body,
+        } => impurity_in_expr(body, *condition).or_else(|| first_boolean_impurity(body, loop_body)),
+        Stmt::Return(expr) => expr.and_then(|ret| impurity_in_expr(body, ret)),
+    }
+}
+
+fn impurity_in_expr(body: &Body, expr_id: Idx<Expr>) -> Option<BooleanImpurity> {
+    match &body.exprs[expr_id] {
+        Expr::Literal(_) | Expr::Variable(_) => None,
+        Expr::Detach { .. } => Some(BooleanImpurity::Keyword {
+            keyword: "detach",
+            span: span_from_range(body.expr_span(expr_id)),
+        }),
+        Expr::Binary { lhs, op, rhs, .. } => {
+            if matches!(
+                op,
+                BinaryOp::Assign
+                    | BinaryOp::AddAssign
+                    | BinaryOp::SubAssign
+                    | BinaryOp::MulAssign
+                    | BinaryOp::DivAssign
+            ) {
+                Some(BooleanImpurity::Mutation {
+                    span: span_from_range(body.expr_span(expr_id)),
+                })
+            } else {
+                impurity_in_expr(body, *lhs).or_else(|| impurity_in_expr(body, *rhs))
+            }
+        }
+        Expr::Unary { op, expr, .. } => {
+            let keyword = match op {
+                UnaryOp::Await => Some("await"),
+                UnaryOp::Spawn => Some("spawn"),
+                UnaryOp::Fire => Some("fire"),
+                UnaryOp::Err => Some("error"),
+                _ => None,
+            };
+            if let Some(keyword) = keyword {
+                Some(BooleanImpurity::Keyword {
+                    keyword,
+                    span: span_from_range(body.expr_span(expr_id)),
+                })
+            } else {
+                impurity_in_expr(body, *expr)
+            }
+        }
+        Expr::TypeApply { callee, .. } => impurity_in_expr(body, *callee),
+        Expr::Crash { expr } => impurity_in_expr(body, *expr),
+        Expr::Call { callee, args, .. } | Expr::GivenCall { callee, args, .. } => {
+            if let Expr::Variable(name) = &body.exprs[*callee] {
+                let keyword = match name.as_str() {
+                    "detach" => Some("detach"),
+                    "spawn" => Some("spawn"),
+                    _ => None,
+                };
+                if let Some(keyword) = keyword {
+                    return Some(BooleanImpurity::Keyword {
+                        keyword,
+                        span: span_from_range(body.expr_span(expr_id)),
+                    });
+                }
+            }
+            impurity_in_expr(body, *callee).or_else(|| {
+                for arg in args {
+                    let value = match arg {
+                        Arg::Positional { value, .. } => *value,
+                        Arg::Named { value, .. } => *value,
+                    };
+                    if let Some(cause) = impurity_in_expr(body, value) {
+                        return Some(cause);
+                    }
+                }
+                None
+            })
+        }
+        Expr::Member { object, .. } => impurity_in_expr(body, *object),
+        Expr::List(items) => {
+            for item in items {
+                if let Some(cause) = impurity_in_expr(body, *item) {
+                    return Some(cause);
+                }
+            }
+            None
+        }
+        Expr::Map(items) => {
+            for (key, value) in items {
+                if let Some(cause) = impurity_in_expr(body, *key) {
+                    return Some(cause);
+                }
+                if let Some(cause) = impurity_in_expr(body, *value) {
+                    return Some(cause);
+                }
+            }
+            None
+        }
+        Expr::StringInterp(parts) => {
+            for part in parts {
+                if let crate::hir::StringPart::Expr(expr) = part {
+                    if let Some(cause) = impurity_in_expr(body, *expr) {
+                        return Some(cause);
+                    }
+                }
+            }
+            None
+        }
+    }
+}
+
 impl<'a> Checker<'a> {
     fn is_type_name(&self, name: &SmolStr) -> bool {
         if self.class_names.contains(name) {
@@ -1603,6 +1988,7 @@ impl<'a> Checker<'a> {
                 | "Result"
                 | "Pool"
                 | "Bytes"
+                | "StoredBoolean"
         )
     }
 }
@@ -2229,8 +2615,14 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
         (SmolStr::new("__wr_reactor_new"), BindingKind::Function),
         (SmolStr::new("__wr_reactor_drop"), BindingKind::Function),
         (SmolStr::new("__wr_reactor_register"), BindingKind::Function),
-        (SmolStr::new("__wr_reactor_deregister"), BindingKind::Function),
-        (SmolStr::new("__wr_reactor_arm_timer"), BindingKind::Function),
+        (
+            SmolStr::new("__wr_reactor_deregister"),
+            BindingKind::Function,
+        ),
+        (
+            SmolStr::new("__wr_reactor_arm_timer"),
+            BindingKind::Function,
+        ),
         (SmolStr::new("__wr_task_signal_new"), BindingKind::Function),
         (SmolStr::new("__wr_task_signal_drop"), BindingKind::Function),
         (SmolStr::new("__wr_task_unpark_one"), BindingKind::Function),
@@ -2777,5 +3169,140 @@ to run() -> Integer:
                 .iter()
                 .any(|err| matches!(err, SemanticError::InvalidPoolTarget { .. }))
         );
+    }
+
+    #[test]
+    fn test_pure_boolean_function_suggests_check() {
+        let input = "to is_ready(value: Integer) -> Boolean:\n    return value > 0";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let diagnostics = check_module(&module);
+        assert!(diagnostics.errors.iter().any(|err| {
+            matches!(
+                err,
+                SemanticError::BooleanFunctionShouldBeCheck { name, help, .. }
+                    if name == "is_ready" && help.contains("check is_ready")
+            )
+        }));
+    }
+
+    #[test]
+    fn test_pure_boolean_method_suggests_checks() {
+        let input = "\
+A Foo:
+    can is_ready(value: Integer) -> Boolean:
+        return value > 0
+";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let diagnostics = check_module(&module);
+        assert!(diagnostics.errors.iter().any(|err| {
+            matches!(
+                err,
+                SemanticError::BooleanFunctionShouldBeCheck { name, help, .. }
+                    if name == "is_ready" && help.contains("checks is_ready")
+            )
+        }));
+    }
+
+    #[test]
+    fn test_impure_boolean_function_reports_impurity() {
+        let input = "to is_ready(value: Integer) -> Boolean:\n    assert value > 0";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let diagnostics = check_module(&module);
+        assert!(diagnostics.errors.iter().any(|err| {
+            matches!(
+                err,
+                SemanticError::BooleanFunctionImpure { name, help, .. }
+                    if name == "is_ready" && help.contains("`assert`")
+            )
+        }));
+    }
+
+    #[test]
+    fn test_pure_result_boolean_function_banned() {
+        let input =
+            "to is_ready(value: Integer) -> Result[Boolean]:\n    return value > 0 otherwise false";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let diagnostics = check_module(&module);
+        assert!(diagnostics.errors.iter().any(|err| {
+            matches!(
+                err,
+                SemanticError::BooleanFunctionShouldBeCheck { name, help, .. }
+                    if name == "is_ready" && help.contains("Result[StoredBoolean]")
+            )
+        }));
+    }
+
+    #[test]
+    fn test_impure_pending_result_boolean_function_banned() {
+        let input = "\
+to is_ready() -> Pending[Result[Boolean]]:
+    worker = detach Worker() * 1
+    return await worker.readiness()
+
+A Worker:
+    can readiness() -> Boolean:
+        return true
+";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let diagnostics = check_module(&module);
+        assert!(diagnostics.errors.iter().any(|err| {
+            matches!(
+                err,
+                SemanticError::BooleanFunctionImpure { name, help, .. }
+                    if name == "is_ready"
+                        && help.contains("Pending[Result[Boolean]]")
+                        && help.contains("Pending[Result[StoredBoolean]]")
+            )
+        }));
+    }
+
+    #[test]
+    fn test_interface_pending_boolean_requires_must_check_or_stored_boolean() {
+        let input = "\
+A Pred:
+    must ready(value: Integer) -> Pending[Boolean]
+";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let diagnostics = check_module(&module);
+        assert!(diagnostics.errors.iter().any(|err| {
+            matches!(
+                err,
+                SemanticError::BooleanInterfaceMethodShouldBeMustCheck { name, help, .. }
+                    if name == "ready"
+                        && help.contains("must check")
+                        && help.contains("Pending[StoredBoolean]")
+            )
+        }));
+    }
+
+    #[test]
+    fn test_interface_boolean_requires_must_check() {
+        let input = "\
+A Pred:
+    must ready(value: Integer) -> Boolean
+";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let diagnostics = check_module(&module);
+        assert!(diagnostics.errors.iter().any(|err| {
+            matches!(
+                err,
+                SemanticError::BooleanInterfaceMethodShouldBeMustCheck { name, help, .. }
+                    if name == "ready" && help.contains("must check ready")
+            )
+        }));
     }
 }

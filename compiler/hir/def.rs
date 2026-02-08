@@ -80,6 +80,13 @@ pub struct InterfaceMethod {
     pub name_span: Option<TextRange>,
     pub params: Vec<Param>,
     pub ret_type: Option<TypeRef>,
+    pub kind: InterfaceMethodKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterfaceMethodKind {
+    Method,
+    Check,
 }
 
 #[derive(Debug, Clone, PartialEq)]

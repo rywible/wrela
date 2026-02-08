@@ -1634,7 +1634,10 @@ mod tests {
     #[test]
     fn test_stdlib_flat_alias_table_maps_to_grouped_paths() {
         assert_eq!(canonical_stdlib_module_name("actor"), Some("runtime/actor"));
-        assert_eq!(canonical_stdlib_module_name("runtime"), Some("runtime/config"));
+        assert_eq!(
+            canonical_stdlib_module_name("runtime"),
+            Some("runtime/config")
+        );
         assert_eq!(canonical_stdlib_module_name("parse"), Some("data/parse"));
         assert_eq!(canonical_stdlib_module_name("env"), Some("host/env"));
         assert_eq!(canonical_stdlib_module_name("metrics"), None);

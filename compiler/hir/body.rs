@@ -234,6 +234,7 @@ pub enum UnaryOp {
     Not,
     BitNot,
     Await,
+    Resolve,
     Spawn,
     Fire,
     Err,

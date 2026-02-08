@@ -348,6 +348,7 @@ fn kind_label(kind: SyntaxKind) -> &'static str {
         SyntaxKind::OrKw => "'or'",
         SyntaxKind::NotKw => "'not'",
         SyntaxKind::AwaitKw => "'await'",
+        SyntaxKind::ResolveKw => "'resolve'",
         SyntaxKind::DetachKw => "'detach'",
         SyntaxKind::SpawnKw => "'spawn'",
         SyntaxKind::FireKw => "'fire'",
@@ -549,6 +550,7 @@ foo(1, 2, a=3).bar
 {a: 1, b: 2}
 \"hi {name}\"
 fire foo()
+resolve ready
 ";
         let (_node, errors) = parse_with_errors(text);
         assert!(errors.is_empty(), "{errors:?}");
