@@ -1,3 +1,4 @@
+pub(crate) mod logging {
 use crate::list;
 use crate::map;
 use crate::string;
@@ -300,4 +301,111 @@ mod tests {
         let json: JsonValue = serde_json::from_str(&line).expect("json");
         assert!(json.get("fields").is_none());
     }
+}
+}
+
+use crate::bytes;
+use crate::result;
+use crate::string;
+use crate::value::{Value, int_value};
+use std::sync::OnceLock;
+use std::time::Instant;
+
+pub(crate) fn print(val: Value) -> Value {
+    if val.is_ptr() {
+        unsafe {
+            let header = &*val.as_ptr();
+            if header.type_id == crate::TypeId::String as u32 {
+                let _ = string::with_string_bytes(val, |bytes| {
+                    println!("{}", String::from_utf8_lossy(bytes));
+                });
+                return Value::nil();
+            }
+        }
+    }
+    println!("<value>");
+    Value::nil()
+}
+
+pub(crate) fn log(level: Value, msg: Value, fields: Value) -> Value {
+    logging::log(level, msg, fields)
+}
+
+pub(crate) fn log_configure(config: Value) -> Value {
+    logging::log_configure(config)
+}
+
+fn builtin_error(message: &str) -> Value {
+    string::str_from_utf8(message.as_ptr(), message.len())
+}
+
+fn string_bytes(val: Value) -> Option<Vec<u8>> {
+    string::with_string_bytes(val, |bytes| bytes.to_vec())
+}
+
+pub(crate) fn fs_read_bytes(path: Value) -> Value {
+    let Some(bytes) = string_bytes(path) else {
+        return result::result_err(builtin_error("fs_read_bytes expects a String"));
+    };
+    let path_str = String::from_utf8_lossy(&bytes);
+    match std::fs::read(path_str.as_ref()) {
+        Ok(contents) => result::result_ok(bytes::bytes_from_slice(&contents)),
+        Err(err) => result::result_err(builtin_error(&format!("fs_read_bytes: {err}"))),
+    }
+}
+
+pub(crate) fn fs_write_bytes(path: Value, contents: Value) -> Value {
+    let Some(path_bytes) = string_bytes(path) else {
+        return result::result_err(builtin_error("fs_write_bytes expects a String path"));
+    };
+    let Some(contents_bytes) = bytes::with_bytes(contents, |bytes| bytes.to_vec()) else {
+        return result::result_err(builtin_error("fs_write_bytes expects Bytes contents"));
+    };
+    let path_str = String::from_utf8_lossy(&path_bytes);
+    match std::fs::write(path_str.as_ref(), contents_bytes) {
+        Ok(()) => result::result_ok(Value::nil()),
+        Err(err) => result::result_err(builtin_error(&format!("fs_write_bytes: {err}"))),
+    }
+}
+
+fn value_to_string(val: Value) -> Option<String> {
+    string::with_string_bytes(val, |bytes| String::from_utf8_lossy(bytes).into_owned())
+}
+
+pub(crate) fn env_get(key: Value) -> Value {
+    let key = match value_to_string(key) {
+        Some(key) => key,
+        None => return Value::nil(),
+    };
+    match std::env::var(&key).ok() {
+        Some(val) => string::str_from_bytes(val.as_bytes()),
+        None => Value::nil(),
+    }
+}
+
+pub(crate) fn env_set(key: Value, val: Value) -> Value {
+    let key = match value_to_string(key) {
+        Some(key) => key,
+        None => return Value::from_bool(false),
+    };
+    let val = match value_to_string(val) {
+        Some(val) => val,
+        None => return Value::from_bool(false),
+    };
+    unsafe {
+        std::env::set_var(key, val);
+    }
+    Value::from_bool(true)
+}
+
+pub(crate) fn clock_ns() -> Value {
+    static START: OnceLock<Instant> = OnceLock::new();
+    let start = START.get_or_init(Instant::now);
+    let ns = start.elapsed().as_nanos() as i64;
+    Value::from_int(ns)
+}
+
+pub(crate) fn sleep_ms(ms_val: Value) -> Value {
+    let ms = int_value(ms_val).unwrap_or(0);
+    crate::actor::sleep_ms(ms)
 }

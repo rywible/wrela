@@ -818,12 +818,13 @@ impl ProjectLoader {
             }
         }
         let stdlib_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stdlib");
-        let mut rel = PathBuf::from(name.as_str());
+        let canonical_name = canonical_stdlib_module(name);
+        let mut rel = PathBuf::from(canonical_name.as_str());
         let candidate_wr = stdlib_root.join(rel.with_extension("wr"));
         if candidate_wr.is_file() {
             return Some(candidate_wr);
         }
-        rel = PathBuf::from(name.as_str());
+        rel = PathBuf::from(canonical_name.as_str());
         let candidate_sp = stdlib_root.join(rel.with_extension("sp"));
         if candidate_sp.is_file() {
             return Some(candidate_sp);
@@ -958,12 +959,41 @@ fn removed_core_stdlib_module_message(module_name: &str) -> Option<String> {
     }
 }
 
+fn canonical_stdlib_module_name(module_name: &str) -> Option<&'static str> {
+    match module_name {
+        "actor" => Some("runtime/actor"),
+        "pool" => Some("runtime/pool"),
+        "scheduler" => Some("runtime/scheduler"),
+        "runtime" => Some("runtime/config"),
+        "reactor" => Some("runtime/reactor"),
+        "task" => Some("runtime/task"),
+        "bytes" => Some("data/bytes"),
+        "list" => Some("data/list"),
+        "map" => Some("data/map"),
+        "parse" => Some("data/parse"),
+        "env" => Some("host/env"),
+        "fs" => Some("host/fs"),
+        "io" => Some("host/io"),
+        "log" => Some("host/log"),
+        "time" => Some("host/time"),
+        _ => None,
+    }
+}
+
+fn canonical_stdlib_module(module_name: &SmolStr) -> SmolStr {
+    if let Some(canonical) = canonical_stdlib_module_name(module_name.as_str()) {
+        SmolStr::new(canonical)
+    } else {
+        module_name.clone()
+    }
+}
+
 fn collect_use_sites(module: &Module) -> Vec<UseSite> {
     module
         .uses
         .iter()
         .map(|use_stmt| UseSite {
-            module: use_stmt.module.clone(),
+            module: canonical_stdlib_module(&use_stmt.module),
             names: use_stmt.names.clone(),
             span: use_stmt.span,
             module_span: use_stmt.module_span,
@@ -1592,5 +1622,34 @@ mod tests {
 
         let project = load_project(&entry_path);
         assert!(project.is_err());
+    }
+
+    #[test]
+    fn test_stdlib_flat_alias_table_maps_to_grouped_paths() {
+        assert_eq!(canonical_stdlib_module_name("actor"), Some("runtime/actor"));
+        assert_eq!(canonical_stdlib_module_name("runtime"), Some("runtime/config"));
+        assert_eq!(canonical_stdlib_module_name("parse"), Some("data/parse"));
+        assert_eq!(canonical_stdlib_module_name("env"), Some("host/env"));
+        assert_eq!(canonical_stdlib_module_name("metrics"), None);
+    }
+
+    #[test]
+    fn test_stdlib_flat_alias_imports_resolve_without_flat_files() {
+        let base = std::env::temp_dir().join(format!(
+            "wrela_project_stdlib_aliases_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let entry_path = base.join("src").join("main.wr");
+        write_temp(
+            &entry_path,
+            "use parse_integer from parse\nuse get_environment_variable_or_default from env\n\nto run() -> Integer:\n    value = get_environment_variable_or_default(\"WRELA_ALIAS_TEST\", \"7\")\n    return parse_integer(value) otherwise 0\n",
+        );
+
+        let project = load_project(&entry_path);
+        assert!(project.is_ok());
     }
 }

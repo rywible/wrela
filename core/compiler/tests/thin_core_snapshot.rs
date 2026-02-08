@@ -231,7 +231,7 @@ fn thin_core_abi_version_matches_snapshot() {
     let snapshot = parse_snapshot(&compiler_dir.join("../spec/thin_core_snapshot.txt"));
 
     let runtime_abi = extract_abi_version(
-        &read(&compiler_dir.join("../runtime/src/diagnostics.rs")),
+        &read(&compiler_dir.join("../runtime/src/kernel.rs")),
         "pub const RUNTIME_ABI_VERSION: u32 =",
     );
     let backend_abi = extract_abi_version(

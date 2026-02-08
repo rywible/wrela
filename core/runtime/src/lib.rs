@@ -1,31 +1,19 @@
 #![allow(clippy::missing_safety_doc)]
 
-mod actor;
-pub mod arena;
-mod bytes;
-mod class;
-mod config;
-mod diagnostics;
-mod iter;
-mod list;
-mod logging;
-mod map;
-mod metrics;
-mod object;
+mod data;
+mod host;
+mod kernel;
 pub mod reactor;
-mod result;
-mod scheduler;
-mod string;
-mod value;
 
-use value::int_value;
-pub use value::{TypeId, Value};
+pub(crate) use data::{arena, bytes, class, iter, list, map, object, result, string, value};
+pub(crate) use kernel::{actor, config, diagnostics, metrics, scheduler};
 
-use object::drop_object;
+use data::value::int_value;
+use data::object::drop_object;
+pub use data::value::{TypeId, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Instant;
 
 const WR_REACTOR_EVENT_READABLE: i32 = 1;
 const WR_REACTOR_EVENT_TIMER: i32 = 2;
@@ -587,29 +575,17 @@ pub extern "C" fn wr_map_set(map_val: Value, key: Value, val: Value) -> Value {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_print(val: Value) -> Value {
-    if val.is_ptr() {
-        unsafe {
-            let header = &*val.as_ptr();
-            if header.type_id == TypeId::String as u32 {
-                let _ = string::with_string_bytes(val, |bytes| {
-                    println!("{}", String::from_utf8_lossy(bytes));
-                });
-                return Value::nil();
-            }
-        }
-    }
-    println!("<value>");
-    Value::nil()
+    host::print(val)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_log(level: Value, msg: Value, fields: Value) -> Value {
-    logging::log(level, msg, fields)
+    host::log(level, msg, fields)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_log_configure(config: Value) -> Value {
-    logging::log_configure(config)
+    host::log_configure(config)
 }
 
 #[unsafe(no_mangle)]
@@ -776,39 +752,14 @@ pub extern "C" fn wr_assert_err(val: Value) -> Value {
     std::process::abort();
 }
 
-fn builtin_error(message: &str) -> Value {
-    string::str_from_utf8(message.as_ptr(), message.len())
-}
-
-fn string_bytes(val: Value) -> Option<Vec<u8>> {
-    string::with_string_bytes(val, |bytes| bytes.to_vec())
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_fs_read_bytes(path: Value) -> Value {
-    let Some(bytes) = string_bytes(path) else {
-        return result::result_err(builtin_error("fs_read_bytes expects a String"));
-    };
-    let path_str = String::from_utf8_lossy(&bytes);
-    match std::fs::read(path_str.as_ref()) {
-        Ok(contents) => result::result_ok(bytes::bytes_from_slice(&contents)),
-        Err(err) => result::result_err(builtin_error(&format!("fs_read_bytes: {err}"))),
-    }
+    host::fs_read_bytes(path)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_fs_write_bytes(path: Value, contents: Value) -> Value {
-    let Some(path_bytes) = string_bytes(path) else {
-        return result::result_err(builtin_error("fs_write_bytes expects a String path"));
-    };
-    let Some(contents_bytes) = bytes::with_bytes(contents, |bytes| bytes.to_vec()) else {
-        return result::result_err(builtin_error("fs_write_bytes expects Bytes contents"));
-    };
-    let path_str = String::from_utf8_lossy(&path_bytes);
-    match std::fs::write(path_str.as_ref(), contents_bytes) {
-        Ok(()) => result::result_ok(Value::nil()),
-        Err(err) => result::result_err(builtin_error(&format!("fs_write_bytes: {err}"))),
-    }
+    host::fs_write_bytes(path, contents)
 }
 
 #[unsafe(no_mangle)]
@@ -937,8 +888,7 @@ pub extern "C" fn wr_actor_pause_wait(handle: Value) -> Value {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_sleep_ms(ms_val: Value) -> Value {
-    let ms = int_value(ms_val).unwrap_or(0);
-    actor::sleep_ms(ms)
+    host::sleep_ms(ms_val)
 }
 
 #[unsafe(no_mangle)]
@@ -959,10 +909,7 @@ pub extern "C" fn wr_metrics_messages_dropped_id() -> Value {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_clock_ns() -> Value {
-    static START: OnceLock<Instant> = OnceLock::new();
-    let start = START.get_or_init(Instant::now);
-    let ns = start.elapsed().as_nanos() as i64;
-    Value::from_int(ns)
+    host::clock_ns()
 }
 
 #[unsafe(no_mangle)]
@@ -1063,42 +1010,12 @@ pub extern "C" fn wr_runtime_configure(config: Value) -> Value {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_env_get(key: Value) -> Value {
-    env_get(key)
+    host::env_get(key)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_env_set(key: Value, val: Value) -> Value {
-    env_set(key, val)
-}
-
-fn value_to_string(val: Value) -> Option<String> {
-    string::with_string_bytes(val, |bytes| String::from_utf8_lossy(bytes).into_owned())
-}
-
-fn env_get(key: Value) -> Value {
-    let key = match value_to_string(key) {
-        Some(key) => key,
-        None => return Value::nil(),
-    };
-    match std::env::var(&key).ok() {
-        Some(val) => string::str_from_bytes(val.as_bytes()),
-        None => Value::nil(),
-    }
-}
-
-fn env_set(key: Value, val: Value) -> Value {
-    let key = match value_to_string(key) {
-        Some(key) => key,
-        None => return Value::from_bool(false),
-    };
-    let val = match value_to_string(val) {
-        Some(val) => val,
-        None => return Value::from_bool(false),
-    };
-    unsafe {
-        std::env::set_var(key, val);
-    }
-    Value::from_bool(true)
+    host::env_set(key, val)
 }
 
 fn num_add(a: Value, b: Value) -> Value {
@@ -1281,4 +1198,148 @@ enum NumKind {
 }
 
 #[cfg(test)]
-mod tests;
+mod tests {
+    use crate::*;
+
+    fn str_value(input: &str) -> Value {
+        wr_str_from_utf8(input.as_ptr(), input.len())
+    }
+
+    fn value_to_string(input: Value) -> String {
+        crate::string::with_string_bytes(input, |bytes| String::from_utf8_lossy(bytes).to_string())
+            .unwrap_or_default()
+    }
+
+    fn dec(input: Value) {
+        unsafe {
+            wr_rc_dec(input);
+        }
+    }
+
+    #[test]
+    fn boxing_round_trip() {
+        let int = wr_box_int(42);
+        assert_eq!(wr_unbox_int(int), 42);
+
+        let float = wr_box_float(3.5);
+        assert_eq!(wr_unbox_float(float), 3.5);
+    }
+
+    #[test]
+    fn string_and_bytes_round_trip() {
+        let hello = str_value("hello");
+        let world = str_value(" world");
+        let parts = [hello, world];
+
+        let joined = wr_str_concat(parts.as_ptr(), parts.len());
+        assert_eq!(value_to_string(joined), "hello world");
+
+        let bytes = wr_bytes_from_string(joined);
+        let len = wr_bytes_len(bytes);
+        assert_eq!(len.as_int(), 11);
+
+        let decoded = wr_bytes_to_string(bytes);
+        assert_eq!(value_to_string(decoded), "hello world");
+
+        dec(hello);
+        dec(world);
+        dec(joined);
+        dec(bytes);
+        dec(decoded);
+    }
+
+    #[test]
+    fn list_and_map_ops() {
+        let list = wr_list_new(0);
+        let one = wr_box_int(1);
+        let two = wr_box_int(2);
+
+        wr_list_push(list, one);
+        wr_list_push(list, two);
+
+        assert_eq!(wr_list_len(list).as_int(), 2);
+        assert_eq!(wr_list_get(list, 1).as_int(), 2);
+
+        let map = wr_map_new();
+        let key = str_value("k");
+        let val = str_value("v");
+        let _ = wr_map_set(map, key, val);
+        let got = wr_map_get(map, key);
+
+        assert_eq!(value_to_string(got), "v");
+
+        dec(list);
+        dec(one);
+        dec(two);
+        dec(map);
+        dec(key);
+        dec(val);
+        dec(got);
+    }
+
+    #[test]
+    fn result_ops() {
+        let ok = wr_result_ok(wr_box_int(7));
+        assert!(wr_result_is_ok(ok).as_bool());
+        assert_eq!(wr_result_unwrap(ok).as_int(), 7);
+
+        let err_msg = str_value("bad");
+        let err = wr_result_err(err_msg);
+        assert!(!wr_result_is_ok(err).as_bool());
+        assert_eq!(value_to_string(wr_result_err_unwrap(err)), "bad");
+
+        dec(ok);
+        dec(err_msg);
+        dec(err);
+    }
+
+    #[test]
+    fn env_ops() {
+        let key = str_value("WRELA_TEST_ENV");
+        let val = str_value("ok");
+
+        let _ = wr_env_set(key, val);
+        let got = wr_env_get(key);
+        assert_eq!(value_to_string(got), "ok");
+
+        dec(key);
+        dec(val);
+        dec(got);
+    }
+
+    #[test]
+    fn runtime_configure_smoke() {
+        let names = [b"actor_batch_limit".as_ptr()];
+        let lens = [17usize];
+        let cfg = wr_class_new(1001, names.as_ptr(), lens.as_ptr(), 1);
+        wr_class_set(cfg, b"actor_batch_limit".as_ptr(), 17, Value::from_int(4));
+
+        let result = wr_runtime_configure(cfg);
+
+        dec(cfg);
+        dec(result);
+    }
+
+    #[test]
+    #[should_panic(expected = "actor_mailbox_cap")]
+    fn runtime_configure_rejects_normalized_negative_capacity() {
+        let names = [b"actor_mailbox_cap".as_ptr()];
+        let lens = [17usize];
+        let cfg = wr_class_new(1002, names.as_ptr(), lens.as_ptr(), 1);
+        wr_class_set(cfg, b"actor_mailbox_cap".as_ptr(), 17, Value::from_int(-1));
+        let _ = crate::config::runtime_configure(cfg);
+    }
+
+    #[test]
+    fn actor_spawn_rejects_legacy_objective_fallback() {
+        let actor = crate::actor::actor_spawn(1, Value::nil(), 1, 7, 256, 10, 64);
+        assert!(actor.is_nil());
+    }
+
+    #[test]
+    fn actor_spawn_legacy_default_sentinel_uses_runtime_config() {
+        let actor = crate::actor::actor_spawn(1, Value::nil(), 1, 3, -1, 10, 64);
+        assert!(!actor.is_nil());
+        dec(actor);
+    }
+}
