@@ -147,6 +147,30 @@ pub enum NamingError {
         #[label("inline this check result")]
         span: SourceSpan,
     },
+
+    #[error("module segment '{name}' must represent a resource/service noun")]
+    #[diagnostic(
+        code(lang::naming::module_semantic_required),
+        help("Use noun-like module segments (resource/service), not action/predicate names.")
+    )]
+    ModuleSemanticRequired {
+        name: SmolStr,
+        #[label("rename this module segment")]
+        span: SourceSpan,
+    },
+
+    #[error("collection {kind} '{name}' must be {expected_form}")]
+    #[diagnostic(
+        code(lang::naming::collection_plurality_required),
+        help("Collections use plural names; loop binders over collections use singular names.")
+    )]
+    CollectionPluralityRequired {
+        kind: &'static str,
+        name: SmolStr,
+        expected_form: &'static str,
+        #[label("rename this {kind}")]
+        span: SourceSpan,
+    },
 }
 
 impl NamingError {
@@ -163,6 +187,8 @@ impl NamingError {
             NamingError::ResultErrorTypeShape { span, .. } => *span,
             NamingError::BooleanPrefixRequired { span, .. } => *span,
             NamingError::InlineCheckCondition { span, .. } => *span,
+            NamingError::ModuleSemanticRequired { span, .. } => *span,
+            NamingError::CollectionPluralityRequired { span, .. } => *span,
         }
     }
 }
@@ -243,6 +269,12 @@ impl<'a> Checker<'a> {
                         span: span_from_option(use_stmt.module_span),
                     });
                 }
+                if !module_segment_is_nounish(segment) {
+                    self.errors.push(NamingError::ModuleSemanticRequired {
+                        name: SmolStr::new(segment),
+                        span: span_from_option(use_stmt.module_span),
+                    });
+                }
             }
         }
 
@@ -262,6 +294,9 @@ impl<'a> Checker<'a> {
                 });
             }
             if let Some(ty) = &field.ty {
+                if type_ref_is_collection_like(ty) {
+                    self.check_plural_collection_name("field", &field.name, field.name_span);
+                }
                 self.check_result_error_type_names(ty);
             }
         }
@@ -350,6 +385,9 @@ impl<'a> Checker<'a> {
             }
 
             if let Some(ty) = &param.ty {
+                if type_ref_is_collection_like(ty) {
+                    self.check_plural_collection_name(kind_label, &param.name, param.name_span);
+                }
                 self.check_result_error_type_names(ty);
             }
         }
@@ -434,9 +472,22 @@ impl<'a> Checker<'a> {
                     );
                 }
                 Stmt::For {
-                    name, body: inner, ..
+                    name,
+                    iterable,
+                    body: inner,
+                    ..
                 } => {
                     self.check_snake("local", name, Some(body.stmt_span(*stmt_id)));
+                    let is_collection_iterable = fn_types
+                        .and_then(|info| info.expr_types.get(&iterable.into_raw()))
+                        .is_some_and(type_is_collection);
+                    if is_collection_iterable {
+                        self.check_singular_collection_binder_name(
+                            "loop binder",
+                            name,
+                            Some(body.stmt_span(*stmt_id)),
+                        );
+                    }
                     self.check_block(body, inner, fn_types);
                 }
                 Stmt::Capture { name, .. } => {
@@ -491,6 +542,12 @@ impl<'a> Checker<'a> {
                 span: span_from_range(body.stmt_span(stmt_id)),
             });
         }
+        let is_collection = fn_types
+            .and_then(|info| info.local_types.get(name))
+            .is_some_and(type_is_collection);
+        if is_collection {
+            self.check_plural_collection_name("local", name, Some(body.stmt_span(stmt_id)));
+        }
     }
 
     fn check_pattern(
@@ -516,6 +573,12 @@ impl<'a> Checker<'a> {
                         name: name.clone(),
                         span: span_from_range(fallback_span),
                     });
+                }
+                let is_collection = fn_types
+                    .and_then(|info| info.local_types.get(name))
+                    .is_some_and(type_is_collection);
+                if is_collection {
+                    self.check_plural_collection_name("local", name, Some(fallback_span));
                 }
             }
             Pattern::Path { args, .. } => {
@@ -586,6 +649,38 @@ impl<'a> Checker<'a> {
             self.errors.push(NamingError::PascalCaseRequired {
                 kind,
                 name: name.clone(),
+                span: span_from_option(span),
+            });
+        }
+    }
+
+    fn check_plural_collection_name(
+        &mut self,
+        kind: &'static str,
+        name: &SmolStr,
+        span: Option<TextRange>,
+    ) {
+        if !is_plural_name(name.as_str()) {
+            self.errors.push(NamingError::CollectionPluralityRequired {
+                kind,
+                name: name.clone(),
+                expected_form: "plural",
+                span: span_from_option(span),
+            });
+        }
+    }
+
+    fn check_singular_collection_binder_name(
+        &mut self,
+        kind: &'static str,
+        name: &SmolStr,
+        span: Option<TextRange>,
+    ) {
+        if is_plural_name(name.as_str()) {
+            self.errors.push(NamingError::CollectionPluralityRequired {
+                kind,
+                name: name.clone(),
+                expected_form: "singular",
                 span: span_from_option(span),
             });
         }
@@ -959,6 +1054,26 @@ fn is_verb_led(name: &str) -> bool {
     )
 }
 
+fn module_segment_is_nounish(segment: &str) -> bool {
+    if starts_with_is_or_has(segment)
+        || segment.starts_with("try_to_")
+        || segment.starts_with("create_")
+        || segment.starts_with("to_")
+        || segment.starts_with("can_")
+        || segment.starts_with("check_")
+    {
+        return false;
+    }
+    if is_verb_led(segment) && !MODULE_SEGMENT_NOUN_EXCEPTIONS.contains(&segment) {
+        return false;
+    }
+    true
+}
+
+const MODULE_SEGMENT_NOUN_EXCEPTIONS: &[&str] = &[
+    "parse", "runtime", "data", "host", "core", "env", "fs", "pool", "task", "log",
+];
+
 fn type_ref_is_result_like(ty: &TypeRef) -> bool {
     if ty.name == "Result" && ty.args.len() == 2 {
         return true;
@@ -976,6 +1091,66 @@ fn type_ref_is_boolean(ty: &TypeRef) -> bool {
 fn type_is_boolean(ty: &Type) -> bool {
     matches!(ty, Type::Boolean)
 }
+
+fn type_ref_is_collection_like(ty: &TypeRef) -> bool {
+    if ty.name == "List" && ty.args.len() == 1 {
+        return true;
+    }
+    if ty.name == "Map" && ty.args.len() == 2 {
+        return true;
+    }
+    if ty.name == "Pending" && ty.args.len() == 1 {
+        return type_ref_is_collection_like(&ty.args[0]);
+    }
+    false
+}
+
+fn type_is_collection(ty: &Type) -> bool {
+    matches!(ty, Type::List(_) | Type::Map(_, _))
+}
+
+fn is_plural_name(name: &str) -> bool {
+    let tail = name.rsplit('_').next().unwrap_or(name);
+    if tail.is_empty() {
+        return false;
+    }
+    if IRREGULAR_PLURALS.contains(&tail) {
+        return true;
+    }
+    if SINGULAR_ENDS_WITH_S.contains(&tail) {
+        return false;
+    }
+    if tail.ends_with("ies") && tail.len() > 3 {
+        return true;
+    }
+    if tail.ends_with("ses") || tail.ends_with("xes") || tail.ends_with("zes") {
+        return true;
+    }
+    tail.ends_with('s') && !tail.ends_with("ss")
+}
+
+const IRREGULAR_PLURALS: &[&str] = &[
+    "children",
+    "people",
+    "men",
+    "women",
+    "teeth",
+    "feet",
+    "geese",
+    "data",
+    "indices",
+];
+
+const SINGULAR_ENDS_WITH_S: &[&str] = &[
+    "status",
+    "analysis",
+    "basis",
+    "thesis",
+    "axis",
+    "class",
+    "glass",
+    "bus",
+];
 
 fn span_from_option(span: Option<TextRange>) -> SourceSpan {
     span.map(span_from_range)
@@ -1102,5 +1277,87 @@ mod tests {
         assert!(!errors
             .iter()
             .any(|err| matches!(err, NamingError::VerbLedRequired { name, .. } if name == "main" || name == "__configure__")));
+    }
+
+    #[test]
+    fn enforces_module_segment_semantics() {
+        let errors =
+            naming_errors("use foo from create/users\n\nto run() -> Integer:\n    return 1\n");
+        assert!(errors.iter().any(|err| {
+            matches!(err, NamingError::ModuleSemanticRequired { name, .. } if name == "create")
+        }));
+    }
+
+    #[test]
+    fn enforces_collection_plurality_for_field_param_local_and_binder() {
+        let errors = naming_errors(
+            "A Bucket:\n    has:\n        item: List[Integer]\n\n\
+             to run(item: List[Integer]) -> Integer:\n    user = [1, 2, 3]\n    for items in user:\n        return items\n    return 0\n",
+        );
+        assert!(errors.iter().any(|err| {
+            matches!(
+                err,
+                NamingError::CollectionPluralityRequired { kind, name, expected_form, .. }
+                    if *kind == "field" && name == "item" && *expected_form == "plural"
+            )
+        }));
+        assert!(errors.iter().any(|err| {
+            matches!(
+                err,
+                NamingError::CollectionPluralityRequired { kind, name, expected_form, .. }
+                    if *kind == "parameter" && name == "item" && *expected_form == "plural"
+            )
+        }));
+        assert!(errors.iter().any(|err| {
+            matches!(
+                err,
+                NamingError::CollectionPluralityRequired { kind, name, expected_form, .. }
+                    if *kind == "local" && name == "user" && *expected_form == "plural"
+            )
+        }));
+        assert!(errors.iter().any(|err| {
+            matches!(
+                err,
+                NamingError::CollectionPluralityRequired { kind, name, expected_form, .. }
+                    if *kind == "loop binder" && name == "items" && *expected_form == "singular"
+            )
+        }));
+    }
+
+    #[test]
+    fn naming_pass_performance_budget_smoke() {
+        use std::time::{Duration, Instant};
+
+        let mut source = String::new();
+        source.push_str("A User:\n    has:\n        ids: List[Integer]\n\n");
+        for index in 0..300 {
+            source.push_str(&format!(
+                "to create_user_{index}() -> User:\n    return User(ids=[1, 2, 3])\n\n",
+            ));
+        }
+        source.push_str("to run() -> Integer:\n    users = [1, 2, 3]\n    for user in users:\n        if user > 100:\n            return user\n    return 0\n");
+
+        let node = parse(&source);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+
+        let type_start = Instant::now();
+        let (_type_errors, type_info) = typeck::check_module_with_info(&module);
+        let type_elapsed = type_start.elapsed();
+
+        let naming_start = Instant::now();
+        let _naming_errors = check_module(&module, &type_info);
+        let naming_elapsed = naming_start.elapsed();
+
+        let budget = type_elapsed
+            .saturating_mul(8)
+            .saturating_add(Duration::from_millis(50));
+        assert!(
+            naming_elapsed <= budget,
+            "naming pass budget exceeded: naming={:?}, typeck={:?}, budget={:?}",
+            naming_elapsed,
+            type_elapsed,
+            budget
+        );
     }
 }
