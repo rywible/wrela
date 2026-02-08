@@ -169,11 +169,7 @@ fn cli_thin_core_bootstrap_matrix() {
     std::fs::create_dir_all(&src).unwrap();
     std::fs::create_dir_all(&tests).unwrap();
 
-    std::fs::write(
-        src.join("main.wr"),
-        "to run() -> Integer:\n    return 0\n",
-    )
-    .unwrap();
+    std::fs::write(src.join("main.wr"), "to run() -> Integer:\n    return 0\n").unwrap();
     let entry = src.join("main.wr");
     std::fs::write(
         tests.join("basic.wr"),

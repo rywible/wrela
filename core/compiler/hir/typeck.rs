@@ -878,33 +878,17 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("__wr_parse_int"),
-            FunctionSig {
-                params: vec![(SmolStr::new("value"), Type::String)],
-                ret: Type::Result(Box::new(Type::Integer), Box::new(err.clone())),
-                kind: FunctionKind::Function,
-            },
-        ),
-        (
-            SmolStr::new("__wr_parse_float"),
-            FunctionSig {
-                params: vec![(SmolStr::new("value"), Type::String)],
-                ret: Type::Result(Box::new(Type::Float), Box::new(err.clone())),
-                kind: FunctionKind::Function,
-            },
-        ),
-        (
-            SmolStr::new("__wr_read_file"),
-            FunctionSig {
-                params: vec![(SmolStr::new("path"), Type::String)],
-                ret: Type::Result(Box::new(Type::String), Box::new(err.clone())),
-                kind: FunctionKind::Function,
-            },
-        ),
-        (
             SmolStr::new("__wr_bytes_from_string"),
             FunctionSig {
                 params: vec![(SmolStr::new("value"), Type::String)],
+                ret: Type::Named(SmolStr::new("Bytes"), Vec::new()),
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_bytes_from_list"),
+            FunctionSig {
+                params: vec![(SmolStr::new("value"), Type::List(Box::new(Type::Integer)))],
                 ret: Type::Named(SmolStr::new("Bytes"), Vec::new()),
                 kind: FunctionKind::Function,
             },
@@ -921,6 +905,17 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
+            SmolStr::new("__wr_bytes_to_list"),
+            FunctionSig {
+                params: vec![(
+                    SmolStr::new("value"),
+                    Type::Named(SmolStr::new("Bytes"), Vec::new()),
+                )],
+                ret: Type::List(Box::new(Type::Integer)),
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
             SmolStr::new("__wr_bytes_len"),
             FunctionSig {
                 params: vec![(
@@ -932,11 +927,25 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("__wr_write_file"),
+            SmolStr::new("__wr_fs_read_bytes"),
+            FunctionSig {
+                params: vec![(SmolStr::new("path"), Type::String)],
+                ret: Type::Result(
+                    Box::new(Type::Named(SmolStr::new("Bytes"), Vec::new())),
+                    Box::new(err.clone()),
+                ),
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_fs_write_bytes"),
             FunctionSig {
                 params: vec![
                     (SmolStr::new("path"), Type::String),
-                    (SmolStr::new("contents"), Type::String),
+                    (
+                        SmolStr::new("contents"),
+                        Type::Named(SmolStr::new("Bytes"), Vec::new()),
+                    ),
                 ],
                 ret: Type::Result(Box::new(Type::Nil), Box::new(err.clone())),
                 kind: FunctionKind::Function,
@@ -1123,47 +1132,12 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("__wr_env_get_or"),
-            FunctionSig {
-                params: vec![
-                    (SmolStr::new("key"), Type::String),
-                    (SmolStr::new("default"), Type::String),
-                ],
-                ret: Type::String,
-                kind: FunctionKind::Function,
-            },
-        ),
-        (
-            SmolStr::new("__wr_env_get_as_bool"),
-            FunctionSig {
-                params: vec![(SmolStr::new("key"), Type::String)],
-                ret: Type::Unknown,
-                kind: FunctionKind::Function,
-            },
-        ),
-        (
-            SmolStr::new("__wr_env_get_as_int"),
-            FunctionSig {
-                params: vec![(SmolStr::new("key"), Type::String)],
-                ret: Type::Unknown,
-                kind: FunctionKind::Function,
-            },
-        ),
-        (
             SmolStr::new("__wr_env_set"),
             FunctionSig {
                 params: vec![
                     (SmolStr::new("key"), Type::String),
                     (SmolStr::new("value"), Type::String),
                 ],
-                ret: Type::Boolean,
-                kind: FunctionKind::Function,
-            },
-        ),
-        (
-            SmolStr::new("__wr_env_load"),
-            FunctionSig {
-                params: vec![(SmolStr::new("path"), Type::String)],
                 ret: Type::Boolean,
                 kind: FunctionKind::Function,
             },
@@ -5404,8 +5378,8 @@ to f(p: Printable) -> String:
     fn test_match_result_bindings_flow() {
         let input = r#"
 to f() -> Integer:
-    match __wr_parse_int("1"):
-        Ok(v): return v
+    match __wr_fs_read_bytes("x"):
+        Ok(v): return __wr_bytes_len(v)
         Err(e): return 0
         otherwise: return 2
 "#;
@@ -5624,7 +5598,7 @@ A Whale:\n    can swim() -> Boolean:\n        return true\n\nto f() -> Result:\n
 
     #[test]
     fn test_builtin_fallible_requires_handling() {
-        let input = "to f() -> Nothing:\n    __wr_parse_int(\"1\")";
+        let input = "to f() -> Nothing:\n    __wr_fs_read_bytes(\"x\")";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
@@ -5638,7 +5612,7 @@ A Whale:\n    can swim() -> Boolean:\n        return true\n\nto f() -> Result:\n
 
     #[test]
     fn test_builtin_fallible_otherwise_ok() {
-        let input = "to f() -> Integer:\n    return __wr_parse_int(\"1\") otherwise 0";
+        let input = "to f() -> Integer:\n    return __wr_bytes_len(__wr_fs_read_bytes(\"x\") otherwise __wr_bytes_from_string(\"1\"))";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);

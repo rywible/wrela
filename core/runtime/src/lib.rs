@@ -85,7 +85,6 @@ pub extern "C" fn wr_unbox_int(val: Value) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_runtime_init() {
     diagnostics::runtime_init();
-    env::init();
     #[cfg(feature = "metrics")]
     metrics::install_dump_hook();
 }
@@ -93,7 +92,6 @@ pub extern "C" fn wr_runtime_init() {
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_runtime_abi() -> u32 {
     diagnostics::runtime_init();
-    env::init();
     diagnostics::RUNTIME_ABI_VERSION
 }
 
@@ -155,6 +153,16 @@ pub extern "C" fn wr_bytes_to_string(val: Value) -> Value {
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_bytes_len(val: Value) -> Value {
     bytes::bytes_len(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_bytes_to_list(val: Value) -> Value {
+    bytes::bytes_to_list(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_bytes_from_list(val: Value) -> Value {
+    bytes::bytes_from_list(val)
 }
 
 #[unsafe(no_mangle)]
@@ -458,60 +466,29 @@ fn string_bytes(val: Value) -> Option<Vec<u8>> {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn wr_parse_int(val: Value) -> Value {
-    let Some(bytes) = string_bytes(val) else {
-        return result::result_err(builtin_error("parse_int expects a String"));
-    };
-    let parsed = std::str::from_utf8(&bytes)
-        .ok()
-        .and_then(|s| s.trim().parse::<i64>().ok());
-    match parsed {
-        Some(num) => result::result_ok(Value::from_int(num)),
-        None => result::result_err(builtin_error("parse_int: invalid integer")),
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn wr_parse_float(val: Value) -> Value {
-    let Some(bytes) = string_bytes(val) else {
-        return result::result_err(builtin_error("parse_float expects a String"));
-    };
-    let parsed = std::str::from_utf8(&bytes)
-        .ok()
-        .and_then(|s| s.trim().parse::<f64>().ok());
-    match parsed {
-        Some(num) => result::result_ok(Value::from_float(num)),
-        None => result::result_err(builtin_error("parse_float: invalid float")),
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn wr_read_file(path: Value) -> Value {
+pub extern "C" fn wr_fs_read_bytes(path: Value) -> Value {
     let Some(bytes) = string_bytes(path) else {
-        return result::result_err(builtin_error("read_file expects a String"));
+        return result::result_err(builtin_error("fs_read_bytes expects a String"));
     };
     let path_str = String::from_utf8_lossy(&bytes);
     match std::fs::read(path_str.as_ref()) {
-        Ok(contents) => match std::str::from_utf8(&contents) {
-            Ok(text) => result::result_ok(string::str_from_utf8(text.as_ptr(), text.len())),
-            Err(_) => result::result_err(builtin_error("read_file: invalid utf8")),
-        },
-        Err(err) => result::result_err(builtin_error(&format!("read_file: {err}"))),
+        Ok(contents) => result::result_ok(bytes::bytes_from_slice(&contents)),
+        Err(err) => result::result_err(builtin_error(&format!("fs_read_bytes: {err}"))),
     }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn wr_write_file(path: Value, contents: Value) -> Value {
+pub extern "C" fn wr_fs_write_bytes(path: Value, contents: Value) -> Value {
     let Some(path_bytes) = string_bytes(path) else {
-        return result::result_err(builtin_error("write_file expects a String path"));
+        return result::result_err(builtin_error("fs_write_bytes expects a String path"));
     };
-    let Some(contents_bytes) = string_bytes(contents) else {
-        return result::result_err(builtin_error("write_file expects String contents"));
+    let Some(contents_bytes) = bytes::with_bytes(contents, |bytes| bytes.to_vec()) else {
+        return result::result_err(builtin_error("fs_write_bytes expects Bytes contents"));
     };
     let path_str = String::from_utf8_lossy(&path_bytes);
     match std::fs::write(path_str.as_ref(), contents_bytes) {
         Ok(()) => result::result_ok(Value::nil()),
-        Err(err) => result::result_err(builtin_error(&format!("write_file: {err}"))),
+        Err(err) => result::result_err(builtin_error(&format!("fs_write_bytes: {err}"))),
     }
 }
 
@@ -779,28 +756,8 @@ pub extern "C" fn wr_env_get(key: Value) -> Value {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn wr_env_get_or(key: Value, default: Value) -> Value {
-    env::env_get_or(key, default)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn wr_env_get_as_bool(key: Value) -> Value {
-    env::env_get_as_bool(key)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn wr_env_get_as_int(key: Value) -> Value {
-    env::env_get_as_int(key)
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn wr_env_set(key: Value, val: Value) -> Value {
     env::env_set(key, val)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn wr_env_load(path: Value) -> Value {
-    env::env_load(path)
 }
 
 #[cfg(test)]

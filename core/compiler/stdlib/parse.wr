@@ -1,10 +1,181 @@
 so:
     Parsing helpers.
 
+use:
+    get_bytes_from_string,
+    get_list_from_bytes
+from bytes
+
+use push from list
+
+
+to is_ascii_space(byte_value: Integer) -> Boolean:
+    return byte_value == 9 or byte_value == 10 or byte_value == 13 or byte_value == 32
+
+
+to digit_value(byte_value: Integer) -> Integer:
+    if byte_value >= 48 and byte_value <= 57:
+        return byte_value - 48
+    return -1
+
+
+to trim_bytes(text: String) -> List[Integer]:
+    raw_bytes = get_list_from_bytes(get_bytes_from_string(text))
+    trimmed = []
+    mutable started = false
+    mutable pending_whitespace = []
+
+    for byte_value in raw_bytes:
+        if is_ascii_space(byte_value):
+            if started:
+                push(pending_whitespace, byte_value)
+        otherwise:
+            if not started:
+                started = true
+            for pending in pending_whitespace:
+                push(trimmed, pending)
+            pending_whitespace = []
+            push(trimmed, byte_value)
+
+    return trimmed
+
+
 so: Parse an Integer from a String.
 to parse_integer(text: String) -> Result[Integer]:
-    return __wr_parse_int(text)
+    bytes = trim_bytes(text)
+    mutable started = false
+    mutable seen_digit = false
+    mutable sign = 1
+    mutable value = 0
+    mutable previous_was_underscore = false
+
+    for byte_value in bytes:
+        if not started and (byte_value == 43 or byte_value == 45):
+            started = true
+            if byte_value == 45:
+                sign = -1
+            continue
+
+        digit = digit_value(byte_value)
+        if digit >= 0:
+            started = true
+            seen_digit = true
+            previous_was_underscore = false
+            value = value * 10 + digit
+            continue
+
+        if byte_value == 95:
+            if not seen_digit or previous_was_underscore:
+                return error "parse_integer: invalid integer"
+            previous_was_underscore = true
+            continue
+
+        return error "parse_integer: invalid integer"
+
+    if not seen_digit or previous_was_underscore:
+        return error "parse_integer: invalid integer"
+
+    return value * sign
+
 
 so: Parse a Float from a String.
 to parse_float(text: String) -> Result[Float]:
-    return __wr_parse_float(text)
+    bytes = trim_bytes(text)
+
+    mutable started = false
+    mutable sign = 1
+    mutable whole = 0
+    mutable fractional = 0
+    mutable fractional_scale = 1.0
+    mutable seen_digit = false
+    mutable seen_dot = false
+
+    mutable seen_exponent = false
+    mutable parsing_exponent = false
+    mutable just_entered_exponent = false
+    mutable exponent_sign = 1
+    mutable exponent_value = 0
+    mutable seen_exponent_digit = false
+    mutable previous_was_underscore = false
+
+    for byte_value in bytes:
+        if not started and (byte_value == 43 or byte_value == 45):
+            started = true
+            if byte_value == 45:
+                sign = -1
+            continue
+
+        if byte_value == 95:
+            if previous_was_underscore:
+                return error "parse_float: invalid float"
+            if parsing_exponent and not seen_exponent_digit:
+                return error "parse_float: invalid float"
+            if not parsing_exponent and not seen_digit:
+                return error "parse_float: invalid float"
+            previous_was_underscore = true
+            continue
+
+        if not parsing_exponent and byte_value == 46:
+            if seen_dot or seen_exponent or previous_was_underscore:
+                return error "parse_float: invalid float"
+            started = true
+            seen_dot = true
+            previous_was_underscore = false
+            continue
+
+        if byte_value == 101 or byte_value == 69:
+            if seen_exponent or previous_was_underscore or not seen_digit:
+                return error "parse_float: invalid float"
+            seen_exponent = true
+            parsing_exponent = true
+            just_entered_exponent = true
+            previous_was_underscore = false
+            continue
+
+        if parsing_exponent and just_entered_exponent and (byte_value == 43 or byte_value == 45):
+            if byte_value == 45:
+                exponent_sign = -1
+            just_entered_exponent = false
+            previous_was_underscore = false
+            continue
+
+        digit = digit_value(byte_value)
+        if digit < 0:
+            return error "parse_float: invalid float"
+
+        started = true
+        previous_was_underscore = false
+
+        if parsing_exponent:
+            seen_exponent_digit = true
+            just_entered_exponent = false
+            exponent_value = exponent_value * 10 + digit
+            continue
+
+        seen_digit = true
+        if seen_dot:
+            fractional = fractional * 10 + digit
+            fractional_scale = fractional_scale * 10.0
+        otherwise:
+            whole = whole * 10 + digit
+
+    if not seen_digit or previous_was_underscore:
+        return error "parse_float: invalid float"
+
+    if parsing_exponent and (not seen_exponent_digit or just_entered_exponent):
+        return error "parse_float: invalid float"
+
+    mutable value = whole + 0.0
+    value = value + (fractional / fractional_scale)
+
+    if exponent_value > 0:
+        for _ in 1...exponent_value:
+            if exponent_sign == 1:
+                value = value * 10.0
+            otherwise:
+                value = value / 10.0
+
+    if sign == -1:
+        return 0.0 - value
+
+    return value

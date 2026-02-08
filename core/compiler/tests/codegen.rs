@@ -486,7 +486,7 @@ to run() -> Integer:
 }
 
 #[test]
-fn native_builtins_parse_and_io() {
+fn native_builtins_bytes_and_io() {
     if std::env::var("WR_SKIP_NATIVE").is_ok() {
         return;
     }
@@ -496,11 +496,15 @@ fn native_builtins_parse_and_io() {
     let source = format!(
         r#"
 to run() -> Integer:
-    __wr_write_file("{path}", "123") otherwise nothing
-    value = __wr_read_file("{path}") otherwise "0"
-    parsed = __wr_parse_int(value) otherwise 0
-    parsed_float = __wr_parse_float("2.5") otherwise 0.0
-    if parsed == 123 and parsed_float == 2.5:
+    payload = __wr_bytes_from_string("123")
+    __wr_fs_write_bytes("{path}", payload) otherwise nothing
+
+    read_payload = __wr_fs_read_bytes("{path}") otherwise __wr_bytes_from_string("0")
+    text = __wr_bytes_to_string(read_payload)
+    numbers = __wr_bytes_to_list(read_payload)
+    round_trip = __wr_bytes_from_list(numbers)
+
+    if text == "123" and __wr_bytes_len(round_trip) == 3:
         return 1
     return 0
 "#,

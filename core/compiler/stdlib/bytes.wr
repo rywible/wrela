@@ -12,3 +12,11 @@ to get_string_from_bytes(bytes: Bytes) -> String:
 so: Return the length of a Bytes value.
 to get_length(bytes: Bytes) -> Integer:
     return __wr_bytes_len(bytes)
+
+so: Decode Bytes into a list of byte values.
+to get_list_from_bytes(bytes: Bytes) -> List[Integer]:
+    return __wr_bytes_to_list(bytes)
+
+so: Build Bytes from a list of byte values.
+to get_bytes_from_list(items: List[Integer]) -> Bytes:
+    return __wr_bytes_from_list(items)

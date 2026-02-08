@@ -32,7 +32,7 @@ const NANBOX_IMM_FALSE: u64 = 1;
 const NANBOX_IMM_TRUE: u64 = 2;
 const NANBOX_INT_MIN: i64 = -(1i64 << (NANBOX_TAG_SHIFT - 1));
 const NANBOX_INT_MAX: i64 = (1i64 << (NANBOX_TAG_SHIFT - 1)) - 1;
-const RUNTIME_ABI_VERSION: i64 = 2;
+const RUNTIME_ABI_VERSION: i64 = 3;
 
 #[derive(Debug)]
 pub struct CodegenError(pub String);
@@ -1322,18 +1322,6 @@ fn lower_rvalue(
                                     "__wr_log_configure" => {
                                         Some(runtime_fn_log_configure(module, runtime)?)
                                     }
-                                    "__wr_parse_int" => {
-                                        Some(runtime_fn_parse_int(module, runtime)?)
-                                    }
-                                    "__wr_parse_float" => {
-                                        Some(runtime_fn_parse_float(module, runtime)?)
-                                    }
-                                    "__wr_read_file" => {
-                                        Some(runtime_fn_read_file(module, runtime)?)
-                                    }
-                                    "__wr_write_file" => {
-                                        Some(runtime_fn_write_file(module, runtime)?)
-                                    }
                                     "__wr_list_push" => {
                                         Some(runtime_fn_list_push(module, runtime)?)
                                     }
@@ -1374,28 +1362,30 @@ fn lower_rvalue(
                                     "__wr_clock_ns" => Some(runtime_fn_clock_ns(module, runtime)?),
                                     "__wr_sleep_ms" => Some(runtime_fn_sleep_ms(module, runtime)?),
                                     "__wr_env_get" => Some(runtime_fn_env_get(module, runtime)?),
-                                    "__wr_env_get_or" => {
-                                        Some(runtime_fn_env_get_or(module, runtime)?)
-                                    }
-                                    "__wr_env_get_as_bool" => {
-                                        Some(runtime_fn_env_get_as_bool(module, runtime)?)
-                                    }
-                                    "__wr_env_get_as_int" => {
-                                        Some(runtime_fn_env_get_as_int(module, runtime)?)
-                                    }
                                     "__wr_env_set" => Some(runtime_fn_env_set(module, runtime)?),
-                                    "__wr_env_load" => Some(runtime_fn_env_load(module, runtime)?),
                                     "__wr_runtime_configure" => {
                                         Some(runtime_fn_runtime_configure(module, runtime)?)
                                     }
                                     "__wr_bytes_from_string" => {
                                         Some(runtime_fn_bytes_from_string(module, runtime)?)
                                     }
+                                    "__wr_bytes_from_list" => {
+                                        Some(runtime_fn_bytes_from_list(module, runtime)?)
+                                    }
                                     "__wr_bytes_to_string" => {
                                         Some(runtime_fn_bytes_to_string(module, runtime)?)
                                     }
+                                    "__wr_bytes_to_list" => {
+                                        Some(runtime_fn_bytes_to_list(module, runtime)?)
+                                    }
                                     "__wr_bytes_len" => {
                                         Some(runtime_fn_bytes_len(module, runtime)?)
+                                    }
+                                    "__wr_fs_read_bytes" => {
+                                        Some(runtime_fn_fs_read_bytes(module, runtime)?)
+                                    }
+                                    "__wr_fs_write_bytes" => {
+                                        Some(runtime_fn_fs_write_bytes(module, runtime)?)
                                     }
                                     _ => None,
                                 }
@@ -2066,6 +2056,14 @@ fn runtime_fn_bytes_from_string(
     runtime.get_func(module, "wr_bytes_from_string", sig)
 }
 
+fn runtime_fn_bytes_from_list(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_bytes_from_list", sig)
+}
+
 fn runtime_fn_bytes_to_string(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
@@ -2074,12 +2072,36 @@ fn runtime_fn_bytes_to_string(
     runtime.get_func(module, "wr_bytes_to_string", sig)
 }
 
+fn runtime_fn_bytes_to_list(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_bytes_to_list", sig)
+}
+
 fn runtime_fn_bytes_len(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
 ) -> Result<cranelift_module::FuncId, CodegenError> {
     let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
     runtime.get_func(module, "wr_bytes_len", sig)
+}
+
+fn runtime_fn_fs_read_bytes(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_fs_read_bytes", sig)
+}
+
+fn runtime_fn_fs_write_bytes(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_fs_write_bytes", sig)
 }
 
 fn runtime_fn_str_concat(
@@ -2268,44 +2290,12 @@ fn runtime_fn_env_get(
     runtime.get_func(module, "wr_env_get", sig)
 }
 
-fn runtime_fn_env_get_or(
-    module: &mut ObjectModule,
-    runtime: &mut RuntimeRegistry,
-) -> Result<cranelift_module::FuncId, CodegenError> {
-    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
-    runtime.get_func(module, "wr_env_get_or", sig)
-}
-
-fn runtime_fn_env_get_as_bool(
-    module: &mut ObjectModule,
-    runtime: &mut RuntimeRegistry,
-) -> Result<cranelift_module::FuncId, CodegenError> {
-    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
-    runtime.get_func(module, "wr_env_get_as_bool", sig)
-}
-
-fn runtime_fn_env_get_as_int(
-    module: &mut ObjectModule,
-    runtime: &mut RuntimeRegistry,
-) -> Result<cranelift_module::FuncId, CodegenError> {
-    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
-    runtime.get_func(module, "wr_env_get_as_int", sig)
-}
-
 fn runtime_fn_env_set(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
 ) -> Result<cranelift_module::FuncId, CodegenError> {
     let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
     runtime.get_func(module, "wr_env_set", sig)
-}
-
-fn runtime_fn_env_load(
-    module: &mut ObjectModule,
-    runtime: &mut RuntimeRegistry,
-) -> Result<cranelift_module::FuncId, CodegenError> {
-    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
-    runtime.get_func(module, "wr_env_load", sig)
 }
 
 fn runtime_fn_runtime_configure(
@@ -2548,38 +2538,6 @@ fn runtime_fn_assert_err(
 ) -> Result<cranelift_module::FuncId, CodegenError> {
     let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
     runtime.get_func(module, "wr_assert_err", sig)
-}
-
-fn runtime_fn_parse_int(
-    module: &mut ObjectModule,
-    runtime: &mut RuntimeRegistry,
-) -> Result<cranelift_module::FuncId, CodegenError> {
-    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
-    runtime.get_func(module, "wr_parse_int", sig)
-}
-
-fn runtime_fn_parse_float(
-    module: &mut ObjectModule,
-    runtime: &mut RuntimeRegistry,
-) -> Result<cranelift_module::FuncId, CodegenError> {
-    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
-    runtime.get_func(module, "wr_parse_float", sig)
-}
-
-fn runtime_fn_read_file(
-    module: &mut ObjectModule,
-    runtime: &mut RuntimeRegistry,
-) -> Result<cranelift_module::FuncId, CodegenError> {
-    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
-    runtime.get_func(module, "wr_read_file", sig)
-}
-
-fn runtime_fn_write_file(
-    module: &mut ObjectModule,
-    runtime: &mut RuntimeRegistry,
-) -> Result<cranelift_module::FuncId, CodegenError> {
-    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
-    runtime.get_func(module, "wr_write_file", sig)
 }
 
 fn runtime_fn_type_id(
