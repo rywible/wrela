@@ -32,7 +32,8 @@ so: Wrela Language Spec (Runnable)
     - Spaces only; tabs are lexer errors.
     - Comments use `so:` and can span indented blocks.
     - DocComment token exists but is not currently surfaced; `so:` is the only comment form.
-    - Identifiers are case-sensitive and may include `_` and non-ASCII letters.
+    - Identifiers are case-sensitive and may include `_` and non-ASCII letters at parse time.
+      Semantic naming enforcement (Section 6c) is stricter and requires ASCII for enforced symbol categories.
     - Keywords are reserved and cannot be used as identifiers or member names; they are not escapable.
     
     Keywords (current):
@@ -284,6 +285,36 @@ to test_resolve_stored_boolean() -> Nothing:
     if resolve flag:
         assert value true == true
 
+so: ------------------------------------------------------------
+    6c) Semantic naming enforcement (hard-fail compiler policy)
+
+    - Naming rules are compiler-enforced and fail compilation (`check`, `build`, `test`) on violation.
+    - The policy is deterministic and heuristic-driven (no ML model/network dependency).
+    - Whitelisted bypass names: `main`, `__configure__`.
+
+    Shape + role constraints:
+    - `to` / `can` function names: ASCII `snake_case`, verb-led.
+    - Top-level `check` names: subject statements containing `_is_` or `_has_`;
+      they must not begin with `is_` / `has_`.
+    - Class/interface check names (`checks`, `must check`): must begin with `is_` or `has_`.
+    - `derives` names and class field names: ASCII `snake_case`, noun-only (not verb-led).
+    - Type-like names (`A`/`An` classes, interfaces, enums, enum variants): ASCII `PascalCase`.
+    - `Result[T, E]` error type names (`E`): ASCII `PascalCase` and must end with `Error`.
+    - Result-returning function/method names: must begin with `try_to_`.
+    - Top-level factory functions returning class types: must begin with `create_`.
+    - Fallible top-level factory functions: must begin with `try_to_create_`.
+
+    Boolean + data-shape constraints:
+    - Boolean parameters/locals: must begin with `is_` or `has_`.
+    - Storing a check result only to use it once in the next immediate condition is rejected
+      (inline the check directly into the condition instead).
+    - Collection fields/parameters/locals (List/Map and known collection-typed bindings): plural names.
+    - Loop binders iterating known collection values: singular names.
+
+    Module path constraints:
+    - `use ... from ...` module segments must be ASCII `snake_case`.
+    - Module segments are treated as resource/service nouns; action/predicate-like segments are rejected.
+
 
 so: ------------------------------------------------------------
     7) Classes, fields, methods, and the implicit receiver
@@ -429,20 +460,20 @@ so: ------------------------------------------------------------
 
 
 to test_list_and_map_literals() -> Nothing:
-    a = [1, 2, 3]
-    b = [1, 2, 3]
-    m1 = {"x": 1, "y": 2}
-    m2 = {"x": 1, "y": 2}
-    assert value a == b
-    assert value m1 == m2
+    numbers = [1, 2, 3]
+    values = [1, 2, 3]
+    maps = {"x": 1, "y": 2}
+    entries = {"x": 1, "y": 2}
+    assert value numbers == values
+    assert value maps == entries
 
 
 to test_identity_vs_value() -> Nothing:
-    a = [1, 2]
-    b = [1, 2]
-    assert value a == b
-    assert identity a == a
-    assert identity a != b
+    numbers = [1, 2]
+    values = [1, 2]
+    assert value numbers == values
+    assert identity numbers == numbers
+    assert identity numbers != values
 
 so: Stdlib surface tests live alongside this spec in `language/spec`.
 
@@ -592,9 +623,9 @@ to test_assert_value_comparison() -> Nothing:
 
 
 to test_assert_identity_for_objects() -> Nothing:
-    a = [1]
-    b = [1]
-    assert identity a != b
+    numbers = [1]
+    values = [1]
+    assert identity numbers != values
 
 
 so: ------------------------------------------------------------
