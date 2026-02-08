@@ -1340,6 +1340,51 @@ fn lower_rvalue(
                                     "__wr_runtime_cpu_count" => {
                                         Some(runtime_fn_runtime_cpu_count(module, runtime)?)
                                     }
+                                    "__wr_reactor_new" => {
+                                        Some(runtime_fn_reactor_new(module, runtime)?)
+                                    }
+                                    "__wr_reactor_drop" => {
+                                        Some(runtime_fn_reactor_drop(module, runtime)?)
+                                    }
+                                    "__wr_reactor_register" => {
+                                        Some(runtime_fn_reactor_register(module, runtime)?)
+                                    }
+                                    "__wr_reactor_deregister" => {
+                                        Some(runtime_fn_reactor_deregister(module, runtime)?)
+                                    }
+                                    "__wr_reactor_arm_timer" => {
+                                        Some(runtime_fn_reactor_arm_timer(module, runtime)?)
+                                    }
+                                    "__wr_task_signal_new" => {
+                                        Some(runtime_fn_task_signal_new(module, runtime)?)
+                                    }
+                                    "__wr_task_signal_drop" => {
+                                        Some(runtime_fn_task_signal_drop(module, runtime)?)
+                                    }
+                                    "__wr_task_unpark_one" => {
+                                        Some(runtime_fn_task_unpark_one(module, runtime)?)
+                                    }
+                                    "__wr_task_unpark_all" => {
+                                        Some(runtime_fn_task_unpark_all(module, runtime)?)
+                                    }
+                                    "__wr_task_epoch" => {
+                                        Some(runtime_fn_task_epoch(module, runtime)?)
+                                    }
+                                    "__wr_atomic_i64_new" => {
+                                        Some(runtime_fn_atomic_i64_new(module, runtime)?)
+                                    }
+                                    "__wr_atomic_i64_drop" => {
+                                        Some(runtime_fn_atomic_i64_drop(module, runtime)?)
+                                    }
+                                    "__wr_atomic_i64_load" => {
+                                        Some(runtime_fn_atomic_i64_load(module, runtime)?)
+                                    }
+                                    "__wr_atomic_i64_store" => {
+                                        Some(runtime_fn_atomic_i64_store(module, runtime)?)
+                                    }
+                                    "__wr_atomic_i64_fetch_add" => {
+                                        Some(runtime_fn_atomic_i64_fetch_add(module, runtime)?)
+                                    }
                                     "__wr_pool_size" => {
                                         Some(runtime_fn_pool_size(module, runtime)?)
                                     }
@@ -2189,6 +2234,130 @@ fn runtime_fn_runtime_cpu_count(
 ) -> Result<cranelift_module::FuncId, CodegenError> {
     let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
     runtime.get_func(module, "wr_runtime_cpu_count", sig)
+}
+
+fn runtime_fn_reactor_new(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(module, "wr_reactor_new", sig)
+}
+
+fn runtime_fn_reactor_drop(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_reactor_drop", sig)
+}
+
+fn runtime_fn_reactor_register(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_reactor_register", sig)
+}
+
+fn runtime_fn_reactor_deregister(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_reactor_deregister", sig)
+}
+
+fn runtime_fn_reactor_arm_timer(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(
+        module,
+        &[types::I64, types::I64, types::I64],
+        &[types::I64],
+    );
+    runtime.get_func(module, "wr_reactor_arm_timer", sig)
+}
+
+fn runtime_fn_task_signal_new(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(module, "wr_task_signal_new", sig)
+}
+
+fn runtime_fn_task_signal_drop(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_task_signal_drop", sig)
+}
+
+fn runtime_fn_task_unpark_one(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_task_unpark_one", sig)
+}
+
+fn runtime_fn_task_unpark_all(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_task_unpark_all", sig)
+}
+
+fn runtime_fn_task_epoch(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_task_epoch", sig)
+}
+
+fn runtime_fn_atomic_i64_new(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_atomic_i64_new", sig)
+}
+
+fn runtime_fn_atomic_i64_drop(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_atomic_i64_drop", sig)
+}
+
+fn runtime_fn_atomic_i64_load(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_atomic_i64_load", sig)
+}
+
+fn runtime_fn_atomic_i64_store(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_atomic_i64_store", sig)
+}
+
+fn runtime_fn_atomic_i64_fetch_add(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_atomic_i64_fetch_add", sig)
 }
 
 fn runtime_fn_pool_size(

@@ -1,0 +1,7 @@
+scenario	run	seconds	command
+pool_queue_mpsc_multi_producer	1	0.07	cargo test -p wrela_runtime pool_queue_mpsc_multi_producer -- --exact
+pool_queue_mpsc_multi_producer	2	0.07	cargo test -p wrela_runtime pool_queue_mpsc_multi_producer -- --exact
+pool_queue_mpsc_multi_producer	3	0.07	cargo test -p wrela_runtime pool_queue_mpsc_multi_producer -- --exact
+native_pool_backpressure_config_smoke	1	0.47	cargo test -p wrela --test codegen native_pool_backpressure_config_smoke -- --exact
+native_pool_backpressure_config_smoke	2	0.30	cargo test -p wrela --test codegen native_pool_backpressure_config_smoke -- --exact
+native_pool_backpressure_config_smoke	3	0.32	cargo test -p wrela --test codegen native_pool_backpressure_config_smoke -- --exact

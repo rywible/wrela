@@ -1,0 +1,183 @@
+so:
+    Task wake policy helpers.
+
+use:
+    create_map,
+    get,
+    set
+from map
+
+
+to task_at_least(value: Integer, minimum: Integer) -> Integer:
+    if value < minimum:
+        return minimum
+    return value
+
+
+so: Create a task signal handle.
+to create_task_signal() -> Integer:
+    return __wr_task_signal_new()
+
+
+so: Drop a task signal handle.
+to drop_task_signal(task_signal: Integer) -> Boolean:
+    return __wr_task_signal_drop(task_signal)
+
+
+so: Wake one waiter for a task signal handle.
+to unpark_one(task_signal: Integer) -> Boolean:
+    return __wr_task_unpark_one(task_signal)
+
+
+so: Wake all waiters for a task signal handle.
+to unpark_all(task_signal: Integer) -> Boolean:
+    return __wr_task_unpark_all(task_signal)
+
+
+so: Snapshot the signal epoch from runtime primitive.
+to read_signal_epoch(task_signal: Integer) -> Integer:
+    return __wr_task_epoch(task_signal)
+
+
+so: Create an atomic i64 handle.
+to create_atomic_counter(initial_value: Integer) -> Integer:
+    return __wr_atomic_i64_new(initial_value)
+
+
+so: Drop an atomic i64 handle.
+to drop_atomic_counter(atomic_counter: Integer) -> Boolean:
+    return __wr_atomic_i64_drop(atomic_counter)
+
+
+so: Load the current value from an atomic i64 handle.
+to load_atomic_counter(atomic_counter: Integer) -> Integer:
+    return __wr_atomic_i64_load(atomic_counter)
+
+
+so: Store a value into an atomic i64 handle.
+to store_atomic_counter(atomic_counter: Integer, value: Integer) -> Boolean:
+    return __wr_atomic_i64_store(atomic_counter, value)
+
+
+so: Add delta and return previous value from atomic i64 handle.
+to fetch_add_atomic_counter(atomic_counter: Integer, delta: Integer) -> Integer:
+    return __wr_atomic_i64_fetch_add(atomic_counter, delta)
+
+
+so: Create mutable task state used by policy wrappers.
+to create_task_state(task_identifier: Integer) -> Map:
+    state = create_map()
+    set(state, "task_identifier", task_identifier)
+    set(state, "epoch", 0)
+    set(state, "waiter_count", 0)
+    return state
+
+
+so: Get current signal epoch for a task state.
+to snapshot_epoch(task_state: Map) -> Integer:
+    value = get(task_state, "epoch")
+    match value:
+        Integer(epoch):
+            return epoch
+        otherwise:
+            return 0
+
+
+so: Register that a waiter is observing this task state.
+to register_waiter(task_state: Map) -> Integer:
+    current_waiters = get_waiter_count(task_state)
+    next_waiter_count = current_waiters + 1
+    set(task_state, "waiter_count", next_waiter_count)
+    return next_waiter_count
+
+
+so: Resolve and clear waiter count after notifying.
+to notify_waiters(task_state: Map) -> Integer:
+    next_epoch = snapshot_epoch(task_state) + 1
+    set(task_state, "epoch", next_epoch)
+    set(task_state, "waiter_count", 0)
+    return next_epoch
+
+
+so: Resolve waiter count from task state.
+to get_waiter_count(task_state: Map) -> Integer:
+    value = get(task_state, "waiter_count")
+    match value:
+        Integer(waiter_count):
+            return waiter_count
+        otherwise:
+            return 0
+
+
+so:
+    Build a wake action from an event source.
+    This is intentionally explicit so policy changes stay in stdlib.
+to create_wake_action(task_identifier: Integer, wake_reason: String) -> Map:
+    action = create_map()
+    set(action, "task_identifier", task_identifier)
+    set(action, "wake_reason", wake_reason)
+    set(action, "delay_milliseconds", 0)
+    set(action, "should_wake", true)
+    return action
+
+
+so: Mark a wake action as deferred for a fixed timeout.
+to mark_action_as_deferred(action: Map, delay_milliseconds: Integer) -> Map:
+    safe_delay = task_at_least(delay_milliseconds, 0)
+    set(action, "delay_milliseconds", safe_delay)
+    set(action, "should_wake", safe_delay == 0)
+    return action
+
+
+so: Decide whether a wake action should wake now.
+to should_wake_task(action: Map) -> Boolean:
+    value = get(action, "should_wake")
+    match value:
+        Boolean(flag):
+            return flag
+        otherwise:
+            return false
+
+
+so:
+    Example flow:
+    - snapshot epoch
+    - register waiter
+    - notify waiters
+    - create wake action from event reason
+
+to example_task_wake_flow() -> Integer:
+    state = create_task_state(7)
+    initial_epoch = snapshot_epoch(state)
+    register_waiter(state)
+    next_epoch = notify_waiters(state)
+    action = create_wake_action(7, "readable")
+    if initial_epoch == 0 and next_epoch == 1 and should_wake_task(action):
+        return 1
+    return 0
+
+
+so:
+    Example primitive flow:
+    - create signal + atomic counter
+    - unpark and read epoch
+    - update/read counter
+    - drop handles
+to example_task_primitive_flow() -> Integer:
+    task_signal = create_task_signal()
+    counter = create_atomic_counter(0)
+    unpark_one(task_signal)
+    epoch_after_unpark = read_signal_epoch(task_signal)
+    previous_value = fetch_add_atomic_counter(counter, 3)
+    current_value = load_atomic_counter(counter)
+    dropped_counter = drop_atomic_counter(counter)
+    dropped_signal = drop_task_signal(task_signal)
+    if (
+        epoch_after_unpark >= 1 and
+        previous_value == 0 and
+        current_value == 3 and
+        dropped_counter and
+        dropped_signal
+    ):
+        return 1
+    return 0

@@ -7,56 +7,6 @@ use:
 from bytes
 
 
-to resolve_boolean(explicit_value: Boolean, env_key: String) -> Boolean:
-    raw = __wr_env_get(env_key)
-    match raw:
-        String(text):
-            if text == "1" or text == "true" or text == "on":
-                return true
-            if text == "0" or text == "false" or text == "off":
-                return false
-            return explicit_value
-        otherwise:
-            return explicit_value
-
-
-to resolve_number(explicit_value: Number, env_key: String) -> Number:
-    raw = __wr_env_get(env_key)
-    match raw:
-        String(text):
-            return parse_signed_decimal_or_default(text, explicit_value)
-        otherwise:
-            return explicit_value
-
-
-to parse_signed_decimal_or_default(text: String, fallback: Number) -> Number:
-    bytes = get_list_from_bytes(get_bytes_from_string(text))
-    mutable started = false
-    mutable seen_digit = false
-    mutable sign = 1
-    mutable value = 0
-
-    for byte_value in bytes:
-        if not started and (byte_value == 43 or byte_value == 45):
-            started = true
-            if byte_value == 45:
-                sign = -1
-            continue
-
-        if byte_value >= 48 and byte_value <= 57:
-            started = true
-            seen_digit = true
-            value = value * 10 + (byte_value - 48)
-            continue
-
-        return fallback
-
-    if not seen_digit:
-        return fallback
-
-    return value * sign
-
-
 to default_if_nothing(value: Number, fallback: Number) -> Number:
     if value == nothing:
         return fallback
@@ -71,72 +21,145 @@ to at_least(value: Number, minimum: Number) -> Number:
 
 A Runtime:
     has:
-        actor_mailbox_cap: Number = 256
-        actor_enqueue_timeout_ms: Number = 10
-        actor_batch_limit: Number = 64
-        pause_queue_cap: Number = 128
-        deterministic: Boolean = false
-        debug_actor: Boolean = false
-        actor_watchdog_ms: Number = 0
-        sched_watchdog_ms: Number = 0
-        sched_shards: Number = nothing
-        sched_tick_ms: Number = 1
-        sched_ready_cap: Number = 1024
-        sched_batch_limit: Number = 64
-        pool_min_share: Number = 1
-        pool_max_share: Number = nothing
-        pool_queue_cap: Number = 256
-        pool_auto_min: Number = 1
-        pool_auto_max: Number = nothing
-        diagnostics_enabled: Boolean = false
+        mutable actor_mailbox_cap: Number = 256
+        mutable actor_enqueue_timeout_ms: Number = 10
+        mutable actor_batch_limit: Number = 64
+        mutable pause_queue_cap: Number = 128
+        mutable deterministic: Boolean = false
+        mutable debug_actor: Boolean = false
+        mutable actor_watchdog_ms: Number = 0
+        mutable sched_watchdog_ms: Number = 0
+        mutable sched_shards: Number = nothing
+        mutable sched_tick_ms: Number = 1
+        mutable sched_ready_cap: Number = 1024
+        mutable sched_batch_limit: Number = 64
+        mutable reactor_disable_io_uring: Boolean = false
+        mutable pool_min_share: Number = 1
+        mutable pool_max_share: Number = nothing
+        mutable pool_queue_cap: Number = 256
+        mutable pool_auto_min: Number = 1
+        mutable pool_auto_max: Number = nothing
+        mutable diagnostics_enabled: Boolean = false
 
-    so: Resolve defaults, apply env overrides, normalize values, and apply runtime configuration.
-    can __configure__() -> Nothing:
+    so: Parse a signed decimal string; return fallback when invalid.
+    can parse_signed_decimal_or_default(text: String, fallback: Number) -> Number:
+        bytes = get_list_from_bytes(get_bytes_from_string(text))
+        mutable started = false
+        mutable seen_digit = false
+        mutable sign = 1
+        mutable value = 0
+
+        for byte_value in bytes:
+            if not started and (byte_value == 43 or byte_value == 45):
+                started = true
+                if byte_value == 45:
+                    sign = -1
+                continue
+
+            if byte_value >= 48 and byte_value <= 57:
+                started = true
+                seen_digit = true
+                value = value * 10 + (byte_value - 48)
+                continue
+
+            return fallback
+
+        if not seen_digit:
+            return fallback
+
+        return value * sign
+
+    so: Resolve a boolean field from environment, defaulting to explicit value.
+    can resolve_boolean_from_environment(explicit_value: Boolean, env_key: String) -> Boolean:
+        raw = __wr_env_get(env_key)
+        match raw:
+            String(text):
+                if text == "1" or text == "true" or text == "on":
+                    return true
+                if text == "0" or text == "false" or text == "off":
+                    return false
+                return explicit_value
+            otherwise:
+                return explicit_value
+
+    so: Resolve a numeric field from environment, defaulting to explicit value.
+    can resolve_number_from_environment(explicit_value: Number, env_key: String) -> Number:
+        raw = __wr_env_get(env_key)
+        match raw:
+            String(text):
+                return its.parse_signed_decimal_or_default(text, explicit_value)
+            otherwise:
+                return explicit_value
+
+    so: Resolve defaults, apply env overrides, and normalize runtime configuration.
+    can from_environment() -> Runtime:
         cpu_count = __wr_runtime_cpu_count()
 
-        deterministic_value = resolve_boolean(
+        deterministic_value = its.resolve_boolean_from_environment(
             its.deterministic,
             "WRELA_RUNTIME_DETERMINISTIC"
         )
-        debug_actor_value = resolve_boolean(
+        debug_actor_value = its.resolve_boolean_from_environment(
             its.debug_actor,
             "WRELA_RUNTIME_DEBUG_ACTOR"
         )
-        diagnostics_enabled_value = resolve_boolean(
+        diagnostics_enabled_value = its.resolve_boolean_from_environment(
             its.diagnostics_enabled,
             "WRELA_RUNTIME_DIAGNOSTICS_ENABLED"
         )
+        reactor_disable_io_uring_value = its.resolve_boolean_from_environment(
+            its.reactor_disable_io_uring,
+            "WRELA_DISABLE_IO_URING"
+        )
 
         actor_mailbox_cap_value = at_least(
-            resolve_number(its.actor_mailbox_cap, "WRELA_RUNTIME_ACTOR_MAILBOX_CAP"),
+            its.resolve_number_from_environment(
+                its.actor_mailbox_cap,
+                "WRELA_RUNTIME_ACTOR_MAILBOX_CAP"
+            ),
             1
         )
         actor_enqueue_timeout_ms_value = at_least(
-            resolve_number(
+            its.resolve_number_from_environment(
                 its.actor_enqueue_timeout_ms,
                 "WRELA_RUNTIME_ACTOR_ENQUEUE_TIMEOUT_MS"
             ),
             1
         )
         actor_batch_limit_value = at_least(
-            resolve_number(its.actor_batch_limit, "WRELA_RUNTIME_ACTOR_BATCH_LIMIT"),
+            its.resolve_number_from_environment(
+                its.actor_batch_limit,
+                "WRELA_RUNTIME_ACTOR_BATCH_LIMIT"
+            ),
             1
         )
         pause_queue_cap_value = at_least(
-            resolve_number(its.pause_queue_cap, "WRELA_RUNTIME_PAUSE_QUEUE_CAP"),
+            its.resolve_number_from_environment(
+                its.pause_queue_cap,
+                "WRELA_RUNTIME_PAUSE_QUEUE_CAP"
+            ),
             1
         )
         actor_watchdog_ms_value = at_least(
-            resolve_number(its.actor_watchdog_ms, "WRELA_RUNTIME_ACTOR_WATCHDOG_MS"),
+            its.resolve_number_from_environment(
+                its.actor_watchdog_ms,
+                "WRELA_RUNTIME_ACTOR_WATCHDOG_MS"
+            ),
             0
         )
         sched_watchdog_ms_value = at_least(
-            resolve_number(its.sched_watchdog_ms, "WRELA_RUNTIME_SCHED_WATCHDOG_MS"),
+            its.resolve_number_from_environment(
+                its.sched_watchdog_ms,
+                "WRELA_RUNTIME_SCHED_WATCHDOG_MS"
+            ),
             0
         )
 
         mutable sched_shards_value = default_if_nothing(
-            resolve_number(its.sched_shards, "WRELA_RUNTIME_SCHED_SHARDS"),
+            its.resolve_number_from_environment(
+                its.sched_shards,
+                "WRELA_RUNTIME_SCHED_SHARDS"
+            ),
             cpu_count
         )
         if deterministic_value:
@@ -144,27 +167,42 @@ A Runtime:
         sched_shards_value = at_least(sched_shards_value, 1)
 
         mutable sched_tick_ms_value = at_least(
-            resolve_number(its.sched_tick_ms, "WRELA_RUNTIME_SCHED_TICK_MS"),
+            its.resolve_number_from_environment(
+                its.sched_tick_ms,
+                "WRELA_RUNTIME_SCHED_TICK_MS"
+            ),
             1
         )
         if deterministic_value:
             sched_tick_ms_value = 1
 
         sched_ready_cap_value = at_least(
-            resolve_number(its.sched_ready_cap, "WRELA_RUNTIME_SCHED_READY_CAP"),
+            its.resolve_number_from_environment(
+                its.sched_ready_cap,
+                "WRELA_RUNTIME_SCHED_READY_CAP"
+            ),
             2
         )
         sched_batch_limit_value = at_least(
-            resolve_number(its.sched_batch_limit, "WRELA_RUNTIME_SCHED_BATCH_LIMIT"),
+            its.resolve_number_from_environment(
+                its.sched_batch_limit,
+                "WRELA_RUNTIME_SCHED_BATCH_LIMIT"
+            ),
             1
         )
         pool_min_share_value = at_least(
-            resolve_number(its.pool_min_share, "WRELA_RUNTIME_POOL_MIN_SHARE"),
+            its.resolve_number_from_environment(
+                its.pool_min_share,
+                "WRELA_RUNTIME_POOL_MIN_SHARE"
+            ),
             1
         )
 
         mutable pool_max_share_value = default_if_nothing(
-            resolve_number(its.pool_max_share, "WRELA_RUNTIME_POOL_MAX_SHARE"),
+            its.resolve_number_from_environment(
+                its.pool_max_share,
+                "WRELA_RUNTIME_POOL_MAX_SHARE"
+            ),
             cpu_count * 2
         )
         pool_max_share_value = at_least(pool_max_share_value, 1)
@@ -172,39 +210,58 @@ A Runtime:
             pool_max_share_value = pool_min_share_value
 
         pool_queue_cap_value = at_least(
-            resolve_number(its.pool_queue_cap, "WRELA_RUNTIME_POOL_QUEUE_CAP"),
+            its.resolve_number_from_environment(
+                its.pool_queue_cap,
+                "WRELA_RUNTIME_POOL_QUEUE_CAP"
+            ),
             1
         )
         pool_auto_min_value = at_least(
-            resolve_number(its.pool_auto_min, "WRELA_RUNTIME_POOL_AUTO_MIN"),
+            its.resolve_number_from_environment(
+                its.pool_auto_min,
+                "WRELA_RUNTIME_POOL_AUTO_MIN"
+            ),
             1
         )
         mutable pool_auto_max_value = default_if_nothing(
-            resolve_number(its.pool_auto_max, "WRELA_RUNTIME_POOL_AUTO_MAX"),
+            its.resolve_number_from_environment(
+                its.pool_auto_max,
+                "WRELA_RUNTIME_POOL_AUTO_MAX"
+            ),
             cpu_count
         )
         pool_auto_max_value = at_least(pool_auto_max_value, 1)
         if pool_auto_max_value < pool_auto_min_value:
             pool_auto_max_value = pool_auto_min_value
 
-        normalized = Runtime(
-            actor_mailbox_cap=actor_mailbox_cap_value,
-            actor_enqueue_timeout_ms=actor_enqueue_timeout_ms_value,
-            actor_batch_limit=actor_batch_limit_value,
-            pause_queue_cap=pause_queue_cap_value,
-            deterministic=deterministic_value,
-            debug_actor=debug_actor_value,
-            actor_watchdog_ms=actor_watchdog_ms_value,
-            sched_watchdog_ms=sched_watchdog_ms_value,
-            sched_shards=sched_shards_value,
-            sched_tick_ms=sched_tick_ms_value,
-            sched_ready_cap=sched_ready_cap_value,
-            sched_batch_limit=sched_batch_limit_value,
-            pool_min_share=pool_min_share_value,
-            pool_max_share=pool_max_share_value,
-            pool_queue_cap=pool_queue_cap_value,
-            pool_auto_min=pool_auto_min_value,
-            pool_auto_max=pool_auto_max_value,
-            diagnostics_enabled=diagnostics_enabled_value
-        )
+        its.actor_mailbox_cap = actor_mailbox_cap_value
+        its.actor_enqueue_timeout_ms = actor_enqueue_timeout_ms_value
+        its.actor_batch_limit = actor_batch_limit_value
+        its.pause_queue_cap = pause_queue_cap_value
+        its.deterministic = deterministic_value
+        its.debug_actor = debug_actor_value
+        its.actor_watchdog_ms = actor_watchdog_ms_value
+        its.sched_watchdog_ms = sched_watchdog_ms_value
+        its.sched_shards = sched_shards_value
+        its.sched_tick_ms = sched_tick_ms_value
+        its.sched_ready_cap = sched_ready_cap_value
+        its.sched_batch_limit = sched_batch_limit_value
+        its.reactor_disable_io_uring = reactor_disable_io_uring_value
+        its.pool_min_share = pool_min_share_value
+        its.pool_max_share = pool_max_share_value
+        its.pool_queue_cap = pool_queue_cap_value
+        its.pool_auto_min = pool_auto_min_value
+        its.pool_auto_max = pool_auto_max_value
+        its.diagnostics_enabled = diagnostics_enabled_value
+        return its
+
+    so: Apply normalized runtime configuration.
+    can __configure__() -> Nothing:
+        normalized = its.from_environment()
         return __wr_runtime_configure(normalized)
+
+
+so: Build a Runtime from defaults with environment overrides.
+to from_environment() -> Runtime:
+    runtime = Runtime()
+    return runtime.from_environment()

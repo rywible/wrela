@@ -26,6 +26,7 @@ pub struct RuntimeConfig {
     pub sched_tick_ms: u64,
     pub sched_ready_cap: usize,
     pub sched_batch_limit: i64,
+    pub reactor_disable_io_uring: bool,
     pub pool_min_share: u32,
     pub pool_max_share: u32,
     pub pool_queue_cap: usize,
@@ -52,6 +53,7 @@ impl Default for RuntimeConfig {
             sched_tick_ms: 1,
             sched_ready_cap: 1024,
             sched_batch_limit: 64,
+            reactor_disable_io_uring: false,
             pool_min_share: 1,
             pool_max_share: (cores * 2).max(1) as u32,
             pool_queue_cap: 256,
@@ -80,7 +82,9 @@ fn set_runtime_config(config: RuntimeConfig) {
 }
 
 pub fn runtime_configure(config: Value) -> Value {
-    set_runtime_config(runtime_config_from_value(config));
+    let runtime_config = runtime_config_from_value(config);
+    validate_runtime_config(&runtime_config);
+    set_runtime_config(runtime_config);
     Value::nil()
 }
 
@@ -122,6 +126,9 @@ fn runtime_config_from_value(config: Value) -> RuntimeConfig {
     if let Some(val) = config_field_i64(config, "sched_batch_limit") {
         out.sched_batch_limit = val;
     }
+    if let Some(val) = config_field_bool(config, "reactor_disable_io_uring") {
+        out.reactor_disable_io_uring = val;
+    }
     if let Some(val) = config_field_u32(config, "pool_min_share") {
         out.pool_min_share = val;
     }
@@ -152,22 +159,33 @@ fn config_field_bool(config: Value, field: &str) -> Option<bool> {
     let out = if val.is_bool() {
         Some(val.as_bool())
     } else {
-        None
+        panic!("runtime_configure: field `{field}` must be a Boolean");
     };
     unsafe { wr_rc_dec(val) };
     out
 }
 
 fn config_field_usize(config: Value, field: &str) -> Option<usize> {
-    config_field_i64(config, field).and_then(|val| if val >= 0 { Some(val as usize) } else { None })
+    config_field_i64(config, field).map(|val| {
+        usize::try_from(val).unwrap_or_else(|_| {
+            panic!("runtime_configure: field `{field}` must be a non-negative integer")
+        })
+    })
 }
 
 fn config_field_u64(config: Value, field: &str) -> Option<u64> {
-    config_field_i64(config, field).and_then(|val| if val >= 0 { Some(val as u64) } else { None })
+    config_field_i64(config, field).map(|val| {
+        u64::try_from(val).unwrap_or_else(|_| {
+            panic!("runtime_configure: field `{field}` must be a non-negative integer")
+        })
+    })
 }
 
 fn config_field_u32(config: Value, field: &str) -> Option<u32> {
-    config_field_i64(config, field).and_then(|val| if val >= 0 { Some(val as u32) } else { None })
+    config_field_i64(config, field).map(|val| {
+        u32::try_from(val)
+            .unwrap_or_else(|_| panic!("runtime_configure: field `{field}` must be in u32 range"))
+    })
 }
 
 fn config_field_i64(config: Value, field: &str) -> Option<i64> {
@@ -176,7 +194,8 @@ fn config_field_i64(config: Value, field: &str) -> Option<i64> {
         unsafe { wr_rc_dec(val) };
         return None;
     }
-    let out = int_value(val);
+    let out =
+        int_value(val).or_else(|| panic!("runtime_configure: field `{field}` must be an Integer"));
     unsafe { wr_rc_dec(val) };
     out
 }
@@ -184,18 +203,14 @@ fn config_field_i64(config: Value, field: &str) -> Option<i64> {
 pub fn actor_config() -> ActorConfig {
     let config = runtime_config();
     ActorConfig {
-        mailbox_cap: config.actor_mailbox_cap.max(1),
-        enqueue_timeout: Duration::from_millis(config.actor_enqueue_timeout_ms.max(1)),
-        batch_limit: config.actor_batch_limit.max(1),
+        mailbox_cap: config.actor_mailbox_cap,
+        enqueue_timeout: Duration::from_millis(config.actor_enqueue_timeout_ms),
+        batch_limit: config.actor_batch_limit,
     }
 }
 
 pub fn pause_queue_cap() -> usize {
-    runtime_config().pause_queue_cap.max(1)
-}
-
-pub fn deterministic_runtime() -> bool {
-    runtime_config().deterministic
+    runtime_config().pause_queue_cap
 }
 
 pub fn debug_actor_enabled() -> bool {
@@ -210,147 +225,69 @@ pub fn sched_watchdog_ms() -> u64 {
     runtime_config().sched_watchdog_ms
 }
 
-pub fn diagnostics_enabled() -> bool {
-    runtime_config().diagnostics_enabled
-}
-
-pub fn actor_config_for_objective(objective: u8) -> ActorConfig {
-    let base = actor_config();
-    match objective {
-        0 => ActorConfig {
-            mailbox_cap: scale_usize(base.mailbox_cap, 1, 2, 1),
-            enqueue_timeout: scale_duration(base.enqueue_timeout, 1, 2),
-            batch_limit: scale_usize(base.batch_limit, 1, 2, 1),
-        },
-        1 => ActorConfig {
-            mailbox_cap: scale_usize(base.mailbox_cap, 2, 1, 1),
-            enqueue_timeout: scale_duration(base.enqueue_timeout, 2, 1),
-            batch_limit: scale_usize(base.batch_limit, 2, 1, 1),
-        },
-        2 => ActorConfig {
-            mailbox_cap: scale_usize(base.mailbox_cap, 1, 2, 1),
-            enqueue_timeout: base.enqueue_timeout,
-            batch_limit: base.batch_limit,
-        },
-        _ => base,
-    }
-}
-
 pub fn sched_shards() -> usize {
-    let config = runtime_config();
-    if config.deterministic {
-        return 1;
-    }
-    config.sched_shards.max(1)
+    runtime_config().sched_shards
 }
 
 pub fn sched_tick_ms() -> u64 {
-    let config = runtime_config();
-    if config.deterministic {
-        return 1;
-    }
-    config.sched_tick_ms.max(1)
+    runtime_config().sched_tick_ms
 }
 
 pub fn sched_ready_cap() -> usize {
-    runtime_config().sched_ready_cap.max(2)
+    runtime_config().sched_ready_cap
 }
 
 pub fn sched_batch_limit() -> i64 {
-    runtime_config().sched_batch_limit.max(1)
+    runtime_config().sched_batch_limit
 }
 
-pub fn pool_min_share_default() -> u32 {
-    runtime_config().pool_min_share.max(1)
+pub fn reactor_disable_io_uring() -> bool {
+    runtime_config().reactor_disable_io_uring
 }
 
-pub fn pool_max_share_default() -> u32 {
-    runtime_config().pool_max_share.max(1)
-}
-
-pub fn pool_queue_cap_default() -> usize {
-    runtime_config().pool_queue_cap.max(1)
-}
-
-pub fn pool_queue_cap_for_objective(objective: u8) -> usize {
-    let base = pool_queue_cap_default();
-    match objective {
-        0 => base.max(32),
-        1 => base.saturating_mul(2).max(64),
-        2 => (base / 2).max(16),
-        _ => base.max(32),
-    }
-}
-
-pub fn sched_batch_limit_for_objective(objective: u8) -> i64 {
-    let base = sched_batch_limit();
-    match objective {
-        0 => (base / 2).max(1),
-        1 => base.saturating_mul(2).max(1),
-        2 => base.max(1),
-        _ => base.max(1),
-    }
-}
-
-pub fn pool_queue_cap_for_policy(objective: u8, queue_cap: isize) -> usize {
-    if queue_cap == 0 {
-        1
-    } else if queue_cap > 0 {
-        queue_cap as usize
-    } else {
-        pool_queue_cap_for_objective(objective)
-    }
-}
-
-pub fn normalize_pool_size(size: i64, objective: u8) -> i64 {
-    if size >= 1 {
-        size
-    } else {
-        auto_pool_size(objective, 0, 0, 0)
-    }
-}
-
-pub fn normalize_objective(objective: i64) -> u8 {
-    match objective {
-        0 => 0,
-        1 => 1,
-        2 => 2,
-        3 => 3,
-        _ => 3,
-    }
-}
-
-fn scale_usize(value: usize, num: usize, den: usize, min: usize) -> usize {
-    let scaled = value.saturating_mul(num).saturating_div(den.max(1));
-    scaled.max(min)
-}
-
-fn scale_duration(value: Duration, num: u64, den: u64) -> Duration {
-    let millis = value.as_millis() as u64;
-    let scaled = millis.saturating_mul(num).saturating_div(den.max(1));
-    Duration::from_millis(scaled.max(1))
-}
-
-fn auto_pool_size(objective: u8, min: i64, max: i64, weight: i64) -> i64 {
-    let cores = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1) as i64;
-    let base = match objective {
-        0 => cores,
-        1 => cores.saturating_mul(2),
-        2 => (cores / 2).max(1),
-        _ => cores,
-    };
-    let config = runtime_config();
-    let min_default = config.pool_auto_min.max(1);
-    let max_default = if config.pool_auto_max > 0 {
-        config.pool_auto_max
-    } else {
-        cores.max(1)
-    };
-    let min = if min > 0 { min } else { min_default };
-    let max = if max > 0 { max } else { max_default };
-    let weight = if weight > 0 { weight } else { 1 };
-    let weighted = base.saturating_mul(weight);
-    weighted.clamp(min, max.max(min))
+fn validate_runtime_config(config: &RuntimeConfig) {
+    assert!(
+        config.actor_mailbox_cap > 0,
+        "runtime config `actor_mailbox_cap` must be > 0"
+    );
+    assert!(
+        config.actor_enqueue_timeout_ms > 0,
+        "runtime config `actor_enqueue_timeout_ms` must be > 0"
+    );
+    assert!(
+        config.actor_batch_limit > 0,
+        "runtime config `actor_batch_limit` must be > 0"
+    );
+    assert!(
+        config.pause_queue_cap > 0,
+        "runtime config `pause_queue_cap` must be > 0"
+    );
+    assert!(
+        config.sched_shards > 0,
+        "runtime config `sched_shards` must be > 0"
+    );
+    assert!(
+        config.sched_tick_ms > 0,
+        "runtime config `sched_tick_ms` must be > 0"
+    );
+    assert!(
+        config.sched_ready_cap >= 2,
+        "runtime config `sched_ready_cap` must be >= 2"
+    );
+    assert!(
+        config.sched_batch_limit > 0,
+        "runtime config `sched_batch_limit` must be > 0"
+    );
+    assert!(
+        config.pool_min_share > 0,
+        "runtime config `pool_min_share` must be > 0"
+    );
+    assert!(
+        config.pool_max_share > 0,
+        "runtime config `pool_max_share` must be > 0"
+    );
+    assert!(
+        config.pool_queue_cap > 0,
+        "runtime config `pool_queue_cap` must be > 0"
+    );
 }

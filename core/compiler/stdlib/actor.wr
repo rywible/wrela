@@ -1,6 +1,70 @@
 so:
     Actor control helpers.
 
+to actor_at_least(value: Integer, minimum: Integer) -> Integer:
+    if value < minimum:
+        return minimum
+    return value
+
+
+to objective_scale(value: Integer, objective: Integer) -> Integer:
+    if objective == 0:
+        return actor_at_least(value / 2, 1)
+    if objective == 1:
+        return actor_at_least(value * 2, 1)
+    return actor_at_least(value, 1)
+
+
+so:
+    Resolve mailbox capacity policy in Wrela.
+    Examples:
+        * latency objective (0) prefers tighter mailboxes.
+        * throughput objective (1) prefers larger mailboxes.
+to normalize_mailbox_capacity(
+    requested_capacity: Integer,
+    default_capacity: Integer,
+    objective: Integer
+) -> Integer:
+    if requested_capacity > 0:
+        return actor_at_least(requested_capacity, 1)
+    return objective_scale(default_capacity, objective)
+
+
+so: Resolve enqueue timeout policy in Wrela.
+to normalize_enqueue_timeout_milliseconds(
+    requested_timeout_milliseconds: Integer,
+    default_timeout_milliseconds: Integer,
+    objective: Integer
+) -> Integer:
+    if requested_timeout_milliseconds >= 0:
+        return actor_at_least(requested_timeout_milliseconds, 1)
+    return objective_scale(default_timeout_milliseconds, objective)
+
+
+so: Resolve actor batch limit policy in Wrela.
+to normalize_batch_limit(
+    requested_batch_limit: Integer,
+    default_batch_limit: Integer,
+    objective: Integer
+) -> Integer:
+    if requested_batch_limit > 0:
+        return actor_at_least(requested_batch_limit, 1)
+    return objective_scale(default_batch_limit, objective)
+
+
+so:
+    Decide paused-mailbox drop behavior in Wrela.
+    This stays deterministic because it only reads explicit inputs.
+to should_drop_when_paused(
+    is_paused: Boolean,
+    mailbox_length: Integer,
+    pause_queue_capacity: Integer
+) -> Boolean:
+    if not is_paused:
+        return false
+    return mailbox_length >= actor_at_least(pause_queue_capacity, 1)
+
+
 so: Get the mailbox length for an actor handle.
 to get_mailbox_length(handle: Any) -> Integer:
     return __wr_actor_mailbox_len(handle)
@@ -19,3 +83,8 @@ so: Pause an actor and wait for the pause to take effect.
 to pause_and_wait(handle: Any) -> Nothing:
     __wr_actor_pause_wait(handle)
     return nothing
+
+
+so: Backward-compatible short alias used by existing tests.
+to pause_wait(handle: Any) -> Nothing:
+    return pause_and_wait(handle)

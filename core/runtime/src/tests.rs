@@ -118,3 +118,26 @@ fn runtime_configure_smoke() {
     dec(cfg);
     dec(result);
 }
+
+#[test]
+#[should_panic(expected = "actor_mailbox_cap")]
+fn runtime_configure_rejects_normalized_negative_capacity() {
+    let names = [b"actor_mailbox_cap".as_ptr()];
+    let lens = [17usize];
+    let cfg = wr_class_new(1002, names.as_ptr(), lens.as_ptr(), 1);
+    wr_class_set(cfg, b"actor_mailbox_cap".as_ptr(), 17, Value::from_int(-1));
+    let _ = crate::config::runtime_configure(cfg);
+}
+
+#[test]
+fn actor_spawn_rejects_legacy_objective_fallback() {
+    let actor = crate::actor::actor_spawn(1, Value::nil(), 1, 7, 256, 10, 64);
+    assert!(actor.is_nil());
+}
+
+#[test]
+fn actor_spawn_legacy_default_sentinel_uses_runtime_config() {
+    let actor = crate::actor::actor_spawn(1, Value::nil(), 1, 3, -1, 10, 64);
+    assert!(!actor.is_nil());
+    dec(actor);
+}

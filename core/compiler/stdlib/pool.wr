@@ -53,6 +53,39 @@ to auto_size(objective: Integer, min: Integer, max: Integer, weight: Integer) ->
     return clamp_integer(weighted, min_value, max_value)
 
 
+to pool_at_least(value: Integer, minimum: Integer) -> Integer:
+    if value < minimum:
+        return minimum
+    return value
+
+
+so:
+    Resolve queue capacity policy in Wrela.
+    A requested capacity of `0` means drop on full.
+to normalize_queue_capacity(
+    requested_queue_capacity: Integer,
+    default_queue_capacity: Integer,
+    objective: Integer
+) -> Integer:
+    if requested_queue_capacity > 0:
+        return pool_at_least(requested_queue_capacity, 1)
+
+    base_capacity = pool_at_least(default_queue_capacity, 1)
+    normalized_objective = normalize_objective(objective)
+    if normalized_objective == 0:
+        return pool_at_least(base_capacity, 32)
+    if normalized_objective == 1:
+        return pool_at_least(base_capacity * 2, 64)
+    if normalized_objective == 2:
+        return pool_at_least(base_capacity / 2, 16)
+    return pool_at_least(base_capacity, 32)
+
+
+so: Resolve drop-on-full policy from the backpressure request.
+to should_drop_on_full(requested_queue_capacity: Integer) -> Boolean:
+    return requested_queue_capacity == 0
+
+
 so: Return the current pool size.
 to size(handle: Any) -> Integer:
     return __wr_pool_size(handle)

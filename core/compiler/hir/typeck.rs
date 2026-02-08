@@ -258,24 +258,24 @@ pub enum TypeError {
         span: SourceSpan,
     },
 
-    #[error("await expects an actor method call")]
+    #[error("await expects a pending value")]
     #[diagnostic(code(lang::ty::invalid_await_operand))]
     InvalidAwaitOperand {
         #[label("await here")]
         span: SourceSpan,
     },
 
-    #[error("fire expects an actor method call")]
+    #[error("fire expects a pending value")]
     #[diagnostic(code(lang::ty::invalid_fire_operand))]
     InvalidFireOperand {
         #[label("fire here")]
         span: SourceSpan,
     },
 
-    #[error("actor call must be awaited or fired")]
+    #[error("pending value must be awaited or fired")]
     #[diagnostic(code(lang::ty::pending_not_awaited))]
     PendingNotAwaited {
-        #[label("actor call here")]
+        #[label("pending value here")]
         span: SourceSpan,
         #[help]
         help: String,
@@ -963,6 +963,14 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
+            SmolStr::new("__wr_map_new"),
+            FunctionSig {
+                params: vec![],
+                ret: Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown)),
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
             SmolStr::new("__wr_map_get"),
             FunctionSig {
                 params: vec![
@@ -1018,6 +1026,142 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             SmolStr::new("__wr_runtime_cpu_count"),
             FunctionSig {
                 params: vec![],
+                ret: Type::Integer,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_reactor_new"),
+            FunctionSig {
+                params: vec![],
+                ret: Type::Integer,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_reactor_drop"),
+            FunctionSig {
+                params: vec![(SmolStr::new("reactor"), Type::Integer)],
+                ret: Type::Boolean,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_reactor_register"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("reactor"), Type::Integer),
+                    (SmolStr::new("token"), Type::Integer),
+                ],
+                ret: Type::Boolean,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_reactor_deregister"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("reactor"), Type::Integer),
+                    (SmolStr::new("token"), Type::Integer),
+                ],
+                ret: Type::Boolean,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_reactor_arm_timer"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("reactor"), Type::Integer),
+                    (SmolStr::new("token"), Type::Integer),
+                    (SmolStr::new("timeout_ms"), Type::Integer),
+                ],
+                ret: Type::Boolean,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_task_signal_new"),
+            FunctionSig {
+                params: vec![],
+                ret: Type::Integer,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_task_signal_drop"),
+            FunctionSig {
+                params: vec![(SmolStr::new("signal"), Type::Integer)],
+                ret: Type::Boolean,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_task_unpark_one"),
+            FunctionSig {
+                params: vec![(SmolStr::new("signal"), Type::Integer)],
+                ret: Type::Boolean,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_task_unpark_all"),
+            FunctionSig {
+                params: vec![(SmolStr::new("signal"), Type::Integer)],
+                ret: Type::Boolean,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_task_epoch"),
+            FunctionSig {
+                params: vec![(SmolStr::new("signal"), Type::Integer)],
+                ret: Type::Integer,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_atomic_i64_new"),
+            FunctionSig {
+                params: vec![(SmolStr::new("initial"), Type::Integer)],
+                ret: Type::Integer,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_atomic_i64_drop"),
+            FunctionSig {
+                params: vec![(SmolStr::new("atomic"), Type::Integer)],
+                ret: Type::Boolean,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_atomic_i64_load"),
+            FunctionSig {
+                params: vec![(SmolStr::new("atomic"), Type::Integer)],
+                ret: Type::Integer,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_atomic_i64_store"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("atomic"), Type::Integer),
+                    (SmolStr::new("value"), Type::Integer),
+                ],
+                ret: Type::Boolean,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_atomic_i64_fetch_add"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("atomic"), Type::Integer),
+                    (SmolStr::new("delta"), Type::Integer),
+                ],
                 ret: Type::Integer,
                 kind: FunctionKind::Function,
             },
@@ -5608,6 +5752,51 @@ A Whale:\n    can swim() -> Boolean:\n        return true\n\nto f() -> Result:\n
     #[test]
     fn test_builtin_fallible_otherwise_ok() {
         let input = "to f() -> Integer:\n    return __wr_bytes_len(__wr_fs_read_bytes(\"x\") otherwise __wr_bytes_from_string(\"1\"))";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let errors = check_module(&module);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_builtin_map_new_signature_ok() {
+        let input = "\
+to f() -> Nothing:\n    m = __wr_map_new()\n    __wr_map_set(m, \"k\", \"v\")\n    __wr_map_get(m, \"k\")\n";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let errors = check_module(&module);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_builtin_map_new_arg_count_mismatch() {
+        let input = "to f() -> Nothing:\n    __wr_map_new(1)";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let errors = check_module(&module);
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::ArgumentCountMismatch { .. }))
+        );
+    }
+
+    #[test]
+    fn test_await_on_pending_value_ok() {
+        let input = "to f() -> Result:\n    return await __wr_sleep_ms(1)\n";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let errors = check_module(&module);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_fire_on_pending_value_ok() {
+        let input = "to f() -> Nothing:\n    fire __wr_sleep_ms(1)\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);

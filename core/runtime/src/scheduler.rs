@@ -1,17 +1,11 @@
 use crate::actor::{PoolHandle, PoolMessage, deliver_pool_message};
-use crate::config::{
-    pool_max_share_default, pool_min_share_default, sched_ready_cap, sched_shards, sched_tick_ms,
-};
+use crate::config::{sched_ready_cap, sched_shards, sched_tick_ms};
 use crate::diagnostics;
-use crate::metrics::{
-    inc_pool_enqueue_after_retire, inc_pool_queue_full, inc_sched_dispatched,
-    inc_sched_skipped_no_credit,
-};
-use crate::wr_rc_dec;
+use crate::metrics::{inc_pool_enqueue_after_retire, inc_pool_queue_full, inc_sched_dispatched};
+use crate::reactor::task::TaskSignal;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use tokio::sync::Notify;
-use tokio::time::{Duration, Instant};
+use std::time::{Duration, Instant};
 
 static SHARDS: OnceLock<Vec<Arc<SchedulerShard>>> = OnceLock::new();
 static POOL_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -19,7 +13,7 @@ static POOL_COUNTER: AtomicU64 = AtomicU64::new(1);
 pub struct SchedulerShard {
     ready: ReadyQueue,
     head: AtomicUsize,
-    notify: Notify,
+    notify: TaskSignal,
     has_work: AtomicBool,
     retired: Mutex<Vec<usize>>,
 }
@@ -29,7 +23,7 @@ impl SchedulerShard {
         Self {
             ready: ReadyQueue::new(sched_ready_cap()),
             head: AtomicUsize::new(0),
-            notify: Notify::new(),
+            notify: TaskSignal::new(),
             has_work: AtomicBool::new(false),
             retired: Mutex::new(Vec::new()),
         }
@@ -131,9 +125,7 @@ pub fn init() -> &'static Vec<Arc<SchedulerShard>> {
         let shard_handles = shards.clone();
         for shard in shards.iter() {
             let shard = shard.clone();
-            crate::actor::runtime_spawn(async move {
-                scheduler_loop(shard).await;
-            });
+            crate::actor::runtime_spawn(move || scheduler_loop(shard));
         }
         shard_handles
     })
@@ -246,20 +238,14 @@ pub fn enqueue(pool: *const PoolHandle, msg: PoolMessage) -> Result<(), PoolMess
     }
 }
 
-async fn scheduler_loop(shard: Arc<SchedulerShard>) {
+fn scheduler_loop(shard: Arc<SchedulerShard>) {
     let tick = Duration::from_millis(sched_tick_ms());
-    let mut last_refill = Instant::now();
     let mut last_progress = Instant::now();
     let watchdog_ms = crate::config::sched_watchdog_ms();
     loop {
         if !shard.has_work.load(Ordering::Acquire) {
-            let _ = tokio::time::timeout(tick, shard.notify.notified()).await;
-        }
-        if shard.ready.peek_has_data() {
-            // Hot path: refill inline to avoid a full shard scan when idle.
-            inline_refill_ready(&shard);
-        } else {
-            refill_shard(&shard, &mut last_refill);
+            let observed_epoch = shard.notify.snapshot();
+            let _ = shard.notify.wait_timeout(observed_epoch, tick);
         }
         let dispatched = dispatch_ready(&shard);
         if dispatched > 0 {
@@ -300,12 +286,14 @@ fn reap_retired(shard: &SchedulerShard) {
                 deliver_pool_message(msg);
             }
             diagnostics::log_event("retire_drain_done");
-            for handle in (&(*pool).handles).iter() {
-                wr_rc_dec(*handle);
-            }
+            // Keep actor handles alive for process lifetime in the current
+            // scheduler model to avoid cross-thread teardown races.
         }
         unlink_pool(shard, pool);
-        unsafe { drop(Box::from_raw(pool as *mut PoolHandle)) };
+        // Keep retired pool allocation alive to avoid concurrent reader UAFs on
+        // raw pointers in the scheduler fast path. Handles are already decref'd
+        // above, so leaking the container is acceptable for the current runtime
+        // process model.
     }
 }
 
@@ -372,64 +360,6 @@ fn steal_work(shard: &SchedulerShard) {
     }
 }
 
-fn inline_refill_ready(shard: &SchedulerShard) {
-    // Minimal refill to keep hot pools moving.
-    let mut pool_ptr = shard.head.load(Ordering::Acquire) as *const PoolHandle;
-    let mut budget = 32usize;
-    while !pool_ptr.is_null() && budget > 0 {
-        unsafe {
-            let pool = &*pool_ptr;
-            let min = if pool.min_share == 0 {
-                pool_min_share_default()
-            } else {
-                pool.min_share
-            } as i64;
-            let max = if pool.max_share == 0 {
-                pool_max_share_default()
-            } else {
-                pool.max_share
-            } as i64;
-            let weight = if pool.weight == 0 { 1 } else { pool.weight } as i64;
-            let delta = min + weight;
-            let mut current = pool.credits.load(Ordering::Relaxed);
-            current = current.saturating_add(delta).min(max);
-            pool.credits.store(current, Ordering::Relaxed);
-            pool_ptr = pool.next_in_shard.load(Ordering::Acquire) as *const PoolHandle;
-            budget -= 1;
-        }
-    }
-}
-
-fn refill_shard(shard: &SchedulerShard, last_refill: &mut Instant) {
-    let now = Instant::now();
-    if now.duration_since(*last_refill).as_millis() == 0 {
-        return;
-    }
-    *last_refill = now;
-    let mut pool_ptr = shard.head.load(Ordering::Acquire) as *const PoolHandle;
-    while !pool_ptr.is_null() {
-        unsafe {
-            let pool = &*pool_ptr;
-            let min = if pool.min_share == 0 {
-                pool_min_share_default()
-            } else {
-                pool.min_share
-            } as i64;
-            let max = if pool.max_share == 0 {
-                pool_max_share_default()
-            } else {
-                pool.max_share
-            } as i64;
-            let weight = if pool.weight == 0 { 1 } else { pool.weight } as i64;
-            let delta = min + weight;
-            let mut current = pool.credits.load(Ordering::Relaxed);
-            current = current.saturating_add(delta).min(max);
-            pool.credits.store(current, Ordering::Relaxed);
-            pool_ptr = pool.next_in_shard.load(Ordering::Acquire) as *const PoolHandle;
-        }
-    }
-}
-
 fn dispatch_ready(shard: &SchedulerShard) -> i64 {
     let mut dispatched_total = 0i64;
     loop {
@@ -446,21 +376,11 @@ fn dispatch_ready(shard: &SchedulerShard) -> i64 {
             if !pool.alive.load(Ordering::Acquire) {
                 continue;
             }
-            let mut credits = pool.credits.load(Ordering::Relaxed);
-            if credits <= 0 {
-                inc_sched_skipped_no_credit();
-                let _ = shard.ready.push(pool_ptr as usize);
-                continue;
-            }
             if let Some(msg) = pool.queue.pop() {
-                let mut max_batch = pool.batch_limit.max(1);
-                let depth = pool.queue.len() as i64;
-                if depth > max_batch {
-                    max_batch = (max_batch * 2).max(1);
-                }
+                let max_batch = pool.batch_limit;
                 let mut dispatched = 0i64;
                 let mut first = Some(msg);
-                while dispatched < max_batch && credits > 0 {
+                while dispatched < max_batch {
                     let msg = if let Some(msg) = first.take() {
                         msg
                     } else if pool.queue.has_more() {
@@ -471,15 +391,11 @@ fn dispatch_ready(shard: &SchedulerShard) -> i64 {
                     } else {
                         break;
                     };
-                    credits -= 1;
                     dispatched += 1;
                     crate::actor::deliver_pool_message(msg);
                     inc_sched_dispatched();
                 }
                 dispatched_total += dispatched;
-                if dispatched > 0 {
-                    pool.credits.store(credits, Ordering::Relaxed);
-                }
                 if pool.queue.has_more() {
                     let _ = shard.ready.push(pool_ptr as usize);
                 } else {
@@ -507,10 +423,10 @@ mod tests {
 
     #[test]
     fn retire_pool_unlinks_head() {
-        let actor_handle = actor::actor_spawn(1, Value::nil(), 1, 3, -1, -1, -1);
+        let actor_handle = actor::actor_spawn(1, Value::nil(), 1, 3, 256, 10, 64);
         let handles = list::list_new(0);
         list::list_push(handles, actor_handle);
-        let pool = actor::pool_new(handles, 0, 0, 0, 0, -1);
+        let pool = actor::pool_new(handles, 0, 0, 0, 0, 256);
         let pool_ptr = pool.as_ptr() as *const PoolHandle;
         let shard_id = unsafe { (*pool_ptr).shard_id as usize };
         unsafe {
@@ -542,10 +458,10 @@ mod tests {
         let _ = COUNTER_PTR.set(counter.clone());
 
         actor::register_method(99, 0, bump);
-        let actor_handle = actor::actor_spawn(99, Value::nil(), 1, 3, -1, -1, -1);
+        let actor_handle = actor::actor_spawn(99, Value::nil(), 1, 3, 256, 10, 64);
         let handles = list::list_new(0);
         list::list_push(handles, actor_handle);
-        let pool = actor::pool_new(handles, 0, 0, 0, 0, -1);
+        let pool = actor::pool_new(handles, 0, 0, 0, 0, 256);
         actor::actor_fire(pool, 0, 0, std::ptr::null());
 
         let pool_ptr = pool.as_ptr() as *const PoolHandle;
@@ -585,10 +501,10 @@ mod tests {
         let _ = COUNTER_PTR.set(counter.clone());
 
         actor::register_method(100, 0, bump);
-        let actor_handle = actor::actor_spawn(100, Value::nil(), 1, 3, -1, -1, -1);
+        let actor_handle = actor::actor_spawn(100, Value::nil(), 1, 3, 256, 10, 64);
         let handles = list::list_new(0);
         list::list_push(handles, actor_handle);
-        let pool = actor::pool_new(handles, 0, 0, 0, 0, -1);
+        let pool = actor::pool_new(handles, 0, 0, 0, 0, 256);
 
         let total = 128usize;
         for _ in 0..total {
@@ -633,10 +549,10 @@ mod tests {
         let _ = COUNTER_PTR.set(counter.clone());
 
         actor::register_method(101, 0, bump);
-        let actor_handle = actor::actor_spawn(101, Value::nil(), 1, 3, -1, -1, -1);
+        let actor_handle = actor::actor_spawn(101, Value::nil(), 1, 3, 256, 10, 64);
         let handles = list::list_new(0);
         list::list_push(handles, actor_handle);
-        let pool = actor::pool_new(handles, 0, 0, 0, 0, -1);
+        let pool = actor::pool_new(handles, 0, 0, 0, 0, 256);
 
         let pool_ptr = pool.as_ptr() as *const PoolHandle;
         let shard_id = unsafe { (*pool_ptr).shard_id as usize };

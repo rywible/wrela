@@ -20,8 +20,6 @@ use:
     set
 from map
 
-use push from list
-
 use:
     parse_integer,
     parse_float
@@ -38,6 +36,51 @@ use:
     read_text,
     write_text
 from fs
+
+use:
+    create_reactor,
+    register_token,
+    arm_timer,
+    normalize_timer_timeout_milliseconds,
+    deregister_token,
+    drop_reactor
+from reactor
+
+use:
+    create_task_signal,
+    unpark_one,
+    read_signal_epoch,
+    drop_task_signal,
+    create_atomic_counter,
+    fetch_add_atomic_counter,
+    load_atomic_counter,
+    drop_atomic_counter
+from task
+
+use:
+    Runtime,
+    from_environment
+from runtime
+
+use:
+    normalize_mailbox_capacity,
+    normalize_enqueue_timeout_milliseconds,
+    normalize_batch_limit,
+    should_drop_when_paused
+from actor
+
+use:
+    auto_size,
+    normalize_queue_capacity,
+    should_drop_on_full
+from pool
+
+use:
+    normalize_shard_count,
+    choose_next_shard,
+    compute_dispatch_budget,
+    should_steal_work
+from scheduler
 
 
 so: ------------------------------------------------------------
@@ -61,13 +104,11 @@ to test_map_new_and_accessors() -> Nothing:
 
 
 so: ------------------------------------------------------------
-so: 3) List helpers
+so: 3) List value semantics
 
 
-to test_list_push_builtin() -> Nothing:
-    items = [1, 2]
-    push(items, 3)
-    assert value items == [1, 2, 3]
+to test_list_literals() -> Nothing:
+    assert value [1, 2, 3] == [1, 2, 3]
 
 
 so: ------------------------------------------------------------
@@ -150,3 +191,75 @@ so: - Actor helpers: mailbox_length, pause, resume, wait_until_resumed
 so: - Metrics helpers
 so: - Filesystem text helpers: read_text, write_text
 so: - Time helpers: get_current_nanoseconds_since_epoch, sleep
+so: - Reactor wrappers: create_reactor, register_token, arm_timer, deregister_token
+so: - Task wrappers: signal + atomic counter primitives
+
+
+so: ------------------------------------------------------------
+so: 8) Runtime + policy helpers
+
+
+to test_runtime_and_policy_helpers() -> Nothing:
+    set_environment_variable("WRELA_RUNTIME_DETERMINISTIC", "on") otherwise nothing
+    set_environment_variable("WRELA_RUNTIME_SCHED_SHARDS", "9") otherwise nothing
+    set_environment_variable("WRELA_RUNTIME_SCHED_TICK_MS", "7") otherwise nothing
+    set_environment_variable("WRELA_RUNTIME_POOL_MIN_SHARE", "4") otherwise nothing
+    set_environment_variable("WRELA_RUNTIME_POOL_MAX_SHARE", "2") otherwise nothing
+    set_environment_variable("WRELA_RUNTIME_ACTOR_MAILBOX_CAP", "0") otherwise nothing
+
+    resolved_runtime = Runtime().from_environment()
+    assert value resolved_runtime.deterministic == true
+    assert value resolved_runtime.sched_shards == 1
+    assert value resolved_runtime.sched_tick_ms == 1
+    assert value resolved_runtime.pool_min_share == 4
+    assert value resolved_runtime.pool_max_share == 4
+    assert value resolved_runtime.actor_mailbox_cap == 1
+
+    resolved_from_alias = from_environment()
+    assert value resolved_from_alias.deterministic == true
+
+    assert value normalize_mailbox_capacity(0, 64, 0) == 32
+    assert value normalize_mailbox_capacity(0, 64, 1) == 128
+    assert value normalize_enqueue_timeout_milliseconds(-1, 10, 1) == 20
+    assert value normalize_batch_limit(0, 8, 2) == 8
+    assert value should_drop_when_paused(true, 5, 5) == true
+    assert value should_drop_when_paused(false, 10, 1) == false
+
+    assert value normalize_queue_capacity(0, 32, 1) == 64
+    assert value should_drop_on_full(0) == true
+    assert value should_drop_on_full(16) == false
+    computed_pool_size = auto_size(1, 2, 6, 3)
+    assert value computed_pool_size >= 2
+    assert value computed_pool_size <= 6
+
+    assert value normalize_shard_count(9, true) == 1
+    assert value choose_next_shard(15, 4, true) == 0
+    assert value choose_next_shard(15, 4, false) == 3
+    assert value compute_dispatch_budget(100, 8, 12) == 12
+    assert value should_steal_work(0, 3, false) == true
+    assert value should_steal_work(0, 3, true) == false
+
+
+so: ------------------------------------------------------------
+so: 9) Reactor/task wrapper smoke
+
+
+to test_reactor_and_task_wrappers() -> Nothing:
+    reactor_handle = create_reactor()
+    assert value register_token(reactor_handle, 17) == true
+    timeout_milliseconds = normalize_timer_timeout_milliseconds(1)
+    assert value timeout_milliseconds == 1
+    assert value normalize_timer_timeout_milliseconds(-5) == 0
+    assert value arm_timer(reactor_handle, 17, timeout_milliseconds) == true
+    assert value deregister_token(reactor_handle, 17) == true
+    assert value drop_reactor(reactor_handle) == true
+
+    task_signal = create_task_signal()
+    assert value unpark_one(task_signal) == true
+    assert value read_signal_epoch(task_signal) >= 1
+    assert value drop_task_signal(task_signal) == true
+
+    atomic_counter = create_atomic_counter(10)
+    assert value fetch_add_atomic_counter(atomic_counter, 2) == 10
+    assert value load_atomic_counter(atomic_counter) == 12
+    assert value drop_atomic_counter(atomic_counter) == true

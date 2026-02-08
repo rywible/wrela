@@ -1,10 +1,21 @@
 abi_version=4
 
+# Thin-core symbol contract:
+# - Symbols are grouped by category so updates are intentional and reviewable.
+# - Runtime/compiler policy symbols are forbidden in this snapshot.
+# - Unsafe updates must explain why a symbol moved classes.
+#
+# Category: kernel primitive intrinsics (compiler <-> runtime waist)
 intrinsic=__wr_actor_mailbox_len
 intrinsic=__wr_actor_pause
 intrinsic=__wr_actor_pause_wait
 intrinsic=__wr_actor_resume
 intrinsic=__wr_assert_err
+intrinsic=__wr_atomic_i64_drop
+intrinsic=__wr_atomic_i64_fetch_add
+intrinsic=__wr_atomic_i64_load
+intrinsic=__wr_atomic_i64_new
+intrinsic=__wr_atomic_i64_store
 intrinsic=__wr_bytes_from_list
 intrinsic=__wr_bytes_from_string
 intrinsic=__wr_bytes_len
@@ -28,10 +39,21 @@ intrinsic=__wr_pool_queue_len
 intrinsic=__wr_pool_rr
 intrinsic=__wr_pool_size
 intrinsic=__wr_print
+intrinsic=__wr_reactor_arm_timer
+intrinsic=__wr_reactor_deregister
+intrinsic=__wr_reactor_drop
+intrinsic=__wr_reactor_new
+intrinsic=__wr_reactor_register
 intrinsic=__wr_runtime_configure
 intrinsic=__wr_runtime_cpu_count
 intrinsic=__wr_sleep_ms
+intrinsic=__wr_task_epoch
+intrinsic=__wr_task_signal_drop
+intrinsic=__wr_task_signal_new
+intrinsic=__wr_task_unpark_all
+intrinsic=__wr_task_unpark_one
 
+# Category: runtime C exports (stable ABI surface)
 runtime_export=wr_actor_fire
 runtime_export=wr_actor_mailbox_len
 runtime_export=wr_actor_pause
@@ -44,6 +66,11 @@ runtime_export=wr_assert_eq
 runtime_export=wr_assert_err
 runtime_export=wr_assert_identity
 runtime_export=wr_assert_value_equality
+runtime_export=wr_atomic_i64_drop
+runtime_export=wr_atomic_i64_fetch_add
+runtime_export=wr_atomic_i64_load
+runtime_export=wr_atomic_i64_new
+runtime_export=wr_atomic_i64_store
 runtime_export=wr_box_float
 runtime_export=wr_box_int
 runtime_export=wr_bytes_from_list
@@ -98,6 +125,11 @@ runtime_export=wr_pool_rr
 runtime_export=wr_pool_size
 runtime_export=wr_print
 runtime_export=wr_range_new
+runtime_export=wr_reactor_arm_timer
+runtime_export=wr_reactor_deregister
+runtime_export=wr_reactor_drop
+runtime_export=wr_reactor_new
+runtime_export=wr_reactor_register
 runtime_export=wr_register_class
 runtime_export=wr_register_method
 runtime_export=wr_register_method_name
@@ -115,8 +147,16 @@ runtime_export=wr_str_concat
 runtime_export=wr_str_concat_local
 runtime_export=wr_str_from_utf8
 runtime_export=wr_str_intern
+runtime_export=wr_task_epoch
+runtime_export=wr_task_signal_drop
+runtime_export=wr_task_signal_new
+runtime_export=wr_task_unpark_all
+runtime_export=wr_task_unpark_one
 runtime_export=wr_type_id
 runtime_export=wr_unbox_float
 runtime_export=wr_unbox_int
 runtime_export=wr_value_deep_eq
 runtime_export=wr_value_eq
+
+# Category: deprecated symbols pending removal
+# - none at ABI version 4

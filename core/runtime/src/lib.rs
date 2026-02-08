@@ -6,17 +6,13 @@ mod bytes;
 mod class;
 mod config;
 mod diagnostics;
-mod env;
-mod float_box;
 mod iter;
-mod lease;
 mod list;
 mod logging;
 mod map;
 mod metrics;
-mod number;
 mod object;
-mod range;
+pub mod reactor;
 mod result;
 mod scheduler;
 mod string;
@@ -26,9 +22,163 @@ use value::int_value;
 pub use value::{TypeId, Value};
 
 use object::drop_object;
-use std::collections::HashSet;
-use std::sync::OnceLock;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
+
+const WR_REACTOR_EVENT_READABLE: i32 = 1;
+const WR_REACTOR_EVENT_TIMER: i32 = 2;
+
+struct ReactorRegistry {
+    next_handle: AtomicU64,
+    handles: Mutex<HashMap<u64, Arc<reactor::Reactor>>>,
+}
+
+impl ReactorRegistry {
+    fn new() -> Self {
+        Self {
+            next_handle: AtomicU64::new(1),
+            handles: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn insert(&self, reactor: reactor::Reactor) -> i64 {
+        let handle = self.next_handle.fetch_add(1, Ordering::Relaxed);
+        self.handles
+            .lock()
+            .expect("reactor registry lock")
+            .insert(handle, Arc::new(reactor));
+        handle as i64
+    }
+
+    fn get(&self, handle: i64) -> Option<Arc<reactor::Reactor>> {
+        if handle <= 0 {
+            return None;
+        }
+        self.handles
+            .lock()
+            .expect("reactor registry lock")
+            .get(&(handle as u64))
+            .cloned()
+    }
+
+    fn remove(&self, handle: i64) -> bool {
+        if handle <= 0 {
+            return false;
+        }
+        self.handles
+            .lock()
+            .expect("reactor registry lock")
+            .remove(&(handle as u64))
+            .is_some()
+    }
+}
+
+fn reactor_registry() -> &'static ReactorRegistry {
+    static REGISTRY: OnceLock<ReactorRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(ReactorRegistry::new)
+}
+
+struct TaskSignalRegistry {
+    next_handle: AtomicU64,
+    handles: Mutex<HashMap<u64, Arc<reactor::task::TaskSignal>>>,
+}
+
+impl TaskSignalRegistry {
+    fn new() -> Self {
+        Self {
+            next_handle: AtomicU64::new(1),
+            handles: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn insert(&self, signal: reactor::task::TaskSignal) -> i64 {
+        let handle = self.next_handle.fetch_add(1, Ordering::Relaxed);
+        self.handles
+            .lock()
+            .expect("task signal registry lock")
+            .insert(handle, Arc::new(signal));
+        handle as i64
+    }
+
+    fn get(&self, handle: i64) -> Option<Arc<reactor::task::TaskSignal>> {
+        if handle <= 0 {
+            return None;
+        }
+        self.handles
+            .lock()
+            .expect("task signal registry lock")
+            .get(&(handle as u64))
+            .cloned()
+    }
+
+    fn remove(&self, handle: i64) -> bool {
+        if handle <= 0 {
+            return false;
+        }
+        self.handles
+            .lock()
+            .expect("task signal registry lock")
+            .remove(&(handle as u64))
+            .is_some()
+    }
+}
+
+fn task_signal_registry() -> &'static TaskSignalRegistry {
+    static REGISTRY: OnceLock<TaskSignalRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(TaskSignalRegistry::new)
+}
+
+struct AtomicI64Registry {
+    next_handle: AtomicU64,
+    handles: Mutex<HashMap<u64, Arc<AtomicI64>>>,
+}
+
+impl AtomicI64Registry {
+    fn new() -> Self {
+        Self {
+            next_handle: AtomicU64::new(1),
+            handles: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn insert(&self, value: i64) -> i64 {
+        let handle = self.next_handle.fetch_add(1, Ordering::Relaxed);
+        self.handles
+            .lock()
+            .expect("atomic registry lock")
+            .insert(handle, Arc::new(AtomicI64::new(value)));
+        handle as i64
+    }
+
+    fn get(&self, handle: i64) -> Option<Arc<AtomicI64>> {
+        if handle <= 0 {
+            return None;
+        }
+        self.handles
+            .lock()
+            .expect("atomic registry lock")
+            .get(&(handle as u64))
+            .cloned()
+    }
+
+    fn remove(&self, handle: i64) -> bool {
+        if handle <= 0 {
+            return false;
+        }
+        self.handles
+            .lock()
+            .expect("atomic registry lock")
+            .remove(&(handle as u64))
+            .is_some()
+    }
+}
+
+fn atomic_i64_registry() -> &'static AtomicI64Registry {
+    static REGISTRY: OnceLock<AtomicI64Registry> = OnceLock::new();
+    REGISTRY.get_or_init(AtomicI64Registry::new)
+}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wr_rc_inc(value: Value) {
@@ -93,6 +243,175 @@ pub extern "C" fn wr_runtime_init() {
 pub extern "C" fn wr_runtime_abi() -> u32 {
     diagnostics::runtime_init();
     diagnostics::RUNTIME_ABI_VERSION
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_reactor_new() -> Value {
+    match reactor::Reactor::new() {
+        Ok(reactor) => Value::from_int(reactor_registry().insert(reactor)),
+        Err(_) => Value::nil(),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_reactor_drop(handle: Value) -> Value {
+    let handle = int_value(handle).unwrap_or(0);
+    Value::from_bool(reactor_registry().remove(handle))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_reactor_register(handle: Value, token: Value) -> Value {
+    let Some(reactor) = reactor_registry().get(int_value(handle).unwrap_or(0)) else {
+        return Value::from_bool(false);
+    };
+    Value::from_bool(
+        reactor
+            .register(int_value(token).unwrap_or(0) as u64)
+            .is_ok(),
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_reactor_deregister(handle: Value, token: Value) -> Value {
+    let Some(reactor) = reactor_registry().get(int_value(handle).unwrap_or(0)) else {
+        return Value::from_bool(false);
+    };
+    Value::from_bool(
+        reactor
+            .deregister(int_value(token).unwrap_or(0) as u64)
+            .is_ok(),
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_reactor_arm_timer(handle: Value, token: Value, timeout_ms: Value) -> Value {
+    let Some(reactor) = reactor_registry().get(int_value(handle).unwrap_or(0)) else {
+        return Value::from_bool(false);
+    };
+    let token = int_value(token).unwrap_or(0) as u64;
+    let timeout_ms = int_value(timeout_ms).unwrap_or(-1);
+    Value::from_bool(reactor.arm_timer_ms(token, timeout_ms).is_ok())
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wr_reactor_poll(
+    handle: i64,
+    timeout_ms: i64,
+    out_token: *mut u64,
+    out_kind: *mut i32,
+) -> i32 {
+    if out_token.is_null() || out_kind.is_null() {
+        return -1;
+    }
+    let Some(reactor) = reactor_registry().get(handle) else {
+        return -1;
+    };
+    match reactor.poll(timeout_ms) {
+        Ok(Some(event)) => {
+            unsafe {
+                *out_token = event.token;
+                *out_kind = match event.kind {
+                    reactor::ReactorEventKind::Readable => WR_REACTOR_EVENT_READABLE,
+                    reactor::ReactorEventKind::Timer => WR_REACTOR_EVENT_TIMER,
+                };
+            }
+            1
+        }
+        Ok(None) => 0,
+        Err(_) => -1,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_task_signal_new() -> Value {
+    Value::from_int(task_signal_registry().insert(reactor::task::TaskSignal::new()))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_task_signal_drop(handle: Value) -> Value {
+    Value::from_bool(task_signal_registry().remove(int_value(handle).unwrap_or(0)))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_task_unpark_one(handle: Value) -> Value {
+    let Some(signal) = task_signal_registry().get(int_value(handle).unwrap_or(0)) else {
+        return Value::from_bool(false);
+    };
+    signal.notify_one();
+    Value::from_bool(true)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_task_unpark_all(handle: Value) -> Value {
+    let Some(signal) = task_signal_registry().get(int_value(handle).unwrap_or(0)) else {
+        return Value::from_bool(false);
+    };
+    signal.notify_waiters();
+    Value::from_bool(true)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wr_task_park(
+    handle: i64,
+    observed_epoch: u64,
+    timeout_ms: i64,
+    out_epoch: *mut u64,
+) -> i32 {
+    if out_epoch.is_null() || timeout_ms < 0 {
+        return -1;
+    }
+    let Some(signal) = task_signal_registry().get(handle) else {
+        return -1;
+    };
+    let timeout = std::time::Duration::from_millis(timeout_ms as u64);
+    let (epoch, notified) = signal.wait_timeout(observed_epoch, timeout);
+    unsafe {
+        *out_epoch = epoch;
+    }
+    if notified { 1 } else { 0 }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_task_epoch(handle: Value) -> Value {
+    let Some(signal) = task_signal_registry().get(int_value(handle).unwrap_or(0)) else {
+        return Value::nil();
+    };
+    Value::from_int(signal.snapshot() as i64)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_atomic_i64_new(initial: Value) -> Value {
+    Value::from_int(atomic_i64_registry().insert(int_value(initial).unwrap_or(0)))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_atomic_i64_drop(handle: Value) -> Value {
+    Value::from_bool(atomic_i64_registry().remove(int_value(handle).unwrap_or(0)))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_atomic_i64_load(handle: Value) -> Value {
+    let Some(cell) = atomic_i64_registry().get(int_value(handle).unwrap_or(0)) else {
+        return Value::nil();
+    };
+    Value::from_int(cell.load(Ordering::SeqCst))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_atomic_i64_store(handle: Value, value: Value) -> Value {
+    let Some(cell) = atomic_i64_registry().get(int_value(handle).unwrap_or(0)) else {
+        return Value::from_bool(false);
+    };
+    cell.store(int_value(value).unwrap_or(0), Ordering::SeqCst);
+    Value::from_bool(true)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_atomic_i64_fetch_add(handle: Value, delta: Value) -> Value {
+    let Some(cell) = atomic_i64_registry().get(int_value(handle).unwrap_or(0)) else {
+        return Value::nil();
+    };
+    Value::from_int(cell.fetch_add(int_value(delta).unwrap_or(0), Ordering::SeqCst))
 }
 
 #[unsafe(no_mangle)]
@@ -197,52 +516,52 @@ pub extern "C" fn wr_list_len(list_val: Value) -> Value {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_num_add(a: Value, b: Value) -> Value {
-    number::num_add(a, b)
+    num_add(a, b)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_num_sub(a: Value, b: Value) -> Value {
-    number::num_sub(a, b)
+    num_sub(a, b)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_num_mul(a: Value, b: Value) -> Value {
-    number::num_mul(a, b)
+    num_mul(a, b)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_num_div(a: Value, b: Value) -> Value {
-    number::num_div(a, b)
+    num_div(a, b)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_num_mod(a: Value, b: Value) -> Value {
-    number::num_mod(a, b)
+    num_mod(a, b)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_num_neg(a: Value) -> Value {
-    number::num_neg(a)
+    num_neg(a)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_num_lt(a: Value, b: Value) -> Value {
-    number::num_lt(a, b)
+    num_lt(a, b)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_num_gt(a: Value, b: Value) -> Value {
-    number::num_gt(a, b)
+    num_gt(a, b)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_num_le(a: Value, b: Value) -> Value {
-    number::num_le(a, b)
+    num_le(a, b)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_num_ge(a: Value, b: Value) -> Value {
-    number::num_ge(a, b)
+    num_ge(a, b)
 }
 
 #[unsafe(no_mangle)]
@@ -575,7 +894,7 @@ pub extern "C" fn wr_runtime_cpu_count() -> Value {
     let count = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1) as i64;
-    Value::from_int(count.max(1))
+    Value::from_int(count)
 }
 
 #[unsafe(no_mangle)]
@@ -729,7 +1048,7 @@ pub extern "C" fn wr_class_set(obj: Value, name_ptr: *const u8, len: usize, val:
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_range_new(start: Value, end: Value) -> Value {
-    range::range_new(start, end)
+    range_new(start, end)
 }
 
 #[unsafe(no_mangle)]
@@ -744,12 +1063,221 @@ pub extern "C" fn wr_runtime_configure(config: Value) -> Value {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_env_get(key: Value) -> Value {
-    env::env_get(key)
+    env_get(key)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_env_set(key: Value, val: Value) -> Value {
-    env::env_set(key, val)
+    env_set(key, val)
+}
+
+fn value_to_string(val: Value) -> Option<String> {
+    string::with_string_bytes(val, |bytes| String::from_utf8_lossy(bytes).into_owned())
+}
+
+fn env_get(key: Value) -> Value {
+    let key = match value_to_string(key) {
+        Some(key) => key,
+        None => return Value::nil(),
+    };
+    match std::env::var(&key).ok() {
+        Some(val) => string::str_from_bytes(val.as_bytes()),
+        None => Value::nil(),
+    }
+}
+
+fn env_set(key: Value, val: Value) -> Value {
+    let key = match value_to_string(key) {
+        Some(key) => key,
+        None => return Value::from_bool(false),
+    };
+    let val = match value_to_string(val) {
+        Some(val) => val,
+        None => return Value::from_bool(false),
+    };
+    unsafe {
+        std::env::set_var(key, val);
+    }
+    Value::from_bool(true)
+}
+
+fn num_add(a: Value, b: Value) -> Value {
+    if is_string(a) && is_string(b) {
+        let parts = [a, b];
+        return string::str_concat(parts.as_ptr(), parts.len());
+    }
+    numeric_binary(a, b, |x, y| x + y, |x, y| x + y)
+}
+
+fn num_sub(a: Value, b: Value) -> Value {
+    numeric_binary(a, b, |x, y| x - y, |x, y| x - y)
+}
+
+fn num_mul(a: Value, b: Value) -> Value {
+    numeric_binary(a, b, |x, y| x * y, |x, y| x * y)
+}
+
+fn num_div(a: Value, b: Value) -> Value {
+    match (num_kind(a), num_kind(b)) {
+        (Some(NumKind::Integer(x)), Some(NumKind::Integer(y))) => {
+            if y == 0 {
+                std::process::abort();
+            }
+            Value::from_int(x / y)
+        }
+        (Some(x), Some(y)) => {
+            let xf = num_to_f64(x);
+            let yf = num_to_f64(y);
+            Value::from_float(xf / yf)
+        }
+        _ => Value::nil(),
+    }
+}
+
+fn num_mod(a: Value, b: Value) -> Value {
+    match (num_kind(a), num_kind(b)) {
+        (Some(NumKind::Integer(x)), Some(NumKind::Integer(y))) => {
+            if y == 0 {
+                std::process::abort();
+            }
+            Value::from_int(x % y)
+        }
+        (Some(x), Some(y)) => {
+            let xf = num_to_f64(x);
+            let yf = num_to_f64(y);
+            Value::from_float(xf % yf)
+        }
+        _ => Value::nil(),
+    }
+}
+
+fn num_neg(a: Value) -> Value {
+    match num_kind(a) {
+        Some(NumKind::Integer(x)) => Value::from_int(-x),
+        Some(NumKind::Float(x)) => Value::from_float(-x),
+        None => Value::nil(),
+    }
+}
+
+fn num_lt(a: Value, b: Value) -> Value {
+    Value::from_bool(numeric_cmp(a, b, |x, y| x < y, |x, y| x < y))
+}
+
+fn num_gt(a: Value, b: Value) -> Value {
+    Value::from_bool(numeric_cmp(a, b, |x, y| x > y, |x, y| x > y))
+}
+
+fn num_le(a: Value, b: Value) -> Value {
+    Value::from_bool(numeric_cmp(a, b, |x, y| x <= y, |x, y| x <= y))
+}
+
+fn num_ge(a: Value, b: Value) -> Value {
+    Value::from_bool(numeric_cmp(a, b, |x, y| x >= y, |x, y| x >= y))
+}
+
+fn range_new(start: Value, end: Value) -> Value {
+    match (num_kind(start), num_kind(end)) {
+        (Some(NumKind::Integer(a)), Some(NumKind::Integer(b))) => range_int(a, b),
+        (Some(a), Some(b)) => range_float(num_to_f64(a), num_to_f64(b)),
+        _ => list::list_new(0),
+    }
+}
+
+fn range_int(start: i64, end: i64) -> Value {
+    let list_val = list::list_new(0);
+    let step = if start <= end { 1 } else { -1 };
+    let mut current = start;
+    loop {
+        list::list_push(list_val, Value::from_int(current));
+        if current == end {
+            break;
+        }
+        current = current.saturating_add(step);
+    }
+    list_val
+}
+
+fn range_float(start: f64, end: f64) -> Value {
+    if !start.is_finite() || !end.is_finite() {
+        return list::list_new(0);
+    }
+    let list_val = list::list_new(0);
+    let step = if start <= end { 1.0 } else { -1.0 };
+    let mut current = start;
+    loop {
+        list::list_push(list_val, Value::from_float(current));
+        if (step > 0.0 && current >= end) || (step < 0.0 && current <= end) {
+            break;
+        }
+        current += step;
+        if !current.is_finite() {
+            break;
+        }
+    }
+    list_val
+}
+
+fn numeric_binary(
+    a: Value,
+    b: Value,
+    int_op: impl FnOnce(i64, i64) -> i64,
+    float_op: impl FnOnce(f64, f64) -> f64,
+) -> Value {
+    match (num_kind(a), num_kind(b)) {
+        (Some(NumKind::Integer(x)), Some(NumKind::Integer(y))) => Value::from_int(int_op(x, y)),
+        (Some(x), Some(y)) => {
+            let xf = num_to_f64(x);
+            let yf = num_to_f64(y);
+            Value::from_float(float_op(xf, yf))
+        }
+        _ => Value::nil(),
+    }
+}
+
+fn numeric_cmp(
+    a: Value,
+    b: Value,
+    int_op: impl FnOnce(i64, i64) -> bool,
+    float_op: impl FnOnce(f64, f64) -> bool,
+) -> bool {
+    match (num_kind(a), num_kind(b)) {
+        (Some(NumKind::Integer(x)), Some(NumKind::Integer(y))) => int_op(x, y),
+        (Some(x), Some(y)) => {
+            let xf = num_to_f64(x);
+            let yf = num_to_f64(y);
+            float_op(xf, yf)
+        }
+        _ => false,
+    }
+}
+
+fn num_to_f64(kind: NumKind) -> f64 {
+    match kind {
+        NumKind::Integer(x) => x as f64,
+        NumKind::Float(x) => x,
+    }
+}
+
+fn num_kind(val: Value) -> Option<NumKind> {
+    if let Some(i) = int_value(val) {
+        return Some(NumKind::Integer(i));
+    }
+    if val.is_float() {
+        return Some(NumKind::Float(val.as_float()));
+    }
+    None
+}
+
+fn is_string(val: Value) -> bool {
+    if !val.is_ptr() {
+        return false;
+    }
+    unsafe { (*val.as_ptr()).type_id == TypeId::String as u32 }
+}
+
+enum NumKind {
+    Integer(i64),
+    Float(f64),
 }
 
 #[cfg(test)]

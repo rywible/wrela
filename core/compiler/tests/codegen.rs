@@ -22,6 +22,36 @@ fn expected_int_exit(val: i64) -> i32 {
     (val as i32) & 0xFF
 }
 
+fn compile_and_run_native_source(source: &str, executable_name: &str) -> std::process::Output {
+    let module = load_module_from_source(source);
+    let semantic = hir::semantic::check_module(&module);
+    assert!(
+        semantic.errors.is_empty(),
+        "semantic errors: {:?}",
+        semantic.errors
+    );
+    let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+    assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
+
+    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    for func in &mut mir_module.functions {
+        mir::opt::run_function_passes(func);
+    }
+    let mir_errors = mir::validate::validate_module(&mir_module);
+    assert!(mir_errors.is_empty(), "mir errors: {mir_errors:?}");
+
+    let keep_native = std::env::var("WR_KEEP_NATIVE_BIN").is_ok();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = dir.path().join(executable_name);
+    wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
+    if keep_native {
+        eprintln!("WR_KEEP_NATIVE_BIN={}", out.display());
+        std::mem::forget(dir);
+    }
+
+    Command::new(&out).output().expect("run failed")
+}
+
 #[test]
 fn native_actor_smoke() {
     if std::env::var("WR_SKIP_NATIVE").is_ok() {
@@ -917,6 +947,10 @@ to run() -> Integer:
     let dir = tempfile::tempdir().expect("tempdir");
     let out = dir.path().join("wr_pool_pause_drop_smoke");
     wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
+    if std::env::var("WR_KEEP_NATIVE_BIN").is_ok() {
+        eprintln!("WR_KEEP_NATIVE_BIN={}", out.display());
+        std::mem::forget(dir);
+    }
 
     let output = Command::new(&out).output().expect("run failed");
     let expected = expected_int_exit(1);
@@ -982,6 +1016,152 @@ to run() -> Integer:
             use std::os::unix::process::ExitStatusExt;
             panic!(
                 "process terminated by signal {:?}: {}",
+                output.status.signal(),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+}
+
+#[test]
+fn native_pool_policy_matrix_smoke() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+
+    struct PolicyMatrixRow {
+        objective: &'static str,
+        min_size: i64,
+        max_size: i64,
+        weight: i64,
+        queue_cap: i64,
+        expected_size: i64,
+    }
+
+    let rows = [
+        PolicyMatrixRow {
+            objective: "balance",
+            min_size: 1,
+            max_size: 4,
+            weight: 3,
+            queue_cap: 1,
+            expected_size: 4,
+        },
+        PolicyMatrixRow {
+            objective: "latency",
+            min_size: 1,
+            max_size: 2,
+            weight: 1,
+            queue_cap: 1,
+            expected_size: 2,
+        },
+        PolicyMatrixRow {
+            objective: "throughput",
+            min_size: 2,
+            max_size: 4,
+            weight: 1,
+            queue_cap: 1,
+            expected_size: 4,
+        },
+    ];
+
+    for row in rows {
+        let source = format!(
+            r#"
+A Counter:
+    can ping(x: Integer) -> Integer:
+        return x
+
+to run() -> Integer:
+    optimize {objective}:
+        c = detach Pool.of(
+            Counter,
+            size=n,
+            min={min_size},
+            max={max_size},
+            weight={weight},
+            backpressure=queue({queue_cap})
+        ) * 1
+        __wr_actor_pause(c)
+        __wr_actor_pause_wait(c)
+        for i in 1...4:
+            fire c.ping(i)
+        observed = __wr_pool_queue_len(c) + __wr_actor_mailbox_len(c)
+        pool_size = __wr_pool_size(c)
+        __wr_actor_resume(c)
+        if pool_size == {expected_size} and observed >= 1:
+            return 1
+        return 0
+"#,
+            objective = row.objective,
+            min_size = row.min_size,
+            max_size = row.max_size,
+            weight = row.weight,
+            queue_cap = row.queue_cap,
+            expected_size = row.expected_size
+        );
+
+        let output = compile_and_run_native_source(
+            &source,
+            &format!("wr_pool_policy_matrix_{}", row.objective),
+        );
+        let expected = expected_int_exit(1);
+        match output.status.code() {
+            Some(code) => assert_eq!(
+                code, expected,
+                "policy matrix row failed for objective={}",
+                row.objective
+            ),
+            None => {
+                use std::os::unix::process::ExitStatusExt;
+                panic!(
+                    "row objective={} terminated by signal {:?}: {}",
+                    row.objective,
+                    output.status.signal(),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn native_scheduler_policy_helpers_smoke() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+
+    let output = compile_and_run_native_source(
+        r#"
+use:
+    choose_next_shard,
+    compute_dispatch_budget,
+    should_steal_work,
+    refill_credits
+from scheduler
+
+to run() -> Integer:
+    shard_a = choose_next_shard(11, 4, false)
+    shard_b = choose_next_shard(11, 4, true)
+    budget = compute_dispatch_budget(12, 4, 9)
+    steal_a = should_steal_work(0, 3, false)
+    steal_b = should_steal_work(0, 3, true)
+    credits = refill_credits(1, 5, 2, 2)
+
+    if shard_a == 3 and shard_b == 0 and budget == 8 and steal_a and not steal_b and credits == 5:
+        return 1
+    return 0
+"#,
+        "wr_scheduler_policy_helpers",
+    );
+
+    let expected = expected_int_exit(1);
+    match output.status.code() {
+        Some(code) => assert_eq!(code, expected),
+        None => {
+            use std::os::unix::process::ExitStatusExt;
+            panic!(
+                "terminated by signal {:?}: {}",
                 output.status.signal(),
                 String::from_utf8_lossy(&output.stderr)
             );
