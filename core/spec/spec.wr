@@ -639,12 +639,12 @@ so: ------------------------------------------------------------
     bytes: __wr_bytes_from_string, __wr_bytes_to_string, __wr_bytes_len, __wr_bytes_to_list, __wr_bytes_from_list
     list/map: __wr_list_push, __wr_map_new, __wr_map_get, __wr_map_set
     log: __wr_log, __wr_log_configure
-    pool: __wr_pool_auto_size, __wr_pool_size, __wr_pool_rr, __wr_pool_queue_len
+    pool: __wr_pool_size, __wr_pool_rr, __wr_pool_queue_len
     actor: __wr_actor_mailbox_len, __wr_actor_pause, __wr_actor_resume, __wr_actor_pause_wait
     metrics: __wr_metrics_get, __wr_metrics_dropped_paused_id, __wr_metrics_messages_dropped_id
     time: __wr_clock_ns, __wr_sleep_ms
     env: __wr_env_get, __wr_env_set
-    runtime: __wr_runtime_configure
+    runtime: __wr_runtime_configure, __wr_runtime_cpu_count
     
     Implicit values:
     Pool, queue, drop, n

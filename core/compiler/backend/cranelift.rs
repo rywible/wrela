@@ -32,7 +32,7 @@ const NANBOX_IMM_FALSE: u64 = 1;
 const NANBOX_IMM_TRUE: u64 = 2;
 const NANBOX_INT_MIN: i64 = -(1i64 << (NANBOX_TAG_SHIFT - 1));
 const NANBOX_INT_MAX: i64 = (1i64 << (NANBOX_TAG_SHIFT - 1)) - 1;
-const RUNTIME_ABI_VERSION: i64 = 3;
+const RUNTIME_ABI_VERSION: i64 = 4;
 
 #[derive(Debug)]
 pub struct CodegenError(pub String);
@@ -928,7 +928,8 @@ fn lower_rvalue(
                         let call = builder.ins().call(callee, &[args_ptr, args_len]);
                         builder.inst_results(call)[0]
                     } else {
-                        let func_id = runtime_fn_num_add(module, runtime)?;
+                        let func_id =
+                            runtime_fn_numeric_binary(crate::hir::BinaryOp::Add, module, runtime)?;
                         let callee = module.declare_func_in_func(func_id, builder.func);
                         let call = builder.ins().call(callee, &[lhs_val, rhs_val]);
                         builder.inst_results(call)[0]
@@ -955,7 +956,8 @@ fn lower_rvalue(
                         let call = builder.ins().call(box_callee, &[res]);
                         builder.inst_results(call)[0]
                     } else {
-                        let func_id = runtime_fn_num_sub(module, runtime)?;
+                        let func_id =
+                            runtime_fn_numeric_binary(crate::hir::BinaryOp::Sub, module, runtime)?;
                         let callee = module.declare_func_in_func(func_id, builder.func);
                         let call = builder.ins().call(callee, &[lhs_val, rhs_val]);
                         builder.inst_results(call)[0]
@@ -982,7 +984,8 @@ fn lower_rvalue(
                         let call = builder.ins().call(box_callee, &[res]);
                         builder.inst_results(call)[0]
                     } else {
-                        let func_id = runtime_fn_num_mul(module, runtime)?;
+                        let func_id =
+                            runtime_fn_numeric_binary(crate::hir::BinaryOp::Mul, module, runtime)?;
                         let callee = module.declare_func_in_func(func_id, builder.func);
                         let call = builder.ins().call(callee, &[lhs_val, rhs_val]);
                         builder.inst_results(call)[0]
@@ -1025,7 +1028,8 @@ fn lower_rvalue(
                         let call = builder.ins().call(box_callee, &[res]);
                         builder.inst_results(call)[0]
                     } else {
-                        let func_id = runtime_fn_num_div(module, runtime)?;
+                        let func_id =
+                            runtime_fn_numeric_binary(crate::hir::BinaryOp::Div, module, runtime)?;
                         let callee = module.declare_func_in_func(func_id, builder.func);
                         let call = builder.ins().call(callee, &[lhs_val, rhs_val]);
                         builder.inst_results(call)[0]
@@ -1040,7 +1044,8 @@ fn lower_rvalue(
                         let res = builder.ins().srem(l, r);
                         tag_int(builder, module, runtime, res)?
                     } else {
-                        let func_id = runtime_fn_num_mod(module, runtime)?;
+                        let func_id =
+                            runtime_fn_numeric_binary(crate::hir::BinaryOp::Mod, module, runtime)?;
                         let callee = module.declare_func_in_func(func_id, builder.func);
                         let call = builder.ins().call(callee, &[lhs_val, rhs_val]);
                         builder.inst_results(call)[0]
@@ -1112,7 +1117,8 @@ fn lower_rvalue(
                         let b = bool_to_int(builder, cmp);
                         tag_bool(builder, b)
                     } else {
-                        let func_id = runtime_fn_num_lt(module, runtime)?;
+                        let func_id =
+                            runtime_fn_numeric_binary(crate::hir::BinaryOp::Lt, module, runtime)?;
                         let callee = module.declare_func_in_func(func_id, builder.func);
                         let call = builder.ins().call(callee, &[lhs_val, rhs_val]);
                         builder.inst_results(call)[0]
@@ -1146,7 +1152,8 @@ fn lower_rvalue(
                         let b = bool_to_int(builder, cmp);
                         tag_bool(builder, b)
                     } else {
-                        let func_id = runtime_fn_num_gt(module, runtime)?;
+                        let func_id =
+                            runtime_fn_numeric_binary(crate::hir::BinaryOp::Gt, module, runtime)?;
                         let callee = module.declare_func_in_func(func_id, builder.func);
                         let call = builder.ins().call(callee, &[lhs_val, rhs_val]);
                         builder.inst_results(call)[0]
@@ -1180,7 +1187,8 @@ fn lower_rvalue(
                         let b = bool_to_int(builder, cmp);
                         tag_bool(builder, b)
                     } else {
-                        let func_id = runtime_fn_num_le(module, runtime)?;
+                        let func_id =
+                            runtime_fn_numeric_binary(crate::hir::BinaryOp::Le, module, runtime)?;
                         let callee = module.declare_func_in_func(func_id, builder.func);
                         let call = builder.ins().call(callee, &[lhs_val, rhs_val]);
                         builder.inst_results(call)[0]
@@ -1214,7 +1222,8 @@ fn lower_rvalue(
                         let b = bool_to_int(builder, cmp);
                         tag_bool(builder, b)
                     } else {
-                        let func_id = runtime_fn_num_ge(module, runtime)?;
+                        let func_id =
+                            runtime_fn_numeric_binary(crate::hir::BinaryOp::Ge, module, runtime)?;
                         let callee = module.declare_func_in_func(func_id, builder.func);
                         let call = builder.ins().call(callee, &[lhs_val, rhs_val]);
                         builder.inst_results(call)[0]
@@ -1328,8 +1337,8 @@ fn lower_rvalue(
                                     "__wr_map_new" => Some(runtime_fn_map_new(module, runtime)?),
                                     "__wr_map_get" => Some(runtime_fn_map_get(module, runtime)?),
                                     "__wr_map_set" => Some(runtime_fn_map_set(module, runtime)?),
-                                    "__wr_pool_auto_size" => {
-                                        Some(runtime_fn_pool_auto_size(module, runtime)?)
+                                    "__wr_runtime_cpu_count" => {
+                                        Some(runtime_fn_runtime_cpu_count(module, runtime)?)
                                     }
                                     "__wr_pool_size" => {
                                         Some(runtime_fn_pool_size(module, runtime)?)
@@ -2174,16 +2183,12 @@ fn runtime_fn_map_set(
     runtime.get_func(module, "wr_map_set", sig)
 }
 
-fn runtime_fn_pool_auto_size(
+fn runtime_fn_runtime_cpu_count(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
 ) -> Result<cranelift_module::FuncId, CodegenError> {
-    let sig = RuntimeRegistry::runtime_sig(
-        module,
-        &[types::I64, types::I64, types::I64, types::I64],
-        &[types::I64],
-    );
-    runtime.get_func(module, "wr_pool_auto_size", sig)
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(module, "wr_runtime_cpu_count", sig)
 }
 
 fn runtime_fn_pool_size(
@@ -2546,6 +2551,41 @@ fn runtime_fn_type_id(
 ) -> Result<cranelift_module::FuncId, CodegenError> {
     let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
     runtime.get_func(module, "wr_type_id", sig)
+}
+
+#[cfg(test)]
+fn runtime_numeric_symbol(op: crate::hir::BinaryOp) -> Option<&'static str> {
+    match op {
+        crate::hir::BinaryOp::Add => Some("wr_num_add"),
+        crate::hir::BinaryOp::Sub => Some("wr_num_sub"),
+        crate::hir::BinaryOp::Mul => Some("wr_num_mul"),
+        crate::hir::BinaryOp::Div => Some("wr_num_div"),
+        crate::hir::BinaryOp::Mod => Some("wr_num_mod"),
+        crate::hir::BinaryOp::Lt => Some("wr_num_lt"),
+        crate::hir::BinaryOp::Gt => Some("wr_num_gt"),
+        crate::hir::BinaryOp::Le => Some("wr_num_le"),
+        crate::hir::BinaryOp::Ge => Some("wr_num_ge"),
+        _ => None,
+    }
+}
+
+fn runtime_fn_numeric_binary(
+    op: crate::hir::BinaryOp,
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    match op {
+        crate::hir::BinaryOp::Add => runtime_fn_num_add(module, runtime),
+        crate::hir::BinaryOp::Sub => runtime_fn_num_sub(module, runtime),
+        crate::hir::BinaryOp::Mul => runtime_fn_num_mul(module, runtime),
+        crate::hir::BinaryOp::Div => runtime_fn_num_div(module, runtime),
+        crate::hir::BinaryOp::Mod => runtime_fn_num_mod(module, runtime),
+        crate::hir::BinaryOp::Lt => runtime_fn_num_lt(module, runtime),
+        crate::hir::BinaryOp::Gt => runtime_fn_num_gt(module, runtime),
+        crate::hir::BinaryOp::Le => runtime_fn_num_le(module, runtime),
+        crate::hir::BinaryOp::Ge => runtime_fn_num_ge(module, runtime),
+        _ => Err(CodegenError("unsupported numeric binary op".to_string())),
+    }
 }
 
 fn runtime_fn_register_method(
@@ -2933,5 +2973,25 @@ fn ty_to_clif(ty: &MirType) -> Result<cranelift_codegen::ir::Type, CodegenError>
         | MirType::Actor(_)
         | MirType::Pending(_)
         | MirType::Result(_, _) => Ok(types::I64),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::runtime_numeric_symbol;
+    use crate::hir::BinaryOp;
+
+    #[test]
+    fn runtime_numeric_symbol_maps_supported_binary_ops() {
+        assert_eq!(runtime_numeric_symbol(BinaryOp::Add), Some("wr_num_add"));
+        assert_eq!(runtime_numeric_symbol(BinaryOp::Sub), Some("wr_num_sub"));
+        assert_eq!(runtime_numeric_symbol(BinaryOp::Mul), Some("wr_num_mul"));
+        assert_eq!(runtime_numeric_symbol(BinaryOp::Div), Some("wr_num_div"));
+        assert_eq!(runtime_numeric_symbol(BinaryOp::Mod), Some("wr_num_mod"));
+        assert_eq!(runtime_numeric_symbol(BinaryOp::Lt), Some("wr_num_lt"));
+        assert_eq!(runtime_numeric_symbol(BinaryOp::Gt), Some("wr_num_gt"));
+        assert_eq!(runtime_numeric_symbol(BinaryOp::Le), Some("wr_num_le"));
+        assert_eq!(runtime_numeric_symbol(BinaryOp::Ge), Some("wr_num_ge"));
+        assert_eq!(runtime_numeric_symbol(BinaryOp::Eq), None);
     }
 }

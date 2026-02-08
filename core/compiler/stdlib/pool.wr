@@ -1,17 +1,67 @@
 so:
     Actor pool helpers.
 
+
+to normalize_objective(objective: Integer) -> Integer:
+    if objective == 0 or objective == 1 or objective == 2 or objective == 3:
+        return objective
+    return 3
+
+
+to objective_base(objective: Integer, cpu_count: Integer) -> Integer:
+    normalized = normalize_objective(objective)
+    if normalized == 0:
+        return cpu_count
+    if normalized == 1:
+        return cpu_count * 2
+    if normalized == 2:
+        half = cpu_count / 2
+        if half < 1:
+            return 1
+        return half
+    return cpu_count
+
+
+to clamp_integer(value: Integer, min_value: Integer, max_value: Integer) -> Integer:
+    if value < min_value:
+        return min_value
+    if value > max_value:
+        return max_value
+    return value
+
+
 so: Compute an automatic pool size for an objective and bounds.
 to auto_size(objective: Integer, min: Integer, max: Integer, weight: Integer) -> Integer:
-    return __wr_pool_auto_size(objective, min, max, weight)
+    cpu_count = __wr_runtime_cpu_count()
+    mutable min_value = min
+    if min_value <= 0:
+        min_value = 1
+
+    mutable max_value = max
+    if max_value <= 0:
+        max_value = cpu_count
+    if max_value < min_value:
+        max_value = min_value
+
+    mutable weight_value = weight
+    if weight_value <= 0:
+        weight_value = 1
+
+    base = objective_base(objective, cpu_count)
+    weighted = base * weight_value
+
+    return clamp_integer(weighted, min_value, max_value)
+
 
 so: Return the current pool size.
 to size(handle: Any) -> Integer:
     return __wr_pool_size(handle)
 
+
 so: Return the next handle in round-robin order.
 to round_robin(handle: Any) -> Any:
     return __wr_pool_rr(handle)
+
 
 so: Return the current pool queue length.
 to queue_len(handle: Any) -> Integer:

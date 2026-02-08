@@ -2222,7 +2222,10 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
             SmolStr::new("__wr_runtime_configure"),
             BindingKind::Function,
         ),
-        (SmolStr::new("__wr_pool_auto_size"), BindingKind::Function),
+        (
+            SmolStr::new("__wr_runtime_cpu_count"),
+            BindingKind::Function,
+        ),
         (SmolStr::new("__wr_pool_size"), BindingKind::Function),
         (SmolStr::new("__wr_pool_rr"), BindingKind::Function),
         (SmolStr::new("__wr_pool_queue_len"), BindingKind::Function),

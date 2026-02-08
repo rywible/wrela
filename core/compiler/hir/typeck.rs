@@ -1015,14 +1015,9 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("__wr_pool_auto_size"),
+            SmolStr::new("__wr_runtime_cpu_count"),
             FunctionSig {
-                params: vec![
-                    (SmolStr::new("objective"), Type::Integer),
-                    (SmolStr::new("min"), Type::Integer),
-                    (SmolStr::new("max"), Type::Integer),
-                    (SmolStr::new("weight"), Type::Integer),
-                ],
+                params: vec![],
                 ret: Type::Integer,
                 kind: FunctionKind::Function,
             },

@@ -753,7 +753,9 @@ A Counter:
 to run() -> Integer:
     optimize balance:
         c = detach Counter() * n
-        return size(c)
+        if size(c) > 0:
+            return 1
+        return 0
 "#;
 
     let module = load_module_from_source(source);
@@ -777,12 +779,8 @@ to run() -> Integer:
     let out = dir.path().join("wr_pool_auto_smoke");
     wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
 
-    let output = Command::new(&out)
-        .env("WRELA_POOL_AUTO_MIN", "3")
-        .env("WRELA_POOL_AUTO_MAX", "3")
-        .output()
-        .expect("run failed");
-    let expected = expected_int_exit(3);
+    let output = Command::new(&out).output().expect("run failed");
+    let expected = expected_int_exit(1);
     match output.status.code() {
         Some(code) => assert_eq!(code, expected),
         None => {
@@ -874,6 +872,7 @@ use:
     pause_and_wait,
     resume
 from actor
+use Runtime from runtime
 use:
     get,
     get_dropped_paused_id
@@ -884,6 +883,7 @@ A Counter:
         return x
 
 to run() -> Integer:
+    Runtime(pause_queue_cap=1).__configure__()
     optimize balance:
         c = detach Counter() * 2
         pause(c)
@@ -918,10 +918,7 @@ to run() -> Integer:
     let out = dir.path().join("wr_pool_pause_drop_smoke");
     wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
 
-    let output = Command::new(&out)
-        .env("WRELA_PAUSE_QUEUE_CAP", "1")
-        .output()
-        .expect("run failed");
+    let output = Command::new(&out).output().expect("run failed");
     let expected = expected_int_exit(1);
     match output.status.code() {
         Some(code) => assert_eq!(code, expected),

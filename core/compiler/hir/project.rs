@@ -1160,7 +1160,7 @@ fn is_builtin_value_name(name: &SmolStr) -> bool {
             | "__wr_print"
             | "__wr_list_push"
             | "__wr_map_new"
-            | "__wr_pool_auto_size"
+            | "__wr_runtime_cpu_count"
             | "__wr_pool_size"
             | "__wr_pool_rr"
             | "__wr_pool_queue_len"

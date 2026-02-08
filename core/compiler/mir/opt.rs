@@ -353,7 +353,9 @@ fn convert_to_ssa(func: &mut MirFunction) {
         }
         for stmt in &block.stmts {
             for local in stmt_local_defs(stmt) {
-                def_blocks[local.0].push(block_idx);
+                if !def_blocks[local.0].contains(&block_idx) {
+                    def_blocks[local.0].push(block_idx);
+                }
             }
         }
     }

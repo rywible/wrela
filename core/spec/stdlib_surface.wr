@@ -10,7 +10,8 @@ so: Stdlib surface can evolve faster than core language rules.
 use:
     get_bytes_from_string,
     get_string_from_bytes,
-    get_length
+    get_length,
+    get_bytes_from_list
 from bytes
 
 use:
@@ -25,6 +26,18 @@ use:
     parse_integer,
     parse_float
 from parse
+
+use:
+    get_environment_variable_as_boolean,
+    get_environment_variable_as_integer,
+    load_environment_variables,
+    set_environment_variable
+from env
+
+use:
+    read_text,
+    write_text
+from fs
 
 
 so: ------------------------------------------------------------
@@ -66,8 +79,63 @@ to test_parse_integer_and_float() -> Nothing:
     assert value (parse_float("1.5") otherwise 0.0) == 1.5
 
 
+to test_parse_edge_cases() -> Nothing:
+    assert value (parse_integer("  -1_200  ") otherwise 0) == -1200
+    assert value (parse_integer("1__2") otherwise 9) == 9
+    assert value (parse_float("1.2e3") otherwise 0.0) == 1200.0
+    assert value (parse_float("1._2") otherwise 9.0) == 9.0
+
+
 so: ------------------------------------------------------------
-so: 5) Stdlib types and classes
+so: 5) Env helpers
+
+
+to test_env_boolean_and_integer_coercion() -> Nothing:
+    set_environment_variable("WRELA_STDLIB_BOOL", "on") otherwise nothing
+    set_environment_variable("WRELA_STDLIB_INT", "42") otherwise nothing
+    assert value (get_environment_variable_as_boolean("WRELA_STDLIB_BOOL") otherwise false) == true
+    assert value (get_environment_variable_as_integer("WRELA_STDLIB_INT") otherwise 0) == 42
+
+
+to test_env_invalid_coercions() -> Nothing:
+    set_environment_variable("WRELA_STDLIB_BAD_BOOL", "maybe") otherwise nothing
+    set_environment_variable("WRELA_STDLIB_BAD_INT", "12x") otherwise nothing
+    assert value (get_environment_variable_as_boolean("WRELA_STDLIB_BAD_BOOL") otherwise false) == false
+    assert value (get_environment_variable_as_integer("WRELA_STDLIB_BAD_INT") otherwise -1) == -1
+
+
+to test_dotenv_load_edge_cases() -> Nothing:
+    path = "target/stdlib-surface.env"
+    write_text(
+        path,
+        "# comment\nexport A=1\nB = 'two'\nC=\"three\"\nINVALID\n"
+    ) otherwise nothing
+
+    load_environment_variables(path) otherwise nothing
+
+    assert value (get_environment_variable_as_integer("A") otherwise 0) == 1
+    assert value (get_environment_variable_as_integer("B") otherwise 0) == 0
+    assert value (get_environment_variable_as_integer("C") otherwise 0) == 0
+
+
+so: ------------------------------------------------------------
+so: 6) FS UTF-8 behavior
+
+
+to test_fs_text_helpers_utf8_and_invalid_utf8() -> Nothing:
+    ok_path = "target/stdlib-surface-ok.txt"
+    bad_path = "target/stdlib-surface-bad.bin"
+
+    write_text(ok_path, "hello") otherwise nothing
+    assert value (read_text(ok_path) otherwise "") == "hello"
+
+    raw = get_bytes_from_list([255])
+    __wr_fs_write_bytes(bad_path, raw) otherwise nothing
+    assert value (read_text(bad_path) otherwise "invalid") == "invalid"
+
+
+so: ------------------------------------------------------------
+so: 7) Stdlib types and classes
 so:
 so: The following types/classes are part of the public stdlib surface.
 so: This spec does not attempt to exhaustively test them.
@@ -80,5 +148,5 @@ so: - Runtime (runtime configuration)
 so: - Pool helpers: auto_size, size, round_robin, queue_length
 so: - Actor helpers: mailbox_length, pause, resume, wait_until_resumed
 so: - Metrics helpers
-so: - Filesystem text helpers: read_text_file, write_text_file
-so: - Time helpers: now_nanoseconds, sleep_milliseconds
+so: - Filesystem text helpers: read_text, write_text
+so: - Time helpers: get_current_nanoseconds_since_epoch, sleep

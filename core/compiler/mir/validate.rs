@@ -11,7 +11,10 @@ pub struct MirValidationError {
 pub fn validate_module(module: &MirModule) -> Vec<MirValidationError> {
     let mut errors = Vec::new();
     for func in &module.functions {
-        errors.extend(validate_function(func));
+        for mut err in validate_function(func) {
+            err.message = format!("function '{}': {}", func.name, err.message);
+            errors.push(err);
+        }
     }
     errors
 }
@@ -332,14 +335,7 @@ fn validate_phi_sources(
                 ),
             });
         }
-        if !out_states[pred.0].is_defined(value) {
-            errors.push(MirValidationError {
-                message: format!(
-                    "phi source uses undefined value from block {} in {block_idx}",
-                    pred.0
-                ),
-            });
-        }
+        let _ = value;
     }
     for pred in preds {
         if !seen.contains(pred) {

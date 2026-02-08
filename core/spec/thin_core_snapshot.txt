@@ -1,4 +1,4 @@
-abi_version=3
+abi_version=4
 
 intrinsic=__wr_actor_mailbox_len
 intrinsic=__wr_actor_pause
@@ -24,12 +24,12 @@ intrinsic=__wr_map_set
 intrinsic=__wr_metrics_dropped_paused_id
 intrinsic=__wr_metrics_get
 intrinsic=__wr_metrics_messages_dropped_id
-intrinsic=__wr_pool_auto_size
 intrinsic=__wr_pool_queue_len
 intrinsic=__wr_pool_rr
 intrinsic=__wr_pool_size
 intrinsic=__wr_print
 intrinsic=__wr_runtime_configure
+intrinsic=__wr_runtime_cpu_count
 intrinsic=__wr_sleep_ms
 
 runtime_export=wr_actor_fire
@@ -92,7 +92,6 @@ runtime_export=wr_num_mul
 runtime_export=wr_num_neg
 runtime_export=wr_num_sub
 runtime_export=wr_pending_await
-runtime_export=wr_pool_auto_size
 runtime_export=wr_pool_new
 runtime_export=wr_pool_queue_len
 runtime_export=wr_pool_rr
@@ -109,6 +108,7 @@ runtime_export=wr_result_ok
 runtime_export=wr_result_unwrap
 runtime_export=wr_runtime_abi
 runtime_export=wr_runtime_configure
+runtime_export=wr_runtime_cpu_count
 runtime_export=wr_runtime_init
 runtime_export=wr_sleep_ms
 runtime_export=wr_str_concat

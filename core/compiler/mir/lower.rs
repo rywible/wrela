@@ -568,6 +568,9 @@ impl FunctionLowerer {
 
     fn lower_stmt_block(&mut self, body: &hir::Body, stmts: &[hir::Idx<HirStmt>]) {
         for stmt in stmts {
+            if !self.block_is_open(self.current_block) {
+                break;
+            }
             self.lower_stmt(body, *stmt);
         }
     }
@@ -965,8 +968,6 @@ impl FunctionLowerer {
                 };
                 self.emit_defers(body, span);
                 self.set_terminator(Terminator::Return { value, span });
-                let next = self.new_block();
-                self.current_block = next;
             }
             HirStmt::Break => {
                 if let Some(target) = self.loop_stack.last() {
@@ -974,8 +975,6 @@ impl FunctionLowerer {
                         target: target.break_target,
                         span,
                     });
-                    let next = self.new_block();
-                    self.current_block = next;
                 }
             }
             HirStmt::Continue => {
@@ -984,8 +983,6 @@ impl FunctionLowerer {
                         target: target.continue_target,
                         span,
                     });
-                    let next = self.new_block();
-                    self.current_block = next;
                 }
             }
         }
@@ -1578,14 +1575,18 @@ impl FunctionLowerer {
                     let then_block = self.new_block();
                     let else_block = self.new_block();
                     let join_block = self.new_block();
+                    let result_local = self.new_temp_local();
+                    self.push_stmt(MirStmt::Assign {
+                        place: Place::Local(result_local),
+                        value: Rvalue::Use(Value::Const(Literal::Nil)),
+                        span,
+                    });
                     self.set_terminator(Terminator::Branch {
                         cond: Value::Temp(ok_flag),
                         then_target: then_block,
                         else_target: else_block,
                         span,
                     });
-
-                    let result_local = self.new_temp_local();
 
                     self.current_block = then_block;
                     let ok_value = self.new_temp(MirType::Unknown);
@@ -1633,6 +1634,12 @@ impl FunctionLowerer {
                     } else {
                         (short_block, eval_block)
                     };
+                    let result_local = self.new_temp_local();
+                    self.push_stmt(MirStmt::Assign {
+                        place: Place::Local(result_local),
+                        value: Rvalue::Use(Value::Const(Literal::Nil)),
+                        span,
+                    });
 
                     self.set_terminator(Terminator::Branch {
                         cond: lhs_val.clone(),
@@ -1640,8 +1647,6 @@ impl FunctionLowerer {
                         else_target,
                         span,
                     });
-
-                    let result_local = self.new_temp_local();
 
                     self.current_block = short_block;
                     self.push_stmt(MirStmt::Assign {
@@ -2131,20 +2136,17 @@ impl FunctionLowerer {
         let class = self.class_target_info(body, target_expr)?;
         let objective = objective.unwrap_or(hir::Objective::Balance);
         let obj_code = objective_code(objective);
+        let resolved_size = compile_time_auto_pool_size(
+            obj_code,
+            min_size.unwrap_or(0),
+            max_size.unwrap_or(0),
+            weight.unwrap_or(0),
+        );
 
         let size_temp = self.new_temp(MirType::Integer);
         self.push_stmt(MirStmt::Assign {
             place: Place::Temp(size_temp),
-            value: Rvalue::Call {
-                kind: CallKind::Sync,
-                target: CallTarget::Function(SmolStr::new("__wr_pool_auto_size")),
-                args: vec![
-                    Value::Const(Literal::Integer(obj_code)),
-                    Value::Const(Literal::Integer(min_size.unwrap_or(0))),
-                    Value::Const(Literal::Integer(max_size.unwrap_or(0))),
-                    Value::Const(Literal::Integer(weight.unwrap_or(0))),
-                ],
-            },
+            value: Rvalue::Use(Value::Const(Literal::Integer(resolved_size))),
             span,
         });
 
@@ -2409,6 +2411,9 @@ impl FunctionLowerer {
     }
 
     fn maybe_call_configure(&mut self, class_name: &SmolStr, receiver: Value, span: TextRange) {
+        if self.name == SmolStr::new(format!("{}.{}", class_name, "__configure__")) {
+            return;
+        }
         let method_id = match self
             .class_method_ids
             .get(class_name)
@@ -2686,6 +2691,22 @@ impl FunctionLowerer {
             _ => false,
         }
     }
+}
+
+fn compile_time_auto_pool_size(objective: i64, min: i64, max: i64, weight: i64) -> i64 {
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1) as i64;
+    let base = match objective {
+        0 => cores,
+        1 => cores.saturating_mul(2),
+        2 => (cores / 2).max(1),
+        _ => cores,
+    };
+    let min = if min > 0 { min } else { 1 };
+    let max = if max > 0 { max } else { cores.max(1) };
+    let weight = if weight > 0 { weight } else { 1 };
+    base.saturating_mul(weight).clamp(min, max.max(min))
 }
 
 fn builtin_type_tag(name: &SmolStr) -> Option<TypeTagId> {
@@ -2978,7 +2999,7 @@ fn builtin_function_names() -> Vec<SmolStr> {
         SmolStr::new("__wr_map_set"),
         SmolStr::new("__wr_log"),
         SmolStr::new("__wr_log_configure"),
-        SmolStr::new("__wr_pool_auto_size"),
+        SmolStr::new("__wr_runtime_cpu_count"),
         SmolStr::new("__wr_pool_size"),
         SmolStr::new("__wr_pool_rr"),
         SmolStr::new("__wr_pool_queue_len"),

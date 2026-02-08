@@ -571,19 +571,11 @@ pub extern "C" fn wr_pool_new(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn wr_pool_auto_size(
-    objective: Value,
-    min: Value,
-    max: Value,
-    weight: Value,
-) -> Value {
-    let obj = int_value(objective).unwrap_or(0);
-    let min = int_value(min).unwrap_or(0);
-    let max = int_value(max).unwrap_or(0);
-    let weight = int_value(weight).unwrap_or(0);
-    Value::from_int(
-        config::pool_auto_size(config::normalize_objective(obj), min, max, weight) as i64,
-    )
+pub extern "C" fn wr_runtime_cpu_count() -> Value {
+    let count = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1) as i64;
+    Value::from_int(count.max(1))
 }
 
 #[unsafe(no_mangle)]
