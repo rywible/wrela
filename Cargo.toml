@@ -1,8 +1,8 @@
 [workspace]
 resolver = "3"
 members = [
-    "core/compiler",
-    "core/runtime",
+    "compiler",
+    "runtime",
 ]
 
 [profile.release]

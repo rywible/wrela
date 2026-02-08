@@ -171,7 +171,7 @@ fn extract_abi_version(source: &str, marker: &str) -> u32 {
 #[test]
 fn thin_core_snapshot_matches_compiler_and_runtime_surfaces() {
     let compiler_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let snapshot = parse_snapshot(&compiler_dir.join("../spec/thin_core_snapshot.txt"));
+    let snapshot = parse_snapshot(&compiler_dir.join("../language/spec/thin_core_snapshot.txt"));
     validate_symbol_classes(&snapshot)
         .unwrap_or_else(|err| panic!("invalid symbol class in thin-core snapshot: {err}"));
 
@@ -214,21 +214,21 @@ fn thin_core_snapshot_matches_compiler_and_runtime_surfaces() {
     );
     assert_eq!(
         snapshot.intrinsics, semantic_intrinsics,
-        "intrinsic surface changed; update core/spec/thin_core_snapshot.txt intentionally"
+        "intrinsic surface changed; update language/spec/thin_core_snapshot.txt intentionally"
     );
 
     let runtime_exports =
         extract_runtime_exports(&read(&compiler_dir.join("../runtime/src/lib.rs")));
     assert_eq!(
         snapshot.runtime_exports, runtime_exports,
-        "runtime export surface changed; update core/spec/thin_core_snapshot.txt intentionally"
+        "runtime export surface changed; update language/spec/thin_core_snapshot.txt intentionally"
     );
 }
 
 #[test]
 fn thin_core_abi_version_matches_snapshot() {
     let compiler_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let snapshot = parse_snapshot(&compiler_dir.join("../spec/thin_core_snapshot.txt"));
+    let snapshot = parse_snapshot(&compiler_dir.join("../language/spec/thin_core_snapshot.txt"));
 
     let runtime_abi = extract_abi_version(
         &read(&compiler_dir.join("../runtime/src/kernel.rs")),

@@ -2,8 +2,7 @@ so: Wrela Language Spec (Runnable)
     
     This file is the **authoritative, runnable spec** of the language as
     implemented in this repository. It is intentionally executable: every
-    `to test_*` function is discovered by `wrela test` (via a symlink from
-    `tests/spec/spec.wr`).
+    `to test_*` function is discovered by `wrela test language/spec/spec.wr`.
     
     This file is not a tutorial. It is a *contract* for current behavior.
     If behavior differs between this spec and the implementation, the
@@ -425,7 +424,7 @@ to test_identity_vs_value() -> Nothing:
     assert identity a == a
     assert identity a != b
 
-so: Stdlib surface tests live in `core/spec/stdlib_surface.wr`.
+so: Stdlib surface tests live alongside this spec in `language/spec`.
 
 
 so: ------------------------------------------------------------

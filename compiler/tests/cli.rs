@@ -162,6 +162,59 @@ fn cli_test_perf_debug() {
 }
 
 #[test]
+fn cli_test_single_file_runs() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("spec.wr");
+    std::fs::write(
+        &path,
+        "to helper() -> Integer:\n    return 1\n\nto test_basic() -> Nothing:\n    assert value helper() == 1\n",
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("test")
+        .arg(&path)
+        .output()
+        .expect("run wrela");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("spec::test_basic"));
+}
+
+#[test]
+fn cli_test_single_file_without_tests_is_ok() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("spec.wr");
+    std::fs::write(&path, "to helper() -> Integer:\n    return 1\n").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("test")
+        .arg(&path)
+        .output()
+        .expect("run wrela");
+    assert!(output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("no tests found"));
+    assert!(stderr.contains(&path.display().to_string()));
+}
+
+#[test]
+fn cli_test_rejects_non_wr_file_target() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("spec.txt");
+    std::fs::write(&path, "not wr").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("test")
+        .arg(&path)
+        .output()
+        .expect("run wrela");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("test file must have .wr extension"));
+}
+
+#[test]
 fn cli_thin_core_bootstrap_matrix() {
     let dir = tempfile::tempdir().expect("tempdir");
     let src = dir.path().join("src");

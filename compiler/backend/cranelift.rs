@@ -387,8 +387,8 @@ fn ensure_runtime_built() -> Result<PathBuf, CodegenError> {
             if let Some(path) = lib_path {
                 if path.exists() {
                     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-                    let workspace_root = manifest_dir.join("..").join("..");
-                    let runtime_root = workspace_root.join("core").join("runtime");
+                    let workspace_root = manifest_dir.join("..");
+                    let runtime_root = workspace_root.join("runtime");
                     if runtime_root.exists() && runtime_needs_rebuild(&path, &runtime_root) {
                         // Fall through to rebuild in dev contexts.
                     } else {
@@ -401,11 +401,11 @@ fn ensure_runtime_built() -> Result<PathBuf, CodegenError> {
 
     // 3. Development fallback (Cargo workspace)
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace_root = manifest_dir.join("..").join("..");
+    let workspace_root = manifest_dir.join("..");
     let profile = env::var("WRELA_RUNTIME_PROFILE").unwrap_or_else(|_| "debug".to_string());
     let lib_path = workspace_root.join("target").join(&profile).join(lib_name);
     if lib_path.exists()
-        && !runtime_needs_rebuild(&lib_path, &workspace_root.join("core").join("runtime"))
+        && !runtime_needs_rebuild(&lib_path, &workspace_root.join("runtime"))
     {
         return Ok(lib_path);
     }

@@ -296,14 +296,14 @@ fn main() {
             }
             let jobs = test_jobs.unwrap_or(1).max(1);
             let timeout = Duration::from_millis(test_timeout_ms.unwrap_or(5000).max(1));
-            let root = match resolve_test_root(path_arg.as_deref()) {
-                Ok(path) => path,
+            let target = match resolve_test_target(path_arg.as_deref()) {
+                Ok(target) => target,
                 Err(err) => {
                     eprintln!("error: {err}");
                     std::process::exit(EXIT_USAGE);
                 }
             };
-            let exit = run_tests(&root, jobs, timeout, output_format, perf_debug);
+            let exit = run_tests(&target, jobs, timeout, output_format, perf_debug);
             std::process::exit(exit);
         }
         _ => {
@@ -325,7 +325,7 @@ commands:\n\
   compile <path>        alias for build\n\
   run <path>            compile and run\n\
   dev <path>            watch and rebuild (polling)\n\
-  test [path]           discover and run tests\n\
+  test [path]           run tests from project root or a single .wr file\n\
 \n\
 options:\n\
   --prefix PATH         install/update prefix (default: $PREFIX or ~/.local/wrela)\n\
@@ -427,17 +427,26 @@ fn is_command(arg: &str) -> bool {
     )
 }
 
-fn resolve_test_root(path_arg: Option<&str>) -> Result<PathBuf, String> {
+enum TestTarget {
+    ProjectRoot(PathBuf),
+    SingleFile(PathBuf),
+}
+
+fn resolve_test_target(path_arg: Option<&str>) -> Result<TestTarget, String> {
     let path = PathBuf::from(path_arg.unwrap_or("."));
-    let candidate = if path.is_file() {
-        path.parent().map(|p| p.to_path_buf()).unwrap_or(path)
-    } else {
-        path
-    };
-    if candidate.is_dir() {
-        return Ok(candidate);
+    if path.is_file() {
+        if path.extension().and_then(|s| s.to_str()) == Some("wr") {
+            return Ok(TestTarget::SingleFile(path));
+        }
+        return Err(format!(
+            "test file must have .wr extension: {}",
+            path.display()
+        ));
     }
-    Err("test root must be a directory".to_string())
+    if path.is_dir() {
+        return Ok(TestTarget::ProjectRoot(path));
+    }
+    Err("test target must be an existing directory or .wr file".to_string())
 }
 
 #[derive(Clone)]
@@ -522,26 +531,69 @@ struct TestRun {
 }
 
 fn run_tests(
-    root: &Path,
+    target: &TestTarget,
     jobs: usize,
     timeout: Duration,
     output_format: OutputFormat,
     perf_debug: bool,
 ) -> i32 {
-    let src_root = root.join("src");
-    let tests_root = root.join("tests");
-    if !tests_root.is_dir() {
-        eprintln!("no tests found at {}", tests_root.display());
-        return EXIT_OK;
-    }
-
     let mut tests = Vec::new();
-    if let Err(err) = collect_tests(&tests_root, &src_root, &tests_root, &mut tests) {
-        eprintln!("test discovery error: {err}");
-        return EXIT_USAGE;
-    }
+    let (workspace_root, compile_root, tests_root, missing_path_msg) = match target {
+        TestTarget::ProjectRoot(root) => {
+            let src_root = root.join("src");
+            let tests_root = root.join("tests");
+            if !tests_root.is_dir() {
+                eprintln!("no tests found at {}", tests_root.display());
+                return EXIT_OK;
+            }
+            if let Err(err) = collect_tests(&tests_root, &tests_root, &mut tests) {
+                eprintln!("test discovery error: {err}");
+                return EXIT_USAGE;
+            }
+            (
+                root.clone(),
+                src_root,
+                Some(tests_root.clone()),
+                tests_root.display().to_string(),
+            )
+        }
+        TestTarget::SingleFile(path) => {
+            let Some(parent) = path.parent() else {
+                eprintln!("test discovery error: file has no parent directory");
+                return EXIT_USAGE;
+            };
+            let source = match fs::read_to_string(path) {
+                Ok(source) => source,
+                Err(err) => {
+                    eprintln!("test discovery error: {err}");
+                    return EXIT_USAGE;
+                }
+            };
+            let module_path = match module_path_for_single_file(path) {
+                Ok(module_path) => module_path,
+                Err(err) => {
+                    eprintln!("test discovery error: {err}");
+                    return EXIT_USAGE;
+                }
+            };
+            for func in extract_test_functions(&source) {
+                tests.push(TestCase {
+                    name: format!("{module_path}::{func}"),
+                    module_path: module_path.clone(),
+                    func_name: func,
+                });
+            }
+            (
+                parent.to_path_buf(),
+                parent.to_path_buf(),
+                None,
+                path.display().to_string(),
+            )
+        }
+    };
+
     if tests.is_empty() {
-        eprintln!("no tests found at {}", tests_root.display());
+        eprintln!("no tests found at {}", missing_path_msg);
         return EXIT_OK;
     }
 
@@ -555,8 +607,9 @@ fn run_tests(
     for _ in 0..jobs {
         let queue = std::sync::Arc::clone(&queue);
         let tx = tx.clone();
-        let src_root = src_root.clone();
-        let root = root.to_path_buf();
+        let compile_root = compile_root.clone();
+        let workspace_root = workspace_root.clone();
+        let tests_root = tests_root.clone();
         handles.push(std::thread::spawn(move || {
             loop {
                 let next = {
@@ -565,7 +618,14 @@ fn run_tests(
                 };
                 let Some(test) = next else { break };
                 let start = Instant::now();
-                let result = run_single_test(&root, &src_root, &test, timeout, output_format);
+                let result = run_single_test(
+                    &workspace_root,
+                    &compile_root,
+                    tests_root.as_deref(),
+                    &test,
+                    timeout,
+                    output_format,
+                );
                 let dur = start.elapsed();
                 let (ok, err, metrics) = match result {
                     Ok(run) => (true, String::new(), run.metrics),
@@ -651,17 +711,12 @@ fn percentile(samples: &[u128], pct: f64) -> u128 {
     samples[rank.min(n - 1)]
 }
 
-fn collect_tests(
-    root: &Path,
-    src_root: &Path,
-    tests_root: &Path,
-    out: &mut Vec<TestCase>,
-) -> io::Result<()> {
+fn collect_tests(root: &Path, tests_root: &Path, out: &mut Vec<TestCase>) -> io::Result<()> {
     for entry in fs::read_dir(root)? {
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
-            collect_tests(&path, src_root, tests_root, out)?;
+            collect_tests(&path, tests_root, out)?;
             continue;
         }
         if path.extension().and_then(|s| s.to_str()) != Some("wr") {
@@ -699,6 +754,16 @@ fn module_path_for_test_file(path: &Path, tests_root: &Path) -> io::Result<Strin
     Ok(format!("tests/{}", parts.join("/")))
 }
 
+fn module_path_for_single_file(path: &Path) -> io::Result<String> {
+    let stem = path.file_stem().and_then(|s| s.to_str()).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid test file name: {}", path.display()),
+        )
+    })?;
+    Ok(stem.to_string())
+}
+
 fn extract_test_functions(source: &str) -> Vec<String> {
     let mut out = Vec::new();
     for line in source.lines() {
@@ -717,13 +782,14 @@ fn extract_test_functions(source: &str) -> Vec<String> {
 }
 
 fn run_single_test(
-    root: &Path,
-    src_root: &Path,
+    workspace_root: &Path,
+    compile_root: &Path,
+    tests_root: Option<&Path>,
     test: &TestCase,
     timeout: Duration,
     output_format: OutputFormat,
 ) -> Result<TestRun, String> {
-    let temp_dir = root.join("target").join("wrela_tests");
+    let temp_dir = workspace_root.join("target").join("wrela_tests");
     let _ = fs::create_dir_all(&temp_dir);
     let file_stem = test
         .name
@@ -740,12 +806,11 @@ fn run_single_test(
     if let Err(err) = fs::write(&entry_path, entry) {
         return Err(format!("failed to write test entry: {err}"));
     }
-    let tests_root = root.join("tests");
-    let mir_module =
-        match compile_to_mir_with_root(&entry_path, src_root, Some(&tests_root), output_format) {
-            Ok(mir) => mir,
-            Err(_) => return Err("compile failed".to_string()),
-        };
+    let mir_module = match compile_to_mir_with_root(&entry_path, compile_root, tests_root, output_format)
+    {
+        Ok(mir) => mir,
+        Err(_) => return Err("compile failed".to_string()),
+    };
     if let Err(err) = wrela::backend::cranelift::compile_to_executable(&mir_module, &exe_path) {
         return Err(format!("codegen error: {}", err.0));
     }

@@ -641,7 +641,7 @@ impl ProjectLoader {
             used_external.insert(name.clone(), collect_used_external_names(&module.module));
         }
 
-        let stdlib_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stdlib");
+        let stdlib_root = stdlib_root();
         for module in self.modules.values() {
             let mut imported_names: HashMap<SmolStr, (SmolStr, TextRange)> = HashMap::new();
             let mut imported_set: HashSet<SmolStr> = HashSet::new();
@@ -817,7 +817,7 @@ impl ProjectLoader {
                 }
             }
         }
-        let stdlib_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stdlib");
+        let stdlib_root = stdlib_root();
         let canonical_name = canonical_stdlib_module(name);
         let mut rel = PathBuf::from(canonical_name.as_str());
         let candidate_wr = stdlib_root.join(rel.with_extension("wr"));
@@ -957,6 +957,13 @@ fn removed_core_stdlib_module_message(module_name: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+fn stdlib_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("language")
+        .join("stdlib")
 }
 
 fn canonical_stdlib_module_name(module_name: &str) -> Option<&'static str> {
