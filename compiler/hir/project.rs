@@ -1656,7 +1656,7 @@ mod tests {
         let entry_path = base.join("src").join("main.wr");
         write_temp(
             &entry_path,
-            "use parse_integer from parse\nuse get_environment_variable_or_default from env\n\nto run() -> Integer:\n    value = get_environment_variable_or_default(\"WRELA_ALIAS_TEST\", \"7\")\n    return parse_integer(value) otherwise 0\n",
+            "use try_to_parse_integer from parse\nuse get_environment_variable_or_default from env\n\nto run() -> Integer:\n    value = get_environment_variable_or_default(\"WRELA_ALIAS_TEST\", \"7\")\n    return try_to_parse_integer(value) otherwise 0\n",
         );
 
         let project = load_project(&entry_path);

@@ -51,6 +51,72 @@ fn cli_json_diagnostics() {
     let value: serde_json::Value = serde_json::from_str(first).expect("valid json");
     assert!(value.get("message").is_some());
     assert!(value.get("span").is_some());
+    assert!(value.get("code").is_none());
+    assert!(value.get("rule").is_none());
+    assert!(value.get("help").is_none());
+    assert!(value.get("suggestions").is_none());
+}
+
+#[test]
+fn cli_json_naming_diagnostics_include_metadata_fields_when_present() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("main.wr");
+    std::fs::write(
+        &path,
+        "to BadName() -> Integer:\n    let AlsoBad = 1\n    return AlsoBad\n",
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("check")
+        .arg("--format=json")
+        .arg(&path)
+        .output()
+        .expect("run wrela");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let diagnostics: Vec<serde_json::Value> = stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("valid json"))
+        .collect();
+
+    let naming: Vec<&serde_json::Value> = diagnostics
+        .iter()
+        .filter(|diag| {
+            diag.get("code")
+                .and_then(|value| value.as_str())
+                .is_some_and(|code| code.starts_with("lang::naming::"))
+        })
+        .collect();
+
+    if naming.is_empty() {
+        return;
+    }
+
+    for diag in naming {
+        let code = diag
+            .get("code")
+            .and_then(|value| value.as_str())
+            .expect("naming diagnostic has code");
+        assert!(code.starts_with("lang::naming::"));
+        assert!(
+            diag.get("rule")
+                .and_then(|value| value.as_str())
+                .is_some_and(|rule| !rule.is_empty())
+        );
+        assert!(diag.get("help").is_some());
+        let suggestions = diag
+            .get("suggestions")
+            .and_then(|value| value.as_array())
+            .expect("naming diagnostic has suggestions array");
+        for suggestion in suggestions {
+            assert!(suggestion.get("replacement").is_some());
+            assert!(suggestion.get("span").is_some());
+            assert!(suggestion.get("rationale").is_some());
+            assert!(suggestion.get("confidence").is_some());
+        }
+    }
 }
 
 #[test]
@@ -100,7 +166,7 @@ fn cli_check_success() {
 fn cli_check_without_run_is_ok() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("spec.wr");
-    std::fs::write(&path, "to helper() -> Integer:\n    return 1\n").unwrap();
+    std::fs::write(&path, "to compute_value() -> Integer:\n    return 1\n").unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
         .arg("check")
@@ -167,7 +233,7 @@ fn cli_test_single_file_runs() {
     let path = dir.path().join("spec.wr");
     std::fs::write(
         &path,
-        "to helper() -> Integer:\n    return 1\n\nto test_basic() -> Nothing:\n    assert value helper() == 1\n",
+        "to compute_value() -> Integer:\n    return 1\n\nto test_basic() -> Nothing:\n    assert value compute_value() == 1\n",
     )
     .unwrap();
 
@@ -185,7 +251,7 @@ fn cli_test_single_file_runs() {
 fn cli_test_single_file_without_tests_is_ok() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("spec.wr");
-    std::fs::write(&path, "to helper() -> Integer:\n    return 1\n").unwrap();
+    std::fs::write(&path, "to compute_value() -> Integer:\n    return 1\n").unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
         .arg("test")
@@ -271,4 +337,40 @@ fn cli_thin_core_bootstrap_matrix() {
         "test failed: {:?}",
         test.status.code()
     );
+}
+
+#[test]
+fn cli_exit_code_naming_error() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("src").join("main.wr");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "to helper() -> Integer:\n    return 1\n").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("check")
+        .arg(&path)
+        .output()
+        .expect("run wrela");
+    assert_eq!(output.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("must start with a verb"));
+}
+
+#[test]
+fn cli_naming_bypass_allows_main_and_configure() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("src").join("main.wr");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        "A Logger:\n    can __configure__() -> Nothing:\n        return\n\nto main() -> Integer:\n    return 0\n",
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("check")
+        .arg(&path)
+        .output()
+        .expect("run wrela");
+    assert!(output.status.success());
 }

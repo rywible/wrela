@@ -135,7 +135,7 @@ to mark_action_as_deferred(action: Map, delay_milliseconds: Integer) -> Map:
 
 
 so: Decide whether a wake action should wake now.
-check should_wake_task(action: Map) -> Boolean:
+check task_should_wake(action: Map) -> Boolean:
     value = get(action, "should_wake")
     match value:
         Boolean(flag):
@@ -157,7 +157,7 @@ to example_task_wake_flow() -> Integer:
     register_waiter(state)
     next_epoch = notify_waiters(state)
     action = create_wake_action(7, "readable")
-    if initial_epoch == 0 and next_epoch == 1 and (should_wake_task given action):
+    if initial_epoch == 0 and next_epoch == 1 and (task_should_wake given action):
         return 1
     return 0
 

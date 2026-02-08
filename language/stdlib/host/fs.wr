@@ -2,17 +2,17 @@ so:
     File system helpers.
 
 so: Read a UTF-8 text file into a String.
-to read_text(path: String) -> Result[String]:
+to try_to_read_text(path: String) -> Result[String]:
     match __wr_fs_read_bytes(path):
         Ok(bytes):
             text = __wr_bytes_to_string(bytes)
             match text:
                 String: return text
-                otherwise: return error "read_text: invalid utf8"
+                otherwise: return error "try_to_read_text: invalid utf8"
         Err(err):
             return error err
 
 so: Write a String to a UTF-8 text file.
-to write_text(path: String, contents: String) -> Result[Nothing]:
+to try_to_write_text(path: String, contents: String) -> Result[Nothing]:
     payload = __wr_bytes_from_string(contents)
     return __wr_fs_write_bytes(path, payload)

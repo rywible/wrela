@@ -9,7 +9,7 @@ from bytes
 use push from list
 
 
-check is_ascii_space(byte_value: Integer) -> Boolean:
+check byte_is_ascii_space(byte_value: Integer) -> Boolean:
     return byte_value == 9 or byte_value == 10 or byte_value == 13 or byte_value == 32
 
 
@@ -26,7 +26,7 @@ to trim_bytes(text: String) -> List[Integer]:
     mutable pending_whitespace = []
 
     for byte_value in raw_bytes:
-        if is_ascii_space given byte_value:
+        if byte_is_ascii_space given byte_value:
             if started:
                 push(pending_whitespace, byte_value)
         otherwise:
@@ -41,7 +41,7 @@ to trim_bytes(text: String) -> List[Integer]:
 
 
 so: Parse an Integer from a String.
-to parse_integer(text: String) -> Result[Integer]:
+to try_to_parse_integer(text: String) -> Result[Integer]:
     bytes = trim_bytes(text)
     mutable started = false
     mutable seen_digit = false
@@ -66,20 +66,20 @@ to parse_integer(text: String) -> Result[Integer]:
 
         if byte_value == 95:
             if not seen_digit or previous_was_underscore:
-                return error "parse_integer: invalid integer"
+                return error "try_to_parse_integer: invalid integer"
             previous_was_underscore = true
             continue
 
-        return error "parse_integer: invalid integer"
+        return error "try_to_parse_integer: invalid integer"
 
     if not seen_digit or previous_was_underscore:
-        return error "parse_integer: invalid integer"
+        return error "try_to_parse_integer: invalid integer"
 
     return value * sign
 
 
 so: Parse a Float from a String.
-to parse_float(text: String) -> Result[Float]:
+to try_to_parse_float(text: String) -> Result[Float]:
     bytes = trim_bytes(text)
 
     mutable started = false
@@ -107,17 +107,17 @@ to parse_float(text: String) -> Result[Float]:
 
         if byte_value == 95:
             if previous_was_underscore:
-                return error "parse_float: invalid float"
+                return error "try_to_parse_float: invalid float"
             if parsing_exponent and not seen_exponent_digit:
-                return error "parse_float: invalid float"
+                return error "try_to_parse_float: invalid float"
             if not parsing_exponent and not seen_digit:
-                return error "parse_float: invalid float"
+                return error "try_to_parse_float: invalid float"
             previous_was_underscore = true
             continue
 
         if not parsing_exponent and byte_value == 46:
             if seen_dot or seen_exponent or previous_was_underscore:
-                return error "parse_float: invalid float"
+                return error "try_to_parse_float: invalid float"
             started = true
             seen_dot = true
             previous_was_underscore = false
@@ -125,7 +125,7 @@ to parse_float(text: String) -> Result[Float]:
 
         if byte_value == 101 or byte_value == 69:
             if seen_exponent or previous_was_underscore or not seen_digit:
-                return error "parse_float: invalid float"
+                return error "try_to_parse_float: invalid float"
             seen_exponent = true
             parsing_exponent = true
             just_entered_exponent = true
@@ -141,7 +141,7 @@ to parse_float(text: String) -> Result[Float]:
 
         digit = digit_value(byte_value)
         if digit < 0:
-            return error "parse_float: invalid float"
+            return error "try_to_parse_float: invalid float"
 
         started = true
         previous_was_underscore = false
@@ -160,10 +160,10 @@ to parse_float(text: String) -> Result[Float]:
             whole = whole * 10 + digit
 
     if not seen_digit or previous_was_underscore:
-        return error "parse_float: invalid float"
+        return error "try_to_parse_float: invalid float"
 
     if parsing_exponent and (not seen_exponent_digit or just_entered_exponent):
-        return error "parse_float: invalid float"
+        return error "try_to_parse_float: invalid float"
 
     mutable value = whole + 0.0
     value = value + (fractional / fractional_scale)

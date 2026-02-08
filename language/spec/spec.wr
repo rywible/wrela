@@ -204,7 +204,7 @@ to test_match_pattern_type_check() -> Nothing:
 
 
 to test_match_pattern_result() -> Nothing:
-    result = returns_result(flag=true)
+    result = try_to_return_result(is_flag=true)
     mutable out = 0
     match result:
         Ok(v): out = v
@@ -250,10 +250,10 @@ so: ------------------------------------------------------------
     - Use `StoredBoolean` for retrieved truth data and convert with `resolve <expr>` when you need branch-ready `Boolean`.
 
 
-check is_positive(value: Integer) -> Boolean:
+check value_is_positive(value: Integer) -> Boolean:
     return value > 0
 
-check is_between(value: Integer, min: Integer, max: Integer) -> Boolean:
+check value_is_between(value: Integer, min: Integer, max: Integer) -> Boolean:
     return value >= min and value <= max
 
 A EvenCounter:
@@ -263,9 +263,9 @@ A EvenCounter:
         return its.value % 2 == 0
 
 to test_checks_and_given() -> Nothing:
-    assert value (is_positive given 3) == true
-    assert value (is_positive given -2) == false
-    assert value (is_between given value=2, min=1, max=3) == true
+    assert value (value_is_positive given 3) == true
+    assert value (value_is_positive given -2) == false
+    assert value (value_is_between given value=2, min=1, max=3) == true
     c = EvenCounter(value=2)
     assert value (c.is_even given) == true
 
@@ -276,11 +276,11 @@ A StoredBoolean:
     has:
         value: Boolean = false
 
-to read_flag() -> StoredBoolean:
+to create_stored_boolean_flag() -> StoredBoolean:
     return true
 
 to test_resolve_stored_boolean() -> Nothing:
-    flag = read_flag()
+    flag = create_stored_boolean_flag()
     if resolve flag:
         assert value true == true
 
@@ -311,9 +311,9 @@ A Whale:
     has:
         mutable name: String
         age: Integer
-    can greet() -> String:
+    can show_greeting() -> String:
         return "hi {its.name}"
-    can rename(new_name: String) -> Nothing:
+    can update_name(new_name: String) -> Nothing:
         its.name = new_name
     derives next_age() -> Integer:
         return its.age + 1
@@ -322,21 +322,21 @@ A Whale:
 A BoxSelf:
     has:
         value: Integer
-    can self() -> BoxSelf:
+    can return_self() -> BoxSelf:
         return it
 
 
 to test_class_fields_and_methods() -> Nothing:
     whale = Whale(name="Moby", age=7)
-    assert value whale.greet() == "hi Moby"
-    whale.rename(new_name="Blue")
-    assert value whale.greet() == "hi Blue"
+    assert value whale.show_greeting() == "hi Moby"
+    whale.update_name(new_name="Blue")
+    assert value whale.show_greeting() == "hi Blue"
     assert value whale.next_age == 8
 
 
 to test_return_it() -> Nothing:
     b = BoxSelf(value=1)
-    assert identity b.self() == b
+    assert identity b.return_self() == b
 
 
 A Defaults:
@@ -379,11 +379,11 @@ A Box[T]:
         value: T
 
 A Printable:
-    must show() -> String
+    must show_value() -> String
 
 A Foo:
     is a Printable
-    can show() -> String:
+    can show_value() -> String:
         return "foo"
 
 A Counter:
@@ -392,10 +392,10 @@ A Counter:
     can add(delta: Integer) -> Nothing:
         its.value += delta
 
-to show(p: Printable) -> String:
-    return p.show()
+to show_printable(p: Printable) -> String:
+    return p.show_value()
 
-to bump(counter: Counter) -> Nothing:
+to add_deferred_bump(counter: Counter) -> Nothing:
     defer counter.add(1)
     defer counter.add(2)
     return
@@ -413,11 +413,11 @@ to test_generic_class_instantiation() -> Nothing:
     assert value b.value == 7
 
 to test_interface_dispatch() -> Nothing:
-    assert value show(p=Foo()) == "foo"
+    assert value show_printable(p=Foo()) == "foo"
 
 to test_defer_lifo() -> Nothing:
     c = Counter(value=0)
-    bump(counter=c)
+    add_deferred_bump(counter=c)
     assert value c.value == 3
 
 
@@ -530,28 +530,28 @@ so: ------------------------------------------------------------
       - explicitly captured with `capture name = expr`
 
 
-to returns_result(flag: Boolean) -> Result[Integer]:
-    if flag:
+to try_to_return_result(is_flag: Boolean) -> Result[Integer]:
+    if is_flag:
         return 7
     return error "bad"
 
 
 to test_result_otherwise_ok() -> Nothing:
-    value = returns_result(flag=true) otherwise 0
+    value = try_to_return_result(is_flag=true) otherwise 0
     assert value value == 7
 
 
 to test_result_otherwise_err() -> Nothing:
-    value = returns_result(flag=false) otherwise 9
+    value = try_to_return_result(is_flag=false) otherwise 9
     assert value value == 9
 
 
 to test_result_ignore_result() -> Nothing:
-    ignore result returns_result(flag=true)
+    ignore result try_to_return_result(is_flag=true)
 
 
 to test_result_capture() -> Nothing:
-    capture r = returns_result(flag=true)
+    capture r = try_to_return_result(is_flag=true)
     match r:
         Ok(v): assert value v == 7
         Err(_): assert value false == true
@@ -562,13 +562,13 @@ A AuthError is either:
     MissingToken
     InvalidToken(reason: String)
 
-to parse_token(token: String) -> Result[Integer, AuthError]:
+to try_to_parse_token(token: String) -> Result[Integer, AuthError]:
     if token == "":
         return error AuthError.MissingToken
     return 1
 
 to test_custom_error_handling() -> Nothing:
-    result = parse_token(token="")
+    result = try_to_parse_token(token="")
     match result:
         Ok(_): assert value false == true
         Err(e):
@@ -708,7 +708,7 @@ so: ------------------------------------------------------------
     Example errors (canonical):
     - unhandled Result:
         to f() -> Nothing:
-            returns_result(flag=true)
+            try_to_return_result(flag=true)
     - shadowing:
         to f() -> Nothing:
             x = 1

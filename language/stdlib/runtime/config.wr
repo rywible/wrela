@@ -70,7 +70,7 @@ A Runtime:
         return value * sign
 
     so: Resolve a boolean field from environment, defaulting to explicit value.
-    checks resolve_boolean_from_environment(explicit_value: Boolean, env_key: String) -> Boolean:
+    checks is_boolean_enabled_from_environment(explicit_value: Boolean, env_key: String) -> Boolean:
         raw = __wr_env_get(env_key)
         match raw:
             String(text):
@@ -92,13 +92,13 @@ A Runtime:
                 return explicit_value
 
     so: Resolve defaults, apply env overrides, and normalize runtime configuration.
-    can from_environment() -> Runtime:
+    can create_runtime_from_environment() -> Runtime:
         cpu_count = __wr_runtime_cpu_count()
 
-        deterministic_value = its.resolve_boolean_from_environment given its.deterministic, "WRELA_RUNTIME_DETERMINISTIC"
-        debug_actor_value = its.resolve_boolean_from_environment given its.debug_actor, "WRELA_RUNTIME_DEBUG_ACTOR"
-        diagnostics_enabled_value = its.resolve_boolean_from_environment given its.diagnostics_enabled, "WRELA_RUNTIME_DIAGNOSTICS_ENABLED"
-        reactor_disable_io_uring_value = its.resolve_boolean_from_environment given its.reactor_disable_io_uring, "WRELA_DISABLE_IO_URING"
+        deterministic_value = its.is_boolean_enabled_from_environment given its.deterministic, "WRELA_RUNTIME_DETERMINISTIC"
+        debug_actor_value = its.is_boolean_enabled_from_environment given its.debug_actor, "WRELA_RUNTIME_DEBUG_ACTOR"
+        diagnostics_enabled_value = its.is_boolean_enabled_from_environment given its.diagnostics_enabled, "WRELA_RUNTIME_DIAGNOSTICS_ENABLED"
+        reactor_disable_io_uring_value = its.is_boolean_enabled_from_environment given its.reactor_disable_io_uring, "WRELA_DISABLE_IO_URING"
 
         actor_mailbox_cap_value = at_least(
             its.resolve_number_from_environment(
@@ -245,11 +245,11 @@ A Runtime:
 
     so: Apply normalized runtime configuration.
     can __configure__() -> Nothing:
-        normalized = its.from_environment()
+        normalized = its.create_runtime_from_environment()
         return __wr_runtime_configure(normalized)
 
 
 so: Build a Runtime from defaults with environment overrides.
-to from_environment() -> Runtime:
+to create_runtime_from_environment() -> Runtime:
     runtime = Runtime()
-    return runtime.from_environment()
+    return runtime.create_runtime_from_environment()

@@ -377,6 +377,30 @@ struct JsonDiag {
     message: String,
     path: String,
     span: JsonSpan,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rule: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    help: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    suggestions: Option<Vec<JsonSuggestion>>,
+}
+
+#[derive(Serialize)]
+struct JsonSuggestion {
+    replacement: String,
+    span: JsonSpan,
+    rationale: String,
+    confidence: f64,
+}
+
+#[derive(Default)]
+struct JsonDiagMetadata {
+    code: Option<String>,
+    rule: Option<String>,
+    help: Option<String>,
+    suggestions: Option<Vec<JsonSuggestion>>,
 }
 
 fn emit_diag(
@@ -404,20 +428,62 @@ fn emit_diag(
 }
 
 fn emit_json_diag(kind: &str, message: String, span: SourceSpan, path: String) {
+    emit_json_diag_with_metadata(kind, message, span, path, None);
+}
+
+fn emit_json_diag_with_metadata(
+    kind: &str,
+    message: String,
+    span: SourceSpan,
+    path: String,
+    metadata: Option<JsonDiagMetadata>,
+) {
     let span = JsonSpan {
         offset: span.offset(),
         len: span.len(),
     };
+    let metadata = metadata.unwrap_or_default();
     let json = JsonDiag {
         kind: kind.to_string(),
         message,
         path,
         span,
+        code: metadata.code,
+        rule: metadata.rule,
+        help: metadata.help,
+        suggestions: metadata.suggestions,
     };
     println!(
         "{}",
         serde_json::to_string(&json).unwrap_or_else(|_| "{}".to_string())
     );
+}
+
+fn naming_rule_from_code(code: &str) -> Option<String> {
+    let (_, rule) = code.split_once("lang::naming::")?;
+    Some(rule.to_string())
+}
+
+fn extract_json_metadata(diag: &dyn Diagnostic) -> Option<JsonDiagMetadata> {
+    let code = diag.code().map(|value| value.to_string())?;
+    let rule = naming_rule_from_code(&code)?;
+    let help = diag.help().map(|value| value.to_string());
+    Some(JsonDiagMetadata {
+        code: Some(code),
+        rule: Some(rule),
+        help,
+        suggestions: Some(Vec::new()),
+    })
+}
+
+fn emit_json_diag_for_diagnostic(
+    kind: &str,
+    diag: &dyn Diagnostic,
+    span: SourceSpan,
+    path: String,
+) {
+    let metadata = extract_json_metadata(diag);
+    emit_json_diag_with_metadata(kind, diag.to_string(), span, path, metadata);
 }
 
 fn is_command(arg: &str) -> bool {
@@ -907,6 +973,18 @@ fn compile_to_mir_with_root(
         );
         return Err(EXIT_TYPE);
     }
+    let naming_errors = hir::naming::check_module(&module, &type_info);
+    if let Some(err) = naming_errors.into_iter().next() {
+        emit_diag(
+            output_format,
+            "error",
+            err.to_string(),
+            err.primary_span(),
+            source_name.clone(),
+            source.clone(),
+        );
+        return Err(EXIT_TYPE);
+    }
     let mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
     let mut had_errors = false;
     for err in mir::validate::validate_module(&mir_module) {
@@ -1020,9 +1098,9 @@ fn compile_to_mir(
                 eprintln!("{report:?}");
             }
             OutputFormat::Json => {
-                emit_json_diag(
+                emit_json_diag_for_diagnostic(
                     "error",
-                    err.to_string(),
+                    &err,
                     err.primary_span(),
                     source_name.clone(),
                 );
@@ -1038,9 +1116,9 @@ fn compile_to_mir(
                 eprintln!("warning: {report:?}");
             }
             OutputFormat::Json => {
-                emit_json_diag(
+                emit_json_diag_for_diagnostic(
                     "warning",
-                    warn.to_string(),
+                    &warn,
                     warn.primary_span(),
                     source_name.clone(),
                 );
@@ -1051,6 +1129,27 @@ fn compile_to_mir(
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     stage("typeck", &start);
     for err in type_errors {
+        match output_format {
+            OutputFormat::Pretty => {
+                let report = Report::new(err)
+                    .with_source_code(NamedSource::new(source_name.clone(), source.clone()));
+                eprintln!("{report:?}");
+            }
+            OutputFormat::Json => {
+                emit_json_diag_for_diagnostic(
+                    "error",
+                    &err,
+                    err.primary_span(),
+                    source_name.clone(),
+                );
+            }
+        }
+        had_errors = true;
+    }
+
+    let naming_errors = hir::naming::check_module(&module, &type_info);
+    stage("naming", &start);
+    for err in naming_errors {
         match output_format {
             OutputFormat::Pretty => {
                 let report = Report::new(err)
