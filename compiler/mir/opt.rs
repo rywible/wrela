@@ -1,18 +1,21 @@
+use crate::hir::checkir::CheckIrModule;
 use crate::hir::{BinaryOp, Literal, UnaryOp};
 use crate::mir::analysis::{CallGraph, FunctionTypes, analyze_module};
+use crate::mir::effect_ir;
 use crate::mir::ir::{
     AllocKind, BasicBlock, CallKind, CallTarget, Local, LocalId, MirFunction, MirModule, MirType,
     Place, Rvalue, Stmt, SwitchCase, Terminator, TypeTagId, Value,
 };
+use crate::mir::rewrite::{RewriteBudget, RewriteReport, mine_admit_and_apply};
 use rowan::TextRange;
 use smol_str::SmolStr;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 pub fn run_function_passes(func: &mut MirFunction) {
-    run_function_passes_with_types(func, None);
+    run_function_passes_with(func, None);
 }
 
-pub fn run_function_passes_with_types(func: &mut MirFunction, types: Option<&FunctionTypes>) {
+pub fn run_function_passes_with(func: &mut MirFunction, types: Option<&FunctionTypes>) {
     devirtualize_calls(func, types);
     specialize_container_ops(func, types);
     if std::env::var("WRELA_DISABLE_ESCAPE_ANALYSIS").is_err() {
@@ -22,7 +25,9 @@ pub fn run_function_passes_with_types(func: &mut MirFunction, types: Option<&Fun
     simplify_branches(func);
     dead_code_elim(func);
     convert_to_ssa(func);
-    if std::env::var("WRELA_DISABLE_RESULT_PEEPHOLE").is_err() {
+    if std::env::var("WRELA_DISABLE_RESULT_ANNIHILATION").is_err()
+        && std::env::var("WRELA_DISABLE_RESULT_PEEPHOLE").is_err()
+    {
         result_peephole(func);
     }
     scalar_replace_literals(func);
@@ -30,7 +35,18 @@ pub fn run_function_passes_with_types(func: &mut MirFunction, types: Option<&Fun
     insert_rc(func);
 }
 
+pub fn run_function_passes_with_types(func: &mut MirFunction, types: Option<&FunctionTypes>) {
+    run_function_passes_with(func, types);
+}
+
 pub fn run_module_passes(module: &mut MirModule) {
+    let _ = run_module_passes_with_rulepack(module, None);
+}
+
+pub fn run_module_passes_with_rulepack(
+    module: &mut MirModule,
+    checkir: Option<&CheckIrModule>,
+) -> RewriteReport {
     if std::env::var("WRELA_DISABLE_INTERFACE_DEVIRTUALIZE").is_err() {
         devirtualize_interface_dispatch_calls(module);
     }
@@ -38,6 +54,18 @@ pub fn run_module_passes(module: &mut MirModule) {
     clone_small_hot_functions(module, &analysis.call_graph);
     let analysis = analyze_module(module);
     tree_shake_unused_functions(module, &analysis.call_graph);
+
+    let max_rules = std::env::var("WRELA_REWRITE_MAX_RULES")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .unwrap_or(8);
+    let budget = RewriteBudget {
+        max_steps: std::env::var("WRELA_REWRITE_BUDGET")
+            .ok()
+            .and_then(|raw| raw.parse::<usize>().ok())
+            .unwrap_or(50_000),
+    };
+    mine_admit_and_apply(module, checkir, budget, max_rules)
 }
 
 #[derive(Debug, Clone)]
@@ -961,57 +989,7 @@ fn rename_terminator(term: &mut Terminator, stacks: &[Vec<LocalId>]) {
 }
 
 fn result_peephole(func: &mut MirFunction) {
-    for block in &mut func.blocks {
-        let mut result_sources: HashMap<usize, (bool, Value)> = HashMap::new();
-        for stmt in &mut block.stmts {
-            if let Stmt::Assign { place, value, .. } = stmt {
-                if let Place::Temp(temp) = place {
-                    match value {
-                        Rvalue::ResultOk { value } => {
-                            result_sources.insert(temp.0, (true, value.clone()));
-                        }
-                        Rvalue::ResultErr { value } => {
-                            result_sources.insert(temp.0, (false, value.clone()));
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-
-        for stmt in &mut block.stmts {
-            if let Stmt::Assign { value, .. } = stmt {
-                match value {
-                    Rvalue::ResultUnwrap { value: inner } => {
-                        if let Value::Temp(temp) = inner {
-                            if let Some((is_ok, src)) = result_sources.get(&temp.0) {
-                                if *is_ok {
-                                    *value = Rvalue::Use(src.clone());
-                                }
-                            }
-                        }
-                    }
-                    Rvalue::ResultErrUnwrap { value: inner } => {
-                        if let Value::Temp(temp) = inner {
-                            if let Some((is_ok, src)) = result_sources.get(&temp.0) {
-                                if !*is_ok {
-                                    *value = Rvalue::Use(src.clone());
-                                }
-                            }
-                        }
-                    }
-                    Rvalue::ResultIsOk { value: inner } => {
-                        if let Value::Temp(temp) = inner {
-                            if let Some((is_ok, _)) = result_sources.get(&temp.0) {
-                                *value = Rvalue::Use(Value::Const(Literal::Boolean(*is_ok)));
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
+    effect_ir::annihilate_result_wrappers(func);
 }
 
 fn scalar_replace_literals(func: &mut MirFunction) {

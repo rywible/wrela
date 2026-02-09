@@ -381,6 +381,40 @@ fn main() {
             );
             std::process::exit(exit);
         }
+        "matrix" => {
+            if trace {
+                eprintln!("build: command matrix");
+            }
+            if !program_args.is_empty() {
+                eprintln!("error: unexpected extra arguments");
+                std::process::exit(EXIT_USAGE);
+            }
+            let workspace_root = match path_arg {
+                Some(path) => PathBuf::from(path),
+                None => match env::current_dir() {
+                    Ok(path) => path,
+                    Err(err) => {
+                        eprintln!("error: failed to resolve current directory: {err}");
+                        std::process::exit(EXIT_USAGE);
+                    }
+                },
+            };
+            if !workspace_root.is_dir() {
+                eprintln!(
+                    "error: matrix target must be an existing directory: {}",
+                    workspace_root.display()
+                );
+                std::process::exit(EXIT_USAGE);
+            }
+            let runs = perf_runs.unwrap_or(1).max(1);
+            let exit = run_matrix(
+                &workspace_root,
+                runs,
+                perf_gate_path.as_deref(),
+                perf_max_regression_pct.unwrap_or(5.0),
+            );
+            std::process::exit(exit);
+        }
         _ => {
             print_help();
             std::process::exit(EXIT_USAGE);
@@ -402,6 +436,7 @@ commands:\n\
   dev <path>            watch and rebuild (polling)\n\
   test [path]           run tests from project root or a single .wr file\n\
   perf [path]           run perf harness and write baseline JSON\n\
+  matrix [path]         run workspace test/spec/perf matrix and write evidence bundle\n\
 \n\
 options:\n\
   --prefix PATH         install/update prefix (default: $PREFIX or ~/.local/wrela)\n\
@@ -570,8 +605,215 @@ fn emit_json_diag_for_diagnostic(
 fn is_command(arg: &str) -> bool {
     matches!(
         arg,
-        "init" | "update" | "check" | "build" | "compile" | "run" | "dev" | "test" | "perf"
+        "init"
+            | "update"
+            | "check"
+            | "build"
+            | "compile"
+            | "run"
+            | "dev"
+            | "test"
+            | "perf"
+            | "matrix"
     )
+}
+
+#[derive(Debug, Serialize)]
+struct MatrixEvidenceBundle {
+    version: u32,
+    generated_at_unix_ms: u128,
+    workspace_root: String,
+    success: bool,
+    exit_code: i32,
+    perf_runs: usize,
+    perf_baseline_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    perf_gate_path: Option<String>,
+    steps: Vec<MatrixStepEvidence>,
+}
+
+#[derive(Debug, Serialize)]
+struct MatrixStepEvidence {
+    name: String,
+    command: Vec<String>,
+    cwd: String,
+    started_at_unix_ms: u128,
+    duration_ms: u128,
+    exit_code: i32,
+    success: bool,
+    stdout_log: String,
+    stderr_log: String,
+}
+
+struct MatrixStepSpec<'a> {
+    name: &'a str,
+    program: &'a Path,
+    args: Vec<String>,
+}
+
+fn run_matrix(
+    workspace_root: &Path,
+    perf_runs: usize,
+    perf_gate_path: Option<&str>,
+    perf_max_regression_pct: f64,
+) -> i32 {
+    let artifact_dir = workspace_root.join(".artifacts").join("matrix");
+    if let Err(err) = fs::create_dir_all(&artifact_dir) {
+        eprintln!(
+            "matrix error: failed to create {}: {}",
+            artifact_dir.display(),
+            err
+        );
+        return EXIT_CODEGEN;
+    }
+
+    let generated_at_unix_ms = now_unix_ms();
+    let bundle_path = artifact_dir.join(format!("matrix-{}.json", generated_at_unix_ms));
+    let latest_path = artifact_dir.join("matrix-latest.json");
+    let perf_baseline_path = artifact_dir.join("perf-baseline.json");
+
+    let cargo_bin = env::var("WRELA_MATRIX_CARGO_BIN").unwrap_or_else(|_| "cargo".to_string());
+    let self_bin = env::var("WRELA_MATRIX_SELF_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| env::current_exe().unwrap_or_else(|_| PathBuf::from("wrela")));
+
+    let mut perf_args = vec![
+        "perf".to_string(),
+        format!("--runs={perf_runs}"),
+        format!("--baseline-out={}", perf_baseline_path.display()),
+        "language/spec/spec.wr".to_string(),
+    ];
+    if let Some(path) = perf_gate_path {
+        perf_args.push(format!("--perf-gate={path}"));
+        perf_args.push(format!(
+            "--perf-max-regression-pct={}",
+            perf_max_regression_pct
+        ));
+    }
+
+    let steps = vec![
+        MatrixStepSpec {
+            name: "cargo-test-workspace",
+            program: Path::new(&cargo_bin),
+            args: vec!["test".to_string(), "--workspace".to_string()],
+        },
+        MatrixStepSpec {
+            name: "spec-tests",
+            program: &self_bin,
+            args: vec!["test".to_string(), "language/spec/spec.wr".to_string()],
+        },
+        MatrixStepSpec {
+            name: "perf-harness",
+            program: &self_bin,
+            args: perf_args,
+        },
+    ];
+
+    let mut evidence = MatrixEvidenceBundle {
+        version: 1,
+        generated_at_unix_ms,
+        workspace_root: workspace_root.display().to_string(),
+        success: false,
+        exit_code: EXIT_CODEGEN,
+        perf_runs,
+        perf_baseline_path: perf_baseline_path.display().to_string(),
+        perf_gate_path: perf_gate_path.map(|s| s.to_string()),
+        steps: Vec::new(),
+    };
+
+    let mut final_exit = EXIT_OK;
+    for (index, step) in steps.into_iter().enumerate() {
+        let result = run_matrix_step(index + 1, workspace_root, &artifact_dir, step);
+        let exit_code = result.exit_code;
+        let success = result.success;
+        evidence.steps.push(result);
+        if !success {
+            final_exit = if exit_code == EXIT_OK {
+                EXIT_CODEGEN
+            } else {
+                exit_code
+            };
+            break;
+        }
+    }
+
+    evidence.success = final_exit == EXIT_OK;
+    evidence.exit_code = final_exit;
+    if let Err(err) = write_matrix_bundle(&bundle_path, &latest_path, &evidence) {
+        eprintln!("matrix error: failed to write evidence bundle: {err}");
+        return EXIT_CODEGEN;
+    }
+    println!(
+        "matrix evidence: {}",
+        latest_path.canonicalize().unwrap_or(latest_path).display()
+    );
+
+    final_exit
+}
+
+fn run_matrix_step(
+    index: usize,
+    workspace_root: &Path,
+    artifact_dir: &Path,
+    step: MatrixStepSpec<'_>,
+) -> MatrixStepEvidence {
+    println!("matrix: {}", step.name);
+    let started_at_unix_ms = now_unix_ms();
+    let started = Instant::now();
+    let mut command = Command::new(step.program);
+    command.current_dir(workspace_root).args(&step.args);
+    let output = command.output();
+    let duration_ms = started.elapsed().as_millis();
+    let stdout_log = artifact_dir.join(format!("{index:02}-{}.stdout.log", step.name));
+    let stderr_log = artifact_dir.join(format!("{index:02}-{}.stderr.log", step.name));
+    let mut exit_code = EXIT_CODEGEN;
+    let mut success = false;
+
+    match output {
+        Ok(output) => {
+            let _ = fs::write(&stdout_log, &output.stdout);
+            let _ = fs::write(&stderr_log, &output.stderr);
+            exit_code = output.status.code().unwrap_or(EXIT_CODEGEN);
+            success = output.status.success();
+        }
+        Err(err) => {
+            let msg = format!("failed to execute {}: {err}\n", step.program.display());
+            let _ = fs::write(&stderr_log, msg);
+            let _ = fs::write(&stdout_log, []);
+        }
+    }
+
+    MatrixStepEvidence {
+        name: step.name.to_string(),
+        command: std::iter::once(step.program.display().to_string())
+            .chain(step.args)
+            .collect(),
+        cwd: workspace_root.display().to_string(),
+        started_at_unix_ms,
+        duration_ms,
+        exit_code,
+        success,
+        stdout_log: stdout_log.display().to_string(),
+        stderr_log: stderr_log.display().to_string(),
+    }
+}
+
+fn write_matrix_bundle(
+    bundle_path: &Path,
+    latest_path: &Path,
+    evidence: &MatrixEvidenceBundle,
+) -> Result<(), String> {
+    let payload = serde_json::to_vec_pretty(evidence).map_err(|err| err.to_string())?;
+    fs::write(bundle_path, &payload).map_err(|err| err.to_string())?;
+    fs::write(latest_path, payload).map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+fn now_unix_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::from_secs(0))
+        .as_millis()
 }
 
 enum TestTarget {
@@ -1721,6 +1963,15 @@ fn compile_to_mir(
         return Err(EXIT_TYPE);
     }
 
+    let check_ir = hir::checkir::extract_module(&module);
+    if std::env::var("WRELA_CHECK_ORACLE_TRACE").is_ok() {
+        eprintln!(
+            "check-oracle: extracted={} skipped={}",
+            check_ir.checks.len(),
+            check_ir.skipped.len()
+        );
+    }
+
     let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
     stage("mir_lower", &start);
     if emit_mir {
@@ -1731,7 +1982,18 @@ fn compile_to_mir(
         let types = analysis.type_map.function(&func.name);
         mir::opt::run_function_passes_with_types(func, types);
     }
-    mir::opt::run_module_passes(&mut mir_module);
+    let rewrite_report =
+        mir::opt::run_module_passes_with_rulepack(&mut mir_module, Some(&check_ir));
+    if std::env::var("WRELA_CHECK_ORACLE_TRACE").is_ok() {
+        eprintln!(
+            "rewrite: mined={} admitted={} applied={} steps={} exhausted={}",
+            rewrite_report.mined,
+            rewrite_report.admitted,
+            rewrite_report.applied,
+            rewrite_report.steps,
+            rewrite_report.budget_exhausted
+        );
+    }
     stage("mir_opt", &start);
     if emit_mir_opt {
         println!("{:#?}", mir_module);

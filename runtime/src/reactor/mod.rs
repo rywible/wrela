@@ -7,7 +7,7 @@ mod macos_kqueue;
 pub mod task {
     use std::ptr;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicU8, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicU64, AtomicUsize, Ordering};
     use std::thread;
     use std::time::{Duration, Instant};
 

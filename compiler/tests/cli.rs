@@ -1,5 +1,8 @@
 use std::process::Command;
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 #[test]
 fn cli_version() {
     let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
@@ -442,4 +445,159 @@ fn cli_naming_bypass_allows_main_and_configure() {
         .output()
         .expect("run wrela");
     assert!(output.status.success());
+}
+
+#[cfg(unix)]
+fn write_executable(path: &std::path::Path, body: &str) {
+    std::fs::write(path, body).expect("write script");
+    let mut perms = std::fs::metadata(path).expect("metadata").permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(path, perms).expect("chmod");
+}
+
+#[cfg(unix)]
+fn setup_matrix_stubs(root: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    let cargo_stub = root.join("cargo-stub.sh");
+    let wrlea_stub = root.join("wrela-stub.sh");
+    write_executable(
+        &cargo_stub,
+        r#"#!/bin/sh
+set -eu
+echo "cargo:$*" >> "$WRELA_MATRIX_STUB_LOG"
+if [ "${WRELA_MATRIX_FAIL_STEP:-}" = "cargo" ]; then
+  exit 9
+fi
+exit 0
+"#,
+    );
+    write_executable(
+        &wrlea_stub,
+        r#"#!/bin/sh
+set -eu
+echo "wrela:$*" >> "$WRELA_MATRIX_STUB_LOG"
+cmd="${1:-}"
+if [ "${WRELA_MATRIX_FAIL_STEP:-}" = "$cmd" ]; then
+  exit 7
+fi
+if [ "$cmd" = "perf" ]; then
+  baseline=""
+  for arg in "$@"; do
+    case "$arg" in
+      --baseline-out=*)
+        baseline="${arg#--baseline-out=}"
+        ;;
+    esac
+  done
+  if [ -n "$baseline" ]; then
+    mkdir -p "$(dirname "$baseline")"
+    printf '{"summary":{"sample_count":1,"compile_throughput_tests_per_sec":1.0,"runtime_p50_ns":1,"runtime_p95_ns":1,"runtime_p99_ns":1,"allocs_per_request":0.0,"rc_inc":0,"rc_dec":0,"rc_ops_total":0,"dispatch_hit_ratio":1.0,"metrics":{"messages_sent":0,"messages_dropped":0,"pending_resolved":0,"pending_dropped":0,"mailbox_high_water":0,"rc_inc":0,"rc_dec":0,"alloc_list":0,"alloc_map":0,"alloc_string":0,"alloc_bytes":0,"alloc_result":0,"alloc_pending":0,"mailbox_enqueue_ok":0,"mailbox_enqueue_fail":0,"mailbox_dequeue":0,"sched_dispatched":0,"sched_skipped_no_credit":0,"abi_typed_lane":0,"abi_boxed_lane":0}}}' > "$baseline"
+  fi
+fi
+exit 0
+"#,
+    );
+    (cargo_stub, wrlea_stub)
+}
+
+#[cfg(unix)]
+#[test]
+fn cli_matrix_writes_evidence_bundle() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let log_path = dir.path().join("matrix-stub.log");
+    let (cargo_stub, wrlea_stub) = setup_matrix_stubs(dir.path());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .current_dir(dir.path())
+        .arg("matrix")
+        .env("WRELA_MATRIX_CARGO_BIN", &cargo_stub)
+        .env("WRELA_MATRIX_SELF_BIN", &wrlea_stub)
+        .env("WRELA_MATRIX_STUB_LOG", &log_path)
+        .output()
+        .expect("run matrix");
+    assert!(
+        output.status.success(),
+        "matrix failed: code={:?}\nstdout={}\nstderr={}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let latest = dir.path().join(".artifacts/matrix/matrix-latest.json");
+    assert!(latest.exists());
+    let json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&latest).expect("read bundle")).expect("bundle json");
+    assert_eq!(json.get("success").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(json.get("exit_code").and_then(|v| v.as_i64()), Some(0));
+    assert_eq!(
+        json.get("steps")
+            .and_then(|v| v.as_array())
+            .map(|steps| steps.len()),
+        Some(3)
+    );
+    let baseline = json
+        .get("perf_baseline_path")
+        .and_then(|v| v.as_str())
+        .expect("baseline path");
+    assert!(std::path::Path::new(baseline).exists());
+
+    let invocations = std::fs::read_to_string(log_path).expect("read invocation log");
+    assert!(invocations.contains("cargo:test --workspace"));
+    assert!(invocations.contains("wrela:test language/spec/spec.wr"));
+    assert!(invocations.contains("wrela:perf --runs=1"));
+}
+
+#[cfg(unix)]
+#[test]
+fn cli_matrix_forwards_perf_gate_flags() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let log_path = dir.path().join("matrix-stub.log");
+    let gate = dir.path().join("gate-baseline.json");
+    std::fs::write(&gate, "{}").expect("write gate");
+    let (cargo_stub, wrlea_stub) = setup_matrix_stubs(dir.path());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .current_dir(dir.path())
+        .arg("matrix")
+        .arg(format!("--perf-gate={}", gate.display()))
+        .arg("--perf-max-regression-pct=12.5")
+        .env("WRELA_MATRIX_CARGO_BIN", &cargo_stub)
+        .env("WRELA_MATRIX_SELF_BIN", &wrlea_stub)
+        .env("WRELA_MATRIX_STUB_LOG", &log_path)
+        .output()
+        .expect("run matrix");
+    assert!(output.status.success());
+    let invocations = std::fs::read_to_string(log_path).expect("read invocation log");
+    assert!(invocations.contains(&format!("--perf-gate={}", gate.display())));
+    assert!(invocations.contains("--perf-max-regression-pct=12.5"));
+}
+
+#[cfg(unix)]
+#[test]
+fn cli_matrix_stops_on_failed_step_and_persists_evidence() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let log_path = dir.path().join("matrix-stub.log");
+    let (cargo_stub, wrlea_stub) = setup_matrix_stubs(dir.path());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .current_dir(dir.path())
+        .arg("matrix")
+        .env("WRELA_MATRIX_CARGO_BIN", &cargo_stub)
+        .env("WRELA_MATRIX_SELF_BIN", &wrlea_stub)
+        .env("WRELA_MATRIX_STUB_LOG", &log_path)
+        .env("WRELA_MATRIX_FAIL_STEP", "test")
+        .output()
+        .expect("run matrix");
+    assert!(!output.status.success());
+
+    let latest = dir.path().join(".artifacts/matrix/matrix-latest.json");
+    assert!(latest.exists());
+    let json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&latest).expect("read bundle")).expect("bundle json");
+    assert_eq!(json.get("success").and_then(|v| v.as_bool()), Some(false));
+    assert_eq!(
+        json.get("steps")
+            .and_then(|v| v.as_array())
+            .map(|steps| steps.len()),
+        Some(2)
+    );
 }

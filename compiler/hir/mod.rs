@@ -1,5 +1,6 @@
 pub mod arena;
 pub mod body;
+pub mod checkir;
 pub mod def;
 pub mod lower;
 pub mod naming;
@@ -8,6 +9,7 @@ pub mod typeck;
 
 pub use arena::*;
 pub use body::*;
+pub use checkir::*;
 pub use def::*;
 pub use naming::{NamingError, check_module as check_naming_module};
 pub use semantic::*;

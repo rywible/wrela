@@ -1,0 +1,28 @@
+name: matrix
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run Matrix Lane
+        run: cargo run -p wrela -- matrix --runs=1
+
+      - name: Upload Matrix Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: matrix-artifacts
+          path: .artifacts/matrix
+          if-no-files-found: warn

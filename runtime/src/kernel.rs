@@ -628,7 +628,11 @@ pub(crate) mod actor {
         drop_message(msg);
     }
 
-    fn process_message_node(mailbox: &Mailbox, method_cache: &mut MethodCache, node: MessageNodeHandle) {
+    fn process_message_node(
+        mailbox: &Mailbox,
+        method_cache: &mut MethodCache,
+        node: MessageNodeHandle,
+    ) {
         let msg = message_node_into_message(node);
         process_message(mailbox, method_cache, msg);
     }
@@ -1289,7 +1293,9 @@ pub(crate) mod actor {
             let mailbox = (*actor).mailbox.clone();
             mailbox.closed.store(true, Ordering::Release);
             mailbox.work_notify.notify_waiters();
-            mailbox.space_notify_inflight.store(false, Ordering::Release);
+            mailbox
+                .space_notify_inflight
+                .store(false, Ordering::Release);
             mailbox.space_notify.notify_waiters();
             mailbox.pause_notify.notify_waiters();
             // Keep actor allocation/instance alive for process lifetime to avoid
@@ -1601,7 +1607,10 @@ pub(crate) mod actor {
     }
 
     fn maybe_notify_space(mailbox: &Mailbox) {
-        let _ = mailbox.space_notify_epoch.fetch_add(SPACE_NOTIFY_COALESCE_WINDOW, Ordering::AcqRel) + 1;
+        let _ = mailbox
+            .space_notify_epoch
+            .fetch_add(SPACE_NOTIFY_COALESCE_WINDOW, Ordering::AcqRel)
+            + 1;
         if !mailbox.space_notify_inflight.swap(true, Ordering::AcqRel) {
             mailbox.space_notify.notify_one();
         }
@@ -1612,7 +1621,10 @@ pub(crate) mod actor {
     }
 
     fn enqueue_messages_ref(mailbox: &Mailbox, msgs: Vec<Message>) {
-        let nodes = msgs.into_iter().map(message_node_from_message).collect::<Vec<_>>();
+        let nodes = msgs
+            .into_iter()
+            .map(message_node_from_message)
+            .collect::<Vec<_>>();
         enqueue_node_batch_ref(mailbox, &nodes);
     }
 
@@ -1658,7 +1670,9 @@ pub(crate) mod actor {
                     mailbox.work_notify.notify_one();
                 }
                 if idx >= nodes.len() {
-                    mailbox.space_notify_inflight.store(false, Ordering::Release);
+                    mailbox
+                        .space_notify_inflight
+                        .store(false, Ordering::Release);
                     return;
                 }
             } else {
@@ -1683,7 +1697,9 @@ pub(crate) mod actor {
                 let remaining = deadline.saturating_duration_since(now);
                 let wait_for = remaining.min(Duration::from_micros(250));
                 let _ = mailbox.space_notify.wait_timeout(observed, wait_for);
-                mailbox.space_notify_inflight.store(false, Ordering::Release);
+                mailbox
+                    .space_notify_inflight
+                    .store(false, Ordering::Release);
             }
         }
     }
@@ -2419,7 +2435,11 @@ pub(crate) mod actor {
             let before = mailbox.work_notify.snapshot();
             enqueue_node_batch_ref(mailbox.as_ref(), &nodes);
             let after = mailbox.work_notify.snapshot();
-            assert_eq!(after, before + 1, "batch flush should notify work edge once");
+            assert_eq!(
+                after,
+                before + 1,
+                "batch flush should notify work edge once"
+            );
             while let Some(node) = mailbox.queue.pop_node() {
                 drop_message_node(node);
                 mailbox_dec(mailbox.as_ref());
