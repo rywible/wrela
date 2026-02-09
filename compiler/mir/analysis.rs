@@ -69,7 +69,7 @@ fn record_calls(func: &MirFunction, graph: &mut CallGraph) {
             let Rvalue::Call { target, .. } = value else {
                 continue;
             };
-            if let Some(name) = call_target_name(target) {
+            for name in call_target_names(target) {
                 graph
                     .edges
                     .entry(func.name.clone())
@@ -81,10 +81,21 @@ fn record_calls(func: &MirFunction, graph: &mut CallGraph) {
     }
 }
 
-fn call_target_name(target: &CallTarget) -> Option<SmolStr> {
+fn call_target_names(target: &CallTarget) -> Vec<SmolStr> {
     match target {
-        CallTarget::Function(name) => Some(name.clone()),
-        CallTarget::Method { method, .. } => Some(method.clone()),
-        CallTarget::Indirect(_) => None,
+        CallTarget::Function(name) => vec![name.clone()],
+        CallTarget::Method { method, .. } => vec![method.clone()],
+        CallTarget::GuardedInterface {
+            fast_paths,
+            fallback,
+        } => {
+            let mut out = Vec::with_capacity(fast_paths.len() + 1);
+            for (_tag, func) in fast_paths {
+                out.push(func.clone());
+            }
+            out.push(fallback.clone());
+            out
+        }
+        CallTarget::Indirect(_) => Vec::new(),
     }
 }

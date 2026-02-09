@@ -7,6 +7,7 @@ use crate::mir::ir::*;
 use rowan::TextRange;
 use smol_str::SmolStr;
 use std::collections::{HashMap, HashSet};
+use std::env;
 
 pub fn lower_module(module: &Module) -> MirModule {
     lower_module_with_types(module, None)
@@ -367,6 +368,141 @@ to run() -> Nothing:
         assert!(build_list >= 1, "expected BuildList for default list");
         assert!(build_map >= 1, "expected BuildMap for default map");
     }
+
+    #[test]
+    fn test_lower_integer_range_for_uses_typed_induction_fast_path() {
+        let input = "\
+to run() -> Integer:
+    start = 1
+    stop = 4
+    mutable total = 0
+    for i in start...stop:
+        total += i
+    return total
+";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = hir_lower::lower(root);
+        let (_type_errors, type_info) = typeck::check_module_with_info(&module);
+        let mir_module = lower_module_with_types(&module, Some(&type_info));
+        let func = mir_module
+            .functions
+            .iter()
+            .find(|func| func.name == "run")
+            .expect("missing run");
+
+        assert!(
+            func.locals
+                .iter()
+                .any(|local| local.name.as_str() == "i" && local.ty == MirType::Integer),
+            "expected typed loop variable for integer range",
+        );
+        assert!(
+            func.locals
+                .iter()
+                .any(|local| local.name.starts_with("$range_idx") && local.ty == MirType::Integer),
+            "expected typed integer induction local",
+        );
+        assert!(
+            func.locals
+                .iter()
+                .any(|local| local.name.starts_with("$range_step") && local.ty == MirType::Integer),
+            "expected typed integer step local",
+        );
+
+        for block in &func.blocks {
+            for stmt in &block.stmts {
+                assert!(
+                    !matches!(stmt, MirStmt::IterInit { .. } | MirStmt::IterNext { .. }),
+                    "typed integer range loop should not use iterator protocol",
+                );
+                if let MirStmt::Assign { value, .. } = stmt {
+                    assert!(
+                        !matches!(
+                            value,
+                            Rvalue::Binary {
+                                op: crate::hir::BinaryOp::Range,
+                                ..
+                            }
+                        ),
+                        "typed integer range loop should not materialize range object",
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_lower_member_field_ops_emit_slot_hints() {
+        let input = "\
+A Counter:
+    has:
+        mutable value: Integer
+        mutable other: Integer
+
+    can bump() -> Nothing:
+        its.value += 1
+        its.other = 4
+
+to run() -> Integer:
+    c = Counter(value=1, other=2)
+    c.value += 3
+    return c.other
+";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = hir_lower::lower(root);
+        let (_type_errors, type_info) = typeck::check_module_with_info(&module);
+        let mir_module = lower_module_with_types(&module, Some(&type_info));
+
+        let mut saw_get_value_slot = false;
+        let mut saw_get_other_slot = false;
+        let mut saw_set_value_slot = false;
+        let mut saw_set_other_slot = false;
+
+        for func in &mir_module.functions {
+            for block in &func.blocks {
+                for stmt in &block.stmts {
+                    match stmt {
+                        MirStmt::Assign {
+                            value:
+                                Rvalue::GetField {
+                                    field,
+                                    slot: Some(slot),
+                                    ..
+                                },
+                            ..
+                        } if field.as_str() == "value" && *slot == 0 => saw_get_value_slot = true,
+                        MirStmt::Assign {
+                            value:
+                                Rvalue::GetField {
+                                    field,
+                                    slot: Some(slot),
+                                    ..
+                                },
+                            ..
+                        } if field.as_str() == "other" && *slot == 1 => saw_get_other_slot = true,
+                        MirStmt::SetField {
+                            field,
+                            slot: Some(slot),
+                            ..
+                        } if field.as_str() == "value" && *slot == 0 => saw_set_value_slot = true,
+                        MirStmt::SetField {
+                            field,
+                            slot: Some(slot),
+                            ..
+                        } if field.as_str() == "other" && *slot == 1 => saw_set_other_slot = true,
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        assert!(saw_get_value_slot, "expected slot-hinted get for value");
+        assert!(saw_get_other_slot, "expected slot-hinted get for other");
+        assert!(saw_set_value_slot, "expected slot-hinted set for value");
+        assert!(saw_set_other_slot, "expected slot-hinted set for other");
+    }
 }
 
 struct LoopTarget {
@@ -477,6 +613,14 @@ impl FunctionLowerer {
             .and_then(|info| info.expr_types.get(&expr_id.into_raw()))
             .map(mir_type_from_type)
             .unwrap_or(MirType::Unknown)
+    }
+
+    fn proven_range_induction_type(lhs_ty: &MirType, rhs_ty: &MirType) -> Option<MirType> {
+        match (lhs_ty, rhs_ty) {
+            (MirType::Integer, MirType::Integer) => Some(MirType::Integer),
+            (MirType::Float, MirType::Float) => Some(MirType::Float),
+            _ => None,
+        }
     }
 
     fn new_temp_for_expr(&mut self, expr_id: hir::Idx<Expr>) -> TempId {
@@ -997,26 +1141,118 @@ impl FunctionLowerer {
         loop_body: &[hir::Idx<hir::Stmt>],
         span: TextRange,
     ) -> bool {
-        let lhs_ty = self.expr_type(lhs);
-        let rhs_ty = self.expr_type(rhs);
-        let is_numeric = matches!(lhs_ty, MirType::Integer | MirType::Float)
-            || matches!(rhs_ty, MirType::Integer | MirType::Float);
-        if !is_numeric {
+        if env::var_os("WRELA_DISABLE_TYPED_RANGE_FASTPATH").is_some() {
             return false;
         }
+        let lhs_ty = self.expr_type(lhs);
+        let rhs_ty = self.expr_type(rhs);
+        let Some(induction_ty) = Self::proven_range_induction_type(&lhs_ty, &rhs_ty) else {
+            return false;
+        };
 
         let start_val = self.lower_expr(body, lhs);
         let end_val = self.lower_expr(body, rhs);
+        let constant_int_bounds = match (&body.exprs[lhs], &body.exprs[rhs]) {
+            (
+                Expr::Literal(hir::Literal::Integer(start)),
+                Expr::Literal(hir::Literal::Integer(end)),
+            ) if matches!(induction_ty, MirType::Integer) => Some((*start, *end)),
+            _ => None,
+        };
+
+        if let Some((start, end)) = constant_int_bounds {
+            let idx_local = self.new_local(
+                SmolStr::new(format!("$range_idx{}", self.locals.len())),
+                true,
+                induction_ty.clone(),
+            );
+            let loop_var = self.new_local(name.clone(), false, induction_ty.clone());
+            let head_block = self.new_block();
+            let body_block = self.new_block();
+            let exit_block = self.new_block();
+            self.push_stmt(MirStmt::Assign {
+                place: Place::Local(idx_local),
+                value: Rvalue::Use(start_val.clone()),
+                span,
+            });
+            self.set_terminator(Terminator::Jump {
+                target: head_block,
+                span,
+            });
+
+            self.current_block = head_block;
+            let cond_temp = self.new_temp(MirType::Boolean);
+            let cond_op = if start <= end {
+                BinaryOp::Le
+            } else {
+                BinaryOp::Ge
+            };
+            self.push_stmt(MirStmt::Assign {
+                place: Place::Temp(cond_temp),
+                value: Rvalue::Binary {
+                    op: cond_op,
+                    lhs: Value::Local(idx_local),
+                    rhs: end_val.clone(),
+                },
+                span,
+            });
+            self.set_terminator(Terminator::Branch {
+                cond: Value::Temp(cond_temp),
+                then_target: body_block,
+                else_target: exit_block,
+                span,
+            });
+
+            self.current_block = body_block;
+            self.enter_scope();
+            self.declare_local(name.clone(), loop_var);
+            self.push_stmt(MirStmt::Assign {
+                place: Place::Local(loop_var),
+                value: Rvalue::Use(Value::Local(idx_local)),
+                span,
+            });
+            self.loop_stack.push(LoopTarget {
+                break_target: exit_block,
+                continue_target: head_block,
+            });
+            self.lower_stmt_block(body, loop_body);
+            self.loop_stack.pop();
+            self.exit_scope();
+            if self.block_is_open(self.current_block) {
+                let step_temp = self.new_temp(induction_ty);
+                self.push_stmt(MirStmt::Assign {
+                    place: Place::Temp(step_temp),
+                    value: Rvalue::Binary {
+                        op: BinaryOp::Add,
+                        lhs: Value::Local(idx_local),
+                        rhs: Value::Const(Literal::Integer(if start <= end { 1 } else { -1 })),
+                    },
+                    span,
+                });
+                self.push_stmt(MirStmt::Assign {
+                    place: Place::Local(idx_local),
+                    value: Rvalue::Use(Value::Temp(step_temp)),
+                    span,
+                });
+                self.set_terminator(Terminator::Jump {
+                    target: head_block,
+                    span,
+                });
+            }
+
+            self.current_block = exit_block;
+            return true;
+        }
 
         let idx_local = self.new_local(
             SmolStr::new(format!("$range_idx{}", self.locals.len())),
             true,
-            MirType::Unknown,
+            induction_ty.clone(),
         );
         let step_local = self.new_local(
             SmolStr::new(format!("$range_step{}", self.locals.len())),
             true,
-            MirType::Unknown,
+            induction_ty.clone(),
         );
         let step_is_pos_local = self.new_local(
             SmolStr::new(format!("$range_pos{}", self.locals.len())),
@@ -1024,7 +1260,7 @@ impl FunctionLowerer {
             MirType::Boolean,
         );
 
-        let loop_var = self.new_local(name.clone(), false, MirType::Unknown);
+        let loop_var = self.new_local(name.clone(), false, induction_ty.clone());
 
         let is_pos_temp = self.new_temp(MirType::Boolean);
         self.push_stmt(MirStmt::Assign {
@@ -1052,13 +1288,12 @@ impl FunctionLowerer {
             span,
         });
 
-        let step_value = if matches!(lhs_ty, MirType::Float) || matches!(rhs_ty, MirType::Float) {
+        let step_value = if matches!(induction_ty, MirType::Float) {
             Value::Const(Literal::Float(1.0))
         } else {
             Value::Const(Literal::Integer(1))
         };
-        let neg_step_value = if matches!(lhs_ty, MirType::Float) || matches!(rhs_ty, MirType::Float)
-        {
+        let neg_step_value = if matches!(induction_ty, MirType::Float) {
             Value::Const(Literal::Float(-1.0))
         } else {
             Value::Const(Literal::Integer(-1))
@@ -1166,7 +1401,7 @@ impl FunctionLowerer {
         self.loop_stack.pop();
         self.exit_scope();
         if self.block_is_open(self.current_block) {
-            let step_temp = self.new_temp(MirType::Unknown);
+            let step_temp = self.new_temp(induction_ty);
             self.push_stmt(MirStmt::Assign {
                 place: Place::Temp(step_temp),
                 value: Rvalue::Binary {
@@ -1414,6 +1649,7 @@ impl FunctionLowerer {
                                 value: Rvalue::GetField {
                                     base: value.clone(),
                                     field: field.clone(),
+                                    slot: Some(idx as u32),
                                 },
                                 span,
                             });
@@ -1519,6 +1755,7 @@ impl FunctionLowerer {
                         | BinaryOp::DivAssign
                 ) {
                     if let Expr::Member { object, member, .. } = &body.exprs[*lhs] {
+                        let slot = self.member_slot_hint(*object, member);
                         let base = self.lower_expr(body, *object);
                         let rhs_val = self.lower_expr(body, *rhs);
                         let new_val = if *op == BinaryOp::Assign {
@@ -1530,6 +1767,7 @@ impl FunctionLowerer {
                                 value: Rvalue::GetField {
                                     base: base.clone(),
                                     field: member.clone(),
+                                    slot,
                                 },
                                 span,
                             });
@@ -1555,6 +1793,7 @@ impl FunctionLowerer {
                         self.push_stmt(MirStmt::SetField {
                             base,
                             field: member.clone(),
+                            slot,
                             value: new_val.clone(),
                             span,
                         });
@@ -1747,12 +1986,14 @@ impl FunctionLowerer {
                     }
                 }
                 let base = self.lower_expr(body, *object);
+                let slot = self.member_slot_hint(*object, member);
                 let temp = self.new_temp_for_expr(expr_id);
                 self.push_stmt(MirStmt::Assign {
                     place: Place::Temp(temp),
                     value: Rvalue::GetField {
                         base,
                         field: member.clone(),
+                        slot,
                     },
                     span,
                 });
@@ -1808,6 +2049,7 @@ impl FunctionLowerer {
                                     .get(&class_name)
                                     .and_then(|fields| fields.get(idx).cloned())
                                     .unwrap_or_default(),
+                                slot: Some(idx as u32),
                                 value,
                                 span,
                             });
@@ -1824,6 +2066,7 @@ impl FunctionLowerer {
                                         .get(&class_name)
                                         .and_then(|fields| fields.get(idx).cloned())
                                         .unwrap_or_default(),
+                                    slot: Some(idx as u32),
                                     value,
                                     span,
                                 });
@@ -2014,6 +2257,7 @@ impl FunctionLowerer {
                                     .get(name)
                                     .and_then(|fields| fields.get(idx).cloned())
                                     .unwrap_or_default(),
+                                slot: Some(idx as u32),
                                 value,
                                 span,
                             });
@@ -2339,6 +2583,7 @@ impl FunctionLowerer {
                 self.push_stmt(MirStmt::SetField {
                     base: Value::Temp(temp),
                     field: class.fields.get(idx).cloned().unwrap_or_default(),
+                    slot: Some(idx as u32),
                     value: value.clone(),
                     span,
                 });
@@ -2356,6 +2601,7 @@ impl FunctionLowerer {
                     self.push_stmt(MirStmt::SetField {
                         base: Value::Temp(temp),
                         field: class.fields.get(idx).cloned().unwrap_or_default(),
+                        slot: Some(idx as u32),
                         value,
                         span,
                     });
@@ -2650,6 +2896,16 @@ impl FunctionLowerer {
         self.class_method_ids
             .get(class_name)
             .and_then(|methods| methods.get(method).copied())
+    }
+
+    fn member_slot_hint(&self, object_expr: hir::Idx<Expr>, member: &SmolStr) -> Option<u32> {
+        let MirType::Named(class_name) = self.expr_type(object_expr) else {
+            return None;
+        };
+        self.class_fields
+            .get(&class_name)
+            .and_then(|fields| fields.iter().position(|field| field == member))
+            .map(|idx| idx as u32)
     }
 
     fn resolve_class_init_target(
@@ -3022,6 +3278,9 @@ fn builtin_function_names() -> Vec<SmolStr> {
         SmolStr::new("__wr_actor_pause"),
         SmolStr::new("__wr_actor_resume"),
         SmolStr::new("__wr_actor_pause_wait"),
+        SmolStr::new("__wr_actor_fire_burst_begin"),
+        SmolStr::new("__wr_actor_fire_burst_end"),
+        SmolStr::new("__wr_actor_fire_burst_abort"),
         SmolStr::new("__wr_metrics_get"),
         SmolStr::new("__wr_metrics_dropped_paused_id"),
         SmolStr::new("__wr_metrics_messages_dropped_id"),

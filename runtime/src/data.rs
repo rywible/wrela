@@ -1,13 +1,21 @@
 pub(crate) mod arena {
     use std::cell::Cell;
+    use std::collections::HashSet;
 
     thread_local! {
         static ACTIVE_ARENA: Cell<*mut Arena> = const { Cell::new(std::ptr::null_mut()) };
     }
 
+    #[derive(Clone, Copy)]
+    struct ObjAllocation {
+        ptr: usize,
+        layout: std::alloc::Layout,
+    }
+
     #[derive(Default)]
     pub struct Arena {
-        allocations: Vec<usize>,
+        allocations: Vec<ObjAllocation>,
+        allocation_set: HashSet<usize>,
         bytes_allocations: Vec<(usize, usize, usize)>,
     }
 
@@ -17,11 +25,13 @@ pub(crate) mod arena {
         }
 
         pub fn reset(&mut self) {
-            for ptr in self.allocations.drain(..) {
+            for allocation in self.allocations.drain(..) {
                 unsafe {
-                    drop(Box::from_raw(ptr as *mut u8));
+                    drop_object_in_arena(allocation.ptr as *mut crate::object::ObjHeader);
+                    std::alloc::dealloc(allocation.ptr as *mut u8, allocation.layout);
                 }
             }
+            self.allocation_set.clear();
             for (ptr, len, align) in self.bytes_allocations.drain(..) {
                 unsafe {
                     let layout =
@@ -82,7 +92,12 @@ pub(crate) mod arena {
             let boxed = Box::new(value);
             let raw = Box::into_raw(boxed);
             unsafe {
-                (*arena_ptr).allocations.push(raw as usize);
+                let ptr = raw as usize;
+                (*arena_ptr).allocations.push(ObjAllocation {
+                    ptr,
+                    layout: std::alloc::Layout::new::<T>(),
+                });
+                (*arena_ptr).allocation_set.insert(ptr);
             }
             Some(raw)
         })
@@ -108,22 +123,56 @@ pub(crate) mod arena {
         })
     }
 
-    pub fn is_arena_value(_val: crate::value::Value) -> bool {
-        false
+    pub fn is_arena_value(val: crate::value::Value) -> bool {
+        if !val.is_ptr() {
+            return false;
+        }
+        is_arena_ptr(val.as_ptr())
     }
 
-    pub fn is_arena_ptr(_ptr: *mut crate::object::ObjHeader) -> bool {
-        false
+    pub fn is_arena_ptr(ptr: *mut crate::object::ObjHeader) -> bool {
+        if ptr.is_null() {
+            return false;
+        }
+        ACTIVE_ARENA.with(|slot| {
+            let arena_ptr = slot.get();
+            if arena_ptr.is_null() {
+                return false;
+            }
+            unsafe { (*arena_ptr).allocation_set.contains(&(ptr as usize)) }
+        })
     }
 
-    pub fn drop_object_in_arena(_ptr: *mut crate::object::ObjHeader) {
-        // Arena-backed object tracking is disabled in this trimmed runtime.
+    pub fn drop_object_in_arena(ptr: *mut crate::object::ObjHeader) {
+        if ptr.is_null() {
+            return;
+        }
+        let type_id = unsafe { (*ptr).type_id };
+        match type_id {
+            x if x == crate::value::TypeId::String as u32 => {
+                crate::string::drop_string_in_arena(ptr)
+            }
+            x if x == crate::value::TypeId::List as u32 => crate::list::drop_list_in_arena(ptr),
+            x if x == crate::value::TypeId::Map as u32 => crate::map::drop_map_in_arena(ptr),
+            x if x == crate::value::TypeId::Result as u32 => {
+                crate::result::drop_result_in_arena(ptr)
+            }
+            x if x == crate::value::TypeId::Bytes as u32 => crate::bytes::drop_bytes_in_arena(ptr),
+            _ => {
+                if type_id >= crate::value::TypeId::UserBase as u32 {
+                    crate::class::drop_class_in_arena(ptr);
+                }
+            }
+        }
     }
 
     pub fn reject_arena_escape(
         val: crate::value::Value,
         _context: &str,
     ) -> Option<crate::value::Value> {
+        if is_arena_value(val) {
+            return None;
+        }
         Some(val)
     }
 }
@@ -281,10 +330,14 @@ pub(crate) mod class {
     use crate::{wr_rc_dec, wr_rc_inc};
     use std::collections::HashMap;
 
+    const INVALID_SLOT: u32 = u32::MAX;
+
     #[repr(C)]
     pub struct ClassObj {
         header: ObjHeader,
-        fields: HashMap<Vec<u8>, Value>,
+        slot_names: HashMap<Vec<u8>, u32>,
+        slots: Box<[Value]>,
+        overflow: HashMap<Vec<u8>, Value>,
     }
 
     pub fn class_new(
@@ -296,7 +349,8 @@ pub(crate) mod class {
         if (names_ptr.is_null() || lens_ptr.is_null()) && count != 0 {
             return Value::nil();
         }
-        let mut fields = HashMap::new();
+        let mut slot_names = HashMap::new();
+        let slots = vec![Value::nil(); count];
         for i in 0..count {
             let name_ptr = unsafe { *names_ptr.add(i) };
             let len = unsafe { *lens_ptr.add(i) };
@@ -304,26 +358,44 @@ pub(crate) mod class {
                 continue;
             }
             let bytes = unsafe { std::slice::from_raw_parts(name_ptr, len) };
-            fields.insert(bytes.to_vec(), Value::nil());
+            slot_names.entry(bytes.to_vec()).or_insert(i as u32);
         }
         let obj = Box::new(ClassObj {
             header: header_raw(class_id.max(TypeId::UserBase as u32)),
-            fields,
+            slot_names,
+            slots: slots.into_boxed_slice(),
+            overflow: HashMap::new(),
         });
         Value::from_ptr(Box::into_raw(obj) as *mut ObjHeader)
     }
 
     pub fn class_get(obj_val: Value, name_ptr: *const u8, len: usize) -> Value {
+        class_get_slot(obj_val, name_ptr, len, INVALID_SLOT)
+    }
+
+    pub fn class_get_slot(obj_val: Value, name_ptr: *const u8, len: usize, slot: u32) -> Value {
         let obj = match as_class(obj_val) {
             Some(obj) => obj,
             None => return Value::nil(),
         };
+        if let Some(slot_index) = to_slot_index(slot, unsafe { (&(*obj).slots).len() }) {
+            unsafe {
+                let val = (&(*obj).slots)[slot_index];
+                wr_rc_inc(val);
+                return val;
+            }
+        }
         if name_ptr.is_null() && len != 0 {
             return Value::nil();
         }
         let key = unsafe { std::slice::from_raw_parts(name_ptr, len) };
         unsafe {
-            if let Some(val) = (*obj).fields.get(key).copied() {
+            if let Some(slot_index) = (*obj).slot_names.get(key) {
+                let val = (&(*obj).slots)[*slot_index as usize];
+                wr_rc_inc(val);
+                return val;
+            }
+            if let Some(val) = (*obj).overflow.get(key).copied() {
                 wr_rc_inc(val);
                 return val;
             }
@@ -332,16 +404,36 @@ pub(crate) mod class {
     }
 
     pub fn class_set(obj_val: Value, name_ptr: *const u8, len: usize, val: Value) {
+        class_set_slot(obj_val, name_ptr, len, INVALID_SLOT, val)
+    }
+
+    pub fn class_set_slot(obj_val: Value, name_ptr: *const u8, len: usize, slot: u32, val: Value) {
         let obj = match as_class(obj_val) {
             Some(obj) => obj,
             None => return,
         };
+        if let Some(slot_index) = to_slot_index(slot, unsafe { (&(*obj).slots).len() }) {
+            unsafe {
+                let old = &mut (*obj).slots[slot_index];
+                wr_rc_inc(val);
+                wr_rc_dec(*old);
+                *old = val;
+            }
+            return;
+        }
         if name_ptr.is_null() && len != 0 {
             return;
         }
         let key = unsafe { std::slice::from_raw_parts(name_ptr, len) };
         unsafe {
-            if let Some(old) = (*obj).fields.insert(key.to_vec(), val) {
+            if let Some(slot_index) = (*obj).slot_names.get(key).copied() {
+                let old = &mut (*obj).slots[slot_index as usize];
+                wr_rc_inc(val);
+                wr_rc_dec(*old);
+                *old = val;
+                return;
+            }
+            if let Some(old) = (*obj).overflow.insert(key.to_vec(), val) {
                 wr_rc_dec(old);
             }
             wr_rc_inc(val);
@@ -351,7 +443,10 @@ pub(crate) mod class {
     pub unsafe fn drop_class(ptr: *mut ObjHeader) {
         let obj = ptr as *mut ClassObj;
         unsafe {
-            for (_key, val) in (*obj).fields.iter() {
+            for val in (*obj).slots.iter() {
+                wr_rc_dec(*val);
+            }
+            for (_key, val) in (*obj).overflow.iter() {
                 wr_rc_dec(*val);
             }
             drop(Box::from_raw(obj));
@@ -361,10 +456,15 @@ pub(crate) mod class {
     pub fn drop_class_in_arena(ptr: *mut ObjHeader) {
         let obj = ptr as *mut ClassObj;
         unsafe {
-            for (_key, val) in (*obj).fields.iter() {
+            for val in (*obj).slots.iter() {
                 wr_rc_dec(*val);
             }
-            std::ptr::drop_in_place(&mut (*obj).fields);
+            for (_key, val) in (*obj).overflow.iter() {
+                wr_rc_dec(*val);
+            }
+            std::ptr::drop_in_place(&mut (*obj).slot_names);
+            std::ptr::drop_in_place(&mut (*obj).slots);
+            std::ptr::drop_in_place(&mut (*obj).overflow);
         }
     }
 
@@ -379,6 +479,14 @@ pub(crate) mod class {
             }
         }
         Some(val.as_ptr() as *mut ClassObj)
+    }
+
+    fn to_slot_index(slot: u32, len: usize) -> Option<usize> {
+        if slot == INVALID_SLOT {
+            return None;
+        }
+        let index = slot as usize;
+        if index < len { Some(index) } else { None }
     }
 }
 
@@ -692,10 +800,12 @@ pub(crate) mod map {
     use crate::object::ObjHeader;
     use crate::value::{TypeId, Value, header, int_value, value_eq, value_hash as hash_value};
     use crate::{wr_rc_dec, wr_rc_inc};
+    use std::cell::RefCell;
     use std::collections::HashMap;
     use std::collections::hash_map::{Entry, Iter as HashIter};
     use std::hash::{Hash, Hasher};
     use std::mem::MaybeUninit;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     #[repr(C)]
     pub struct MapObj {
@@ -722,6 +832,62 @@ pub(crate) mod map {
     }
 
     const INLINE_CAP: usize = 8;
+    const CACHE_SHAPE_INLINE_SLOT: u8 = 1;
+    const CACHE_SHAPE_HEAP_KEY: u8 = 2;
+    const CACHE_SHAPE_MISSING: u8 = 3;
+
+    #[derive(Clone, Copy, Default)]
+    struct MapInlineCache {
+        map_ptr: usize,
+        version: u64,
+        key: Value,
+        shape: u8,
+        inline_index: usize,
+    }
+
+    impl MapInlineCache {
+        fn clear(&mut self) {
+            *self = Self::default();
+        }
+
+        fn store_inline_slot(&mut self, map: *mut MapObj, version: u64, key: Value, index: usize) {
+            self.map_ptr = map as usize;
+            self.version = version;
+            self.key = key;
+            self.shape = CACHE_SHAPE_INLINE_SLOT;
+            self.inline_index = index;
+        }
+
+        fn store_heap_key(&mut self, map: *mut MapObj, version: u64, key: Value) {
+            self.map_ptr = map as usize;
+            self.version = version;
+            self.key = key;
+            self.shape = CACHE_SHAPE_HEAP_KEY;
+            self.inline_index = 0;
+        }
+
+        fn store_missing(&mut self, map: *mut MapObj, version: u64, key: Value) {
+            self.map_ptr = map as usize;
+            self.version = version;
+            self.key = key;
+            self.shape = CACHE_SHAPE_MISSING;
+            self.inline_index = 0;
+        }
+
+        fn matches(&self, map: *mut MapObj, version: u64, key: Value) -> bool {
+            self.shape != 0
+                && self.map_ptr == map as usize
+                && self.version == version
+                && value_eq(self.key, key)
+        }
+    }
+
+    thread_local! {
+        static MAP_INLINE_CACHE: RefCell<MapInlineCache> = RefCell::new(MapInlineCache::default());
+    }
+
+    static MAP_IC_HITS: AtomicU64 = AtomicU64::new(0);
+    static MAP_IC_MISSES: AtomicU64 = AtomicU64::new(0);
 
     pub(crate) enum MapEntries {
         Inline {
@@ -834,26 +1000,12 @@ pub(crate) mod map {
             Some(map) => map,
             None => return Value::nil(),
         };
-        unsafe {
-            match &(*map).entries {
-                MapEntries::Inline { len, entries } => {
-                    for idx in 0..*len {
-                        let (stored_key, val) = entries[idx].assume_init_ref();
-                        if *stored_key == MapKey(key) {
-                            wr_rc_inc(*val);
-                            return *val;
-                        }
-                    }
-                }
-                MapEntries::Heap(entries) => {
-                    if let Some(val) = entries.get(&MapKey(key)).copied() {
-                        wr_rc_inc(val);
-                        return val;
-                    }
-                }
-            }
-            Value::nil()
+        if let Some(val) = map_get_ic_hit(map, key) {
+            MAP_IC_HITS.fetch_add(1, Ordering::Relaxed);
+            return val;
         }
+        MAP_IC_MISSES.fetch_add(1, Ordering::Relaxed);
+        map_get_ic_miss(map, key)
     }
 
     pub fn map_set(map_val: Value, key: Value, val: Value) {
@@ -1030,6 +1182,87 @@ pub(crate) mod map {
 
     pub(crate) fn map_version(map: *mut MapObj) -> u64 {
         unsafe { (*map).version }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn map_ic_stats() -> (u64, u64) {
+        (
+            MAP_IC_HITS.load(Ordering::Relaxed),
+            MAP_IC_MISSES.load(Ordering::Relaxed),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn map_ic_reset_stats() {
+        MAP_IC_HITS.store(0, Ordering::Relaxed);
+        MAP_IC_MISSES.store(0, Ordering::Relaxed);
+        MAP_INLINE_CACHE.with(|cache| cache.borrow_mut().clear());
+    }
+
+    fn map_get_ic_hit(map: *mut MapObj, key: Value) -> Option<Value> {
+        let version = map_version(map);
+        MAP_INLINE_CACHE.with(|cache_cell| {
+            let cache = *cache_cell.borrow();
+            if !cache.matches(map, version, key) {
+                return None;
+            }
+            unsafe {
+                match cache.shape {
+                    CACHE_SHAPE_INLINE_SLOT => match &(*map).entries {
+                        MapEntries::Inline { len, entries } if cache.inline_index < *len => {
+                            let (stored_key, val) = entries[cache.inline_index].assume_init_ref();
+                            if *stored_key == MapKey(key) {
+                                wr_rc_inc(*val);
+                                Some(*val)
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    },
+                    CACHE_SHAPE_HEAP_KEY => match &(*map).entries {
+                        MapEntries::Heap(entries) => {
+                            entries.get(&MapKey(key)).copied().inspect(|v| {
+                                wr_rc_inc(*v);
+                            })
+                        }
+                        _ => None,
+                    },
+                    CACHE_SHAPE_MISSING => Some(Value::nil()),
+                    _ => None,
+                }
+            }
+        })
+    }
+
+    fn map_get_ic_miss(map: *mut MapObj, key: Value) -> Value {
+        let version = map_version(map);
+        unsafe {
+            match &(*map).entries {
+                MapEntries::Inline { len, entries } => {
+                    for idx in 0..*len {
+                        let (stored_key, val) = entries[idx].assume_init_ref();
+                        if *stored_key == MapKey(key) {
+                            MAP_INLINE_CACHE.with(|cache| {
+                                cache.borrow_mut().store_inline_slot(map, version, key, idx)
+                            });
+                            wr_rc_inc(*val);
+                            return *val;
+                        }
+                    }
+                }
+                MapEntries::Heap(entries) => {
+                    if let Some(val) = entries.get(&MapKey(key)).copied() {
+                        MAP_INLINE_CACHE
+                            .with(|cache| cache.borrow_mut().store_heap_key(map, version, key));
+                        wr_rc_inc(val);
+                        return val;
+                    }
+                }
+            }
+        }
+        MAP_INLINE_CACHE.with(|cache| cache.borrow_mut().store_missing(map, version, key));
+        Value::nil()
     }
 
     fn is_valid_key(val: Value) -> bool {
@@ -1481,6 +1714,12 @@ pub(crate) mod value {
     #[derive(Clone, Copy, PartialEq, Eq, Hash)]
     pub struct Value(pub u64);
 
+    impl Default for Value {
+        fn default() -> Self {
+            Self::nil()
+        }
+    }
+
     impl Value {
         const QNAN: u64 = 0x7ff8_0000_0000_0000;
         const TAG_SHIFT: u64 = 49;
@@ -1771,6 +2010,10 @@ pub(crate) mod value {
         Value::from_ptr(Box::into_raw(obj) as *mut ObjHeader)
     }
 
+    pub fn force_boxed_int(val: i64) -> Value {
+        box_int(val)
+    }
+
     pub fn int_value(val: Value) -> Option<i64> {
         if val.is_int() {
             return Some(val.as_int());
@@ -1797,5 +2040,72 @@ pub(crate) mod value {
         unsafe {
             drop(Box::from_raw(boxed));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::value::Value;
+    use crate::{arena, list, result, string, wr_rc_dec, wr_rc_inc};
+    use std::sync::atomic::Ordering;
+
+    fn rc_count(value: Value) -> u32 {
+        assert!(value.is_ptr());
+        unsafe { (*value.as_ptr()).rc.load(Ordering::Relaxed) }
+    }
+
+    #[test]
+    fn region_confined_rc_ops_are_elided() {
+        let mut arena_mem = arena::Arena::new(1024);
+        let _guard = arena::enter(&mut arena_mem as *mut _);
+
+        let local = list::list_new_local(0);
+        assert!(arena::is_arena_value(local));
+        assert_eq!(rc_count(local), 1);
+
+        unsafe {
+            wr_rc_inc(local);
+            wr_rc_dec(local);
+        }
+
+        // The global metrics counters are process-wide and can be advanced by
+        // other concurrently running tests, so this assertion focuses on
+        // observable local behavior.
+        assert_eq!(rc_count(local), 1);
+
+        arena_mem.reset();
+    }
+
+    #[test]
+    fn region_bulk_reclaim_drops_external_refs() {
+        let heap = string::str_from_bytes(b"owned-by-heap");
+        assert_eq!(rc_count(heap), 1);
+
+        let mut arena_mem = arena::Arena::new(1024);
+        {
+            let _guard = arena::enter(&mut arena_mem as *mut _);
+            let local = list::list_new_local(0);
+            list::list_push(local, heap);
+            assert_eq!(rc_count(heap), 2);
+            arena_mem.reset();
+        }
+
+        assert_eq!(rc_count(heap), 1);
+        unsafe { wr_rc_dec(heap) };
+    }
+
+    #[test]
+    fn result_rejects_region_confined_escape() {
+        let mut arena_mem = arena::Arena::new(1024);
+        let _guard = arena::enter(&mut arena_mem as *mut _);
+
+        let local = string::str_concat_local([Value::from_int(7)].as_ptr(), 1);
+        assert!(arena::is_arena_value(local));
+        assert!(arena::reject_arena_escape(local, "test").is_none());
+
+        let wrapped = result::result_ok(local);
+        assert!(wrapped.is_nil());
+
+        arena_mem.reset();
     }
 }

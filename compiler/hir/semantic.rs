@@ -2646,6 +2646,18 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
         (SmolStr::new("__wr_actor_pause"), BindingKind::Function),
         (SmolStr::new("__wr_actor_resume"), BindingKind::Function),
         (SmolStr::new("__wr_actor_pause_wait"), BindingKind::Function),
+        (
+            SmolStr::new("__wr_actor_fire_burst_begin"),
+            BindingKind::Function,
+        ),
+        (
+            SmolStr::new("__wr_actor_fire_burst_end"),
+            BindingKind::Function,
+        ),
+        (
+            SmolStr::new("__wr_actor_fire_burst_abort"),
+            BindingKind::Function,
+        ),
         (SmolStr::new("__wr_metrics_get"), BindingKind::Function),
         (
             SmolStr::new("__wr_metrics_dropped_paused_id"),

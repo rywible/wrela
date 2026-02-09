@@ -401,6 +401,31 @@ fn check_rvalue_uses(
                         }
                     }
                 }
+                CallTarget::GuardedInterface { fast_paths, .. } => {
+                    if !matches!(kind, CallKind::Sync) {
+                        errors.push(MirValidationError {
+                            message: format!(
+                                "guarded interface call must be sync in block {block_idx}"
+                            ),
+                        });
+                    }
+                    if args.is_empty() {
+                        errors.push(MirValidationError {
+                            message: format!(
+                                "guarded interface call missing receiver arg in block {block_idx}"
+                            ),
+                        });
+                    } else {
+                        check_value_use(func, block_idx, &args[0], defined, errors);
+                    }
+                    if fast_paths.is_empty() {
+                        errors.push(MirValidationError {
+                            message: format!(
+                                "guarded interface call missing fast paths in block {block_idx}"
+                            ),
+                        });
+                    }
+                }
                 CallTarget::Indirect(value) => {
                     check_value_use(func, block_idx, value, defined, errors);
                     if matches!(kind, CallKind::Actor) {

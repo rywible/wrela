@@ -2,7 +2,7 @@ use crate::hir::{BinaryOp, Literal, UnaryOp};
 use crate::mir::analysis::{CallGraph, FunctionTypes, analyze_module};
 use crate::mir::ir::{
     AllocKind, BasicBlock, CallKind, CallTarget, Local, LocalId, MirFunction, MirModule, MirType,
-    Place, Rvalue, Stmt, Terminator, Value,
+    Place, Rvalue, Stmt, SwitchCase, Terminator, TypeTagId, Value,
 };
 use rowan::TextRange;
 use smol_str::SmolStr;
@@ -15,22 +15,164 @@ pub fn run_function_passes(func: &mut MirFunction) {
 pub fn run_function_passes_with_types(func: &mut MirFunction, types: Option<&FunctionTypes>) {
     devirtualize_calls(func, types);
     specialize_container_ops(func, types);
-    annotate_allocs(func);
+    if std::env::var("WRELA_DISABLE_ESCAPE_ANALYSIS").is_err() {
+        annotate_allocs(func);
+    }
     constant_fold(func);
     simplify_branches(func);
     dead_code_elim(func);
     convert_to_ssa(func);
-    result_peephole(func);
+    if std::env::var("WRELA_DISABLE_RESULT_PEEPHOLE").is_err() {
+        result_peephole(func);
+    }
     scalar_replace_literals(func);
     strength_reduce_mods(func);
     insert_rc(func);
 }
 
 pub fn run_module_passes(module: &mut MirModule) {
+    if std::env::var("WRELA_DISABLE_INTERFACE_DEVIRTUALIZE").is_err() {
+        devirtualize_interface_dispatch_calls(module);
+    }
     let analysis = analyze_module(module);
     clone_small_hot_functions(module, &analysis.call_graph);
     let analysis = analyze_module(module);
     tree_shake_unused_functions(module, &analysis.call_graph);
+}
+
+#[derive(Debug, Clone)]
+struct InterfaceDispatchCase {
+    tag: TypeTagId,
+    target: SmolStr,
+}
+
+#[derive(Debug, Clone)]
+struct InterfaceDispatchInfo {
+    cases: Vec<InterfaceDispatchCase>,
+}
+
+fn devirtualize_interface_dispatch_calls(module: &mut MirModule) {
+    const MAX_GUARDED_INTERFACE_FAST_PATHS: usize = 3;
+    let dispatch = collect_interface_dispatch_functions(module);
+    if dispatch.is_empty() {
+        return;
+    }
+
+    for func in &mut module.functions {
+        if dispatch.contains_key(&func.name) {
+            continue;
+        }
+        for block in &mut func.blocks {
+            for stmt in &mut block.stmts {
+                let Stmt::Assign { value, .. } = stmt else {
+                    continue;
+                };
+                let Rvalue::Call { kind, target, .. } = value else {
+                    continue;
+                };
+                if *kind != CallKind::Sync {
+                    continue;
+                }
+                let CallTarget::Function(name) = target else {
+                    continue;
+                };
+                let Some(info) = dispatch.get(name) else {
+                    continue;
+                };
+                if info.cases.len() == 1 {
+                    *target = CallTarget::Function(info.cases[0].target.clone());
+                    continue;
+                }
+                if info.cases.len() > MAX_GUARDED_INTERFACE_FAST_PATHS {
+                    continue;
+                }
+                let fast_paths = info
+                    .cases
+                    .iter()
+                    .take(MAX_GUARDED_INTERFACE_FAST_PATHS)
+                    .map(|case| (case.tag, case.target.clone()))
+                    .collect();
+                *target = CallTarget::GuardedInterface {
+                    fast_paths,
+                    fallback: name.clone(),
+                };
+            }
+        }
+    }
+}
+
+fn collect_interface_dispatch_functions(
+    module: &MirModule,
+) -> HashMap<SmolStr, InterfaceDispatchInfo> {
+    let mut out = HashMap::new();
+    for func in &module.functions {
+        if let Some(info) = parse_interface_dispatch_function(func) {
+            out.insert(func.name.clone(), info);
+        }
+    }
+    out
+}
+
+fn parse_interface_dispatch_function(func: &MirFunction) -> Option<InterfaceDispatchInfo> {
+    if func.params.is_empty() {
+        return None;
+    }
+    let entry = func.blocks.get(func.entry.0)?;
+    let Terminator::Switch {
+        scrutinee, cases, ..
+    } = &entry.terminator
+    else {
+        return None;
+    };
+    if !matches!(scrutinee, Value::Local(local) if *local == func.params[0]) {
+        return None;
+    }
+    if cases.is_empty() {
+        return None;
+    }
+
+    let mut parsed_cases = Vec::with_capacity(cases.len());
+    for (case, block_id) in cases {
+        let SwitchCase::Type(tag) = case else {
+            return None;
+        };
+        let block = func.blocks.get(block_id.0)?;
+        let target = find_direct_dispatch_call(block, &func.params)?;
+        parsed_cases.push(InterfaceDispatchCase { tag: *tag, target });
+    }
+    Some(InterfaceDispatchInfo {
+        cases: parsed_cases,
+    })
+}
+
+fn find_direct_dispatch_call(block: &BasicBlock, params: &[LocalId]) -> Option<SmolStr> {
+    for stmt in &block.stmts {
+        let Stmt::Assign { value, .. } = stmt else {
+            continue;
+        };
+        let Rvalue::Call { kind, target, args } = value else {
+            continue;
+        };
+        if *kind != CallKind::Sync || !args_match_params(args, params) {
+            continue;
+        }
+        if let CallTarget::Function(name) = target {
+            return Some(name.clone());
+        }
+    }
+    None
+}
+
+fn args_match_params(args: &[Value], params: &[LocalId]) -> bool {
+    if args.len() != params.len() {
+        return false;
+    }
+    for (arg, param) in args.iter().zip(params) {
+        if !matches!(arg, Value::Local(local) if local == param) {
+            return false;
+        }
+    }
+    true
 }
 
 fn devirtualize_calls(func: &mut MirFunction, types: Option<&FunctionTypes>) {
@@ -799,6 +941,7 @@ fn rename_call_target(target: &mut CallTarget, stacks: &[Vec<LocalId>]) {
     match target {
         CallTarget::Function(_) => {}
         CallTarget::Method { receiver, .. } => rename_value(receiver, stacks),
+        CallTarget::GuardedInterface { .. } => {}
         CallTarget::Indirect(value) => rename_value(value, stacks),
     }
 }
@@ -1154,6 +1297,7 @@ fn collect_temp_ids_call_target(target: &CallTarget, escapes: &mut Vec<bool>) {
     match target {
         CallTarget::Function(_) => {}
         CallTarget::Method { receiver, .. } => collect_temp_ids_value(receiver, escapes),
+        CallTarget::GuardedInterface { .. } => {}
         CallTarget::Indirect(value) => collect_temp_ids_value(value, escapes),
     }
 }
@@ -1218,6 +1362,7 @@ fn collect_temp_ids_in_call_target(target: &CallTarget, out: &mut Vec<usize>) {
     match target {
         CallTarget::Function(_) => {}
         CallTarget::Method { receiver, .. } => collect_temp_ids_in_value(receiver, out),
+        CallTarget::GuardedInterface { .. } => {}
         CallTarget::Indirect(value) => collect_temp_ids_in_value(value, out),
     }
 }
@@ -1442,6 +1587,7 @@ fn collect_rvalue(value: &Rvalue, used: &mut HashSet<usize>) {
             match target {
                 CallTarget::Function(_) => {}
                 CallTarget::Method { receiver, .. } => collect_value(receiver, used),
+                CallTarget::GuardedInterface { .. } => {}
                 CallTarget::Indirect(value) => collect_value(value, used),
             }
             for arg in args {
@@ -1705,6 +1851,7 @@ fn handle_owning_uses(
             match target {
                 CallTarget::Method { receiver, .. } => values.push(receiver),
                 CallTarget::Indirect(value) => values.push(value),
+                CallTarget::GuardedInterface { .. } => {}
                 CallTarget::Function(_) => {}
             }
             values.extend(args.iter());
@@ -2022,6 +2169,7 @@ fn collect_rvalue_uses(value: &Rvalue, locals_len: usize, out: &mut Vec<usize>) 
                         out.push(idx);
                     }
                 }
+                CallTarget::GuardedInterface { .. } => {}
                 CallTarget::Indirect(value) => {
                     if let Some(idx) = value_idx(value, locals_len) {
                         out.push(idx);
@@ -2330,6 +2478,200 @@ mod tests {
         }
         assert!(saw_temp_assign, "expected temp assignment for self-assign");
         assert!(saw_dec_old, "expected dec of old value after temp");
+    }
+
+    #[test]
+    fn test_rc_skips_integer_self_assign() {
+        let span = TextRange::new(0.into(), 0.into());
+        let mut func = MirFunction {
+            name: "test_int".into(),
+            params: vec![],
+            locals: vec![Local {
+                name: "x".into(),
+                mutable: true,
+                ty: MirType::Integer,
+            }],
+            temps: vec![],
+            blocks: vec![BasicBlock {
+                stmts: vec![Stmt::Assign {
+                    place: Place::Local(LocalId(0)),
+                    value: Rvalue::Binary {
+                        op: BinaryOp::Add,
+                        lhs: Value::Local(LocalId(0)),
+                        rhs: Value::Const(Literal::Integer(1)),
+                    },
+                    span,
+                }],
+                terminator: Terminator::Return { value: None, span },
+            }],
+            entry: BlockId(0),
+            suspendable: false,
+        };
+        insert_rc(&mut func);
+        assert!(
+            !func.blocks[0]
+                .stmts
+                .iter()
+                .any(|stmt| matches!(stmt, Stmt::RcInc { .. } | Stmt::RcDec { .. })),
+            "typed integer lane should not emit RC traffic"
+        );
+    }
+
+    #[test]
+    fn result_peephole_elides_proven_ok_wrapper_ops() {
+        let span = TextRange::new(0.into(), 0.into());
+        let mut func = MirFunction {
+            name: "result_ok_fastpath".into(),
+            params: vec![],
+            locals: vec![Local {
+                name: "v".into(),
+                mutable: false,
+                ty: MirType::Integer,
+            }],
+            temps: vec![
+                Temp {
+                    ty: MirType::Result(Box::new(MirType::Integer), Box::new(MirType::String)),
+                },
+                Temp {
+                    ty: MirType::Integer,
+                },
+                Temp {
+                    ty: MirType::Boolean,
+                },
+            ],
+            blocks: vec![BasicBlock {
+                stmts: vec![
+                    Stmt::Assign {
+                        place: Place::Temp(TempId(0)),
+                        value: Rvalue::ResultOk {
+                            value: Value::Local(LocalId(0)),
+                        },
+                        span,
+                    },
+                    Stmt::Assign {
+                        place: Place::Temp(TempId(1)),
+                        value: Rvalue::ResultUnwrap {
+                            value: Value::Temp(TempId(0)),
+                        },
+                        span,
+                    },
+                    Stmt::Assign {
+                        place: Place::Temp(TempId(2)),
+                        value: Rvalue::ResultIsOk {
+                            value: Value::Temp(TempId(0)),
+                        },
+                        span,
+                    },
+                ],
+                terminator: Terminator::Return { value: None, span },
+            }],
+            entry: BlockId(0),
+            suspendable: false,
+        };
+
+        result_peephole(&mut func);
+
+        let stmts = &func.blocks[0].stmts;
+        assert!(matches!(
+            stmts[1],
+            Stmt::Assign {
+                value: Rvalue::Use(Value::Local(LocalId(0))),
+                ..
+            }
+        ));
+        assert!(matches!(
+            stmts[2],
+            Stmt::Assign {
+                value: Rvalue::Use(Value::Const(Literal::Boolean(true))),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn result_peephole_preserves_error_propagation_shape() {
+        let span = TextRange::new(0.into(), 0.into());
+        let mut func = MirFunction {
+            name: "result_err_fastpath".into(),
+            params: vec![],
+            locals: vec![],
+            temps: vec![
+                Temp {
+                    ty: MirType::Result(Box::new(MirType::Integer), Box::new(MirType::String)),
+                },
+                Temp {
+                    ty: MirType::Integer,
+                },
+                Temp {
+                    ty: MirType::String,
+                },
+                Temp {
+                    ty: MirType::Boolean,
+                },
+            ],
+            blocks: vec![BasicBlock {
+                stmts: vec![
+                    Stmt::Assign {
+                        place: Place::Temp(TempId(0)),
+                        value: Rvalue::ResultErr {
+                            value: Value::Const(Literal::String("boom".into())),
+                        },
+                        span,
+                    },
+                    Stmt::Assign {
+                        place: Place::Temp(TempId(1)),
+                        value: Rvalue::ResultUnwrap {
+                            value: Value::Temp(TempId(0)),
+                        },
+                        span,
+                    },
+                    Stmt::Assign {
+                        place: Place::Temp(TempId(2)),
+                        value: Rvalue::ResultErrUnwrap {
+                            value: Value::Temp(TempId(0)),
+                        },
+                        span,
+                    },
+                    Stmt::Assign {
+                        place: Place::Temp(TempId(3)),
+                        value: Rvalue::ResultIsOk {
+                            value: Value::Temp(TempId(0)),
+                        },
+                        span,
+                    },
+                ],
+                terminator: Terminator::Return { value: None, span },
+            }],
+            entry: BlockId(0),
+            suspendable: false,
+        };
+
+        result_peephole(&mut func);
+
+        let stmts = &func.blocks[0].stmts;
+        assert!(matches!(
+            stmts[1],
+            Stmt::Assign {
+                value: Rvalue::ResultUnwrap {
+                    value: Value::Temp(TempId(0))
+                },
+                ..
+            }
+        ));
+        assert!(matches!(
+            stmts[2],
+            Stmt::Assign {
+                value: Rvalue::Use(Value::Const(Literal::String(_))),
+                ..
+            }
+        ));
+        assert!(matches!(
+            stmts[3],
+            Stmt::Assign {
+                value: Rvalue::Use(Value::Const(Literal::Boolean(false))),
+                ..
+            }
+        ));
     }
 
     #[test]

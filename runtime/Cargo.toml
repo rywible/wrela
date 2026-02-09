@@ -10,6 +10,7 @@ crate-type = ["staticlib", "rlib"]
 [features]
 default = ["metrics"]
 metrics = []
+abi_typed_fast_path = []
 
 [dependencies]
 

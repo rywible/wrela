@@ -587,6 +587,9 @@ fn linker_io_error(name: &str, err: io::Error) -> CodegenError {
 fn create_object_module() -> Result<ObjectModule, CodegenError> {
     let mut flag_builder = settings::builder();
     flag_builder
+        .set("opt_level", "speed")
+        .map_err(|err| CodegenError(format!("flags error: {err}")))?;
+    flag_builder
         .set("is_pic", "true")
         .map_err(|err| CodegenError(format!("flags error: {err}")))?;
     let flags = settings::Flags::new(flag_builder);
@@ -784,15 +787,25 @@ fn lower_stmt(
             builder.ins().call(callee, &[pending_val]);
         }
         Stmt::SetField {
-            base, field, value, ..
+            base,
+            field,
+            slot,
+            value,
+            ..
         } => {
             let obj = lower_value(base, builder, locals, temps, module, runtime)?;
             let val = lower_value(value, builder, locals, temps, module, runtime)?;
             let (name_ptr, len_val) =
                 lower_bytes_literal(builder, module, runtime, field.as_str())?;
-            let func_id = runtime_fn_class_set(module, runtime)?;
+            let func_id = runtime_fn_class_set_slot(module, runtime)?;
             let callee = module.declare_func_in_func(func_id, builder.func);
-            builder.ins().call(callee, &[obj, name_ptr, len_val, val]);
+            let slot_val = builder.ins().iconst(
+                module.target_config().pointer_type(),
+                slot.unwrap_or(u32::MAX) as i64,
+            );
+            builder
+                .ins()
+                .call(callee, &[obj, name_ptr, len_val, slot_val, val]);
         }
         Stmt::IterInit { dst, iterable, .. } => {
             let iter_val = lower_value(iterable, builder, locals, temps, module, runtime)?;
@@ -1080,13 +1093,43 @@ fn lower_rvalue(
                     let res = builder.ins().sshr(l, r);
                     tag_int(builder, module, runtime, res)?
                 }
-                crate::hir::BinaryOp::Eq => runtime_eq(builder, lhs_val, rhs_val, module, runtime)?,
+                crate::hir::BinaryOp::Eq => {
+                    let lty = mir_type_of_value(lhs, locals_tys, temps_tys);
+                    let rty = mir_type_of_value(rhs, locals_tys, temps_tys);
+                    if matches!(lty, MirType::Integer) && matches!(rty, MirType::Integer) {
+                        let l = untag_int(builder, module, runtime, lhs_val)?;
+                        let r = untag_int(builder, module, runtime, rhs_val)?;
+                        let cmp = builder.ins().icmp(
+                            cranelift_codegen::ir::condcodes::IntCC::Equal,
+                            l,
+                            r,
+                        );
+                        let b = bool_to_int(builder, cmp);
+                        tag_bool(builder, b)
+                    } else {
+                        runtime_eq(builder, lhs_val, rhs_val, module, runtime)?
+                    }
+                }
                 crate::hir::BinaryOp::Ne => {
-                    let eq = runtime_eq(builder, lhs_val, rhs_val, module, runtime)?;
-                    let unboxed = untag_bool(builder, eq);
-                    let one = builder.ins().iconst(types::I64, 1);
-                    let toggled = builder.ins().bxor(unboxed, one);
-                    tag_bool(builder, toggled)
+                    let lty = mir_type_of_value(lhs, locals_tys, temps_tys);
+                    let rty = mir_type_of_value(rhs, locals_tys, temps_tys);
+                    if matches!(lty, MirType::Integer) && matches!(rty, MirType::Integer) {
+                        let l = untag_int(builder, module, runtime, lhs_val)?;
+                        let r = untag_int(builder, module, runtime, rhs_val)?;
+                        let cmp = builder.ins().icmp(
+                            cranelift_codegen::ir::condcodes::IntCC::NotEqual,
+                            l,
+                            r,
+                        );
+                        let b = bool_to_int(builder, cmp);
+                        tag_bool(builder, b)
+                    } else {
+                        let eq = runtime_eq(builder, lhs_val, rhs_val, module, runtime)?;
+                        let unboxed = untag_bool(builder, eq);
+                        let one = builder.ins().iconst(types::I64, 1);
+                        let toggled = builder.ins().bxor(unboxed, one);
+                        tag_bool(builder, toggled)
+                    }
                 }
                 crate::hir::BinaryOp::Lt => {
                     let lty = mir_type_of_value(lhs, locals_tys, temps_tys);
@@ -1302,6 +1345,9 @@ fn lower_rvalue(
                     let target_name = match &target {
                         CallTarget::Function(name) => name.as_str().to_string(),
                         CallTarget::Method { method, .. } => method.as_str().to_string(),
+                        CallTarget::GuardedInterface { fallback, .. } => {
+                            fallback.as_str().to_string()
+                        }
                         CallTarget::Indirect(_) => "<indirect>".to_string(),
                     };
                     let func_id = match target {
@@ -1403,6 +1449,15 @@ fn lower_rvalue(
                                     "__wr_actor_pause_wait" => {
                                         Some(runtime_fn_actor_pause_wait(module, runtime)?)
                                     }
+                                    "__wr_actor_fire_burst_begin" => {
+                                        Some(runtime_fn_actor_fire_burst_begin(module, runtime)?)
+                                    }
+                                    "__wr_actor_fire_burst_end" => {
+                                        Some(runtime_fn_actor_fire_burst_end(module, runtime)?)
+                                    }
+                                    "__wr_actor_fire_burst_abort" => {
+                                        Some(runtime_fn_actor_fire_burst_abort(module, runtime)?)
+                                    }
                                     "__wr_metrics_get" => {
                                         Some(runtime_fn_metrics_get(module, runtime)?)
                                     }
@@ -1451,6 +1506,74 @@ fn lower_rvalue(
                                 lower_value(receiver, builder, locals, temps, module, runtime)?;
                             call_args.insert(0, recv);
                             func_ids.get(method).copied()
+                        }
+                        CallTarget::GuardedInterface {
+                            fast_paths,
+                            fallback,
+                        } => {
+                            let receiver = *call_args.first().ok_or_else(|| {
+                                CodegenError("guarded interface call missing receiver".to_string())
+                            })?;
+                            let type_func = runtime_fn_type_id(module, runtime)?;
+                            let type_callee = module.declare_func_in_func(type_func, builder.func);
+                            let type_call = builder.ins().call(type_callee, &[receiver]);
+                            let type_id = builder.inst_results(type_call)[0];
+
+                            let result_block = builder.create_block();
+                            builder.append_block_param(result_block, types::I64);
+                            let fallback_block = builder.create_block();
+                            let mut case_blocks = Vec::with_capacity(fast_paths.len());
+                            for _ in fast_paths {
+                                case_blocks.push(builder.create_block());
+                            }
+
+                            let mut next_block = builder.create_block();
+                            for (idx, (tag, _func_name)) in fast_paths.iter().enumerate() {
+                                let tag_val = builder.ins().iconst(types::I64, tag.0 as i64);
+                                let cond = builder.ins().icmp(
+                                    cranelift_codegen::ir::condcodes::IntCC::Equal,
+                                    type_id,
+                                    tag_val,
+                                );
+                                builder
+                                    .ins()
+                                    .brif(cond, case_blocks[idx], &[], next_block, &[]);
+                                builder.switch_to_block(next_block);
+                                next_block = builder.create_block();
+                            }
+                            builder.ins().jump(fallback_block, &[]);
+
+                            for (idx, (_tag, func_name)) in fast_paths.iter().enumerate() {
+                                builder.switch_to_block(case_blocks[idx]);
+                                let case_func_id =
+                                    func_ids.get(func_name).copied().ok_or_else(|| {
+                                        CodegenError(format!(
+                                            "missing guarded interface fast path target: {}",
+                                            func_name
+                                        ))
+                                    })?;
+                                let case_callee =
+                                    module.declare_func_in_func(case_func_id, builder.func);
+                                let case_call = builder.ins().call(case_callee, &call_args);
+                                let case_result = builder.inst_results(case_call)[0];
+                                builder.ins().jump(result_block, &[case_result]);
+                            }
+
+                            builder.switch_to_block(fallback_block);
+                            let fallback_id = func_ids.get(fallback).copied().ok_or_else(|| {
+                                CodegenError(format!(
+                                    "missing guarded interface fallback target: {}",
+                                    fallback
+                                ))
+                            })?;
+                            let fallback_callee =
+                                module.declare_func_in_func(fallback_id, builder.func);
+                            let fallback_call = builder.ins().call(fallback_callee, &call_args);
+                            let fallback_result = builder.inst_results(fallback_call)[0];
+                            builder.ins().jump(result_block, &[fallback_result]);
+
+                            builder.switch_to_block(result_block);
+                            return Ok(builder.block_params(result_block)[0]);
                         }
                         CallTarget::Indirect(_) => None,
                     }
@@ -1581,13 +1704,19 @@ fn lower_rvalue(
                 .call(callee, &[class_id_val, names_ptr, lens_ptr, count_val]);
             Ok(builder.inst_results(call)[0])
         }
-        Rvalue::GetField { base, field } => {
+        Rvalue::GetField { base, field, slot } => {
             let obj = lower_value(base, builder, locals, temps, module, runtime)?;
             let (name_ptr, len_val) =
                 lower_bytes_literal(builder, module, runtime, field.as_str())?;
-            let func_id = runtime_fn_class_get(module, runtime)?;
+            let func_id = runtime_fn_class_get_slot(module, runtime)?;
             let callee = module.declare_func_in_func(func_id, builder.func);
-            let call = builder.ins().call(callee, &[obj, name_ptr, len_val]);
+            let slot_val = builder.ins().iconst(
+                module.target_config().pointer_type(),
+                slot.unwrap_or(u32::MAX) as i64,
+            );
+            let call = builder
+                .ins()
+                .call(callee, &[obj, name_ptr, len_val, slot_val]);
             Ok(builder.inst_results(call)[0])
         }
         Rvalue::BuildList { items, alloc } => {
@@ -2412,6 +2541,30 @@ fn runtime_fn_actor_pause_wait(
     runtime.get_func(module, "wr_actor_pause_wait", sig)
 }
 
+fn runtime_fn_actor_fire_burst_begin(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_actor_fire_burst_begin", sig)
+}
+
+fn runtime_fn_actor_fire_burst_end(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_actor_fire_burst_end", sig)
+}
+
+fn runtime_fn_actor_fire_burst_abort(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_actor_fire_burst_abort", sig)
+}
+
 fn runtime_fn_metrics_get(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
@@ -2627,22 +2780,27 @@ fn runtime_fn_class_new(
     runtime.get_func(module, "wr_class_new", sig)
 }
 
-fn runtime_fn_class_get(
+fn runtime_fn_class_get_slot(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
 ) -> Result<cranelift_module::FuncId, CodegenError> {
     let ptr_ty = module.target_config().pointer_type();
-    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, ptr_ty, ptr_ty], &[types::I64]);
-    runtime.get_func(module, "wr_class_get", sig)
+    let sig =
+        RuntimeRegistry::runtime_sig(module, &[types::I64, ptr_ty, ptr_ty, ptr_ty], &[types::I64]);
+    runtime.get_func(module, "wr_class_get_slot", sig)
 }
 
-fn runtime_fn_class_set(
+fn runtime_fn_class_set_slot(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
 ) -> Result<cranelift_module::FuncId, CodegenError> {
     let ptr_ty = module.target_config().pointer_type();
-    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, ptr_ty, ptr_ty, types::I64], &[]);
-    runtime.get_func(module, "wr_class_set", sig)
+    let sig = RuntimeRegistry::runtime_sig(
+        module,
+        &[types::I64, ptr_ty, ptr_ty, ptr_ty, types::I64],
+        &[],
+    );
+    runtime.get_func(module, "wr_class_set_slot", sig)
 }
 
 fn runtime_fn_print(

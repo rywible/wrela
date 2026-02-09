@@ -48,6 +48,11 @@ fn main() {
     let mut test_jobs: Option<usize> = None;
     let mut test_timeout_ms: Option<u64> = None;
     let mut perf_debug = false;
+    let mut perf_runs: Option<usize> = None;
+    let mut perf_baseline_out: Option<String> = None;
+    let mut perf_gate_path: Option<String> = None;
+    let mut perf_max_regression_pct: Option<f64> = None;
+    let mut perf_cv_max_pct: Option<f64> = None;
     let mut seen_double_dash = false;
 
     let mut iter = args.into_iter();
@@ -97,6 +102,26 @@ fn main() {
         }
         if arg == "--perf-debug" {
             perf_debug = true;
+            continue;
+        }
+        if let Some(runs) = arg.strip_prefix("--runs=") {
+            perf_runs = runs.parse::<usize>().ok();
+            continue;
+        }
+        if let Some(path) = arg.strip_prefix("--baseline-out=") {
+            perf_baseline_out = Some(path.to_string());
+            continue;
+        }
+        if let Some(path) = arg.strip_prefix("--perf-gate=") {
+            perf_gate_path = Some(path.to_string());
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--perf-max-regression-pct=") {
+            perf_max_regression_pct = value.parse::<f64>().ok();
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--perf-cv-max-pct=") {
+            perf_cv_max_pct = value.parse::<f64>().ok();
             continue;
         }
         if arg == "--prefix" {
@@ -303,7 +328,57 @@ fn main() {
                     std::process::exit(EXIT_USAGE);
                 }
             };
-            let exit = run_tests(&target, jobs, timeout, output_format, perf_debug);
+            let gate_cfg = perf_gate_path.as_ref().map(|path| PerfGateConfig {
+                baseline_path: PathBuf::from(path),
+                max_regression_pct: perf_max_regression_pct.unwrap_or(5.0),
+            });
+            let exit = run_tests(
+                &target,
+                jobs,
+                timeout,
+                output_format,
+                perf_debug,
+                gate_cfg.as_ref(),
+            );
+            std::process::exit(exit);
+        }
+        "perf" => {
+            if trace {
+                eprintln!("build: command perf");
+            }
+            if !program_args.is_empty() {
+                eprintln!("error: unexpected extra arguments");
+                std::process::exit(EXIT_USAGE);
+            }
+            let runs = perf_runs.unwrap_or(5).max(1);
+            let jobs = test_jobs.unwrap_or(1).max(1);
+            let timeout = Duration::from_millis(test_timeout_ms.unwrap_or(5000).max(1));
+            let target = match resolve_test_target(path_arg.as_deref()) {
+                Ok(target) => target,
+                Err(err) => {
+                    eprintln!("error: {err}");
+                    std::process::exit(EXIT_USAGE);
+                }
+            };
+            let baseline_out = perf_baseline_out
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(".artifacts/perf/baseline.json"));
+            let gate_cfg = perf_gate_path.as_ref().map(|path| PerfGateConfig {
+                baseline_path: PathBuf::from(path),
+                max_regression_pct: perf_max_regression_pct.unwrap_or(5.0),
+            });
+            let cv_max_pct = perf_cv_max_pct.unwrap_or(5.0);
+            let exit = run_perf_harness(
+                &target,
+                jobs,
+                timeout,
+                output_format,
+                perf_debug,
+                runs,
+                cv_max_pct,
+                &baseline_out,
+                gate_cfg.as_ref(),
+            );
             std::process::exit(exit);
         }
         _ => {
@@ -326,6 +401,7 @@ commands:\n\
   run <path>            compile and run\n\
   dev <path>            watch and rebuild (polling)\n\
   test [path]           run tests from project root or a single .wr file\n\
+  perf [path]           run perf harness and write baseline JSON\n\
 \n\
 options:\n\
   --prefix PATH         install/update prefix (default: $PREFIX or ~/.local/wrela)\n\
@@ -338,6 +414,11 @@ options:\n\
   --jobs=N              test runner parallelism (default: 1)\n\
   --test-timeout-ms=N   per-test timeout in milliseconds (default: 5000)\n\
   --perf-debug          dump perf counters after tests\n\
+  --runs=N              perf harness run count (default: 5)\n\
+  --baseline-out=PATH   perf baseline JSON output path\n\
+  --perf-gate=PATH      compare perf summary against baseline JSON\n\
+  --perf-max-regression-pct=N  allowed regression percentage (default: 5)\n\
+  --perf-cv-max-pct=N   max coefficient of variation percentage (default: 5)\n\
   --format=json         emit diagnostics as JSON\n\
   -h, --help            show this help\n\
   -V, --version         show version\n"
@@ -489,7 +570,7 @@ fn emit_json_diag_for_diagnostic(
 fn is_command(arg: &str) -> bool {
     matches!(
         arg,
-        "init" | "update" | "check" | "build" | "compile" | "run" | "dev" | "test"
+        "init" | "update" | "check" | "build" | "compile" | "run" | "dev" | "test" | "perf"
     )
 }
 
@@ -540,9 +621,17 @@ struct MetricsDump {
     mailbox_enqueue_ok: u64,
     mailbox_enqueue_fail: u64,
     mailbox_dequeue: u64,
+    #[serde(default)]
+    sched_dispatched: u64,
+    #[serde(default)]
+    sched_skipped_no_credit: u64,
+    #[serde(default)]
+    abi_typed_lane: u64,
+    #[serde(default)]
+    abi_boxed_lane: u64,
 }
 
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
 struct MetricsTotals {
     messages_sent: u64,
     messages_dropped: u64,
@@ -560,6 +649,10 @@ struct MetricsTotals {
     mailbox_enqueue_ok: u64,
     mailbox_enqueue_fail: u64,
     mailbox_dequeue: u64,
+    sched_dispatched: u64,
+    sched_skipped_no_credit: u64,
+    abi_typed_lane: u64,
+    abi_boxed_lane: u64,
 }
 
 impl MetricsTotals {
@@ -580,6 +673,10 @@ impl MetricsTotals {
         self.mailbox_enqueue_ok += metrics.mailbox_enqueue_ok;
         self.mailbox_enqueue_fail += metrics.mailbox_enqueue_fail;
         self.mailbox_dequeue += metrics.mailbox_dequeue;
+        self.sched_dispatched += metrics.sched_dispatched;
+        self.sched_skipped_no_credit += metrics.sched_skipped_no_credit;
+        self.abi_typed_lane += metrics.abi_typed_lane;
+        self.abi_boxed_lane += metrics.abi_boxed_lane;
     }
 
     fn total_allocs(&self) -> u64 {
@@ -594,6 +691,47 @@ impl MetricsTotals {
 
 struct TestRun {
     metrics: Option<MetricsDump>,
+    compile_ns: u128,
+    runtime_ns: u128,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PerfSummary {
+    sample_count: usize,
+    compile_throughput_tests_per_sec: f64,
+    runtime_p50_ns: u128,
+    runtime_p95_ns: u128,
+    runtime_p99_ns: u128,
+    allocs_per_request: f64,
+    rc_inc: u64,
+    rc_dec: u64,
+    rc_ops_total: u64,
+    dispatch_hit_ratio: f64,
+    metrics: MetricsTotals,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PerfCv {
+    compile_throughput_pct: f64,
+    runtime_p50_pct: f64,
+    runtime_p95_pct: f64,
+    runtime_p99_pct: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PerfReport {
+    version: u32,
+    generated_at_unix_ms: u128,
+    runs: usize,
+    cv: PerfCv,
+    summary: PerfSummary,
+    samples: Vec<PerfSummary>,
+}
+
+#[derive(Debug, Clone)]
+struct PerfGateConfig {
+    baseline_path: PathBuf,
+    max_regression_pct: f64,
 }
 
 fn run_tests(
@@ -602,7 +740,56 @@ fn run_tests(
     timeout: Duration,
     output_format: OutputFormat,
     perf_debug: bool,
+    perf_gate: Option<&PerfGateConfig>,
 ) -> i32 {
+    let (exit, summary) = run_tests_once(
+        target,
+        jobs,
+        timeout,
+        output_format,
+        perf_debug,
+        perf_gate.is_some(),
+    );
+    if exit != EXIT_OK {
+        return exit;
+    }
+    if let (Some(gate), Some(summary)) = (perf_gate, summary.as_ref()) {
+        let baseline = match load_perf_baseline_summary(&gate.baseline_path) {
+            Ok(baseline) => baseline,
+            Err(err) => {
+                eprintln!(
+                    "perf gate error: failed to load baseline {}: {}",
+                    gate.baseline_path.display(),
+                    err
+                );
+                return EXIT_CODEGEN;
+            }
+        };
+        let failures = evaluate_perf_gate(summary, &baseline, gate.max_regression_pct);
+        if !failures.is_empty() {
+            eprintln!(
+                "perf gate failed against {} (max regression {:.2}%):",
+                gate.baseline_path.display(),
+                gate.max_regression_pct
+            );
+            for failure in failures {
+                eprintln!("  - {failure}");
+            }
+            return EXIT_CODEGEN;
+        }
+    }
+    EXIT_OK
+}
+
+fn run_tests_once(
+    target: &TestTarget,
+    jobs: usize,
+    timeout: Duration,
+    output_format: OutputFormat,
+    perf_debug: bool,
+    perf_lane: bool,
+) -> (i32, Option<PerfSummary>) {
+    configure_runtime_for_test_lane(perf_lane, perf_debug);
     let mut tests = Vec::new();
     let (workspace_root, compile_root, tests_root, missing_path_msg) = match target {
         TestTarget::ProjectRoot(root) => {
@@ -610,11 +797,11 @@ fn run_tests(
             let tests_root = root.join("tests");
             if !tests_root.is_dir() {
                 eprintln!("no tests found at {}", tests_root.display());
-                return EXIT_OK;
+                return (EXIT_OK, None);
             }
             if let Err(err) = collect_tests(&tests_root, &tests_root, &mut tests) {
                 eprintln!("test discovery error: {err}");
-                return EXIT_USAGE;
+                return (EXIT_USAGE, None);
             }
             (
                 root.clone(),
@@ -626,20 +813,20 @@ fn run_tests(
         TestTarget::SingleFile(path) => {
             let Some(parent) = path.parent() else {
                 eprintln!("test discovery error: file has no parent directory");
-                return EXIT_USAGE;
+                return (EXIT_USAGE, None);
             };
             let source = match fs::read_to_string(path) {
                 Ok(source) => source,
                 Err(err) => {
                     eprintln!("test discovery error: {err}");
-                    return EXIT_USAGE;
+                    return (EXIT_USAGE, None);
                 }
             };
             let module_path = match module_path_for_single_file(path) {
                 Ok(module_path) => module_path,
                 Err(err) => {
                     eprintln!("test discovery error: {err}");
-                    return EXIT_USAGE;
+                    return (EXIT_USAGE, None);
                 }
             };
             for func in extract_test_functions(&source) {
@@ -660,14 +847,13 @@ fn run_tests(
 
     if tests.is_empty() {
         eprintln!("no tests found at {}", missing_path_msg);
-        return EXIT_OK;
+        return (EXIT_OK, None);
     }
 
     let queue = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from(
         tests,
     )));
-    let (tx, rx) =
-        std::sync::mpsc::channel::<(String, bool, Duration, String, Option<MetricsDump>)>();
+    let (tx, rx) = std::sync::mpsc::channel::<(String, bool, Duration, String, Option<TestRun>)>();
     let mut handles = Vec::new();
 
     for _ in 0..jobs {
@@ -693,11 +879,11 @@ fn run_tests(
                     output_format,
                 );
                 let dur = start.elapsed();
-                let (ok, err, metrics) = match result {
-                    Ok(run) => (true, String::new(), run.metrics),
+                let (ok, err, run) = match result {
+                    Ok(run) => (true, String::new(), Some(run)),
                     Err(msg) => (false, msg, None),
                 };
-                let _ = tx.send((test.name.clone(), ok, dur, err, metrics));
+                let _ = tx.send((test.name.clone(), ok, dur, err, run));
             }
         }));
     }
@@ -705,14 +891,18 @@ fn run_tests(
 
     let mut ok_count = 0usize;
     let mut fail_count = 0usize;
-    let mut durations_ns: Vec<u128> = Vec::new();
+    let mut compile_ns: Vec<u128> = Vec::new();
+    let mut runtime_ns: Vec<u128> = Vec::new();
     let mut metrics_totals = MetricsTotals::default();
     let mut metrics_count = 0usize;
-    for (name, ok, dur, err, metrics) in rx.iter() {
-        durations_ns.push(dur.as_nanos());
-        if let Some(metrics) = metrics.as_ref() {
-            metrics_totals.add(metrics);
-            metrics_count += 1;
+    for (name, ok, dur, err, run) in rx.iter() {
+        if let Some(run) = run.as_ref() {
+            compile_ns.push(run.compile_ns);
+            runtime_ns.push(run.runtime_ns);
+            if let Some(metrics) = run.metrics.as_ref() {
+                metrics_totals.add(metrics);
+                metrics_count += 1;
+            }
         }
         if ok {
             println!("ok   {:>7?}  {}", dur, name);
@@ -726,46 +916,389 @@ fn run_tests(
         let _ = handle.join();
     }
     println!("tests: {} passed, {} failed", ok_count, fail_count);
-    if !durations_ns.is_empty() {
-        durations_ns.sort_unstable();
-        let p50 = percentile(&durations_ns, 0.50);
-        let p99 = percentile(&durations_ns, 0.99);
-        let allocs_per_request = if metrics_count == 0 {
-            0.0
-        } else {
-            metrics_totals.total_allocs() as f64 / metrics_count as f64
-        };
-        println!(
-            "perf: p50_ns={} p99_ns={} allocs/request={:.2}",
-            p50, p99, allocs_per_request
-        );
-        if perf_debug {
-            println!(
-                "perf-debug: rc_inc={} rc_dec={} mailbox_enqueue_ok={} mailbox_enqueue_fail={} mailbox_dequeue={} mailbox_high_water={} alloc_list={} alloc_map={} alloc_string={} alloc_bytes={} alloc_result={} alloc_pending={} messages_sent={} messages_dropped={} pending_resolved={} pending_dropped={}",
-                metrics_totals.rc_inc,
-                metrics_totals.rc_dec,
-                metrics_totals.mailbox_enqueue_ok,
-                metrics_totals.mailbox_enqueue_fail,
-                metrics_totals.mailbox_dequeue,
-                metrics_totals.mailbox_high_water,
-                metrics_totals.alloc_list,
-                metrics_totals.alloc_map,
-                metrics_totals.alloc_string,
-                metrics_totals.alloc_bytes,
-                metrics_totals.alloc_result,
-                metrics_totals.alloc_pending,
-                metrics_totals.messages_sent,
-                metrics_totals.messages_dropped,
-                metrics_totals.pending_resolved,
-                metrics_totals.pending_dropped
-            );
+    if fail_count != 0 || runtime_ns.is_empty() {
+        return (EXIT_CODEGEN, None);
+    }
+    let summary = build_perf_summary(&compile_ns, &runtime_ns, metrics_count, &metrics_totals);
+    print_perf_summary(&summary, perf_debug);
+    (EXIT_OK, Some(summary))
+}
+
+fn run_perf_harness(
+    target: &TestTarget,
+    jobs: usize,
+    timeout: Duration,
+    output_format: OutputFormat,
+    perf_debug: bool,
+    runs: usize,
+    cv_max_pct: f64,
+    baseline_out: &Path,
+    perf_gate: Option<&PerfGateConfig>,
+) -> i32 {
+    let mut samples = Vec::new();
+    for idx in 0..runs {
+        println!("perf-run {}/{}", idx + 1, runs);
+        let (exit, summary) =
+            run_tests_once(target, jobs, timeout, output_format, perf_debug, true);
+        if exit != EXIT_OK {
+            return exit;
+        }
+        if let Some(summary) = summary {
+            samples.push(summary);
         }
     }
-    if fail_count == 0 {
-        EXIT_OK
-    } else {
-        EXIT_CODEGEN
+    if samples.is_empty() {
+        eprintln!("perf harness error: no samples produced");
+        return EXIT_CODEGEN;
     }
+    let summary = aggregate_perf_samples(&samples);
+    let cv = compute_cv(&samples);
+    if cv.compile_throughput_pct > cv_max_pct
+        || cv.runtime_p50_pct > cv_max_pct
+        || cv.runtime_p95_pct > cv_max_pct
+        || cv.runtime_p99_pct > cv_max_pct
+    {
+        eprintln!(
+            "perf harness failed: coefficient of variation exceeded {:.2}%",
+            cv_max_pct
+        );
+        eprintln!(
+            "cv: compile={:.2}% runtime_p50={:.2}% runtime_p95={:.2}% runtime_p99={:.2}%",
+            cv.compile_throughput_pct, cv.runtime_p50_pct, cv.runtime_p95_pct, cv.runtime_p99_pct
+        );
+        return EXIT_CODEGEN;
+    }
+    if let Some(gate) = perf_gate {
+        let baseline = match load_perf_baseline_summary(&gate.baseline_path) {
+            Ok(baseline) => baseline,
+            Err(err) => {
+                eprintln!(
+                    "perf gate error: failed to load baseline {}: {}",
+                    gate.baseline_path.display(),
+                    err
+                );
+                return EXIT_CODEGEN;
+            }
+        };
+        let failures = evaluate_perf_gate(&summary, &baseline, gate.max_regression_pct);
+        if !failures.is_empty() {
+            eprintln!(
+                "perf gate failed against {} (max regression {:.2}%):",
+                gate.baseline_path.display(),
+                gate.max_regression_pct
+            );
+            for failure in failures {
+                eprintln!("  - {failure}");
+            }
+            return EXIT_CODEGEN;
+        }
+    }
+
+    let report = PerfReport {
+        version: 1,
+        generated_at_unix_ms: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::from_secs(0))
+            .as_millis(),
+        runs,
+        cv,
+        summary,
+        samples,
+    };
+    if let Some(parent) = baseline_out.parent() {
+        if let Err(err) = fs::create_dir_all(parent) {
+            eprintln!(
+                "perf harness error: failed to create {}: {}",
+                parent.display(),
+                err
+            );
+            return EXIT_CODEGEN;
+        }
+    }
+    let json = match serde_json::to_vec_pretty(&report) {
+        Ok(json) => json,
+        Err(err) => {
+            eprintln!("perf harness error: failed to serialize report: {err}");
+            return EXIT_CODEGEN;
+        }
+    };
+    if let Err(err) = fs::write(baseline_out, json) {
+        eprintln!(
+            "perf harness error: failed to write {}: {}",
+            baseline_out.display(),
+            err
+        );
+        return EXIT_CODEGEN;
+    }
+    println!("perf baseline written: {}", baseline_out.display());
+    EXIT_OK
+}
+
+fn configure_runtime_for_test_lane(perf_lane: bool, perf_debug: bool) {
+    if !perf_lane {
+        return;
+    }
+    if env::var_os("WRELA_RUNTIME_PROFILE").is_none() {
+        // Perf lanes should exercise release runtime defaults.
+        // SAFETY: this happens before test worker threads are spawned.
+        unsafe { env::set_var("WRELA_RUNTIME_PROFILE", "release") };
+    }
+    if env::var_os("WRELA_RUNTIME_METRICS").is_none() {
+        // Keep metrics out of hot loops unless profiling mode is explicitly enabled.
+        // SAFETY: this happens before test worker threads are spawned.
+        unsafe { env::set_var("WRELA_RUNTIME_METRICS", if perf_debug { "1" } else { "0" }) };
+    }
+}
+
+fn build_perf_summary(
+    compile_ns: &[u128],
+    runtime_ns: &[u128],
+    metrics_count: usize,
+    metrics_totals: &MetricsTotals,
+) -> PerfSummary {
+    let compile_total_ns: u128 = compile_ns.iter().copied().sum();
+    let compile_throughput_tests_per_sec = if compile_total_ns == 0 {
+        0.0
+    } else {
+        compile_ns.len() as f64 / (compile_total_ns as f64 / 1_000_000_000.0)
+    };
+
+    let mut runtime_sorted = runtime_ns.to_vec();
+    runtime_sorted.sort_unstable();
+    let runtime_p50_ns = percentile(&runtime_sorted, 0.50);
+    let runtime_p95_ns = percentile(&runtime_sorted, 0.95);
+    let runtime_p99_ns = percentile(&runtime_sorted, 0.99);
+
+    let allocs_per_request = if metrics_count == 0 {
+        0.0
+    } else {
+        metrics_totals.total_allocs() as f64 / metrics_count as f64
+    };
+    let dispatch_total = metrics_totals.sched_dispatched + metrics_totals.sched_skipped_no_credit;
+    let dispatch_hit_ratio = if dispatch_total == 0 {
+        1.0
+    } else {
+        metrics_totals.sched_dispatched as f64 / dispatch_total as f64
+    };
+    let rc_ops_total = metrics_totals.rc_inc + metrics_totals.rc_dec;
+    PerfSummary {
+        sample_count: runtime_ns.len(),
+        compile_throughput_tests_per_sec,
+        runtime_p50_ns,
+        runtime_p95_ns,
+        runtime_p99_ns,
+        allocs_per_request,
+        rc_inc: metrics_totals.rc_inc,
+        rc_dec: metrics_totals.rc_dec,
+        rc_ops_total,
+        dispatch_hit_ratio,
+        metrics: metrics_totals.clone(),
+    }
+}
+
+fn print_perf_summary(summary: &PerfSummary, perf_debug: bool) {
+    println!(
+        "perf: compile_tps={:.2} p50_ns={} p95_ns={} p99_ns={} allocs/request={:.2} rc_ops={} dispatch_hit_ratio={:.4}",
+        summary.compile_throughput_tests_per_sec,
+        summary.runtime_p50_ns,
+        summary.runtime_p95_ns,
+        summary.runtime_p99_ns,
+        summary.allocs_per_request,
+        summary.rc_ops_total,
+        summary.dispatch_hit_ratio
+    );
+    if perf_debug {
+        println!(
+            "perf-debug: rc_inc={} rc_dec={} mailbox_enqueue_ok={} mailbox_enqueue_fail={} mailbox_dequeue={} mailbox_high_water={} alloc_list={} alloc_map={} alloc_string={} alloc_bytes={} alloc_result={} alloc_pending={} messages_sent={} messages_dropped={} pending_resolved={} pending_dropped={} sched_dispatched={} sched_skipped_no_credit={} abi_typed_lane={} abi_boxed_lane={}",
+            summary.metrics.rc_inc,
+            summary.metrics.rc_dec,
+            summary.metrics.mailbox_enqueue_ok,
+            summary.metrics.mailbox_enqueue_fail,
+            summary.metrics.mailbox_dequeue,
+            summary.metrics.mailbox_high_water,
+            summary.metrics.alloc_list,
+            summary.metrics.alloc_map,
+            summary.metrics.alloc_string,
+            summary.metrics.alloc_bytes,
+            summary.metrics.alloc_result,
+            summary.metrics.alloc_pending,
+            summary.metrics.messages_sent,
+            summary.metrics.messages_dropped,
+            summary.metrics.pending_resolved,
+            summary.metrics.pending_dropped,
+            summary.metrics.sched_dispatched,
+            summary.metrics.sched_skipped_no_credit,
+            summary.metrics.abi_typed_lane,
+            summary.metrics.abi_boxed_lane
+        );
+    }
+}
+
+fn aggregate_perf_samples(samples: &[PerfSummary]) -> PerfSummary {
+    if samples.len() == 1 {
+        return samples[0].clone();
+    }
+    let len = samples.len() as f64;
+    let mut metrics = MetricsTotals::default();
+    for sample in samples {
+        metrics.messages_sent += sample.metrics.messages_sent;
+        metrics.messages_dropped += sample.metrics.messages_dropped;
+        metrics.pending_resolved += sample.metrics.pending_resolved;
+        metrics.pending_dropped += sample.metrics.pending_dropped;
+        metrics.mailbox_high_water = metrics
+            .mailbox_high_water
+            .max(sample.metrics.mailbox_high_water);
+        metrics.rc_inc += sample.metrics.rc_inc;
+        metrics.rc_dec += sample.metrics.rc_dec;
+        metrics.alloc_list += sample.metrics.alloc_list;
+        metrics.alloc_map += sample.metrics.alloc_map;
+        metrics.alloc_string += sample.metrics.alloc_string;
+        metrics.alloc_bytes += sample.metrics.alloc_bytes;
+        metrics.alloc_result += sample.metrics.alloc_result;
+        metrics.alloc_pending += sample.metrics.alloc_pending;
+        metrics.mailbox_enqueue_ok += sample.metrics.mailbox_enqueue_ok;
+        metrics.mailbox_enqueue_fail += sample.metrics.mailbox_enqueue_fail;
+        metrics.mailbox_dequeue += sample.metrics.mailbox_dequeue;
+        metrics.sched_dispatched += sample.metrics.sched_dispatched;
+        metrics.sched_skipped_no_credit += sample.metrics.sched_skipped_no_credit;
+        metrics.abi_typed_lane += sample.metrics.abi_typed_lane;
+        metrics.abi_boxed_lane += sample.metrics.abi_boxed_lane;
+    }
+    let mut runtime_p50: Vec<u128> = samples.iter().map(|s| s.runtime_p50_ns).collect();
+    let mut runtime_p95: Vec<u128> = samples.iter().map(|s| s.runtime_p95_ns).collect();
+    let mut runtime_p99: Vec<u128> = samples.iter().map(|s| s.runtime_p99_ns).collect();
+    runtime_p50.sort_unstable();
+    runtime_p95.sort_unstable();
+    runtime_p99.sort_unstable();
+    PerfSummary {
+        sample_count: samples.iter().map(|s| s.sample_count).sum(),
+        compile_throughput_tests_per_sec: samples
+            .iter()
+            .map(|s| s.compile_throughput_tests_per_sec)
+            .sum::<f64>()
+            / len,
+        runtime_p50_ns: runtime_p50[runtime_p50.len() / 2],
+        runtime_p95_ns: runtime_p95[runtime_p95.len() / 2],
+        runtime_p99_ns: runtime_p99[runtime_p99.len() / 2],
+        allocs_per_request: samples.iter().map(|s| s.allocs_per_request).sum::<f64>() / len,
+        rc_inc: (samples.iter().map(|s| s.rc_inc as f64).sum::<f64>() / len).round() as u64,
+        rc_dec: (samples.iter().map(|s| s.rc_dec as f64).sum::<f64>() / len).round() as u64,
+        rc_ops_total: (samples.iter().map(|s| s.rc_ops_total as f64).sum::<f64>() / len).round()
+            as u64,
+        dispatch_hit_ratio: samples.iter().map(|s| s.dispatch_hit_ratio).sum::<f64>() / len,
+        metrics,
+    }
+}
+
+fn coefficient_of_variation(values: &[f64]) -> f64 {
+    if values.len() <= 1 {
+        return 0.0;
+    }
+    let mean = values.iter().sum::<f64>() / values.len() as f64;
+    if mean.abs() <= f64::EPSILON {
+        return 0.0;
+    }
+    let variance = values
+        .iter()
+        .map(|value| {
+            let d = *value - mean;
+            d * d
+        })
+        .sum::<f64>()
+        / values.len() as f64;
+    (variance.sqrt() / mean) * 100.0
+}
+
+fn compute_cv(samples: &[PerfSummary]) -> PerfCv {
+    let cv_samples: &[PerfSummary] = if samples.len() > 3 {
+        &samples[1..]
+    } else {
+        samples
+    };
+    let compile: Vec<f64> = cv_samples
+        .iter()
+        .map(|sample| sample.compile_throughput_tests_per_sec)
+        .collect();
+    let p50: Vec<f64> = cv_samples
+        .iter()
+        .map(|sample| sample.runtime_p50_ns as f64)
+        .collect();
+    let p95: Vec<f64> = cv_samples
+        .iter()
+        .map(|sample| sample.runtime_p95_ns as f64)
+        .collect();
+    let p99: Vec<f64> = cv_samples
+        .iter()
+        .map(|sample| sample.runtime_p99_ns as f64)
+        .collect();
+    PerfCv {
+        compile_throughput_pct: coefficient_of_variation(&compile),
+        runtime_p50_pct: coefficient_of_variation(&p50),
+        runtime_p95_pct: coefficient_of_variation(&p95),
+        runtime_p99_pct: coefficient_of_variation(&p99),
+    }
+}
+
+fn load_perf_baseline_summary(path: &Path) -> Result<PerfSummary, String> {
+    let bytes = fs::read(path).map_err(|err| err.to_string())?;
+    if let Ok(report) = serde_json::from_slice::<PerfReport>(&bytes) {
+        return Ok(report.summary);
+    }
+    serde_json::from_slice::<PerfSummary>(&bytes).map_err(|err| err.to_string())
+}
+
+fn evaluate_perf_gate(
+    current: &PerfSummary,
+    baseline: &PerfSummary,
+    max_regression_pct: f64,
+) -> Vec<String> {
+    let mut failures = Vec::new();
+    let up = 1.0 + (max_regression_pct / 100.0);
+    let down = 1.0 - (max_regression_pct / 100.0);
+
+    let runtime_p50_limit = baseline.runtime_p50_ns as f64 * up;
+    if current.runtime_p50_ns as f64 > runtime_p50_limit {
+        failures.push(format!(
+            "runtime_p50_ns {} > {:.0}",
+            current.runtime_p50_ns, runtime_p50_limit
+        ));
+    }
+    let runtime_p95_limit = baseline.runtime_p95_ns as f64 * up;
+    if current.runtime_p95_ns as f64 > runtime_p95_limit {
+        failures.push(format!(
+            "runtime_p95_ns {} > {:.0}",
+            current.runtime_p95_ns, runtime_p95_limit
+        ));
+    }
+    let runtime_p99_limit = baseline.runtime_p99_ns as f64 * up;
+    if current.runtime_p99_ns as f64 > runtime_p99_limit {
+        failures.push(format!(
+            "runtime_p99_ns {} > {:.0}",
+            current.runtime_p99_ns, runtime_p99_limit
+        ));
+    }
+    let compile_min = baseline.compile_throughput_tests_per_sec * down;
+    if current.compile_throughput_tests_per_sec < compile_min {
+        failures.push(format!(
+            "compile_tps {:.2} < {:.2}",
+            current.compile_throughput_tests_per_sec, compile_min
+        ));
+    }
+    let allocs_max = baseline.allocs_per_request * up;
+    if current.allocs_per_request > allocs_max {
+        failures.push(format!(
+            "allocs/request {:.2} > {:.2}",
+            current.allocs_per_request, allocs_max
+        ));
+    }
+    let dispatch_min = baseline.dispatch_hit_ratio * down;
+    if current.dispatch_hit_ratio < dispatch_min {
+        failures.push(format!(
+            "dispatch_hit_ratio {:.4} < {:.4}",
+            current.dispatch_hit_ratio, dispatch_min
+        ));
+    }
+    failures
 }
 
 fn percentile(samples: &[u128], pct: f64) -> u128 {
@@ -872,6 +1405,7 @@ fn run_single_test(
     if let Err(err) = fs::write(&entry_path, entry) {
         return Err(format!("failed to write test entry: {err}"));
     }
+    let compile_start = Instant::now();
     let mir_module =
         match compile_to_mir_with_root(&entry_path, compile_root, tests_root, output_format) {
             Ok(mir) => mir,
@@ -880,11 +1414,26 @@ fn run_single_test(
     if let Err(err) = wrela::backend::cranelift::compile_to_executable(&mir_module, &exe_path) {
         return Err(format!("codegen error: {}", err.0));
     }
+    let compile_ns = compile_start.elapsed().as_nanos();
     let metrics_path = temp_dir.join(format!("{}_metrics.json", file_stem));
     let _ = fs::remove_file(&metrics_path);
+    let runtime_start = Instant::now();
+    if let Some(delay_ms) = synthetic_slowdown_ms() {
+        std::thread::sleep(Duration::from_millis(delay_ms));
+    }
     run_with_timeout(&exe_path, timeout, Some(&metrics_path)).map_err(|e| e)?;
+    let runtime_ns = runtime_start.elapsed().as_nanos();
     let metrics = read_metrics_dump(&metrics_path);
-    Ok(TestRun { metrics })
+    Ok(TestRun {
+        metrics,
+        compile_ns,
+        runtime_ns,
+    })
+}
+
+fn synthetic_slowdown_ms() -> Option<u64> {
+    let raw = env::var("WRELA_TEST_SLOWDOWN_MS").ok()?;
+    raw.parse::<u64>().ok()
 }
 
 fn read_metrics_dump(path: &Path) -> Option<MetricsDump> {

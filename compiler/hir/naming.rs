@@ -1130,26 +1130,11 @@ fn is_plural_name(name: &str) -> bool {
 }
 
 const IRREGULAR_PLURALS: &[&str] = &[
-    "children",
-    "people",
-    "men",
-    "women",
-    "teeth",
-    "feet",
-    "geese",
-    "data",
-    "indices",
+    "children", "people", "men", "women", "teeth", "feet", "geese", "data", "indices",
 ];
 
 const SINGULAR_ENDS_WITH_S: &[&str] = &[
-    "status",
-    "analysis",
-    "basis",
-    "thesis",
-    "axis",
-    "class",
-    "glass",
-    "bus",
+    "status", "analysis", "basis", "thesis", "axis", "class", "glass", "bus",
 ];
 
 fn span_from_option(span: Option<TextRange>) -> SourceSpan {

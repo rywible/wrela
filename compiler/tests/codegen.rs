@@ -5,8 +5,8 @@ use wrela::hir::project::load_project;
 use wrela::mir;
 use wrela::mir::analysis;
 use wrela::mir::ir::{
-    AllocKind, BasicBlock, BlockId, Local, MirFunction, MirType, Place, Rvalue, Stmt, Temp, TempId,
-    Terminator, Value,
+    AllocKind, BasicBlock, BlockId, CallKind, CallTarget, Local, MirFunction, MirType, Place,
+    Rvalue, Stmt, Temp, TempId, Terminator, Value,
 };
 
 fn load_module_from_source(source: &str) -> hir::Module {
@@ -22,6 +22,13 @@ fn expected_int_exit(val: i64) -> i32 {
     (val as i32) & 0xFF
 }
 
+fn optimize_mir_module(mir_module: &mut mir::ir::MirModule) {
+    for func in &mut mir_module.functions {
+        mir::opt::run_function_passes(func);
+    }
+    mir::opt::run_module_passes(mir_module);
+}
+
 fn compile_and_run_native_source(source: &str, executable_name: &str) -> std::process::Output {
     let module = load_module_from_source(source);
     let semantic = hir::semantic::check_module(&module);
@@ -34,9 +41,7 @@ fn compile_and_run_native_source(source: &str, executable_name: &str) -> std::pr
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
     let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
-    for func in &mut mir_module.functions {
-        mir::opt::run_function_passes(func);
-    }
+    optimize_mir_module(&mut mir_module);
     let mir_errors = mir::validate::validate_module(&mir_module);
     assert!(mir_errors.is_empty(), "mir errors: {mir_errors:?}");
 
@@ -136,6 +141,199 @@ to run() -> Integer:
     let status = Command::new(&out).status().expect("run failed");
     let expected = expected_int_exit(116);
     assert_eq!(status.code().unwrap_or(-1), expected);
+}
+
+#[test]
+fn typed_integer_range_for_uses_mir_fast_path() {
+    let source = r#"
+to run() -> Integer:
+    start = 1
+    stop = 4
+    mutable total = 0
+    for i in start...stop:
+        total += i
+    return total
+"#;
+    let module = load_module_from_source(source);
+    let semantic = hir::semantic::check_module(&module);
+    assert!(
+        semantic.errors.is_empty(),
+        "semantic errors: {:?}",
+        semantic.errors
+    );
+    let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+    assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
+
+    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    for func in &mut mir_module.functions {
+        mir::opt::run_function_passes(func);
+    }
+    let run = mir_module
+        .functions
+        .iter()
+        .find(|func| func.name.as_str() == "run")
+        .expect("missing run");
+
+    assert!(
+        run.locals
+            .iter()
+            .any(|local| local.name.as_str() == "i" && local.ty == MirType::Integer),
+        "expected integer-typed loop variable"
+    );
+    assert!(
+        run.locals
+            .iter()
+            .any(|local| local.name.starts_with("$range_idx") && local.ty == MirType::Integer),
+        "expected integer-typed induction variable"
+    );
+
+    for block in &run.blocks {
+        for stmt in &block.stmts {
+            assert!(
+                !matches!(stmt, Stmt::IterInit { .. } | Stmt::IterNext { .. }),
+                "typed range fast path should not lower through iterator protocol"
+            );
+            if let Stmt::Assign { value, .. } = stmt {
+                assert!(
+                    !matches!(
+                        value,
+                        Rvalue::Binary {
+                            op: hir::BinaryOp::Range,
+                            ..
+                        }
+                    ),
+                    "typed range fast path should not materialize range values"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn integer_tight_loop_has_no_rc_traffic_in_mir() {
+    let source = r#"
+to run() -> Integer:
+    mutable total = 0
+    for i in 1...500:
+        total = total + i
+    return total
+"#;
+    let module = load_module_from_source(source);
+    let semantic = hir::semantic::check_module(&module);
+    assert!(
+        semantic.errors.is_empty(),
+        "semantic errors: {:?}",
+        semantic.errors
+    );
+    let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+    assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
+
+    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    for func in &mut mir_module.functions {
+        mir::opt::run_function_passes(func);
+    }
+    let run = mir_module
+        .functions
+        .iter()
+        .find(|func| func.name.as_str() == "run")
+        .expect("missing run");
+
+    assert!(
+        run.blocks
+            .iter()
+            .flat_map(|block| block.stmts.iter())
+            .all(|stmt| !matches!(stmt, Stmt::RcInc { .. } | Stmt::RcDec { .. })),
+        "typed integer loop should not emit retain/release traffic"
+    );
+}
+
+#[test]
+fn check_given_boolean_lane_has_no_rc_traffic() {
+    let source = r#"
+check is_positive(value: Integer) -> Boolean:
+    return value > 0
+
+to run() -> Integer:
+    a = is_positive given 3
+    b = is_positive given -1
+    if a:
+        if not b:
+            return 1
+    return 0
+"#;
+    let module = load_module_from_source(source);
+    let semantic = hir::semantic::check_module(&module);
+    assert!(
+        semantic.errors.is_empty(),
+        "semantic errors: {:?}",
+        semantic.errors
+    );
+    let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+    assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
+
+    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    for func in &mut mir_module.functions {
+        mir::opt::run_function_passes(func);
+    }
+    let run = mir_module
+        .functions
+        .iter()
+        .find(|func| func.name.as_str() == "run")
+        .expect("missing run");
+    let has_rc = run
+        .blocks
+        .iter()
+        .flat_map(|block| block.stmts.iter())
+        .any(|stmt| matches!(stmt, Stmt::RcInc { .. } | Stmt::RcDec { .. }));
+    assert!(!has_rc, "check/given boolean lane should remain scalar");
+}
+
+#[test]
+fn result_otherwise_from_call_keeps_guarded_unwrap() {
+    let source = r#"
+to try_to_read(flag: Boolean) -> Result[Integer]:
+    if flag:
+        return 9
+    return error "bad"
+
+to run() -> Integer:
+    return try_to_read(false) otherwise 5
+"#;
+    let module = load_module_from_source(source);
+    let semantic = hir::semantic::check_module(&module);
+    assert!(
+        semantic.errors.is_empty(),
+        "semantic errors: {:?}",
+        semantic.errors
+    );
+    let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+    assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
+
+    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    for func in &mut mir_module.functions {
+        mir::opt::run_function_passes(func);
+    }
+    let run = mir_module
+        .functions
+        .iter()
+        .find(|func| func.name.as_str() == "run")
+        .expect("missing run");
+    let mut saw_result_is_ok = false;
+    let mut saw_result_unwrap = false;
+    for stmt in run.blocks.iter().flat_map(|block| block.stmts.iter()) {
+        if let Stmt::Assign { value, .. } = stmt {
+            match value {
+                Rvalue::ResultIsOk { .. } => saw_result_is_ok = true,
+                Rvalue::ResultUnwrap { .. } => saw_result_unwrap = true,
+                _ => {}
+            }
+        }
+    }
+    assert!(saw_result_is_ok, "otherwise should guard with ResultIsOk");
+    assert!(
+        saw_result_unwrap,
+        "unknown call result should keep guarded unwrap"
+    );
 }
 
 #[test]
@@ -331,6 +529,45 @@ fn mir_alloc_annotations_preserved() {
 }
 
 #[test]
+fn non_escaping_local_temp_avoids_rc_traffic() {
+    let span = rowan::TextRange::new(0.into(), 0.into());
+    let temp_local = TempId(0);
+    let mut func = MirFunction {
+        name: "alloc_local_temp".into(),
+        params: Vec::new(),
+        locals: Vec::new(),
+        temps: vec![Temp {
+            ty: MirType::Unknown,
+        }],
+        blocks: vec![BasicBlock {
+            stmts: vec![Stmt::Assign {
+                place: Place::Temp(temp_local),
+                value: Rvalue::BuildList {
+                    items: Vec::new(),
+                    alloc: AllocKind::LocalTemp,
+                },
+                span,
+            }],
+            terminator: Terminator::Return { value: None, span },
+        }],
+        entry: BlockId(0),
+        suspendable: false,
+    };
+
+    mir::opt::run_function_passes(&mut func);
+
+    let has_rc = func
+        .blocks
+        .iter()
+        .flat_map(|b| &b.stmts)
+        .any(|stmt| matches!(stmt, Stmt::RcInc { .. } | Stmt::RcDec { .. }));
+    assert!(
+        !has_rc,
+        "local temp allocation should not gain RC bookkeeping"
+    );
+}
+
+#[test]
 fn call_graph_and_type_map_smoke() {
     let source = r#"
 to g(x: Integer) -> Integer:
@@ -512,6 +749,54 @@ to run() -> Integer:
 
     let status = Command::new(&out).status().expect("run failed");
     let expected = expected_int_exit(5);
+    assert_eq!(status.code().unwrap_or(-1), expected);
+}
+
+#[test]
+fn native_class_slot_layout_correctness() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = r#"
+A Counter:
+    has:
+        mutable value: Integer
+        mutable step: Integer
+
+    can bump() -> Nothing:
+        its.value += its.step
+
+to run() -> Integer:
+    c = Counter(value=5, step=2)
+    c.bump()
+    c.step = 4
+    c.bump()
+    return c.value
+"#;
+
+    let module = load_module_from_source(source);
+    let semantic = hir::semantic::check_module(&module);
+    assert!(
+        semantic.errors.is_empty(),
+        "semantic errors: {:?}",
+        semantic.errors
+    );
+    let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+    assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
+
+    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    for func in &mut mir_module.functions {
+        mir::opt::run_function_passes(func);
+    }
+    let mir_errors = mir::validate::validate_module(&mir_module);
+    assert!(mir_errors.is_empty(), "mir errors: {mir_errors:?}");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = dir.path().join("wr_class_slot_layout_correctness");
+    wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
+
+    let status = Command::new(&out).status().expect("run failed");
+    let expected = expected_int_exit(11);
     assert_eq!(status.code().unwrap_or(-1), expected);
 }
 
@@ -1395,6 +1680,106 @@ to run() -> Integer:
 }
 
 #[test]
+fn native_actor_fire_burst_smoke() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = r#"
+A Counter:
+    has:
+        mutable total: Integer = 0
+    can add(x: Integer) -> Integer:
+        its.total += x
+        return its.total
+
+to run() -> Integer:
+    optimize balance:
+        c = detach Counter() * 1
+        __wr_actor_fire_burst_begin(c)
+        fire c.add(2)
+        fire c.add(3)
+        __wr_actor_fire_burst_end(c)
+        v = await c.add(4) otherwise 0
+        return v
+"#;
+
+    let module = load_module_from_source(source);
+    let semantic = hir::semantic::check_module(&module);
+    assert!(
+        semantic.errors.is_empty(),
+        "semantic errors: {:?}",
+        semantic.errors
+    );
+    let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+    assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
+
+    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    for func in &mut mir_module.functions {
+        mir::opt::run_function_passes(func);
+    }
+    let mir_errors = mir::validate::validate_module(&mir_module);
+    assert!(mir_errors.is_empty(), "mir errors: {mir_errors:?}");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = dir.path().join("wr_actor_fire_burst_smoke");
+    wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
+
+    let status = Command::new(&out).status().expect("run failed");
+    let expected = expected_int_exit(9);
+    assert_eq!(status.code().unwrap_or(-1), expected);
+}
+
+#[test]
+fn native_pool_fire_burst_smoke() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = r#"
+A Counter:
+    has:
+        mutable total: Integer = 0
+    can add(x: Integer) -> Integer:
+        its.total += x
+        return its.total
+
+to run() -> Integer:
+    optimize balance:
+        p = detach Pool.of(Counter, size=1) * 1
+        __wr_actor_fire_burst_begin(p)
+        fire p.add(1)
+        fire p.add(2)
+        __wr_actor_fire_burst_end(p)
+        v = await p.add(3) otherwise 0
+        return v
+"#;
+
+    let module = load_module_from_source(source);
+    let semantic = hir::semantic::check_module(&module);
+    assert!(
+        semantic.errors.is_empty(),
+        "semantic errors: {:?}",
+        semantic.errors
+    );
+    let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+    assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
+
+    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    for func in &mut mir_module.functions {
+        mir::opt::run_function_passes(func);
+    }
+    let mir_errors = mir::validate::validate_module(&mir_module);
+    assert!(mir_errors.is_empty(), "mir errors: {mir_errors:?}");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = dir.path().join("wr_pool_fire_burst_smoke");
+    wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
+
+    let status = Command::new(&out).status().expect("run failed");
+    let expected = expected_int_exit(6);
+    assert_eq!(status.code().unwrap_or(-1), expected);
+}
+
+#[test]
 fn native_result_otherwise_smoke() {
     if std::env::var("WR_SKIP_NATIVE").is_ok() {
         return;
@@ -1617,6 +2002,171 @@ to run() -> Integer:
     let status = Command::new(&out).status().expect("run failed");
     let expected = expected_int_exit(2);
     assert_eq!(status.code().unwrap_or(-1), expected);
+}
+
+#[test]
+fn interface_devirt_monomorphic_rewrites_callsite_to_direct() {
+    let source = r#"
+A Printable:
+    must score() -> Integer
+
+A Foo:
+    is a Printable
+    can score() -> Integer:
+        return 7
+
+to call(p: Printable) -> Integer:
+    return p.score()
+
+to run() -> Integer:
+    return call(p=Foo())
+"#;
+
+    let module = load_module_from_source(source);
+    let semantic = hir::semantic::check_module(&module);
+    assert!(
+        semantic.errors.is_empty(),
+        "semantic errors: {:?}",
+        semantic.errors
+    );
+    let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+    assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
+
+    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    optimize_mir_module(&mut mir_module);
+
+    let call_fn = mir_module
+        .functions
+        .iter()
+        .find(|func| func.name.as_str() == "call")
+        .expect("missing call function");
+
+    let mut saw_direct = false;
+    for block in &call_fn.blocks {
+        for stmt in &block.stmts {
+            let Stmt::Assign { value, .. } = stmt else {
+                continue;
+            };
+            let Rvalue::Call {
+                kind: CallKind::Sync,
+                target: CallTarget::Function(name),
+                ..
+            } = value
+            else {
+                continue;
+            };
+            if name.as_str().starts_with("Foo.score") {
+                saw_direct = true;
+            }
+            assert_ne!(
+                name.as_str(),
+                "Printable.score",
+                "monomorphic interface call should not keep dispatch target"
+            );
+            assert!(
+                !name.as_str().starts_with("__wr_iface_guard."),
+                "monomorphic interface call should not use guard helper"
+            );
+        }
+    }
+    assert!(
+        saw_direct,
+        "expected monomorphic interface call to rewrite to direct Foo.score target"
+    );
+}
+
+#[test]
+fn interface_devirt_polymorphic_generates_guard_with_fallback() {
+    let source = r#"
+A Printable:
+    must score() -> Integer
+
+A Foo:
+    is a Printable
+    can score() -> Integer:
+        return 1
+
+A Bar:
+    is a Printable
+    can score() -> Integer:
+        return 2
+
+A Baz:
+    is a Printable
+    can score() -> Integer:
+        return 3
+
+to call(p: Printable) -> Integer:
+    return p.score()
+
+to run() -> Integer:
+    return call(p=Baz())
+"#;
+
+    let module = load_module_from_source(source);
+    let semantic = hir::semantic::check_module(&module);
+    assert!(
+        semantic.errors.is_empty(),
+        "semantic errors: {:?}",
+        semantic.errors
+    );
+    let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+    assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
+
+    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    optimize_mir_module(&mut mir_module);
+
+    let call_fn = mir_module
+        .functions
+        .iter()
+        .find(|func| func.name.as_str() == "call")
+        .expect("missing call function");
+
+    let guarded = call_fn
+        .blocks
+        .iter()
+        .flat_map(|block| block.stmts.iter())
+        .find_map(|stmt| {
+            let Stmt::Assign { value, .. } = stmt else {
+                return None;
+            };
+            let Rvalue::Call {
+                kind: CallKind::Sync,
+                target,
+                ..
+            } = value
+            else {
+                return None;
+            };
+            let CallTarget::GuardedInterface {
+                fast_paths,
+                fallback,
+            } = target
+            else {
+                return None;
+            };
+            Some((fast_paths.clone(), fallback.clone()))
+        })
+        .expect("expected callsite to use guarded interface target");
+    let (fast_paths, fallback) = guarded;
+    assert!(
+        fast_paths.len() >= 2,
+        "expected guarded target to include multiple fast paths"
+    );
+    assert!(
+        fallback.as_str() == "Printable.score",
+        "expected guarded target to keep interface dispatch fallback"
+    );
+
+    if std::env::var("WR_SKIP_NATIVE").is_err() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path().join("wr_interface_guard_fallback");
+        wrela::backend::cranelift::compile_to_executable(&mir_module, &out)
+            .expect("codegen failed");
+        let status = Command::new(&out).status().expect("run failed");
+        let expected = expected_int_exit(3);
+        assert_eq!(status.code().unwrap_or(-1), expected);
+    }
 }
 
 #[test]

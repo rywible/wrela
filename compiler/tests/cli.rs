@@ -204,7 +204,8 @@ fn cli_test_perf_summary() {
         .expect("run wrela");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("perf: p50_ns="));
+    assert!(stdout.contains("p50_ns="));
+    assert!(stdout.contains("p95_ns="));
     assert!(stdout.contains("p99_ns="));
     assert!(stdout.contains("allocs/request="));
 }
@@ -225,6 +226,74 @@ fn cli_test_perf_debug() {
     assert!(stdout.contains("rc_inc="));
     assert!(stdout.contains("mailbox_enqueue_ok="));
     assert!(stdout.contains("alloc_list="));
+}
+
+#[test]
+fn cli_perf_writes_baseline_json() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_test_project(dir.path());
+    let baseline = dir.path().join("baseline.json");
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .current_dir(dir.path())
+        .arg("perf")
+        .arg("--runs=1")
+        .arg(format!("--baseline-out={}", baseline.display()))
+        .arg(".")
+        .output()
+        .expect("run wrela");
+    assert!(output.status.success(), "{:?}", output);
+    assert!(baseline.exists());
+
+    let bytes = std::fs::read(&baseline).expect("read baseline");
+    let json: serde_json::Value = serde_json::from_slice(&bytes).expect("valid baseline json");
+    assert!(json.get("summary").is_some());
+    let summary = json.get("summary").expect("summary");
+    assert!(summary.get("compile_throughput_tests_per_sec").is_some());
+    assert!(summary.get("runtime_p50_ns").is_some());
+    assert!(summary.get("runtime_p95_ns").is_some());
+    assert!(summary.get("runtime_p99_ns").is_some());
+}
+
+#[test]
+fn cli_perf_gate_fails_with_synthetic_slowdown() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_test_project(dir.path());
+    let baseline = dir.path().join("baseline.json");
+    let baseline_output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .current_dir(dir.path())
+        .arg("perf")
+        .arg("--runs=1")
+        .arg(format!("--baseline-out={}", baseline.display()))
+        .arg(".")
+        .output()
+        .expect("run baseline");
+    assert!(baseline_output.status.success());
+
+    let pass_output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .current_dir(dir.path())
+        .arg("test")
+        .arg(format!("--perf-gate={}", baseline.display()))
+        .arg("--perf-max-regression-pct=10000")
+        .arg(".")
+        .output()
+        .expect("run pass gate");
+    assert!(pass_output.status.success());
+
+    let fail_output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .current_dir(dir.path())
+        .env("WRELA_TEST_SLOWDOWN_MS", "1200")
+        .arg("test")
+        .arg(format!("--perf-gate={}", baseline.display()))
+        .arg("--perf-max-regression-pct=0")
+        .arg(".")
+        .output()
+        .expect("run fail gate");
+    assert!(
+        !fail_output.status.success(),
+        "gate should fail with slowdown"
+    );
+    let stderr = String::from_utf8_lossy(&fail_output.stderr);
+    assert!(stderr.contains("perf gate failed"));
 }
 
 #[test]

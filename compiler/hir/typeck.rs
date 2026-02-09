@@ -1231,6 +1231,30 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
+            SmolStr::new("__wr_actor_fire_burst_begin"),
+            FunctionSig {
+                params: vec![(SmolStr::new("handle"), Type::Unknown)],
+                ret: Type::Nil,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_actor_fire_burst_end"),
+            FunctionSig {
+                params: vec![(SmolStr::new("handle"), Type::Unknown)],
+                ret: Type::Nil,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_actor_fire_burst_abort"),
+            FunctionSig {
+                params: vec![(SmolStr::new("handle"), Type::Unknown)],
+                ret: Type::Nil,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
             SmolStr::new("__wr_metrics_get"),
             FunctionSig {
                 params: vec![(SmolStr::new("id"), Type::Integer)],
@@ -5644,6 +5668,41 @@ A Foo:
                 .iter()
                 .any(|err| matches!(err, TypeError::InterfaceMethodMismatch { .. }))
         );
+    }
+
+    #[test]
+    fn test_given_call_records_boolean_expr_type() {
+        let input = r#"
+check is_positive(value: Integer) -> Boolean:
+    return value > 0
+
+to f() -> Boolean:
+    return is_positive given 3
+"#;
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let (errors, info) = check_module_with_info(&module);
+        assert!(errors.is_empty(), "{errors:?}");
+
+        let (func_id, func) = module
+            .functions
+            .iter()
+            .find(|(_, func)| func.name.as_str() == "f")
+            .expect("missing function f");
+        let body = func.body.as_ref().expect("missing function body");
+        let given_expr = body
+            .exprs
+            .iter()
+            .find_map(|(id, expr)| match expr {
+                Expr::GivenCall { .. } => Some(id.into_raw()),
+                _ => None,
+            })
+            .expect("missing given call");
+        let fn_info = info
+            .function(func_id)
+            .expect("missing type info for function");
+        assert_eq!(fn_info.expr_types.get(&given_expr), Some(&Type::Boolean));
     }
 
     #[test]

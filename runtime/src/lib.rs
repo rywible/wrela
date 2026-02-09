@@ -12,11 +12,16 @@ use data::object::drop_object;
 use data::value::int_value;
 pub use data::value::{TypeId, Value};
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 const WR_REACTOR_EVENT_READABLE: i32 = 1;
 const WR_REACTOR_EVENT_TIMER: i32 = 2;
+const ABI_TYPED_LANE_UNKNOWN: u8 = 0;
+const ABI_TYPED_LANE_ENABLED: u8 = 1;
+const ABI_TYPED_LANE_DISABLED: u8 = 2;
+
+static ABI_TYPED_LANE_CACHE: AtomicU8 = AtomicU8::new(ABI_TYPED_LANE_UNKNOWN);
 
 struct ReactorRegistry {
     next_handle: AtomicU64,
@@ -173,6 +178,9 @@ pub unsafe extern "C" fn wr_rc_inc(value: Value) {
     if !value.is_ptr() {
         return;
     }
+    if arena::is_arena_ptr(value.as_ptr()) {
+        return;
+    }
     metrics::inc_rc_inc();
     let header = unsafe { &*value.as_ptr() };
     header.rc.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -181,6 +189,9 @@ pub unsafe extern "C" fn wr_rc_inc(value: Value) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wr_rc_dec(value: Value) {
     if !value.is_ptr() {
+        return;
+    }
+    if arena::is_arena_ptr(value.as_ptr()) {
         return;
     }
     metrics::inc_rc_dec();
@@ -192,10 +203,6 @@ pub unsafe extern "C" fn wr_rc_dec(value: Value) {
     }
     if prev == 1 {
         std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
-        if arena::is_arena_ptr(value.as_ptr()) {
-            arena::drop_object_in_arena(value.as_ptr());
-            return;
-        }
         unsafe { drop_object(value.as_ptr()) };
     }
 }
@@ -939,6 +946,24 @@ pub extern "C" fn wr_actor_fire(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn wr_actor_fire_burst_begin(handle: Value) -> Value {
+    actor::actor_fire_burst_begin(handle);
+    Value::nil()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_actor_fire_burst_end(handle: Value) -> Value {
+    actor::actor_fire_burst_end(handle);
+    Value::nil()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_actor_fire_burst_abort(handle: Value) -> Value {
+    actor::actor_fire_burst_abort(handle);
+    Value::nil()
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn wr_pending_await(pending: Value) -> Value {
     actor::pending_await(pending)
 }
@@ -989,8 +1014,29 @@ pub extern "C" fn wr_class_get(obj: Value, name_ptr: *const u8, len: usize) -> V
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn wr_class_get_slot(
+    obj: Value,
+    name_ptr: *const u8,
+    len: usize,
+    slot: usize,
+) -> Value {
+    class::class_get_slot(obj, name_ptr, len, slot as u32)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn wr_class_set(obj: Value, name_ptr: *const u8, len: usize, val: Value) {
     class::class_set(obj, name_ptr, len, val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_class_set_slot(
+    obj: Value,
+    name_ptr: *const u8,
+    len: usize,
+    slot: usize,
+    val: Value,
+) {
+    class::class_set_slot(obj, name_ptr, len, slot as u32, val)
 }
 
 #[unsafe(no_mangle)]
@@ -1197,9 +1243,79 @@ enum NumKind {
     Float(f64),
 }
 
+#[allow(dead_code)]
+fn abi_flag_truthy(name: &str) -> bool {
+    let Some(raw) = std::env::var_os(name) else {
+        return false;
+    };
+    let lower = raw.to_string_lossy().to_ascii_lowercase();
+    matches!(lower.as_str(), "1" | "true" | "on" | "yes")
+}
+
+#[allow(dead_code)]
+fn abi_typed_lane_enabled() -> bool {
+    #[cfg(feature = "abi_typed_fast_path")]
+    {
+        match ABI_TYPED_LANE_CACHE.load(Ordering::Relaxed) {
+            ABI_TYPED_LANE_ENABLED => return true,
+            ABI_TYPED_LANE_DISABLED => return false,
+            _ => {}
+        }
+
+        let enabled = abi_flag_truthy("WRELA_ABI_TYPED_FAST_PATH");
+        ABI_TYPED_LANE_CACHE.store(
+            if enabled {
+                ABI_TYPED_LANE_ENABLED
+            } else {
+                ABI_TYPED_LANE_DISABLED
+            },
+            Ordering::Relaxed,
+        );
+        enabled
+    }
+    #[cfg(not(feature = "abi_typed_fast_path"))]
+    {
+        false
+    }
+}
+
+#[allow(dead_code)]
+fn abi_refresh_typed_lane_cache() {
+    ABI_TYPED_LANE_CACHE.store(ABI_TYPED_LANE_UNKNOWN, Ordering::Relaxed);
+}
+
+#[allow(dead_code)]
+fn abi_roundtrip_i64(val: i64) -> i64 {
+    if abi_typed_lane_enabled() {
+        metrics::inc_abi_typed_lane();
+        return val;
+    }
+    metrics::inc_abi_boxed_lane();
+    let boxed = value::force_boxed_int(val);
+    let out = int_value(boxed).unwrap_or(0);
+    unsafe {
+        wr_rc_dec(boxed);
+    }
+    out
+}
+
+#[allow(dead_code)]
+fn abi_roundtrip_value(val: Value) -> Value {
+    let input = int_value(val).unwrap_or(0);
+    Value::from_int(abi_roundtrip_i64(input))
+}
+
 #[cfg(test)]
 mod tests {
     use crate::*;
+    use std::hint::black_box;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::Instant;
+
+    fn abi_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     fn str_value(input: &str) -> Value {
         wr_str_from_utf8(input.as_ptr(), input.len())
@@ -1223,6 +1339,41 @@ mod tests {
 
         let float = wr_box_float(3.5);
         assert_eq!(wr_unbox_float(float), 3.5);
+    }
+
+    #[test]
+    fn abi_roundtrip_boxed_lane() {
+        let _guard = abi_test_lock().lock().expect("abi test lock");
+        unsafe {
+            std::env::remove_var("WRELA_ABI_TYPED_FAST_PATH");
+        }
+        abi_refresh_typed_lane_cache();
+        metrics::reset();
+
+        assert_eq!(abi_roundtrip_i64(42), 42);
+        let value = abi_roundtrip_value(Value::from_int(7));
+        assert_eq!(value.as_int(), 7);
+
+        assert_eq!(metrics::metrics_get_raw(metrics::METRIC_ABI_TYPED_LANE), 0);
+        assert_eq!(metrics::metrics_get_raw(metrics::METRIC_ABI_BOXED_LANE), 2);
+    }
+
+    #[cfg(feature = "abi_typed_fast_path")]
+    #[test]
+    fn abi_roundtrip_typed_lane() {
+        let _guard = abi_test_lock().lock().expect("abi test lock");
+        unsafe {
+            std::env::set_var("WRELA_ABI_TYPED_FAST_PATH", "1");
+        }
+        abi_refresh_typed_lane_cache();
+        metrics::reset();
+
+        assert_eq!(abi_roundtrip_i64(123), 123);
+        let value = abi_roundtrip_value(Value::from_int(-11));
+        assert_eq!(value.as_int(), -11);
+
+        assert_eq!(metrics::metrics_get_raw(metrics::METRIC_ABI_TYPED_LANE), 2);
+        assert_eq!(metrics::metrics_get_raw(metrics::METRIC_ABI_BOXED_LANE), 0);
     }
 
     #[test]
@@ -1275,6 +1426,40 @@ mod tests {
         dec(key);
         dec(val);
         dec(got);
+    }
+
+    #[test]
+    fn map_inline_cache_hits_and_invalidation_fallback_correctness() {
+        crate::map::map_ic_reset_stats();
+        let map = wr_map_new();
+        let key = str_value("k");
+        let miss_before_set = wr_map_get(map, key);
+        assert!(miss_before_set.is_nil());
+        dec(miss_before_set);
+
+        let value = Value::from_int(9);
+        let _ = wr_map_set(map, key, value);
+
+        let after_set = wr_map_get(map, key);
+        assert_eq!(after_set.as_int(), 9);
+        dec(after_set);
+
+        let hot = wr_map_get(map, key);
+        assert_eq!(hot.as_int(), 9);
+        dec(hot);
+
+        let (hits, misses) = crate::map::map_ic_stats();
+        assert!(
+            hits >= 1,
+            "expected at least one cache hit after warm lookup, hits={hits}"
+        );
+        assert!(
+            misses >= 2,
+            "expected cold + invalidated miss path at least twice, misses={misses}"
+        );
+
+        dec(map);
+        dec(key);
     }
 
     #[test]
@@ -1341,5 +1526,221 @@ mod tests {
         let actor = crate::actor::actor_spawn(1, Value::nil(), 1, 3, -1, 10, 64);
         assert!(!actor.is_nil());
         dec(actor);
+    }
+
+    #[test]
+    fn class_slot_layout_and_dynamic_fallback_paths() {
+        let names = [b"value".as_ptr(), b"count".as_ptr()];
+        let lens = [5usize, 5usize];
+        let obj = wr_class_new(1100, names.as_ptr(), lens.as_ptr(), 2);
+
+        wr_class_set_slot(obj, b"ignored".as_ptr(), 7, 0, Value::from_int(41));
+        wr_class_set_slot(obj, b"ignored".as_ptr(), 7, 1, Value::from_int(7));
+
+        let value = wr_class_get_slot(obj, std::ptr::null(), 0, 0);
+        let count = wr_class_get_slot(obj, std::ptr::null(), 0, 1);
+        assert_eq!(value.as_int(), 41);
+        assert_eq!(count.as_int(), 7);
+        dec(value);
+        dec(count);
+
+        wr_class_set_slot(
+            obj,
+            b"ephemeral".as_ptr(),
+            9,
+            usize::MAX,
+            Value::from_int(99),
+        );
+        let fallback = wr_class_get(obj, b"ephemeral".as_ptr(), 9);
+        assert_eq!(fallback.as_int(), 99);
+        dec(fallback);
+
+        let by_name_slot = wr_class_get_slot(obj, b"value".as_ptr(), 5, usize::MAX);
+        assert_eq!(by_name_slot.as_int(), 41);
+        dec(by_name_slot);
+
+        dec(obj);
+    }
+
+    #[test]
+    #[ignore]
+    fn class_slot_perf_microbench_artifact() {
+        let names = [b"really_really_hot_field_name_for_lookup".as_ptr()];
+        let lens = [37usize];
+        let obj = wr_class_new(1200, names.as_ptr(), lens.as_ptr(), 1);
+        wr_class_set_slot(obj, b"ignored".as_ptr(), 7, 0, Value::from_int(1));
+
+        let iters = 1_000_000usize;
+        for _ in 0..10_000 {
+            let v = wr_class_get_slot(obj, std::ptr::null(), 0, 0);
+            black_box(v.0);
+            dec(v);
+        }
+        for _ in 0..10_000 {
+            let v = wr_class_get(obj, b"really_really_hot_field_name_for_lookup".as_ptr(), 37);
+            black_box(v.0);
+            dec(v);
+        }
+
+        let slot_start = Instant::now();
+        for _ in 0..iters {
+            let v = wr_class_get_slot(obj, std::ptr::null(), 0, 0);
+            black_box(v.0);
+            dec(v);
+        }
+        let slot_elapsed = slot_start.elapsed();
+
+        let fallback_start = Instant::now();
+        for _ in 0..iters {
+            let v = wr_class_get(obj, b"really_really_hot_field_name_for_lookup".as_ptr(), 37);
+            black_box(v.0);
+            dec(v);
+        }
+        let fallback_elapsed = fallback_start.elapsed();
+
+        let slot_ns_per_op = slot_elapsed.as_nanos() as f64 / iters as f64;
+        let fallback_ns_per_op = fallback_elapsed.as_nanos() as f64 / iters as f64;
+        let improvement_pct = if fallback_ns_per_op > 0.0 {
+            (fallback_ns_per_op - slot_ns_per_op) / fallback_ns_per_op * 100.0
+        } else {
+            0.0
+        };
+
+        let artifact_dir = std::path::Path::new(".artifacts/wre-407");
+        std::fs::create_dir_all(&artifact_dir).expect("create artifact dir");
+        let artifact_path = artifact_dir.join("class_slot_vs_fallback.txt");
+        let body = format!(
+            "iters={iters}\nslot_ns_per_op={slot_ns_per_op:.2}\nfallback_ns_per_op={fallback_ns_per_op:.2}\nimprovement_pct={improvement_pct:.2}\n"
+        );
+        std::fs::write(&artifact_path, body).expect("write perf artifact");
+
+        dec(obj);
+    }
+
+    #[test]
+    #[ignore]
+    fn map_ic_hit_miss_perf_artifact() {
+        let map = wr_map_new();
+        let key_a = str_value("alpha");
+        let key_b = str_value("beta");
+        let val_a = Value::from_int(1);
+        let val_b = Value::from_int(2);
+        let _ = wr_map_set(map, key_a, val_a);
+        let _ = wr_map_set(map, key_b, val_b);
+
+        let iters = 1_000_000usize;
+        for _ in 0..10_000 {
+            let v = wr_map_get(map, key_a);
+            black_box(v.0);
+            dec(v);
+        }
+        crate::map::map_ic_reset_stats();
+        let hit_start = Instant::now();
+        for _ in 0..iters {
+            let v = wr_map_get(map, key_a);
+            black_box(v.0);
+            dec(v);
+        }
+        let hit_elapsed = hit_start.elapsed();
+        let (hit_hits, hit_misses) = crate::map::map_ic_stats();
+
+        crate::map::map_ic_reset_stats();
+        let miss_start = Instant::now();
+        for i in 0..iters {
+            let key = if i & 1 == 0 { key_a } else { key_b };
+            let v = wr_map_get(map, key);
+            black_box(v.0);
+            dec(v);
+        }
+        let miss_elapsed = miss_start.elapsed();
+        let (miss_hits, miss_misses) = crate::map::map_ic_stats();
+
+        let hit_ns_per_op = hit_elapsed.as_nanos() as f64 / iters as f64;
+        let miss_ns_per_op = miss_elapsed.as_nanos() as f64 / iters as f64;
+        let hit_rate = if hit_hits + hit_misses > 0 {
+            hit_hits as f64 / (hit_hits + hit_misses) as f64
+        } else {
+            0.0
+        };
+        let miss_rate = if miss_hits + miss_misses > 0 {
+            miss_misses as f64 / (miss_hits + miss_misses) as f64
+        } else {
+            0.0
+        };
+
+        let artifact_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.artifacts/wre-415");
+        std::fs::create_dir_all(&artifact_dir).expect("create artifact dir");
+        let artifact_path = artifact_dir.join("map_ic_hit_miss.txt");
+        let body = format!(
+            "iters={iters}\nhit_ns_per_op={hit_ns_per_op:.2}\nmiss_ns_per_op={miss_ns_per_op:.2}\nhit_phase_hits={hit_hits}\nhit_phase_misses={hit_misses}\nhit_phase_hit_rate={hit_rate:.4}\nmiss_phase_hits={miss_hits}\nmiss_phase_misses={miss_misses}\nmiss_phase_miss_rate={miss_rate:.4}\n"
+        );
+        std::fs::write(&artifact_path, body).expect("write perf artifact");
+
+        dec(map);
+        dec(key_a);
+        dec(key_b);
+    }
+
+    #[test]
+    #[ignore]
+    fn abi_lane_call_heavy_perf_artifact() {
+        let _guard = abi_test_lock().lock().expect("abi test lock");
+        let iters = 2_000_000usize;
+        let input = 987_654_321i64;
+
+        unsafe {
+            std::env::remove_var("WRELA_ABI_TYPED_FAST_PATH");
+        }
+        abi_refresh_typed_lane_cache();
+        metrics::reset();
+        let boxed_start = Instant::now();
+        for _ in 0..iters {
+            black_box(abi_roundtrip_i64(input));
+        }
+        let boxed_elapsed = boxed_start.elapsed();
+        let boxed_ops = metrics::metrics_get_raw(metrics::METRIC_ABI_BOXED_LANE);
+
+        let (typed_ns_per_op, typed_ops) = {
+            #[cfg(feature = "abi_typed_fast_path")]
+            {
+                unsafe {
+                    std::env::set_var("WRELA_ABI_TYPED_FAST_PATH", "1");
+                }
+                abi_refresh_typed_lane_cache();
+                metrics::reset();
+                let typed_start = Instant::now();
+                for _ in 0..iters {
+                    black_box(abi_roundtrip_i64(input));
+                }
+                let typed_elapsed = typed_start.elapsed();
+                (
+                    typed_elapsed.as_nanos() as f64 / iters as f64,
+                    metrics::metrics_get_raw(metrics::METRIC_ABI_TYPED_LANE),
+                )
+            }
+            #[cfg(not(feature = "abi_typed_fast_path"))]
+            {
+                (0.0f64, 0u64)
+            }
+        };
+
+        let boxed_ns_per_op = boxed_elapsed.as_nanos() as f64 / iters as f64;
+        let improvement_pct = if typed_ns_per_op > 0.0 {
+            (boxed_ns_per_op - typed_ns_per_op) / boxed_ns_per_op * 100.0
+        } else {
+            0.0
+        };
+
+        let artifact_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join(".artifacts/wre-411");
+        std::fs::create_dir_all(&artifact_dir).expect("create artifact dir");
+        let artifact_path = artifact_dir.join("abi_lane_call_heavy.txt");
+        let body = format!(
+            "iters={iters}\nboxed_ns_per_op={boxed_ns_per_op:.2}\ntyped_ns_per_op={typed_ns_per_op:.2}\nimprovement_pct={improvement_pct:.2}\nboxed_ops={boxed_ops}\ntyped_ops={typed_ops}\nfeature_abi_typed_fast_path={}\n",
+            cfg!(feature = "abi_typed_fast_path")
+        );
+        std::fs::write(&artifact_path, body).expect("write perf artifact");
     }
 }

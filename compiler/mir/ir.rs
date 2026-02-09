@@ -86,8 +86,7 @@ pub enum MirType {
 impl MirType {
     pub fn is_ref(&self) -> bool {
         match self {
-            MirType::Float | MirType::Boolean | MirType::Nil => false,
-            MirType::Integer => true,
+            MirType::Integer | MirType::Float | MirType::Boolean | MirType::Nil => false,
             _ => true,
         }
     }
@@ -113,6 +112,10 @@ pub enum CallTarget {
         receiver: Value,
         method: SmolStr,
         method_id: Option<u32>,
+    },
+    GuardedInterface {
+        fast_paths: Vec<(TypeTagId, SmolStr)>,
+        fallback: SmolStr,
     },
     Indirect(Value),
 }
@@ -168,6 +171,7 @@ pub enum Rvalue {
     GetField {
         base: Value,
         field: SmolStr,
+        slot: Option<u32>,
     },
     Call {
         kind: CallKind,
@@ -230,6 +234,7 @@ pub enum Stmt {
     SetField {
         base: Value,
         field: SmolStr,
+        slot: Option<u32>,
         value: Value,
         span: TextRange,
     },
@@ -294,4 +299,18 @@ pub enum Terminator {
     Unreachable {
         span: TextRange,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MirType;
+
+    #[test]
+    fn integer_is_scalar_not_ref() {
+        assert!(!MirType::Integer.is_ref());
+        assert!(!MirType::Float.is_ref());
+        assert!(!MirType::Boolean.is_ref());
+        assert!(!MirType::Nil.is_ref());
+        assert!(MirType::Unknown.is_ref());
+    }
 }

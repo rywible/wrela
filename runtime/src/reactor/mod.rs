@@ -5,63 +5,285 @@ mod linux_io_uring;
 #[cfg(target_os = "macos")]
 mod macos_kqueue;
 pub mod task {
-    use std::sync::{Condvar, Mutex};
-    use std::time::Duration;
+    use std::ptr;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicU8, AtomicUsize, Ordering};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    const WAITER_WAITING: u8 = 0;
+    const WAITER_NOTIFIED: u8 = 1;
+    const WAITER_CANCELLED: u8 = 2;
+
+    struct WaiterNode {
+        next: AtomicPtr<WaiterNode>,
+        thread: thread::Thread,
+        state: AtomicU8,
+    }
 
     pub struct TaskSignal {
-        epoch: Mutex<u64>,
-        condvar: Condvar,
+        epoch: AtomicU64,
+        waiter_count: AtomicUsize,
+        waiters_head: AtomicPtr<WaiterNode>,
     }
 
     impl TaskSignal {
         pub fn new() -> Self {
             Self {
-                epoch: Mutex::new(0),
-                condvar: Condvar::new(),
+                epoch: AtomicU64::new(0),
+                waiter_count: AtomicUsize::new(0),
+                waiters_head: AtomicPtr::new(ptr::null_mut()),
             }
         }
 
         pub fn notify_one(&self) {
-            let mut epoch = self.epoch.lock().expect("task signal epoch lock");
-            *epoch += 1;
-            self.condvar.notify_one();
+            self.epoch.fetch_add(1, Ordering::AcqRel);
+            if self.waiter_count.load(Ordering::Acquire) == 0 {
+                return;
+            }
+            while let Some(waiter) = self.pop_waiter() {
+                let state = waiter.state.swap(WAITER_NOTIFIED, Ordering::AcqRel);
+                if state == WAITER_WAITING {
+                    waiter.thread.unpark();
+                    break;
+                }
+            }
         }
 
         pub fn notify_waiters(&self) {
-            let mut epoch = self.epoch.lock().expect("task signal epoch lock");
-            *epoch += 1;
-            self.condvar.notify_all();
+            self.epoch.fetch_add(1, Ordering::AcqRel);
+            if self.waiter_count.load(Ordering::Acquire) == 0 {
+                return;
+            }
+            while let Some(waiter) = self.pop_waiter() {
+                let state = waiter.state.swap(WAITER_NOTIFIED, Ordering::AcqRel);
+                if state == WAITER_WAITING {
+                    waiter.thread.unpark();
+                }
+            }
         }
 
         pub fn wait(&self, observed_epoch: u64) -> u64 {
-            let mut epoch = self.epoch.lock().expect("task signal epoch lock");
-            while *epoch <= observed_epoch {
-                epoch = self.condvar.wait(epoch).expect("task signal condvar wait");
+            let epoch = self.epoch.load(Ordering::Acquire);
+            if epoch > observed_epoch {
+                return epoch;
             }
-            *epoch
+            let waiter = Arc::new(WaiterNode {
+                next: AtomicPtr::new(ptr::null_mut()),
+                thread: thread::current(),
+                state: AtomicU8::new(WAITER_WAITING),
+            });
+            self.push_waiter(waiter.clone());
+            loop {
+                let epoch = self.epoch.load(Ordering::Acquire);
+                if epoch > observed_epoch {
+                    self.cancel_waiter(&waiter);
+                    return epoch;
+                }
+                if waiter.state.load(Ordering::Acquire) == WAITER_NOTIFIED {
+                    return epoch;
+                }
+                thread::park();
+            }
         }
 
         pub fn wait_timeout(&self, observed_epoch: u64, timeout: Duration) -> (u64, bool) {
-            let mut epoch = self.epoch.lock().expect("task signal epoch lock");
-            if *epoch > observed_epoch {
-                return (*epoch, true);
+            let epoch = self.epoch.load(Ordering::Acquire);
+            if epoch > observed_epoch {
+                return (epoch, true);
             }
-            let (epoch_after_wait, result) = self
-                .condvar
-                .wait_timeout(epoch, timeout)
-                .expect("task signal condvar timeout");
-            epoch = epoch_after_wait;
-            (*epoch, !result.timed_out())
+            let deadline = Instant::now() + timeout;
+            let waiter = Arc::new(WaiterNode {
+                next: AtomicPtr::new(ptr::null_mut()),
+                thread: thread::current(),
+                state: AtomicU8::new(WAITER_WAITING),
+            });
+            self.push_waiter(waiter.clone());
+            loop {
+                let epoch = self.epoch.load(Ordering::Acquire);
+                if epoch > observed_epoch {
+                    self.cancel_waiter(&waiter);
+                    return (epoch, true);
+                }
+                if waiter.state.load(Ordering::Acquire) == WAITER_NOTIFIED {
+                    return (epoch, true);
+                }
+                let now = Instant::now();
+                if now >= deadline {
+                    self.cancel_waiter(&waiter);
+                    let epoch = self.epoch.load(Ordering::Acquire);
+                    return (epoch, epoch > observed_epoch);
+                }
+                thread::park_timeout(deadline.saturating_duration_since(now));
+            }
         }
 
         pub fn snapshot(&self) -> u64 {
-            *self.epoch.lock().expect("task signal epoch lock")
+            self.epoch.load(Ordering::Acquire)
+        }
+
+        fn push_waiter(&self, waiter: Arc<WaiterNode>) {
+            let raw = Arc::into_raw(waiter.clone()) as *mut WaiterNode;
+            loop {
+                let head = self.waiters_head.load(Ordering::Acquire);
+                waiter.next.store(head, Ordering::Release);
+                if self
+                    .waiters_head
+                    .compare_exchange(head, raw, Ordering::AcqRel, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    self.waiter_count.fetch_add(1, Ordering::AcqRel);
+                    return;
+                }
+            }
+        }
+
+        fn pop_waiter(&self) -> Option<Arc<WaiterNode>> {
+            loop {
+                let head = self.waiters_head.load(Ordering::Acquire);
+                if head.is_null() {
+                    return None;
+                }
+                let next = unsafe { (*head).next.load(Ordering::Acquire) };
+                if self
+                    .waiters_head
+                    .compare_exchange(head, next, Ordering::AcqRel, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    self.waiter_count.fetch_sub(1, Ordering::AcqRel);
+                    return Some(unsafe { Arc::from_raw(head) });
+                }
+            }
+        }
+
+        fn cancel_waiter(&self, waiter: &Arc<WaiterNode>) {
+            let state = waiter.state.swap(WAITER_CANCELLED, Ordering::AcqRel);
+            if state != WAITER_WAITING {
+                return;
+            }
+            let raw = Arc::as_ptr(waiter) as *mut WaiterNode;
+            loop {
+                let head = self.waiters_head.load(Ordering::Acquire);
+                if head != raw {
+                    break;
+                }
+                let next = waiter.next.load(Ordering::Acquire);
+                if self
+                    .waiters_head
+                    .compare_exchange(head, next, Ordering::AcqRel, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    self.waiter_count.fetch_sub(1, Ordering::AcqRel);
+                    unsafe {
+                        drop(Arc::from_raw(raw));
+                    }
+                    break;
+                }
+            }
         }
     }
 
     impl Default for TaskSignal {
         fn default() -> Self {
             Self::new()
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::TaskSignal;
+        use std::sync::Arc;
+        use std::sync::atomic::Ordering;
+        use std::thread;
+        use std::time::Duration;
+
+        #[test]
+        fn wake_signal_timeout_semantics_parity() {
+            let signal = Arc::new(TaskSignal::new());
+            let observed = signal.snapshot();
+            let (epoch, notified) = signal.wait_timeout(observed, Duration::from_millis(5));
+            assert!(!notified);
+            assert_eq!(epoch, observed);
+
+            let signal_clone = signal.clone();
+            let handle = thread::spawn(move || {
+                let observed = signal_clone.snapshot();
+                signal_clone.wait_timeout(observed, Duration::from_millis(200))
+            });
+            thread::sleep(Duration::from_millis(10));
+            signal.notify_one();
+            let (epoch, notified) = handle.join().expect("waiter join");
+            assert!(notified);
+            assert!(epoch > observed);
+        }
+
+        #[test]
+        fn wake_signal_notify_one_wakes_single_waiter() {
+            let signal = Arc::new(TaskSignal::new());
+            let woke = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let mut handles = Vec::new();
+            for _ in 0..2 {
+                let signal = signal.clone();
+                let woke = woke.clone();
+                handles.push(thread::spawn(move || {
+                    let observed = signal.snapshot();
+                    let (_, notified) = signal.wait_timeout(observed, Duration::from_millis(200));
+                    if notified {
+                        woke.fetch_add(1, Ordering::AcqRel);
+                    }
+                }));
+            }
+            thread::sleep(Duration::from_millis(10));
+            signal.notify_one();
+            thread::sleep(Duration::from_millis(20));
+            let count = woke.load(Ordering::Acquire);
+            assert!(count <= 1, "notify_one should wake at most one waiter");
+            signal.notify_waiters();
+            for handle in handles {
+                handle.join().expect("waiter join");
+            }
+        }
+
+        #[test]
+        fn wake_signal_notify_waiters_wakes_all() {
+            let signal = Arc::new(TaskSignal::new());
+            let mut handles = Vec::new();
+            for _ in 0..3 {
+                let signal = signal.clone();
+                handles.push(thread::spawn(move || {
+                    let observed = signal.snapshot();
+                    let (_, notified) = signal.wait_timeout(observed, Duration::from_millis(200));
+                    assert!(notified);
+                }));
+            }
+            thread::sleep(Duration::from_millis(10));
+            signal.notify_waiters();
+            for handle in handles {
+                handle.join().expect("waiter join");
+            }
+        }
+
+        #[test]
+        fn wake_signal_no_missed_wake_under_race() {
+            let signal = Arc::new(TaskSignal::new());
+            let mut handles = Vec::new();
+            for _ in 0..50 {
+                let signal_for_wait = signal.clone();
+                handles.push(thread::spawn(move || {
+                    let observed = signal_for_wait.snapshot();
+                    let (_, notified) =
+                        signal_for_wait.wait_timeout(observed, Duration::from_millis(50));
+                    notified
+                }));
+                signal.notify_one();
+            }
+            let mut notified = 0usize;
+            for handle in handles {
+                if handle.join().expect("wait join") {
+                    notified += 1;
+                }
+            }
+            assert!(notified > 0, "race run should observe wakeups");
         }
     }
 }

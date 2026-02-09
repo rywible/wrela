@@ -4,9 +4,8 @@ pub(crate) mod actor {
     #[cfg(feature = "metrics")]
     use crate::metrics::inc_alloc_pending;
     use crate::metrics::{
-        inc_mailbox_dequeue, inc_mailbox_enqueue_fail, inc_mailbox_enqueue_ok,
-        inc_messages_dropped, inc_messages_dropped_paused, inc_messages_sent, inc_pending_dropped,
-        inc_pending_resolved, update_mailbox_high_water,
+        inc_mailbox_enqueue_fail, inc_messages_dropped, inc_messages_dropped_paused,
+        inc_pending_dropped, inc_pending_resolved, update_mailbox_high_water,
     };
     use crate::object::ObjHeader;
     use crate::reactor::task::TaskSignal;
@@ -15,13 +14,13 @@ pub(crate) mod actor {
     use crate::value::{TypeId, Value, header};
     use crate::{wr_rc_dec, wr_rc_inc};
     use std::cell::UnsafeCell;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, VecDeque};
     use std::mem::MaybeUninit;
-    use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
-    use std::sync::mpsc;
-    use std::sync::mpsc::{TryRecvError, TrySendError};
+    #[cfg(test)]
+    use std::sync::atomic::AtomicI8;
+    use std::sync::atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex, OnceLock};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     pub type MethodFn = extern "C" fn(argc: usize, argv: *const Value) -> Value;
 
@@ -70,9 +69,17 @@ pub(crate) mod actor {
         pending: Option<Arc<PendingState>>,
     }
 
+    type MessageNodeHandle = *mut MessageNode;
+
+    struct MessageNode {
+        next: AtomicPtr<MessageNode>,
+        msg: UnsafeCell<MaybeUninit<Message>>,
+    }
+
+    #[derive(Clone)]
     pub struct PoolMessage {
         mailbox: Arc<Mailbox>,
-        msg: Message,
+        node: MessageNodeHandle,
     }
 
     pub struct PoolQueue {
@@ -89,9 +96,32 @@ pub(crate) mod actor {
     }
 
     unsafe impl Sync for PoolSlot {}
+    unsafe impl Send for PoolSlot {}
+
+    struct MailboxQueue {
+        cap: usize,
+        mask: usize,
+        head: AtomicUsize,
+        tail: AtomicUsize,
+        slots: Box<[MailboxSlot]>,
+    }
+
+    struct MailboxSlot {
+        seq: AtomicUsize,
+        msg: UnsafeCell<MaybeUninit<MessageNodeHandle>>,
+    }
+
+    unsafe impl Sync for MailboxSlot {}
+    unsafe impl Send for MailboxSlot {}
+    unsafe impl Sync for MessageNode {}
+    unsafe impl Send for MessageNode {}
 
     struct Mailbox {
-        sender: Mutex<Option<mpsc::SyncSender<Message>>>,
+        queue: MailboxQueue,
+        work_notify: TaskSignal,
+        space_notify: TaskSignal,
+        space_notify_epoch: AtomicU64,
+        space_notify_inflight: AtomicBool,
         len: AtomicUsize,
         closed: AtomicBool,
         paused: AtomicBool,
@@ -99,6 +129,7 @@ pub(crate) mod actor {
         pause_epoch: AtomicUsize,
         pause_ack: AtomicUsize,
         pause_ack_notify: TaskSignal,
+        enqueue_timeout: Duration,
         batch_limit: usize,
         arena: Mutex<arena::Arena>,
     }
@@ -107,6 +138,44 @@ pub(crate) mod actor {
         lock: Mutex<Option<Value>>,
         notify: TaskSignal,
         dropped: AtomicBool,
+    }
+
+    struct MethodCache {
+        class_id: u32,
+        generation: u64,
+        methods: HashMap<u32, MethodFn>,
+        hot_method_id: u32,
+        hot_method: Option<MethodFn>,
+    }
+
+    struct FastSendContext {
+        mailbox: *const Mailbox,
+        queue: VecDeque<MessageNodeHandle>,
+        enqueued_since_flush: u64,
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum BurstTarget {
+        Actor(*const ActorHandle),
+        Pool(*const PoolHandle),
+    }
+
+    enum StagedMessage {
+        Direct {
+            mailbox: Arc<Mailbox>,
+            node: MessageNodeHandle,
+        },
+        Pool {
+            pool: *const PoolHandle,
+            mailbox: Arc<Mailbox>,
+            node: MessageNodeHandle,
+        },
+    }
+
+    struct BurstContext {
+        target: BurstTarget,
+        depth: usize,
+        staged: Vec<StagedMessage>,
     }
 
     impl PoolQueue {
@@ -193,10 +262,129 @@ pub(crate) mod actor {
         }
     }
 
+    impl MailboxQueue {
+        fn new(cap: usize) -> Self {
+            let cap = cap.max(2).next_power_of_two();
+            let mut slots = Vec::with_capacity(cap);
+            for i in 0..cap {
+                slots.push(MailboxSlot {
+                    seq: AtomicUsize::new(i),
+                    msg: UnsafeCell::new(MaybeUninit::uninit()),
+                });
+            }
+            Self {
+                cap,
+                mask: cap - 1,
+                head: AtomicUsize::new(0),
+                tail: AtomicUsize::new(0),
+                slots: slots.into_boxed_slice(),
+            }
+        }
+
+        fn push_node(&self, node: MessageNodeHandle) -> Result<(), MessageNodeHandle> {
+            let mut tail = self.tail.load(Ordering::Relaxed);
+            loop {
+                let slot = &self.slots[tail & self.mask];
+                let seq = slot.seq.load(Ordering::Acquire);
+                let diff = seq as isize - tail as isize;
+                if diff == 0 {
+                    if self
+                        .tail
+                        .compare_exchange_weak(tail, tail + 1, Ordering::AcqRel, Ordering::Relaxed)
+                        .is_ok()
+                    {
+                        unsafe {
+                            (*slot.msg.get()).write(node);
+                        }
+                        slot.seq.store(tail + 1, Ordering::Release);
+                        return Ok(());
+                    }
+                } else if diff < 0 {
+                    return Err(node);
+                }
+                tail = self.tail.load(Ordering::Relaxed);
+            }
+        }
+
+        fn pop_node(&self) -> Option<MessageNodeHandle> {
+            let mut head = self.head.load(Ordering::Relaxed);
+            loop {
+                let slot = &self.slots[head & self.mask];
+                let seq = slot.seq.load(Ordering::Acquire);
+                let diff = seq as isize - (head + 1) as isize;
+                if diff == 0 {
+                    if self
+                        .head
+                        .compare_exchange_weak(head, head + 1, Ordering::AcqRel, Ordering::Relaxed)
+                        .is_ok()
+                    {
+                        let node = unsafe { (*slot.msg.get()).assume_init_read() };
+                        slot.seq.store(head + self.cap, Ordering::Release);
+                        return Some(node);
+                    }
+                } else if diff < 0 {
+                    return None;
+                }
+                head = self.head.load(Ordering::Relaxed);
+            }
+        }
+
+        fn push_batch(&self, nodes: &[MessageNodeHandle]) -> usize {
+            let mut accepted = 0usize;
+            let mut stalls = 0usize;
+            while accepted < nodes.len() {
+                match self.push_node(nodes[accepted]) {
+                    Ok(()) => {
+                        accepted += 1;
+                        stalls = 0;
+                    }
+                    Err(_) => {
+                        stalls += 1;
+                        if stalls >= MAILBOX_BATCH_ENQUEUE_SPIN_LIMIT {
+                            break;
+                        }
+                        std::hint::spin_loop();
+                    }
+                }
+            }
+            accepted
+        }
+
+        fn push(&self, msg: Message) -> Result<(), Message> {
+            let node = message_node_from_message(msg);
+            match self.push_node(node) {
+                Ok(()) => Ok(()),
+                Err(node) => Err(message_node_into_message(node)),
+            }
+        }
+
+        fn pop(&self) -> Option<Message> {
+            self.pop_node().map(message_node_into_message)
+        }
+    }
+
     static METHODS: OnceLock<Mutex<HashMap<u32, HashMap<u32, MethodFn>>>> = OnceLock::new();
+    static METHOD_REGISTRY_GENERATION: AtomicU64 = AtomicU64::new(1);
     static ARGS_POOL: OnceLock<Mutex<Vec<Vec<Value>>>> = OnceLock::new();
     static PENDING_POOL: OnceLock<Mutex<Vec<Arc<PendingState>>>> = OnceLock::new();
     static WATCHDOG_STARTED: OnceLock<()> = OnceLock::new();
+    static FAST_PATH_ENV_ENABLED: OnceLock<bool> = OnceLock::new();
+    static MESSAGE_NODE_GLOBAL_FREELIST: AtomicPtr<MessageNode> =
+        AtomicPtr::new(std::ptr::null_mut());
+    static BURST_ACTIVE_COUNT: AtomicUsize = AtomicUsize::new(0);
+    #[cfg(test)]
+    static FAST_PATH_TEST_OVERRIDE: AtomicI8 = AtomicI8::new(-1);
+    const MESSAGE_NODE_FREELIST_BATCH: usize = 32;
+    const BURST_STAGE_INITIAL_CAP: usize = 64;
+    const BURST_MAX_STAGE: usize = 4096;
+    const MAILBOX_BATCH_ENQUEUE_SPIN_LIMIT: usize = 2;
+    const SPACE_NOTIFY_COALESCE_WINDOW: u64 = 1;
+
+    thread_local! {
+        static FAST_SEND_CONTEXT: UnsafeCell<Option<FastSendContext>> = const { UnsafeCell::new(None) };
+        static BURST_CONTEXT: UnsafeCell<Option<BurstContext>> = const { UnsafeCell::new(None) };
+        static MESSAGE_NODE_LOCAL_FREELIST: UnsafeCell<Vec<MessageNodeHandle>> = const { UnsafeCell::new(Vec::new()) };
+    }
 
     fn method_registry() -> &'static Mutex<HashMap<u32, HashMap<u32, MethodFn>>> {
         METHODS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -213,6 +401,353 @@ pub(crate) mod actor {
     const ARGS_POOL_MAX_CAP: usize = 64;
     const ARGS_POOL_MAX_LEN: usize = 128;
     const PENDING_POOL_MAX_LEN: usize = 512;
+
+    fn method_registry_generation() -> u64 {
+        METHOD_REGISTRY_GENERATION.load(Ordering::Acquire)
+    }
+
+    fn actor_fast_path_enabled() -> bool {
+        #[cfg(test)]
+        {
+            match FAST_PATH_TEST_OVERRIDE.load(Ordering::Relaxed) {
+                0 => return false,
+                1 => return true,
+                _ => {}
+            }
+        }
+        *FAST_PATH_ENV_ENABLED
+            .get_or_init(|| std::env::var_os("WRELA_ACTOR_FAST_PATH_DISABLE").is_none())
+    }
+
+    #[cfg(test)]
+    fn set_actor_fast_path_for_test(enabled: Option<bool>) {
+        let raw = match enabled {
+            Some(true) => 1,
+            Some(false) => 0,
+            None => -1,
+        };
+        FAST_PATH_TEST_OVERRIDE.store(raw, Ordering::Relaxed);
+    }
+
+    fn snapshot_class_methods(class_id: u32) -> HashMap<u32, MethodFn> {
+        let map = method_registry().lock().expect("method registry lock");
+        map.get(&class_id).cloned().unwrap_or_default()
+    }
+
+    impl MethodCache {
+        fn new(class_id: u32) -> Self {
+            Self {
+                class_id,
+                generation: method_registry_generation(),
+                methods: snapshot_class_methods(class_id),
+                hot_method_id: u32::MAX,
+                hot_method: None,
+            }
+        }
+
+        fn resolve(&mut self, method_id: u32) -> Option<MethodFn> {
+            if !actor_fast_path_enabled() {
+                let map = method_registry().lock().expect("method registry lock");
+                return map
+                    .get(&self.class_id)
+                    .and_then(|inner| inner.get(&method_id))
+                    .copied();
+            }
+            let generation = method_registry_generation();
+            if self.generation != generation {
+                self.methods = snapshot_class_methods(self.class_id);
+                self.generation = generation;
+                self.hot_method_id = u32::MAX;
+                self.hot_method = None;
+            }
+            if self.hot_method_id == method_id {
+                return self.hot_method;
+            }
+            let method = self.methods.get(&method_id).copied();
+            self.hot_method_id = method_id;
+            self.hot_method = method;
+            method
+        }
+    }
+
+    fn fast_send_context_enter(mailbox: *const Mailbox) {
+        FAST_SEND_CONTEXT.with(|slot| unsafe {
+            *slot.get() = Some(FastSendContext {
+                mailbox,
+                queue: VecDeque::new(),
+                enqueued_since_flush: 0,
+            });
+        });
+    }
+
+    fn fast_send_context_exit(mailbox: *const Mailbox) {
+        FAST_SEND_CONTEXT.with(|slot| unsafe {
+            let slot = &mut *slot.get();
+            if let Some(ctx) = slot.as_ref() {
+                if std::ptr::eq(ctx.mailbox, mailbox) {
+                    *slot = None;
+                }
+            }
+        });
+    }
+
+    fn fast_send_try_enqueue_node(
+        mailbox: &Mailbox,
+        node: MessageNodeHandle,
+    ) -> Result<(), MessageNodeHandle> {
+        FAST_SEND_CONTEXT.with(|slot| unsafe {
+            let slot = &mut *slot.get();
+            let Some(ctx) = slot.as_mut() else {
+                return Err(node);
+            };
+            if !std::ptr::eq(ctx.mailbox, mailbox as *const Mailbox) {
+                return Err(node);
+            }
+            // Self-send on the actor thread must never fall back to blocking channel send.
+            // Channel fallback here can deadlock when the actor sends to itself while
+            // currently processing a message.
+            ctx.queue.push_back(node);
+            ctx.enqueued_since_flush = ctx.enqueued_since_flush.saturating_add(1);
+            Ok(())
+        })
+    }
+
+    fn fast_send_try_dequeue_node(mailbox: &Mailbox) -> Option<MessageNodeHandle> {
+        FAST_SEND_CONTEXT.with(|slot| unsafe {
+            let slot = &mut *slot.get();
+            let Some(ctx) = slot.as_mut() else {
+                return None;
+            };
+            if !std::ptr::eq(ctx.mailbox, mailbox as *const Mailbox) {
+                return None;
+            }
+            ctx.queue.pop_front()
+        })
+    }
+
+    fn fast_send_take_enqueued_count(mailbox: &Mailbox) -> u64 {
+        FAST_SEND_CONTEXT.with(|slot| unsafe {
+            let slot = &mut *slot.get();
+            let Some(ctx) = slot.as_mut() else {
+                return 0;
+            };
+            if !std::ptr::eq(ctx.mailbox, mailbox as *const Mailbox) {
+                return 0;
+            }
+            let count = ctx.enqueued_since_flush;
+            ctx.enqueued_since_flush = 0;
+            count
+        })
+    }
+
+    fn message_node_alloc() -> MessageNodeHandle {
+        Box::into_raw(Box::new(MessageNode {
+            next: AtomicPtr::new(std::ptr::null_mut()),
+            msg: UnsafeCell::new(MaybeUninit::uninit()),
+        }))
+    }
+
+    fn message_node_global_pop() -> Option<MessageNodeHandle> {
+        loop {
+            let head = MESSAGE_NODE_GLOBAL_FREELIST.load(Ordering::Acquire);
+            if head.is_null() {
+                return None;
+            }
+            let next = unsafe { (*head).next.load(Ordering::Acquire) };
+            if MESSAGE_NODE_GLOBAL_FREELIST
+                .compare_exchange(head, next, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                return Some(head);
+            }
+        }
+    }
+
+    fn message_node_global_push(node: MessageNodeHandle) {
+        loop {
+            let head = MESSAGE_NODE_GLOBAL_FREELIST.load(Ordering::Acquire);
+            unsafe {
+                (*node).next.store(head, Ordering::Release);
+            }
+            if MESSAGE_NODE_GLOBAL_FREELIST
+                .compare_exchange(head, node, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                return;
+            }
+        }
+    }
+
+    fn message_node_acquire() -> MessageNodeHandle {
+        MESSAGE_NODE_LOCAL_FREELIST.with(|slot| unsafe {
+            let local = &mut *slot.get();
+            if let Some(node) = local.pop() {
+                return node;
+            }
+            for _ in 0..MESSAGE_NODE_FREELIST_BATCH.saturating_sub(1) {
+                if let Some(node) = message_node_global_pop() {
+                    local.push(node);
+                } else {
+                    break;
+                }
+            }
+            message_node_global_pop().unwrap_or_else(message_node_alloc)
+        })
+    }
+
+    fn message_node_release(node: MessageNodeHandle) {
+        MESSAGE_NODE_LOCAL_FREELIST.with(|slot| unsafe {
+            let local = &mut *slot.get();
+            local.push(node);
+            if local.len() <= MESSAGE_NODE_FREELIST_BATCH * 16 {
+                return;
+            }
+            for _ in 0..MESSAGE_NODE_FREELIST_BATCH {
+                let Some(node) = local.pop() else { break };
+                message_node_global_push(node);
+            }
+        });
+    }
+
+    fn message_node_from_message(msg: Message) -> MessageNodeHandle {
+        let node = message_node_acquire();
+        unsafe {
+            (*(*node).msg.get()).write(msg);
+        }
+        node
+    }
+
+    fn message_node_into_message(node: MessageNodeHandle) -> Message {
+        let msg = unsafe { (*(*node).msg.get()).assume_init_read() };
+        message_node_release(node);
+        msg
+    }
+
+    fn drop_message_node(node: MessageNodeHandle) {
+        let msg = message_node_into_message(node);
+        drop_message(msg);
+    }
+
+    fn process_message_node(mailbox: &Mailbox, method_cache: &mut MethodCache, node: MessageNodeHandle) {
+        let msg = message_node_into_message(node);
+        process_message(mailbox, method_cache, msg);
+    }
+
+    fn burst_target_from_handle(handle: Value) -> Option<BurstTarget> {
+        if let Some(pool) = as_pool_ref(handle) {
+            return Some(BurstTarget::Pool(pool));
+        }
+        as_actor(handle).map(BurstTarget::Actor)
+    }
+
+    fn burst_target_for_actor(actor: *const ActorHandle) -> BurstTarget {
+        BurstTarget::Actor(actor)
+    }
+
+    fn burst_target_for_pool(pool: *const PoolHandle) -> BurstTarget {
+        BurstTarget::Pool(pool)
+    }
+
+    fn burst_targets_match(left: BurstTarget, right: BurstTarget) -> bool {
+        match (left, right) {
+            (BurstTarget::Actor(a), BurstTarget::Actor(b)) => std::ptr::eq(a, b),
+            (BurstTarget::Pool(a), BurstTarget::Pool(b)) => std::ptr::eq(a, b),
+            _ => false,
+        }
+    }
+
+    fn flush_staged_messages(target: BurstTarget, staged: Vec<StagedMessage>) {
+        if staged.is_empty() {
+            return;
+        }
+        match target {
+            BurstTarget::Actor(_) => {
+                let mut mailbox: Option<Arc<Mailbox>> = None;
+                let mut nodes = Vec::with_capacity(staged.len());
+                for item in staged {
+                    if let StagedMessage::Direct {
+                        mailbox: item_mailbox,
+                        node,
+                    } = item
+                    {
+                        if mailbox.is_none() {
+                            mailbox = Some(item_mailbox);
+                        }
+                        nodes.push(node);
+                    }
+                }
+                if let Some(mailbox) = mailbox {
+                    enqueue_node_batch_ref(mailbox.as_ref(), &nodes);
+                }
+            }
+            BurstTarget::Pool(_) => {
+                let mut pool: Option<*const PoolHandle> = None;
+                let mut batch = Vec::new();
+                for item in staged {
+                    if let StagedMessage::Pool {
+                        pool: pool_ptr,
+                        mailbox,
+                        node,
+                    } = item
+                    {
+                        if pool.is_none() {
+                            pool = Some(pool_ptr);
+                        }
+                        batch.push(PoolMessage { mailbox, node });
+                    }
+                }
+                if let Some(pool) = pool {
+                    let accepted = scheduler::enqueue_batch(pool, &batch);
+                    for msg in batch.into_iter().skip(accepted) {
+                        drop_message_node(msg.node);
+                        inc_messages_dropped();
+                        inc_mailbox_enqueue_fail();
+                    }
+                }
+            }
+        }
+    }
+
+    fn burst_drop_staged(staged: Vec<StagedMessage>) {
+        for item in staged {
+            match item {
+                StagedMessage::Direct { node, .. } => drop_message_node(node),
+                StagedMessage::Pool { node, .. } => drop_message_node(node),
+            }
+        }
+    }
+
+    fn burst_stage_message(target: BurstTarget, msg: StagedMessage) -> bool {
+        BURST_CONTEXT.with(|slot| unsafe {
+            let slot = &mut *slot.get();
+            let Some(ctx) = slot.as_mut() else {
+                return false;
+            };
+            if !burst_targets_match(ctx.target, target) {
+                return false;
+            }
+            if ctx.staged.len() >= BURST_MAX_STAGE {
+                let staged =
+                    std::mem::replace(&mut ctx.staged, Vec::with_capacity(BURST_STAGE_INITIAL_CAP));
+                flush_staged_messages(ctx.target, staged);
+            }
+            ctx.staged.push(msg);
+            true
+        })
+    }
+
+    fn burst_is_active_for_target(target: BurstTarget) -> bool {
+        if BURST_ACTIVE_COUNT.load(Ordering::Acquire) == 0 {
+            return false;
+        }
+        BURST_CONTEXT.with(|slot| unsafe {
+            let slot = &*slot.get();
+            let Some(ctx) = slot.as_ref() else {
+                return false;
+            };
+            burst_targets_match(ctx.target, target)
+        })
+    }
 
     fn ensure_watchdog() {
         if WATCHDOG_STARTED.get().is_some() {
@@ -303,6 +838,7 @@ pub(crate) mod actor {
         map.entry(class_id)
             .or_insert_with(HashMap::new)
             .insert(method_id, func);
+        METHOD_REGISTRY_GENERATION.fetch_add(1, Ordering::Release);
     }
 
     pub fn actor_spawn(
@@ -354,9 +890,12 @@ pub(crate) mod actor {
             runtime_error("actor_spawn: `pool_size` must be > 0");
             return Value::nil();
         };
-        let (tx, rx) = mpsc::sync_channel(config.mailbox_cap);
         let mailbox = Arc::new(Mailbox {
-            sender: Mutex::new(Some(tx)),
+            queue: MailboxQueue::new(config.mailbox_cap),
+            work_notify: TaskSignal::new(),
+            space_notify: TaskSignal::new(),
+            space_notify_epoch: AtomicU64::new(0),
+            space_notify_inflight: AtomicBool::new(false),
             len: AtomicUsize::new(0),
             closed: AtomicBool::new(false),
             paused: AtomicBool::new(false),
@@ -364,6 +903,7 @@ pub(crate) mod actor {
             pause_epoch: AtomicUsize::new(0),
             pause_ack: AtomicUsize::new(0),
             pause_ack_notify: TaskSignal::new(),
+            enqueue_timeout: config.enqueue_timeout,
             batch_limit: config.batch_limit,
             arena: Mutex::new(arena::Arena::new(64 * 1024)),
         });
@@ -371,7 +911,7 @@ pub(crate) mod actor {
             wr_rc_inc(instance);
         }
         let mailbox_for_loop = mailbox.clone();
-        runtime_spawn(move || actor_loop(class_id, mailbox_for_loop, rx));
+        runtime_spawn(move || actor_loop(class_id, mailbox_for_loop));
         let obj = Box::new(ActorHandle {
             header: header(TypeId::Actor),
             class_id,
@@ -560,6 +1100,87 @@ pub(crate) mod actor {
         }
     }
 
+    pub fn actor_fire_burst_begin(handle: Value) {
+        let Some(target) = burst_target_from_handle(handle) else {
+            runtime_error("fire_burst_begin: expected actor or pool handle");
+            return;
+        };
+        BURST_CONTEXT.with(|slot| unsafe {
+            let slot = &mut *slot.get();
+            match slot.as_mut() {
+                Some(ctx) => {
+                    if burst_targets_match(ctx.target, target) {
+                        ctx.depth = ctx.depth.saturating_add(1);
+                    } else {
+                        runtime_error("fire_burst_begin: active burst uses a different handle");
+                    }
+                }
+                None => {
+                    *slot = Some(BurstContext {
+                        target,
+                        depth: 1,
+                        staged: Vec::with_capacity(BURST_STAGE_INITIAL_CAP),
+                    });
+                    BURST_ACTIVE_COUNT.fetch_add(1, Ordering::AcqRel);
+                }
+            }
+        });
+    }
+
+    pub fn actor_fire_burst_end(handle: Value) {
+        let Some(target) = burst_target_from_handle(handle) else {
+            runtime_error("fire_burst_end: expected actor or pool handle");
+            return;
+        };
+        let mut flush_target = None;
+        let mut flush_staged = Vec::new();
+        BURST_CONTEXT.with(|slot| unsafe {
+            let slot = &mut *slot.get();
+            let Some(ctx) = slot.as_mut() else {
+                runtime_error("fire_burst_end: no active burst");
+                return;
+            };
+            if !burst_targets_match(ctx.target, target) {
+                runtime_error("fire_burst_end: handle does not match active burst");
+                return;
+            }
+            if ctx.depth > 1 {
+                ctx.depth -= 1;
+                return;
+            }
+            flush_target = Some(ctx.target);
+            flush_staged = std::mem::replace(&mut ctx.staged, Vec::new());
+            *slot = None;
+            BURST_ACTIVE_COUNT.fetch_sub(1, Ordering::AcqRel);
+        });
+        if let Some(target) = flush_target {
+            flush_staged_messages(target, flush_staged);
+        }
+    }
+
+    pub fn actor_fire_burst_abort(handle: Value) {
+        let Some(target) = burst_target_from_handle(handle) else {
+            runtime_error("fire_burst_abort: expected actor or pool handle");
+            return;
+        };
+        let mut dropped = Vec::new();
+        BURST_CONTEXT.with(|slot| unsafe {
+            let slot = &mut *slot.get();
+            let Some(ctx) = slot.as_mut() else {
+                runtime_error("fire_burst_abort: no active burst");
+                return;
+            };
+            if !burst_targets_match(ctx.target, target) {
+                runtime_error("fire_burst_abort: handle does not match active burst");
+                return;
+            }
+            dropped = std::mem::replace(&mut ctx.staged, Vec::new());
+            *slot = None;
+            BURST_ACTIVE_COUNT.fetch_sub(1, Ordering::AcqRel);
+        });
+        burst_drop_staged(dropped);
+    }
+
     pub fn actor_send(handle: Value, method_id: u32, argc: usize, argv_ptr: *const Value) -> Value {
         if let Some(pool) = as_pool_ref(handle) {
             return pool_send(pool, method_id, argc, argv_ptr);
@@ -587,7 +1208,7 @@ pub(crate) mod actor {
             state,
         });
         unsafe {
-            enqueue_message_ref(&*(*actor).mailbox, msg);
+            enqueue_node_ref(&*(*actor).mailbox, msg);
         }
         Value::from_ptr(Box::into_raw(pending) as *mut ObjHeader)
     }
@@ -621,13 +1242,23 @@ pub(crate) mod actor {
         let Some(msg) = build_message_local(actor, method_id, argc, argv_ptr, None) else {
             return;
         };
-        unsafe {
-            enqueue_message_ref(&*(*actor).mailbox, msg);
+        if burst_is_active_for_target(burst_target_for_actor(actor)) {
+            let _ = burst_stage_message(
+                burst_target_for_actor(actor),
+                StagedMessage::Direct {
+                    mailbox: unsafe { (*actor).mailbox.clone() },
+                    node: msg,
+                },
+            );
+        } else {
+            unsafe {
+                enqueue_node_ref(&*(*actor).mailbox, msg);
+            }
         }
     }
 
     pub fn deliver_pool_message(msg: PoolMessage) {
-        enqueue_message(msg.mailbox, msg.msg);
+        enqueue_node_ref(&msg.mailbox, msg.node);
     }
 
     pub fn pending_await(pending: Value) -> Value {
@@ -657,11 +1288,10 @@ pub(crate) mod actor {
         unsafe {
             let mailbox = (*actor).mailbox.clone();
             mailbox.closed.store(true, Ordering::Release);
-            let sender = {
-                let mut guard = mailbox.sender.lock().expect("mailbox sender lock");
-                guard.take()
-            };
-            drop(sender);
+            mailbox.work_notify.notify_waiters();
+            mailbox.space_notify_inflight.store(false, Ordering::Release);
+            mailbox.space_notify.notify_waiters();
+            mailbox.pause_notify.notify_waiters();
             // Keep actor allocation/instance alive for process lifetime to avoid
             // teardown races with concurrent raw-pointer readers.
         }
@@ -706,25 +1336,23 @@ pub(crate) mod actor {
         unsafe { (&(*actor).mailbox).len.load(Ordering::Relaxed) }
     }
 
-    fn mailbox_dec(mailbox: &Mailbox) {
-        let mut current = mailbox.len.load(Ordering::Acquire);
-        loop {
-            if current == 0 {
-                return;
-            }
-            match mailbox.len.compare_exchange(
-                current,
-                current - 1,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => {
-                    inc_mailbox_dequeue();
-                    return;
-                }
-                Err(next) => current = next,
-            }
+    fn mailbox_dec_n(mailbox: &Mailbox, count: usize) {
+        if count == 0 {
+            return;
         }
+        let prev = mailbox.len.fetch_sub(count, Ordering::AcqRel);
+        if prev < count {
+            mailbox.len.store(0, Ordering::Release);
+            return;
+        }
+        if prev >= mailbox.queue.cap && prev - count < mailbox.queue.cap {
+            maybe_notify_space(mailbox);
+        }
+        crate::metrics::inc_mailbox_dequeue_n(count as u64);
+    }
+
+    fn mailbox_dec(mailbox: &Mailbox) {
+        mailbox_dec_n(mailbox, 1);
     }
 
     fn mailbox_set_paused(actor: *const ActorHandle, paused: bool) {
@@ -755,7 +1383,7 @@ pub(crate) mod actor {
         method_id: u32,
         args: &[Value],
         pending: Option<Arc<PendingState>>,
-    ) -> Option<Message> {
+    ) -> Option<MessageNodeHandle> {
         let mut args_vec = take_args_vec();
         args_vec.push(instance);
         if !args.is_empty() {
@@ -777,7 +1405,7 @@ pub(crate) mod actor {
                 wr_rc_inc(*arg);
             }
         }
-        Some(msg)
+        Some(message_node_from_message(msg))
     }
 
     fn build_message_local(
@@ -786,7 +1414,7 @@ pub(crate) mod actor {
         argc: usize,
         argv_ptr: *const Value,
         pending: Option<Arc<PendingState>>,
-    ) -> Option<Message> {
+    ) -> Option<MessageNodeHandle> {
         let instance = unsafe { (*actor).instance };
         let args = unsafe { args_from_raw(argc, argv_ptr)? };
         build_message_inner(instance, method_id, args, pending)
@@ -802,8 +1430,8 @@ pub(crate) mod actor {
         let mailbox = unsafe { (*actor).mailbox.clone() };
         let instance = unsafe { (*actor).instance };
         let args = unsafe { args_from_raw(argc, argv_ptr)? };
-        let msg = build_message_inner(instance, method_id, args, pending)?;
-        Some(PoolMessage { mailbox, msg })
+        let node = build_message_inner(instance, method_id, args, pending)?;
+        Some(PoolMessage { mailbox, node })
     }
 
     fn mailbox_should_drop_paused(actor: *const ActorHandle) -> bool {
@@ -891,7 +1519,7 @@ pub(crate) mod actor {
                     header: header(TypeId::Pending),
                     state,
                 });
-                enqueue_message_ref(&*(*actor).mailbox, msg);
+                enqueue_node_ref(&*(*actor).mailbox, msg);
                 return Value::from_ptr(Box::into_raw(pending) as *mut ObjHeader);
             }
 
@@ -903,7 +1531,7 @@ pub(crate) mod actor {
             };
 
             if let Err(msg) = scheduler::enqueue(pool, msg) {
-                drop_message(msg.msg);
+                drop_message_node(msg.node);
                 recycle_pending_state(state);
                 return Value::nil();
             }
@@ -939,15 +1567,43 @@ pub(crate) mod actor {
                 let Some(msg) = build_message_local(actor, method_id, argc, argv_ptr, None) else {
                     return;
                 };
-                enqueue_message_ref(&*(*actor).mailbox, msg);
+                if burst_is_active_for_target(burst_target_for_pool(pool)) {
+                    let _ = burst_stage_message(
+                        burst_target_for_pool(pool),
+                        StagedMessage::Direct {
+                            mailbox: (*actor).mailbox.clone(),
+                            node: msg,
+                        },
+                    );
+                    return;
+                }
+                enqueue_node_ref(&*(*actor).mailbox, msg);
                 return;
             }
 
             if let Some(msg) = build_pool_message(actor, method_id, argc, argv_ptr, None) {
+                if burst_is_active_for_target(burst_target_for_pool(pool)) {
+                    let _ = burst_stage_message(
+                        burst_target_for_pool(pool),
+                        StagedMessage::Pool {
+                            pool,
+                            mailbox: msg.mailbox.clone(),
+                            node: msg.node,
+                        },
+                    );
+                    return;
+                }
                 if let Err(msg) = scheduler::enqueue(pool, msg) {
-                    drop_message(msg.msg);
+                    drop_message_node(msg.node);
                 }
             }
+        }
+    }
+
+    fn maybe_notify_space(mailbox: &Mailbox) {
+        let _ = mailbox.space_notify_epoch.fetch_add(SPACE_NOTIFY_COALESCE_WINDOW, Ordering::AcqRel) + 1;
+        if !mailbox.space_notify_inflight.swap(true, Ordering::AcqRel) {
+            mailbox.space_notify.notify_one();
         }
     }
 
@@ -955,66 +1611,94 @@ pub(crate) mod actor {
         enqueue_message_ref(&mailbox, msg);
     }
 
+    fn enqueue_messages_ref(mailbox: &Mailbox, msgs: Vec<Message>) {
+        let nodes = msgs.into_iter().map(message_node_from_message).collect::<Vec<_>>();
+        enqueue_node_batch_ref(mailbox, &nodes);
+    }
+
     fn enqueue_message_ref(mailbox: &Mailbox, msg: Message) {
-        if mailbox.closed.load(Ordering::Acquire) {
-            drop_message(msg);
-            inc_mailbox_enqueue_fail();
-            inc_messages_dropped();
+        enqueue_node_ref(mailbox, message_node_from_message(msg));
+    }
+
+    fn enqueue_node_ref(mailbox: &Mailbox, node: MessageNodeHandle) {
+        let one = [node];
+        enqueue_node_batch_ref(mailbox, &one);
+    }
+
+    fn enqueue_node_batch_ref(mailbox: &Mailbox, nodes: &[MessageNodeHandle]) {
+        if nodes.is_empty() {
             return;
         }
-        let sender = {
-            let guard = mailbox.sender.lock().expect("mailbox sender lock");
-            guard.clone()
-        };
-        let Some(sender) = sender else {
-            drop_message(msg);
-            inc_mailbox_enqueue_fail();
-            inc_messages_dropped();
+        if mailbox.closed.load(Ordering::Acquire) {
+            for node in nodes.iter().copied() {
+                drop_message_node(node);
+                inc_mailbox_enqueue_fail();
+                inc_messages_dropped();
+            }
             return;
-        };
-        let mut current = msg;
+        }
+        if nodes.len() == 1 {
+            let node = nodes[0];
+            if fast_send_try_enqueue_node(mailbox, node).is_ok() {
+                return;
+            }
+        }
+        let deadline = Instant::now() + mailbox.enqueue_timeout;
+        let mut idx = 0usize;
         loop {
-            match sender.try_send(current) {
-                Ok(()) => {
-                    let len = mailbox.len.fetch_add(1, Ordering::AcqRel) + 1;
-                    update_mailbox_high_water(len);
-                    inc_mailbox_enqueue_ok();
-                    inc_messages_sent();
+            let accepted = mailbox.queue.push_batch(&nodes[idx..]);
+            if accepted > 0 {
+                let prev = mailbox.len.fetch_add(accepted, Ordering::AcqRel);
+                let len = prev + accepted;
+                update_mailbox_high_water(len);
+                crate::metrics::inc_mailbox_enqueue_ok_n(accepted as u64);
+                crate::metrics::inc_messages_sent_n(accepted as u64);
+                idx += accepted;
+                if prev == 0 {
+                    mailbox.work_notify.notify_one();
+                }
+                if idx >= nodes.len() {
+                    mailbox.space_notify_inflight.store(false, Ordering::Release);
                     return;
                 }
-                Err(TrySendError::Disconnected(msg)) => {
-                    drop_message(msg);
-                    inc_mailbox_enqueue_fail();
-                    inc_messages_dropped();
-                    return;
-                }
-                Err(TrySendError::Full(msg)) => {
-                    current = msg;
-                    match sender.send(current) {
-                        Ok(()) => {
-                            let len = mailbox.len.fetch_add(1, Ordering::AcqRel) + 1;
-                            update_mailbox_high_water(len);
-                            inc_mailbox_enqueue_ok();
-                            inc_messages_sent();
-                            return;
-                        }
-                        Err(err) => {
-                            drop_message(err.0);
-                            inc_mailbox_enqueue_fail();
-                            inc_messages_dropped();
-                            return;
-                        }
+            } else {
+                if mailbox.closed.load(Ordering::Acquire) {
+                    for node in nodes[idx..].iter().copied() {
+                        drop_message_node(node);
+                        inc_mailbox_enqueue_fail();
+                        inc_messages_dropped();
                     }
+                    return;
                 }
+                let now = Instant::now();
+                if now >= deadline {
+                    for node in nodes[idx..].iter().copied() {
+                        drop_message_node(node);
+                        inc_mailbox_enqueue_fail();
+                        inc_messages_dropped();
+                    }
+                    return;
+                }
+                let observed = mailbox.space_notify.snapshot();
+                let remaining = deadline.saturating_duration_since(now);
+                let wait_for = remaining.min(Duration::from_micros(250));
+                let _ = mailbox.space_notify.wait_timeout(observed, wait_for);
+                mailbox.space_notify_inflight.store(false, Ordering::Release);
             }
         }
     }
 
-    fn actor_loop(class_id: u32, mailbox: Arc<Mailbox>, rx: mpsc::Receiver<Message>) {
+    fn actor_loop(class_id: u32, mailbox: Arc<Mailbox>) {
+        let mailbox_ptr = Arc::as_ptr(&mailbox);
+        let fast_path = actor_fast_path_enabled();
+        if fast_path {
+            fast_send_context_enter(mailbox_ptr);
+        }
+        let mut method_cache = MethodCache::new(class_id);
         loop {
-            let msg = match rx.recv() {
-                Ok(msg) => msg,
-                Err(_) => break,
+            let (msg, counted) = match mailbox_recv(&mailbox, fast_path) {
+                Some(pair) => pair,
+                None => break,
             };
             while mailbox.paused.load(Ordering::Acquire) {
                 let epoch = mailbox.pause_epoch.load(Ordering::Acquire);
@@ -1022,67 +1706,125 @@ pub(crate) mod actor {
                 mailbox.pause_ack_notify.notify_waiters();
                 let _ = mailbox.pause_notify.wait(mailbox.pause_notify.snapshot());
             }
-            if handle_message(&mailbox, class_id, msg, &rx) {
+            if handle_message(&mailbox, msg, counted, &mut method_cache) {
                 std::thread::yield_now();
             } else {
                 break;
             }
+            if fast_path {
+                let enqueued = fast_send_take_enqueued_count(&mailbox);
+                if enqueued > 0 {
+                    crate::metrics::inc_mailbox_enqueue_ok_n(enqueued);
+                    crate::metrics::inc_messages_sent_n(enqueued);
+                }
+            }
+        }
+        if fast_path {
+            let enqueued = fast_send_take_enqueued_count(&mailbox);
+            if enqueued > 0 {
+                crate::metrics::inc_mailbox_enqueue_ok_n(enqueued);
+                crate::metrics::inc_messages_sent_n(enqueued);
+            }
+            fast_send_context_exit(mailbox_ptr);
+        }
+    }
+
+    fn mailbox_recv(mailbox: &Mailbox, fast_path: bool) -> Option<(MessageNodeHandle, bool)> {
+        loop {
+            if fast_path {
+                if let Some(msg) = fast_send_try_dequeue_node(mailbox) {
+                    return Some((msg, false));
+                }
+            }
+            if let Some(msg) = mailbox.queue.pop_node() {
+                return Some((msg, true));
+            }
+            if mailbox.closed.load(Ordering::Acquire) && mailbox.len.load(Ordering::Acquire) == 0 {
+                return None;
+            }
+            let observed = mailbox.work_notify.snapshot();
+            if fast_path {
+                if let Some(msg) = fast_send_try_dequeue_node(mailbox) {
+                    return Some((msg, false));
+                }
+            }
+            if let Some(msg) = mailbox.queue.pop_node() {
+                return Some((msg, true));
+            }
+            if mailbox.closed.load(Ordering::Acquire) && mailbox.len.load(Ordering::Acquire) == 0 {
+                return None;
+            }
+            let _ = mailbox.work_notify.wait(observed);
         }
     }
 
     fn handle_message(
         mailbox: &Mailbox,
-        class_id: u32,
-        first: Message,
-        rx: &mpsc::Receiver<Message>,
+        first: MessageNodeHandle,
+        first_counted: bool,
+        method_cache: &mut MethodCache,
     ) -> bool {
         let batch_limit = mailbox.batch_limit;
         let mut current = first;
+        let mut current_counted = first_counted;
+        let mut processed = 0usize;
         for idx in 0..batch_limit {
             if mailbox.closed.load(Ordering::Acquire) {
-                drop_message(current);
-                mailbox_dec(mailbox);
-                drain_messages(mailbox, rx);
+                drop_message_node(current);
+                if current_counted {
+                    mailbox_dec_n(mailbox, processed + 1);
+                } else {
+                    mailbox_dec_n(mailbox, processed);
+                }
+                while let Some(msg) = fast_send_try_dequeue_node(mailbox) {
+                    drop_message_node(msg);
+                }
+                drain_messages(mailbox);
                 return false;
             }
-            process_message(mailbox, class_id, current);
-            mailbox_dec(mailbox);
+            process_message_node(mailbox, method_cache, current);
+            if current_counted {
+                processed += 1;
+            }
             if idx + 1 >= batch_limit {
                 break;
             }
-            match rx.try_recv() {
-                Ok(next) => current = next,
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => return false,
+            if let Some(next) = fast_send_try_dequeue_node(mailbox) {
+                current = next;
+                current_counted = false;
+                continue;
+            }
+            match mailbox.queue.pop_node() {
+                Some(next) => {
+                    current = next;
+                    current_counted = true;
+                }
+                None => break,
             }
         }
+        mailbox_dec_n(mailbox, processed);
         true
     }
 
-    fn drain_messages(mailbox: &Mailbox, rx: &mpsc::Receiver<Message>) {
+    fn drain_messages(mailbox: &Mailbox) {
         loop {
-            let msg = match rx.try_recv() {
-                Ok(msg) => msg,
-                Err(_) => break,
+            let msg = match mailbox.queue.pop_node() {
+                Some(msg) => msg,
+                None => break,
             };
-            drop_message(msg);
+            drop_message_node(msg);
             mailbox_dec(mailbox);
         }
     }
 
-    fn process_message(mailbox: &Mailbox, class_id: u32, msg: Message) {
+    fn process_message(mailbox: &Mailbox, method_cache: &mut MethodCache, msg: Message) {
         let mut arena_guard = mailbox.arena.lock().expect("arena lock");
         let _guard = arena::enter(&mut *arena_guard as *mut _);
-        let func = {
-            let map = method_registry().lock().expect("method registry lock");
-            map.get(&class_id)
-                .and_then(|inner| inner.get(&msg.method_id))
-                .copied()
-        };
+        let func = method_cache.resolve(msg.method_id);
         if func.is_none() && crate::config::debug_actor_enabled() {
             eprintln!(
                 "actor: missing method class_id={} method_id={} argc={}",
-                class_id,
+                method_cache.class_id,
                 msg.method_id,
                 msg.args.len()
             );
@@ -1168,18 +1910,29 @@ pub(crate) mod actor {
     mod tests {
         use super::*;
         use crate::metrics;
+        use crate::value::int_value;
+        use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
         use std::sync::{Arc, Mutex, OnceLock};
         use std::thread;
+        use std::time::{Duration, Instant};
 
         fn metrics_test_lock() -> &'static Mutex<()> {
             static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
             LOCK.get_or_init(|| Mutex::new(()))
         }
 
+        fn burst_test_lock() -> &'static Mutex<()> {
+            static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+            LOCK.get_or_init(|| Mutex::new(()))
+        }
+
         fn dummy_mailbox() -> Arc<Mailbox> {
-            let (tx, _rx) = mpsc::sync_channel(1);
             Arc::new(Mailbox {
-                sender: Mutex::new(Some(tx)),
+                queue: MailboxQueue::new(1),
+                work_notify: TaskSignal::new(),
+                space_notify: TaskSignal::new(),
+                space_notify_epoch: AtomicU64::new(0),
+                space_notify_inflight: AtomicBool::new(false),
                 len: AtomicUsize::new(0),
                 closed: AtomicBool::new(false),
                 paused: AtomicBool::new(false),
@@ -1187,15 +1940,19 @@ pub(crate) mod actor {
                 pause_epoch: AtomicUsize::new(0),
                 pause_ack: AtomicUsize::new(0),
                 pause_ack_notify: TaskSignal::new(),
+                enqueue_timeout: Duration::from_millis(1),
                 batch_limit: 1,
                 arena: Mutex::new(arena::Arena::new(1024)),
             })
         }
 
-        fn test_mailbox() -> (Arc<Mailbox>, mpsc::Receiver<Message>) {
-            let (tx, rx) = mpsc::sync_channel(1);
+        fn test_mailbox() -> Arc<Mailbox> {
             let mailbox = Arc::new(Mailbox {
-                sender: Mutex::new(Some(tx)),
+                queue: MailboxQueue::new(1),
+                work_notify: TaskSignal::new(),
+                space_notify: TaskSignal::new(),
+                space_notify_epoch: AtomicU64::new(0),
+                space_notify_inflight: AtomicBool::new(false),
                 len: AtomicUsize::new(0),
                 closed: AtomicBool::new(false),
                 paused: AtomicBool::new(false),
@@ -1203,10 +1960,119 @@ pub(crate) mod actor {
                 pause_epoch: AtomicUsize::new(0),
                 pause_ack: AtomicUsize::new(0),
                 pause_ack_notify: TaskSignal::new(),
+                enqueue_timeout: Duration::from_millis(1),
                 batch_limit: 1,
                 arena: Mutex::new(arena::Arena::new(1024)),
             });
-            (mailbox, rx)
+            mailbox
+        }
+
+        fn ordering_log() -> &'static Mutex<Vec<i64>> {
+            static LOG: OnceLock<Mutex<Vec<i64>>> = OnceLock::new();
+            LOG.get_or_init(|| Mutex::new(Vec::new()))
+        }
+
+        fn burst_ordering_log() -> &'static Mutex<Vec<i64>> {
+            static LOG: OnceLock<Mutex<Vec<i64>>> = OnceLock::new();
+            LOG.get_or_init(|| Mutex::new(Vec::new()))
+        }
+
+        fn at_most_once_counts() -> &'static Mutex<HashMap<i64, usize>> {
+            static COUNTS: OnceLock<Mutex<HashMap<i64, usize>>> = OnceLock::new();
+            COUNTS.get_or_init(|| Mutex::new(HashMap::new()))
+        }
+
+        fn throughput_counter() -> &'static AtomicUsize {
+            static COUNTER: OnceLock<AtomicUsize> = OnceLock::new();
+            COUNTER.get_or_init(|| AtomicUsize::new(0))
+        }
+
+        fn throughput_target() -> &'static AtomicUsize {
+            static TARGET: OnceLock<AtomicUsize> = OnceLock::new();
+            TARGET.get_or_init(|| AtomicUsize::new(0))
+        }
+
+        fn throughput_fanout() -> &'static AtomicUsize {
+            static FANOUT: OnceLock<AtomicUsize> = OnceLock::new();
+            FANOUT.get_or_init(|| AtomicUsize::new(1))
+        }
+
+        fn throughput_actor_bits() -> &'static AtomicU64 {
+            static HANDLE_BITS: OnceLock<AtomicU64> = OnceLock::new();
+            HANDLE_BITS.get_or_init(|| AtomicU64::new(Value::nil().0))
+        }
+
+        extern "C" fn record_ordering(argc: usize, argv: *const Value) -> Value {
+            if argc > 1 && !argv.is_null() {
+                let args = unsafe { std::slice::from_raw_parts(argv, argc) };
+                if let Some(tag) = int_value(args[1]) {
+                    ordering_log().lock().expect("ordering log lock").push(tag);
+                }
+            }
+            Value::nil()
+        }
+
+        extern "C" fn record_burst_ordering(argc: usize, argv: *const Value) -> Value {
+            if argc > 1 && !argv.is_null() {
+                let args = unsafe { std::slice::from_raw_parts(argv, argc) };
+                if let Some(tag) = int_value(args[1]) {
+                    burst_ordering_log()
+                        .lock()
+                        .expect("burst ordering log lock")
+                        .push(tag);
+                }
+            }
+            Value::nil()
+        }
+
+        extern "C" fn record_at_most_once(argc: usize, argv: *const Value) -> Value {
+            if argc > 1 && !argv.is_null() {
+                let args = unsafe { std::slice::from_raw_parts(argv, argc) };
+                if let Some(tag) = int_value(args[1]) {
+                    let mut counts = at_most_once_counts().lock().expect("counts lock");
+                    let entry = counts.entry(tag).or_insert(0);
+                    *entry += 1;
+                }
+            }
+            Value::nil()
+        }
+
+        extern "C" fn throughput_ping_fanout(_argc: usize, _argv: *const Value) -> Value {
+            let completed = throughput_counter().fetch_add(1, Ordering::Relaxed) + 1;
+            let total = throughput_target().load(Ordering::Acquire);
+            if completed >= total {
+                return Value::nil();
+            }
+            let fanout = throughput_fanout().load(Ordering::Relaxed).max(1);
+            let remaining = total - completed;
+            let sends = fanout.min(remaining);
+            let actor = Value(throughput_actor_bits().load(Ordering::Acquire));
+            for _ in 0..sends {
+                actor_fire(actor, 0, 0, std::ptr::null());
+            }
+            Value::nil()
+        }
+
+        fn wait_until<F>(timeout: Duration, mut predicate: F) -> bool
+        where
+            F: FnMut() -> bool,
+        {
+            let deadline = Instant::now() + timeout;
+            while Instant::now() < deadline {
+                if predicate() {
+                    return true;
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+            predicate()
+        }
+
+        struct FastPathOverrideGuard;
+
+        impl Drop for FastPathOverrideGuard {
+            fn drop(&mut self) {
+                set_actor_fast_path_for_test(None);
+            }
         }
 
         #[cfg(feature = "metrics")]
@@ -1214,7 +2080,7 @@ pub(crate) mod actor {
         fn mailbox_metrics_enqueue_dequeue() {
             let _guard = metrics_test_lock().lock().expect("metrics test lock");
             metrics::reset();
-            let (mailbox, rx) = test_mailbox();
+            let mailbox = test_mailbox();
 
             let before_ok = metrics::metrics_get_raw(metrics::METRIC_MAILBOX_ENQUEUE_OK);
             let before_dequeue = metrics::metrics_get_raw(metrics::METRIC_MAILBOX_DEQUEUE);
@@ -1232,7 +2098,7 @@ pub(crate) mod actor {
                 "enqueue metric did not advance (before={before_ok}, after={after_ok})"
             );
 
-            let received = rx.recv().expect("recv message");
+            let received = mailbox.queue.pop().expect("recv message");
             drop_message(received);
             mailbox_dec(mailbox.as_ref());
 
@@ -1248,7 +2114,7 @@ pub(crate) mod actor {
         fn mailbox_metrics_enqueue_fail() {
             let _guard = metrics_test_lock().lock().expect("metrics test lock");
             metrics::reset();
-            let (mailbox, _rx) = test_mailbox();
+            let mailbox = test_mailbox();
             mailbox.closed.store(true, Ordering::Release);
 
             let before_fail = metrics::metrics_get_raw(metrics::METRIC_MAILBOX_ENQUEUE_FAIL);
@@ -1263,6 +2129,382 @@ pub(crate) mod actor {
                 after_fail > before_fail,
                 "enqueue-fail metric did not advance (before={before_fail}, after={after_fail})"
             );
+        }
+
+        #[test]
+        fn actor_fire_burst_flush_order_preserved() {
+            const CLASS_ID: u32 = 36_001;
+            let _guard = burst_test_lock().lock().expect("burst test lock");
+            burst_ordering_log()
+                .lock()
+                .expect("burst ordering log lock")
+                .clear();
+            register_method(CLASS_ID, 0, record_burst_ordering);
+            let actor = actor_spawn(CLASS_ID as u64, Value::nil(), 1, 3, 256, 10, 64);
+
+            actor_fire_burst_begin(actor);
+            for tag in [1i64, 2, 3] {
+                let args = [Value::from_int(tag)];
+                actor_fire(actor, 0, 1, args.as_ptr());
+            }
+            assert_eq!(
+                burst_ordering_log()
+                    .lock()
+                    .expect("burst ordering log lock")
+                    .len(),
+                0,
+                "messages should remain staged before burst end"
+            );
+            actor_fire_burst_end(actor);
+            assert!(
+                wait_until(Duration::from_secs(5), || {
+                    burst_ordering_log()
+                        .lock()
+                        .expect("burst ordering log lock")
+                        .len()
+                        == 3
+                }),
+                "timed out waiting for staged burst flush"
+            );
+            let log = burst_ordering_log()
+                .lock()
+                .expect("burst ordering log lock")
+                .clone();
+            assert_eq!(log, vec![1, 2, 3]);
+            unsafe {
+                wr_rc_dec(actor);
+            }
+        }
+
+        #[test]
+        fn actor_fire_burst_nested_same_handle_ok() {
+            const CLASS_ID: u32 = 36_002;
+            let _guard = burst_test_lock().lock().expect("burst test lock");
+            burst_ordering_log()
+                .lock()
+                .expect("burst ordering log lock")
+                .clear();
+            register_method(CLASS_ID, 0, record_burst_ordering);
+            let actor = actor_spawn(CLASS_ID as u64, Value::nil(), 1, 3, 256, 10, 64);
+
+            actor_fire_burst_begin(actor);
+            actor_fire_burst_begin(actor);
+            let args = [Value::from_int(7)];
+            actor_fire(actor, 0, 1, args.as_ptr());
+            actor_fire_burst_end(actor);
+            thread::sleep(Duration::from_millis(10));
+            assert_eq!(
+                burst_ordering_log()
+                    .lock()
+                    .expect("burst ordering log lock")
+                    .len(),
+                0,
+                "nested end should not flush until outer end"
+            );
+            actor_fire_burst_end(actor);
+            assert!(
+                wait_until(Duration::from_secs(5), || {
+                    burst_ordering_log()
+                        .lock()
+                        .expect("burst ordering log lock")
+                        .len()
+                        == 1
+                }),
+                "timed out waiting for nested burst flush"
+            );
+            let log = burst_ordering_log()
+                .lock()
+                .expect("burst ordering log lock")
+                .clone();
+            assert_eq!(log, vec![7]);
+            unsafe {
+                wr_rc_dec(actor);
+            }
+        }
+
+        #[test]
+        fn actor_fire_burst_mismatched_handle_rejected() {
+            const CLASS_ID: u32 = 36_003;
+            let _guard = burst_test_lock().lock().expect("burst test lock");
+            burst_ordering_log()
+                .lock()
+                .expect("burst ordering log lock")
+                .clear();
+            register_method(CLASS_ID, 0, record_burst_ordering);
+            let actor_a = actor_spawn(CLASS_ID as u64, Value::nil(), 1, 3, 256, 10, 64);
+            let actor_b = actor_spawn(CLASS_ID as u64, Value::nil(), 1, 3, 256, 10, 64);
+
+            actor_fire_burst_begin(actor_a);
+            let args = [Value::from_int(11)];
+            actor_fire(actor_a, 0, 1, args.as_ptr());
+            actor_fire_burst_begin(actor_b);
+            actor_fire_burst_end(actor_b);
+            thread::sleep(Duration::from_millis(10));
+            assert_eq!(
+                burst_ordering_log()
+                    .lock()
+                    .expect("burst ordering log lock")
+                    .len(),
+                0,
+                "mismatched handle calls should not flush active burst"
+            );
+            actor_fire_burst_end(actor_a);
+            assert!(
+                wait_until(Duration::from_secs(5), || {
+                    burst_ordering_log()
+                        .lock()
+                        .expect("burst ordering log lock")
+                        .len()
+                        == 1
+                }),
+                "timed out waiting for burst flush"
+            );
+            let log = burst_ordering_log()
+                .lock()
+                .expect("burst ordering log lock")
+                .clone();
+            assert_eq!(log, vec![11]);
+            unsafe {
+                wr_rc_dec(actor_a);
+                wr_rc_dec(actor_b);
+            }
+        }
+
+        #[test]
+        fn actor_fire_burst_abort_reclaims_nodes() {
+            const CLASS_ID: u32 = 36_004;
+            let _guard = burst_test_lock().lock().expect("burst test lock");
+            burst_ordering_log()
+                .lock()
+                .expect("burst ordering log lock")
+                .clear();
+            register_method(CLASS_ID, 0, record_burst_ordering);
+            let actor = actor_spawn(CLASS_ID as u64, Value::nil(), 1, 3, 256, 10, 64);
+
+            actor_fire_burst_begin(actor);
+            for tag in [21i64, 22, 23] {
+                let args = [Value::from_int(tag)];
+                actor_fire(actor, 0, 1, args.as_ptr());
+            }
+            actor_fire_burst_abort(actor);
+            thread::sleep(Duration::from_millis(20));
+            assert_eq!(
+                burst_ordering_log()
+                    .lock()
+                    .expect("burst ordering log lock")
+                    .len(),
+                0,
+                "aborted staged messages should not be delivered"
+            );
+            unsafe {
+                wr_rc_dec(actor);
+            }
+        }
+
+        #[test]
+        fn message_slab_reuse_smoke() {
+            let mailbox = test_mailbox();
+            for _ in 0..128 {
+                let msg = Message {
+                    method_id: 0,
+                    args: take_args_vec(),
+                    pending: None,
+                };
+                enqueue_message(mailbox.clone(), msg);
+                if let Some(received) = mailbox.queue.pop() {
+                    drop_message(received);
+                    mailbox_dec(mailbox.as_ref());
+                }
+            }
+            let pooled = args_pool().lock().expect("args pool lock").len();
+            assert!(
+                pooled > 0,
+                "message argument pool did not retain reusable entries"
+            );
+        }
+
+        #[test]
+        fn message_slab_no_leak_on_enqueue_fail() {
+            let mailbox = test_mailbox();
+            mailbox.closed.store(true, Ordering::Release);
+            for _ in 0..128 {
+                let msg = Message {
+                    method_id: 0,
+                    args: take_args_vec(),
+                    pending: None,
+                };
+                enqueue_message(mailbox.clone(), msg);
+            }
+            let pooled = args_pool().lock().expect("args pool lock").len();
+            assert!(
+                pooled > 0,
+                "enqueue-fail path should recycle message storage"
+            );
+        }
+
+        #[test]
+        fn mailbox_push_batch_preserves_order() {
+            let queue = MailboxQueue::new(8);
+            let mut nodes = Vec::new();
+            for tag in [1i64, 2, 3, 4] {
+                let mut args = take_args_vec();
+                args.push(Value::from_int(tag));
+                nodes.push(message_node_from_message(Message {
+                    method_id: 7,
+                    args,
+                    pending: None,
+                }));
+            }
+            let accepted = queue.push_batch(&nodes);
+            assert_eq!(accepted, nodes.len());
+            let mut out = Vec::new();
+            while let Some(node) = queue.pop_node() {
+                let msg = message_node_into_message(node);
+                out.push(crate::value::int_value(msg.args[0]).unwrap_or_default());
+                drop_message(msg);
+            }
+            assert_eq!(out, vec![1, 2, 3, 4]);
+        }
+
+        #[test]
+        fn mailbox_push_batch_partial_full_returns_count() {
+            let queue = MailboxQueue::new(2);
+            let mut nodes = Vec::new();
+            for tag in [10i64, 11, 12] {
+                let mut args = take_args_vec();
+                args.push(Value::from_int(tag));
+                nodes.push(message_node_from_message(Message {
+                    method_id: 9,
+                    args,
+                    pending: None,
+                }));
+            }
+            let accepted = queue.push_batch(&nodes);
+            assert!(accepted <= 2);
+            for node in nodes.into_iter().skip(accepted) {
+                drop_message_node(node);
+            }
+            while let Some(node) = queue.pop_node() {
+                drop_message_node(node);
+            }
+        }
+
+        #[test]
+        fn burst_flush_uses_single_wake_edge() {
+            let mailbox = Arc::new(Mailbox {
+                queue: MailboxQueue::new(8),
+                work_notify: TaskSignal::new(),
+                space_notify: TaskSignal::new(),
+                space_notify_epoch: AtomicU64::new(0),
+                space_notify_inflight: AtomicBool::new(false),
+                len: AtomicUsize::new(0),
+                closed: AtomicBool::new(false),
+                paused: AtomicBool::new(false),
+                pause_notify: TaskSignal::new(),
+                pause_epoch: AtomicUsize::new(0),
+                pause_ack: AtomicUsize::new(0),
+                pause_ack_notify: TaskSignal::new(),
+                enqueue_timeout: Duration::from_millis(1),
+                batch_limit: 1,
+                arena: Mutex::new(arena::Arena::new(1024)),
+            });
+            let mut nodes = Vec::new();
+            for _ in 0..4 {
+                nodes.push(message_node_from_message(Message {
+                    method_id: 0,
+                    args: take_args_vec(),
+                    pending: None,
+                }));
+            }
+            let before = mailbox.work_notify.snapshot();
+            enqueue_node_batch_ref(mailbox.as_ref(), &nodes);
+            let after = mailbox.work_notify.snapshot();
+            assert_eq!(after, before + 1, "batch flush should notify work edge once");
+            while let Some(node) = mailbox.queue.pop_node() {
+                drop_message_node(node);
+                mailbox_dec(mailbox.as_ref());
+            }
+        }
+
+        fn dummy_pool_handle_for_batch(queue_cap: usize) -> Box<PoolHandle> {
+            Box::new(PoolHandle {
+                header: header(TypeId::Pool),
+                pool_id: 0,
+                shard_id: 0,
+                objective: 0,
+                pool_size: 0,
+                rr: AtomicUsize::new(0),
+                handles: Vec::new(),
+                queue: PoolQueue::new(queue_cap),
+                credits: AtomicI64::new(0),
+                min_share: 0,
+                max_share: 0,
+                weight: 0,
+                has_ready: AtomicBool::new(false),
+                alive: AtomicBool::new(true),
+                enqueue_inflight: AtomicUsize::new(0),
+                next_in_shard: AtomicUsize::new(0),
+                batch_limit: 1,
+                drop_on_full: false,
+                shard_hint: AtomicUsize::new(0),
+            })
+        }
+
+        #[test]
+        fn pool_enqueue_batch_preserves_order() {
+            let pool = dummy_pool_handle_for_batch(8);
+            let pool_ptr = &*pool as *const PoolHandle;
+            let mailbox = dummy_mailbox();
+            let mut batch = Vec::new();
+            for tag in [31i64, 32, 33] {
+                let mut args = take_args_vec();
+                args.push(Value::from_int(tag));
+                batch.push(PoolMessage {
+                    mailbox: mailbox.clone(),
+                    node: message_node_from_message(Message {
+                        method_id: 1,
+                        args,
+                        pending: None,
+                    }),
+                });
+            }
+            let accepted = crate::scheduler::enqueue_batch(pool_ptr, &batch);
+            assert_eq!(accepted, batch.len());
+            let mut out = Vec::new();
+            while let Some(msg) = unsafe { (*pool_ptr).queue.pop() } {
+                let inner = message_node_into_message(msg.node);
+                out.push(crate::value::int_value(inner.args[0]).unwrap_or_default());
+                drop_message(inner);
+            }
+            assert_eq!(out, vec![31, 32, 33]);
+        }
+
+        #[test]
+        fn pool_enqueue_batch_partial_full_drops_tail_safely() {
+            let pool = dummy_pool_handle_for_batch(2);
+            let pool_ptr = &*pool as *const PoolHandle;
+            let mailbox = dummy_mailbox();
+            let mut batch = Vec::new();
+            for tag in [41i64, 42, 43] {
+                let mut args = take_args_vec();
+                args.push(Value::from_int(tag));
+                batch.push(PoolMessage {
+                    mailbox: mailbox.clone(),
+                    node: message_node_from_message(Message {
+                        method_id: 2,
+                        args,
+                        pending: None,
+                    }),
+                });
+            }
+            let accepted = crate::scheduler::enqueue_batch(pool_ptr, &batch);
+            assert!(accepted <= 2);
+            for msg in batch.into_iter().skip(accepted) {
+                drop_message_node(msg.node);
+            }
+            while let Some(msg) = unsafe { (*pool_ptr).queue.pop() } {
+                drop_message_node(msg.node);
+            }
         }
 
         #[test]
@@ -1281,11 +2523,11 @@ pub(crate) mod actor {
                     for _ in 0..per_producer {
                         let mut msg = PoolMessage {
                             mailbox: mailbox.clone(),
-                            msg: Message {
+                            node: message_node_from_message(Message {
                                 method_id: 0,
                                 args: Vec::new(),
                                 pending: None,
-                            },
+                            }),
                         };
                         loop {
                             match queue.push(msg) {
@@ -1302,7 +2544,8 @@ pub(crate) mod actor {
 
             let mut received = 0usize;
             while received < total {
-                if queue.pop().is_some() {
+                if let Some(msg) = queue.pop() {
+                    drop_message_node(msg.node);
                     received += 1;
                 } else {
                     thread::yield_now();
@@ -1343,11 +2586,11 @@ pub(crate) mod actor {
                     for _ in 0..per_producer {
                         let mut msg = PoolMessage {
                             mailbox: mailbox.clone(),
-                            msg: Message {
+                            node: message_node_from_message(Message {
                                 method_id: 0,
                                 args: Vec::new(),
                                 pending: None,
-                            },
+                            }),
                         };
                         loop {
                             match queue.push(msg) {
@@ -1364,7 +2607,8 @@ pub(crate) mod actor {
 
             let mut received = 0usize;
             while received < total {
-                if queue.pop().is_some() {
+                if let Some(msg) = queue.pop() {
+                    drop_message_node(msg.node);
                     received += 1;
                 } else {
                     thread::yield_now();
@@ -1392,11 +2636,11 @@ pub(crate) mod actor {
             let mailbox = dummy_mailbox();
             let msg = PoolMessage {
                 mailbox,
-                msg: Message {
+                node: message_node_from_message(Message {
                     method_id: 0,
                     args: Vec::new(),
                     pending: None,
-                },
+                }),
             };
             let _ = crate::scheduler::enqueue(pool_ptr, msg);
             assert!(metrics::get(metrics::METRIC_POOL_ENQUEUE_AFTER_RETIRE) >= 1);
@@ -1405,6 +2649,159 @@ pub(crate) mod actor {
                 wr_rc_dec(handles);
                 wr_rc_dec(actor_handle);
             }
+        }
+
+        #[test]
+        fn actor_concurrent_send_preserves_per_sender_order() {
+            const CLASS_ID: u32 = 32_001;
+            const PRODUCERS: usize = 6;
+            const PER_PRODUCER: usize = 300;
+            let total = PRODUCERS * PER_PRODUCER;
+            ordering_log().lock().expect("ordering log lock").clear();
+            register_method(CLASS_ID, 0, record_ordering);
+            let actor = actor_spawn(CLASS_ID as u64, Value::nil(), 1, 3, 256, 10, 64);
+
+            let mut producers = Vec::new();
+            for producer in 0..PRODUCERS {
+                producers.push(thread::spawn(move || {
+                    for seq in 0..PER_PRODUCER {
+                        let tag = ((producer as i64) << 32) | seq as i64;
+                        let args = [Value::from_int(tag)];
+                        actor_fire(actor, 0, 1, args.as_ptr());
+                    }
+                }));
+            }
+            for producer in producers {
+                producer.join().expect("producer join");
+            }
+
+            assert!(
+                wait_until(Duration::from_secs(10), || {
+                    ordering_log().lock().expect("ordering log lock").len() == total
+                }),
+                "timed out waiting for all ordered messages"
+            );
+            let log = ordering_log().lock().expect("ordering log lock").clone();
+            assert_eq!(log.len(), total);
+
+            let mut next = vec![0usize; PRODUCERS];
+            for tag in log {
+                let producer = (tag >> 32) as usize;
+                let seq = (tag as u64 & 0xffff_ffff) as usize;
+                assert!(producer < PRODUCERS, "unexpected producer id in tag {tag}");
+                assert_eq!(
+                    seq, next[producer],
+                    "producer {producer} sequence out of order"
+                );
+                next[producer] += 1;
+            }
+            for observed in next {
+                assert_eq!(observed, PER_PRODUCER);
+            }
+
+            unsafe { wr_rc_dec(actor) };
+        }
+
+        #[test]
+        fn actor_concurrent_send_is_at_most_once() {
+            const CLASS_ID: u32 = 32_002;
+            const PRODUCERS: usize = 8;
+            const PER_PRODUCER: usize = 250;
+            let total = PRODUCERS * PER_PRODUCER;
+            at_most_once_counts().lock().expect("counts lock").clear();
+            register_method(CLASS_ID, 0, record_at_most_once);
+            let actor = actor_spawn(CLASS_ID as u64, Value::nil(), 1, 3, 256, 10, 64);
+
+            let mut producers = Vec::new();
+            for producer in 0..PRODUCERS {
+                producers.push(thread::spawn(move || {
+                    for seq in 0..PER_PRODUCER {
+                        let tag = (producer * PER_PRODUCER + seq) as i64;
+                        let args = [Value::from_int(tag)];
+                        actor_fire(actor, 0, 1, args.as_ptr());
+                    }
+                }));
+            }
+            for producer in producers {
+                producer.join().expect("producer join");
+            }
+
+            assert!(
+                wait_until(Duration::from_secs(10), || {
+                    let counts = at_most_once_counts().lock().expect("counts lock");
+                    counts.len() == total && counts.values().all(|count| *count == 1)
+                }),
+                "timed out waiting for at-most-once delivery"
+            );
+            let counts = at_most_once_counts().lock().expect("counts lock");
+            assert_eq!(counts.len(), total);
+            assert!(counts.values().all(|count| *count == 1));
+
+            unsafe { wr_rc_dec(actor) };
+        }
+
+        fn run_actor_throughput_lane(class_id: u32, fast_path: bool) -> f64 {
+            const PRODUCERS: usize = 1;
+            const SEED_MESSAGES_PER_PRODUCER: usize = 1;
+            const TOTAL_MESSAGES: usize = 20_000;
+            const FANOUT: usize = 1;
+            set_actor_fast_path_for_test(Some(fast_path));
+            throughput_counter().store(0, Ordering::Relaxed);
+            throughput_target().store(TOTAL_MESSAGES, Ordering::Relaxed);
+            throughput_fanout().store(FANOUT, Ordering::Relaxed);
+            register_method(class_id, 0, throughput_ping_fanout);
+            let actor = actor_spawn(class_id as u64, Value::nil(), 1, 3, 1024, 10, 128);
+            throughput_actor_bits().store(actor.0, Ordering::Release);
+
+            let start = Instant::now();
+            let mut producers = Vec::new();
+            for _ in 0..PRODUCERS {
+                producers.push(thread::spawn(move || {
+                    for _ in 0..SEED_MESSAGES_PER_PRODUCER {
+                        actor_fire(actor, 0, 0, std::ptr::null());
+                    }
+                }));
+            }
+            for producer in producers {
+                producer.join().expect("producer join");
+            }
+            let completed_ok = wait_until(Duration::from_secs(30), || {
+                throughput_counter().load(Ordering::Acquire) >= TOTAL_MESSAGES
+            });
+            assert!(
+                completed_ok,
+                "timed out waiting for throughput lane completion: fast_path={} completed={} target={}",
+                fast_path,
+                throughput_counter().load(Ordering::Acquire),
+                TOTAL_MESSAGES
+            );
+            let elapsed = start.elapsed();
+            throughput_actor_bits().store(Value::nil().0, Ordering::Release);
+            throughput_target().store(0, Ordering::Relaxed);
+            unsafe { wr_rc_dec(actor) };
+            TOTAL_MESSAGES as f64 / elapsed.as_secs_f64()
+        }
+
+        #[test]
+        #[ignore]
+        fn actor_fast_path_throughput_artifact() {
+            let _override_guard = FastPathOverrideGuard;
+            let baseline = run_actor_throughput_lane(32_101, false);
+            let fast_path = run_actor_throughput_lane(32_102, true);
+            let improvement_pct = if baseline > 0.0 {
+                (fast_path - baseline) / baseline * 100.0
+            } else {
+                0.0
+            };
+            let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+            let repo_root = manifest_dir.parent().unwrap_or(manifest_dir);
+            let artifact_dir = repo_root.join(".artifacts/wre-412");
+            std::fs::create_dir_all(&artifact_dir).expect("create artifact dir");
+            let artifact = artifact_dir.join("actor_throughput.txt");
+            let body = format!(
+                "benchmark=ping_pong_fanout_single_actor\nproducers=1\nseed_messages_per_producer=1\nfanout=1\ntotal_messages=20000\nbaseline_msgs_per_sec={baseline:.2}\nfast_path_msgs_per_sec={fast_path:.2}\nimprovement_pct={improvement_pct:.2}\n"
+            );
+            std::fs::write(&artifact, body).expect("write throughput artifact");
         }
     }
 }
@@ -1727,6 +3124,10 @@ pub(crate) mod diagnostics {
 }
 
 pub(crate) mod metrics {
+    use std::env;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::OnceLock;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     pub const METRIC_ALLOC_STRING: u32 = 1;
@@ -1749,14 +3150,30 @@ pub(crate) mod metrics {
     pub const METRIC_POOL_ENQUEUE_AFTER_RETIRE: u32 = 18;
     pub const METRIC_SCHED_DISPATCHED: u32 = 19;
     pub const METRIC_SCHED_SKIPPED_NO_CREDIT: u32 = 20;
+    pub const METRIC_ABI_TYPED_LANE: u32 = 21;
+    pub const METRIC_ABI_BOXED_LANE: u32 = 22;
 
     const METRIC_COUNT: usize = 64;
     static METRICS: [AtomicU64; METRIC_COUNT] = [const { AtomicU64::new(0) }; METRIC_COUNT];
     static MAILBOX_HIGH_WATER: AtomicU64 = AtomicU64::new(0);
+    static METRICS_DUMP_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
 
+    #[inline(always)]
     fn bump(id: u32) {
         if let Some(metric) = METRICS.get(id as usize) {
             metric.fetch_add(1, Ordering::Relaxed);
+            maybe_dump_metrics();
+        }
+    }
+
+    #[inline(always)]
+    fn bump_by(id: u32, value: u64) {
+        if value == 0 {
+            return;
+        }
+        if let Some(metric) = METRICS.get(id as usize) {
+            metric.fetch_add(value, Ordering::Relaxed);
+            maybe_dump_metrics();
         }
     }
 
@@ -1776,9 +3193,48 @@ pub(crate) mod metrics {
             metric.store(0, Ordering::Relaxed);
         }
         MAILBOX_HIGH_WATER.store(0, Ordering::Relaxed);
+        maybe_dump_metrics();
     }
 
-    pub fn install_dump_hook() {}
+    pub fn install_dump_hook() {
+        maybe_dump_metrics();
+    }
+
+    fn metrics_dump_path() -> Option<PathBuf> {
+        METRICS_DUMP_PATH
+            .get_or_init(|| env::var("WRELA_METRICS_PATH").ok().map(PathBuf::from))
+            .clone()
+    }
+
+    fn maybe_dump_metrics() {
+        let Some(path) = metrics_dump_path() else {
+            return;
+        };
+        let data = format!(
+            "{{\"messages_sent\":{},\"messages_dropped\":{},\"pending_resolved\":{},\"pending_dropped\":{},\"mailbox_high_water\":{},\"rc_inc\":{},\"rc_dec\":{},\"alloc_list\":{},\"alloc_map\":{},\"alloc_string\":{},\"alloc_bytes\":{},\"alloc_result\":{},\"alloc_pending\":{},\"mailbox_enqueue_ok\":{},\"mailbox_enqueue_fail\":{},\"mailbox_dequeue\":{},\"sched_dispatched\":{},\"sched_skipped_no_credit\":{},\"abi_typed_lane\":{},\"abi_boxed_lane\":{}}}",
+            get(METRIC_MESSAGES_SENT),
+            get(METRIC_MESSAGES_DROPPED),
+            get(METRIC_PENDING_RESOLVED),
+            get(METRIC_PENDING_DROPPED),
+            MAILBOX_HIGH_WATER.load(Ordering::Relaxed),
+            get(METRIC_RC_INC),
+            get(METRIC_RC_DEC),
+            get(METRIC_ALLOC_LIST),
+            get(METRIC_ALLOC_MAP),
+            get(METRIC_ALLOC_STRING),
+            get(METRIC_ALLOC_BYTES),
+            get(METRIC_ALLOC_RESULT),
+            get(METRIC_ALLOC_PENDING),
+            get(METRIC_MAILBOX_ENQUEUE_OK),
+            get(METRIC_MAILBOX_ENQUEUE_FAIL),
+            get(METRIC_MAILBOX_DEQUEUE),
+            get(METRIC_SCHED_DISPATCHED),
+            get(METRIC_SCHED_SKIPPED_NO_CREDIT),
+            get(METRIC_ABI_TYPED_LANE),
+            get(METRIC_ABI_BOXED_LANE),
+        );
+        let _ = fs::write(path, data.as_bytes());
+    }
 
     pub fn inc_alloc_string() {
         bump(METRIC_ALLOC_STRING)
@@ -1813,6 +3269,9 @@ pub(crate) mod metrics {
     pub fn inc_messages_sent() {
         bump(METRIC_MESSAGES_SENT)
     }
+    pub fn inc_messages_sent_n(value: u64) {
+        bump_by(METRIC_MESSAGES_SENT, value)
+    }
     pub fn inc_pending_dropped() {
         bump(METRIC_PENDING_DROPPED)
     }
@@ -1822,11 +3281,14 @@ pub(crate) mod metrics {
     pub fn inc_mailbox_enqueue_ok() {
         bump(METRIC_MAILBOX_ENQUEUE_OK)
     }
+    pub fn inc_mailbox_enqueue_ok_n(value: u64) {
+        bump_by(METRIC_MAILBOX_ENQUEUE_OK, value)
+    }
     pub fn inc_mailbox_enqueue_fail() {
         bump(METRIC_MAILBOX_ENQUEUE_FAIL)
     }
-    pub fn inc_mailbox_dequeue() {
-        bump(METRIC_MAILBOX_DEQUEUE)
+    pub fn inc_mailbox_dequeue_n(value: u64) {
+        bump_by(METRIC_MAILBOX_DEQUEUE, value)
     }
     pub fn inc_pool_queue_full() {
         bump(METRIC_POOL_QUEUE_FULL)
@@ -1839,6 +3301,12 @@ pub(crate) mod metrics {
     }
     pub fn inc_sched_skipped_no_credit() {
         bump(METRIC_SCHED_SKIPPED_NO_CREDIT)
+    }
+    pub fn inc_abi_typed_lane() {
+        bump(METRIC_ABI_TYPED_LANE)
+    }
+    pub fn inc_abi_boxed_lane() {
+        bump(METRIC_ABI_BOXED_LANE)
     }
 
     pub fn update_mailbox_high_water(len: usize) {
@@ -1855,6 +3323,7 @@ pub(crate) mod metrics {
                 Err(actual) => current = actual,
             }
         }
+        maybe_dump_metrics();
     }
 }
 
@@ -1864,17 +3333,124 @@ pub(crate) mod scheduler {
     use crate::diagnostics;
     use crate::metrics::{
         inc_pool_enqueue_after_retire, inc_pool_queue_full, inc_sched_dispatched,
+        inc_sched_skipped_no_credit,
     };
     use crate::reactor::task::TaskSignal;
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex, OnceLock};
     use std::time::{Duration, Instant};
 
+    const OBJECTIVE_COUNT: usize = 4;
+    #[cfg(test)]
+    const OBJECTIVE_THROUGHPUT: usize = 1;
+    #[cfg(test)]
+    const OBJECTIVE_BALANCE: usize = 3;
+    const STARVATION_BOUND_TICKS: usize = 12;
+
+    #[derive(Clone, Copy)]
+    struct DispatchProfile {
+        quantum: i64,
+        batch_cap: i64,
+    }
+
+    const DISPATCH_PROFILES: [DispatchProfile; OBJECTIVE_COUNT] = [
+        DispatchProfile {
+            quantum: 6,
+            batch_cap: 8,
+        },
+        DispatchProfile {
+            quantum: 10,
+            batch_cap: 64,
+        },
+        DispatchProfile {
+            quantum: 2,
+            batch_cap: 4,
+        },
+        DispatchProfile {
+            quantum: 4,
+            batch_cap: 16,
+        },
+    ];
+
+    #[derive(Clone)]
+    struct ObjectiveDispatchState {
+        deficits: [i64; OBJECTIVE_COUNT],
+        wait_ticks: [usize; OBJECTIVE_COUNT],
+        cursor: usize,
+        starvation_bound_ticks: usize,
+    }
+
+    impl ObjectiveDispatchState {
+        fn new() -> Self {
+            Self {
+                deficits: [0; OBJECTIVE_COUNT],
+                wait_ticks: [0; OBJECTIVE_COUNT],
+                cursor: 0,
+                starvation_bound_ticks: STARVATION_BOUND_TICKS,
+            }
+        }
+
+        fn select_objective(&mut self, ready: [bool; OBJECTIVE_COUNT]) -> Option<usize> {
+            if !ready.iter().any(|is_ready| *is_ready) {
+                self.deficits = [0; OBJECTIVE_COUNT];
+                self.wait_ticks = [0; OBJECTIVE_COUNT];
+                return None;
+            }
+
+            for idx in 0..OBJECTIVE_COUNT {
+                if ready[idx] {
+                    self.wait_ticks[idx] = self.wait_ticks[idx].saturating_add(1);
+                } else {
+                    self.wait_ticks[idx] = 0;
+                    self.deficits[idx] = 0;
+                }
+            }
+
+            let mut forced = None;
+            let mut longest_wait = 0usize;
+            for idx in 0..OBJECTIVE_COUNT {
+                if ready[idx]
+                    && self.wait_ticks[idx] >= self.starvation_bound_ticks
+                    && self.wait_ticks[idx] >= longest_wait
+                {
+                    longest_wait = self.wait_ticks[idx];
+                    forced = Some(idx);
+                }
+            }
+
+            let selected = forced.or_else(|| self.select_with_deficit(ready));
+            if let Some(idx) = selected {
+                self.cursor = (idx + 1) % OBJECTIVE_COUNT;
+                self.wait_ticks[idx] = 0;
+                self.deficits[idx] = self.deficits[idx].saturating_sub(1);
+            }
+            selected
+        }
+
+        fn select_with_deficit(&mut self, ready: [bool; OBJECTIVE_COUNT]) -> Option<usize> {
+            for _ in 0..2 {
+                for step in 0..OBJECTIVE_COUNT {
+                    let idx = (self.cursor + step) % OBJECTIVE_COUNT;
+                    if ready[idx] && self.deficits[idx] > 0 {
+                        return Some(idx);
+                    }
+                }
+                for idx in 0..OBJECTIVE_COUNT {
+                    if ready[idx] {
+                        let quantum = DISPATCH_PROFILES[idx].quantum.max(1);
+                        self.deficits[idx] = self.deficits[idx].saturating_add(quantum);
+                    }
+                }
+            }
+            None
+        }
+    }
+
     static SHARDS: OnceLock<Vec<Arc<SchedulerShard>>> = OnceLock::new();
     static POOL_COUNTER: AtomicU64 = AtomicU64::new(1);
 
     pub struct SchedulerShard {
-        ready: ReadyQueue,
+        ready_by_objective: [ReadyQueue; OBJECTIVE_COUNT],
         head: AtomicUsize,
         notify: TaskSignal,
         has_work: AtomicBool,
@@ -1884,7 +3460,7 @@ pub(crate) mod scheduler {
     impl SchedulerShard {
         fn new(_id: usize) -> Self {
             Self {
-                ready: ReadyQueue::new(sched_ready_cap()),
+                ready_by_objective: std::array::from_fn(|_| ReadyQueue::new(sched_ready_cap())),
                 head: AtomicUsize::new(0),
                 notify: TaskSignal::new(),
                 has_work: AtomicBool::new(false),
@@ -2018,7 +3594,7 @@ pub(crate) mod scheduler {
                     pool_ptr = pool.next_in_shard.load(Ordering::Acquire) as *const PoolHandle;
                 }
             }
-            let ready = shard.ready.peek_has_data();
+            let ready = shard.has_ready_work();
             out.push_str(&format!(
             "  shard {idx}: pools={pools} alive={alive} queued={queued} credits={credits} ready={ready}\n"
         ));
@@ -2091,7 +3667,8 @@ pub(crate) mod scheduler {
             let shard_id = (*pool).shard_id as usize;
             if let Some(shard) = SHARDS.get().and_then(|s| s.get(shard_id)) {
                 if !(*pool).has_ready.swap(true, Ordering::AcqRel) {
-                    let _ = shard.ready.push(pool as usize);
+                    let objective = objective_index((*pool).objective);
+                    let _ = shard.ready_by_objective[objective].push(pool as usize);
                 }
                 if !shard.has_work.swap(true, Ordering::AcqRel) {
                     shard.notify.notify_one();
@@ -2101,8 +3678,51 @@ pub(crate) mod scheduler {
         }
     }
 
+    pub fn enqueue_batch(pool: *const PoolHandle, msgs: &[PoolMessage]) -> usize {
+        unsafe {
+            if pool.is_null() || msgs.is_empty() {
+                return 0;
+            }
+            (*pool).enqueue_inflight.fetch_add(1, Ordering::AcqRel);
+            if !(*pool).alive.load(Ordering::Acquire) || (*pool).drop_on_full {
+                if !(*pool).alive.load(Ordering::Acquire) {
+                    inc_pool_enqueue_after_retire();
+                } else {
+                    inc_pool_queue_full();
+                }
+                (*pool).enqueue_inflight.fetch_sub(1, Ordering::AcqRel);
+                return 0;
+            }
+            let queue = &(*pool).queue;
+            let mut accepted = 0usize;
+            for msg in msgs {
+                if queue.push(msg.clone()).is_ok() {
+                    accepted += 1;
+                } else {
+                    inc_pool_queue_full();
+                    break;
+                }
+            }
+            (*pool).enqueue_inflight.fetch_sub(1, Ordering::AcqRel);
+            if accepted > 0 {
+                let shard_id = (*pool).shard_id as usize;
+                if let Some(shard) = SHARDS.get().and_then(|s| s.get(shard_id)) {
+                    if !(*pool).has_ready.swap(true, Ordering::AcqRel) {
+                        let objective = objective_index((*pool).objective);
+                        let _ = shard.ready_by_objective[objective].push(pool as usize);
+                    }
+                    if !shard.has_work.swap(true, Ordering::AcqRel) {
+                        shard.notify.notify_one();
+                    }
+                }
+            }
+            accepted
+        }
+    }
+
     fn scheduler_loop(shard: Arc<SchedulerShard>) {
         let tick = Duration::from_millis(sched_tick_ms());
+        let mut dispatch_state = ObjectiveDispatchState::new();
         let mut last_progress = Instant::now();
         let watchdog_ms = crate::config::sched_watchdog_ms();
         loop {
@@ -2110,7 +3730,7 @@ pub(crate) mod scheduler {
                 let observed_epoch = shard.notify.snapshot();
                 let _ = shard.notify.wait_timeout(observed_epoch, tick);
             }
-            let dispatched = dispatch_ready(&shard);
+            let dispatched = dispatch_ready(&shard, &mut dispatch_state);
             if dispatched > 0 {
                 last_progress = Instant::now();
             } else if watchdog_ms > 0
@@ -2123,7 +3743,7 @@ pub(crate) mod scheduler {
                 std::process::abort();
             }
             reap_retired(&shard);
-            if !shard.ready.peek_has_data() {
+            if !shard.has_ready_work() {
                 shard.has_work.store(false, Ordering::Release);
             }
             steal_work(&shard);
@@ -2216,9 +3836,9 @@ pub(crate) mod scheduler {
             if other_ptr == self_ptr {
                 continue;
             }
-            if other.ready.peek_has_data() {
-                if let Some(pool_ptr) = other.ready.pop() {
-                    let _ = shard.ready.push(pool_ptr);
+            if other.has_ready_work() {
+                if let Some((objective, pool_ptr)) = other.pop_ready_any() {
+                    let _ = shard.ready_by_objective[objective].push(pool_ptr);
                     shard.has_work.store(true, Ordering::Release);
                     break;
                 }
@@ -2226,10 +3846,14 @@ pub(crate) mod scheduler {
         }
     }
 
-    fn dispatch_ready(shard: &SchedulerShard) -> i64 {
+    fn dispatch_ready(shard: &SchedulerShard, dispatch_state: &mut ObjectiveDispatchState) -> i64 {
         let mut dispatched_total = 0i64;
         loop {
-            let pool_ptr = shard.ready.pop();
+            let ready = shard.ready_mask();
+            let Some(objective) = dispatch_state.select_objective(ready) else {
+                break;
+            };
+            let pool_ptr = shard.ready_by_objective[objective].pop();
             let Some(pool_ptr) = pool_ptr else {
                 break;
             };
@@ -2243,7 +3867,8 @@ pub(crate) mod scheduler {
                     continue;
                 }
                 if let Some(msg) = pool.queue.pop() {
-                    let max_batch = pool.batch_limit;
+                    let profile = DISPATCH_PROFILES[objective];
+                    let max_batch = pool.batch_limit.min(profile.batch_cap).max(1);
                     let mut dispatched = 0i64;
                     let mut first = Some(msg);
                     while dispatched < max_batch {
@@ -2263,16 +3888,41 @@ pub(crate) mod scheduler {
                     }
                     dispatched_total += dispatched;
                     if pool.queue.has_more() {
-                        let _ = shard.ready.push(pool_ptr as usize);
+                        let requeue_objective = objective_index(pool.objective);
+                        let _ = shard.ready_by_objective[requeue_objective].push(pool_ptr as usize);
                     } else {
                         pool.has_ready.store(false, Ordering::Release);
                     }
                 } else {
+                    inc_sched_skipped_no_credit();
                     pool.has_ready.store(false, Ordering::Release);
                 }
             }
         }
         dispatched_total
+    }
+
+    fn objective_index(objective: u8) -> usize {
+        usize::from(objective).min(OBJECTIVE_COUNT - 1)
+    }
+
+    impl SchedulerShard {
+        fn ready_mask(&self) -> [bool; OBJECTIVE_COUNT] {
+            std::array::from_fn(|idx| self.ready_by_objective[idx].peek_has_data())
+        }
+
+        fn has_ready_work(&self) -> bool {
+            self.ready_mask().iter().any(|has_data| *has_data)
+        }
+
+        fn pop_ready_any(&self) -> Option<(usize, usize)> {
+            for objective in 0..OBJECTIVE_COUNT {
+                if let Some(pool_ptr) = self.ready_by_objective[objective].pop() {
+                    return Some((objective, pool_ptr));
+                }
+            }
+            None
+        }
     }
 
     #[cfg(test)]
@@ -2285,7 +3935,7 @@ pub(crate) mod scheduler {
         use std::sync::Arc;
         use std::sync::OnceLock;
         use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::time::Duration;
+        use std::time::{Duration, Instant};
 
         #[test]
         fn retire_pool_unlinks_head() {
@@ -2397,6 +4047,156 @@ pub(crate) mod scheduler {
                 wr_rc_dec(handles);
                 wr_rc_dec(actor_handle);
             }
+        }
+
+        #[test]
+        fn objective_dispatch_policy_bounds_starvation() {
+            let mut state = ObjectiveDispatchState::new();
+            let ready = [true, true, true, true];
+            let mut current_gap = [0usize; OBJECTIVE_COUNT];
+            let mut max_gap = [0usize; OBJECTIVE_COUNT];
+            let rounds = 20_000usize;
+
+            for _ in 0..rounds {
+                let objective = state
+                    .select_objective(ready)
+                    .expect("all objectives are ready");
+                for idx in 0..OBJECTIVE_COUNT {
+                    if idx == objective {
+                        current_gap[idx] = 0;
+                    } else {
+                        current_gap[idx] = current_gap[idx].saturating_add(1);
+                        max_gap[idx] = max_gap[idx].max(current_gap[idx]);
+                    }
+                }
+            }
+
+            for gap in max_gap {
+                assert!(
+                    gap <= STARVATION_BOUND_TICKS,
+                    "observed starvation gap {gap} exceeds bound {}",
+                    STARVATION_BOUND_TICKS
+                );
+            }
+        }
+
+        fn run_pool_throughput_lane(class_id: u32, objective: i64) -> f64 {
+            const TOTAL_MESSAGES: usize = 30_000;
+            const FANOUT: usize = 2;
+            static POOL_COUNTER: OnceLock<AtomicUsize> = OnceLock::new();
+            static POOL_TARGET: OnceLock<AtomicUsize> = OnceLock::new();
+            static POOL_FANOUT: OnceLock<AtomicUsize> = OnceLock::new();
+            static POOL_BITS: OnceLock<std::sync::atomic::AtomicU64> = OnceLock::new();
+
+            extern "C" fn throughput_ping_pool(_argc: usize, _argv: *const Value) -> Value {
+                let counter = POOL_COUNTER.get().expect("pool counter");
+                let target = POOL_TARGET.get().expect("pool target");
+                let fanout = POOL_FANOUT.get().expect("pool fanout");
+                let pool_bits = POOL_BITS.get().expect("pool bits");
+
+                let completed = counter.fetch_add(1, Ordering::Relaxed) + 1;
+                let total = target.load(Ordering::Acquire);
+                if completed >= total {
+                    return Value::nil();
+                }
+                let sends = fanout.load(Ordering::Acquire).max(1).min(total - completed);
+                let pool = Value(pool_bits.load(Ordering::Acquire));
+                for _ in 0..sends {
+                    actor::actor_fire(pool, 0, 0, std::ptr::null());
+                }
+                Value::nil()
+            }
+
+            POOL_COUNTER
+                .get_or_init(|| AtomicUsize::new(0))
+                .store(0, Ordering::Relaxed);
+            POOL_TARGET
+                .get_or_init(|| AtomicUsize::new(0))
+                .store(TOTAL_MESSAGES, Ordering::Relaxed);
+            POOL_FANOUT
+                .get_or_init(|| AtomicUsize::new(1))
+                .store(FANOUT, Ordering::Relaxed);
+            actor::register_method(class_id, 0, throughput_ping_pool);
+
+            let actor_handle_a =
+                actor::actor_spawn(class_id as u64, Value::nil(), 1, 3, 1024, 10, 128);
+            let actor_handle_b =
+                actor::actor_spawn(class_id as u64, Value::nil(), 1, 3, 1024, 10, 128);
+            let handles = list::list_new(0);
+            list::list_push(handles, actor_handle_a);
+            list::list_push(handles, actor_handle_b);
+            let pool = actor::pool_new(handles, objective, 0, 0, 1, 4096);
+            POOL_BITS
+                .get_or_init(|| std::sync::atomic::AtomicU64::new(Value::nil().0))
+                .store(pool.0, Ordering::Release);
+
+            let start = Instant::now();
+            actor::actor_fire(pool, 0, 0, std::ptr::null());
+            let completed_ok = {
+                let deadline = Instant::now() + Duration::from_secs(30);
+                loop {
+                    if Instant::now() >= deadline {
+                        break false;
+                    }
+                    if POOL_COUNTER
+                        .get()
+                        .expect("pool counter")
+                        .load(Ordering::Acquire)
+                        >= TOTAL_MESSAGES
+                    {
+                        break true;
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            };
+            assert!(
+                completed_ok,
+                "timed out waiting for throughput lane objective={} completed={} target={}",
+                objective,
+                POOL_COUNTER
+                    .get()
+                    .expect("pool counter")
+                    .load(Ordering::Acquire),
+                TOTAL_MESSAGES
+            );
+            let elapsed = start.elapsed();
+            POOL_BITS
+                .get_or_init(|| std::sync::atomic::AtomicU64::new(Value::nil().0))
+                .store(Value::nil().0, Ordering::Release);
+            unsafe {
+                wr_rc_dec(pool);
+                wr_rc_dec(handles);
+                wr_rc_dec(actor_handle_a);
+                wr_rc_dec(actor_handle_b);
+            }
+            TOTAL_MESSAGES as f64 / elapsed.as_secs_f64()
+        }
+
+        #[test]
+        #[ignore]
+        fn objective_policy_throughput_artifact() {
+            let compile_heavy_baseline = run_pool_throughput_lane(41_401, OBJECTIVE_BALANCE as i64);
+            let compile_heavy_matched =
+                run_pool_throughput_lane(41_402, OBJECTIVE_THROUGHPUT as i64);
+            let improvement_pct = if compile_heavy_baseline > 0.0 {
+                (compile_heavy_matched - compile_heavy_baseline) / compile_heavy_baseline * 100.0
+            } else {
+                0.0
+            };
+            assert!(
+                improvement_pct >= 20.0,
+                "expected >=20% throughput improvement, saw {improvement_pct:.2}% (baseline={compile_heavy_baseline:.2}, matched={compile_heavy_matched:.2})"
+            );
+
+            let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+            let repo_root = manifest_dir.parent().unwrap_or(manifest_dir);
+            let artifact_dir = repo_root.join(".artifacts/wre-414");
+            std::fs::create_dir_all(&artifact_dir).expect("create artifact dir");
+            let artifact = artifact_dir.join("scheduler_objective_throughput.txt");
+            let body = format!(
+                "benchmark=compile_heavy_pool_lane\nbaseline_objective=balance\nmatched_objective=throughput\ntotal_messages=30000\nfanout=2\nbaseline_msgs_per_sec={compile_heavy_baseline:.2}\nmatched_msgs_per_sec={compile_heavy_matched:.2}\nimprovement_pct={improvement_pct:.2}\nstarvation_bound_ticks={STARVATION_BOUND_TICKS}\nprofiles=latency(quantum=6,batch=8),throughput(quantum=10,batch=64),conservation(quantum=2,batch=4),balance(quantum=4,batch=16)\n"
+            );
+            std::fs::write(&artifact, body).expect("write throughput artifact");
         }
 
         #[test]

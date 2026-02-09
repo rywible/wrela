@@ -88,3 +88,18 @@ to pause_and_wait(handle: Any) -> Nothing:
 so: Backward-compatible short alias used by existing tests.
 to pause_wait(handle: Any) -> Nothing:
     return pause_and_wait(handle)
+
+so: Begin a scoped producer burst for an actor or pool handle.
+to fire_burst_begin(handle: Any) -> Nothing:
+    __wr_actor_fire_burst_begin(handle)
+    return nothing
+
+so: Flush a scoped producer burst for an actor or pool handle.
+to fire_burst_end(handle: Any) -> Nothing:
+    __wr_actor_fire_burst_end(handle)
+    return nothing
+
+so: Abort a scoped producer burst for an actor or pool handle.
+to fire_burst_abort(handle: Any) -> Nothing:
+    __wr_actor_fire_burst_abort(handle)
+    return nothing
