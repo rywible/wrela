@@ -17,6 +17,13 @@ Project: Wrela 4-Track Straight-Shot (Internal Crown)
 2. `wrela test language/spec/spec.wr`
 3. `wrela perf --runs=1 --baseline-out=.artifacts/matrix/perf-baseline.json language/spec/spec.wr`
 
+KPI gate inputs (when enabled in matrix lane):
+
+- `--kpi-check-fallback-max`
+- `--kpi-check-batch-min`
+- `--kpi-scheduler-p99-improve-min-pct`
+- `--kpi-rewrite-overhead-max-pct`
+
 ## Performance Summary
 
 From `final-comparison.json`:
@@ -43,6 +50,7 @@ Gate rollup:
 - [x] EffectIR annihilation/reconstruction integrated (`compiler/mir/effect_ir.rs`)
 - [x] Matrix CI workflow present (`.github/workflows/matrix.yml`)
 - [x] Evidence bundle and logs persisted under `.artifacts/matrix`
+- [x] Matrix evidence includes KPI table (`perf_summary`) and threshold snapshot (`kpi_thresholds`)
 
 ## Known Limitations
 

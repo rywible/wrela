@@ -1,7 +1,7 @@
 use crate::hir::arena::Idx;
 use crate::hir::{BinaryOp, Body, Expr, FunctionKind, Literal, Module, Stmt, UnaryOp};
 use smol_str::SmolStr;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CheckIrModule {
@@ -21,6 +21,8 @@ pub struct CheckIrFunction {
     pub params: Vec<SmolStr>,
     pub dag: DecisionDag,
     pub ops_used: BTreeSet<CheckBinaryOp>,
+    pub shape_id: u64,
+    pub supports_vector_lane: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -76,10 +78,38 @@ pub enum CheckValue {
     Boolean(bool),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckDagShapeFamily {
+    Generic,
+    ParamCmpConst,
+    ParamCmpParam,
+    AndOrCmpPair,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CachedExecutionPath {
+    Scalar,
+    Specialized(CheckDagShapeFamily),
+    VectorLaneStub(CheckDagShapeFamily),
+}
+
+pub type FallbackReasonCounts = BTreeMap<String, usize>;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BatchPlan {
+    pub shape_id: u64,
+    pub lane_width: usize,
+    pub supports_vector_lane: bool,
+    pub cached_execution_path: CachedExecutionPath,
+    pub fallback_reason_counts: FallbackReasonCounts,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct BatchEvalResult {
     pub lane_width: usize,
     pub values: Vec<Option<bool>>,
+    pub fallback_reason_counts: FallbackReasonCounts,
+    pub cached_execution_path: CachedExecutionPath,
 }
 
 pub fn extract_module(module: &Module) -> CheckIrModule {
@@ -132,14 +162,21 @@ pub fn extract_module(module: &Module) -> CheckIrModule {
             continue;
         };
 
+        let dag = DecisionDag {
+            nodes: builder.nodes,
+            root,
+        };
+        let canonical_signature = dag.canonical_signature();
+        let shape_id = stable_hash64(canonical_signature.as_bytes());
+        let supports_vector_lane = supports_vector_lane(&dag, &builder.ops_used);
+
         checks.push(CheckIrFunction {
             name,
             params: func.params.iter().map(|p| p.name.clone()).collect(),
-            dag: DecisionDag {
-                nodes: builder.nodes,
-                root,
-            },
+            dag,
             ops_used: builder.ops_used,
+            shape_id,
+            supports_vector_lane,
         });
     }
 
@@ -160,18 +197,117 @@ impl CheckIrFunction {
         self.dag.eval_bool(args)
     }
 
+    pub fn build_batch_plan(&self, lane_width: usize) -> BatchPlan {
+        let family = crate::backend::cranelift::classify_check_shape_family(self);
+        let cached_execution_path = if self.supports_vector_lane {
+            CachedExecutionPath::VectorLaneStub(family)
+        } else if !matches!(family, CheckDagShapeFamily::Generic) {
+            CachedExecutionPath::Specialized(family)
+        } else {
+            CachedExecutionPath::Scalar
+        };
+        BatchPlan {
+            shape_id: self.shape_id,
+            lane_width: lane_width.max(1),
+            supports_vector_lane: self.supports_vector_lane,
+            cached_execution_path,
+            fallback_reason_counts: BTreeMap::new(),
+        }
+    }
+
+    pub fn eval_batch_with_plan(
+        &self,
+        rows: &[Vec<CheckValue>],
+        plan: &mut BatchPlan,
+    ) -> BatchEvalResult {
+        plan.eval(self, rows)
+    }
+
     pub fn eval_batch_bool(&self, rows: &[Vec<CheckValue>]) -> BatchEvalResult {
-        let lane_width = 8;
-        let mut out = Vec::with_capacity(rows.len());
-        for chunk in rows.chunks(lane_width) {
-            for row in chunk {
-                out.push(self.eval_scalar_bool(row));
+        let mut plan = self.build_batch_plan(8);
+        plan.eval(self, rows)
+    }
+}
+
+impl BatchPlan {
+    pub fn eval(&mut self, func: &CheckIrFunction, rows: &[Vec<CheckValue>]) -> BatchEvalResult {
+        let mut local_fallbacks: FallbackReasonCounts = BTreeMap::new();
+        let values = match self.cached_execution_path {
+            CachedExecutionPath::VectorLaneStub(family) => {
+                if let Some(values) = crate::backend::cranelift::dispatch_vector_lane_stub(
+                    func,
+                    rows,
+                    family,
+                    self.lane_width,
+                ) {
+                    values
+                } else {
+                    bump_fallback(&mut self.fallback_reason_counts, "vector_lane_stub_miss");
+                    bump_fallback(&mut local_fallbacks, "vector_lane_stub_miss");
+                    self.eval_scalar_rows(func, rows, &mut local_fallbacks)
+                }
+            }
+            CachedExecutionPath::Specialized(family) => {
+                let mut out = Vec::with_capacity(rows.len());
+                for row in rows {
+                    if let Some(value) =
+                        crate::backend::cranelift::try_eval_specialized_check_family(
+                            func, row, family,
+                        )
+                    {
+                        out.push(Some(value));
+                        continue;
+                    }
+                    bump_fallback(&mut self.fallback_reason_counts, "specialized_eval_miss");
+                    bump_fallback(&mut local_fallbacks, "specialized_eval_miss");
+                    let scalar = func.eval_scalar_bool(row);
+                    if scalar.is_none() {
+                        bump_fallback(&mut self.fallback_reason_counts, "scalar_eval_none");
+                        bump_fallback(&mut local_fallbacks, "scalar_eval_none");
+                    }
+                    out.push(scalar);
+                }
+                out
+            }
+            CachedExecutionPath::Scalar => self.eval_scalar_rows(func, rows, &mut local_fallbacks),
+        };
+
+        BatchEvalResult {
+            lane_width: self.lane_width,
+            values,
+            fallback_reason_counts: local_fallbacks,
+            cached_execution_path: self.cached_execution_path,
+        }
+    }
+
+    fn eval_scalar_rows(
+        &mut self,
+        func: &CheckIrFunction,
+        rows: &[Vec<CheckValue>],
+        local_fallbacks: &mut FallbackReasonCounts,
+    ) -> Vec<Option<bool>> {
+        if !self.supports_vector_lane {
+            let count = rows.len();
+            if count != 0 {
+                bump_fallback_n(
+                    &mut self.fallback_reason_counts,
+                    "vector_lane_unsupported",
+                    count,
+                );
+                bump_fallback_n(local_fallbacks, "vector_lane_unsupported", count);
             }
         }
-        BatchEvalResult {
-            lane_width,
-            values: out,
+
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let scalar = func.eval_scalar_bool(row);
+            if scalar.is_none() {
+                bump_fallback(&mut self.fallback_reason_counts, "scalar_eval_none");
+                bump_fallback(local_fallbacks, "scalar_eval_none");
+            }
+            out.push(scalar);
         }
+        out
     }
 }
 
@@ -187,6 +323,41 @@ impl DecisionDag {
     pub fn eval_value(&self, args: &[CheckValue]) -> Option<CheckValue> {
         let mut memo = vec![None; self.nodes.len()];
         self.eval_node(self.root, args, &mut memo)
+    }
+
+    pub fn canonical_signature(&self) -> String {
+        let mut memo: Vec<Option<String>> = vec![None; self.nodes.len()];
+        self.canonical_signature_node(self.root, &mut memo)
+            .unwrap_or_else(|| "invalid".to_string())
+    }
+
+    fn canonical_signature_node(&self, id: NodeId, memo: &mut [Option<String>]) -> Option<String> {
+        if let Some(sig) = memo.get(id).cloned().flatten() {
+            return Some(sig);
+        }
+
+        let node = self.nodes.get(id)?;
+        let signature = match node {
+            DecisionNode::Const(value) => canonical_value(value),
+            DecisionNode::Param(idx) => format!("p{idx}"),
+            DecisionNode::Unary { op, input } => {
+                let input = self.canonical_signature_node(*input, memo)?;
+                format!("({}{})", canonical_unary(*op), input)
+            }
+            DecisionNode::Binary { op, lhs, rhs } => {
+                let mut lhs = self.canonical_signature_node(*lhs, memo)?;
+                let mut rhs = self.canonical_signature_node(*rhs, memo)?;
+                if is_commutative(*op) && rhs < lhs {
+                    std::mem::swap(&mut lhs, &mut rhs);
+                }
+                format!("({} {} {})", canonical_binary(*op), lhs, rhs)
+            }
+        };
+
+        if let Some(slot) = memo.get_mut(id) {
+            *slot = Some(signature.clone());
+        }
+        Some(signature)
     }
 
     fn eval_node(
@@ -219,6 +390,92 @@ impl DecisionDag {
         }
         Some(value)
     }
+}
+
+fn supports_vector_lane(dag: &DecisionDag, ops_used: &BTreeSet<CheckBinaryOp>) -> bool {
+    if ops_used.contains(&CheckBinaryOp::Div) || ops_used.contains(&CheckBinaryOp::Mod) {
+        return false;
+    }
+    for node in &dag.nodes {
+        match node {
+            DecisionNode::Const(CheckValue::Float(_)) => return false,
+            DecisionNode::Unary {
+                op: CheckUnaryOp::Neg,
+                ..
+            } => return false,
+            _ => {}
+        }
+    }
+    true
+}
+
+fn bump_fallback(map: &mut FallbackReasonCounts, key: &str) {
+    bump_fallback_n(map, key, 1);
+}
+
+fn bump_fallback_n(map: &mut FallbackReasonCounts, key: &str, amount: usize) {
+    if amount == 0 {
+        return;
+    }
+    let entry = map.entry(key.to_string()).or_insert(0);
+    *entry += amount;
+}
+
+fn is_commutative(op: CheckBinaryOp) -> bool {
+    matches!(
+        op,
+        CheckBinaryOp::Add
+            | CheckBinaryOp::Mul
+            | CheckBinaryOp::Eq
+            | CheckBinaryOp::Ne
+            | CheckBinaryOp::And
+            | CheckBinaryOp::Or
+    )
+}
+
+fn canonical_unary(op: CheckUnaryOp) -> &'static str {
+    match op {
+        CheckUnaryOp::Not => "not ",
+        CheckUnaryOp::Neg => "neg ",
+    }
+}
+
+fn canonical_binary(op: CheckBinaryOp) -> &'static str {
+    match op {
+        CheckBinaryOp::Add => "+",
+        CheckBinaryOp::Sub => "-",
+        CheckBinaryOp::Mul => "*",
+        CheckBinaryOp::Div => "/",
+        CheckBinaryOp::Mod => "%",
+        CheckBinaryOp::Eq => "==",
+        CheckBinaryOp::Ne => "!=",
+        CheckBinaryOp::Lt => "<",
+        CheckBinaryOp::Gt => ">",
+        CheckBinaryOp::Le => "<=",
+        CheckBinaryOp::Ge => ">=",
+        CheckBinaryOp::And => "&&",
+        CheckBinaryOp::Or => "||",
+    }
+}
+
+fn canonical_value(value: &CheckValue) -> String {
+    match value {
+        CheckValue::Integer(value) => format!("i:{value}"),
+        CheckValue::Float(value) => format!("f:{:016x}", value.to_bits()),
+        CheckValue::Boolean(value) => format!("b:{}", if *value { 1 } else { 0 }),
+    }
+}
+
+fn stable_hash64(data: &[u8]) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x1000_0000_01b3;
+
+    let mut hash = FNV_OFFSET;
+    for byte in data {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
 }
 
 fn eval_unary(op: CheckUnaryOp, input: CheckValue) -> Option<CheckValue> {

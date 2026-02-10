@@ -2855,6 +2855,12 @@ pub(crate) mod config {
         pub sched_tick_ms: u64,
         pub sched_ready_cap: usize,
         pub sched_batch_limit: i64,
+        pub sched_profile_auto: bool,
+        pub sched_quantum_min: i64,
+        pub sched_quantum_max: i64,
+        pub sched_batch_min: i64,
+        pub sched_batch_max: i64,
+        pub sched_affinity_rebalance_ms: u64,
         pub reactor_disable_io_uring: bool,
         pub pool_min_share: u32,
         pub pool_max_share: u32,
@@ -2882,6 +2888,12 @@ pub(crate) mod config {
                 sched_tick_ms: 1,
                 sched_ready_cap: 1024,
                 sched_batch_limit: 64,
+                sched_profile_auto: false,
+                sched_quantum_min: 2,
+                sched_quantum_max: 16,
+                sched_batch_min: 4,
+                sched_batch_max: 128,
+                sched_affinity_rebalance_ms: 0,
                 reactor_disable_io_uring: false,
                 pool_min_share: 1,
                 pool_max_share: (cores * 2).max(1) as u32,
@@ -2954,6 +2966,24 @@ pub(crate) mod config {
         }
         if let Some(val) = config_field_i64(config, "sched_batch_limit") {
             out.sched_batch_limit = val;
+        }
+        if let Some(val) = config_field_bool(config, "sched_profile_auto") {
+            out.sched_profile_auto = val;
+        }
+        if let Some(val) = config_field_i64(config, "sched_quantum_min") {
+            out.sched_quantum_min = val;
+        }
+        if let Some(val) = config_field_i64(config, "sched_quantum_max") {
+            out.sched_quantum_max = val;
+        }
+        if let Some(val) = config_field_i64(config, "sched_batch_min") {
+            out.sched_batch_min = val;
+        }
+        if let Some(val) = config_field_i64(config, "sched_batch_max") {
+            out.sched_batch_max = val;
+        }
+        if let Some(val) = config_field_u64(config, "sched_affinity_rebalance_ms") {
+            out.sched_affinity_rebalance_ms = val;
         }
         if let Some(val) = config_field_bool(config, "reactor_disable_io_uring") {
             out.reactor_disable_io_uring = val;
@@ -3071,6 +3101,30 @@ pub(crate) mod config {
         runtime_config().sched_batch_limit
     }
 
+    pub fn sched_profile_auto() -> bool {
+        runtime_config().sched_profile_auto
+    }
+
+    pub fn sched_quantum_min() -> i64 {
+        runtime_config().sched_quantum_min
+    }
+
+    pub fn sched_quantum_max() -> i64 {
+        runtime_config().sched_quantum_max
+    }
+
+    pub fn sched_batch_min() -> i64 {
+        runtime_config().sched_batch_min
+    }
+
+    pub fn sched_batch_max() -> i64 {
+        runtime_config().sched_batch_max
+    }
+
+    pub fn sched_affinity_rebalance_ms() -> u64 {
+        runtime_config().sched_affinity_rebalance_ms
+    }
+
     pub fn reactor_disable_io_uring() -> bool {
         runtime_config().reactor_disable_io_uring
     }
@@ -3107,6 +3161,30 @@ pub(crate) mod config {
         assert!(
             config.sched_batch_limit > 0,
             "runtime config `sched_batch_limit` must be > 0"
+        );
+        assert!(
+            config.sched_quantum_min > 0,
+            "runtime config `sched_quantum_min` must be > 0"
+        );
+        assert!(
+            config.sched_quantum_max >= config.sched_quantum_min,
+            "runtime config `sched_quantum_max` must be >= `sched_quantum_min`"
+        );
+        assert!(
+            config.sched_batch_min > 0,
+            "runtime config `sched_batch_min` must be > 0"
+        );
+        assert!(
+            config.sched_batch_max >= config.sched_batch_min,
+            "runtime config `sched_batch_max` must be >= `sched_batch_min`"
+        );
+        assert!(
+            config.sched_batch_limit >= config.sched_batch_min,
+            "runtime config `sched_batch_limit` must be >= `sched_batch_min`"
+        );
+        assert!(
+            config.sched_batch_limit <= config.sched_batch_max,
+            "runtime config `sched_batch_limit` must be <= `sched_batch_max`"
         );
         assert!(
             config.pool_min_share > 0,
@@ -3172,6 +3250,9 @@ pub(crate) mod metrics {
     pub const METRIC_SCHED_SKIPPED_NO_CREDIT: u32 = 20;
     pub const METRIC_ABI_TYPED_LANE: u32 = 21;
     pub const METRIC_ABI_BOXED_LANE: u32 = 22;
+    pub const METRIC_SCHED_PROFILE_SWITCH: u32 = 23;
+    pub const METRIC_SCHED_STARVATION_VIOLATION: u32 = 24;
+    pub const METRIC_SCHED_CROSS_SHARD_MIGRATION: u32 = 25;
 
     const METRIC_COUNT: usize = 64;
     static METRICS: [AtomicU64; METRIC_COUNT] = [const { AtomicU64::new(0) }; METRIC_COUNT];
@@ -3231,7 +3312,7 @@ pub(crate) mod metrics {
             return;
         };
         let data = format!(
-            "{{\"messages_sent\":{},\"messages_dropped\":{},\"pending_resolved\":{},\"pending_dropped\":{},\"mailbox_high_water\":{},\"rc_inc\":{},\"rc_dec\":{},\"alloc_list\":{},\"alloc_map\":{},\"alloc_string\":{},\"alloc_bytes\":{},\"alloc_result\":{},\"alloc_pending\":{},\"mailbox_enqueue_ok\":{},\"mailbox_enqueue_fail\":{},\"mailbox_dequeue\":{},\"sched_dispatched\":{},\"sched_skipped_no_credit\":{},\"abi_typed_lane\":{},\"abi_boxed_lane\":{}}}",
+            "{{\"messages_sent\":{},\"messages_dropped\":{},\"pending_resolved\":{},\"pending_dropped\":{},\"mailbox_high_water\":{},\"rc_inc\":{},\"rc_dec\":{},\"alloc_list\":{},\"alloc_map\":{},\"alloc_string\":{},\"alloc_bytes\":{},\"alloc_result\":{},\"alloc_pending\":{},\"mailbox_enqueue_ok\":{},\"mailbox_enqueue_fail\":{},\"mailbox_dequeue\":{},\"sched_dispatched\":{},\"sched_skipped_no_credit\":{},\"sched_profile_switch\":{},\"sched_starvation_violation\":{},\"sched_cross_shard_migration\":{},\"abi_typed_lane\":{},\"abi_boxed_lane\":{}}}",
             get(METRIC_MESSAGES_SENT),
             get(METRIC_MESSAGES_DROPPED),
             get(METRIC_PENDING_RESOLVED),
@@ -3250,6 +3331,9 @@ pub(crate) mod metrics {
             get(METRIC_MAILBOX_DEQUEUE),
             get(METRIC_SCHED_DISPATCHED),
             get(METRIC_SCHED_SKIPPED_NO_CREDIT),
+            get(METRIC_SCHED_PROFILE_SWITCH),
+            get(METRIC_SCHED_STARVATION_VIOLATION),
+            get(METRIC_SCHED_CROSS_SHARD_MIGRATION),
             get(METRIC_ABI_TYPED_LANE),
             get(METRIC_ABI_BOXED_LANE),
         );
@@ -3322,6 +3406,15 @@ pub(crate) mod metrics {
     pub fn inc_sched_skipped_no_credit() {
         bump(METRIC_SCHED_SKIPPED_NO_CREDIT)
     }
+    pub fn inc_sched_profile_switch() {
+        bump(METRIC_SCHED_PROFILE_SWITCH)
+    }
+    pub fn inc_sched_starvation_violation() {
+        bump(METRIC_SCHED_STARVATION_VIOLATION)
+    }
+    pub fn inc_sched_cross_shard_migration() {
+        bump(METRIC_SCHED_CROSS_SHARD_MIGRATION)
+    }
     pub fn inc_abi_typed_lane() {
         bump(METRIC_ABI_TYPED_LANE)
     }
@@ -3349,11 +3442,15 @@ pub(crate) mod metrics {
 
 pub(crate) mod scheduler {
     use crate::actor::{PoolHandle, PoolMessage, deliver_pool_message};
-    use crate::config::{sched_ready_cap, sched_shards, sched_tick_ms};
+    use crate::config::{
+        sched_affinity_rebalance_ms, sched_batch_max, sched_batch_min, sched_profile_auto,
+        sched_quantum_max, sched_quantum_min, sched_ready_cap, sched_shards, sched_tick_ms,
+    };
     use crate::diagnostics;
     use crate::metrics::{
-        inc_pool_enqueue_after_retire, inc_pool_queue_full, inc_sched_dispatched,
-        inc_sched_skipped_no_credit,
+        inc_pool_enqueue_after_retire, inc_pool_queue_full, inc_sched_cross_shard_migration,
+        inc_sched_dispatched, inc_sched_profile_switch, inc_sched_skipped_no_credit,
+        inc_sched_starvation_violation,
     };
     use crate::reactor::task::TaskSignal;
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -3367,13 +3464,13 @@ pub(crate) mod scheduler {
     const OBJECTIVE_BALANCE: usize = 3;
     const STARVATION_BOUND_TICKS: usize = 12;
 
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     struct DispatchProfile {
         quantum: i64,
         batch_cap: i64,
     }
 
-    const DISPATCH_PROFILES: [DispatchProfile; OBJECTIVE_COUNT] = [
+    const BASE_DISPATCH_PROFILES: [DispatchProfile; OBJECTIVE_COUNT] = [
         DispatchProfile {
             quantum: 6,
             batch_cap: 8,
@@ -3396,6 +3493,7 @@ pub(crate) mod scheduler {
     struct ObjectiveDispatchState {
         deficits: [i64; OBJECTIVE_COUNT],
         wait_ticks: [usize; OBJECTIVE_COUNT],
+        profiles: [DispatchProfile; OBJECTIVE_COUNT],
         cursor: usize,
         starvation_bound_ticks: usize,
     }
@@ -3405,6 +3503,7 @@ pub(crate) mod scheduler {
             Self {
                 deficits: [0; OBJECTIVE_COUNT],
                 wait_ticks: [0; OBJECTIVE_COUNT],
+                profiles: BASE_DISPATCH_PROFILES,
                 cursor: 0,
                 starvation_bound_ticks: STARVATION_BOUND_TICKS,
             }
@@ -3437,6 +3536,9 @@ pub(crate) mod scheduler {
                     forced = Some(idx);
                 }
             }
+            if forced.is_some() {
+                inc_sched_starvation_violation();
+            }
 
             let selected = forced.or_else(|| self.select_with_deficit(ready));
             if let Some(idx) = selected {
@@ -3457,12 +3559,62 @@ pub(crate) mod scheduler {
                 }
                 for idx in 0..OBJECTIVE_COUNT {
                     if ready[idx] {
-                        let quantum = DISPATCH_PROFILES[idx].quantum.max(1);
+                        let quantum = self.profiles[idx].quantum.max(1);
                         self.deficits[idx] = self.deficits[idx].saturating_add(quantum);
                     }
                 }
             }
             None
+        }
+
+        fn dispatch_profile_for(&self, objective: usize) -> DispatchProfile {
+            self.profiles[objective]
+        }
+
+        fn tune_profiles(&mut self, ready_depth: [usize; OBJECTIVE_COUNT], auto_enabled: bool) {
+            if !auto_enabled {
+                if self.profiles != BASE_DISPATCH_PROFILES {
+                    self.profiles = BASE_DISPATCH_PROFILES;
+                    inc_sched_profile_switch();
+                }
+                return;
+            }
+            let total_ready = ready_depth.iter().sum::<usize>();
+            let max_wait = self.wait_ticks.iter().copied().max().unwrap_or(0);
+            let quantum_min = sched_quantum_min().max(1);
+            let quantum_max = sched_quantum_max().max(quantum_min);
+            let batch_min = sched_batch_min().max(1);
+            let batch_max = sched_batch_max().max(batch_min);
+
+            for idx in 0..OBJECTIVE_COUNT {
+                let profile = self.profiles[idx];
+                let backlog = ready_depth[idx];
+                let congested = backlog >= 4
+                    || total_ready >= OBJECTIVE_COUNT * 3
+                    || max_wait >= STARVATION_BOUND_TICKS / 2;
+                let target_quantum = if congested {
+                    (profile.quantum + 1).min(quantum_max)
+                } else if backlog == 0 {
+                    (profile.quantum - 1).max(quantum_min)
+                } else {
+                    profile.quantum.clamp(quantum_min, quantum_max)
+                };
+                let target_batch = if congested {
+                    (profile.batch_cap + 4).min(batch_max)
+                } else if backlog == 0 {
+                    (profile.batch_cap - 2).max(batch_min)
+                } else {
+                    profile.batch_cap.clamp(batch_min, batch_max)
+                };
+                let updated = DispatchProfile {
+                    quantum: target_quantum.clamp(quantum_min, quantum_max),
+                    batch_cap: target_batch.clamp(batch_min, batch_max),
+                };
+                if updated != profile {
+                    self.profiles[idx] = updated;
+                    inc_sched_profile_switch();
+                }
+            }
         }
     }
 
@@ -3470,6 +3622,7 @@ pub(crate) mod scheduler {
     static POOL_COUNTER: AtomicU64 = AtomicU64::new(1);
 
     pub struct SchedulerShard {
+        id: usize,
         ready_by_objective: [ReadyQueue; OBJECTIVE_COUNT],
         head: AtomicUsize,
         notify: TaskSignal,
@@ -3478,8 +3631,9 @@ pub(crate) mod scheduler {
     }
 
     impl SchedulerShard {
-        fn new(_id: usize) -> Self {
+        fn new(id: usize) -> Self {
             Self {
+                id,
                 ready_by_objective: std::array::from_fn(|_| ReadyQueue::new(sched_ready_cap())),
                 head: AtomicUsize::new(0),
                 notify: TaskSignal::new(),
@@ -3499,6 +3653,7 @@ pub(crate) mod scheduler {
         slots: Box<[ReadySlot]>,
         head: AtomicUsize,
         tail: AtomicUsize,
+        len: AtomicUsize,
     }
 
     impl ReadyQueue {
@@ -3516,6 +3671,7 @@ pub(crate) mod scheduler {
                 slots: slots.into_boxed_slice(),
                 head: AtomicUsize::new(0),
                 tail: AtomicUsize::new(0),
+                len: AtomicUsize::new(0),
             }
         }
 
@@ -3533,6 +3689,7 @@ pub(crate) mod scheduler {
                     {
                         slot.val.store(value, Ordering::Relaxed);
                         slot.seq.store(tail + 1, Ordering::Release);
+                        self.len.fetch_add(1, Ordering::Release);
                         return true;
                     }
                 } else if diff < 0 {
@@ -3556,6 +3713,7 @@ pub(crate) mod scheduler {
                     {
                         let val = slot.val.load(Ordering::Relaxed);
                         slot.seq.store(head + self.mask + 1, Ordering::Release);
+                        self.len.fetch_sub(1, Ordering::Release);
                         return Some(val);
                     }
                 } else if diff < 0 {
@@ -3571,6 +3729,10 @@ pub(crate) mod scheduler {
             let seq = slot.seq.load(Ordering::Acquire);
             let diff = seq as isize - (head + 1) as isize;
             diff >= 0
+        }
+
+        fn len(&self) -> usize {
+            self.len.load(Ordering::Acquire)
         }
     }
 
@@ -3628,6 +3790,9 @@ pub(crate) mod scheduler {
         let shard_id = (pool_id as usize) % shards.len();
         let shard = &shards[shard_id];
         let pool_ptr = pool as usize;
+        unsafe {
+            (*pool).shard_hint.store(shard_id, Ordering::Release);
+        }
         loop {
             let head = shard.head.load(Ordering::Acquire);
             unsafe {
@@ -3744,12 +3909,15 @@ pub(crate) mod scheduler {
         let tick = Duration::from_millis(sched_tick_ms());
         let mut dispatch_state = ObjectiveDispatchState::new();
         let mut last_progress = Instant::now();
+        let mut last_rebalance_at = Instant::now();
         let watchdog_ms = crate::config::sched_watchdog_ms();
         loop {
             if !shard.has_work.load(Ordering::Acquire) {
                 let observed_epoch = shard.notify.snapshot();
                 let _ = shard.notify.wait_timeout(observed_epoch, tick);
             }
+            let ready_depth = shard.ready_depth();
+            dispatch_state.tune_profiles(ready_depth, sched_profile_auto());
             let dispatched = dispatch_ready(&shard, &mut dispatch_state);
             if dispatched > 0 {
                 last_progress = Instant::now();
@@ -3766,7 +3934,7 @@ pub(crate) mod scheduler {
             if !shard.has_ready_work() {
                 shard.has_work.store(false, Ordering::Release);
             }
-            steal_work(&shard);
+            steal_work(&shard, &mut last_rebalance_at);
         }
     }
 
@@ -3848,9 +4016,12 @@ pub(crate) mod scheduler {
         }
     }
 
-    fn steal_work(shard: &SchedulerShard) {
+    fn steal_work(shard: &SchedulerShard, last_rebalance_at: &mut Instant) {
         let Some(shards) = SHARDS.get() else { return };
         let self_ptr = shard as *const SchedulerShard as usize;
+        let rebalance_ms = sched_affinity_rebalance_ms();
+        let rebalance_enabled =
+            rebalance_ms > 0 && last_rebalance_at.elapsed() >= Duration::from_millis(rebalance_ms);
         for other in shards.iter() {
             let other_ptr = other.as_ref() as *const SchedulerShard as usize;
             if other_ptr == self_ptr {
@@ -3858,12 +4029,59 @@ pub(crate) mod scheduler {
             }
             if other.has_ready_work() {
                 if let Some((objective, pool_ptr)) = other.pop_ready_any() {
+                    if rebalance_enabled {
+                        maybe_rebalance_pool_affinity(
+                            pool_ptr as *const PoolHandle,
+                            shard.id,
+                            last_rebalance_at,
+                        );
+                    }
                     let _ = shard.ready_by_objective[objective].push(pool_ptr);
                     shard.has_work.store(true, Ordering::Release);
                     break;
                 }
             }
         }
+    }
+
+    fn maybe_rebalance_pool_affinity(
+        pool_ptr: *const PoolHandle,
+        target_shard: usize,
+        last_rebalance_at: &mut Instant,
+    ) {
+        if pool_ptr.is_null() {
+            return;
+        }
+        unsafe {
+            let pool = &mut *(pool_ptr as *mut PoolHandle);
+            let current_shard = pool.shard_id as usize;
+            let last_hint = pool.shard_hint.load(Ordering::Acquire);
+            let queue_depth = pool.queue.len();
+            let alive = pool.alive.load(Ordering::Acquire);
+            if !should_rebalance_affinity(
+                current_shard,
+                last_hint,
+                target_shard,
+                queue_depth,
+                alive,
+            ) {
+                return;
+            }
+            pool.shard_hint.store(target_shard, Ordering::Release);
+            pool.shard_id = target_shard as u32;
+            *last_rebalance_at = Instant::now();
+            inc_sched_cross_shard_migration();
+        }
+    }
+
+    fn should_rebalance_affinity(
+        current_shard: usize,
+        last_hint: usize,
+        target_shard: usize,
+        queue_depth: usize,
+        alive: bool,
+    ) -> bool {
+        alive && queue_depth >= 2 && current_shard != target_shard && last_hint != target_shard
     }
 
     fn dispatch_ready(shard: &SchedulerShard, dispatch_state: &mut ObjectiveDispatchState) -> i64 {
@@ -3887,7 +4105,7 @@ pub(crate) mod scheduler {
                     continue;
                 }
                 if let Some(msg) = pool.queue.pop() {
-                    let profile = DISPATCH_PROFILES[objective];
+                    let profile = dispatch_state.dispatch_profile_for(objective);
                     let max_batch = pool.batch_limit.min(profile.batch_cap).max(1);
                     let mut dispatched = 0i64;
                     let mut first = Some(msg);
@@ -3931,6 +4149,10 @@ pub(crate) mod scheduler {
             std::array::from_fn(|idx| self.ready_by_objective[idx].peek_has_data())
         }
 
+        fn ready_depth(&self) -> [usize; OBJECTIVE_COUNT] {
+            std::array::from_fn(|idx| self.ready_by_objective[idx].len())
+        }
+
         fn has_ready_work(&self) -> bool {
             self.ready_mask().iter().any(|has_data| *has_data)
         }
@@ -3950,9 +4172,12 @@ pub(crate) mod scheduler {
         use super::*;
         use crate::actor;
         use crate::list;
+        #[cfg(feature = "metrics")]
+        use crate::metrics;
         use crate::value::Value;
         use crate::wr_rc_dec;
         use std::sync::Arc;
+        use std::sync::Mutex;
         use std::sync::OnceLock;
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::time::{Duration, Instant};
@@ -4098,6 +4323,84 @@ pub(crate) mod scheduler {
                     STARVATION_BOUND_TICKS
                 );
             }
+        }
+
+        #[test]
+        fn adaptive_profile_tuning_is_deterministic() {
+            let mut left = ObjectiveDispatchState::new();
+            let mut right = ObjectiveDispatchState::new();
+            let ready = [true, true, true, true];
+            let depths = [[1, 0, 0, 0], [4, 4, 3, 2], [0, 1, 0, 1], [7, 7, 7, 7]];
+
+            for idx in 0..256 {
+                let depth = depths[idx % depths.len()];
+                left.tune_profiles(depth, true);
+                right.tune_profiles(depth, true);
+                assert_eq!(left.select_objective(ready), right.select_objective(ready));
+                assert_eq!(left.profiles, right.profiles);
+                assert_eq!(left.wait_ticks, right.wait_ticks);
+            }
+        }
+
+        #[test]
+        fn adaptive_profile_stays_within_configured_bounds_under_contention() {
+            let mut state = ObjectiveDispatchState::new();
+            for _ in 0..512 {
+                state.tune_profiles([12, 12, 12, 12], true);
+            }
+            for profile in state.profiles {
+                assert!(profile.quantum >= sched_quantum_min().max(1));
+                assert!(profile.quantum <= sched_quantum_max().max(sched_quantum_min().max(1)));
+                assert!(profile.batch_cap >= sched_batch_min().max(1));
+                assert!(profile.batch_cap <= sched_batch_max().max(sched_batch_min().max(1)));
+            }
+        }
+
+        #[test]
+        fn affinity_rebalance_contention_heuristic_requires_real_pressure() {
+            assert!(!should_rebalance_affinity(0, 0, 0, 8, true));
+            assert!(!should_rebalance_affinity(0, 1, 1, 8, true));
+            assert!(!should_rebalance_affinity(0, 0, 1, 1, true));
+            assert!(!should_rebalance_affinity(0, 0, 1, 8, false));
+            assert!(should_rebalance_affinity(0, 0, 1, 8, true));
+        }
+
+        #[cfg(feature = "metrics")]
+        fn metrics_test_lock() -> &'static Mutex<()> {
+            static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+            LOCK.get_or_init(|| Mutex::new(()))
+        }
+
+        #[cfg(feature = "metrics")]
+        #[test]
+        fn adaptive_profile_switch_metric_advances() {
+            let _guard = metrics_test_lock().lock().expect("metrics test lock");
+            metrics::reset();
+            let before = metrics::metrics_get_raw(metrics::METRIC_SCHED_PROFILE_SWITCH);
+            let mut state = ObjectiveDispatchState::new();
+            for _ in 0..64 {
+                state.tune_profiles([8, 8, 8, 8], true);
+            }
+            let after = metrics::metrics_get_raw(metrics::METRIC_SCHED_PROFILE_SWITCH);
+            assert!(after > before, "expected profile switch metric to increase");
+        }
+
+        #[cfg(feature = "metrics")]
+        #[test]
+        fn starvation_violation_metric_advances_when_forced() {
+            let _guard = metrics_test_lock().lock().expect("metrics test lock");
+            metrics::reset();
+            let before = metrics::metrics_get_raw(metrics::METRIC_SCHED_STARVATION_VIOLATION);
+            let mut state = ObjectiveDispatchState::new();
+            state.starvation_bound_ticks = 1;
+            for _ in 0..16 {
+                let _ = state.select_objective([true, true, true, true]);
+            }
+            let after = metrics::metrics_get_raw(metrics::METRIC_SCHED_STARVATION_VIOLATION);
+            assert!(
+                after > before,
+                "expected starvation violation metric to increase"
+            );
         }
 
         fn run_pool_throughput_lane(class_id: u32, objective: i64) -> f64 {

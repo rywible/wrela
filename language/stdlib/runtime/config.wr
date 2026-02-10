@@ -33,6 +33,12 @@ A Runtime:
         mutable sched_tick_ms: Number = 1
         mutable sched_ready_cap: Number = 1024
         mutable sched_batch_limit: Number = 64
+        mutable sched_profile_auto: Boolean = false
+        mutable sched_quantum_min: Number = 2
+        mutable sched_quantum_max: Number = 16
+        mutable sched_batch_min: Number = 4
+        mutable sched_batch_max: Number = 128
+        mutable sched_affinity_rebalance_ms: Number = 0
         mutable reactor_disable_io_uring: Boolean = false
         mutable pool_min_share: Number = 1
         mutable pool_max_share: Number = nothing
@@ -99,6 +105,7 @@ A Runtime:
         debug_actor_value = its.is_boolean_enabled_from_environment given its.debug_actor, "WRELA_RUNTIME_DEBUG_ACTOR"
         diagnostics_enabled_value = its.is_boolean_enabled_from_environment given its.diagnostics_enabled, "WRELA_RUNTIME_DIAGNOSTICS_ENABLED"
         reactor_disable_io_uring_value = its.is_boolean_enabled_from_environment given its.reactor_disable_io_uring, "WRELA_DISABLE_IO_URING"
+        mutable sched_profile_auto_value = its.is_boolean_enabled_from_environment given its.sched_profile_auto, "WRELA_RUNTIME_SCHED_PROFILE_AUTO"
 
         actor_mailbox_cap_value = at_least(
             its.resolve_number_from_environment(
@@ -171,13 +178,55 @@ A Runtime:
             ),
             2
         )
-        sched_batch_limit_value = at_least(
+        mutable sched_batch_limit_value = at_least(
             its.resolve_number_from_environment(
                 its.sched_batch_limit,
                 "WRELA_RUNTIME_SCHED_BATCH_LIMIT"
             ),
             1
         )
+        sched_quantum_min_value = at_least(
+            its.resolve_number_from_environment(
+                its.sched_quantum_min,
+                "WRELA_RUNTIME_SCHED_QUANTUM_MIN"
+            ),
+            1
+        )
+        mutable sched_quantum_max_value = at_least(
+            its.resolve_number_from_environment(
+                its.sched_quantum_max,
+                "WRELA_RUNTIME_SCHED_QUANTUM_MAX"
+            ),
+            sched_quantum_min_value
+        )
+        sched_batch_min_value = at_least(
+            its.resolve_number_from_environment(
+                its.sched_batch_min,
+                "WRELA_RUNTIME_SCHED_BATCH_MIN"
+            ),
+            1
+        )
+        mutable sched_batch_max_value = at_least(
+            its.resolve_number_from_environment(
+                its.sched_batch_max,
+                "WRELA_RUNTIME_SCHED_BATCH_MAX"
+            ),
+            sched_batch_min_value
+        )
+        if sched_batch_limit_value < sched_batch_min_value:
+            sched_batch_limit_value = sched_batch_min_value
+        if sched_batch_limit_value > sched_batch_max_value:
+            sched_batch_limit_value = sched_batch_max_value
+        mutable sched_affinity_rebalance_ms_value = at_least(
+            its.resolve_number_from_environment(
+                its.sched_affinity_rebalance_ms,
+                "WRELA_RUNTIME_SCHED_AFFINITY_REBALANCE_MS"
+            ),
+            0
+        )
+        if deterministic_value:
+            sched_profile_auto_value = false
+            sched_affinity_rebalance_ms_value = 0
         pool_min_share_value = at_least(
             its.resolve_number_from_environment(
                 its.pool_min_share,
@@ -234,6 +283,12 @@ A Runtime:
         its.sched_tick_ms = sched_tick_ms_value
         its.sched_ready_cap = sched_ready_cap_value
         its.sched_batch_limit = sched_batch_limit_value
+        its.sched_profile_auto = sched_profile_auto_value
+        its.sched_quantum_min = sched_quantum_min_value
+        its.sched_quantum_max = sched_quantum_max_value
+        its.sched_batch_min = sched_batch_min_value
+        its.sched_batch_max = sched_batch_max_value
+        its.sched_affinity_rebalance_ms = sched_affinity_rebalance_ms_value
         its.reactor_disable_io_uring = reactor_disable_io_uring_value
         its.pool_min_share = pool_min_share_value
         its.pool_max_share = pool_max_share_value

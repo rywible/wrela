@@ -16,8 +16,11 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Seed Perf Baseline
+        run: cargo run -p wrela -- perf --runs=1 --baseline-out=.artifacts/matrix/perf-baseline.json language/spec/spec.wr
+
       - name: Run Matrix Lane
-        run: cargo run -p wrela -- matrix --runs=1
+        run: cargo run -p wrela -- matrix --runs=1 --perf-gate=.artifacts/matrix/perf-baseline.json --perf-max-regression-pct=5 --kpi-check-fallback-max=0.20 --kpi-check-batch-min=6 --kpi-scheduler-p99-improve-min-pct=0 --kpi-rewrite-overhead-max-pct=5
 
       - name: Upload Matrix Artifacts
         if: always()

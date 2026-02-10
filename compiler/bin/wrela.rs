@@ -53,6 +53,10 @@ fn main() {
     let mut perf_gate_path: Option<String> = None;
     let mut perf_max_regression_pct: Option<f64> = None;
     let mut perf_cv_max_pct: Option<f64> = None;
+    let mut kpi_check_fallback_max: Option<f64> = None;
+    let mut kpi_check_batch_min: Option<f64> = None;
+    let mut kpi_scheduler_p99_improve_min_pct: Option<f64> = None;
+    let mut kpi_rewrite_overhead_max_pct: Option<f64> = None;
     let mut seen_double_dash = false;
 
     let mut iter = args.into_iter();
@@ -124,6 +128,22 @@ fn main() {
             perf_cv_max_pct = value.parse::<f64>().ok();
             continue;
         }
+        if let Some(value) = arg.strip_prefix("--kpi-check-fallback-max=") {
+            kpi_check_fallback_max = value.parse::<f64>().ok();
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--kpi-check-batch-min=") {
+            kpi_check_batch_min = value.parse::<f64>().ok();
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--kpi-scheduler-p99-improve-min-pct=") {
+            kpi_scheduler_p99_improve_min_pct = value.parse::<f64>().ok();
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--kpi-rewrite-overhead-max-pct=") {
+            kpi_rewrite_overhead_max_pct = value.parse::<f64>().ok();
+            continue;
+        }
         if arg == "--prefix" {
             if let Some(path) = iter.next() {
                 prefix_path = Some(path);
@@ -163,6 +183,12 @@ fn main() {
             print_help();
             std::process::exit(EXIT_USAGE);
         }
+    };
+    let kpi_thresholds = KpiThresholds {
+        check_fallback_max: kpi_check_fallback_max,
+        check_batch_min: kpi_check_batch_min,
+        scheduler_p99_improve_min_pct: kpi_scheduler_p99_improve_min_pct,
+        rewrite_overhead_max_pct: kpi_rewrite_overhead_max_pct,
     };
 
     match command {
@@ -331,6 +357,7 @@ fn main() {
             let gate_cfg = perf_gate_path.as_ref().map(|path| PerfGateConfig {
                 baseline_path: PathBuf::from(path),
                 max_regression_pct: perf_max_regression_pct.unwrap_or(5.0),
+                kpi_thresholds,
             });
             let exit = run_tests(
                 &target,
@@ -366,6 +393,7 @@ fn main() {
             let gate_cfg = perf_gate_path.as_ref().map(|path| PerfGateConfig {
                 baseline_path: PathBuf::from(path),
                 max_regression_pct: perf_max_regression_pct.unwrap_or(5.0),
+                kpi_thresholds,
             });
             let cv_max_pct = perf_cv_max_pct.unwrap_or(5.0);
             let exit = run_perf_harness(
@@ -412,6 +440,7 @@ fn main() {
                 runs,
                 perf_gate_path.as_deref(),
                 perf_max_regression_pct.unwrap_or(5.0),
+                &kpi_thresholds,
             );
             std::process::exit(exit);
         }
@@ -454,6 +483,10 @@ options:\n\
   --perf-gate=PATH      compare perf summary against baseline JSON\n\
   --perf-max-regression-pct=N  allowed regression percentage (default: 5)\n\
   --perf-cv-max-pct=N   max coefficient of variation percentage (default: 5)\n\
+  --kpi-check-fallback-max=N  max allowed check fallback rate\n\
+  --kpi-check-batch-min=N  minimum required average check batch size\n\
+  --kpi-scheduler-p99-improve-min-pct=N  min scheduler p99 improvement vs baseline\n\
+  --kpi-rewrite-overhead-max-pct=N  max rewrite compile overhead percentage\n\
   --format=json         emit diagnostics as JSON\n\
   -h, --help            show this help\n\
   -V, --version         show version\n"
@@ -629,7 +662,20 @@ struct MatrixEvidenceBundle {
     perf_baseline_path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     perf_gate_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kpi_thresholds: Option<KpiThresholds>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    perf_summary: Option<PerfSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    check_lane_kpis: Option<CheckLaneKpis>,
     steps: Vec<MatrixStepEvidence>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CheckLaneKpis {
+    typed_lane_total: u64,
+    boxed_lane_total: u64,
+    typed_lane_ratio: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -656,6 +702,7 @@ fn run_matrix(
     perf_runs: usize,
     perf_gate_path: Option<&str>,
     perf_max_regression_pct: f64,
+    kpi_thresholds: &KpiThresholds,
 ) -> i32 {
     let artifact_dir = workspace_root.join(".artifacts").join("matrix");
     if let Err(err) = fs::create_dir_all(&artifact_dir) {
@@ -689,6 +736,18 @@ fn run_matrix(
             "--perf-max-regression-pct={}",
             perf_max_regression_pct
         ));
+        if let Some(value) = kpi_thresholds.check_fallback_max {
+            perf_args.push(format!("--kpi-check-fallback-max={value}"));
+        }
+        if let Some(value) = kpi_thresholds.check_batch_min {
+            perf_args.push(format!("--kpi-check-batch-min={value}"));
+        }
+        if let Some(value) = kpi_thresholds.scheduler_p99_improve_min_pct {
+            perf_args.push(format!("--kpi-scheduler-p99-improve-min-pct={value}"));
+        }
+        if let Some(value) = kpi_thresholds.rewrite_overhead_max_pct {
+            perf_args.push(format!("--kpi-rewrite-overhead-max-pct={value}"));
+        }
     }
 
     let steps = vec![
@@ -710,7 +769,7 @@ fn run_matrix(
     ];
 
     let mut evidence = MatrixEvidenceBundle {
-        version: 1,
+        version: 2,
         generated_at_unix_ms,
         workspace_root: workspace_root.display().to_string(),
         success: false,
@@ -718,6 +777,9 @@ fn run_matrix(
         perf_runs,
         perf_baseline_path: perf_baseline_path.display().to_string(),
         perf_gate_path: perf_gate_path.map(|s| s.to_string()),
+        kpi_thresholds: kpi_thresholds.any_set().then_some(*kpi_thresholds),
+        perf_summary: None,
+        check_lane_kpis: None,
         steps: Vec::new(),
     };
 
@@ -739,6 +801,11 @@ fn run_matrix(
 
     evidence.success = final_exit == EXIT_OK;
     evidence.exit_code = final_exit;
+    evidence.perf_summary = load_perf_baseline_summary(&perf_baseline_path).ok();
+    evidence.check_lane_kpis = evidence
+        .perf_summary
+        .as_ref()
+        .map(check_lane_kpis_from_summary);
     if let Err(err) = write_matrix_bundle(&bundle_path, &latest_path, &evidence) {
         eprintln!("matrix error: failed to write evidence bundle: {err}");
         return EXIT_CODEGEN;
@@ -809,6 +876,22 @@ fn write_matrix_bundle(
     Ok(())
 }
 
+fn check_lane_kpis_from_summary(summary: &PerfSummary) -> CheckLaneKpis {
+    let typed = summary.metrics.abi_typed_lane;
+    let boxed = summary.metrics.abi_boxed_lane;
+    let total = typed + boxed;
+    let typed_lane_ratio = if total == 0 {
+        1.0
+    } else {
+        typed as f64 / total as f64
+    };
+    CheckLaneKpis {
+        typed_lane_total: typed,
+        boxed_lane_total: boxed,
+        typed_lane_ratio,
+    }
+}
+
 fn now_unix_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -868,6 +951,12 @@ struct MetricsDump {
     #[serde(default)]
     sched_skipped_no_credit: u64,
     #[serde(default)]
+    sched_profile_switch: u64,
+    #[serde(default)]
+    sched_starvation_violation: u64,
+    #[serde(default)]
+    sched_cross_shard_migration: u64,
+    #[serde(default)]
     abi_typed_lane: u64,
     #[serde(default)]
     abi_boxed_lane: u64,
@@ -893,7 +982,15 @@ struct MetricsTotals {
     mailbox_dequeue: u64,
     sched_dispatched: u64,
     sched_skipped_no_credit: u64,
+    #[serde(default)]
+    sched_profile_switch: u64,
+    #[serde(default)]
+    sched_starvation_violation: u64,
+    #[serde(default)]
+    sched_cross_shard_migration: u64,
+    #[serde(default)]
     abi_typed_lane: u64,
+    #[serde(default)]
     abi_boxed_lane: u64,
 }
 
@@ -917,6 +1014,9 @@ impl MetricsTotals {
         self.mailbox_dequeue += metrics.mailbox_dequeue;
         self.sched_dispatched += metrics.sched_dispatched;
         self.sched_skipped_no_credit += metrics.sched_skipped_no_credit;
+        self.sched_profile_switch += metrics.sched_profile_switch;
+        self.sched_starvation_violation += metrics.sched_starvation_violation;
+        self.sched_cross_shard_migration += metrics.sched_cross_shard_migration;
         self.abi_typed_lane += metrics.abi_typed_lane;
         self.abi_boxed_lane += metrics.abi_boxed_lane;
     }
@@ -949,7 +1049,46 @@ struct PerfSummary {
     rc_dec: u64,
     rc_ops_total: u64,
     dispatch_hit_ratio: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    check_fallback_rate: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    avg_check_batch_size: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    check_oracle_eval_ns_p50: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    check_oracle_eval_ns_p95: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effect_annihilation_rewrite_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scheduler_dispatch_p99_ns: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scheduler_starvation_violations: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rewrite_compile_overhead_pct: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rewrite_applied_count: Option<u64>,
     metrics: MetricsTotals,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+struct KpiThresholds {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    check_fallback_max: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    check_batch_min: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scheduler_p99_improve_min_pct: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rewrite_overhead_max_pct: Option<f64>,
+}
+
+impl KpiThresholds {
+    fn any_set(&self) -> bool {
+        self.check_fallback_max.is_some()
+            || self.check_batch_min.is_some()
+            || self.scheduler_p99_improve_min_pct.is_some()
+            || self.rewrite_overhead_max_pct.is_some()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -974,6 +1113,7 @@ struct PerfReport {
 struct PerfGateConfig {
     baseline_path: PathBuf,
     max_regression_pct: f64,
+    kpi_thresholds: KpiThresholds,
 }
 
 fn run_tests(
@@ -1007,7 +1147,12 @@ fn run_tests(
                 return EXIT_CODEGEN;
             }
         };
-        let failures = evaluate_perf_gate(summary, &baseline, gate.max_regression_pct);
+        let failures = evaluate_perf_gate(
+            summary,
+            &baseline,
+            gate.max_regression_pct,
+            &gate.kpi_thresholds,
+        );
         if !failures.is_empty() {
             eprintln!(
                 "perf gate failed against {} (max regression {:.2}%):",
@@ -1222,7 +1367,12 @@ fn run_perf_harness(
                 return EXIT_CODEGEN;
             }
         };
-        let failures = evaluate_perf_gate(&summary, &baseline, gate.max_regression_pct);
+        let failures = evaluate_perf_gate(
+            &summary,
+            &baseline,
+            gate.max_regression_pct,
+            &gate.kpi_thresholds,
+        );
         if !failures.is_empty() {
             eprintln!(
                 "perf gate failed against {} (max regression {:.2}%):",
@@ -1334,6 +1484,15 @@ fn build_perf_summary(
         rc_dec: metrics_totals.rc_dec,
         rc_ops_total,
         dispatch_hit_ratio,
+        check_fallback_rate: None,
+        avg_check_batch_size: None,
+        check_oracle_eval_ns_p50: None,
+        check_oracle_eval_ns_p95: None,
+        effect_annihilation_rewrite_count: None,
+        scheduler_dispatch_p99_ns: None,
+        scheduler_starvation_violations: None,
+        rewrite_compile_overhead_pct: None,
+        rewrite_applied_count: None,
         metrics: metrics_totals.clone(),
     }
 }
@@ -1349,9 +1508,14 @@ fn print_perf_summary(summary: &PerfSummary, perf_debug: bool) {
         summary.rc_ops_total,
         summary.dispatch_hit_ratio
     );
+    let check_lane = check_lane_kpis_from_summary(summary);
+    println!(
+        "check-lane: typed_total={} boxed_total={} typed_ratio={:.4}",
+        check_lane.typed_lane_total, check_lane.boxed_lane_total, check_lane.typed_lane_ratio
+    );
     if perf_debug {
         println!(
-            "perf-debug: rc_inc={} rc_dec={} mailbox_enqueue_ok={} mailbox_enqueue_fail={} mailbox_dequeue={} mailbox_high_water={} alloc_list={} alloc_map={} alloc_string={} alloc_bytes={} alloc_result={} alloc_pending={} messages_sent={} messages_dropped={} pending_resolved={} pending_dropped={} sched_dispatched={} sched_skipped_no_credit={} abi_typed_lane={} abi_boxed_lane={}",
+            "perf-debug: rc_inc={} rc_dec={} mailbox_enqueue_ok={} mailbox_enqueue_fail={} mailbox_dequeue={} mailbox_high_water={} alloc_list={} alloc_map={} alloc_string={} alloc_bytes={} alloc_result={} alloc_pending={} messages_sent={} messages_dropped={} pending_resolved={} pending_dropped={} sched_dispatched={} sched_skipped_no_credit={} sched_profile_switch={} sched_starvation_violation={} sched_cross_shard_migration={} abi_typed_lane={} abi_boxed_lane={}",
             summary.metrics.rc_inc,
             summary.metrics.rc_dec,
             summary.metrics.mailbox_enqueue_ok,
@@ -1370,6 +1534,9 @@ fn print_perf_summary(summary: &PerfSummary, perf_debug: bool) {
             summary.metrics.pending_dropped,
             summary.metrics.sched_dispatched,
             summary.metrics.sched_skipped_no_credit,
+            summary.metrics.sched_profile_switch,
+            summary.metrics.sched_starvation_violation,
+            summary.metrics.sched_cross_shard_migration,
             summary.metrics.abi_typed_lane,
             summary.metrics.abi_boxed_lane
         );
@@ -1403,6 +1570,9 @@ fn aggregate_perf_samples(samples: &[PerfSummary]) -> PerfSummary {
         metrics.mailbox_dequeue += sample.metrics.mailbox_dequeue;
         metrics.sched_dispatched += sample.metrics.sched_dispatched;
         metrics.sched_skipped_no_credit += sample.metrics.sched_skipped_no_credit;
+        metrics.sched_profile_switch += sample.metrics.sched_profile_switch;
+        metrics.sched_starvation_violation += sample.metrics.sched_starvation_violation;
+        metrics.sched_cross_shard_migration += sample.metrics.sched_cross_shard_migration;
         metrics.abi_typed_lane += sample.metrics.abi_typed_lane;
         metrics.abi_boxed_lane += sample.metrics.abi_boxed_lane;
     }
@@ -1428,7 +1598,59 @@ fn aggregate_perf_samples(samples: &[PerfSummary]) -> PerfSummary {
         rc_ops_total: (samples.iter().map(|s| s.rc_ops_total as f64).sum::<f64>() / len).round()
             as u64,
         dispatch_hit_ratio: samples.iter().map(|s| s.dispatch_hit_ratio).sum::<f64>() / len,
+        check_fallback_rate: average_optional_f64(samples, |s| s.check_fallback_rate),
+        avg_check_batch_size: average_optional_f64(samples, |s| s.avg_check_batch_size),
+        check_oracle_eval_ns_p50: median_optional_u128(samples, |s| s.check_oracle_eval_ns_p50),
+        check_oracle_eval_ns_p95: median_optional_u128(samples, |s| s.check_oracle_eval_ns_p95),
+        effect_annihilation_rewrite_count: average_optional_u64(samples, |s| {
+            s.effect_annihilation_rewrite_count
+        }),
+        scheduler_dispatch_p99_ns: median_optional_u128(samples, |s| s.scheduler_dispatch_p99_ns),
+        scheduler_starvation_violations: average_optional_u64(samples, |s| {
+            s.scheduler_starvation_violations
+        }),
+        rewrite_compile_overhead_pct: average_optional_f64(samples, |s| {
+            s.rewrite_compile_overhead_pct
+        }),
+        rewrite_applied_count: average_optional_u64(samples, |s| s.rewrite_applied_count),
         metrics,
+    }
+}
+
+fn average_optional_f64(
+    samples: &[PerfSummary],
+    pick: impl Fn(&PerfSummary) -> Option<f64>,
+) -> Option<f64> {
+    let values: Vec<f64> = samples.iter().filter_map(pick).collect();
+    if values.is_empty() {
+        None
+    } else {
+        Some(values.iter().sum::<f64>() / values.len() as f64)
+    }
+}
+
+fn average_optional_u64(
+    samples: &[PerfSummary],
+    pick: impl Fn(&PerfSummary) -> Option<u64>,
+) -> Option<u64> {
+    let values: Vec<u64> = samples.iter().filter_map(pick).collect();
+    if values.is_empty() {
+        None
+    } else {
+        Some((values.iter().map(|v| *v as f64).sum::<f64>() / values.len() as f64).round() as u64)
+    }
+}
+
+fn median_optional_u128(
+    samples: &[PerfSummary],
+    pick: impl Fn(&PerfSummary) -> Option<u128>,
+) -> Option<u128> {
+    let mut values: Vec<u128> = samples.iter().filter_map(pick).collect();
+    if values.is_empty() {
+        None
+    } else {
+        values.sort_unstable();
+        Some(values[values.len() / 2])
     }
 }
 
@@ -1493,6 +1715,7 @@ fn evaluate_perf_gate(
     current: &PerfSummary,
     baseline: &PerfSummary,
     max_regression_pct: f64,
+    kpi_thresholds: &KpiThresholds,
 ) -> Vec<String> {
     let mut failures = Vec::new();
     let up = 1.0 + (max_regression_pct / 100.0);
@@ -1539,6 +1762,54 @@ fn evaluate_perf_gate(
             "dispatch_hit_ratio {:.4} < {:.4}",
             current.dispatch_hit_ratio, dispatch_min
         ));
+    }
+    if let (Some(current_value), Some(limit)) = (
+        current.check_fallback_rate,
+        kpi_thresholds.check_fallback_max,
+    ) {
+        if current_value > limit {
+            failures.push(format!(
+                "check_fallback_rate {:.4} > {:.4}",
+                current_value, limit
+            ));
+        }
+    }
+    if let (Some(current_value), Some(min)) =
+        (current.avg_check_batch_size, kpi_thresholds.check_batch_min)
+    {
+        if current_value < min {
+            failures.push(format!(
+                "avg_check_batch_size {:.2} < {:.2}",
+                current_value, min
+            ));
+        }
+    }
+    if let (Some(current_value), Some(baseline_value), Some(min_improve_pct)) = (
+        current.scheduler_dispatch_p99_ns,
+        baseline.scheduler_dispatch_p99_ns,
+        kpi_thresholds.scheduler_p99_improve_min_pct,
+    ) {
+        if baseline_value > 0 {
+            let improvement_pct =
+                ((baseline_value as f64 - current_value as f64) / baseline_value as f64) * 100.0;
+            if improvement_pct < min_improve_pct {
+                failures.push(format!(
+                    "scheduler_dispatch_p99_ns improvement {:.2}% < {:.2}%",
+                    improvement_pct, min_improve_pct
+                ));
+            }
+        }
+    }
+    if let (Some(current_value), Some(limit)) = (
+        current.rewrite_compile_overhead_pct,
+        kpi_thresholds.rewrite_overhead_max_pct,
+    ) {
+        if current_value > limit {
+            failures.push(format!(
+                "rewrite_compile_overhead_pct {:.2} > {:.2}",
+                current_value, limit
+            ));
+        }
     }
     failures
 }
@@ -1965,11 +2236,23 @@ fn compile_to_mir(
 
     let check_ir = hir::checkir::extract_module(&module);
     if std::env::var("WRELA_CHECK_ORACLE_TRACE").is_ok() {
+        let vector_eligible = check_ir
+            .checks
+            .iter()
+            .filter(|check| check.supports_vector_lane)
+            .count();
         eprintln!(
-            "check-oracle: extracted={} skipped={}",
+            "check-oracle: extracted={} skipped={} vector_eligible={}",
             check_ir.checks.len(),
-            check_ir.skipped.len()
+            check_ir.skipped.len(),
+            vector_eligible
         );
+        for check in &check_ir.checks {
+            eprintln!(
+                "check-oracle-shape: name={} shape_id={} vector_lane={}",
+                check.name, check.shape_id, check.supports_vector_lane
+            );
+        }
     }
 
     let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
@@ -2252,3 +2535,93 @@ const EXIT_PARSE: i32 = 2;
 const EXIT_TYPE: i32 = 3;
 const EXIT_OK: i32 = 0;
 const EXIT_CODEGEN: i32 = 4;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn perf_summary_with_kpis() -> PerfSummary {
+        PerfSummary {
+            sample_count: 1,
+            compile_throughput_tests_per_sec: 100.0,
+            runtime_p50_ns: 100,
+            runtime_p95_ns: 150,
+            runtime_p99_ns: 200,
+            allocs_per_request: 1.0,
+            rc_inc: 0,
+            rc_dec: 0,
+            rc_ops_total: 0,
+            dispatch_hit_ratio: 1.0,
+            check_fallback_rate: Some(0.10),
+            avg_check_batch_size: Some(8.0),
+            check_oracle_eval_ns_p50: Some(50),
+            check_oracle_eval_ns_p95: Some(90),
+            effect_annihilation_rewrite_count: Some(2),
+            scheduler_dispatch_p99_ns: Some(800),
+            scheduler_starvation_violations: Some(0),
+            rewrite_compile_overhead_pct: Some(4.0),
+            rewrite_applied_count: Some(10),
+            metrics: MetricsTotals::default(),
+        }
+    }
+
+    #[test]
+    fn evaluate_perf_gate_applies_kpi_thresholds() {
+        let baseline = perf_summary_with_kpis();
+        let mut current = perf_summary_with_kpis();
+        current.check_fallback_rate = Some(0.25);
+        current.avg_check_batch_size = Some(4.0);
+        current.scheduler_dispatch_p99_ns = Some(950);
+        current.rewrite_compile_overhead_pct = Some(7.5);
+        let thresholds = KpiThresholds {
+            check_fallback_max: Some(0.20),
+            check_batch_min: Some(6.0),
+            scheduler_p99_improve_min_pct: Some(10.0),
+            rewrite_overhead_max_pct: Some(5.0),
+        };
+
+        let failures = evaluate_perf_gate(&current, &baseline, 5.0, &thresholds);
+
+        assert!(
+            failures
+                .iter()
+                .any(|line| line.contains("check_fallback_rate"))
+        );
+        assert!(
+            failures
+                .iter()
+                .any(|line| line.contains("avg_check_batch_size"))
+        );
+        assert!(
+            failures
+                .iter()
+                .any(|line| line.contains("scheduler_dispatch_p99_ns improvement"))
+        );
+        assert!(
+            failures
+                .iter()
+                .any(|line| line.contains("rewrite_compile_overhead_pct"))
+        );
+    }
+
+    #[test]
+    fn evaluate_perf_gate_ignores_missing_optional_kpis() {
+        let mut baseline = perf_summary_with_kpis();
+        let mut current = perf_summary_with_kpis();
+        baseline.scheduler_dispatch_p99_ns = None;
+        current.scheduler_dispatch_p99_ns = None;
+        current.check_fallback_rate = None;
+        current.avg_check_batch_size = None;
+        current.rewrite_compile_overhead_pct = None;
+        let thresholds = KpiThresholds {
+            check_fallback_max: Some(0.20),
+            check_batch_min: Some(6.0),
+            scheduler_p99_improve_min_pct: Some(10.0),
+            rewrite_overhead_max_pct: Some(5.0),
+        };
+
+        let failures = evaluate_perf_gate(&current, &baseline, 5.0, &thresholds);
+
+        assert!(failures.is_empty());
+    }
+}

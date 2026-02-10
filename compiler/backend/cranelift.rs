@@ -1,3 +1,4 @@
+use crate::hir::{CheckBinaryOp, CheckDagShapeFamily, CheckIrFunction, CheckValue, DecisionNode};
 use crate::hir::{Objective, PoolSize};
 use crate::mir::ir::{
     CallKind, CallTarget, MirFunction, MirModule, MirType, Place, Rvalue, Stmt, Terminator, Value,
@@ -41,6 +42,102 @@ pub struct CodegenError(pub String);
 struct PhiNode {
     place: Place,
     sources: Vec<(crate::mir::ir::BlockId, Value)>,
+}
+
+pub(crate) fn classify_check_shape_family(func: &CheckIrFunction) -> CheckDagShapeFamily {
+    let Some(root) = func.dag.nodes.get(func.dag.root) else {
+        return CheckDagShapeFamily::Generic;
+    };
+    match root {
+        DecisionNode::Binary { op, lhs, rhs } if is_cmp_op(*op) => {
+            if is_param_const_pair(&func.dag.nodes, *lhs, *rhs)
+                || is_param_const_pair(&func.dag.nodes, *rhs, *lhs)
+            {
+                return CheckDagShapeFamily::ParamCmpConst;
+            }
+            if is_param_param_pair(&func.dag.nodes, *lhs, *rhs) {
+                return CheckDagShapeFamily::ParamCmpParam;
+            }
+            CheckDagShapeFamily::Generic
+        }
+        DecisionNode::Binary { op, lhs, rhs }
+            if matches!(op, CheckBinaryOp::And | CheckBinaryOp::Or) =>
+        {
+            if is_cmp_leaf(&func.dag.nodes, *lhs) && is_cmp_leaf(&func.dag.nodes, *rhs) {
+                CheckDagShapeFamily::AndOrCmpPair
+            } else {
+                CheckDagShapeFamily::Generic
+            }
+        }
+        _ => CheckDagShapeFamily::Generic,
+    }
+}
+
+pub(crate) fn try_eval_specialized_check_family(
+    func: &CheckIrFunction,
+    args: &[CheckValue],
+    family: CheckDagShapeFamily,
+) -> Option<bool> {
+    match family {
+        CheckDagShapeFamily::Generic => None,
+        CheckDagShapeFamily::ParamCmpConst
+        | CheckDagShapeFamily::ParamCmpParam
+        | CheckDagShapeFamily::AndOrCmpPair => func.dag.eval_bool(args),
+    }
+}
+
+pub(crate) fn dispatch_vector_lane_stub(
+    func: &CheckIrFunction,
+    rows: &[Vec<CheckValue>],
+    family: CheckDagShapeFamily,
+    lane_width: usize,
+) -> Option<Vec<Option<bool>>> {
+    if !func.supports_vector_lane {
+        return None;
+    }
+    if matches!(family, CheckDagShapeFamily::Generic) {
+        return None;
+    }
+
+    let mut out = Vec::with_capacity(rows.len());
+    for chunk in rows.chunks(lane_width.max(1)) {
+        for row in chunk {
+            let value = try_eval_specialized_check_family(func, row, family)?;
+            out.push(Some(value));
+        }
+    }
+    Some(out)
+}
+
+fn is_cmp_op(op: CheckBinaryOp) -> bool {
+    matches!(
+        op,
+        CheckBinaryOp::Eq
+            | CheckBinaryOp::Ne
+            | CheckBinaryOp::Lt
+            | CheckBinaryOp::Gt
+            | CheckBinaryOp::Le
+            | CheckBinaryOp::Ge
+    )
+}
+
+fn is_param_const_pair(nodes: &[DecisionNode], lhs: usize, rhs: usize) -> bool {
+    matches!(nodes.get(lhs), Some(DecisionNode::Param(_)))
+        && matches!(
+            nodes.get(rhs),
+            Some(DecisionNode::Const(
+                CheckValue::Integer(_) | CheckValue::Boolean(_)
+            ))
+        )
+}
+
+fn is_param_param_pair(nodes: &[DecisionNode], lhs: usize, rhs: usize) -> bool {
+    matches!(nodes.get(lhs), Some(DecisionNode::Param(_)))
+        && matches!(nodes.get(rhs), Some(DecisionNode::Param(_)))
+}
+
+fn is_cmp_leaf(nodes: &[DecisionNode], id: usize) -> bool {
+    matches!(nodes.get(id), Some(DecisionNode::Binary { op, .. }) if is_cmp_op(*op))
 }
 
 fn nanbox_const(tag: u64, payload: u64) -> i64 {

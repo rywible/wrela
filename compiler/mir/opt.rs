@@ -28,6 +28,7 @@ pub fn run_function_passes_with(func: &mut MirFunction, types: Option<&FunctionT
     if std::env::var("WRELA_DISABLE_RESULT_ANNIHILATION").is_err()
         && std::env::var("WRELA_DISABLE_RESULT_PEEPHOLE").is_err()
     {
+        hoist_loop_invariant_result_is_ok(func);
         result_peephole(func);
     }
     scalar_replace_literals(func);
@@ -54,6 +55,15 @@ pub fn run_module_passes_with_rulepack(
     clone_small_hot_functions(module, &analysis.call_graph);
     let analysis = analyze_module(module);
     tree_shake_unused_functions(module, &analysis.call_graph);
+    let batch_rewrite = rewrite_check_callsite_clusters(module, checkir);
+    if std::env::var("WRELA_CHECK_ORACLE_TRACE").is_ok() {
+        eprintln!(
+            "check-oracle-batch: clusters={} rewritten={} scalar_fallback_clusters={}",
+            batch_rewrite.clusters_seen,
+            batch_rewrite.clusters_rewritten,
+            batch_rewrite.scalar_fallback_clusters
+        );
+    }
 
     let max_rules = std::env::var("WRELA_REWRITE_MAX_RULES")
         .ok()
@@ -64,8 +74,131 @@ pub fn run_module_passes_with_rulepack(
             .ok()
             .and_then(|raw| raw.parse::<usize>().ok())
             .unwrap_or(50_000),
+        max_compile_cost: std::env::var("WRELA_REWRITE_ADMISSION_BUDGET")
+            .ok()
+            .and_then(|raw| raw.parse::<u32>().ok())
+            .unwrap_or(16),
+        max_rule_risk: std::env::var("WRELA_REWRITE_MAX_RISK")
+            .ok()
+            .and_then(|raw| raw.parse::<u32>().ok())
+            .unwrap_or(8),
+        per_function_rewrite_cap: std::env::var("WRELA_REWRITE_PER_FUNCTION_CAP")
+            .ok()
+            .and_then(|raw| raw.parse::<usize>().ok())
+            .unwrap_or(128),
     };
     mine_admit_and_apply(module, checkir, budget, max_rules)
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct BatchCallsiteRewriteReport {
+    clusters_seen: usize,
+    clusters_rewritten: usize,
+    scalar_fallback_clusters: usize,
+}
+
+fn rewrite_check_callsite_clusters(
+    module: &mut MirModule,
+    checkir: Option<&CheckIrModule>,
+) -> BatchCallsiteRewriteReport {
+    let Some(checkir) = checkir else {
+        return BatchCallsiteRewriteReport::default();
+    };
+    let check_map: HashMap<SmolStr, bool> = checkir
+        .checks
+        .iter()
+        .map(|check| (check.name.clone(), check.supports_vector_lane))
+        .collect();
+    if check_map.is_empty() {
+        return BatchCallsiteRewriteReport::default();
+    }
+
+    let mut report = BatchCallsiteRewriteReport::default();
+    let mut available = HashSet::new();
+    for func in &module.functions {
+        available.insert(func.name.clone());
+    }
+
+    for func in &mut module.functions {
+        for block in &mut func.blocks {
+            let mut idx = 0usize;
+            while idx < block.stmts.len() {
+                let Some((target, end)) = detect_sync_call_cluster(&block.stmts, idx) else {
+                    idx += 1;
+                    continue;
+                };
+                let cluster_len = end - idx;
+                if cluster_len < 2 {
+                    idx += 1;
+                    continue;
+                }
+                report.clusters_seen += 1;
+
+                let Some(vector_compatible) = check_map.get(&target).copied() else {
+                    report.scalar_fallback_clusters += 1;
+                    idx = end;
+                    continue;
+                };
+                if !vector_compatible {
+                    report.scalar_fallback_clusters += 1;
+                    idx = end;
+                    continue;
+                }
+
+                let batch_name = SmolStr::new(format!("{target}__batch"));
+                if !available.contains(&batch_name) {
+                    report.scalar_fallback_clusters += 1;
+                    idx = end;
+                    continue;
+                }
+
+                for stmt in &mut block.stmts[idx..end] {
+                    let Stmt::Assign { value, .. } = stmt else {
+                        continue;
+                    };
+                    let Rvalue::Call { target, .. } = value else {
+                        continue;
+                    };
+                    *target = CallTarget::Function(batch_name.clone());
+                }
+                report.clusters_rewritten += 1;
+                idx = end;
+            }
+        }
+    }
+
+    report
+}
+
+fn detect_sync_call_cluster(stmts: &[Stmt], start: usize) -> Option<(SmolStr, usize)> {
+    let Stmt::Assign { value, .. } = stmts.get(start)? else {
+        return None;
+    };
+    let Rvalue::Call {
+        kind: CallKind::Sync,
+        target: CallTarget::Function(name),
+        ..
+    } = value
+    else {
+        return None;
+    };
+
+    let mut end = start + 1;
+    while let Some(Stmt::Assign { value, .. }) = stmts.get(end) {
+        let Rvalue::Call {
+            kind: CallKind::Sync,
+            target: CallTarget::Function(next),
+            ..
+        } = value
+        else {
+            break;
+        };
+        if next != name {
+            break;
+        }
+        end += 1;
+    }
+    Some((name.clone(), end))
 }
 
 #[derive(Debug, Clone)]
@@ -989,7 +1122,159 @@ fn rename_terminator(term: &mut Terminator, stacks: &[Vec<LocalId>]) {
 }
 
 fn result_peephole(func: &mut MirFunction) {
-    effect_ir::annihilate_result_wrappers(func);
+    let report = effect_ir::annihilate_result_wrappers(func);
+    if std::env::var("WRELA_CHECK_ORACLE_TRACE").is_ok() {
+        eprintln!(
+            "effect-annihilation: rewritten={} cross_block={} blocked={}",
+            report.rewritten_statements,
+            report.cross_block_rewrites,
+            report
+                .blocked_rewrite_reasons
+                .values()
+                .copied()
+                .sum::<usize>()
+        );
+    }
+}
+
+fn hoist_loop_invariant_result_is_ok(func: &mut MirFunction) {
+    if func.blocks.len() < 2 {
+        return;
+    }
+    let succs = block_successors(func);
+    let preds = block_predecessors(func, &succs);
+    let reachable = compute_reachable(func.entry.0, &succs);
+    let doms = compute_dominators(func.blocks.len(), func.entry.0, &preds);
+    let def_block_by_temp = collect_temp_def_blocks(func);
+
+    let mut planned: Vec<(usize, usize, usize)> = Vec::new();
+    for pred in 0..succs.len() {
+        if !reachable[pred] {
+            continue;
+        }
+        for header in &succs[pred] {
+            if *header >= doms.len() || !doms[pred][*header] {
+                continue;
+            }
+            let Some(preheader) = unique_loop_preheader(*header, pred, &preds, &doms) else {
+                continue;
+            };
+            for (stmt_idx, stmt) in func.blocks[*header].stmts.iter().enumerate() {
+                let Stmt::Assign { value, .. } = stmt else {
+                    continue;
+                };
+                let Rvalue::ResultIsOk {
+                    value: Value::Temp(temp),
+                } = value
+                else {
+                    continue;
+                };
+                let Some(def_block) = def_block_by_temp.get(temp.0).copied().flatten() else {
+                    continue;
+                };
+                if in_backedge_loop(def_block, *header, pred, &preds) {
+                    continue;
+                }
+                planned.push((*header, stmt_idx, preheader));
+            }
+        }
+    }
+    if planned.is_empty() {
+        return;
+    }
+
+    planned.sort_unstable();
+    planned.dedup();
+
+    let mut removals: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut inserts: HashMap<usize, Vec<Stmt>> = HashMap::new();
+    for (block_idx, stmt_idx, preheader) in planned {
+        let stmt = func.blocks[block_idx].stmts[stmt_idx].clone();
+        removals.entry(block_idx).or_default().push(stmt_idx);
+        inserts.entry(preheader).or_default().push(stmt);
+    }
+
+    for (preheader, mut stmts) in inserts {
+        if stmts.is_empty() {
+            continue;
+        }
+        func.blocks[preheader].stmts.append(&mut stmts);
+    }
+    for (block_idx, mut to_remove) in removals {
+        to_remove.sort_unstable_by(|lhs, rhs| rhs.cmp(lhs));
+        for stmt_idx in to_remove {
+            if stmt_idx < func.blocks[block_idx].stmts.len() {
+                func.blocks[block_idx].stmts.remove(stmt_idx);
+            }
+        }
+    }
+}
+
+fn collect_temp_def_blocks(func: &MirFunction) -> Vec<Option<usize>> {
+    let mut defs = vec![None; func.temps.len()];
+    for (block_idx, block) in func.blocks.iter().enumerate() {
+        for stmt in &block.stmts {
+            let Stmt::Assign { place, .. } = stmt else {
+                continue;
+            };
+            let Place::Temp(temp) = place else {
+                continue;
+            };
+            defs[temp.0] = Some(block_idx);
+        }
+    }
+    defs
+}
+
+fn unique_loop_preheader(
+    header: usize,
+    loop_pred: usize,
+    preds: &[Vec<usize>],
+    doms: &[Vec<bool>],
+) -> Option<usize> {
+    let mut outside = Vec::new();
+    for pred in &preds[header] {
+        if *pred == loop_pred {
+            continue;
+        }
+        if doms[*pred][header] {
+            continue;
+        }
+        outside.push(*pred);
+    }
+    if outside.len() == 1 {
+        outside.into_iter().next()
+    } else {
+        None
+    }
+}
+
+fn in_backedge_loop(
+    block: usize,
+    header: usize,
+    backedge_pred: usize,
+    preds: &[Vec<usize>],
+) -> bool {
+    if block == header || block == backedge_pred {
+        return true;
+    }
+    let mut seen = HashSet::new();
+    let mut stack = vec![backedge_pred];
+    while let Some(node) = stack.pop() {
+        if !seen.insert(node) {
+            continue;
+        }
+        if node == block {
+            return true;
+        }
+        if node == header {
+            continue;
+        }
+        for pred in &preds[node] {
+            stack.push(*pred);
+        }
+    }
+    false
 }
 
 fn scalar_replace_literals(func: &mut MirFunction) {

@@ -12,6 +12,11 @@ If `--perf-gate=PATH` is provided, step 3 also receives:
 
 - `--perf-gate=PATH`
 - `--perf-max-regression-pct=<N>` (default `5`)
+- optional KPI thresholds:
+  - `--kpi-check-fallback-max=<N>`
+  - `--kpi-check-batch-min=<N>`
+  - `--kpi-scheduler-p99-improve-min-pct=<N>`
+  - `--kpi-rewrite-overhead-max-pct=<N>`
 
 ## Usage
 
@@ -19,6 +24,7 @@ If `--perf-gate=PATH` is provided, step 3 also receives:
 cargo run -p wrela -- matrix
 cargo run -p wrela -- matrix --runs=1
 cargo run -p wrela -- matrix --runs=1 --perf-gate=.artifacts/perf/baseline.json --perf-max-regression-pct=5
+cargo run -p wrela -- matrix --runs=1 --perf-gate=.artifacts/perf/baseline.json --perf-max-regression-pct=5 --kpi-check-fallback-max=0.20 --kpi-check-batch-min=6 --kpi-scheduler-p99-improve-min-pct=10 --kpi-rewrite-overhead-max-pct=5
 ```
 
 ## Evidence Output
@@ -31,6 +37,7 @@ The command writes:
 - perf baseline: `.artifacts/matrix/perf-baseline.json`
 
 Bundle fields include `success`, `exit_code`, `steps[]`, command args, duration, and log paths.
+When available, the bundle also includes a KPI table under `perf_summary` and active KPI thresholds under `kpi_thresholds`.
 
 ## CI Notes
 

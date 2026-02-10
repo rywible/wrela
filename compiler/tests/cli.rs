@@ -23,6 +23,10 @@ fn cli_help() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("usage: wrela"));
+    assert!(stdout.contains("--kpi-check-fallback-max"));
+    assert!(stdout.contains("--kpi-check-batch-min"));
+    assert!(stdout.contains("--kpi-scheduler-p99-improve-min-pct"));
+    assert!(stdout.contains("--kpi-rewrite-overhead-max-pct"));
 }
 
 #[test]
@@ -490,7 +494,7 @@ if [ "$cmd" = "perf" ]; then
   done
   if [ -n "$baseline" ]; then
     mkdir -p "$(dirname "$baseline")"
-    printf '{"summary":{"sample_count":1,"compile_throughput_tests_per_sec":1.0,"runtime_p50_ns":1,"runtime_p95_ns":1,"runtime_p99_ns":1,"allocs_per_request":0.0,"rc_inc":0,"rc_dec":0,"rc_ops_total":0,"dispatch_hit_ratio":1.0,"metrics":{"messages_sent":0,"messages_dropped":0,"pending_resolved":0,"pending_dropped":0,"mailbox_high_water":0,"rc_inc":0,"rc_dec":0,"alloc_list":0,"alloc_map":0,"alloc_string":0,"alloc_bytes":0,"alloc_result":0,"alloc_pending":0,"mailbox_enqueue_ok":0,"mailbox_enqueue_fail":0,"mailbox_dequeue":0,"sched_dispatched":0,"sched_skipped_no_credit":0,"abi_typed_lane":0,"abi_boxed_lane":0}}}' > "$baseline"
+    printf '{"sample_count":1,"compile_throughput_tests_per_sec":1.0,"runtime_p50_ns":1,"runtime_p95_ns":1,"runtime_p99_ns":1,"allocs_per_request":0.0,"rc_inc":0,"rc_dec":0,"rc_ops_total":0,"dispatch_hit_ratio":1.0,"check_fallback_rate":0.1,"avg_check_batch_size":8.0,"check_oracle_eval_ns_p50":50,"check_oracle_eval_ns_p95":90,"effect_annihilation_rewrite_count":2,"scheduler_dispatch_p99_ns":1000,"scheduler_starvation_violations":0,"rewrite_compile_overhead_pct":3.0,"rewrite_applied_count":12,"metrics":{"messages_sent":0,"messages_dropped":0,"pending_resolved":0,"pending_dropped":0,"mailbox_high_water":0,"rc_inc":0,"rc_dec":0,"alloc_list":0,"alloc_map":0,"alloc_string":0,"alloc_bytes":0,"alloc_result":0,"alloc_pending":0,"mailbox_enqueue_ok":0,"mailbox_enqueue_fail":0,"mailbox_dequeue":0,"sched_dispatched":0,"sched_skipped_no_credit":0,"sched_profile_switch":0,"sched_starvation_violation":0,"sched_cross_shard_migration":0,"abi_typed_lane":0,"abi_boxed_lane":0}}' > "$baseline"
   fi
 fi
 exit 0
@@ -534,6 +538,16 @@ fn cli_matrix_writes_evidence_bundle() {
             .map(|steps| steps.len()),
         Some(3)
     );
+    assert!(
+        json.get("perf_summary")
+            .and_then(|v| v.as_object())
+            .is_some()
+    );
+    assert!(
+        json.get("check_lane_kpis")
+            .and_then(|v| v.as_object())
+            .is_some()
+    );
     let baseline = json
         .get("perf_baseline_path")
         .and_then(|v| v.as_str())
@@ -560,6 +574,10 @@ fn cli_matrix_forwards_perf_gate_flags() {
         .arg("matrix")
         .arg(format!("--perf-gate={}", gate.display()))
         .arg("--perf-max-regression-pct=12.5")
+        .arg("--kpi-check-fallback-max=0.20")
+        .arg("--kpi-check-batch-min=6")
+        .arg("--kpi-scheduler-p99-improve-min-pct=10")
+        .arg("--kpi-rewrite-overhead-max-pct=5")
         .env("WRELA_MATRIX_CARGO_BIN", &cargo_stub)
         .env("WRELA_MATRIX_SELF_BIN", &wrlea_stub)
         .env("WRELA_MATRIX_STUB_LOG", &log_path)
@@ -569,6 +587,20 @@ fn cli_matrix_forwards_perf_gate_flags() {
     let invocations = std::fs::read_to_string(log_path).expect("read invocation log");
     assert!(invocations.contains(&format!("--perf-gate={}", gate.display())));
     assert!(invocations.contains("--perf-max-regression-pct=12.5"));
+    assert!(invocations.contains("--kpi-check-fallback-max=0.2"));
+    assert!(invocations.contains("--kpi-check-batch-min=6"));
+    assert!(invocations.contains("--kpi-scheduler-p99-improve-min-pct=10"));
+    assert!(invocations.contains("--kpi-rewrite-overhead-max-pct=5"));
+
+    let latest = dir.path().join(".artifacts/matrix/matrix-latest.json");
+    let json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&latest).expect("read bundle")).expect("bundle");
+    assert_eq!(
+        json.get("kpi_thresholds")
+            .and_then(|v| v.get("check_fallback_max"))
+            .and_then(|v| v.as_f64()),
+        Some(0.2)
+    );
 }
 
 #[cfg(unix)]
