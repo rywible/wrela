@@ -181,18 +181,18 @@ pub(crate) mod actor {
     // logically actor-thread only. We enforce that via `MailboxArena::with`.
     unsafe impl Sync for MailboxArena {}
 
-    struct Mailbox {
-        spsc: MailboxSpscQueue,
-        queue: MailboxQueue,
-        work_notify: TaskSignal,
-        space_notify: TaskSignal,
-        space_notify_epoch: AtomicU64,
-        space_notify_inflight: AtomicBool,
-        len: AtomicUsize,
-        closed: AtomicBool,
-        paused: AtomicBool,
-        pause_notify: TaskSignal,
-        pause_epoch: AtomicUsize,
+	    struct Mailbox {
+	        spsc: MailboxSpscQueue,
+	        queue: MailboxQueue,
+	        work_notify: TaskSignal,
+	        space_notify: TaskSignal,
+	        space_notify_epoch: AtomicU64,
+	        space_notify_inflight: AtomicBool,
+	        inflight: AtomicUsize,
+	        closed: AtomicBool,
+	        paused: AtomicBool,
+	        pause_notify: TaskSignal,
+	        pause_epoch: AtomicUsize,
         pause_ack: AtomicUsize,
         pause_ack_notify: TaskSignal,
         wake_pending: AtomicBool,
@@ -410,6 +410,18 @@ pub(crate) mod actor {
             }
         }
 
+        #[inline]
+        fn is_empty(&self) -> bool {
+            self.head.load(Ordering::Acquire) == self.tail.load(Ordering::Acquire)
+        }
+
+        #[inline]
+        fn len(&self) -> usize {
+            let head = self.head.load(Ordering::Acquire);
+            let tail = self.tail.load(Ordering::Acquire);
+            tail.wrapping_sub(head)
+        }
+
         fn push_batch(&self, nodes: &[MessageNodeHandle]) -> usize {
             let mut accepted = 0usize;
             let mut stalls = 0usize;
@@ -524,45 +536,57 @@ pub(crate) mod actor {
         }
     }
 
-	    impl MailboxSpscQueue {
-	        fn new(cap: usize) -> Self {
-	            let cap = cap.max(2).next_power_of_two();
-	            let mut slots = Vec::with_capacity(cap);
+    impl MailboxSpscQueue {
+        fn new(cap: usize) -> Self {
+            let cap = cap.max(2).next_power_of_two();
+            let mut slots = Vec::with_capacity(cap);
             for _ in 0..cap {
                 slots.push(MailboxSpscSlot {
                     msg: UnsafeCell::new(MaybeUninit::uninit()),
                     enqueued_at_ns: UnsafeCell::new(MaybeUninit::uninit()),
                 });
             }
-	            Self {
-	                cap,
-	                mask: cap - 1,
-	                head: AtomicUsize::new(0),
-	                tail: AtomicUsize::new(0),
-	                producer_tid: AtomicU64::new(0),
-	                slots: slots.into_boxed_slice(),
-	            }
-	        }
+            Self {
+                cap,
+                mask: cap - 1,
+                head: AtomicUsize::new(0),
+                tail: AtomicUsize::new(0),
+                producer_tid: AtomicU64::new(0),
+                slots: slots.into_boxed_slice(),
+            }
+        }
 
-	        #[inline]
-	        fn current_tid() -> u64 {
-	            #[cfg(target_os = "macos")]
-	            unsafe {
-	                let mut tid: u64 = 0;
-	                // SAFETY: documented API; returns 0 on success.
-	                // Passing 0 requests the current thread id.
-	                if libc::pthread_threadid_np(0, &mut tid) == 0 && tid != 0 {
-	                    return tid;
-	                }
-	                // Fallback: stable per-thread within this process.
-	                use std::hash::{Hash, Hasher};
-	                let mut h = std::collections::hash_map::DefaultHasher::new();
-	                std::thread::current().id().hash(&mut h);
-	                h.finish()
-	            }
-	            #[cfg(not(target_os = "macos"))]
-	            {
-	                // Fallback: stable per-thread within this process.
+        #[inline]
+        fn is_empty(&self) -> bool {
+            self.head.load(Ordering::Acquire) == self.tail.load(Ordering::Acquire)
+        }
+
+        #[inline]
+        fn len(&self) -> usize {
+            let head = self.head.load(Ordering::Acquire);
+            let tail = self.tail.load(Ordering::Acquire);
+            tail.wrapping_sub(head)
+        }
+
+        #[inline]
+        fn current_tid() -> u64 {
+            #[cfg(target_os = "macos")]
+            unsafe {
+                let mut tid: u64 = 0;
+                // SAFETY: documented API; returns 0 on success.
+                // Passing 0 requests the current thread id.
+                if libc::pthread_threadid_np(0, &mut tid) == 0 && tid != 0 {
+                    return tid;
+                }
+                // Fallback: stable per-thread within this process.
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                std::thread::current().id().hash(&mut h);
+                h.finish()
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                // Fallback: stable per-thread within this process.
                 use std::hash::{Hash, Hasher};
                 let mut h = std::collections::hash_map::DefaultHasher::new();
                 std::thread::current().id().hash(&mut h);
@@ -575,7 +599,7 @@ pub(crate) mod actor {
             self.producer_tid.load(Ordering::Acquire) != u64::MAX
         }
 
-        fn try_push(&self, msg: Message, enqueue_ns: u64) -> Result<(), Message> {
+        fn try_push(&self, msg: Message, enqueue_ns: u64) -> Result<bool, Message> {
             let tid = Self::current_tid();
             let mut owner = self.producer_tid.load(Ordering::Acquire);
             if owner == 0 {
@@ -605,13 +629,14 @@ pub(crate) mod actor {
             if tail.wrapping_sub(head) >= self.cap {
                 return Err(msg);
             }
+            let was_empty = tail == head;
             let slot = &self.slots[tail & self.mask];
             unsafe {
                 (*slot.msg.get()).write(msg);
                 (*slot.enqueued_at_ns.get()).write(enqueue_ns);
             }
             self.tail.store(tail + 1, Ordering::Release);
-            Ok(())
+            Ok(was_empty)
         }
 
         fn try_pop(&self) -> Option<(Message, u64)> {
@@ -734,10 +759,12 @@ pub(crate) mod actor {
 
     fn actor_catch_panic_enabled() -> bool {
         static ENABLED: OnceLock<bool> = OnceLock::new();
-        *ENABLED.get_or_init(|| match std::env::var("WRELA_ACTOR_CATCH_PANIC").ok().as_deref() {
-            Some("0") => false,
-            _ => true,
-        })
+        *ENABLED.get_or_init(
+            || match std::env::var("WRELA_ACTOR_CATCH_PANIC").ok().as_deref() {
+                Some("0") => false,
+                _ => true,
+            },
+        )
     }
 
     fn producer_batch_enabled() -> bool {
@@ -1270,7 +1297,7 @@ pub(crate) mod actor {
             space_notify: TaskSignal::new(),
             space_notify_epoch: AtomicU64::new(0),
             space_notify_inflight: AtomicBool::new(false),
-            len: AtomicUsize::new(0),
+            inflight: AtomicUsize::new(0),
             closed: AtomicBool::new(false),
             paused: AtomicBool::new(false),
             pause_notify: TaskSignal::new(),
@@ -1295,7 +1322,9 @@ pub(crate) mod actor {
         if instance.is_ptr() {
             crate::metrics::inc_actor_spawn_instance_is_ptr();
             unsafe {
-                crate::metrics::set_actor_spawn_instance_type_id((*instance.as_ptr()).type_id as u64);
+                crate::metrics::set_actor_spawn_instance_type_id(
+                    (*instance.as_ptr()).type_id as u64,
+                );
             }
         } else {
             crate::metrics::inc_actor_spawn_instance_not_ptr();
@@ -1743,28 +1772,14 @@ pub(crate) mod actor {
         unsafe { Some((*actor).instance) }
     }
 
-    fn mailbox_len(actor: *const ActorHandle) -> usize {
-        unsafe { (&(*actor).mailbox).len.load(Ordering::Relaxed) }
-    }
-
-    fn mailbox_dec_n(mailbox: &Mailbox, count: usize) {
-        if count == 0 {
-            return;
-        }
-        let prev = mailbox.len.fetch_sub(count, Ordering::Relaxed);
-        if prev < count {
-            mailbox.len.store(0, Ordering::Release);
-            return;
-        }
-        if prev >= mailbox.queue.cap && prev - count < mailbox.queue.cap {
-            maybe_notify_space(mailbox);
-        }
-        crate::metrics::inc_mailbox_dequeue_n(count as u64);
-    }
-
-    fn mailbox_dec(mailbox: &Mailbox) {
-        mailbox_dec_n(mailbox, 1);
-    }
+	    fn mailbox_len(actor: *const ActorHandle) -> usize {
+	        unsafe {
+	            let mailbox = &(*actor).mailbox;
+	            mailbox.spsc.len()
+	                + mailbox.queue.len()
+	                + mailbox.inflight.load(Ordering::Acquire)
+	        }
+	    }
 
     fn mailbox_set_paused(actor: *const ActorHandle, paused: bool) {
         unsafe {
@@ -1859,20 +1874,21 @@ pub(crate) mod actor {
         let mailbox = unsafe { (*actor).mailbox.clone() };
         let instance = Value::from_ptr(actor as *mut ObjHeader);
         let args = unsafe { args_from_raw(argc, argv_ptr)? };
-        let node = message_node_from_message(build_message_inner(instance, method_id, args, pending)?);
+        let node =
+            message_node_from_message(build_message_inner(instance, method_id, args, pending)?);
         Some(PoolMessage { mailbox, node })
     }
 
-    fn mailbox_should_drop_paused(actor: *const ActorHandle) -> bool {
-        unsafe {
-            let mailbox = &(*actor).mailbox;
-            if !mailbox.paused.load(Ordering::Acquire) {
-                return false;
-            }
-            let cap = crate::config::pause_queue_cap();
-            mailbox.len.load(Ordering::Acquire) >= cap
-        }
-    }
+	    fn mailbox_should_drop_paused(actor: *const ActorHandle) -> bool {
+	        unsafe {
+	            let mailbox = &(*actor).mailbox;
+	            if !mailbox.paused.load(Ordering::Acquire) {
+	                return false;
+	            }
+	            let cap = crate::config::pause_queue_cap();
+	            mailbox.spsc.len() + mailbox.queue.len() + mailbox.inflight.load(Ordering::Acquire) >= cap
+	        }
+	    }
 
     fn mailbox_wait_paused(actor: *const ActorHandle) {
         unsafe {
@@ -2058,10 +2074,10 @@ pub(crate) mod actor {
         for msg in msgs {
             if mailbox.spsc.can_use() {
                 match mailbox.spsc.try_push(msg, enqueue_ns) {
-                    Ok(()) => {
-                        let prev = mailbox.len.fetch_add(1, Ordering::Relaxed);
-                        let len = prev + 1;
-                        update_mailbox_high_water(len);
+                    Ok(was_empty) => {
+                        if crate::metrics::is_enabled() {
+                            update_mailbox_high_water(mailbox.spsc.len() + mailbox.queue.len());
+                        }
                         crate::metrics::inc_mailbox_enqueue_ok();
                         crate::metrics::inc_messages_sent();
                         if mailbox.rescue_wake_ns > 0 {
@@ -2070,13 +2086,14 @@ pub(crate) mod actor {
                                 .store(monotonic_now_ns(), Ordering::Release);
                         }
                         if mailbox.wake_coalesce {
-                            if prev == 0 {
-                                mailbox.wake_pending.store(true, Ordering::Release);
-                                mailbox.work_notify.notify_one();
-                            } else if queue_kpi {
-                                crate::metrics::inc_mailbox_wake_coalesced();
+                            if was_empty && mailbox.queue.is_empty() {
+                                if !mailbox.wake_pending.swap(true, Ordering::AcqRel) {
+                                    mailbox.work_notify.notify_one();
+                                } else if queue_kpi {
+                                    crate::metrics::inc_mailbox_wake_coalesced();
+                                }
                             }
-                        } else if prev == 0 {
+                        } else if was_empty && mailbox.queue.is_empty() {
                             mailbox.work_notify.notify_one();
                         }
                     }
@@ -2106,10 +2123,10 @@ pub(crate) mod actor {
         let enqueue_ns = if queue_kpi { monotonic_now_ns() } else { 0 };
         let msg = if mailbox.spsc.can_use() {
             match mailbox.spsc.try_push(msg, enqueue_ns) {
-                Ok(()) => {
-                    let prev = mailbox.len.fetch_add(1, Ordering::Relaxed);
-                    let len = prev + 1;
-                    update_mailbox_high_water(len);
+                Ok(was_empty) => {
+                    if crate::metrics::is_enabled() {
+                        update_mailbox_high_water(mailbox.spsc.len() + mailbox.queue.len());
+                    }
                     crate::metrics::inc_mailbox_enqueue_ok();
                     crate::metrics::inc_messages_sent();
                     if mailbox.rescue_wake_ns > 0 {
@@ -2118,16 +2135,19 @@ pub(crate) mod actor {
                             .store(monotonic_now_ns(), Ordering::Release);
                     }
                     if mailbox.wake_coalesce {
-                        if prev == 0 {
-                            mailbox.wake_pending.store(true, Ordering::Release);
-                            mailbox.work_notify.notify_one();
-                        } else if queue_kpi {
-                            crate::metrics::inc_mailbox_wake_coalesced();
+                        if was_empty && mailbox.queue.is_empty() {
+                            if !mailbox.wake_pending.swap(true, Ordering::AcqRel) {
+                                mailbox.work_notify.notify_one();
+                            } else if queue_kpi {
+                                crate::metrics::inc_mailbox_wake_coalesced();
+                            }
                         }
-                    } else if prev == 0 {
+                    } else if was_empty && mailbox.queue.is_empty() {
                         mailbox.work_notify.notify_one();
                     }
-                    mailbox.space_notify_inflight.store(false, Ordering::Release);
+                    mailbox
+                        .space_notify_inflight
+                        .store(false, Ordering::Release);
                     return;
                 }
                 Err(msg) => msg,
@@ -2212,9 +2232,9 @@ pub(crate) mod actor {
                         monotonic_now_ns().saturating_sub(enqueue_start_ns),
                     );
                 }
-                let prev = mailbox.len.fetch_add(accepted, Ordering::Relaxed);
-                let len = prev + accepted;
-                update_mailbox_high_water(len);
+                if crate::metrics::is_enabled() {
+                    update_mailbox_high_water(mailbox.spsc.len() + mailbox.queue.len());
+                }
                 crate::metrics::inc_mailbox_enqueue_ok_n(accepted as u64);
                 crate::metrics::inc_messages_sent_n(accepted as u64);
                 if mailbox.rescue_wake_ns > 0 {
@@ -2224,15 +2244,12 @@ pub(crate) mod actor {
                 }
                 idx += accepted;
                 if mailbox.wake_coalesce {
-                    if prev == 0 {
-                        mailbox.wake_pending.store(true, Ordering::Release);
+                    if !mailbox.wake_pending.swap(true, Ordering::AcqRel) {
                         mailbox.work_notify.notify_one();
-                    } else {
-                        if queue_kpi {
-                            crate::metrics::inc_mailbox_wake_coalesced();
-                        }
+                    } else if queue_kpi {
+                        crate::metrics::inc_mailbox_wake_coalesced();
                     }
-                } else if prev == 0 {
+                } else {
                     mailbox.work_notify.notify_one();
                 }
                 if idx >= nodes.len() {
@@ -2270,7 +2287,7 @@ pub(crate) mod actor {
         }
     }
 
-    fn actor_loop(class_id: u32, mailbox: Arc<Mailbox>) {
+	    fn actor_loop(class_id: u32, mailbox: Arc<Mailbox>) {
         let mailbox_ptr = Arc::as_ptr(&mailbox);
         let fast_path = actor_fast_path_enabled();
         if fast_path {
@@ -2281,41 +2298,41 @@ pub(crate) mod actor {
         let arena_ptr = mailbox.arena.ptr();
         let _arena_enter_guard = arena::enter(arena_ptr);
         let mut method_cache = MethodCache::new(class_id);
-        loop {
-            let msg = match mailbox_recv(&mailbox, fast_path) {
-                Some(pair) => pair,
-                None => break,
-            };
-            while mailbox.paused.load(Ordering::Acquire) {
-                let epoch = mailbox.pause_epoch.load(Ordering::Acquire);
-                mailbox.pause_ack.store(epoch, Ordering::Release);
-                mailbox.pause_ack_notify.notify_waiters();
-                let _ = mailbox.pause_notify.wait(mailbox.pause_notify.snapshot());
-            }
-            if handle_message(&mailbox, msg, &mut method_cache) {
-                if mailbox.len.load(Ordering::Acquire) == 0 {
-                    std::thread::yield_now();
-                }
-            } else {
-                break;
-            }
-            if fast_path {
-                let enqueued = fast_send_take_enqueued_count(&mailbox);
-                if enqueued > 0 {
-                    crate::metrics::inc_mailbox_enqueue_ok_n(enqueued);
+	        loop {
+	            let msg = match mailbox_recv(&mailbox, fast_path) {
+	                Some(pair) => pair,
+	                None => break,
+	            };
+	            mailbox.inflight.store(1, Ordering::Release);
+	            while mailbox.paused.load(Ordering::Acquire) {
+	                let epoch = mailbox.pause_epoch.load(Ordering::Acquire);
+	                mailbox.pause_ack.store(epoch, Ordering::Release);
+	                mailbox.pause_ack_notify.notify_waiters();
+	                let _ = mailbox.pause_notify.wait(mailbox.pause_notify.snapshot());
+	            }
+	            if handle_message(&mailbox, msg, &mut method_cache) {
+	                mailbox.inflight.store(0, Ordering::Release);
+	            } else {
+	                mailbox.inflight.store(0, Ordering::Release);
+	                break;
+	            }
+	            if fast_path {
+	                let enqueued = fast_send_take_enqueued_count(&mailbox);
+	                if enqueued > 0 {
+	                    crate::metrics::inc_mailbox_enqueue_ok_n(enqueued);
                     crate::metrics::inc_messages_sent_n(enqueued);
                 }
             }
         }
-        if fast_path {
+	        if fast_path {
             let enqueued = fast_send_take_enqueued_count(&mailbox);
             if enqueued > 0 {
                 crate::metrics::inc_mailbox_enqueue_ok_n(enqueued);
                 crate::metrics::inc_messages_sent_n(enqueued);
             }
             fast_send_context_exit(mailbox_ptr);
-        }
-    }
+	        }
+	    }
 
     struct RecvMessage {
         msg: Message,
@@ -2342,6 +2359,11 @@ pub(crate) mod actor {
             });
         }
         if let Some(node) = mailbox.queue.pop_node() {
+            // If we just popped the queue from "full" to "not full", wake any producers
+            // waiting for space.
+            if mailbox.queue.len() == mailbox.queue.cap.saturating_sub(1) {
+                maybe_notify_space(mailbox);
+            }
             let enqueued_at_ns = unsafe { (*node).enqueued_at_ns.load(Ordering::Acquire) };
             return Some(RecvMessage {
                 msg: message_node_into_message(node),
@@ -2351,6 +2373,11 @@ pub(crate) mod actor {
         }
         None
     }
+
+    #[inline]
+	    fn mailbox_total_len(mailbox: &Mailbox) -> usize {
+	        mailbox.spsc.len() + mailbox.queue.len() + mailbox.inflight.load(Ordering::Acquire)
+	    }
 
     fn mailbox_recv(mailbox: &Mailbox, fast_path: bool) -> Option<RecvMessage> {
         let queue_kpi = queue_kpi_enabled();
@@ -2373,7 +2400,7 @@ pub(crate) mod actor {
                 }
                 return Some(msg);
             }
-            if mailbox.closed.load(Ordering::Acquire) && mailbox.len.load(Ordering::Acquire) == 0 {
+            if mailbox.closed.load(Ordering::Acquire) && mailbox_total_len(mailbox) == 0 {
                 return None;
             }
             if mailbox.empty_spin > 0 && spins < mailbox.empty_spin {
@@ -2398,13 +2425,13 @@ pub(crate) mod actor {
                 }
                 return Some(msg);
             }
-            if mailbox.closed.load(Ordering::Acquire) && mailbox.len.load(Ordering::Acquire) == 0 {
+            if mailbox.closed.load(Ordering::Acquire) && mailbox_total_len(mailbox) == 0 {
                 return None;
             }
             let rescue_wake_ns = mailbox.rescue_wake_ns.max(mailbox.queue_age_guard_ns);
             if mailbox.wake_coalesce
                 && rescue_wake_ns > 0
-                && mailbox.len.load(Ordering::Acquire) > 0
+                && mailbox_total_len(mailbox) > 0
                 && monotonic_now_ns()
                     .saturating_sub(mailbox.last_progress_ns.load(Ordering::Acquire))
                     >= rescue_wake_ns
@@ -2432,9 +2459,9 @@ pub(crate) mod actor {
             if mailbox.closed.load(Ordering::Acquire) {
                 drop_message(current.msg);
                 if current.counted {
-                    mailbox_dec_n(mailbox, processed + 1);
+                    crate::metrics::inc_mailbox_dequeue_n((processed + 1) as u64);
                 } else {
-                    mailbox_dec_n(mailbox, processed);
+                    crate::metrics::inc_mailbox_dequeue_n(processed as u64);
                 }
                 while let Some(msg) = fast_send_try_dequeue_node(mailbox) {
                     drop_message_node(msg);
@@ -2463,15 +2490,17 @@ pub(crate) mod actor {
         if queue_kpi {
             crate::metrics::observe_queue_burst_drain(processed as u64);
         }
-        mailbox_dec_n(mailbox, processed);
+        crate::metrics::inc_mailbox_dequeue_n(processed as u64);
         true
     }
 
     fn drain_messages(mailbox: &Mailbox) {
         loop {
-            let Some((msg, _enq)) = mailbox.spsc.try_pop() else { break };
+            let Some((msg, _enq)) = mailbox.spsc.try_pop() else {
+                break;
+            };
             drop_message(msg);
-            mailbox_dec(mailbox);
+            crate::metrics::inc_mailbox_dequeue_n(1);
         }
         loop {
             let msg = match mailbox.queue.pop_node() {
@@ -2479,7 +2508,7 @@ pub(crate) mod actor {
                 None => break,
             };
             drop_message_node(msg);
-            mailbox_dec(mailbox);
+            crate::metrics::inc_mailbox_dequeue_n(1);
         }
     }
 
@@ -2504,8 +2533,9 @@ pub(crate) mod actor {
             if msg.args.is_none() {
                 let argv_ptr: *const Value = &msg.instance;
                 if catch_panic {
-                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| func(1, argv_ptr)))
-                    {
+                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        func(1, argv_ptr)
+                    })) {
                         Ok(val) => val,
                         Err(_) => {
                             crate::metrics::inc_actor_method_panic();
@@ -2525,7 +2555,9 @@ pub(crate) mod actor {
                 if args.len() <= 8 {
                     let mut inline: [MaybeUninit<Value>; 9] = [const { MaybeUninit::uninit() }; 9];
                     inline[0].write(msg.instance);
-                    for (dst, src) in inline[1..(1 + args.len())].iter_mut().zip(args.iter().copied())
+                    for (dst, src) in inline[1..(1 + args.len())]
+                        .iter_mut()
+                        .zip(args.iter().copied())
                     {
                         dst.write(src);
                     }
@@ -2658,19 +2690,19 @@ pub(crate) mod actor {
             LOCK.get_or_init(|| Mutex::new(()))
         }
 
-        fn dummy_mailbox() -> Arc<Mailbox> {
-            Arc::new(Mailbox {
-                spsc: MailboxSpscQueue::new(1),
-                queue: MailboxQueue::new(1),
-                work_notify: TaskSignal::new(),
-                space_notify: TaskSignal::new(),
-                space_notify_epoch: AtomicU64::new(0),
-                space_notify_inflight: AtomicBool::new(false),
-                len: AtomicUsize::new(0),
-                closed: AtomicBool::new(false),
-                paused: AtomicBool::new(false),
-                pause_notify: TaskSignal::new(),
-                pause_epoch: AtomicUsize::new(0),
+	        fn dummy_mailbox() -> Arc<Mailbox> {
+	            Arc::new(Mailbox {
+	                spsc: MailboxSpscQueue::new(1),
+	                queue: MailboxQueue::new(1),
+	                work_notify: TaskSignal::new(),
+	                space_notify: TaskSignal::new(),
+	                space_notify_epoch: AtomicU64::new(0),
+	                space_notify_inflight: AtomicBool::new(false),
+	                inflight: AtomicUsize::new(0),
+	                closed: AtomicBool::new(false),
+	                paused: AtomicBool::new(false),
+	                pause_notify: TaskSignal::new(),
+	                pause_epoch: AtomicUsize::new(0),
                 pause_ack: AtomicUsize::new(0),
                 pause_ack_notify: TaskSignal::new(),
                 wake_pending: AtomicBool::new(false),
@@ -2687,19 +2719,19 @@ pub(crate) mod actor {
             })
         }
 
-        fn test_mailbox() -> Arc<Mailbox> {
-            let mailbox = Arc::new(Mailbox {
-                spsc: MailboxSpscQueue::new(1),
-                queue: MailboxQueue::new(1),
-                work_notify: TaskSignal::new(),
-                space_notify: TaskSignal::new(),
-                space_notify_epoch: AtomicU64::new(0),
-                space_notify_inflight: AtomicBool::new(false),
-                len: AtomicUsize::new(0),
-                closed: AtomicBool::new(false),
-                paused: AtomicBool::new(false),
-                pause_notify: TaskSignal::new(),
-                pause_epoch: AtomicUsize::new(0),
+	        fn test_mailbox() -> Arc<Mailbox> {
+	            let mailbox = Arc::new(Mailbox {
+	                spsc: MailboxSpscQueue::new(1),
+	                queue: MailboxQueue::new(1),
+	                work_notify: TaskSignal::new(),
+	                space_notify: TaskSignal::new(),
+	                space_notify_epoch: AtomicU64::new(0),
+	                space_notify_inflight: AtomicBool::new(false),
+	                inflight: AtomicUsize::new(0),
+	                closed: AtomicBool::new(false),
+	                paused: AtomicBool::new(false),
+	                pause_notify: TaskSignal::new(),
+	                pause_epoch: AtomicUsize::new(0),
                 pause_ack: AtomicUsize::new(0),
                 pause_ack_notify: TaskSignal::new(),
                 wake_pending: AtomicBool::new(false),
@@ -2856,7 +2888,7 @@ pub(crate) mod actor {
                 .or_else(|| mailbox.queue.pop())
                 .expect("recv message");
             drop_message(received);
-            mailbox_dec(mailbox.as_ref());
+            crate::metrics::inc_mailbox_dequeue_n(1);
 
             let after_dequeue = metrics::metrics_get_raw(metrics::METRIC_MAILBOX_DEQUEUE);
             assert!(
@@ -3124,7 +3156,6 @@ pub(crate) mod actor {
                 enqueue_message(mailbox.clone(), msg);
                 if let Some(received) = mailbox.queue.pop() {
                     drop_message(received);
-                    mailbox_dec(mailbox.as_ref());
                 }
             }
             let pooled = args_pool().lock().expect("args pool lock").len();
@@ -3290,19 +3321,19 @@ pub(crate) mod actor {
         }
 
         #[test]
-        fn burst_flush_uses_single_wake_edge() {
-            let mailbox = Arc::new(Mailbox {
-                spsc: MailboxSpscQueue::new(8),
-                queue: MailboxQueue::new(8),
-                work_notify: TaskSignal::new(),
-                space_notify: TaskSignal::new(),
-                space_notify_epoch: AtomicU64::new(0),
-                space_notify_inflight: AtomicBool::new(false),
-                len: AtomicUsize::new(0),
-                closed: AtomicBool::new(false),
-                paused: AtomicBool::new(false),
-                pause_notify: TaskSignal::new(),
-                pause_epoch: AtomicUsize::new(0),
+	        fn burst_flush_uses_single_wake_edge() {
+	            let mailbox = Arc::new(Mailbox {
+	                spsc: MailboxSpscQueue::new(8),
+	                queue: MailboxQueue::new(8),
+	                work_notify: TaskSignal::new(),
+	                space_notify: TaskSignal::new(),
+	                space_notify_epoch: AtomicU64::new(0),
+	                space_notify_inflight: AtomicBool::new(false),
+	                inflight: AtomicUsize::new(0),
+	                closed: AtomicBool::new(false),
+	                paused: AtomicBool::new(false),
+	                pause_notify: TaskSignal::new(),
+	                pause_epoch: AtomicUsize::new(0),
                 pause_ack: AtomicUsize::new(0),
                 pause_ack_notify: TaskSignal::new(),
                 wake_pending: AtomicBool::new(false),
@@ -3336,7 +3367,6 @@ pub(crate) mod actor {
             );
             while let Some(node) = mailbox.queue.pop_node() {
                 drop_message_node(node);
-                mailbox_dec(mailbox.as_ref());
             }
         }
 
@@ -3602,7 +3632,9 @@ pub(crate) mod actor {
             }
 
             assert!(
-                wait_until(Duration::from_secs(5), || NOARGS_COUNT.load(Ordering::Relaxed) >= n),
+                wait_until(Duration::from_secs(5), || NOARGS_COUNT
+                    .load(Ordering::Relaxed)
+                    >= n),
                 "timed out waiting for no-arg messages to be processed"
             );
 
@@ -3777,7 +3809,7 @@ pub(crate) mod actor {
     }
 }
 
-    pub(crate) mod config {
+pub(crate) mod config {
     use std::sync::{Mutex, OnceLock};
     use std::time::Duration;
 
@@ -4348,9 +4380,9 @@ pub(crate) mod metrics {
     use std::env;
     use std::fs;
     use std::path::PathBuf;
-    use std::sync::OnceLock;
     #[cfg(test)]
     use std::sync::Mutex;
+    use std::sync::OnceLock;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     pub const METRIC_ALLOC_STRING: u32 = 1;
@@ -4442,11 +4474,17 @@ pub(crate) mod metrics {
 
     #[inline(always)]
     fn enabled() -> bool {
-        *METRICS_ENABLED.get_or_init(|| match std::env::var("WRELA_RUNTIME_METRICS").ok().as_deref()
-        {
-            Some("0") => false,
-            _ => true,
+        *METRICS_ENABLED.get_or_init(|| {
+            match std::env::var("WRELA_RUNTIME_METRICS").ok().as_deref() {
+                Some("0") => false,
+                _ => true,
+            }
         })
+    }
+
+    #[inline(always)]
+    pub fn is_enabled() -> bool {
+        enabled()
     }
 
     #[inline(always)]
