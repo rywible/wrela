@@ -369,6 +369,40 @@ pub(crate) mod class {
         Value::from_ptr(Box::into_raw(obj) as *mut ObjHeader)
     }
 
+    /// If `val` is a user object allocated in the current arena, clone it onto the heap.
+    ///
+    /// Detached actors must own a stable instance across threads and across arena resets. If we
+    /// accidentally pass a local-temp arena allocation into `wr_actor_spawn`, we promote it here
+    /// to preserve semantics.
+    pub fn promote_user_object_to_heap(val: Value) -> Value {
+        let Some(obj) = as_class(val) else {
+            return val;
+        };
+        // Clone unconditionally: actor state must be heap-stable, and this avoids subtle
+        // dependencies on whether a temp arena is currently active in the spawning thread.
+        crate::metrics::inc_actor_spawn_instance_promoted();
+        unsafe {
+            let slots_ref: &Box<[Value]> = &(*obj).slots;
+            let mut slots: Vec<Value> = Vec::with_capacity(slots_ref.len());
+            for v in slots_ref.iter().copied() {
+                wr_rc_inc(v);
+                slots.push(v);
+            }
+            let mut overflow: HashMap<Vec<u8>, Value> = HashMap::new();
+            for (k, v) in (&(*obj).overflow).iter() {
+                wr_rc_inc(*v);
+                overflow.insert(k.clone(), *v);
+            }
+            let new_obj = Box::new(ClassObj {
+                header: header_raw((*obj).header.type_id),
+                slot_names: (&(*obj).slot_names).clone(),
+                slots: slots.into_boxed_slice(),
+                overflow,
+            });
+            Value::from_ptr(Box::into_raw(new_obj) as *mut ObjHeader)
+        }
+    }
+
     pub fn class_get(obj_val: Value, name_ptr: *const u8, len: usize) -> Value {
         class_get_slot(obj_val, name_ptr, len, INVALID_SLOT)
     }

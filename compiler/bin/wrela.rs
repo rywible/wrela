@@ -57,6 +57,12 @@ fn main() {
     let mut kpi_check_batch_min: Option<f64> = None;
     let mut kpi_scheduler_p99_improve_min_pct: Option<f64> = None;
     let mut kpi_rewrite_overhead_max_pct: Option<f64> = None;
+    let mut kpi_actor_throughput_improve_min_pct: Option<f64> = None;
+    let mut kpi_queue_age_p99_max_regress_pct: Option<f64> = None;
+    let mut kpi_starvation_violations_max: Option<f64> = None;
+    let mut kpi_scheduler_throughput_improve_min_pct: Option<f64> = None;
+    let mut kpi_scheduler_loop_p99_max_regress_pct: Option<f64> = None;
+    let mut kpi_scheduler_local_hit_min: Option<f64> = None;
     let mut seen_double_dash = false;
 
     let mut iter = args.into_iter();
@@ -144,6 +150,30 @@ fn main() {
             kpi_rewrite_overhead_max_pct = value.parse::<f64>().ok();
             continue;
         }
+        if let Some(value) = arg.strip_prefix("--kpi-actor-throughput-improve-min-pct=") {
+            kpi_actor_throughput_improve_min_pct = value.parse::<f64>().ok();
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--kpi-queue-age-p99-max-regress-pct=") {
+            kpi_queue_age_p99_max_regress_pct = value.parse::<f64>().ok();
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--kpi-starvation-violations-max=") {
+            kpi_starvation_violations_max = value.parse::<f64>().ok();
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--kpi-scheduler-throughput-improve-min-pct=") {
+            kpi_scheduler_throughput_improve_min_pct = value.parse::<f64>().ok();
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--kpi-scheduler-loop-p99-max-regress-pct=") {
+            kpi_scheduler_loop_p99_max_regress_pct = value.parse::<f64>().ok();
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--kpi-scheduler-local-hit-min=") {
+            kpi_scheduler_local_hit_min = value.parse::<f64>().ok();
+            continue;
+        }
         if arg == "--prefix" {
             if let Some(path) = iter.next() {
                 prefix_path = Some(path);
@@ -189,6 +219,12 @@ fn main() {
         check_batch_min: kpi_check_batch_min,
         scheduler_p99_improve_min_pct: kpi_scheduler_p99_improve_min_pct,
         rewrite_overhead_max_pct: kpi_rewrite_overhead_max_pct,
+        actor_throughput_improve_min_pct: kpi_actor_throughput_improve_min_pct,
+        queue_age_p99_max_regress_pct: kpi_queue_age_p99_max_regress_pct,
+        starvation_violations_max: kpi_starvation_violations_max,
+        scheduler_throughput_improve_min_pct: kpi_scheduler_throughput_improve_min_pct,
+        scheduler_loop_p99_max_regress_pct: kpi_scheduler_loop_p99_max_regress_pct,
+        scheduler_local_hit_min: kpi_scheduler_local_hit_min,
     };
 
     match command {
@@ -487,6 +523,12 @@ options:\n\
   --kpi-check-batch-min=N  minimum required average check batch size\n\
   --kpi-scheduler-p99-improve-min-pct=N  min scheduler p99 improvement vs baseline\n\
   --kpi-rewrite-overhead-max-pct=N  max rewrite compile overhead percentage\n\
+  --kpi-actor-throughput-improve-min-pct=N  min actor throughput improvement vs baseline\n\
+  --kpi-queue-age-p99-max-regress-pct=N  max queue age p99 regression percentage\n\
+  --kpi-starvation-violations-max=N  max scheduler starvation violations\n\
+  --kpi-scheduler-throughput-improve-min-pct=N  min scheduler throughput improvement vs baseline\n\
+  --kpi-scheduler-loop-p99-max-regress-pct=N  max scheduler loop p99 regression percentage\n\
+  --kpi-scheduler-local-hit-min=N  minimum local dispatch hit ratio\n\
   --format=json         emit diagnostics as JSON\n\
   -h, --help            show this help\n\
   -V, --version         show version\n"
@@ -748,6 +790,26 @@ fn run_matrix(
         if let Some(value) = kpi_thresholds.rewrite_overhead_max_pct {
             perf_args.push(format!("--kpi-rewrite-overhead-max-pct={value}"));
         }
+        if let Some(value) = kpi_thresholds.actor_throughput_improve_min_pct {
+            perf_args.push(format!("--kpi-actor-throughput-improve-min-pct={value}"));
+        }
+        if let Some(value) = kpi_thresholds.queue_age_p99_max_regress_pct {
+            perf_args.push(format!("--kpi-queue-age-p99-max-regress-pct={value}"));
+        }
+        if let Some(value) = kpi_thresholds.starvation_violations_max {
+            perf_args.push(format!("--kpi-starvation-violations-max={value}"));
+        }
+        if let Some(value) = kpi_thresholds.scheduler_throughput_improve_min_pct {
+            perf_args.push(format!(
+                "--kpi-scheduler-throughput-improve-min-pct={value}"
+            ));
+        }
+        if let Some(value) = kpi_thresholds.scheduler_loop_p99_max_regress_pct {
+            perf_args.push(format!("--kpi-scheduler-loop-p99-max-regress-pct={value}"));
+        }
+        if let Some(value) = kpi_thresholds.scheduler_local_hit_min {
+            perf_args.push(format!("--kpi-scheduler-local-hit-min={value}"));
+        }
     }
 
     let steps = vec![
@@ -960,6 +1022,36 @@ struct MetricsDump {
     abi_typed_lane: u64,
     #[serde(default)]
     abi_boxed_lane: u64,
+    #[serde(default)]
+    queue_cas_retry_total: u64,
+    #[serde(default)]
+    mailbox_wake_coalesced_count: u64,
+    #[serde(default)]
+    mailbox_rescue_wake_count: u64,
+    #[serde(default)]
+    sched_local_dispatch_count: u64,
+    #[serde(default)]
+    sched_global_dispatch_count: u64,
+    #[serde(default)]
+    sched_plan_recompute_count: u64,
+    #[serde(default)]
+    sched_steal_attempts: u64,
+    #[serde(default)]
+    sched_steal_success: u64,
+    #[serde(default)]
+    sched_migration_blocked_hysteresis: u64,
+    #[serde(default)]
+    sched_migration_blocked_cooldown: u64,
+    #[serde(default)]
+    queue_enqueue_p99_ns: u128,
+    #[serde(default)]
+    queue_dequeue_p99_ns: u128,
+    #[serde(default)]
+    queue_age_p99_ns: u128,
+    #[serde(default)]
+    sched_dispatch_loop_ns_p99: u128,
+    #[serde(default)]
+    queue_burst_drain_avg: f64,
 }
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
@@ -992,6 +1084,36 @@ struct MetricsTotals {
     abi_typed_lane: u64,
     #[serde(default)]
     abi_boxed_lane: u64,
+    #[serde(default)]
+    queue_cas_retry_total: u64,
+    #[serde(default)]
+    mailbox_wake_coalesced_count: u64,
+    #[serde(default)]
+    mailbox_rescue_wake_count: u64,
+    #[serde(default)]
+    sched_local_dispatch_count: u64,
+    #[serde(default)]
+    sched_global_dispatch_count: u64,
+    #[serde(default)]
+    sched_plan_recompute_count: u64,
+    #[serde(default)]
+    sched_steal_attempts: u64,
+    #[serde(default)]
+    sched_steal_success: u64,
+    #[serde(default)]
+    sched_migration_blocked_hysteresis: u64,
+    #[serde(default)]
+    sched_migration_blocked_cooldown: u64,
+    #[serde(default)]
+    queue_enqueue_p99_ns: u128,
+    #[serde(default)]
+    queue_dequeue_p99_ns: u128,
+    #[serde(default)]
+    queue_age_p99_ns: u128,
+    #[serde(default)]
+    sched_dispatch_loop_ns_p99: u128,
+    #[serde(default)]
+    queue_burst_drain_avg: f64,
 }
 
 impl MetricsTotals {
@@ -1019,6 +1141,25 @@ impl MetricsTotals {
         self.sched_cross_shard_migration += metrics.sched_cross_shard_migration;
         self.abi_typed_lane += metrics.abi_typed_lane;
         self.abi_boxed_lane += metrics.abi_boxed_lane;
+        self.queue_cas_retry_total += metrics.queue_cas_retry_total;
+        self.mailbox_wake_coalesced_count += metrics.mailbox_wake_coalesced_count;
+        self.mailbox_rescue_wake_count += metrics.mailbox_rescue_wake_count;
+        self.sched_local_dispatch_count += metrics.sched_local_dispatch_count;
+        self.sched_global_dispatch_count += metrics.sched_global_dispatch_count;
+        self.sched_plan_recompute_count += metrics.sched_plan_recompute_count;
+        self.sched_steal_attempts += metrics.sched_steal_attempts;
+        self.sched_steal_success += metrics.sched_steal_success;
+        self.sched_migration_blocked_hysteresis += metrics.sched_migration_blocked_hysteresis;
+        self.sched_migration_blocked_cooldown += metrics.sched_migration_blocked_cooldown;
+        self.queue_enqueue_p99_ns = self.queue_enqueue_p99_ns.max(metrics.queue_enqueue_p99_ns);
+        self.queue_dequeue_p99_ns = self.queue_dequeue_p99_ns.max(metrics.queue_dequeue_p99_ns);
+        self.queue_age_p99_ns = self.queue_age_p99_ns.max(metrics.queue_age_p99_ns);
+        self.sched_dispatch_loop_ns_p99 = self
+            .sched_dispatch_loop_ns_p99
+            .max(metrics.sched_dispatch_loop_ns_p99);
+        self.queue_burst_drain_avg = self
+            .queue_burst_drain_avg
+            .max(metrics.queue_burst_drain_avg);
     }
 
     fn total_allocs(&self) -> u64 {
@@ -1067,6 +1208,22 @@ struct PerfSummary {
     rewrite_compile_overhead_pct: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     rewrite_applied_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    actor_msgs_per_sec_p50: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    actor_msgs_per_sec_p95: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    queue_enqueue_p99_ns: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    queue_dequeue_p99_ns: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    queue_age_p99_ns: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mailbox_wake_coalesced_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mailbox_rescue_wake_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    queue_cas_retry_total: Option<u64>,
     metrics: MetricsTotals,
 }
 
@@ -1080,6 +1237,18 @@ struct KpiThresholds {
     scheduler_p99_improve_min_pct: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     rewrite_overhead_max_pct: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    actor_throughput_improve_min_pct: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    queue_age_p99_max_regress_pct: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    starvation_violations_max: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scheduler_throughput_improve_min_pct: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scheduler_loop_p99_max_regress_pct: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scheduler_local_hit_min: Option<f64>,
 }
 
 impl KpiThresholds {
@@ -1088,6 +1257,12 @@ impl KpiThresholds {
             || self.check_batch_min.is_some()
             || self.scheduler_p99_improve_min_pct.is_some()
             || self.rewrite_overhead_max_pct.is_some()
+            || self.actor_throughput_improve_min_pct.is_some()
+            || self.queue_age_p99_max_regress_pct.is_some()
+            || self.starvation_violations_max.is_some()
+            || self.scheduler_throughput_improve_min_pct.is_some()
+            || self.scheduler_loop_p99_max_regress_pct.is_some()
+            || self.scheduler_local_hit_min.is_some()
     }
 }
 
@@ -1426,7 +1601,7 @@ fn run_perf_harness(
     EXIT_OK
 }
 
-fn configure_runtime_for_test_lane(perf_lane: bool, perf_debug: bool) {
+fn configure_runtime_for_test_lane(perf_lane: bool, _perf_debug: bool) {
     if !perf_lane {
         return;
     }
@@ -1436,9 +1611,9 @@ fn configure_runtime_for_test_lane(perf_lane: bool, perf_debug: bool) {
         unsafe { env::set_var("WRELA_RUNTIME_PROFILE", "release") };
     }
     if env::var_os("WRELA_RUNTIME_METRICS").is_none() {
-        // Keep metrics out of hot loops unless profiling mode is explicitly enabled.
+        // KPI-gated matrix lanes require runtime metrics to be emitted.
         // SAFETY: this happens before test worker threads are spawned.
-        unsafe { env::set_var("WRELA_RUNTIME_METRICS", if perf_debug { "1" } else { "0" }) };
+        unsafe { env::set_var("WRELA_RUNTIME_METRICS", "1") };
     }
 }
 
@@ -1473,6 +1648,15 @@ fn build_perf_summary(
         metrics_totals.sched_dispatched as f64 / dispatch_total as f64
     };
     let rc_ops_total = metrics_totals.rc_inc + metrics_totals.rc_dec;
+    let runtime_total_ns: u128 = runtime_ns.iter().copied().sum();
+    let actor_msgs_per_sec = if runtime_total_ns == 0 || metrics_totals.mailbox_dequeue == 0 {
+        None
+    } else {
+        Some(
+            metrics_totals.mailbox_dequeue as f64
+                / (runtime_total_ns as f64 / 1_000_000_000.0).max(f64::EPSILON),
+        )
+    };
     PerfSummary {
         sample_count: runtime_ns.len(),
         compile_throughput_tests_per_sec,
@@ -1489,10 +1673,22 @@ fn build_perf_summary(
         check_oracle_eval_ns_p50: None,
         check_oracle_eval_ns_p95: None,
         effect_annihilation_rewrite_count: None,
-        scheduler_dispatch_p99_ns: None,
-        scheduler_starvation_violations: None,
+        scheduler_dispatch_p99_ns: (metrics_totals.sched_dispatch_loop_ns_p99 > 0)
+            .then_some(metrics_totals.sched_dispatch_loop_ns_p99),
+        scheduler_starvation_violations: Some(metrics_totals.sched_starvation_violation),
         rewrite_compile_overhead_pct: None,
         rewrite_applied_count: None,
+        actor_msgs_per_sec_p50: actor_msgs_per_sec,
+        actor_msgs_per_sec_p95: actor_msgs_per_sec,
+        queue_enqueue_p99_ns: (metrics_totals.queue_enqueue_p99_ns > 0)
+            .then_some(metrics_totals.queue_enqueue_p99_ns),
+        queue_dequeue_p99_ns: (metrics_totals.queue_dequeue_p99_ns > 0)
+            .then_some(metrics_totals.queue_dequeue_p99_ns),
+        queue_age_p99_ns: (metrics_totals.queue_age_p99_ns > 0)
+            .then_some(metrics_totals.queue_age_p99_ns),
+        mailbox_wake_coalesced_count: Some(metrics_totals.mailbox_wake_coalesced_count),
+        mailbox_rescue_wake_count: Some(metrics_totals.mailbox_rescue_wake_count),
+        queue_cas_retry_total: Some(metrics_totals.queue_cas_retry_total),
         metrics: metrics_totals.clone(),
     }
 }
@@ -1575,6 +1771,32 @@ fn aggregate_perf_samples(samples: &[PerfSummary]) -> PerfSummary {
         metrics.sched_cross_shard_migration += sample.metrics.sched_cross_shard_migration;
         metrics.abi_typed_lane += sample.metrics.abi_typed_lane;
         metrics.abi_boxed_lane += sample.metrics.abi_boxed_lane;
+        metrics.queue_cas_retry_total += sample.metrics.queue_cas_retry_total;
+        metrics.mailbox_wake_coalesced_count += sample.metrics.mailbox_wake_coalesced_count;
+        metrics.mailbox_rescue_wake_count += sample.metrics.mailbox_rescue_wake_count;
+        metrics.sched_local_dispatch_count += sample.metrics.sched_local_dispatch_count;
+        metrics.sched_global_dispatch_count += sample.metrics.sched_global_dispatch_count;
+        metrics.sched_plan_recompute_count += sample.metrics.sched_plan_recompute_count;
+        metrics.sched_steal_attempts += sample.metrics.sched_steal_attempts;
+        metrics.sched_steal_success += sample.metrics.sched_steal_success;
+        metrics.sched_migration_blocked_hysteresis +=
+            sample.metrics.sched_migration_blocked_hysteresis;
+        metrics.sched_migration_blocked_cooldown += sample.metrics.sched_migration_blocked_cooldown;
+        metrics.queue_enqueue_p99_ns = metrics
+            .queue_enqueue_p99_ns
+            .max(sample.metrics.queue_enqueue_p99_ns);
+        metrics.queue_dequeue_p99_ns = metrics
+            .queue_dequeue_p99_ns
+            .max(sample.metrics.queue_dequeue_p99_ns);
+        metrics.queue_age_p99_ns = metrics
+            .queue_age_p99_ns
+            .max(sample.metrics.queue_age_p99_ns);
+        metrics.sched_dispatch_loop_ns_p99 = metrics
+            .sched_dispatch_loop_ns_p99
+            .max(sample.metrics.sched_dispatch_loop_ns_p99);
+        metrics.queue_burst_drain_avg = metrics
+            .queue_burst_drain_avg
+            .max(sample.metrics.queue_burst_drain_avg);
     }
     let mut runtime_p50: Vec<u128> = samples.iter().map(|s| s.runtime_p50_ns).collect();
     let mut runtime_p95: Vec<u128> = samples.iter().map(|s| s.runtime_p95_ns).collect();
@@ -1613,6 +1835,16 @@ fn aggregate_perf_samples(samples: &[PerfSummary]) -> PerfSummary {
             s.rewrite_compile_overhead_pct
         }),
         rewrite_applied_count: average_optional_u64(samples, |s| s.rewrite_applied_count),
+        actor_msgs_per_sec_p50: average_optional_f64(samples, |s| s.actor_msgs_per_sec_p50),
+        actor_msgs_per_sec_p95: average_optional_f64(samples, |s| s.actor_msgs_per_sec_p95),
+        queue_enqueue_p99_ns: median_optional_u128(samples, |s| s.queue_enqueue_p99_ns),
+        queue_dequeue_p99_ns: median_optional_u128(samples, |s| s.queue_dequeue_p99_ns),
+        queue_age_p99_ns: median_optional_u128(samples, |s| s.queue_age_p99_ns),
+        mailbox_wake_coalesced_count: average_optional_u64(samples, |s| {
+            s.mailbox_wake_coalesced_count
+        }),
+        mailbox_rescue_wake_count: average_optional_u64(samples, |s| s.mailbox_rescue_wake_count),
+        queue_cas_retry_total: average_optional_u64(samples, |s| s.queue_cas_retry_total),
         metrics,
     }
 }
@@ -1809,6 +2041,92 @@ fn evaluate_perf_gate(
                 "rewrite_compile_overhead_pct {:.2} > {:.2}",
                 current_value, limit
             ));
+        }
+    }
+    if let (Some(current_value), Some(baseline_value), Some(min_improve_pct)) = (
+        current.actor_msgs_per_sec_p50,
+        baseline.actor_msgs_per_sec_p50,
+        kpi_thresholds.actor_throughput_improve_min_pct,
+    ) {
+        if baseline_value > 0.0 {
+            let improvement_pct = ((current_value - baseline_value) / baseline_value) * 100.0;
+            if improvement_pct < min_improve_pct {
+                failures.push(format!(
+                    "actor_msgs_per_sec_p50 improvement {:.2}% < {:.2}%",
+                    improvement_pct, min_improve_pct
+                ));
+            }
+        }
+    }
+    if let (Some(current_value), Some(baseline_value), Some(max_regress_pct)) = (
+        current.queue_age_p99_ns,
+        baseline.queue_age_p99_ns,
+        kpi_thresholds.queue_age_p99_max_regress_pct,
+    ) {
+        if baseline_value > 0 {
+            let regress_pct =
+                ((current_value as f64 - baseline_value as f64) / baseline_value as f64) * 100.0;
+            if regress_pct > max_regress_pct {
+                failures.push(format!(
+                    "queue_age_p99_ns regression {:.2}% > {:.2}%",
+                    regress_pct, max_regress_pct
+                ));
+            }
+        }
+    }
+    if let Some(max_violations) = kpi_thresholds.starvation_violations_max {
+        let current_violations = current
+            .scheduler_starvation_violations
+            .unwrap_or(current.metrics.sched_starvation_violation);
+        if current_violations as f64 > max_violations {
+            failures.push(format!(
+                "scheduler_starvation_violations {} > {:.0}",
+                current_violations, max_violations
+            ));
+        }
+    }
+    if let Some(min_improve_pct) = kpi_thresholds.scheduler_throughput_improve_min_pct {
+        let baseline_value = baseline.metrics.sched_dispatched as f64;
+        let current_value = current.metrics.sched_dispatched as f64;
+        if baseline_value > 0.0 {
+            let improvement_pct = ((current_value - baseline_value) / baseline_value) * 100.0;
+            if improvement_pct < min_improve_pct {
+                failures.push(format!(
+                    "scheduler_dispatched improvement {:.2}% < {:.2}%",
+                    improvement_pct, min_improve_pct
+                ));
+            }
+        }
+    }
+    if let Some(max_regress_pct) = kpi_thresholds.scheduler_loop_p99_max_regress_pct {
+        if let (Some(current_p99), Some(baseline_p99)) = (
+            current.scheduler_dispatch_p99_ns,
+            baseline.scheduler_dispatch_p99_ns,
+        ) {
+            if baseline_p99 > 0 {
+                let regress_pct =
+                    ((current_p99 as f64 - baseline_p99 as f64) / baseline_p99 as f64) * 100.0;
+                if regress_pct > max_regress_pct {
+                    failures.push(format!(
+                        "scheduler_dispatch_p99_ns regression {:.2}% > {:.2}%",
+                        regress_pct, max_regress_pct
+                    ));
+                }
+            }
+        }
+    }
+    if let Some(min_ratio) = kpi_thresholds.scheduler_local_hit_min {
+        let local = current.metrics.sched_local_dispatch_count as f64;
+        let global = current.metrics.sched_global_dispatch_count as f64;
+        let total = local + global;
+        if total > 0.0 {
+            let ratio = local / total;
+            if ratio < min_ratio {
+                failures.push(format!(
+                    "scheduler_local_dispatch_ratio {:.4} < {:.4}",
+                    ratio, min_ratio
+                ));
+            }
         }
     }
     failures
@@ -2561,6 +2879,14 @@ mod tests {
             scheduler_starvation_violations: Some(0),
             rewrite_compile_overhead_pct: Some(4.0),
             rewrite_applied_count: Some(10),
+            actor_msgs_per_sec_p50: Some(1000.0),
+            actor_msgs_per_sec_p95: Some(900.0),
+            queue_enqueue_p99_ns: Some(100),
+            queue_dequeue_p99_ns: Some(120),
+            queue_age_p99_ns: Some(150),
+            mailbox_wake_coalesced_count: Some(2),
+            mailbox_rescue_wake_count: Some(0),
+            queue_cas_retry_total: Some(1),
             metrics: MetricsTotals::default(),
         }
     }
@@ -2573,11 +2899,20 @@ mod tests {
         current.avg_check_batch_size = Some(4.0);
         current.scheduler_dispatch_p99_ns = Some(950);
         current.rewrite_compile_overhead_pct = Some(7.5);
+        current.actor_msgs_per_sec_p50 = Some(900.0);
+        current.queue_age_p99_ns = Some(220);
+        current.scheduler_starvation_violations = Some(2);
         let thresholds = KpiThresholds {
             check_fallback_max: Some(0.20),
             check_batch_min: Some(6.0),
             scheduler_p99_improve_min_pct: Some(10.0),
             rewrite_overhead_max_pct: Some(5.0),
+            actor_throughput_improve_min_pct: Some(0.0),
+            queue_age_p99_max_regress_pct: Some(10.0),
+            starvation_violations_max: Some(0.0),
+            scheduler_throughput_improve_min_pct: Some(0.0),
+            scheduler_loop_p99_max_regress_pct: Some(20.0),
+            scheduler_local_hit_min: Some(0.0),
         };
 
         let failures = evaluate_perf_gate(&current, &baseline, 5.0, &thresholds);
@@ -2602,6 +2937,21 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("rewrite_compile_overhead_pct"))
         );
+        assert!(
+            failures
+                .iter()
+                .any(|line| line.contains("actor_msgs_per_sec_p50 improvement"))
+        );
+        assert!(
+            failures
+                .iter()
+                .any(|line| line.contains("queue_age_p99_ns regression"))
+        );
+        assert!(
+            failures
+                .iter()
+                .any(|line| line.contains("scheduler_starvation_violations"))
+        );
     }
 
     #[test]
@@ -2618,6 +2968,12 @@ mod tests {
             check_batch_min: Some(6.0),
             scheduler_p99_improve_min_pct: Some(10.0),
             rewrite_overhead_max_pct: Some(5.0),
+            actor_throughput_improve_min_pct: None,
+            queue_age_p99_max_regress_pct: None,
+            starvation_violations_max: None,
+            scheduler_throughput_improve_min_pct: None,
+            scheduler_loop_p99_max_regress_pct: None,
+            scheduler_local_hit_min: None,
         };
 
         let failures = evaluate_perf_gate(&current, &baseline, 5.0, &thresholds);

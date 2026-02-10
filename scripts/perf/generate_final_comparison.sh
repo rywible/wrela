@@ -15,6 +15,11 @@ c_bin="$CORPUS_DIR/c_bench"
 rustc -C opt-level=0 "$rust_src" -o "$rust_bin"
 cc -O0 -pthread "$c_src" -o "$c_bin"
 
+# Refresh Wrela queue/scheduler artifacts from optimized runtime lanes before comparison.
+cargo test --release -p wrela_runtime \
+  kernel::actor::tests::actor_fast_path_throughput_artifact \
+  -- --ignored >/dev/null
+
 extract_kv() {
   local key="$1" file="$2"
   awk -F= -v k="$key" '$1==k {print $2}' "$file"

@@ -23,6 +23,12 @@ KPI gate inputs (when enabled in matrix lane):
 - `--kpi-check-batch-min`
 - `--kpi-scheduler-p99-improve-min-pct`
 - `--kpi-rewrite-overhead-max-pct`
+- `--kpi-actor-throughput-improve-min-pct`
+- `--kpi-queue-age-p99-max-regress-pct`
+- `--kpi-starvation-violations-max`
+- `--kpi-scheduler-throughput-improve-min-pct`
+- `--kpi-scheduler-loop-p99-max-regress-pct`
+- `--kpi-scheduler-local-hit-min`
 
 ## Performance Summary
 
@@ -68,6 +74,18 @@ KPI-gated matrix runs (all `success=true`, `exit_code=0`):
 | `.artifacts/matrix/matrix-kpi-run2.json` | 130639417 | 135916500 | 138150416 | 1.0000 |
 | `.artifacts/matrix/matrix-kpi-run3.json` | 131805042 | 140544375 | 151907333 | 1.0000 |
 
+Queue KPI table template for future runs:
+
+| Run artifact | actor msgs/sec p50 | queue enqueue p99 (ns) | queue dequeue p99 (ns) | queue age p99 (ns) | starvation violations |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `<artifact>` | `<value>` | `<value>` | `<value>` | `<value>` | `<value>` |
+
+Scheduler KPI template for future runs:
+
+| Run artifact | scheduler dispatched | scheduler loop p99 (ns) | local dispatch ratio |
+| --- | ---: | ---: | ---: |
+| `<artifact>` | `<value>` | `<value>` | `<value>` |
+
 Delta vs baseline:
 
 - run1 p50: `+0.29%`, p95: `+1.46%`, p99: `+18.75%`
@@ -80,6 +98,12 @@ Thresholds used in all three runs:
 - `--kpi-check-batch-min=6`
 - `--kpi-scheduler-p99-improve-min-pct=0`
 - `--kpi-rewrite-overhead-max-pct=5`
+- `--kpi-actor-throughput-improve-min-pct=0`
+- `--kpi-queue-age-p99-max-regress-pct=10`
+- `--kpi-starvation-violations-max=0`
+- `--kpi-scheduler-throughput-improve-min-pct=0`
+- `--kpi-scheduler-loop-p99-max-regress-pct=20`
+- `--kpi-scheduler-local-hit-min=0`
 
 Result:
 

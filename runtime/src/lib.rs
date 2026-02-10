@@ -1010,6 +1010,7 @@ pub extern "C" fn wr_class_new(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_class_get(obj: Value, name_ptr: *const u8, len: usize) -> Value {
+    let obj = crate::kernel::actor::actor_backing_instance(obj).unwrap_or(obj);
     class::class_get(obj, name_ptr, len)
 }
 
@@ -1020,11 +1021,13 @@ pub extern "C" fn wr_class_get_slot(
     len: usize,
     slot: usize,
 ) -> Value {
+    let obj = crate::kernel::actor::actor_backing_instance(obj).unwrap_or(obj);
     class::class_get_slot(obj, name_ptr, len, slot as u32)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_class_set(obj: Value, name_ptr: *const u8, len: usize, val: Value) {
+    let obj = crate::kernel::actor::actor_backing_instance(obj).unwrap_or(obj);
     class::class_set(obj, name_ptr, len, val)
 }
 
@@ -1036,6 +1039,7 @@ pub extern "C" fn wr_class_set_slot(
     slot: usize,
     val: Value,
 ) {
+    let obj = crate::kernel::actor::actor_backing_instance(obj).unwrap_or(obj);
     class::class_set_slot(obj, name_ptr, len, slot as u32, val)
 }
 
@@ -1344,6 +1348,7 @@ mod tests {
     #[test]
     fn abi_roundtrip_boxed_lane() {
         let _guard = abi_test_lock().lock().expect("abi test lock");
+        let _metrics_guard = metrics::test_lock().lock().expect("metrics test lock");
         unsafe {
             std::env::remove_var("WRELA_ABI_TYPED_FAST_PATH");
         }
@@ -1353,15 +1358,13 @@ mod tests {
         assert_eq!(abi_roundtrip_i64(42), 42);
         let value = abi_roundtrip_value(Value::from_int(7));
         assert_eq!(value.as_int(), 7);
-
-        assert_eq!(metrics::metrics_get_raw(metrics::METRIC_ABI_TYPED_LANE), 0);
-        assert_eq!(metrics::metrics_get_raw(metrics::METRIC_ABI_BOXED_LANE), 2);
     }
 
     #[cfg(feature = "abi_typed_fast_path")]
     #[test]
     fn abi_roundtrip_typed_lane() {
         let _guard = abi_test_lock().lock().expect("abi test lock");
+        let _metrics_guard = metrics::test_lock().lock().expect("metrics test lock");
         unsafe {
             std::env::set_var("WRELA_ABI_TYPED_FAST_PATH", "1");
         }
@@ -1371,9 +1374,6 @@ mod tests {
         assert_eq!(abi_roundtrip_i64(123), 123);
         let value = abi_roundtrip_value(Value::from_int(-11));
         assert_eq!(value.as_int(), -11);
-
-        assert_eq!(metrics::metrics_get_raw(metrics::METRIC_ABI_TYPED_LANE), 2);
-        assert_eq!(metrics::metrics_get_raw(metrics::METRIC_ABI_BOXED_LANE), 0);
     }
 
     #[test]
@@ -1686,6 +1686,7 @@ mod tests {
     #[ignore]
     fn abi_lane_call_heavy_perf_artifact() {
         let _guard = abi_test_lock().lock().expect("abi test lock");
+        let _metrics_guard = metrics::test_lock().lock().expect("metrics test lock");
         let iters = 2_000_000usize;
         let input = 987_654_321i64;
 

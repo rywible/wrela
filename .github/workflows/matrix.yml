@@ -20,7 +20,7 @@ jobs:
         run: cargo run -p wrela -- perf --runs=1 --baseline-out=.artifacts/matrix/perf-baseline.json language/spec/spec.wr
 
       - name: Run Matrix Lane
-        run: cargo run -p wrela -- matrix --runs=1 --perf-gate=.artifacts/matrix/perf-baseline.json --perf-max-regression-pct=5 --kpi-check-fallback-max=0.20 --kpi-check-batch-min=6 --kpi-scheduler-p99-improve-min-pct=0 --kpi-rewrite-overhead-max-pct=5
+        run: cargo run -p wrela -- matrix --runs=1 --perf-gate=.artifacts/matrix/perf-baseline.json --perf-max-regression-pct=5 --kpi-check-fallback-max=0.20 --kpi-check-batch-min=6 --kpi-scheduler-p99-improve-min-pct=0 --kpi-rewrite-overhead-max-pct=5 --kpi-actor-throughput-improve-min-pct=0 --kpi-queue-age-p99-max-regress-pct=10 --kpi-starvation-violations-max=0 --kpi-scheduler-throughput-improve-min-pct=0 --kpi-scheduler-loop-p99-max-regress-pct=20 --kpi-scheduler-local-hit-min=0
 
       - name: Upload Matrix Artifacts
         if: always()

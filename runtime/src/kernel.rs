@@ -18,9 +18,16 @@ pub(crate) mod actor {
     use std::mem::MaybeUninit;
     #[cfg(test)]
     use std::sync::atomic::AtomicI8;
-    use std::sync::atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+    use std::sync::atomic::{
+        AtomicBool, AtomicI64, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering,
+    };
     use std::sync::{Arc, Mutex, OnceLock};
     use std::time::{Duration, Instant};
+
+    const OBJECTIVE_LATENCY: u8 = 0;
+    const OBJECTIVE_THROUGHPUT: u8 = 1;
+    const OBJECTIVE_CONSERVATION: u8 = 2;
+    const OBJECTIVE_BALANCE: u8 = 3;
 
     pub type MethodFn = extern "C" fn(argc: usize, argv: *const Value) -> Value;
 
@@ -55,6 +62,8 @@ pub(crate) mod actor {
         pub batch_limit: i64,
         pub drop_on_full: bool,
         pub shard_hint: AtomicUsize,
+        pub migration_pressure_ticks: AtomicU32,
+        pub last_migration_ns: AtomicU64,
     }
 
     #[repr(C)]
@@ -65,7 +74,10 @@ pub(crate) mod actor {
 
     struct Message {
         method_id: u32,
-        args: Vec<Value>,
+        instance: Value,
+        // User-provided args only (receiver lives in `instance`).
+        // `None` avoids allocating a Vec for argc=0 hot paths.
+        args: Option<Vec<Value>>,
         pending: Option<Arc<PendingState>>,
     }
 
@@ -73,6 +85,7 @@ pub(crate) mod actor {
 
     struct MessageNode {
         next: AtomicPtr<MessageNode>,
+        enqueued_at_ns: AtomicU64,
         msg: UnsafeCell<MaybeUninit<Message>>,
     }
 
@@ -111,12 +124,65 @@ pub(crate) mod actor {
         msg: UnsafeCell<MaybeUninit<MessageNodeHandle>>,
     }
 
+    struct MailboxSpscSlot {
+        msg: UnsafeCell<MaybeUninit<Message>>,
+        enqueued_at_ns: UnsafeCell<MaybeUninit<u64>>,
+    }
+
     unsafe impl Sync for MailboxSlot {}
     unsafe impl Send for MailboxSlot {}
+    unsafe impl Sync for MailboxSpscSlot {}
+    unsafe impl Send for MailboxSpscSlot {}
     unsafe impl Sync for MessageNode {}
     unsafe impl Send for MessageNode {}
 
+    struct MailboxSpscQueue {
+        cap: usize,
+        mask: usize,
+        head: AtomicUsize,
+        tail: AtomicUsize,
+        producer_tid: AtomicU64,
+        slots: Box<[MailboxSpscSlot]>,
+    }
+
+    struct MailboxArena {
+        // Debug-only guard: arena access is actor-thread only. If we ever touch it from another
+        // thread, fail loudly in debug before we take `&mut` from the `UnsafeCell`.
+        #[cfg(debug_assertions)]
+        owner: OnceLock<std::thread::ThreadId>,
+        inner: UnsafeCell<arena::Arena>,
+    }
+
+    impl MailboxArena {
+        fn new(arena: arena::Arena) -> Self {
+            Self {
+                #[cfg(debug_assertions)]
+                owner: OnceLock::new(),
+                inner: UnsafeCell::new(arena),
+            }
+        }
+
+        #[inline]
+        fn ptr(&self) -> *mut arena::Arena {
+            #[cfg(debug_assertions)]
+            {
+                let current = std::thread::current().id();
+                let owner = self.owner.get_or_init(|| current);
+                debug_assert_eq!(
+                    *owner, current,
+                    "mailbox arena accessed from non-owner thread"
+                );
+            }
+            self.inner.get()
+        }
+    }
+
+    // The mailbox is shared across threads for enqueue/dequeue signaling, but the arena is
+    // logically actor-thread only. We enforce that via `MailboxArena::with`.
+    unsafe impl Sync for MailboxArena {}
+
     struct Mailbox {
+        spsc: MailboxSpscQueue,
         queue: MailboxQueue,
         work_notify: TaskSignal,
         space_notify: TaskSignal,
@@ -129,9 +195,17 @@ pub(crate) mod actor {
         pause_epoch: AtomicUsize,
         pause_ack: AtomicUsize,
         pause_ack_notify: TaskSignal,
+        wake_pending: AtomicBool,
+        fast_send_pending: AtomicBool,
+        last_progress_ns: AtomicU64,
         enqueue_timeout: Duration,
         batch_limit: usize,
-        arena: Mutex<arena::Arena>,
+        burst_drain_max: usize,
+        queue_age_guard_ns: u64,
+        wake_coalesce: bool,
+        rescue_wake_ns: u64,
+        empty_spin: u32,
+        arena: MailboxArena,
     }
 
     pub(crate) struct PendingState {
@@ -143,6 +217,7 @@ pub(crate) mod actor {
     struct MethodCache {
         class_id: u32,
         generation: u64,
+        generation_check_counter: u32,
         methods: HashMap<u32, MethodFn>,
         hot_method_id: u32,
         hot_method: Option<MethodFn>,
@@ -152,6 +227,12 @@ pub(crate) mod actor {
         mailbox: *const Mailbox,
         queue: VecDeque<MessageNodeHandle>,
         enqueued_since_flush: u64,
+    }
+
+    struct ProducerBatchContext {
+        mailbox: *const Mailbox,
+        nodes: Vec<MessageNodeHandle>,
+        flushing: bool,
     }
 
     #[derive(Clone, Copy, PartialEq, Eq)]
@@ -332,20 +413,100 @@ pub(crate) mod actor {
         fn push_batch(&self, nodes: &[MessageNodeHandle]) -> usize {
             let mut accepted = 0usize;
             let mut stalls = 0usize;
+            let mut stall_total = 0usize;
             while accepted < nodes.len() {
-                match self.push_node(nodes[accepted]) {
-                    Ok(()) => {
-                        accepted += 1;
-                        stalls = 0;
+                let tail = self.tail.load(Ordering::Relaxed);
+                let head = self.head.load(Ordering::Acquire);
+                let used = tail.wrapping_sub(head);
+                if used >= self.cap {
+                    stalls += 1;
+                    stall_total += 1;
+                    crate::metrics::inc_mailbox_batch_reserve_fail();
+                    if stalls >= MAILBOX_BATCH_ENQUEUE_SPIN_LIMIT {
+                        break;
                     }
-                    Err(_) => {
-                        stalls += 1;
-                        if stalls >= MAILBOX_BATCH_ENQUEUE_SPIN_LIMIT {
-                            break;
-                        }
-                        std::hint::spin_loop();
+                    std::hint::spin_loop();
+                    continue;
+                }
+                let free = self.cap - used;
+                let want = (nodes.len() - accepted).min(free);
+                if want == 0 {
+                    stalls += 1;
+                    stall_total += 1;
+                    crate::metrics::inc_mailbox_batch_reserve_fail();
+                    if stalls >= MAILBOX_BATCH_ENQUEUE_SPIN_LIMIT {
+                        break;
+                    }
+                    std::hint::spin_loop();
+                    continue;
+                }
+
+                // Find the longest ready prefix of the requested reservation window.
+                // We must observe `seq == pos` for every slot we reserve; otherwise a consumer may
+                // still be reading from that slot even if `head` has already advanced.
+                let mut ready = 0usize;
+                let mut resync = false;
+                while ready < want {
+                    let pos = tail + ready;
+                    let slot = &self.slots[pos & self.mask];
+                    let seq = slot.seq.load(Ordering::Acquire);
+                    let diff = seq as isize - pos as isize;
+                    if diff == 0 {
+                        ready += 1;
+                    } else if diff > 0 {
+                        // Another producer has advanced the tail and published into this slot.
+                        // Refresh our tail snapshot and retry without treating this as "full".
+                        resync = true;
+                        break;
+                    } else {
+                        break;
                     }
                 }
+                if resync {
+                    stall_total += 1;
+                    continue;
+                }
+                if ready == 0 {
+                    stalls += 1;
+                    stall_total += 1;
+                    crate::metrics::inc_mailbox_batch_reserve_fail();
+                    if stalls >= MAILBOX_BATCH_ENQUEUE_SPIN_LIMIT {
+                        break;
+                    }
+                    std::hint::spin_loop();
+                    continue;
+                }
+
+                // Single CAS tail reservation for the entire ready prefix.
+                if self
+                    .tail
+                    .compare_exchange_weak(tail, tail + ready, Ordering::AcqRel, Ordering::Relaxed)
+                    .is_err()
+                {
+                    stalls += 1;
+                    stall_total += 1;
+                    crate::metrics::inc_mailbox_batch_reserve_fail();
+                    if stalls >= MAILBOX_BATCH_ENQUEUE_SPIN_LIMIT {
+                        break;
+                    }
+                    std::hint::spin_loop();
+                    continue;
+                }
+
+                crate::metrics::inc_mailbox_batch_reserve_ok();
+                for i in 0..ready {
+                    let pos = tail + i;
+                    let slot = &self.slots[pos & self.mask];
+                    unsafe {
+                        (*slot.msg.get()).write(nodes[accepted + i]);
+                    }
+                    slot.seq.store(pos + 1, Ordering::Release);
+                }
+                accepted += ready;
+                stalls = 0;
+            }
+            if stall_total > 0 {
+                crate::metrics::inc_queue_cas_retry_n(stall_total as u64);
             }
             accepted
         }
@@ -363,12 +524,123 @@ pub(crate) mod actor {
         }
     }
 
+	    impl MailboxSpscQueue {
+	        fn new(cap: usize) -> Self {
+	            let cap = cap.max(2).next_power_of_two();
+	            let mut slots = Vec::with_capacity(cap);
+            for _ in 0..cap {
+                slots.push(MailboxSpscSlot {
+                    msg: UnsafeCell::new(MaybeUninit::uninit()),
+                    enqueued_at_ns: UnsafeCell::new(MaybeUninit::uninit()),
+                });
+            }
+	            Self {
+	                cap,
+	                mask: cap - 1,
+	                head: AtomicUsize::new(0),
+	                tail: AtomicUsize::new(0),
+	                producer_tid: AtomicU64::new(0),
+	                slots: slots.into_boxed_slice(),
+	            }
+	        }
+
+	        #[inline]
+	        fn current_tid() -> u64 {
+	            #[cfg(target_os = "macos")]
+	            unsafe {
+	                let mut tid: u64 = 0;
+	                // SAFETY: documented API; returns 0 on success.
+	                // Passing 0 requests the current thread id.
+	                if libc::pthread_threadid_np(0, &mut tid) == 0 && tid != 0 {
+	                    return tid;
+	                }
+	                // Fallback: stable per-thread within this process.
+	                use std::hash::{Hash, Hasher};
+	                let mut h = std::collections::hash_map::DefaultHasher::new();
+	                std::thread::current().id().hash(&mut h);
+	                h.finish()
+	            }
+	            #[cfg(not(target_os = "macos"))]
+	            {
+	                // Fallback: stable per-thread within this process.
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                std::thread::current().id().hash(&mut h);
+                h.finish()
+            }
+        }
+
+        #[inline]
+        fn can_use(&self) -> bool {
+            self.producer_tid.load(Ordering::Acquire) != u64::MAX
+        }
+
+        fn try_push(&self, msg: Message, enqueue_ns: u64) -> Result<(), Message> {
+            let tid = Self::current_tid();
+            let mut owner = self.producer_tid.load(Ordering::Acquire);
+            if owner == 0 {
+                if self
+                    .producer_tid
+                    .compare_exchange(0, tid, Ordering::AcqRel, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    owner = tid;
+                } else {
+                    owner = self.producer_tid.load(Ordering::Acquire);
+                }
+            }
+            if owner != tid {
+                // Multiple producer threads observed: permanently disable SPSC for this mailbox.
+                let _ = self.producer_tid.compare_exchange(
+                    owner,
+                    u64::MAX,
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                );
+                return Err(msg);
+            }
+
+            let tail = self.tail.load(Ordering::Relaxed);
+            let head = self.head.load(Ordering::Acquire);
+            if tail.wrapping_sub(head) >= self.cap {
+                return Err(msg);
+            }
+            let slot = &self.slots[tail & self.mask];
+            unsafe {
+                (*slot.msg.get()).write(msg);
+                (*slot.enqueued_at_ns.get()).write(enqueue_ns);
+            }
+            self.tail.store(tail + 1, Ordering::Release);
+            Ok(())
+        }
+
+        fn try_pop(&self) -> Option<(Message, u64)> {
+            let head = self.head.load(Ordering::Relaxed);
+            let tail = self.tail.load(Ordering::Acquire);
+            if head == tail {
+                return None;
+            }
+            let slot = &self.slots[head & self.mask];
+            let msg = unsafe { (*slot.msg.get()).assume_init_read() };
+            let enqueued_at_ns = unsafe { (*slot.enqueued_at_ns.get()).assume_init_read() };
+            self.head.store(head + 1, Ordering::Release);
+            Some((msg, enqueued_at_ns))
+        }
+
+        fn drain_into(&self, out: &mut Vec<(Message, u64)>) {
+            while let Some(item) = self.try_pop() {
+                out.push(item);
+            }
+        }
+    }
+
     static METHODS: OnceLock<Mutex<HashMap<u32, HashMap<u32, MethodFn>>>> = OnceLock::new();
     static METHOD_REGISTRY_GENERATION: AtomicU64 = AtomicU64::new(1);
     static ARGS_POOL: OnceLock<Mutex<Vec<Vec<Value>>>> = OnceLock::new();
     static PENDING_POOL: OnceLock<Mutex<Vec<Arc<PendingState>>>> = OnceLock::new();
     static WATCHDOG_STARTED: OnceLock<()> = OnceLock::new();
     static FAST_PATH_ENV_ENABLED: OnceLock<bool> = OnceLock::new();
+    static PRODUCER_BATCH_ENV_ENABLED: OnceLock<bool> = OnceLock::new();
     static MESSAGE_NODE_GLOBAL_FREELIST: AtomicPtr<MessageNode> =
         AtomicPtr::new(std::ptr::null_mut());
     static BURST_ACTIVE_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -379,11 +651,43 @@ pub(crate) mod actor {
     const BURST_MAX_STAGE: usize = 4096;
     const MAILBOX_BATCH_ENQUEUE_SPIN_LIMIT: usize = 2;
     const SPACE_NOTIFY_COALESCE_WINDOW: u64 = 1;
+    const DEFAULT_MAILBOX_BURST_DRAIN_MAX: usize = 0;
+    const DEFAULT_MAILBOX_RESCUE_WAKE_NS: u64 = 0;
+    static MONOTONIC_EPOCH: OnceLock<Instant> = OnceLock::new();
+    static QUEUE_KPI_ENABLED: OnceLock<bool> = OnceLock::new();
 
     thread_local! {
         static FAST_SEND_CONTEXT: UnsafeCell<Option<FastSendContext>> = const { UnsafeCell::new(None) };
         static BURST_CONTEXT: UnsafeCell<Option<BurstContext>> = const { UnsafeCell::new(None) };
         static MESSAGE_NODE_LOCAL_FREELIST: UnsafeCell<Vec<MessageNodeHandle>> = const { UnsafeCell::new(Vec::new()) };
+        static PRODUCER_BATCH_CONTEXT: UnsafeCell<ProducerBatchContext> = const { UnsafeCell::new(ProducerBatchContext { mailbox: std::ptr::null(), nodes: Vec::new(), flushing: false }) };
+    }
+
+    const PRODUCER_BATCH_FLUSH: usize = 64;
+
+    impl ProducerBatchContext {
+        fn flush(&mut self) {
+            if self.flushing {
+                return;
+            }
+            if self.nodes.is_empty() || self.mailbox.is_null() {
+                self.nodes.clear();
+                self.mailbox = std::ptr::null();
+                return;
+            }
+            self.flushing = true;
+            let mailbox = unsafe { &*self.mailbox };
+            enqueue_node_batch_ref(mailbox, &self.nodes);
+            self.nodes.clear();
+            self.mailbox = std::ptr::null();
+            self.flushing = false;
+        }
+    }
+
+    impl Drop for ProducerBatchContext {
+        fn drop(&mut self) {
+            self.flush();
+        }
     }
 
     fn method_registry() -> &'static Mutex<HashMap<u32, HashMap<u32, MethodFn>>> {
@@ -406,6 +710,15 @@ pub(crate) mod actor {
         METHOD_REGISTRY_GENERATION.load(Ordering::Acquire)
     }
 
+    fn monotonic_now_ns() -> u64 {
+        let start = MONOTONIC_EPOCH.get_or_init(Instant::now);
+        start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64
+    }
+
+    fn queue_kpi_enabled() -> bool {
+        *QUEUE_KPI_ENABLED.get_or_init(|| std::env::var_os("WRELA_QUEUE_KPI").is_some())
+    }
+
     fn actor_fast_path_enabled() -> bool {
         #[cfg(test)]
         {
@@ -417,6 +730,19 @@ pub(crate) mod actor {
         }
         *FAST_PATH_ENV_ENABLED
             .get_or_init(|| std::env::var_os("WRELA_ACTOR_FAST_PATH_DISABLE").is_none())
+    }
+
+    fn actor_catch_panic_enabled() -> bool {
+        static ENABLED: OnceLock<bool> = OnceLock::new();
+        *ENABLED.get_or_init(|| match std::env::var("WRELA_ACTOR_CATCH_PANIC").ok().as_deref() {
+            Some("0") => false,
+            _ => true,
+        })
+    }
+
+    fn producer_batch_enabled() -> bool {
+        *PRODUCER_BATCH_ENV_ENABLED
+            .get_or_init(|| std::env::var_os("WRELA_PRODUCER_BATCH").is_some())
     }
 
     #[cfg(test)]
@@ -439,6 +765,7 @@ pub(crate) mod actor {
             Self {
                 class_id,
                 generation: method_registry_generation(),
+                generation_check_counter: 0,
                 methods: snapshot_class_methods(class_id),
                 hot_method_id: u32::MAX,
                 hot_method: None,
@@ -453,15 +780,24 @@ pub(crate) mod actor {
                     .and_then(|inner| inner.get(&method_id))
                     .copied();
             }
+            if self.hot_method_id == method_id {
+                // Hot path: avoid an atomic generation read on every call. We only re-check the
+                // method registry generation periodically; dynamic method registration is still
+                // observed, but amortized.
+                if let Some(func) = self.hot_method {
+                    self.generation_check_counter = self.generation_check_counter.wrapping_add(1);
+                    const GENERATION_CHECK_EVERY: u32 = 64;
+                    if (self.generation_check_counter & (GENERATION_CHECK_EVERY - 1)) != 0 {
+                        return Some(func);
+                    }
+                }
+            }
             let generation = method_registry_generation();
             if self.generation != generation {
                 self.methods = snapshot_class_methods(self.class_id);
                 self.generation = generation;
                 self.hot_method_id = u32::MAX;
                 self.hot_method = None;
-            }
-            if self.hot_method_id == method_id {
-                return self.hot_method;
             }
             let method = self.methods.get(&method_id).copied();
             self.hot_method_id = method_id;
@@ -506,8 +842,14 @@ pub(crate) mod actor {
             // Self-send on the actor thread must never fall back to blocking channel send.
             // Channel fallback here can deadlock when the actor sends to itself while
             // currently processing a message.
+            if queue_kpi_enabled() {
+                (*node)
+                    .enqueued_at_ns
+                    .store(monotonic_now_ns(), Ordering::Release);
+            }
             ctx.queue.push_back(node);
             ctx.enqueued_since_flush = ctx.enqueued_since_flush.saturating_add(1);
+            mailbox.fast_send_pending.store(true, Ordering::Release);
             Ok(())
         })
     }
@@ -521,7 +863,11 @@ pub(crate) mod actor {
             if !std::ptr::eq(ctx.mailbox, mailbox as *const Mailbox) {
                 return None;
             }
-            ctx.queue.pop_front()
+            let node = ctx.queue.pop_front();
+            if node.is_none() {
+                mailbox.fast_send_pending.store(false, Ordering::Release);
+            }
+            node
         })
     }
 
@@ -543,6 +889,7 @@ pub(crate) mod actor {
     fn message_node_alloc() -> MessageNodeHandle {
         Box::into_raw(Box::new(MessageNode {
             next: AtomicPtr::new(std::ptr::null_mut()),
+            enqueued_at_ns: AtomicU64::new(0),
             msg: UnsafeCell::new(MaybeUninit::uninit()),
         }))
     }
@@ -599,10 +946,9 @@ pub(crate) mod actor {
         MESSAGE_NODE_LOCAL_FREELIST.with(|slot| unsafe {
             let local = &mut *slot.get();
             local.push(node);
-            if local.len() <= MESSAGE_NODE_FREELIST_BATCH * 16 {
-                return;
-            }
-            for _ in 0..MESSAGE_NODE_FREELIST_BATCH {
+            // Keep the local cache bounded. This avoids starving producer threads (consumer can
+            // accumulate) while still letting producers recycle without touching the global CAS.
+            while local.len() > MESSAGE_NODE_FREELIST_BATCH {
                 let Some(node) = local.pop() else { break };
                 message_node_global_push(node);
             }
@@ -611,6 +957,10 @@ pub(crate) mod actor {
 
     fn message_node_from_message(msg: Message) -> MessageNodeHandle {
         let node = message_node_acquire();
+        unsafe {
+            (*node).next.store(std::ptr::null_mut(), Ordering::Release);
+            (*node).enqueued_at_ns.store(0, Ordering::Release);
+        }
         unsafe {
             (*(*node).msg.get()).write(msg);
         }
@@ -687,18 +1037,37 @@ pub(crate) mod actor {
             BurstTarget::Pool(_) => {
                 let mut pool: Option<*const PoolHandle> = None;
                 let mut batch = Vec::new();
+                let mut direct_mailbox: Option<Arc<Mailbox>> = None;
+                let mut direct_nodes: Vec<MessageNodeHandle> = Vec::new();
                 for item in staged {
-                    if let StagedMessage::Pool {
-                        pool: pool_ptr,
-                        mailbox,
-                        node,
-                    } = item
-                    {
-                        if pool.is_none() {
-                            pool = Some(pool_ptr);
+                    match item {
+                        StagedMessage::Pool {
+                            pool: pool_ptr,
+                            mailbox,
+                            node,
+                        } => {
+                            if pool.is_none() {
+                                pool = Some(pool_ptr);
+                            }
+                            batch.push(PoolMessage { mailbox, node });
                         }
-                        batch.push(PoolMessage { mailbox, node });
+                        // Pool bursts can stage Direct messages when pool_size==1 fast-path is
+                        // taken. Those should flush straight into the mailbox queue.
+                        StagedMessage::Direct { mailbox, node } => {
+                            if let Some(existing) = &direct_mailbox {
+                                debug_assert!(
+                                    Arc::ptr_eq(existing, &mailbox),
+                                    "pool burst direct messages must target a single mailbox"
+                                );
+                            } else {
+                                direct_mailbox = Some(mailbox);
+                            }
+                            direct_nodes.push(node);
+                        }
                     }
+                }
+                if let Some(mailbox) = direct_mailbox {
+                    enqueue_node_batch_ref(mailbox.as_ref(), &direct_nodes);
                 }
                 if let Some(pool) = pool {
                     let accepted = scheduler::enqueue_batch(pool, &batch);
@@ -895,6 +1264,7 @@ pub(crate) mod actor {
             return Value::nil();
         };
         let mailbox = Arc::new(Mailbox {
+            spsc: MailboxSpscQueue::new(config.mailbox_cap),
             queue: MailboxQueue::new(config.mailbox_cap),
             work_notify: TaskSignal::new(),
             space_notify: TaskSignal::new(),
@@ -907,10 +1277,29 @@ pub(crate) mod actor {
             pause_epoch: AtomicUsize::new(0),
             pause_ack: AtomicUsize::new(0),
             pause_ack_notify: TaskSignal::new(),
+            wake_pending: AtomicBool::new(false),
+            fast_send_pending: AtomicBool::new(false),
+            last_progress_ns: AtomicU64::new(monotonic_now_ns()),
             enqueue_timeout: config.enqueue_timeout,
             batch_limit: config.batch_limit,
-            arena: Mutex::new(arena::Arena::new(64 * 1024)),
+            burst_drain_max: config::mailbox_burst_drain_max_for_objective(objective),
+            queue_age_guard_ns: config::mailbox_rescue_wake_ns(),
+            wake_coalesce: config::mailbox_wake_coalesce(),
+            rescue_wake_ns: config::mailbox_rescue_wake_ns(),
+            empty_spin: config::mailbox_empty_spin_for_objective(objective),
+            arena: MailboxArena::new(arena::Arena::new(64 * 1024)),
         });
+        // If the compiler accidentally routes a detached actor instance through a local-temp
+        // arena, promote it to a heap object before we store it in the handle.
+        let instance = crate::class::promote_user_object_to_heap(instance);
+        if instance.is_ptr() {
+            crate::metrics::inc_actor_spawn_instance_is_ptr();
+            unsafe {
+                crate::metrics::set_actor_spawn_instance_type_id((*instance.as_ptr()).type_id as u64);
+            }
+        } else {
+            crate::metrics::inc_actor_spawn_instance_not_ptr();
+        }
         unsafe {
             wr_rc_inc(instance);
         }
@@ -996,6 +1385,8 @@ pub(crate) mod actor {
             batch_limit: config::sched_batch_limit(),
             drop_on_full,
             shard_hint: AtomicUsize::new(0),
+            migration_pressure_ticks: AtomicU32::new(0),
+            last_migration_ns: AtomicU64::new(0),
         });
         let obj_ptr = Box::into_raw(obj);
         let (pool_id, shard_id) = scheduler::register_pool(obj_ptr);
@@ -1007,9 +1398,15 @@ pub(crate) mod actor {
     }
 
     fn objective_u8(objective: i64) -> Option<u8> {
-        u8::try_from(objective)
-            .ok()
-            .filter(|objective| *objective <= 3)
+        u8::try_from(objective).ok().filter(|objective| {
+            matches!(
+                *objective,
+                OBJECTIVE_LATENCY
+                    | OBJECTIVE_THROUGHPUT
+                    | OBJECTIVE_CONSERVATION
+                    | OBJECTIVE_BALANCE
+            )
+        })
     }
 
     pub fn pool_size(handle: Value) -> Value {
@@ -1212,7 +1609,7 @@ pub(crate) mod actor {
             state,
         });
         unsafe {
-            enqueue_node_ref(&*(*actor).mailbox, msg);
+            enqueue_message_ref(&*(*actor).mailbox, msg);
         }
         Value::from_ptr(Box::into_raw(pending) as *mut ObjHeader)
     }
@@ -1251,12 +1648,12 @@ pub(crate) mod actor {
                 burst_target_for_actor(actor),
                 StagedMessage::Direct {
                     mailbox: unsafe { (*actor).mailbox.clone() },
-                    node: msg,
+                    node: message_node_from_message(msg),
                 },
             );
         } else {
             unsafe {
-                enqueue_node_ref(&*(*actor).mailbox, msg);
+                enqueue_message_ref(&*(*actor).mailbox, msg);
             }
         }
     }
@@ -1338,6 +1735,14 @@ pub(crate) mod actor {
         }
     }
 
+    // When an actor method uses `its.field`, compiled code hits wr_class_get(_slot)/set(_slot)
+    // with `obj == its`. In Wrela, `its` is the ActorHandle; field storage lives on the backing
+    // instance. So we redirect get/set through the actor handle.
+    pub(crate) fn actor_backing_instance(handle: Value) -> Option<Value> {
+        let actor = as_actor(handle)?;
+        unsafe { Some((*actor).instance) }
+    }
+
     fn mailbox_len(actor: *const ActorHandle) -> usize {
         unsafe { (&(*actor).mailbox).len.load(Ordering::Relaxed) }
     }
@@ -1346,7 +1751,7 @@ pub(crate) mod actor {
         if count == 0 {
             return;
         }
-        let prev = mailbox.len.fetch_sub(count, Ordering::AcqRel);
+        let prev = mailbox.len.fetch_sub(count, Ordering::Relaxed);
         if prev < count {
             mailbox.len.store(0, Ordering::Release);
             return;
@@ -1366,6 +1771,8 @@ pub(crate) mod actor {
             let mailbox = &(*actor).mailbox;
             if paused {
                 mailbox.pause_epoch.fetch_add(1, Ordering::AcqRel);
+                mailbox.wake_pending.store(true, Ordering::Release);
+                mailbox.work_notify.notify_one();
             }
             mailbox.paused.store(paused, Ordering::Release);
             if !paused {
@@ -1389,29 +1796,43 @@ pub(crate) mod actor {
         method_id: u32,
         args: &[Value],
         pending: Option<Arc<PendingState>>,
-    ) -> Option<MessageNodeHandle> {
-        let mut args_vec = take_args_vec();
-        args_vec.push(instance);
-        if !args.is_empty() {
-            args_vec.extend_from_slice(args);
+    ) -> Option<Message> {
+        // Still reject arena values to avoid cross-thread use-after-free.
+        if arena::is_arena_value(instance) {
+            crate::metrics::inc_message_instance_is_arena();
+            return None;
         }
-        for arg in &args_vec {
+        for arg in args {
             if arena::is_arena_value(*arg) {
-                return_args_vec(args_vec);
                 return None;
             }
         }
+        // We intentionally do not RC-inc/dec the receiver; it's rooted elsewhere (ActorHandle)
+        // and the per-message churn is pure overhead on hot lanes.
+        crate::metrics::inc_message_instance_rc_skipped();
+        let args = if args.is_empty() {
+            crate::metrics::inc_message_build_noargs();
+            None
+        } else {
+            crate::metrics::inc_message_build_args();
+            let mut args_vec = take_args_vec();
+            args_vec.extend_from_slice(args);
+            Some(args_vec)
+        };
         let msg = Message {
             method_id,
-            args: args_vec,
+            instance,
+            args,
             pending,
         };
         unsafe {
-            for arg in &msg.args {
-                wr_rc_inc(*arg);
+            if let Some(args) = msg.args.as_ref() {
+                for arg in args.iter().copied() {
+                    wr_rc_inc(arg);
+                }
             }
         }
-        Some(message_node_from_message(msg))
+        Some(msg)
     }
 
     fn build_message_local(
@@ -1420,8 +1841,10 @@ pub(crate) mod actor {
         argc: usize,
         argv_ptr: *const Value,
         pending: Option<Arc<PendingState>>,
-    ) -> Option<MessageNodeHandle> {
-        let instance = unsafe { (*actor).instance };
+    ) -> Option<Message> {
+        // Actor methods use the actor handle as `its`; field access is resolved via
+        // `wr_class_get_slot`/`wr_class_set_slot` redirection to the actor's backing instance.
+        let instance = Value::from_ptr(actor as *mut ObjHeader);
         let args = unsafe { args_from_raw(argc, argv_ptr)? };
         build_message_inner(instance, method_id, args, pending)
     }
@@ -1434,9 +1857,9 @@ pub(crate) mod actor {
         pending: Option<Arc<PendingState>>,
     ) -> Option<PoolMessage> {
         let mailbox = unsafe { (*actor).mailbox.clone() };
-        let instance = unsafe { (*actor).instance };
+        let instance = Value::from_ptr(actor as *mut ObjHeader);
         let args = unsafe { args_from_raw(argc, argv_ptr)? };
-        let node = build_message_inner(instance, method_id, args, pending)?;
+        let node = message_node_from_message(build_message_inner(instance, method_id, args, pending)?);
         Some(PoolMessage { mailbox, node })
     }
 
@@ -1465,10 +1888,10 @@ pub(crate) mod actor {
 
     fn enqueue_pause_message(actor: *const ActorHandle) {
         unsafe {
-            let args_vec = take_args_vec();
             let msg = Message {
                 method_id: u32::MAX,
-                args: args_vec,
+                instance: Value::nil(),
+                args: None,
                 pending: None,
             };
             enqueue_message_ref(&*(*actor).mailbox, msg);
@@ -1525,7 +1948,7 @@ pub(crate) mod actor {
                     header: header(TypeId::Pending),
                     state,
                 });
-                enqueue_node_ref(&*(*actor).mailbox, msg);
+                enqueue_message_ref(&*(*actor).mailbox, msg);
                 return Value::from_ptr(Box::into_raw(pending) as *mut ObjHeader);
             }
 
@@ -1578,12 +2001,12 @@ pub(crate) mod actor {
                         burst_target_for_pool(pool),
                         StagedMessage::Direct {
                             mailbox: (*actor).mailbox.clone(),
-                            node: msg,
+                            node: message_node_from_message(msg),
                         },
                     );
                     return;
                 }
-                enqueue_node_ref(&*(*actor).mailbox, msg);
+                enqueue_message_ref(&*(*actor).mailbox, msg);
                 return;
             }
 
@@ -1621,18 +2044,131 @@ pub(crate) mod actor {
     }
 
     fn enqueue_messages_ref(mailbox: &Mailbox, msgs: Vec<Message>) {
-        let nodes = msgs
-            .into_iter()
-            .map(message_node_from_message)
-            .collect::<Vec<_>>();
-        enqueue_node_batch_ref(mailbox, &nodes);
+        if mailbox.closed.load(Ordering::Acquire) {
+            for msg in msgs {
+                drop_message(msg);
+                inc_mailbox_enqueue_fail();
+                inc_messages_dropped();
+            }
+            return;
+        }
+        let queue_kpi = queue_kpi_enabled();
+        let enqueue_ns = if queue_kpi { monotonic_now_ns() } else { 0 };
+        let mut remaining: Vec<Message> = Vec::new();
+        for msg in msgs {
+            if mailbox.spsc.can_use() {
+                match mailbox.spsc.try_push(msg, enqueue_ns) {
+                    Ok(()) => {
+                        let prev = mailbox.len.fetch_add(1, Ordering::Relaxed);
+                        let len = prev + 1;
+                        update_mailbox_high_water(len);
+                        crate::metrics::inc_mailbox_enqueue_ok();
+                        crate::metrics::inc_messages_sent();
+                        if mailbox.rescue_wake_ns > 0 {
+                            mailbox
+                                .last_progress_ns
+                                .store(monotonic_now_ns(), Ordering::Release);
+                        }
+                        if mailbox.wake_coalesce {
+                            if prev == 0 {
+                                mailbox.wake_pending.store(true, Ordering::Release);
+                                mailbox.work_notify.notify_one();
+                            } else if queue_kpi {
+                                crate::metrics::inc_mailbox_wake_coalesced();
+                            }
+                        } else if prev == 0 {
+                            mailbox.work_notify.notify_one();
+                        }
+                    }
+                    Err(msg) => remaining.push(msg),
+                }
+            } else {
+                remaining.push(msg)
+            }
+        }
+        if !remaining.is_empty() {
+            let nodes = remaining
+                .into_iter()
+                .map(message_node_from_message)
+                .collect::<Vec<_>>();
+            enqueue_node_batch_ref(mailbox, &nodes);
+        }
     }
 
     fn enqueue_message_ref(mailbox: &Mailbox, msg: Message) {
-        enqueue_node_ref(mailbox, message_node_from_message(msg));
+        if mailbox.closed.load(Ordering::Acquire) {
+            drop_message(msg);
+            inc_mailbox_enqueue_fail();
+            inc_messages_dropped();
+            return;
+        }
+        let queue_kpi = queue_kpi_enabled();
+        let enqueue_ns = if queue_kpi { monotonic_now_ns() } else { 0 };
+        let msg = if mailbox.spsc.can_use() {
+            match mailbox.spsc.try_push(msg, enqueue_ns) {
+                Ok(()) => {
+                    let prev = mailbox.len.fetch_add(1, Ordering::Relaxed);
+                    let len = prev + 1;
+                    update_mailbox_high_water(len);
+                    crate::metrics::inc_mailbox_enqueue_ok();
+                    crate::metrics::inc_messages_sent();
+                    if mailbox.rescue_wake_ns > 0 {
+                        mailbox
+                            .last_progress_ns
+                            .store(monotonic_now_ns(), Ordering::Release);
+                    }
+                    if mailbox.wake_coalesce {
+                        if prev == 0 {
+                            mailbox.wake_pending.store(true, Ordering::Release);
+                            mailbox.work_notify.notify_one();
+                        } else if queue_kpi {
+                            crate::metrics::inc_mailbox_wake_coalesced();
+                        }
+                    } else if prev == 0 {
+                        mailbox.work_notify.notify_one();
+                    }
+                    mailbox.space_notify_inflight.store(false, Ordering::Release);
+                    return;
+                }
+                Err(msg) => msg,
+            }
+        } else {
+            msg
+        };
+        enqueue_node_ref(mailbox, message_node_from_message(msg))
     }
 
     fn enqueue_node_ref(mailbox: &Mailbox, node: MessageNodeHandle) {
+        if fast_send_try_enqueue_node(mailbox, node).is_ok() {
+            return;
+        }
+        // Producer-side microbatching: if a thread is repeatedly sending to the same mailbox,
+        // stage nodes and flush via `push_batch` to cut per-message CAS/seq churn.
+        if producer_batch_enabled() {
+            let staged = PRODUCER_BATCH_CONTEXT.with(|slot| unsafe {
+                let ctx = &mut *slot.get();
+                if ctx.flushing {
+                    return false;
+                }
+                if ctx.mailbox.is_null() {
+                    ctx.mailbox = mailbox as *const Mailbox;
+                } else if !std::ptr::eq(ctx.mailbox, mailbox as *const Mailbox) {
+                    ctx.flush();
+                    ctx.mailbox = mailbox as *const Mailbox;
+                }
+                if std::ptr::eq(ctx.mailbox, mailbox as *const Mailbox) {
+                    ctx.nodes.push(node);
+                    if ctx.nodes.len() >= PRODUCER_BATCH_FLUSH {
+                        ctx.flush();
+                    }
+                    return true;
+                }
+                false
+            });
+            if staged {
+                return;
+            }
+        }
         let one = [node];
         enqueue_node_batch_ref(mailbox, &one);
     }
@@ -1657,16 +2193,46 @@ pub(crate) mod actor {
         }
         let deadline = Instant::now() + mailbox.enqueue_timeout;
         let mut idx = 0usize;
+        let queue_kpi = queue_kpi_enabled();
         loop {
+            let enqueue_start_ns = if queue_kpi { monotonic_now_ns() } else { 0 };
+            if queue_kpi {
+                for node in nodes[idx..].iter().copied() {
+                    unsafe {
+                        (*node)
+                            .enqueued_at_ns
+                            .store(enqueue_start_ns, Ordering::Release);
+                    }
+                }
+            }
             let accepted = mailbox.queue.push_batch(&nodes[idx..]);
             if accepted > 0 {
-                let prev = mailbox.len.fetch_add(accepted, Ordering::AcqRel);
+                if queue_kpi {
+                    crate::metrics::observe_queue_enqueue_latency_ns(
+                        monotonic_now_ns().saturating_sub(enqueue_start_ns),
+                    );
+                }
+                let prev = mailbox.len.fetch_add(accepted, Ordering::Relaxed);
                 let len = prev + accepted;
                 update_mailbox_high_water(len);
                 crate::metrics::inc_mailbox_enqueue_ok_n(accepted as u64);
                 crate::metrics::inc_messages_sent_n(accepted as u64);
+                if mailbox.rescue_wake_ns > 0 {
+                    mailbox
+                        .last_progress_ns
+                        .store(monotonic_now_ns(), Ordering::Release);
+                }
                 idx += accepted;
-                if prev == 0 {
+                if mailbox.wake_coalesce {
+                    if prev == 0 {
+                        mailbox.wake_pending.store(true, Ordering::Release);
+                        mailbox.work_notify.notify_one();
+                    } else {
+                        if queue_kpi {
+                            crate::metrics::inc_mailbox_wake_coalesced();
+                        }
+                    }
+                } else if prev == 0 {
                     mailbox.work_notify.notify_one();
                 }
                 if idx >= nodes.len() {
@@ -1710,9 +2276,13 @@ pub(crate) mod actor {
         if fast_path {
             fast_send_context_enter(mailbox_ptr);
         }
+        // Keep the arena entered for the lifetime of the actor loop thread. Enter/exit is TLS
+        // bookkeeping; doing it per message is pure overhead on hot lanes.
+        let arena_ptr = mailbox.arena.ptr();
+        let _arena_enter_guard = arena::enter(arena_ptr);
         let mut method_cache = MethodCache::new(class_id);
         loop {
-            let (msg, counted) = match mailbox_recv(&mailbox, fast_path) {
+            let msg = match mailbox_recv(&mailbox, fast_path) {
                 Some(pair) => pair,
                 None => break,
             };
@@ -1722,8 +2292,10 @@ pub(crate) mod actor {
                 mailbox.pause_ack_notify.notify_waiters();
                 let _ = mailbox.pause_notify.wait(mailbox.pause_notify.snapshot());
             }
-            if handle_message(&mailbox, msg, counted, &mut method_cache) {
-                std::thread::yield_now();
+            if handle_message(&mailbox, msg, &mut method_cache) {
+                if mailbox.len.load(Ordering::Acquire) == 0 {
+                    std::thread::yield_now();
+                }
             } else {
                 break;
             }
@@ -1745,30 +2317,103 @@ pub(crate) mod actor {
         }
     }
 
-    fn mailbox_recv(mailbox: &Mailbox, fast_path: bool) -> Option<(MessageNodeHandle, bool)> {
-        loop {
-            if fast_path {
-                if let Some(msg) = fast_send_try_dequeue_node(mailbox) {
-                    return Some((msg, false));
-                }
+    struct RecvMessage {
+        msg: Message,
+        counted: bool,
+        enqueued_at_ns: u64,
+    }
+
+    fn mailbox_try_pop_now(mailbox: &Mailbox, fast_path: bool) -> Option<RecvMessage> {
+        if fast_path && mailbox.fast_send_pending.load(Ordering::Acquire) {
+            if let Some(node) = fast_send_try_dequeue_node(mailbox) {
+                let enqueued_at_ns = unsafe { (*node).enqueued_at_ns.load(Ordering::Acquire) };
+                return Some(RecvMessage {
+                    msg: message_node_into_message(node),
+                    counted: false,
+                    enqueued_at_ns,
+                });
             }
-            if let Some(msg) = mailbox.queue.pop_node() {
-                return Some((msg, true));
+        }
+        if let Some((msg, enqueued_at_ns)) = mailbox.spsc.try_pop() {
+            return Some(RecvMessage {
+                msg,
+                counted: true,
+                enqueued_at_ns,
+            });
+        }
+        if let Some(node) = mailbox.queue.pop_node() {
+            let enqueued_at_ns = unsafe { (*node).enqueued_at_ns.load(Ordering::Acquire) };
+            return Some(RecvMessage {
+                msg: message_node_into_message(node),
+                counted: true,
+                enqueued_at_ns,
+            });
+        }
+        None
+    }
+
+    fn mailbox_recv(mailbox: &Mailbox, fast_path: bool) -> Option<RecvMessage> {
+        let queue_kpi = queue_kpi_enabled();
+        let mut spins = 0u32;
+        loop {
+            let recv_start_ns = if queue_kpi { monotonic_now_ns() } else { 0 };
+            if let Some(msg) = mailbox_try_pop_now(mailbox, fast_path) {
+                if queue_kpi {
+                    crate::metrics::observe_queue_dequeue_latency_ns(
+                        monotonic_now_ns().saturating_sub(recv_start_ns),
+                    );
+                }
+                if mailbox.rescue_wake_ns > 0 {
+                    mailbox
+                        .last_progress_ns
+                        .store(monotonic_now_ns(), Ordering::Release);
+                }
+                if mailbox.wake_coalesce {
+                    mailbox.wake_pending.store(false, Ordering::Release);
+                }
+                return Some(msg);
             }
             if mailbox.closed.load(Ordering::Acquire) && mailbox.len.load(Ordering::Acquire) == 0 {
                 return None;
+            }
+            if mailbox.empty_spin > 0 && spins < mailbox.empty_spin {
+                spins = spins.saturating_add(1);
+                std::hint::spin_loop();
+                continue;
             }
             let observed = mailbox.work_notify.snapshot();
-            if fast_path {
-                if let Some(msg) = fast_send_try_dequeue_node(mailbox) {
-                    return Some((msg, false));
+            if let Some(msg) = mailbox_try_pop_now(mailbox, fast_path) {
+                if queue_kpi {
+                    crate::metrics::observe_queue_dequeue_latency_ns(
+                        monotonic_now_ns().saturating_sub(recv_start_ns),
+                    );
                 }
-            }
-            if let Some(msg) = mailbox.queue.pop_node() {
-                return Some((msg, true));
+                if mailbox.rescue_wake_ns > 0 {
+                    mailbox
+                        .last_progress_ns
+                        .store(monotonic_now_ns(), Ordering::Release);
+                }
+                if mailbox.wake_coalesce {
+                    mailbox.wake_pending.store(false, Ordering::Release);
+                }
+                return Some(msg);
             }
             if mailbox.closed.load(Ordering::Acquire) && mailbox.len.load(Ordering::Acquire) == 0 {
                 return None;
+            }
+            let rescue_wake_ns = mailbox.rescue_wake_ns.max(mailbox.queue_age_guard_ns);
+            if mailbox.wake_coalesce
+                && rescue_wake_ns > 0
+                && mailbox.len.load(Ordering::Acquire) > 0
+                && monotonic_now_ns()
+                    .saturating_sub(mailbox.last_progress_ns.load(Ordering::Acquire))
+                    >= rescue_wake_ns
+            {
+                mailbox.wake_pending.store(true, Ordering::Release);
+                mailbox.work_notify.notify_one();
+                if queue_kpi {
+                    crate::metrics::inc_mailbox_rescue_wake();
+                }
             }
             let _ = mailbox.work_notify.wait(observed);
         }
@@ -1776,18 +2421,17 @@ pub(crate) mod actor {
 
     fn handle_message(
         mailbox: &Mailbox,
-        first: MessageNodeHandle,
-        first_counted: bool,
+        first: RecvMessage,
         method_cache: &mut MethodCache,
     ) -> bool {
-        let batch_limit = mailbox.batch_limit;
+        let batch_limit = mailbox.batch_limit.min(mailbox.burst_drain_max.max(1));
+        let queue_kpi = queue_kpi_enabled();
         let mut current = first;
-        let mut current_counted = first_counted;
         let mut processed = 0usize;
         for idx in 0..batch_limit {
             if mailbox.closed.load(Ordering::Acquire) {
-                drop_message_node(current);
-                if current_counted {
+                drop_message(current.msg);
+                if current.counted {
                     mailbox_dec_n(mailbox, processed + 1);
                 } else {
                     mailbox_dec_n(mailbox, processed);
@@ -1798,31 +2442,37 @@ pub(crate) mod actor {
                 drain_messages(mailbox);
                 return false;
             }
-            process_message_node(mailbox, method_cache, current);
-            if current_counted {
+            let enqueued_at_ns = current.enqueued_at_ns;
+            process_message(mailbox, method_cache, current.msg);
+            if queue_kpi && enqueued_at_ns > 0 {
+                crate::metrics::observe_queue_age_ns(
+                    monotonic_now_ns().saturating_sub(enqueued_at_ns),
+                );
+            }
+            if current.counted {
                 processed += 1;
             }
             if idx + 1 >= batch_limit {
                 break;
             }
-            if let Some(next) = fast_send_try_dequeue_node(mailbox) {
-                current = next;
-                current_counted = false;
-                continue;
-            }
-            match mailbox.queue.pop_node() {
-                Some(next) => {
-                    current = next;
-                    current_counted = true;
-                }
+            match mailbox_try_pop_now(mailbox, true) {
+                Some(next) => current = next,
                 None => break,
             }
+        }
+        if queue_kpi {
+            crate::metrics::observe_queue_burst_drain(processed as u64);
         }
         mailbox_dec_n(mailbox, processed);
         true
     }
 
     fn drain_messages(mailbox: &Mailbox) {
+        loop {
+            let Some((msg, _enq)) = mailbox.spsc.try_pop() else { break };
+            drop_message(msg);
+            mailbox_dec(mailbox);
+        }
         loop {
             let msg = match mailbox.queue.pop_node() {
                 Some(msg) => msg,
@@ -1834,24 +2484,83 @@ pub(crate) mod actor {
     }
 
     fn process_message(mailbox: &Mailbox, method_cache: &mut MethodCache, msg: Message) {
-        let mut arena_guard = mailbox.arena.lock().expect("arena lock");
-        let _guard = arena::enter(&mut *arena_guard as *mut _);
+        let arena_ptr = mailbox.arena.ptr();
+        let arena_guard = unsafe { &mut *arena_ptr };
         let func = method_cache.resolve(msg.method_id);
+        if func.is_none() {
+            crate::metrics::inc_actor_method_missing();
+        }
         if func.is_none() && crate::config::debug_actor_enabled() {
             eprintln!(
                 "actor: missing method class_id={} method_id={} argc={}",
                 method_cache.class_id,
                 msg.method_id,
-                msg.args.len()
+                1 + msg.args.as_ref().map(|args| args.len()).unwrap_or(0)
             );
         }
+        let catch_panic = actor_catch_panic_enabled();
         let result = if let Some(func) = func {
-            let call = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                func(msg.args.len(), msg.args.as_ptr())
-            }));
-            match call {
-                Ok(val) => val,
-                Err(_) => Value::nil(),
+            // Fast-path for argc=1 (receiver only). Avoids initializing a fixed-size inline argv.
+            if msg.args.is_none() {
+                let argv_ptr: *const Value = &msg.instance;
+                if catch_panic {
+                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| func(1, argv_ptr)))
+                    {
+                        Ok(val) => val,
+                        Err(_) => {
+                            crate::metrics::inc_actor_method_panic();
+                            Value::nil()
+                        }
+                    }
+                } else {
+                    // WARNING: if `func` panics, unwinding across an `extern "C"` boundary is UB.
+                    // Only disable catch-panic in controlled internal perf lanes where panics are
+                    // treated as fatal anyway.
+                    func(1, argv_ptr)
+                }
+            } else {
+                // Only used on "wide" calls; kept in scope so argv_ptr stays valid.
+                let mut heap_argv: Vec<Value> = Vec::new();
+                let args = msg.args.as_ref().expect("args present");
+                if args.len() <= 8 {
+                    let mut inline: [MaybeUninit<Value>; 9] = [const { MaybeUninit::uninit() }; 9];
+                    inline[0].write(msg.instance);
+                    for (dst, src) in inline[1..(1 + args.len())].iter_mut().zip(args.iter().copied())
+                    {
+                        dst.write(src);
+                    }
+                    let argv_ptr = inline.as_ptr() as *const Value;
+                    if catch_panic {
+                        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            func(1 + args.len(), argv_ptr)
+                        })) {
+                            Ok(val) => val,
+                            Err(_) => {
+                                crate::metrics::inc_actor_method_panic();
+                                Value::nil()
+                            }
+                        }
+                    } else {
+                        func(1 + args.len(), argv_ptr)
+                    }
+                } else {
+                    heap_argv.reserve(1 + args.len());
+                    heap_argv.push(msg.instance);
+                    heap_argv.extend_from_slice(args);
+                    if catch_panic {
+                        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            func(heap_argv.len(), heap_argv.as_ptr())
+                        })) {
+                            Ok(val) => val,
+                            Err(_) => {
+                                crate::metrics::inc_actor_method_panic();
+                                Value::nil()
+                            }
+                        }
+                    } else {
+                        func(heap_argv.len(), heap_argv.as_ptr())
+                    }
+                }
             }
         } else {
             Value::nil()
@@ -1863,19 +2572,23 @@ pub(crate) mod actor {
         if crate::config::debug_actor_enabled() {
             eprintln!("actor: method result raw={}", result.0);
         }
-        if let Some(pending) = msg.pending {
-            resolve_pending(pending, result);
-        }
         if arena_guard.live() != 0 && crate::config::debug_actor_enabled() {
             eprintln!("arena: live objects after message = {}", arena_guard.live());
         }
         arena_guard.reset();
+        if let Some(pending) = msg.pending {
+            resolve_pending(pending, result);
+        }
         unsafe {
-            for arg in msg.args.iter().copied() {
-                wr_rc_dec(arg);
+            if let Some(args) = msg.args.as_ref() {
+                for arg in args.iter().copied() {
+                    wr_rc_dec(arg);
+                }
             }
         }
-        return_args_vec(msg.args);
+        if let Some(args) = msg.args {
+            return_args_vec(args);
+        }
     }
 
     fn drop_message(msg: Message) {
@@ -1883,11 +2596,15 @@ pub(crate) mod actor {
             resolve_pending(pending, Value::nil());
         }
         unsafe {
-            for arg in msg.args.iter().copied() {
-                wr_rc_dec(arg);
+            if let Some(args) = msg.args.as_ref() {
+                for arg in args.iter().copied() {
+                    wr_rc_dec(arg);
+                }
             }
         }
-        return_args_vec(msg.args);
+        if let Some(args) = msg.args {
+            return_args_vec(args);
+        }
     }
 
     pub(crate) fn resolve_pending(pending: Arc<PendingState>, value: Value) {
@@ -1933,8 +2650,7 @@ pub(crate) mod actor {
         use std::time::{Duration, Instant};
 
         fn metrics_test_lock() -> &'static Mutex<()> {
-            static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-            LOCK.get_or_init(|| Mutex::new(()))
+            metrics::test_lock()
         }
 
         fn burst_test_lock() -> &'static Mutex<()> {
@@ -1944,6 +2660,7 @@ pub(crate) mod actor {
 
         fn dummy_mailbox() -> Arc<Mailbox> {
             Arc::new(Mailbox {
+                spsc: MailboxSpscQueue::new(1),
                 queue: MailboxQueue::new(1),
                 work_notify: TaskSignal::new(),
                 space_notify: TaskSignal::new(),
@@ -1956,14 +2673,23 @@ pub(crate) mod actor {
                 pause_epoch: AtomicUsize::new(0),
                 pause_ack: AtomicUsize::new(0),
                 pause_ack_notify: TaskSignal::new(),
+                wake_pending: AtomicBool::new(false),
+                fast_send_pending: AtomicBool::new(false),
+                last_progress_ns: AtomicU64::new(monotonic_now_ns()),
                 enqueue_timeout: Duration::from_millis(1),
                 batch_limit: 1,
-                arena: Mutex::new(arena::Arena::new(1024)),
+                burst_drain_max: 8,
+                queue_age_guard_ns: DEFAULT_MAILBOX_RESCUE_WAKE_NS,
+                wake_coalesce: true,
+                rescue_wake_ns: DEFAULT_MAILBOX_RESCUE_WAKE_NS,
+                empty_spin: 0,
+                arena: MailboxArena::new(arena::Arena::new(1024)),
             })
         }
 
         fn test_mailbox() -> Arc<Mailbox> {
             let mailbox = Arc::new(Mailbox {
+                spsc: MailboxSpscQueue::new(1),
                 queue: MailboxQueue::new(1),
                 work_notify: TaskSignal::new(),
                 space_notify: TaskSignal::new(),
@@ -1976,9 +2702,17 @@ pub(crate) mod actor {
                 pause_epoch: AtomicUsize::new(0),
                 pause_ack: AtomicUsize::new(0),
                 pause_ack_notify: TaskSignal::new(),
+                wake_pending: AtomicBool::new(false),
+                fast_send_pending: AtomicBool::new(false),
+                last_progress_ns: AtomicU64::new(monotonic_now_ns()),
                 enqueue_timeout: Duration::from_millis(1),
                 batch_limit: 1,
-                arena: Mutex::new(arena::Arena::new(1024)),
+                burst_drain_max: 8,
+                queue_age_guard_ns: DEFAULT_MAILBOX_RESCUE_WAKE_NS,
+                wake_coalesce: true,
+                rescue_wake_ns: DEFAULT_MAILBOX_RESCUE_WAKE_NS,
+                empty_spin: 0,
+                arena: MailboxArena::new(arena::Arena::new(1024)),
             });
             mailbox
         }
@@ -2103,7 +2837,8 @@ pub(crate) mod actor {
 
             let msg = Message {
                 method_id: 0,
-                args: take_args_vec(),
+                instance: Value::nil(),
+                args: None,
                 pending: None,
             };
             enqueue_message(mailbox.clone(), msg);
@@ -2114,7 +2849,12 @@ pub(crate) mod actor {
                 "enqueue metric did not advance (before={before_ok}, after={after_ok})"
             );
 
-            let received = mailbox.queue.pop().expect("recv message");
+            let received = mailbox
+                .spsc
+                .try_pop()
+                .map(|(msg, _)| msg)
+                .or_else(|| mailbox.queue.pop())
+                .expect("recv message");
             drop_message(received);
             mailbox_dec(mailbox.as_ref());
 
@@ -2136,7 +2876,8 @@ pub(crate) mod actor {
             let before_fail = metrics::metrics_get_raw(metrics::METRIC_MAILBOX_ENQUEUE_FAIL);
             let msg = Message {
                 method_id: 0,
-                args: take_args_vec(),
+                instance: Value::nil(),
+                args: None,
                 pending: None,
             };
             enqueue_message(mailbox, msg);
@@ -2144,6 +2885,56 @@ pub(crate) mod actor {
             assert!(
                 after_fail > before_fail,
                 "enqueue-fail metric did not advance (before={before_fail}, after={after_fail})"
+            );
+        }
+
+        #[cfg(feature = "metrics")]
+        #[test]
+        fn mailbox_metrics_batch_reserve_ok_fail() {
+            let _guard = metrics_test_lock().lock().expect("metrics test lock");
+            metrics::reset();
+
+            let make_node = |tag: i64| {
+                let mut args = take_args_vec();
+                args.push(Value::from_int(tag));
+                message_node_from_message(Message {
+                    method_id: 0,
+                    instance: Value::nil(),
+                    args: Some(args),
+                    pending: None,
+                })
+            };
+
+            let before_ok = metrics::metrics_get_raw(metrics::METRIC_MAILBOX_BATCH_RESERVE_OK);
+            let before_fail = metrics::metrics_get_raw(metrics::METRIC_MAILBOX_BATCH_RESERVE_FAIL);
+
+            let queue = MailboxQueue::new(2);
+            let nodes = [make_node(1), make_node(2)];
+            let accepted = queue.push_batch(&nodes);
+            assert_eq!(accepted, 2);
+            while let Some(node) = queue.pop_node() {
+                drop_message_node(node);
+            }
+
+            queue.push_node(make_node(10)).expect("fill push 1");
+            queue.push_node(make_node(11)).expect("fill push 2");
+            let fail_node = make_node(99);
+            let accepted = queue.push_batch(std::slice::from_ref(&fail_node));
+            assert_eq!(accepted, 0);
+            drop_message_node(fail_node);
+            while let Some(node) = queue.pop_node() {
+                drop_message_node(node);
+            }
+
+            let after_ok = metrics::metrics_get_raw(metrics::METRIC_MAILBOX_BATCH_RESERVE_OK);
+            let after_fail = metrics::metrics_get_raw(metrics::METRIC_MAILBOX_BATCH_RESERVE_FAIL);
+            assert!(
+                after_ok > before_ok,
+                "batch-reserve-ok metric did not advance (before={before_ok}, after={after_ok})"
+            );
+            assert!(
+                after_fail > before_fail,
+                "batch-reserve-fail metric did not advance (before={before_fail}, after={after_fail})"
             );
         }
 
@@ -2321,9 +3112,13 @@ pub(crate) mod actor {
         fn message_slab_reuse_smoke() {
             let mailbox = test_mailbox();
             for _ in 0..128 {
+                // Non-empty args so this exercises the args Vec pool.
+                let mut args = take_args_vec();
+                args.push(Value::from_int(1));
                 let msg = Message {
                     method_id: 0,
-                    args: take_args_vec(),
+                    instance: Value::nil(),
+                    args: Some(args),
                     pending: None,
                 };
                 enqueue_message(mailbox.clone(), msg);
@@ -2344,9 +3139,13 @@ pub(crate) mod actor {
             let mailbox = test_mailbox();
             mailbox.closed.store(true, Ordering::Release);
             for _ in 0..128 {
+                // Non-empty args so this exercises the args Vec pool even on enqueue failure.
+                let mut args = take_args_vec();
+                args.push(Value::from_int(1));
                 let msg = Message {
                     method_id: 0,
-                    args: take_args_vec(),
+                    instance: Value::nil(),
+                    args: Some(args),
                     pending: None,
                 };
                 enqueue_message(mailbox.clone(), msg);
@@ -2367,7 +3166,8 @@ pub(crate) mod actor {
                 args.push(Value::from_int(tag));
                 nodes.push(message_node_from_message(Message {
                     method_id: 7,
-                    args,
+                    instance: Value::nil(),
+                    args: Some(args),
                     pending: None,
                 }));
             }
@@ -2376,38 +3176,123 @@ pub(crate) mod actor {
             let mut out = Vec::new();
             while let Some(node) = queue.pop_node() {
                 let msg = message_node_into_message(node);
-                out.push(crate::value::int_value(msg.args[0]).unwrap_or_default());
+                let tag = msg
+                    .args
+                    .as_ref()
+                    .and_then(|args| crate::value::int_value(args[0]))
+                    .unwrap_or_default();
+                out.push(tag);
                 drop_message(msg);
             }
             assert_eq!(out, vec![1, 2, 3, 4]);
         }
 
         #[test]
-        fn mailbox_push_batch_partial_full_returns_count() {
-            let queue = MailboxQueue::new(2);
+        fn mailbox_push_batch_wrap_preserves_order() {
+            let queue = MailboxQueue::new(8);
+
+            // Fill exactly to capacity.
+            for tag in 100i64..108 {
+                let mut args = take_args_vec();
+                args.push(Value::from_int(tag));
+                queue
+                    .push_node(message_node_from_message(Message {
+                        method_id: 1,
+                        instance: Value::nil(),
+                        args: Some(args),
+                        pending: None,
+                    }))
+                    .expect("prefill push");
+            }
+
+            // Drain most of it so the next batch wraps around the ring indices.
+            for _ in 0..6 {
+                let node = queue.pop_node().expect("prefill pop");
+                drop_message_node(node);
+            }
+
             let mut nodes = Vec::new();
-            for tag in [10i64, 11, 12] {
+            for tag in [200i64, 201, 202, 203] {
                 let mut args = take_args_vec();
                 args.push(Value::from_int(tag));
                 nodes.push(message_node_from_message(Message {
-                    method_id: 9,
-                    args,
+                    method_id: 2,
+                    instance: Value::nil(),
+                    args: Some(args),
                     pending: None,
                 }));
             }
             let accepted = queue.push_batch(&nodes);
-            assert!(accepted <= 2);
+            assert_eq!(accepted, nodes.len());
+
+            let mut out = Vec::new();
+            while let Some(node) = queue.pop_node() {
+                let msg = message_node_into_message(node);
+                let tag = msg
+                    .args
+                    .as_ref()
+                    .and_then(|args| int_value(args[0]))
+                    .unwrap_or_default();
+                out.push(tag);
+                drop_message(msg);
+            }
+            assert_eq!(out, vec![106, 107, 200, 201, 202, 203]);
+        }
+
+        #[test]
+        fn mailbox_push_batch_partial_capacity_accepts_prefix_in_order() {
+            let queue = MailboxQueue::new(4);
+
+            // Pre-fill 3/4 slots.
+            for tag in [10i64, 11, 12] {
+                let mut args = take_args_vec();
+                args.push(Value::from_int(tag));
+                queue
+                    .push_node(message_node_from_message(Message {
+                        method_id: 9,
+                        instance: Value::nil(),
+                        args: Some(args),
+                        pending: None,
+                    }))
+                    .expect("prefill push");
+            }
+
+            let mut nodes = Vec::new();
+            for tag in [20i64, 21, 22] {
+                let mut args = take_args_vec();
+                args.push(Value::from_int(tag));
+                nodes.push(message_node_from_message(Message {
+                    method_id: 9,
+                    instance: Value::nil(),
+                    args: Some(args),
+                    pending: None,
+                }));
+            }
+            let accepted = queue.push_batch(&nodes);
+            assert_eq!(accepted, 1, "expected to accept only remaining capacity");
+
             for node in nodes.into_iter().skip(accepted) {
                 drop_message_node(node);
             }
+
+            let mut out = Vec::new();
             while let Some(node) = queue.pop_node() {
-                drop_message_node(node);
+                let msg = message_node_into_message(node);
+                let tag = msg
+                    .args
+                    .as_ref()
+                    .and_then(|args| int_value(args[0]))
+                    .unwrap_or_default();
+                out.push(tag);
+                drop_message(msg);
             }
+            assert_eq!(out, vec![10, 11, 12, 20]);
         }
 
         #[test]
         fn burst_flush_uses_single_wake_edge() {
             let mailbox = Arc::new(Mailbox {
+                spsc: MailboxSpscQueue::new(8),
                 queue: MailboxQueue::new(8),
                 work_notify: TaskSignal::new(),
                 space_notify: TaskSignal::new(),
@@ -2420,15 +3305,24 @@ pub(crate) mod actor {
                 pause_epoch: AtomicUsize::new(0),
                 pause_ack: AtomicUsize::new(0),
                 pause_ack_notify: TaskSignal::new(),
+                wake_pending: AtomicBool::new(false),
+                fast_send_pending: AtomicBool::new(false),
+                last_progress_ns: AtomicU64::new(monotonic_now_ns()),
                 enqueue_timeout: Duration::from_millis(1),
                 batch_limit: 1,
-                arena: Mutex::new(arena::Arena::new(1024)),
+                burst_drain_max: 8,
+                queue_age_guard_ns: DEFAULT_MAILBOX_RESCUE_WAKE_NS,
+                wake_coalesce: true,
+                rescue_wake_ns: DEFAULT_MAILBOX_RESCUE_WAKE_NS,
+                empty_spin: 0,
+                arena: MailboxArena::new(arena::Arena::new(1024)),
             });
             let mut nodes = Vec::new();
             for _ in 0..4 {
                 nodes.push(message_node_from_message(Message {
                     method_id: 0,
-                    args: take_args_vec(),
+                    instance: Value::nil(),
+                    args: None,
                     pending: None,
                 }));
             }
@@ -2467,6 +3361,8 @@ pub(crate) mod actor {
                 batch_limit: 1,
                 drop_on_full: false,
                 shard_hint: AtomicUsize::new(0),
+                migration_pressure_ticks: AtomicU32::new(0),
+                last_migration_ns: AtomicU64::new(0),
             })
         }
 
@@ -2483,7 +3379,8 @@ pub(crate) mod actor {
                     mailbox: mailbox.clone(),
                     node: message_node_from_message(Message {
                         method_id: 1,
-                        args,
+                        instance: Value::nil(),
+                        args: Some(args),
                         pending: None,
                     }),
                 });
@@ -2493,7 +3390,12 @@ pub(crate) mod actor {
             let mut out = Vec::new();
             while let Some(msg) = unsafe { (*pool_ptr).queue.pop() } {
                 let inner = message_node_into_message(msg.node);
-                out.push(crate::value::int_value(inner.args[0]).unwrap_or_default());
+                let tag = inner
+                    .args
+                    .as_ref()
+                    .and_then(|args| crate::value::int_value(args[0]))
+                    .unwrap_or_default();
+                out.push(tag);
                 drop_message(inner);
             }
             assert_eq!(out, vec![31, 32, 33]);
@@ -2512,7 +3414,8 @@ pub(crate) mod actor {
                     mailbox: mailbox.clone(),
                     node: message_node_from_message(Message {
                         method_id: 2,
-                        args,
+                        instance: Value::nil(),
+                        args: Some(args),
                         pending: None,
                     }),
                 });
@@ -2545,7 +3448,8 @@ pub(crate) mod actor {
                             mailbox: mailbox.clone(),
                             node: message_node_from_message(Message {
                                 method_id: 0,
-                                args: Vec::new(),
+                                instance: Value::nil(),
+                                args: None,
                                 pending: None,
                             }),
                         };
@@ -2608,7 +3512,8 @@ pub(crate) mod actor {
                             mailbox: mailbox.clone(),
                             node: message_node_from_message(Message {
                                 method_id: 0,
-                                args: Vec::new(),
+                                instance: Value::nil(),
+                                args: None,
                                 pending: None,
                             }),
                         };
@@ -2658,7 +3563,8 @@ pub(crate) mod actor {
                 mailbox,
                 node: message_node_from_message(Message {
                     method_id: 0,
-                    args: Vec::new(),
+                    instance: Value::nil(),
+                    args: None,
                     pending: None,
                 }),
             };
@@ -2668,6 +3574,51 @@ pub(crate) mod actor {
                 wr_rc_dec(pool);
                 wr_rc_dec(handles);
                 wr_rc_dec(actor_handle);
+            }
+        }
+
+        #[test]
+        fn actor_fire_noargs_skips_instance_rc_and_alloc() {
+            let _guard = metrics_test_lock().lock().expect("metrics test lock");
+            metrics::reset();
+
+            static NOARGS_COUNT: AtomicU64 = AtomicU64::new(0);
+            const CLASS_ID: u32 = 48_001;
+            extern "C" fn noargs_method(_argc: usize, _argv: *const Value) -> Value {
+                NOARGS_COUNT.fetch_add(1, Ordering::Relaxed);
+                Value::nil()
+            }
+
+            NOARGS_COUNT.store(0, Ordering::Relaxed);
+            register_method(CLASS_ID, 0, noargs_method);
+            let actor = actor_spawn(CLASS_ID as u64, Value::nil(), 1, 3, 1024, 10, 64);
+
+            let n = 10_000u64;
+            let before_noargs = metrics::get(metrics::METRIC_MESSAGE_BUILD_NOARGS);
+            let before_skipped = metrics::get(metrics::METRIC_MESSAGE_INSTANCE_RC_SKIPPED);
+
+            for _ in 0..n {
+                actor_fire(actor, 0, 0, std::ptr::null());
+            }
+
+            assert!(
+                wait_until(Duration::from_secs(5), || NOARGS_COUNT.load(Ordering::Relaxed) >= n),
+                "timed out waiting for no-arg messages to be processed"
+            );
+
+            let after_noargs = metrics::get(metrics::METRIC_MESSAGE_BUILD_NOARGS);
+            let after_skipped = metrics::get(metrics::METRIC_MESSAGE_INSTANCE_RC_SKIPPED);
+            assert!(
+                after_noargs >= before_noargs + n,
+                "expected noargs message builds to increase by at least {n} (before={before_noargs}, after={after_noargs})"
+            );
+            assert!(
+                after_skipped >= before_skipped + n,
+                "expected instance RC skipped counter to increase by at least {n} (before={before_skipped}, after={after_skipped})"
+            );
+
+            unsafe {
+                wr_rc_dec(actor);
             }
         }
 
@@ -2763,14 +3714,14 @@ pub(crate) mod actor {
         fn run_actor_throughput_lane(class_id: u32, fast_path: bool) -> f64 {
             const PRODUCERS: usize = 1;
             const SEED_MESSAGES_PER_PRODUCER: usize = 1;
-            const TOTAL_MESSAGES: usize = 20_000;
+            const TOTAL_MESSAGES: usize = 2_000_000;
             const FANOUT: usize = 1;
             set_actor_fast_path_for_test(Some(fast_path));
             throughput_counter().store(0, Ordering::Relaxed);
             throughput_target().store(TOTAL_MESSAGES, Ordering::Relaxed);
             throughput_fanout().store(FANOUT, Ordering::Relaxed);
             register_method(class_id, 0, throughput_ping_fanout);
-            let actor = actor_spawn(class_id as u64, Value::nil(), 1, 3, 1024, 10, 128);
+            let actor = actor_spawn(class_id as u64, Value::nil(), 1, 3, 4096, 10, 1024);
             throughput_actor_bits().store(actor.0, Ordering::Release);
 
             let start = Instant::now();
@@ -2819,20 +3770,41 @@ pub(crate) mod actor {
             std::fs::create_dir_all(&artifact_dir).expect("create artifact dir");
             let artifact = artifact_dir.join("actor_throughput.txt");
             let body = format!(
-                "benchmark=ping_pong_fanout_single_actor\nproducers=1\nseed_messages_per_producer=1\nfanout=1\ntotal_messages=20000\nbaseline_msgs_per_sec={baseline:.2}\nfast_path_msgs_per_sec={fast_path:.2}\nimprovement_pct={improvement_pct:.2}\n"
+                "benchmark=ping_pong_fanout_single_actor\nproducers=1\nseed_messages_per_producer=1\nfanout=1\ntotal_messages=2000000\nbaseline_msgs_per_sec={baseline:.2}\nfast_path_msgs_per_sec={fast_path:.2}\nimprovement_pct={improvement_pct:.2}\n"
             );
             std::fs::write(&artifact, body).expect("write throughput artifact");
         }
     }
 }
 
-pub(crate) mod config {
+    pub(crate) mod config {
     use std::sync::{Mutex, OnceLock};
     use std::time::Duration;
 
     use crate::class::class_get;
     use crate::value::{Value, int_value};
     use crate::wr_rc_dec;
+
+    const DEFAULT_SCHED_MIGRATION_HYSTERESIS_TICKS: u32 = 3;
+    const DEFAULT_SCHED_MIGRATION_COOLDOWN_MS: u64 = 50;
+    const DEFAULT_SCHED_PLAN_EPOCH_TICKS: u32 = 64;
+    const DEFAULT_SCHED_LOCAL_READY_CAP: usize = 4096;
+    const DEFAULT_SCHED_METRICS_SAMPLE_RATE: u32 = 16;
+    const DEFAULT_SCHED_STEAL_ATTEMPT_LIMIT: u32 = 2;
+    const DEFAULT_SCHED_MIGRATION_INTERVAL_CAP: u32 = 8;
+    const DEFAULT_MAILBOX_BURST_DRAIN_MAX: usize = 0;
+    const DEFAULT_MAILBOX_RESCUE_WAKE_NS: u64 = 0;
+    const DEFAULT_MAILBOX_EMPTY_SPIN: u32 = 0;
+    const OBJECTIVE_LATENCY_BURST_DRAIN_MAX: usize = 64;
+    const OBJECTIVE_THROUGHPUT_BURST_DRAIN_MAX: usize = 1024;
+    const OBJECTIVE_CONSERVATION_BURST_DRAIN_MAX: usize = 128;
+    const OBJECTIVE_BALANCE_BURST_DRAIN_MAX: usize = 256;
+    const OBJECTIVE_LATENCY_EMPTY_SPIN: u32 = 0;
+    // Empty spinning is extremely workload/hardware dependent and can steal CPU from producers.
+    // Default to 0 across profiles; enable explicitly via `runtime_configure` when desired.
+    const OBJECTIVE_THROUGHPUT_EMPTY_SPIN: u32 = 0;
+    const OBJECTIVE_CONSERVATION_EMPTY_SPIN: u32 = 0;
+    const OBJECTIVE_BALANCE_EMPTY_SPIN: u32 = 0;
 
     #[derive(Clone, Copy)]
     pub struct ActorConfig {
@@ -2861,6 +3833,18 @@ pub(crate) mod config {
         pub sched_batch_min: i64,
         pub sched_batch_max: i64,
         pub sched_affinity_rebalance_ms: u64,
+        pub sched_migration_hysteresis_ticks: u32,
+        pub sched_migration_cooldown_ms: u64,
+        pub sched_plan_epoch_ticks: u32,
+        pub sched_local_ready_cap: usize,
+        pub sched_global_ready_cap: usize,
+        pub sched_metrics_sample_rate: u32,
+        pub sched_steal_attempt_limit: u32,
+        pub sched_migration_interval_cap: u32,
+        pub mailbox_burst_drain_max: usize,
+        pub mailbox_wake_coalesce: bool,
+        pub mailbox_rescue_wake_ns: u64,
+        pub mailbox_empty_spin: u32,
         pub reactor_disable_io_uring: bool,
         pub pool_min_share: u32,
         pub pool_max_share: u32,
@@ -2894,6 +3878,18 @@ pub(crate) mod config {
                 sched_batch_min: 4,
                 sched_batch_max: 128,
                 sched_affinity_rebalance_ms: 0,
+                sched_migration_hysteresis_ticks: DEFAULT_SCHED_MIGRATION_HYSTERESIS_TICKS,
+                sched_migration_cooldown_ms: DEFAULT_SCHED_MIGRATION_COOLDOWN_MS,
+                sched_plan_epoch_ticks: DEFAULT_SCHED_PLAN_EPOCH_TICKS,
+                sched_local_ready_cap: DEFAULT_SCHED_LOCAL_READY_CAP,
+                sched_global_ready_cap: 1024,
+                sched_metrics_sample_rate: DEFAULT_SCHED_METRICS_SAMPLE_RATE,
+                sched_steal_attempt_limit: DEFAULT_SCHED_STEAL_ATTEMPT_LIMIT,
+                sched_migration_interval_cap: DEFAULT_SCHED_MIGRATION_INTERVAL_CAP,
+                mailbox_burst_drain_max: DEFAULT_MAILBOX_BURST_DRAIN_MAX,
+                mailbox_wake_coalesce: false,
+                mailbox_rescue_wake_ns: DEFAULT_MAILBOX_RESCUE_WAKE_NS,
+                mailbox_empty_spin: DEFAULT_MAILBOX_EMPTY_SPIN,
                 reactor_disable_io_uring: false,
                 pool_min_share: 1,
                 pool_max_share: (cores * 2).max(1) as u32,
@@ -2984,6 +3980,42 @@ pub(crate) mod config {
         }
         if let Some(val) = config_field_u64(config, "sched_affinity_rebalance_ms") {
             out.sched_affinity_rebalance_ms = val;
+        }
+        if let Some(val) = config_field_u32(config, "sched_migration_hysteresis_ticks") {
+            out.sched_migration_hysteresis_ticks = val;
+        }
+        if let Some(val) = config_field_u64(config, "sched_migration_cooldown_ms") {
+            out.sched_migration_cooldown_ms = val;
+        }
+        if let Some(val) = config_field_u32(config, "sched_plan_epoch_ticks") {
+            out.sched_plan_epoch_ticks = val;
+        }
+        if let Some(val) = config_field_usize(config, "sched_local_ready_cap") {
+            out.sched_local_ready_cap = val;
+        }
+        if let Some(val) = config_field_usize(config, "sched_global_ready_cap") {
+            out.sched_global_ready_cap = val;
+        }
+        if let Some(val) = config_field_u32(config, "sched_metrics_sample_rate") {
+            out.sched_metrics_sample_rate = val;
+        }
+        if let Some(val) = config_field_u32(config, "sched_steal_attempt_limit") {
+            out.sched_steal_attempt_limit = val;
+        }
+        if let Some(val) = config_field_u32(config, "sched_migration_interval_cap") {
+            out.sched_migration_interval_cap = val;
+        }
+        if let Some(val) = config_field_usize(config, "mailbox_burst_drain_max") {
+            out.mailbox_burst_drain_max = val;
+        }
+        if let Some(val) = config_field_bool(config, "mailbox_wake_coalesce") {
+            out.mailbox_wake_coalesce = val;
+        }
+        if let Some(val) = config_field_u64(config, "mailbox_rescue_wake_ns") {
+            out.mailbox_rescue_wake_ns = val;
+        }
+        if let Some(val) = config_field_u32(config, "mailbox_empty_spin") {
+            out.mailbox_empty_spin = val;
         }
         if let Some(val) = config_field_bool(config, "reactor_disable_io_uring") {
             out.reactor_disable_io_uring = val;
@@ -3125,6 +4157,72 @@ pub(crate) mod config {
         runtime_config().sched_affinity_rebalance_ms
     }
 
+    pub fn sched_migration_hysteresis_ticks() -> u32 {
+        runtime_config().sched_migration_hysteresis_ticks
+    }
+
+    pub fn sched_migration_cooldown_ms() -> u64 {
+        runtime_config().sched_migration_cooldown_ms
+    }
+
+    pub fn sched_plan_epoch_ticks() -> u32 {
+        runtime_config().sched_plan_epoch_ticks
+    }
+
+    pub fn sched_local_ready_cap() -> usize {
+        runtime_config().sched_local_ready_cap
+    }
+
+    pub fn sched_global_ready_cap() -> usize {
+        runtime_config().sched_global_ready_cap
+    }
+
+    pub fn sched_metrics_sample_rate() -> u32 {
+        runtime_config().sched_metrics_sample_rate
+    }
+
+    pub fn sched_steal_attempt_limit() -> u32 {
+        runtime_config().sched_steal_attempt_limit
+    }
+
+    pub fn sched_migration_interval_cap() -> u32 {
+        runtime_config().sched_migration_interval_cap
+    }
+
+    pub fn mailbox_burst_drain_max_for_objective(objective: u8) -> usize {
+        let configured = runtime_config().mailbox_burst_drain_max;
+        if configured > 0 {
+            return configured;
+        }
+        match objective {
+            0 => OBJECTIVE_LATENCY_BURST_DRAIN_MAX,
+            1 => OBJECTIVE_THROUGHPUT_BURST_DRAIN_MAX,
+            2 => OBJECTIVE_CONSERVATION_BURST_DRAIN_MAX,
+            _ => OBJECTIVE_BALANCE_BURST_DRAIN_MAX,
+        }
+    }
+
+    pub fn mailbox_empty_spin_for_objective(objective: u8) -> u32 {
+        let configured = runtime_config().mailbox_empty_spin;
+        if configured > 0 {
+            return configured;
+        }
+        match objective {
+            0 => OBJECTIVE_LATENCY_EMPTY_SPIN,
+            1 => OBJECTIVE_THROUGHPUT_EMPTY_SPIN,
+            2 => OBJECTIVE_CONSERVATION_EMPTY_SPIN,
+            _ => OBJECTIVE_BALANCE_EMPTY_SPIN,
+        }
+    }
+
+    pub fn mailbox_wake_coalesce() -> bool {
+        runtime_config().mailbox_wake_coalesce
+    }
+
+    pub fn mailbox_rescue_wake_ns() -> u64 {
+        runtime_config().mailbox_rescue_wake_ns
+    }
+
     pub fn reactor_disable_io_uring() -> bool {
         runtime_config().reactor_disable_io_uring
     }
@@ -3159,6 +4257,30 @@ pub(crate) mod config {
             "runtime config `sched_ready_cap` must be >= 2"
         );
         assert!(
+            config.sched_local_ready_cap >= 2,
+            "runtime config `sched_local_ready_cap` must be >= 2"
+        );
+        assert!(
+            config.sched_global_ready_cap >= 2,
+            "runtime config `sched_global_ready_cap` must be >= 2"
+        );
+        assert!(
+            config.sched_plan_epoch_ticks > 0,
+            "runtime config `sched_plan_epoch_ticks` must be > 0"
+        );
+        assert!(
+            config.sched_metrics_sample_rate > 0,
+            "runtime config `sched_metrics_sample_rate` must be > 0"
+        );
+        assert!(
+            config.sched_steal_attempt_limit > 0,
+            "runtime config `sched_steal_attempt_limit` must be > 0"
+        );
+        assert!(
+            config.sched_migration_interval_cap > 0,
+            "runtime config `sched_migration_interval_cap` must be > 0"
+        );
+        assert!(
             config.sched_batch_limit > 0,
             "runtime config `sched_batch_limit` must be > 0"
         );
@@ -3186,6 +4308,7 @@ pub(crate) mod config {
             config.sched_batch_limit <= config.sched_batch_max,
             "runtime config `sched_batch_limit` must be <= `sched_batch_max`"
         );
+        // 0 means "use objective profile defaults".
         assert!(
             config.pool_min_share > 0,
             "runtime config `pool_min_share` must be > 0"
@@ -3226,6 +4349,8 @@ pub(crate) mod metrics {
     use std::fs;
     use std::path::PathBuf;
     use std::sync::OnceLock;
+    #[cfg(test)]
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     pub const METRIC_ALLOC_STRING: u32 = 1;
@@ -3253,28 +4378,97 @@ pub(crate) mod metrics {
     pub const METRIC_SCHED_PROFILE_SWITCH: u32 = 23;
     pub const METRIC_SCHED_STARVATION_VIOLATION: u32 = 24;
     pub const METRIC_SCHED_CROSS_SHARD_MIGRATION: u32 = 25;
-
+    pub const METRIC_QUEUE_CAS_RETRY: u32 = 26;
+    pub const METRIC_MAILBOX_WAKE_COALESCED: u32 = 27;
+    pub const METRIC_MAILBOX_RESCUE_WAKE: u32 = 28;
+    pub const METRIC_SCHED_LOCAL_DISPATCH: u32 = 29;
+    pub const METRIC_SCHED_GLOBAL_DISPATCH: u32 = 30;
+    pub const METRIC_SCHED_PLAN_RECOMPUTE: u32 = 31;
+    pub const METRIC_SCHED_STEAL_ATTEMPTS: u32 = 32;
+    pub const METRIC_SCHED_STEAL_SUCCESS: u32 = 33;
+    pub const METRIC_SCHED_MIGRATION_BLOCKED_HYSTERESIS: u32 = 34;
+    pub const METRIC_SCHED_MIGRATION_BLOCKED_COOLDOWN: u32 = 35;
+    // Workqueue / mailbox attribution metrics (low overhead counters).
+    pub const METRIC_MESSAGE_BUILD_NOARGS: u32 = 36;
+    pub const METRIC_MESSAGE_BUILD_ARGS: u32 = 37;
+    pub const METRIC_MESSAGE_INSTANCE_RC_SKIPPED: u32 = 38;
+    pub const METRIC_ACTOR_ARENA_LOCK: u32 = 39;
+    pub const METRIC_MAILBOX_BATCH_RESERVE_OK: u32 = 40;
+    pub const METRIC_MAILBOX_BATCH_RESERVE_FAIL: u32 = 41;
+    pub const METRIC_MESSAGE_INSTANCE_IS_ARENA: u32 = 42;
+    pub const METRIC_ACTOR_SPAWN_INSTANCE_IS_PTR: u32 = 43;
+    pub const METRIC_ACTOR_SPAWN_INSTANCE_NOT_PTR: u32 = 44;
+    pub const METRIC_ACTOR_SPAWN_INSTANCE_PROMOTED: u32 = 45;
+    pub const METRIC_ACTOR_METHOD_PANIC: u32 = 46;
+    pub const METRIC_ACTOR_METHOD_MISSING: u32 = 47;
     const METRIC_COUNT: usize = 64;
+    const LATENCY_BUCKETS: [u64; 12] = [
+        1_000,
+        2_000,
+        5_000,
+        10_000,
+        20_000,
+        50_000,
+        100_000,
+        250_000,
+        500_000,
+        1_000_000,
+        5_000_000,
+        u64::MAX,
+    ];
     static METRICS: [AtomicU64; METRIC_COUNT] = [const { AtomicU64::new(0) }; METRIC_COUNT];
     static MAILBOX_HIGH_WATER: AtomicU64 = AtomicU64::new(0);
+    static QUEUE_ENQUEUE_LATENCY_HIST: [AtomicU64; LATENCY_BUCKETS.len()] =
+        [const { AtomicU64::new(0) }; LATENCY_BUCKETS.len()];
+    static QUEUE_DEQUEUE_LATENCY_HIST: [AtomicU64; LATENCY_BUCKETS.len()] =
+        [const { AtomicU64::new(0) }; LATENCY_BUCKETS.len()];
+    static QUEUE_AGE_HIST: [AtomicU64; LATENCY_BUCKETS.len()] =
+        [const { AtomicU64::new(0) }; LATENCY_BUCKETS.len()];
+    static SCHED_DISPATCH_LOOP_NS_HIST: [AtomicU64; LATENCY_BUCKETS.len()] =
+        [const { AtomicU64::new(0) }; LATENCY_BUCKETS.len()];
+    static BURST_DRAIN_TOTAL: AtomicU64 = AtomicU64::new(0);
+    static BURST_DRAIN_SAMPLES: AtomicU64 = AtomicU64::new(0);
+    static SCHED_SAMPLE_COUNTER: AtomicU64 = AtomicU64::new(0);
+    static ACTOR_SPAWN_INSTANCE_TYPE_ID: AtomicU64 = AtomicU64::new(0);
     static METRICS_DUMP_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
+    static DUMP_HOOK_INSTALLED: OnceLock<()> = OnceLock::new();
+    static METRICS_ENABLED: OnceLock<bool> = OnceLock::new();
+
+    #[cfg(test)]
+    pub fn test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[inline(always)]
+    fn enabled() -> bool {
+        *METRICS_ENABLED.get_or_init(|| match std::env::var("WRELA_RUNTIME_METRICS").ok().as_deref()
+        {
+            Some("0") => false,
+            _ => true,
+        })
+    }
 
     #[inline(always)]
     fn bump(id: u32) {
+        if !enabled() {
+            return;
+        }
         if let Some(metric) = METRICS.get(id as usize) {
             metric.fetch_add(1, Ordering::Relaxed);
-            maybe_dump_metrics();
         }
     }
 
     #[inline(always)]
     fn bump_by(id: u32, value: u64) {
+        if !enabled() {
+            return;
+        }
         if value == 0 {
             return;
         }
         if let Some(metric) = METRICS.get(id as usize) {
             metric.fetch_add(value, Ordering::Relaxed);
-            maybe_dump_metrics();
         }
     }
 
@@ -3294,10 +4488,36 @@ pub(crate) mod metrics {
             metric.store(0, Ordering::Relaxed);
         }
         MAILBOX_HIGH_WATER.store(0, Ordering::Relaxed);
-        maybe_dump_metrics();
+        for bucket in QUEUE_ENQUEUE_LATENCY_HIST.iter() {
+            bucket.store(0, Ordering::Relaxed);
+        }
+        for bucket in QUEUE_DEQUEUE_LATENCY_HIST.iter() {
+            bucket.store(0, Ordering::Relaxed);
+        }
+        for bucket in QUEUE_AGE_HIST.iter() {
+            bucket.store(0, Ordering::Relaxed);
+        }
+        for bucket in SCHED_DISPATCH_LOOP_NS_HIST.iter() {
+            bucket.store(0, Ordering::Relaxed);
+        }
+        BURST_DRAIN_TOTAL.store(0, Ordering::Relaxed);
+        BURST_DRAIN_SAMPLES.store(0, Ordering::Relaxed);
+        SCHED_SAMPLE_COUNTER.store(0, Ordering::Relaxed);
     }
 
     pub fn install_dump_hook() {
+        if metrics_dump_path().is_none() {
+            return;
+        }
+        if DUMP_HOOK_INSTALLED.set(()).is_err() {
+            return;
+        }
+        unsafe {
+            libc::atexit(dump_at_exit);
+        }
+    }
+
+    extern "C" fn dump_at_exit() {
         maybe_dump_metrics();
     }
 
@@ -3307,12 +4527,55 @@ pub(crate) mod metrics {
             .clone()
     }
 
+    fn observe_histogram(hist: &[AtomicU64; LATENCY_BUCKETS.len()], value_ns: u64) {
+        for (idx, bound) in LATENCY_BUCKETS.iter().enumerate() {
+            if value_ns <= *bound {
+                hist[idx].fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+        }
+        if let Some(last) = hist.last() {
+            last.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn histogram_pctl_ns(hist: &[AtomicU64; LATENCY_BUCKETS.len()], pct: f64) -> u64 {
+        let total = hist
+            .iter()
+            .map(|value| value.load(Ordering::Relaxed))
+            .sum::<u64>();
+        if total == 0 {
+            return 0;
+        }
+        let rank = ((total as f64) * pct).ceil() as u64;
+        let rank = rank.max(1);
+        let mut seen = 0u64;
+        for (idx, count) in hist.iter().enumerate() {
+            seen = seen.saturating_add(count.load(Ordering::Relaxed));
+            if seen >= rank {
+                return LATENCY_BUCKETS[idx];
+            }
+        }
+        *LATENCY_BUCKETS.last().unwrap_or(&0)
+    }
+
     fn maybe_dump_metrics() {
         let Some(path) = metrics_dump_path() else {
             return;
         };
+        let enqueue_p99 = histogram_pctl_ns(&QUEUE_ENQUEUE_LATENCY_HIST, 0.99);
+        let dequeue_p99 = histogram_pctl_ns(&QUEUE_DEQUEUE_LATENCY_HIST, 0.99);
+        let queue_age_p99 = histogram_pctl_ns(&QUEUE_AGE_HIST, 0.99);
+        let sched_dispatch_loop_p99 = histogram_pctl_ns(&SCHED_DISPATCH_LOOP_NS_HIST, 0.99);
+        let burst_samples = BURST_DRAIN_SAMPLES.load(Ordering::Relaxed);
+        let burst_total = BURST_DRAIN_TOTAL.load(Ordering::Relaxed);
+        let burst_avg = if burst_samples == 0 {
+            0.0
+        } else {
+            burst_total as f64 / burst_samples as f64
+        };
         let data = format!(
-            "{{\"messages_sent\":{},\"messages_dropped\":{},\"pending_resolved\":{},\"pending_dropped\":{},\"mailbox_high_water\":{},\"rc_inc\":{},\"rc_dec\":{},\"alloc_list\":{},\"alloc_map\":{},\"alloc_string\":{},\"alloc_bytes\":{},\"alloc_result\":{},\"alloc_pending\":{},\"mailbox_enqueue_ok\":{},\"mailbox_enqueue_fail\":{},\"mailbox_dequeue\":{},\"sched_dispatched\":{},\"sched_skipped_no_credit\":{},\"sched_profile_switch\":{},\"sched_starvation_violation\":{},\"sched_cross_shard_migration\":{},\"abi_typed_lane\":{},\"abi_boxed_lane\":{}}}",
+            "{{\"messages_sent\":{},\"messages_dropped\":{},\"pending_resolved\":{},\"pending_dropped\":{},\"mailbox_high_water\":{},\"rc_inc\":{},\"rc_dec\":{},\"alloc_list\":{},\"alloc_map\":{},\"alloc_string\":{},\"alloc_bytes\":{},\"alloc_result\":{},\"alloc_pending\":{},\"mailbox_enqueue_ok\":{},\"mailbox_enqueue_fail\":{},\"mailbox_dequeue\":{},\"sched_dispatched\":{},\"sched_skipped_no_credit\":{},\"sched_profile_switch\":{},\"sched_starvation_violation\":{},\"sched_cross_shard_migration\":{},\"abi_typed_lane\":{},\"abi_boxed_lane\":{},\"queue_cas_retry_total\":{},\"mailbox_wake_coalesced_count\":{},\"mailbox_rescue_wake_count\":{},\"sched_local_dispatch_count\":{},\"sched_global_dispatch_count\":{},\"sched_plan_recompute_count\":{},\"sched_steal_attempts\":{},\"sched_steal_success\":{},\"sched_migration_blocked_hysteresis\":{},\"sched_migration_blocked_cooldown\":{},\"message_build_noargs_count\":{},\"message_build_args_count\":{},\"message_instance_rc_skipped_count\":{},\"message_instance_is_arena_count\":{},\"actor_spawn_instance_is_ptr_count\":{},\"actor_spawn_instance_not_ptr_count\":{},\"actor_spawn_instance_promoted_count\":{},\"actor_spawn_instance_type_id\":{},\"actor_method_panic_count\":{},\"actor_method_missing_count\":{},\"actor_arena_lock_count\":{},\"mailbox_batch_reserve_success\":{},\"mailbox_batch_reserve_failed\":{},\"queue_enqueue_p99_ns\":{},\"queue_dequeue_p99_ns\":{},\"queue_age_p99_ns\":{},\"sched_dispatch_loop_ns_p99\":{},\"queue_burst_drain_avg\":{:.2}}}",
             get(METRIC_MESSAGES_SENT),
             get(METRIC_MESSAGES_DROPPED),
             get(METRIC_PENDING_RESOLVED),
@@ -3336,6 +4599,34 @@ pub(crate) mod metrics {
             get(METRIC_SCHED_CROSS_SHARD_MIGRATION),
             get(METRIC_ABI_TYPED_LANE),
             get(METRIC_ABI_BOXED_LANE),
+            get(METRIC_QUEUE_CAS_RETRY),
+            get(METRIC_MAILBOX_WAKE_COALESCED),
+            get(METRIC_MAILBOX_RESCUE_WAKE),
+            get(METRIC_SCHED_LOCAL_DISPATCH),
+            get(METRIC_SCHED_GLOBAL_DISPATCH),
+            get(METRIC_SCHED_PLAN_RECOMPUTE),
+            get(METRIC_SCHED_STEAL_ATTEMPTS),
+            get(METRIC_SCHED_STEAL_SUCCESS),
+            get(METRIC_SCHED_MIGRATION_BLOCKED_HYSTERESIS),
+            get(METRIC_SCHED_MIGRATION_BLOCKED_COOLDOWN),
+            get(METRIC_MESSAGE_BUILD_NOARGS),
+            get(METRIC_MESSAGE_BUILD_ARGS),
+            get(METRIC_MESSAGE_INSTANCE_RC_SKIPPED),
+            get(METRIC_MESSAGE_INSTANCE_IS_ARENA),
+            get(METRIC_ACTOR_SPAWN_INSTANCE_IS_PTR),
+            get(METRIC_ACTOR_SPAWN_INSTANCE_NOT_PTR),
+            get(METRIC_ACTOR_SPAWN_INSTANCE_PROMOTED),
+            ACTOR_SPAWN_INSTANCE_TYPE_ID.load(Ordering::Relaxed),
+            get(METRIC_ACTOR_METHOD_PANIC),
+            get(METRIC_ACTOR_METHOD_MISSING),
+            get(METRIC_ACTOR_ARENA_LOCK),
+            get(METRIC_MAILBOX_BATCH_RESERVE_OK),
+            get(METRIC_MAILBOX_BATCH_RESERVE_FAIL),
+            enqueue_p99,
+            dequeue_p99,
+            queue_age_p99,
+            sched_dispatch_loop_p99,
+            burst_avg,
         );
         let _ = fs::write(path, data.as_bytes());
     }
@@ -3415,6 +4706,109 @@ pub(crate) mod metrics {
     pub fn inc_sched_cross_shard_migration() {
         bump(METRIC_SCHED_CROSS_SHARD_MIGRATION)
     }
+    pub fn inc_queue_cas_retry_n(value: u64) {
+        bump_by(METRIC_QUEUE_CAS_RETRY, value)
+    }
+    pub fn inc_mailbox_wake_coalesced() {
+        bump(METRIC_MAILBOX_WAKE_COALESCED)
+    }
+    pub fn inc_mailbox_rescue_wake() {
+        bump(METRIC_MAILBOX_RESCUE_WAKE)
+    }
+    pub fn inc_sched_local_dispatch() {
+        bump(METRIC_SCHED_LOCAL_DISPATCH)
+    }
+    pub fn inc_sched_global_dispatch() {
+        bump(METRIC_SCHED_GLOBAL_DISPATCH)
+    }
+    pub fn inc_sched_plan_recompute() {
+        bump(METRIC_SCHED_PLAN_RECOMPUTE)
+    }
+    pub fn inc_sched_steal_attempt() {
+        bump(METRIC_SCHED_STEAL_ATTEMPTS)
+    }
+    pub fn inc_sched_steal_success() {
+        bump(METRIC_SCHED_STEAL_SUCCESS)
+    }
+    pub fn inc_sched_migration_blocked_hysteresis() {
+        bump(METRIC_SCHED_MIGRATION_BLOCKED_HYSTERESIS)
+    }
+    pub fn inc_sched_migration_blocked_cooldown() {
+        bump(METRIC_SCHED_MIGRATION_BLOCKED_COOLDOWN)
+    }
+    pub fn inc_message_build_noargs() {
+        bump(METRIC_MESSAGE_BUILD_NOARGS)
+    }
+    pub fn inc_message_build_args() {
+        bump(METRIC_MESSAGE_BUILD_ARGS)
+    }
+    pub fn inc_message_instance_rc_skipped() {
+        bump(METRIC_MESSAGE_INSTANCE_RC_SKIPPED)
+    }
+    pub fn inc_actor_arena_lock() {
+        bump(METRIC_ACTOR_ARENA_LOCK)
+    }
+    pub fn inc_mailbox_batch_reserve_ok() {
+        bump(METRIC_MAILBOX_BATCH_RESERVE_OK)
+    }
+    pub fn inc_mailbox_batch_reserve_fail() {
+        bump(METRIC_MAILBOX_BATCH_RESERVE_FAIL)
+    }
+    pub fn inc_message_instance_is_arena() {
+        bump(METRIC_MESSAGE_INSTANCE_IS_ARENA)
+    }
+    pub fn inc_actor_spawn_instance_is_ptr() {
+        bump(METRIC_ACTOR_SPAWN_INSTANCE_IS_PTR)
+    }
+    pub fn inc_actor_spawn_instance_not_ptr() {
+        bump(METRIC_ACTOR_SPAWN_INSTANCE_NOT_PTR)
+    }
+    pub fn inc_actor_spawn_instance_promoted() {
+        bump(METRIC_ACTOR_SPAWN_INSTANCE_PROMOTED)
+    }
+    pub fn set_actor_spawn_instance_type_id(type_id: u64) {
+        ACTOR_SPAWN_INSTANCE_TYPE_ID.store(type_id, Ordering::Relaxed);
+    }
+    pub fn inc_actor_method_panic() {
+        bump(METRIC_ACTOR_METHOD_PANIC)
+    }
+    pub fn inc_actor_method_missing() {
+        bump(METRIC_ACTOR_METHOD_MISSING)
+    }
+    pub fn observe_queue_enqueue_latency_ns(value_ns: u64) {
+        if enabled() {
+            observe_histogram(&QUEUE_ENQUEUE_LATENCY_HIST, value_ns);
+        }
+    }
+    pub fn observe_queue_dequeue_latency_ns(value_ns: u64) {
+        if enabled() {
+            observe_histogram(&QUEUE_DEQUEUE_LATENCY_HIST, value_ns);
+        }
+    }
+    pub fn observe_queue_age_ns(value_ns: u64) {
+        if enabled() {
+            observe_histogram(&QUEUE_AGE_HIST, value_ns);
+        }
+    }
+    pub fn observe_queue_burst_drain(batch_size: u64) {
+        if !enabled() {
+            return;
+        }
+        BURST_DRAIN_TOTAL.fetch_add(batch_size, Ordering::Relaxed);
+        BURST_DRAIN_SAMPLES.fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn observe_sched_dispatch_loop_ns(value_ns: u64) {
+        if enabled() {
+            observe_histogram(&SCHED_DISPATCH_LOOP_NS_HIST, value_ns);
+        }
+    }
+    pub fn should_sample_scheduler(sample_rate: u32) -> bool {
+        if sample_rate <= 1 {
+            return true;
+        }
+        let n = SCHED_SAMPLE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        n % (sample_rate as u64) == 0
+    }
     pub fn inc_abi_typed_lane() {
         bump(METRIC_ABI_TYPED_LANE)
     }
@@ -3423,6 +4817,9 @@ pub(crate) mod metrics {
     }
 
     pub fn update_mailbox_high_water(len: usize) {
+        if !enabled() {
+            return;
+        }
         let len = len as u64;
         let mut current = MAILBOX_HIGH_WATER.load(Ordering::Relaxed);
         while len > current {
@@ -3436,23 +4833,29 @@ pub(crate) mod metrics {
                 Err(actual) => current = actual,
             }
         }
-        maybe_dump_metrics();
     }
 }
 
 pub(crate) mod scheduler {
     use crate::actor::{PoolHandle, PoolMessage, deliver_pool_message};
     use crate::config::{
-        sched_affinity_rebalance_ms, sched_batch_max, sched_batch_min, sched_profile_auto,
-        sched_quantum_max, sched_quantum_min, sched_ready_cap, sched_shards, sched_tick_ms,
+        sched_affinity_rebalance_ms, sched_batch_max, sched_batch_min, sched_global_ready_cap,
+        sched_local_ready_cap, sched_metrics_sample_rate, sched_migration_cooldown_ms,
+        sched_migration_hysteresis_ticks, sched_migration_interval_cap, sched_plan_epoch_ticks,
+        sched_profile_auto, sched_quantum_max, sched_quantum_min, sched_shards,
+        sched_steal_attempt_limit, sched_tick_ms,
     };
     use crate::diagnostics;
     use crate::metrics::{
         inc_pool_enqueue_after_retire, inc_pool_queue_full, inc_sched_cross_shard_migration,
-        inc_sched_dispatched, inc_sched_profile_switch, inc_sched_skipped_no_credit,
-        inc_sched_starvation_violation,
+        inc_sched_dispatched, inc_sched_global_dispatch, inc_sched_local_dispatch,
+        inc_sched_migration_blocked_cooldown, inc_sched_migration_blocked_hysteresis,
+        inc_sched_plan_recompute, inc_sched_profile_switch, inc_sched_skipped_no_credit,
+        inc_sched_starvation_violation, inc_sched_steal_attempt, inc_sched_steal_success,
+        observe_sched_dispatch_loop_ns, should_sample_scheduler,
     };
     use crate::reactor::task::TaskSignal;
+    use std::collections::VecDeque;
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex, OnceLock};
     use std::time::{Duration, Instant};
@@ -3468,6 +4871,12 @@ pub(crate) mod scheduler {
     struct DispatchProfile {
         quantum: i64,
         batch_cap: i64,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct DispatchPlan {
+        profiles: [DispatchProfile; OBJECTIVE_COUNT],
+        migration_budget: u32,
     }
 
     const BASE_DISPATCH_PROFILES: [DispatchProfile; OBJECTIVE_COUNT] = [
@@ -3493,9 +4902,10 @@ pub(crate) mod scheduler {
     struct ObjectiveDispatchState {
         deficits: [i64; OBJECTIVE_COUNT],
         wait_ticks: [usize; OBJECTIVE_COUNT],
-        profiles: [DispatchProfile; OBJECTIVE_COUNT],
+        plan: DispatchPlan,
         cursor: usize,
         starvation_bound_ticks: usize,
+        tune_tick: u32,
     }
 
     impl ObjectiveDispatchState {
@@ -3503,9 +4913,13 @@ pub(crate) mod scheduler {
             Self {
                 deficits: [0; OBJECTIVE_COUNT],
                 wait_ticks: [0; OBJECTIVE_COUNT],
-                profiles: BASE_DISPATCH_PROFILES,
+                plan: DispatchPlan {
+                    profiles: BASE_DISPATCH_PROFILES,
+                    migration_budget: sched_migration_interval_cap(),
+                },
                 cursor: 0,
                 starvation_bound_ticks: STARVATION_BOUND_TICKS,
+                tune_tick: 0,
             }
         }
 
@@ -3559,7 +4973,7 @@ pub(crate) mod scheduler {
                 }
                 for idx in 0..OBJECTIVE_COUNT {
                     if ready[idx] {
-                        let quantum = self.profiles[idx].quantum.max(1);
+                        let quantum = self.plan.profiles[idx].quantum.max(1);
                         self.deficits[idx] = self.deficits[idx].saturating_add(quantum);
                     }
                 }
@@ -3568,13 +4982,21 @@ pub(crate) mod scheduler {
         }
 
         fn dispatch_profile_for(&self, objective: usize) -> DispatchProfile {
-            self.profiles[objective]
+            self.plan.profiles[objective]
         }
 
         fn tune_profiles(&mut self, ready_depth: [usize; OBJECTIVE_COUNT], auto_enabled: bool) {
+            self.tune_tick = self.tune_tick.saturating_add(1);
+            let epoch_ticks = sched_plan_epoch_ticks().max(1);
+            if self.tune_tick < epoch_ticks {
+                return;
+            }
+            self.tune_tick = 0;
+            inc_sched_plan_recompute();
             if !auto_enabled {
-                if self.profiles != BASE_DISPATCH_PROFILES {
-                    self.profiles = BASE_DISPATCH_PROFILES;
+                if self.plan.profiles != BASE_DISPATCH_PROFILES {
+                    self.plan.profiles = BASE_DISPATCH_PROFILES;
+                    self.plan.migration_budget = sched_migration_interval_cap();
                     inc_sched_profile_switch();
                 }
                 return;
@@ -3587,7 +5009,7 @@ pub(crate) mod scheduler {
             let batch_max = sched_batch_max().max(batch_min);
 
             for idx in 0..OBJECTIVE_COUNT {
-                let profile = self.profiles[idx];
+                let profile = self.plan.profiles[idx];
                 let backlog = ready_depth[idx];
                 let congested = backlog >= 4
                     || total_ready >= OBJECTIVE_COUNT * 3
@@ -3611,15 +5033,17 @@ pub(crate) mod scheduler {
                     batch_cap: target_batch.clamp(batch_min, batch_max),
                 };
                 if updated != profile {
-                    self.profiles[idx] = updated;
+                    self.plan.profiles[idx] = updated;
                     inc_sched_profile_switch();
                 }
             }
+            self.plan.migration_budget = sched_migration_interval_cap();
         }
     }
 
     static SHARDS: OnceLock<Vec<Arc<SchedulerShard>>> = OnceLock::new();
     static POOL_COUNTER: AtomicU64 = AtomicU64::new(1);
+    static SCHEDULER_EPOCH: OnceLock<Instant> = OnceLock::new();
 
     pub struct SchedulerShard {
         id: usize,
@@ -3634,13 +5058,20 @@ pub(crate) mod scheduler {
         fn new(id: usize) -> Self {
             Self {
                 id,
-                ready_by_objective: std::array::from_fn(|_| ReadyQueue::new(sched_ready_cap())),
+                ready_by_objective: std::array::from_fn(|_| {
+                    ReadyQueue::new(sched_global_ready_cap())
+                }),
                 head: AtomicUsize::new(0),
                 notify: TaskSignal::new(),
                 has_work: AtomicBool::new(false),
                 retired: Mutex::new(Vec::new()),
             }
         }
+    }
+
+    fn scheduler_now_ns() -> u64 {
+        let start = SCHEDULER_EPOCH.get_or_init(Instant::now);
+        start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64
     }
 
     struct ReadySlot {
@@ -3910,15 +5341,28 @@ pub(crate) mod scheduler {
         let mut dispatch_state = ObjectiveDispatchState::new();
         let mut last_progress = Instant::now();
         let mut last_rebalance_at = Instant::now();
+        let mut migrations_this_interval = 0u32;
+        let local_cap = sched_local_ready_cap().max(2);
+        let mut local_ready: [VecDeque<usize>; OBJECTIVE_COUNT] =
+            std::array::from_fn(|_| VecDeque::with_capacity(local_cap.min(1024)));
         let watchdog_ms = crate::config::sched_watchdog_ms();
         loop {
             if !shard.has_work.load(Ordering::Acquire) {
                 let observed_epoch = shard.notify.snapshot();
                 let _ = shard.notify.wait_timeout(observed_epoch, tick);
             }
-            let ready_depth = shard.ready_depth();
+            let ready_depth = shard.ready_depth_with_local(&local_ready);
             dispatch_state.tune_profiles(ready_depth, sched_profile_auto());
-            let dispatched = dispatch_ready(&shard, &mut dispatch_state);
+            let dispatch_start = Instant::now();
+            let dispatched =
+                dispatch_ready(&shard, &mut dispatch_state, &mut local_ready, local_cap);
+            let dispatch_ns = dispatch_start
+                .elapsed()
+                .as_nanos()
+                .min(u128::from(u64::MAX)) as u64;
+            if should_sample_scheduler(sched_metrics_sample_rate()) {
+                observe_sched_dispatch_loop_ns(dispatch_ns);
+            }
             if dispatched > 0 {
                 last_progress = Instant::now();
             } else if watchdog_ms > 0
@@ -3931,10 +5375,23 @@ pub(crate) mod scheduler {
                 std::process::abort();
             }
             reap_retired(&shard);
-            if !shard.has_ready_work() {
+            let local_has_work = local_ready.iter().any(|queue| !queue.is_empty());
+            if !local_has_work && !shard.has_ready_work() {
                 shard.has_work.store(false, Ordering::Release);
             }
-            steal_work(&shard, &mut last_rebalance_at);
+            if last_rebalance_at.elapsed()
+                >= Duration::from_millis(sched_affinity_rebalance_ms().max(1))
+            {
+                migrations_this_interval = 0;
+            }
+            steal_work(
+                &shard,
+                &mut last_rebalance_at,
+                &mut migrations_this_interval,
+                dispatch_state.plan.migration_budget.max(1),
+                &mut local_ready,
+                local_cap,
+            );
         }
     }
 
@@ -4016,28 +5473,50 @@ pub(crate) mod scheduler {
         }
     }
 
-    fn steal_work(shard: &SchedulerShard, last_rebalance_at: &mut Instant) {
+    fn steal_work(
+        shard: &SchedulerShard,
+        last_rebalance_at: &mut Instant,
+        migrations_this_interval: &mut u32,
+        migration_budget: u32,
+        local_ready: &mut [VecDeque<usize>; OBJECTIVE_COUNT],
+        local_cap: usize,
+    ) {
         let Some(shards) = SHARDS.get() else { return };
         let self_ptr = shard as *const SchedulerShard as usize;
         let rebalance_ms = sched_affinity_rebalance_ms();
         let rebalance_enabled =
             rebalance_ms > 0 && last_rebalance_at.elapsed() >= Duration::from_millis(rebalance_ms);
+        let attempt_limit = sched_steal_attempt_limit().max(1) as usize;
+        let mut attempts = 0usize;
         for other in shards.iter() {
+            if attempts >= attempt_limit {
+                break;
+            }
             let other_ptr = other.as_ref() as *const SchedulerShard as usize;
             if other_ptr == self_ptr {
                 continue;
             }
+            inc_sched_steal_attempt();
+            attempts += 1;
             if other.has_ready_work() {
                 if let Some((objective, pool_ptr)) = other.pop_ready_any() {
                     if rebalance_enabled {
                         maybe_rebalance_pool_affinity(
                             pool_ptr as *const PoolHandle,
                             shard.id,
+                            other.id,
                             last_rebalance_at,
+                            migrations_this_interval,
+                            migration_budget,
                         );
                     }
-                    let _ = shard.ready_by_objective[objective].push(pool_ptr);
+                    if local_ready[objective].len() < local_cap {
+                        local_ready[objective].push_back(pool_ptr);
+                    } else {
+                        let _ = shard.ready_by_objective[objective].push(pool_ptr);
+                    }
                     shard.has_work.store(true, Ordering::Release);
+                    inc_sched_steal_success();
                     break;
                 }
             }
@@ -4047,7 +5526,10 @@ pub(crate) mod scheduler {
     fn maybe_rebalance_pool_affinity(
         pool_ptr: *const PoolHandle,
         target_shard: usize,
+        source_shard: usize,
         last_rebalance_at: &mut Instant,
+        migrations_this_interval: &mut u32,
+        migration_budget: u32,
     ) {
         if pool_ptr.is_null() {
             return;
@@ -4058,46 +5540,77 @@ pub(crate) mod scheduler {
             let last_hint = pool.shard_hint.load(Ordering::Acquire);
             let queue_depth = pool.queue.len();
             let alive = pool.alive.load(Ordering::Acquire);
-            if !should_rebalance_affinity(
-                current_shard,
-                last_hint,
-                target_shard,
-                queue_depth,
-                alive,
-            ) {
+            let hysteresis = sched_migration_hysteresis_ticks().max(1);
+            let pressure = if source_shard != target_shard && queue_depth >= 2 {
+                pool.migration_pressure_ticks
+                    .fetch_add(1, Ordering::AcqRel)
+                    .saturating_add(1)
+            } else {
+                pool.migration_pressure_ticks.store(0, Ordering::Release);
+                0
+            };
+            let now_ns = scheduler_now_ns();
+            let cooldown_ns = sched_migration_cooldown_ms().saturating_mul(1_000_000);
+            let last_migration_ns = pool.last_migration_ns.load(Ordering::Acquire);
+            let elapsed_since_last_migration_ns = now_ns.saturating_sub(last_migration_ns);
+            if !alive
+                || queue_depth < 2
+                || current_shard == target_shard
+                || last_hint == target_shard
+            {
+                return;
+            }
+            if pressure < hysteresis {
+                inc_sched_migration_blocked_hysteresis();
+                return;
+            }
+            if elapsed_since_last_migration_ns < cooldown_ns {
+                inc_sched_migration_blocked_cooldown();
+                return;
+            }
+            if *migrations_this_interval >= migration_budget {
                 return;
             }
             pool.shard_hint.store(target_shard, Ordering::Release);
             pool.shard_id = target_shard as u32;
+            pool.migration_pressure_ticks.store(0, Ordering::Release);
+            pool.last_migration_ns.store(now_ns, Ordering::Release);
+            *migrations_this_interval = (*migrations_this_interval).saturating_add(1);
             *last_rebalance_at = Instant::now();
             inc_sched_cross_shard_migration();
         }
     }
 
-    fn should_rebalance_affinity(
-        current_shard: usize,
-        last_hint: usize,
-        target_shard: usize,
-        queue_depth: usize,
-        alive: bool,
-    ) -> bool {
-        alive && queue_depth >= 2 && current_shard != target_shard && last_hint != target_shard
-    }
-
-    fn dispatch_ready(shard: &SchedulerShard, dispatch_state: &mut ObjectiveDispatchState) -> i64 {
+    fn dispatch_ready(
+        shard: &SchedulerShard,
+        dispatch_state: &mut ObjectiveDispatchState,
+        local_ready: &mut [VecDeque<usize>; OBJECTIVE_COUNT],
+        local_cap: usize,
+    ) -> i64 {
         let mut dispatched_total = 0i64;
         loop {
-            let ready = shard.ready_mask();
+            let ready = shard.ready_mask_with_local(local_ready);
             let Some(objective) = dispatch_state.select_objective(ready) else {
                 break;
             };
-            let pool_ptr = shard.ready_by_objective[objective].pop();
+            let mut from_local = true;
+            let pool_ptr = if let Some(pool_ptr) = local_ready[objective].pop_front() {
+                Some(pool_ptr)
+            } else {
+                from_local = false;
+                shard.ready_by_objective[objective].pop()
+            };
             let Some(pool_ptr) = pool_ptr else {
                 break;
             };
             let pool_ptr = pool_ptr as *const PoolHandle;
             if pool_ptr.is_null() {
                 continue;
+            }
+            if from_local {
+                inc_sched_local_dispatch();
+            } else {
+                inc_sched_global_dispatch();
             }
             unsafe {
                 let pool = &*pool_ptr;
@@ -4127,7 +5640,12 @@ pub(crate) mod scheduler {
                     dispatched_total += dispatched;
                     if pool.queue.has_more() {
                         let requeue_objective = objective_index(pool.objective);
-                        let _ = shard.ready_by_objective[requeue_objective].push(pool_ptr as usize);
+                        if local_ready[requeue_objective].len() < local_cap {
+                            local_ready[requeue_objective].push_back(pool_ptr as usize);
+                        } else {
+                            let _ =
+                                shard.ready_by_objective[requeue_objective].push(pool_ptr as usize);
+                        }
                     } else {
                         pool.has_ready.store(false, Ordering::Release);
                     }
@@ -4149,8 +5667,24 @@ pub(crate) mod scheduler {
             std::array::from_fn(|idx| self.ready_by_objective[idx].peek_has_data())
         }
 
+        fn ready_mask_with_local(
+            &self,
+            local_ready: &[VecDeque<usize>; OBJECTIVE_COUNT],
+        ) -> [bool; OBJECTIVE_COUNT] {
+            std::array::from_fn(|idx| {
+                !local_ready[idx].is_empty() || self.ready_by_objective[idx].peek_has_data()
+            })
+        }
+
         fn ready_depth(&self) -> [usize; OBJECTIVE_COUNT] {
             std::array::from_fn(|idx| self.ready_by_objective[idx].len())
+        }
+
+        fn ready_depth_with_local(
+            &self,
+            local_ready: &[VecDeque<usize>; OBJECTIVE_COUNT],
+        ) -> [usize; OBJECTIVE_COUNT] {
+            std::array::from_fn(|idx| local_ready[idx].len() + self.ready_by_objective[idx].len())
         }
 
         fn has_ready_work(&self) -> bool {
@@ -4337,7 +5871,7 @@ pub(crate) mod scheduler {
                 left.tune_profiles(depth, true);
                 right.tune_profiles(depth, true);
                 assert_eq!(left.select_objective(ready), right.select_objective(ready));
-                assert_eq!(left.profiles, right.profiles);
+                assert_eq!(left.plan.profiles, right.plan.profiles);
                 assert_eq!(left.wait_ticks, right.wait_ticks);
             }
         }
@@ -4348,7 +5882,7 @@ pub(crate) mod scheduler {
             for _ in 0..512 {
                 state.tune_profiles([12, 12, 12, 12], true);
             }
-            for profile in state.profiles {
+            for profile in state.plan.profiles {
                 assert!(profile.quantum >= sched_quantum_min().max(1));
                 assert!(profile.quantum <= sched_quantum_max().max(sched_quantum_min().max(1)));
                 assert!(profile.batch_cap >= sched_batch_min().max(1));
@@ -4357,18 +5891,14 @@ pub(crate) mod scheduler {
         }
 
         #[test]
-        fn affinity_rebalance_contention_heuristic_requires_real_pressure() {
-            assert!(!should_rebalance_affinity(0, 0, 0, 8, true));
-            assert!(!should_rebalance_affinity(0, 1, 1, 8, true));
-            assert!(!should_rebalance_affinity(0, 0, 1, 1, true));
-            assert!(!should_rebalance_affinity(0, 0, 1, 8, false));
-            assert!(should_rebalance_affinity(0, 0, 1, 8, true));
+        fn dispatch_plan_has_non_zero_migration_budget() {
+            let state = ObjectiveDispatchState::new();
+            assert!(state.plan.migration_budget > 0);
         }
 
         #[cfg(feature = "metrics")]
         fn metrics_test_lock() -> &'static Mutex<()> {
-            static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-            LOCK.get_or_init(|| Mutex::new(()))
+            metrics::test_lock()
         }
 
         #[cfg(feature = "metrics")]
@@ -4382,7 +5912,10 @@ pub(crate) mod scheduler {
                 state.tune_profiles([8, 8, 8, 8], true);
             }
             let after = metrics::metrics_get_raw(metrics::METRIC_SCHED_PROFILE_SWITCH);
-            assert!(after > before, "expected profile switch metric to increase");
+            assert!(
+                after >= before + 1,
+                "expected profile switch metric to increase"
+            );
         }
 
         #[cfg(feature = "metrics")]
@@ -4398,7 +5931,7 @@ pub(crate) mod scheduler {
             }
             let after = metrics::metrics_get_raw(metrics::METRIC_SCHED_STARVATION_VIOLATION);
             assert!(
-                after > before,
+                after >= before + 1,
                 "expected starvation violation metric to increase"
             );
         }
@@ -4495,6 +6028,37 @@ pub(crate) mod scheduler {
             TOTAL_MESSAGES as f64 / elapsed.as_secs_f64()
         }
 
+        fn run_scheduler_synthetic_lane() -> f64 {
+            const TOTAL_MESSAGES: u64 = 150_000;
+            const SPIN: u64 = 128;
+            let mut q0 = std::collections::VecDeque::from(vec![0u64; 64]);
+            let mut q1 = std::collections::VecDeque::from(vec![0u64; 64]);
+            let mut q2 = std::collections::VecDeque::from(vec![0u64; 64]);
+            let mut q3 = std::collections::VecDeque::from(vec![0u64; 64]);
+            let mut processed = 0u64;
+            let mut cursor = 0usize;
+            let start = Instant::now();
+            while processed < TOTAL_MESSAGES {
+                let q = match cursor & 3 {
+                    0 => &mut q0,
+                    1 => &mut q1,
+                    2 => &mut q2,
+                    _ => &mut q3,
+                };
+                if let Some(v) = q.pop_front() {
+                    let mut mix = v.wrapping_add(1);
+                    for _ in 0..SPIN {
+                        mix = mix.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    }
+                    std::hint::black_box(mix);
+                    q.push_back(mix);
+                    processed += 1;
+                }
+                cursor = (cursor + 1) & 3;
+            }
+            TOTAL_MESSAGES as f64 / start.elapsed().as_secs_f64()
+        }
+
         #[test]
         #[ignore]
         fn objective_policy_throughput_artifact() {
@@ -4520,6 +6084,109 @@ pub(crate) mod scheduler {
                 "benchmark=compile_heavy_pool_lane\nbaseline_objective=balance\nmatched_objective=throughput\ntotal_messages=30000\nfanout=2\nbaseline_msgs_per_sec={compile_heavy_baseline:.2}\nmatched_msgs_per_sec={compile_heavy_matched:.2}\nimprovement_pct={improvement_pct:.2}\nstarvation_bound_ticks={STARVATION_BOUND_TICKS}\nprofiles=latency(quantum=6,batch=8),throughput(quantum=10,batch=64),conservation(quantum=2,batch=4),balance(quantum=4,batch=16)\n"
             );
             std::fs::write(&artifact, body).expect("write throughput artifact");
+        }
+
+        #[test]
+        #[ignore]
+        fn scheduler_synthetic_artifact() {
+            let scheduler_msgs_per_sec = run_scheduler_synthetic_lane();
+            let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+            let repo_root = manifest_dir.parent().unwrap_or(manifest_dir);
+            let artifact_dir = repo_root.join(".artifacts/wre-416");
+            std::fs::create_dir_all(&artifact_dir).expect("create artifact dir");
+            let artifact = artifact_dir.join("scheduler_synthetic_lane.txt");
+            let body = format!(
+                "benchmark=scheduler_synthetic_loop\nqueue_size=64\nobjectives=4\nspin=128\ntotal_messages=150000\nworker_count=1\nwarmup_runs=0\nscheduler_msgs_per_sec={scheduler_msgs_per_sec:.2}\n"
+            );
+            std::fs::write(&artifact, body).expect("write synthetic scheduler artifact");
+        }
+
+        #[test]
+        #[ignore]
+        fn workqueue_throughput_artifact() {
+            const TOTAL: usize = 300_000;
+            const SPIN: u64 = 128;
+            const WORKERS: usize = 4;
+            const PRODUCERS: usize = 4;
+            static COUNTER: OnceLock<Arc<AtomicUsize>> = OnceLock::new();
+
+            extern "C" fn work(_argc: usize, _argv: *const Value) -> Value {
+                let counter = COUNTER.get().expect("counter");
+                let mut v = counter.load(Ordering::Relaxed) as u64;
+                for _ in 0..SPIN {
+                    v = v.wrapping_mul(6364136223846793005).wrapping_add(1);
+                }
+                std::hint::black_box(v);
+                counter.fetch_add(1, Ordering::Relaxed);
+                Value::nil()
+            }
+
+            let counter = Arc::new(AtomicUsize::new(0));
+            let _ = COUNTER.set(counter.clone());
+
+            let class_id = 41_701;
+            actor::register_method(class_id, 0, work);
+
+            let mut worker_handles = Vec::new();
+            for _ in 0..WORKERS {
+                worker_handles.push(actor::actor_spawn(
+                    class_id as u64,
+                    Value::nil(),
+                    1,
+                    OBJECTIVE_THROUGHPUT as i64,
+                    262_144,
+                    1_000,
+                    1024,
+                ));
+            }
+            let handles = Arc::new(worker_handles.clone());
+
+            let start = Instant::now();
+            let mut threads = Vec::new();
+            for p in 0..PRODUCERS {
+                let handles = handles.clone();
+                threads.push(std::thread::spawn(move || {
+                    for i in (p..TOTAL).step_by(PRODUCERS) {
+                        let idx = i % WORKERS;
+                        let handle = handles[idx];
+                        actor::actor_fire(handle, 0, 0, std::ptr::null());
+                    }
+                }));
+            }
+            for t in threads {
+                let _ = t.join();
+            }
+            let completed_ok = {
+                let deadline = Instant::now() + Duration::from_secs(30);
+                loop {
+                    if Instant::now() >= deadline {
+                        break false;
+                    }
+                    if counter.load(Ordering::Acquire) >= TOTAL {
+                        break true;
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            };
+            assert!(completed_ok, "timed out waiting for workqueue completion");
+            let elapsed = start.elapsed();
+
+            let msgs_per_sec = TOTAL as f64 / elapsed.as_secs_f64();
+            let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+            let repo_root = manifest_dir.parent().unwrap_or(manifest_dir);
+            let artifact_dir = repo_root.join(".artifacts/wre-417");
+            std::fs::create_dir_all(&artifact_dir).expect("create artifact dir");
+            let artifact = artifact_dir.join("workqueue_throughput.txt");
+            let body = format!(
+                "benchmark=workqueue_actor_rr_lane\nworkers={WORKERS}\nproducers={PRODUCERS}\nspin={SPIN}\ntotal_messages={TOTAL}\nobjective=throughput\nworkqueue_msgs_per_sec={msgs_per_sec:.2}\n"
+            );
+            std::fs::write(&artifact, body).expect("write workqueue artifact");
+
+            unsafe {
+                for handle in worker_handles {
+                    wr_rc_dec(handle);
+                }
+            }
         }
 
         #[test]

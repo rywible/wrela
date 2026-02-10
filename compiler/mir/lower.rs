@@ -2268,14 +2268,27 @@ impl FunctionLowerer {
                 }
             }
             Expr::Call { callee, .. } | Expr::GivenCall { callee, .. } => {
+                let mut handled = false;
                 if let Expr::Variable(name) = &body.exprs[*callee] {
                     if let Some(id) = self.type_tags.get(name).copied() {
                         target = Some(Value::Const(Literal::Integer(id.0 as i64)));
+                        // `detach` on actor classes should always have a concrete instance.
+                        // Some actor-class "constructor" call shapes don't lower to a normal
+                        // `ClassInit` expression here, so build the instance explicitly from
+                        // class metadata (same strategy as Pool.of fast paths).
+                        if let Some(class) = self.class_target_info(body, *callee) {
+                            let value = self.build_class_instance(&class, span);
+                            instance = Some(value.clone());
+                            lowered = Some(value);
+                            handled = true;
+                        }
                     }
                 }
-                let value = self.lower_expr(body, target_expr);
-                instance = Some(value.clone());
-                lowered = Some(value);
+                if !handled {
+                    let value = self.lower_expr(body, target_expr);
+                    instance = Some(value.clone());
+                    lowered = Some(value);
+                }
             }
             _ => {
                 let value = self.lower_expr(body, target_expr);

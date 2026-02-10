@@ -17,6 +17,12 @@ If `--perf-gate=PATH` is provided, step 3 also receives:
   - `--kpi-check-batch-min=<N>`
   - `--kpi-scheduler-p99-improve-min-pct=<N>`
   - `--kpi-rewrite-overhead-max-pct=<N>`
+  - `--kpi-actor-throughput-improve-min-pct=<N>`
+  - `--kpi-queue-age-p99-max-regress-pct=<N>`
+  - `--kpi-starvation-violations-max=<N>`
+  - `--kpi-scheduler-throughput-improve-min-pct=<N>`
+  - `--kpi-scheduler-loop-p99-max-regress-pct=<N>`
+  - `--kpi-scheduler-local-hit-min=<N>`
 
 ## Usage
 
@@ -25,6 +31,8 @@ cargo run -p wrela -- matrix
 cargo run -p wrela -- matrix --runs=1
 cargo run -p wrela -- matrix --runs=1 --perf-gate=.artifacts/perf/baseline.json --perf-max-regression-pct=5
 cargo run -p wrela -- matrix --runs=1 --perf-gate=.artifacts/perf/baseline.json --perf-max-regression-pct=5 --kpi-check-fallback-max=0.20 --kpi-check-batch-min=6 --kpi-scheduler-p99-improve-min-pct=10 --kpi-rewrite-overhead-max-pct=5
+cargo run -p wrela -- matrix --runs=1 --perf-gate=.artifacts/perf/baseline.json --perf-max-regression-pct=5 --kpi-actor-throughput-improve-min-pct=0 --kpi-queue-age-p99-max-regress-pct=10 --kpi-starvation-violations-max=0
+cargo run -p wrela -- matrix --runs=1 --perf-gate=.artifacts/perf/baseline.json --perf-max-regression-pct=5 --kpi-scheduler-throughput-improve-min-pct=0 --kpi-scheduler-loop-p99-max-regress-pct=20 --kpi-scheduler-local-hit-min=0.25
 ```
 
 ## Evidence Output
