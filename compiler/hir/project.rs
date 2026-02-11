@@ -1,7 +1,7 @@
 use crate::hir::arena::Idx;
 use crate::hir::lower::{lower, lower_root_body};
 use crate::hir::{
-    Arg, Body, Expr, Function, FunctionKind, Literal, Module, Stmt, UseName, UseNameKind,
+    Arg, Body, Expr, Function, FunctionKind, Literal, Module, Stmt, UnaryOp, UseName, UseNameKind,
     Visibility,
 };
 use crate::parser;
@@ -197,7 +197,7 @@ pub fn load_project_with_roots(
     loader.enforce_external_call_policy();
     let classified_effects = loader.classify_function_effects();
     loader.enforce_network_boundary_policy(&classified_effects);
-    loader.enforce_domain_network_policy(&classified_effects);
+    loader.enforce_domain_purity_policy(&classified_effects);
     if !loader.errors.is_empty() {
         return Err(loader.errors);
     }
@@ -1230,7 +1230,7 @@ impl ProjectLoader {
         out
     }
 
-    fn enforce_domain_network_policy(&mut self, effects: &[ClassifiedFunctionEffect]) {
+    fn enforce_domain_purity_policy(&mut self, effects: &[ClassifiedFunctionEffect]) {
         if self.project_mode != ProjectMode::Project {
             return;
         }
@@ -1238,22 +1238,42 @@ impl ProjectLoader {
             if classify_module_layer(effect.entry.module.as_str()) != ModuleLayer::Domain {
                 continue;
             }
-            if effect.entry.effect != FunctionEffect::Network {
-                continue;
+            if effect.entry.effect != FunctionEffect::Pure {
+                let Some(module) = self.modules.get(&effect.entry.module) else {
+                    continue;
+                };
+                self.errors.push(ProjectError {
+                    path: module.path.clone(),
+                    source: module.source.clone(),
+                    message: format!(
+                        "domain function '{}::{}' is classified as {} effect. domain code must stay pure; move host/network I/O into infrastructure and call through application/composition",
+                        effect.entry.module,
+                        effect.entry.function,
+                        effect.entry.effect
+                    ),
+                    span: span_from_range(
+                        effect
+                            .name_span
+                            .unwrap_or_else(|| TextRange::empty(0.into())),
+                    ),
+                });
             }
             let Some(module) = self.modules.get(&effect.entry.module) else {
+                continue;
+            };
+            let Some((keyword, span)) =
+                find_disallowed_domain_async_keyword(module, &effect.entry.function)
+            else {
                 continue;
             };
             self.errors.push(ProjectError {
                 path: module.path.clone(),
                 source: module.source.clone(),
                 message: format!(
-                    "domain function '{}::{}' is classified as {} effect. teacher fix recipe: define a domain interface, move the network call into infrastructure, and wire the implementation in application/composition",
-                    effect.entry.module,
-                    effect.entry.function,
-                    effect.entry.effect
+                    "domain function '{}::{}' uses '{}' which is async/concurrency orchestration. keep domain deterministic and synchronous; move this logic to application/infrastructure",
+                    effect.entry.module, effect.entry.function, keyword
                 ),
-                span: span_from_range(effect.name_span.unwrap_or_else(|| TextRange::empty(0.into()))),
+                span: span_from_range(span),
             });
         }
     }
@@ -2032,6 +2052,155 @@ fn collect_called_functions_in_expr(
                     collect_called_functions_in_expr(body, *expr, called);
                 }
             }
+        }
+    }
+}
+
+fn find_disallowed_domain_async_keyword(
+    module: &LoadedModule,
+    function_name: &SmolStr,
+) -> Option<(&'static str, TextRange)> {
+    let (_, func) = module
+        .module
+        .functions
+        .iter()
+        .find(|(_, func)| &func.name == function_name)?;
+    let body = func.body.as_ref()?;
+    find_disallowed_domain_async_keyword_in_block(body, &body.root_stmts)
+}
+
+fn find_disallowed_domain_async_keyword_in_block(
+    body: &Body,
+    stmts: &[Idx<Stmt>],
+) -> Option<(&'static str, TextRange)> {
+    for stmt_id in stmts {
+        let found = match &body.stmts[*stmt_id] {
+            Stmt::Expr(expr) => find_disallowed_domain_async_keyword_in_expr(body, *expr),
+            Stmt::Assert { expr, .. } => find_disallowed_domain_async_keyword_in_expr(body, *expr),
+            Stmt::Require { condition, message } => {
+                find_disallowed_domain_async_keyword_in_expr(body, *condition)
+                    .or_else(|| find_disallowed_domain_async_keyword_in_expr(body, *message))
+            }
+            Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::Capture { value, .. } => {
+                find_disallowed_domain_async_keyword_in_expr(body, *value)
+            }
+            Stmt::Optimize { body: opt_body, .. } => {
+                find_disallowed_domain_async_keyword_in_block(body, opt_body)
+            }
+            Stmt::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => find_disallowed_domain_async_keyword_in_expr(body, *condition)
+                .or_else(|| find_disallowed_domain_async_keyword_in_block(body, then_branch))
+                .or_else(|| {
+                    else_branch.as_ref().and_then(|branch| {
+                        find_disallowed_domain_async_keyword_in_block(body, branch)
+                    })
+                }),
+            Stmt::For {
+                iterable,
+                body: loop_body,
+                ..
+            } => find_disallowed_domain_async_keyword_in_expr(body, *iterable)
+                .or_else(|| find_disallowed_domain_async_keyword_in_block(body, loop_body)),
+            Stmt::Match {
+                subject,
+                cases,
+                otherwise,
+            } => {
+                let mut found = find_disallowed_domain_async_keyword_in_expr(body, *subject);
+                for case in cases {
+                    found = found.or_else(|| {
+                        find_disallowed_domain_async_keyword_in_block(body, &case.body)
+                    });
+                }
+                found.or_else(|| {
+                    otherwise.as_ref().and_then(|other| {
+                        find_disallowed_domain_async_keyword_in_block(body, other)
+                    })
+                })
+            }
+            Stmt::IgnoreResult { expr } | Stmt::Defer { expr } => {
+                find_disallowed_domain_async_keyword_in_expr(body, *expr)
+            }
+            Stmt::While {
+                condition,
+                body: loop_body,
+            } => find_disallowed_domain_async_keyword_in_expr(body, *condition)
+                .or_else(|| find_disallowed_domain_async_keyword_in_block(body, loop_body)),
+            Stmt::Return(expr) => expr
+                .as_ref()
+                .and_then(|value| find_disallowed_domain_async_keyword_in_expr(body, *value)),
+            Stmt::Use { .. } | Stmt::Break | Stmt::Continue => None,
+        };
+        if found.is_some() {
+            return found;
+        }
+    }
+    None
+}
+
+fn find_disallowed_domain_async_keyword_in_expr(
+    body: &Body,
+    expr_id: Idx<Expr>,
+) -> Option<(&'static str, TextRange)> {
+    match &body.exprs[expr_id] {
+        Expr::Literal(_) | Expr::Variable(_) => None,
+        Expr::Detach { target, .. } => Some(("detach", body.expr_span(expr_id)))
+            .or_else(|| find_disallowed_domain_async_keyword_in_expr(body, *target)),
+        Expr::Unary { op, expr, op_span } => match op {
+            UnaryOp::Await => Some(("await", *op_span)),
+            UnaryOp::Spawn => Some(("spawn", *op_span)),
+            UnaryOp::Fire => Some(("fire", *op_span)),
+            _ => find_disallowed_domain_async_keyword_in_expr(body, *expr),
+        },
+        Expr::Binary { lhs, rhs, .. } => find_disallowed_domain_async_keyword_in_expr(body, *lhs)
+            .or_else(|| find_disallowed_domain_async_keyword_in_expr(body, *rhs)),
+        Expr::TypeApply { callee, .. } => {
+            find_disallowed_domain_async_keyword_in_expr(body, *callee)
+        }
+        Expr::Crash { expr } => find_disallowed_domain_async_keyword_in_expr(body, *expr),
+        Expr::Call { callee, args, .. } | Expr::GivenCall { callee, args, .. } => {
+            let mut found = find_disallowed_domain_async_keyword_in_expr(body, *callee);
+            for arg in args {
+                let arg_expr = match arg {
+                    Arg::Positional { value, .. } | Arg::Named { value, .. } => *value,
+                };
+                found =
+                    found.or_else(|| find_disallowed_domain_async_keyword_in_expr(body, arg_expr));
+            }
+            found
+        }
+        Expr::Member { object, .. } => find_disallowed_domain_async_keyword_in_expr(body, *object),
+        Expr::List(items) => {
+            for item in items {
+                if let Some(found) = find_disallowed_domain_async_keyword_in_expr(body, *item) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        Expr::Map(items) => {
+            for (key, value) in items {
+                if let Some(found) = find_disallowed_domain_async_keyword_in_expr(body, *key) {
+                    return Some(found);
+                }
+                if let Some(found) = find_disallowed_domain_async_keyword_in_expr(body, *value) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        Expr::StringInterp(parts) => {
+            for part in parts {
+                if let crate::hir::StringPart::Expr(expr) = part {
+                    if let Some(found) = find_disallowed_domain_async_keyword_in_expr(body, *expr) {
+                        return Some(found);
+                    }
+                }
+            }
+            None
         }
     }
 }

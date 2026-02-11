@@ -316,9 +316,9 @@ use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
 use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 #[cfg(test)]
 use std::sync::atomic::AtomicI8;
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 

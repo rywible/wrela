@@ -2518,7 +2518,7 @@ fn cli_perf_gate_fails_with_synthetic_slowdown() {
 }
 
 #[test]
-fn cli_test_single_file_runs() {
+fn cli_test_single_file_is_rejected() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("spec.wr");
     std::fs::write(
@@ -2532,13 +2532,16 @@ fn cli_test_single_file_runs() {
         .arg(&path)
         .output()
         .expect("run wrela");
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("spec::test_basic"));
+    assert!(
+        !output.status.success(),
+        "single-file test target should fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("no longer supports single-file targets"));
 }
 
 #[test]
-fn cli_test_single_file_without_tests_is_ok() {
+fn cli_test_single_file_without_tests_is_rejected() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("spec.wr");
     std::fs::write(&path, "to compute_value() -> Integer:\n    return 1\n").unwrap();
@@ -2548,10 +2551,32 @@ fn cli_test_single_file_without_tests_is_ok() {
         .arg(&path)
         .output()
         .expect("run wrela");
-    assert!(output.status.success());
+    assert!(
+        !output.status.success(),
+        "single-file test target should fail"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("no tests found"));
+    assert!(stderr.contains("no longer supports single-file targets"));
     assert!(stderr.contains(&path.display().to_string()));
+}
+
+#[test]
+fn cli_build_single_file_is_rejected() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("spec.wr");
+    std::fs::write(&path, "to run() -> Integer:\n    return 1\n").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("build")
+        .arg(&path)
+        .output()
+        .expect("run wrela");
+    assert!(
+        !output.status.success(),
+        "single-file build target should fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("requires project layout (`src/**`)"));
 }
 
 #[test]
