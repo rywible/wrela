@@ -1,0 +1,13 @@
+so:
+    HTTP connector helper routed through replay/record cassette engine.
+
+to try_to_http_call(
+    service: String,
+    endpoint: String,
+    method: String,
+    url: String,
+    headers: Map,
+    body: String,
+    timeout_ms: Integer
+) -> Result[String]:
+    return __wr_http_call(service, endpoint, method, url, headers, body, timeout_ms)

@@ -2,6 +2,7 @@
 
 use miette::{Diagnostic, NamedSource, Report, SourceSpan};
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::env;
 use std::fs;
 use std::io::{self};
@@ -11,6 +12,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use wrela::hir;
 use wrela::mir;
+use wrela::parser;
+
+#[path = "wrela/repro.rs"]
+mod repro;
 
 #[derive(Debug, Error, Diagnostic)]
 #[error("{message}")]
@@ -47,6 +52,14 @@ fn main() {
     let mut poll_ms: Option<u64> = None;
     let mut test_jobs: Option<usize> = None;
     let mut test_timeout_ms: Option<u64> = None;
+    let mut test_record = false;
+    let mut test_update_public_surface = false;
+    let mut test_list = false;
+    let mut test_id: Option<String> = None;
+    let mut test_filter: Option<String> = None;
+    let mut test_lane: Option<String> = None;
+    let mut test_seed: Option<u64> = None;
+    let mut repro_artifact_path: Option<String> = None;
     let mut perf_debug = false;
     let mut perf_runs: Option<usize> = None;
     let mut perf_baseline_out: Option<String> = None;
@@ -109,6 +122,52 @@ fn main() {
         if let Some(ms) = arg.strip_prefix("--test-timeout-ms=") {
             test_timeout_ms = ms.parse::<u64>().ok();
             continue;
+        }
+        if arg == "--record" {
+            test_record = true;
+            continue;
+        }
+        if arg == "--update-public-surface" {
+            test_update_public_surface = true;
+            continue;
+        }
+        if arg == "--list" {
+            test_list = true;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--id=") {
+            test_id = Some(value.to_string());
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--filter=") {
+            test_filter = Some(value.to_string());
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--lane=") {
+            test_lane = Some(value.to_string());
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--seed=") {
+            match value.parse::<u64>() {
+                Ok(seed) => test_seed = Some(seed),
+                Err(_) => {
+                    eprintln!("error: invalid --seed value `{value}`");
+                    std::process::exit(EXIT_USAGE);
+                }
+            }
+            continue;
+        }
+        if let Some(path) = arg.strip_prefix("--repro=") {
+            repro_artifact_path = Some(path.to_string());
+            continue;
+        }
+        if arg == "--repro" {
+            if let Some(path) = iter.next() {
+                repro_artifact_path = Some(path);
+                continue;
+            }
+            eprintln!("error: missing path for --repro");
+            std::process::exit(EXIT_USAGE);
         }
         if arg == "--perf-debug" {
             perf_debug = true;
@@ -226,6 +285,45 @@ fn main() {
         scheduler_loop_p99_max_regress_pct: kpi_scheduler_loop_p99_max_regress_pct,
         scheduler_local_hit_min: kpi_scheduler_local_hit_min,
     };
+    if command != "test" && (test_record || test_update_public_surface) {
+        eprintln!("error: --record and --update-public-surface are only valid with `wrela test`");
+        std::process::exit(EXIT_USAGE);
+    }
+    if command != "test"
+        && (test_list || test_id.is_some() || test_filter.is_some() || test_lane.is_some())
+    {
+        eprintln!("error: --list, --id, --filter, and --lane are only valid with `wrela test`");
+        std::process::exit(EXIT_USAGE);
+    }
+    if command != "test" && test_seed.is_some() {
+        eprintln!("error: --seed is only valid with `wrela test`");
+        std::process::exit(EXIT_USAGE);
+    }
+    if command != "test" && repro_artifact_path.is_some() {
+        eprintln!("error: --repro is only valid with `wrela test`");
+        std::process::exit(EXIT_USAGE);
+    }
+    let parsed_test_lane = if let Some(raw_lane) = test_lane.as_deref() {
+        match parse_test_lane_filter(raw_lane) {
+            Some(lane) => Some(lane),
+            None => {
+                eprintln!(
+                    "error: invalid --lane value `{raw_lane}` (expected one of spec|integration|sim|model|default)"
+                );
+                std::process::exit(EXIT_USAGE);
+            }
+        }
+    } else {
+        None
+    };
+    let test_selection = TestSelection {
+        list: test_list,
+        id: test_id,
+        filter: test_filter,
+        lane: parsed_test_lane,
+        include_ids: None,
+        cert_selection_report: None,
+    };
 
     match command {
         "init" => {
@@ -280,6 +378,7 @@ fn main() {
             if trace {
                 eprintln!("build: command build");
             }
+            let build_start = Instant::now();
             if !program_args.is_empty() {
                 eprintln!("error: unexpected extra arguments");
                 std::process::exit(EXIT_USAGE);
@@ -292,11 +391,124 @@ fn main() {
                     std::process::exit(EXIT_USAGE);
                 }
             };
+            let workspace_root = project_root_for_entry(&entry_path);
+            let budget_policy = resolve_budget_policy_v1(test_jobs, test_timeout_ms);
+            let jobs = budget_policy.test_jobs.value as usize;
+            let timeout = Duration::from_millis(budget_policy.test_timeout_ms.value);
+            let legacy_to_qualified_ids = match collect_source_function_id_aliases(&workspace_root)
+            {
+                Ok(map) => map,
+                Err(err) => {
+                    eprintln!("certification coverage id map error: {err}");
+                    std::process::exit(EXIT_CODEGEN);
+                }
+            };
+            let toolchain_version = resolve_toolchain_version();
+            let source_hash = match hash_source_fingerprint(&workspace_root) {
+                Ok(hash) => hash,
+                Err(err) => {
+                    eprintln!("certification cache error: {err}");
+                    std::process::exit(EXIT_CODEGEN);
+                }
+            };
+            let cert_cache_hash = certification_cache_hash(&source_hash, &toolchain_version);
+            let cert_cache_dir = workspace_root
+                .join("target")
+                .join("wrela_cert")
+                .join(&cert_cache_hash);
+            let cert_report_path = cert_cache_dir.join("cert.json");
+            let function_coverage_path = cert_cache_dir.join("function_coverage.json");
+            let mut cert_cache_hit = cert_report_path.is_file() && function_coverage_path.is_file();
+            let mut cert_cache_reason = if cert_cache_hit {
+                "unchanged-certified-inputs".to_string()
+            } else {
+                "cache-miss-or-first-run".to_string()
+            };
+            let certification_start = Instant::now();
+            let mut differential_results_hash: Option<String> = None;
+            let mut mutation_summary_hash: Option<String> = None;
+            let mut cached_coverage_snapshot = None;
+            if cert_cache_hit {
+                emit_certification_cache_hit(output_format, &cert_cache_hash, &cert_cache_dir);
+                match load_function_coverage_snapshot(&function_coverage_path) {
+                    Ok(snapshot) => cached_coverage_snapshot = Some(snapshot),
+                    Err(err) => {
+                        cert_cache_hit = false;
+                        cert_cache_reason = "cache-schema-stale-recomputed".to_string();
+                        eprintln!(
+                            "certification cache stale; recomputing certification artifacts: {err}"
+                        );
+                    }
+                }
+            }
+            let function_coverage = if let Some(snapshot) = cached_coverage_snapshot {
+                snapshot
+            } else {
+                let cert_selection =
+                    resolve_certification_test_selection(&workspace_root, output_format);
+                let cert_result = run_tests(
+                    &TestTarget::ProjectRoot(workspace_root.clone()),
+                    &budget_policy,
+                    jobs,
+                    timeout,
+                    output_format,
+                    perf_debug,
+                    None,
+                    &cert_selection,
+                    true,
+                    HttpCassetteMode::Replay,
+                    None,
+                );
+                if cert_result.exit != EXIT_OK {
+                    eprintln!("build blocked: certification failed; no artifact emitted");
+                    std::process::exit(cert_result.exit);
+                }
+                differential_results_hash = cert_result.differential_results_hash.clone();
+                mutation_summary_hash = cert_result.mutation_summary_hash.clone();
+                let raw_snapshot = cert_result
+                    .summary
+                    .as_ref()
+                    .map(|summary| summary.metrics.function_coverage.clone())
+                    .unwrap_or_default();
+                let snapshot =
+                    canonicalize_function_coverage(&raw_snapshot, &legacy_to_qualified_ids);
+                if let Err(err) =
+                    write_function_coverage_snapshot(&function_coverage_path, &snapshot)
+                {
+                    eprintln!("certification cache error: {err}");
+                    std::process::exit(EXIT_CODEGEN);
+                }
+                let coverage_index_path =
+                    certification_coverage_index_path(&workspace_root, &cert_cache_hash);
+                let coverage_index = build_function_test_coverage_index(
+                    cert_result.summary.as_ref(),
+                    &legacy_to_qualified_ids,
+                );
+                if let Err(err) =
+                    write_function_test_coverage_index(&coverage_index_path, &coverage_index)
+                {
+                    eprintln!("certification cache error: {err}");
+                    std::process::exit(EXIT_CODEGEN);
+                }
+                snapshot
+            };
+            let certification_ms = certification_start.elapsed().as_millis();
+            if let Err(err) = enforce_importable_coverage_gate(&workspace_root, &function_coverage)
+            {
+                eprintln!("{err}");
+                std::process::exit(EXIT_CODEGEN);
+            }
+            if let Err(err) = enforce_public_surface_gate(&workspace_root) {
+                eprintln!("{err}");
+                std::process::exit(EXIT_CODEGEN);
+            }
+            let mir_compile_start = Instant::now();
             let mir_module =
                 match compile_to_mir(&entry_path, output_format, emit_mir, emit_mir_opt, true) {
                     Ok(mir) => mir,
                     Err(code) => std::process::exit(code),
                 };
+            let mir_compile_ms = mir_compile_start.elapsed().as_millis();
             if let Some(path) = emit_obj {
                 match wrela::backend::cranelift::compile_to_object(&mir_module) {
                     Ok(obj) => {
@@ -314,12 +526,63 @@ fn main() {
             let output = out_path
                 .or(emit_bin)
                 .unwrap_or_else(|| "wrela.out".to_string());
+            let codegen_start = Instant::now();
             if let Err(err) =
                 wrela::backend::cranelift::compile_to_executable(&mir_module, output.as_ref())
             {
                 eprintln!("codegen error: {}", err.0);
                 std::process::exit(EXIT_CODEGEN);
             }
+            let codegen_ms = codegen_start.elapsed().as_millis();
+            let artifact_path = PathBuf::from(&output);
+            let cert_report_start = Instant::now();
+            if let Err(err) = write_certification_report(
+                &entry_path,
+                &workspace_root,
+                &artifact_path,
+                &budget_policy,
+                &toolchain_version,
+                &source_hash,
+                &cert_cache_hash,
+                differential_results_hash.as_deref(),
+                mutation_summary_hash.as_deref(),
+            ) {
+                eprintln!("certification report error: {err}");
+                std::process::exit(EXIT_CODEGEN);
+            }
+            let cert_report_ms = cert_report_start.elapsed().as_millis();
+            let total_ms = build_start.elapsed().as_millis();
+            emit_build_perf_event(
+                output_format,
+                cert_cache_hit,
+                cert_cache_hash,
+                cert_cache_reason,
+                BuildPerfTimings {
+                    certification_ms,
+                    mir_compile_ms,
+                    codegen_ms,
+                    cert_report_ms,
+                    total_ms,
+                },
+            );
+        }
+        "verify-cert" => {
+            if !program_args.is_empty() {
+                eprintln!("error: unexpected extra arguments");
+                std::process::exit(EXIT_USAGE);
+            }
+            let cert_path = match path_arg {
+                Some(path) => PathBuf::from(path),
+                None => {
+                    eprintln!("error: missing cert path");
+                    std::process::exit(EXIT_USAGE);
+                }
+            };
+            if let Err(err) = verify_certification_report(&cert_path) {
+                eprintln!("{err}");
+                std::process::exit(EXIT_CODEGEN);
+            }
+            println!("cert verified: {}", cert_path.display());
         }
         "run" => {
             if trace {
@@ -381,8 +644,15 @@ fn main() {
                 eprintln!("error: unexpected extra arguments");
                 std::process::exit(EXIT_USAGE);
             }
-            let jobs = test_jobs.unwrap_or(1).max(1);
-            let timeout = Duration::from_millis(test_timeout_ms.unwrap_or(5000).max(1));
+            if out_path.is_some() || emit_obj.is_some() || emit_bin.is_some() {
+                eprintln!(
+                    "error: -o/--out, --emit-obj, and --emit-bin are not valid with `wrela test`"
+                );
+                std::process::exit(EXIT_USAGE);
+            }
+            let budget_policy = resolve_budget_policy_v1(test_jobs, test_timeout_ms);
+            let jobs = budget_policy.test_jobs.value as usize;
+            let timeout = Duration::from_millis(budget_policy.test_timeout_ms.value);
             let target = match resolve_test_target(path_arg.as_deref()) {
                 Ok(target) => target,
                 Err(err) => {
@@ -390,19 +660,97 @@ fn main() {
                     std::process::exit(EXIT_USAGE);
                 }
             };
+            if repro_artifact_path.is_some()
+                && (test_record
+                    || test_update_public_surface
+                    || test_selection.list
+                    || test_selection.id.is_some()
+                    || test_selection.filter.is_some())
+            {
+                eprintln!(
+                    "error: --repro cannot be combined with --record, --update-public-surface, --list, --id, or --filter"
+                );
+                std::process::exit(EXIT_USAGE);
+            }
+            if let Some(repro_path) = repro_artifact_path.as_deref() {
+                let workspace_root = match &target {
+                    TestTarget::ProjectRoot(root) => root.clone(),
+                    TestTarget::SingleFile(path) => path
+                        .parent()
+                        .unwrap_or_else(|| Path::new("."))
+                        .to_path_buf(),
+                };
+                let exit = repro::run_repro_artifact(
+                    &workspace_root,
+                    Path::new(repro_path),
+                    timeout,
+                    output_format,
+                    if test_record {
+                        HttpCassetteMode::Record
+                    } else {
+                        HttpCassetteMode::Replay
+                    },
+                    &budget_policy,
+                );
+                std::process::exit(exit);
+            }
+            if test_record {
+                eprintln!(
+                    "maintenance mode: --record updates integration cassettes; no build artifact is emitted"
+                );
+            }
+            if test_update_public_surface {
+                eprintln!(
+                    "maintenance mode: --update-public-surface updates snapshot baselines; no build artifact is emitted"
+                );
+            }
             let gate_cfg = perf_gate_path.as_ref().map(|path| PerfGateConfig {
                 baseline_path: PathBuf::from(path),
                 max_regression_pct: perf_max_regression_pct.unwrap_or(5.0),
                 kpi_thresholds,
             });
-            let exit = run_tests(
+            let result = run_tests(
                 &target,
+                &budget_policy,
                 jobs,
                 timeout,
                 output_format,
                 perf_debug,
                 gate_cfg.as_ref(),
+                &test_selection,
+                false,
+                if test_record {
+                    HttpCassetteMode::Record
+                } else {
+                    HttpCassetteMode::Replay
+                },
+                test_seed,
             );
+            let exit = result.exit;
+            if test_record || test_update_public_surface {
+                let workspace_root = match &target {
+                    TestTarget::ProjectRoot(root) => root.clone(),
+                    TestTarget::SingleFile(path) => path
+                        .parent()
+                        .unwrap_or_else(|| Path::new("."))
+                        .to_path_buf(),
+                };
+                if test_update_public_surface && exit == EXIT_OK {
+                    if let Err(err) = update_public_surface_baseline(&workspace_root) {
+                        eprintln!("public surface update error: {err}");
+                        std::process::exit(EXIT_CODEGEN);
+                    }
+                }
+                if let Err(err) = write_test_maintenance_summary(
+                    &workspace_root,
+                    test_record,
+                    test_update_public_surface,
+                    exit,
+                ) {
+                    eprintln!("maintenance summary error: {err}");
+                    std::process::exit(EXIT_CODEGEN);
+                }
+            }
             std::process::exit(exit);
         }
         "perf" => {
@@ -414,8 +762,9 @@ fn main() {
                 std::process::exit(EXIT_USAGE);
             }
             let runs = perf_runs.unwrap_or(5).max(1);
-            let jobs = test_jobs.unwrap_or(1).max(1);
-            let timeout = Duration::from_millis(test_timeout_ms.unwrap_or(5000).max(1));
+            let budget_policy = resolve_budget_policy_v1(test_jobs, test_timeout_ms);
+            let jobs = budget_policy.test_jobs.value as usize;
+            let timeout = Duration::from_millis(budget_policy.test_timeout_ms.value);
             let target = match resolve_test_target(path_arg.as_deref()) {
                 Ok(target) => target,
                 Err(err) => {
@@ -434,6 +783,7 @@ fn main() {
             let cv_max_pct = perf_cv_max_pct.unwrap_or(5.0);
             let exit = run_perf_harness(
                 &target,
+                &budget_policy,
                 jobs,
                 timeout,
                 output_format,
@@ -495,8 +845,9 @@ commands:\n\
   init [path]           initialize a new project\n\
   update                update the installed toolchain\n\
   check <path>          parse and typecheck (no codegen)\n\
-  build <path>          compile to a native executable\n\
-  compile <path>        alias for build\n\
+  build <path>          run certification, then compile executable on success only\n\
+  compile <path>        alias for build (also certification-gated)\n\
+  verify-cert <path>    verify an emitted cert.json report and hashes\n\
   run <path>            compile and run\n\
   dev <path>            watch and rebuild (polling)\n\
   test [path]           run tests from project root or a single .wr file\n\
@@ -513,6 +864,15 @@ options:\n\
   --poll-ms=N           poll interval for dev (default: 500)\n\
   --jobs=N              test runner parallelism (default: 1)\n\
   --test-timeout-ms=N   per-test timeout in milliseconds (default: 5000)\n\
+  env: WRELA_BUDGET_*   Budget Policy v1 overrides (autogen/sim/fuzz/mutation + time caps)\n\
+  --record              test maintenance mode; updates integration cassettes\n\
+  --update-public-surface  test maintenance mode; updates API snapshot baselines\n\
+  --list                list discovered tests with stable id/lane metadata\n\
+  --id=ID               run/list a single test by stable id\n\
+  --filter=PATTERN      run/list tests matching pattern\n\
+  --lane=NAME           run/list tests for lane (spec|integration|sim|model|default)\n\
+  --seed=N              schedule seed for sim tests\n\
+  --repro PATH          replay a single typed repro artifact (autogen|fuzz)\n\
   --perf-debug          dump perf counters after tests\n\
   --runs=N              perf harness run count (default: 5)\n\
   --baseline-out=PATH   perf baseline JSON output path\n\
@@ -554,6 +914,2244 @@ fn init_project(path: &str) -> io::Result<()> {
 enum OutputFormat {
     Pretty,
     Json,
+}
+
+const CERT_SCHEMA_VERSION: u32 = 3;
+const CERT_GATE_VERSIONS_MARKER: &str = "wrela-cert-gates-v1";
+const COVERAGE_SNAPSHOT_SCHEMA_VERSION: u32 = 2;
+const COVERAGE_INDEX_SCHEMA_VERSION: u32 = 2;
+const RUNTIME_CARGO_TOML: &str = include_str!("../../runtime/Cargo.toml");
+const BUDGET_POLICY_VERSION: u32 = 1;
+const DEFAULT_TEST_JOBS: u64 = 1;
+const DEFAULT_TEST_TIMEOUT_MS: u64 = 5_000;
+const DEFAULT_AUTOGEN_MAX_CASES: u64 = 64;
+const DEFAULT_SIM_MAX_CASES: u64 = 256;
+const DEFAULT_FUZZ_MAX_CASES: u64 = 128;
+const DEFAULT_MUTATION_MAX_CASES: u64 = 32;
+const DEFAULT_AUTOGEN_TIME_CAP_MS: u64 = 5_000;
+const DEFAULT_SIM_TIME_CAP_MS: u64 = 10_000;
+const DEFAULT_FUZZ_TIME_CAP_MS: u64 = 15_000;
+const DEFAULT_MUTATION_TIME_CAP_MS: u64 = 20_000;
+const CEILING_TEST_JOBS: u64 = 64;
+const CEILING_TEST_TIMEOUT_MS: u64 = 120_000;
+const CEILING_AUTOGEN_MAX_CASES: u64 = 1_024;
+const CEILING_SIM_MAX_CASES: u64 = 4_096;
+const CEILING_FUZZ_MAX_CASES: u64 = 4_096;
+const CEILING_MUTATION_MAX_CASES: u64 = 512;
+const CEILING_AUTOGEN_TIME_CAP_MS: u64 = 60_000;
+const CEILING_SIM_TIME_CAP_MS: u64 = 120_000;
+const CEILING_FUZZ_TIME_CAP_MS: u64 = 120_000;
+const CEILING_MUTATION_TIME_CAP_MS: u64 = 180_000;
+const PUBLIC_SURFACE_CURRENT_REL_PATH: &str = "tests/.artifacts/public_surface/current.json";
+const PUBLIC_SURFACE_BASELINE_REL_PATH: &str = "tests/public_surface.baseline.json";
+
+#[derive(Serialize, Deserialize)]
+struct CertificationReport {
+    cert_schema_version: u32,
+    generated_at_unix_ms: u128,
+    entry_path: String,
+    workspace_root: String,
+    artifact_path: String,
+    tests_passed: bool,
+    toolchain_version: String,
+    compiler_version: String,
+    compiler_git_sha: Option<String>,
+    runtime_version: String,
+    gate_versions_marker: String,
+    source_hash: String,
+    seeds_used: CertificationSeedsUsed,
+    budgets_used: CertificationBudgetsUsed,
+    coverage_summary_hash: Option<String>,
+    mutation_summary_hash: Option<String>,
+    differential_results_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    impact_manifest: Option<CertifiedImpactManifest>,
+    binary_hash: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct CertifiedImpactManifest {
+    source_files: Vec<CertifiedSourceFileFingerprint>,
+    src_modules: Vec<CertifiedSrcModuleSnapshot>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct CertifiedSourceFileFingerprint {
+    rel_path: String,
+    hash: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct CertifiedSrcModuleSnapshot {
+    module_path: String,
+    rel_path: String,
+    hash: String,
+    uses: Vec<String>,
+    runtime_sensitive: bool,
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct PublicSurfaceSnapshot {
+    version: u32,
+    items: Vec<PublicSurfaceItem>,
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct PublicSurfaceItem {
+    qualified_name: String,
+    signature: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    connector_literals: Vec<PublicSurfaceConnectorLiteral>,
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+struct PublicSurfaceConnectorLiteral {
+    service: String,
+    endpoint: String,
+    method: String,
+    url: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct CertificationSeedsUsed {
+    sim: u64,
+    autogen: u64,
+    fuzz: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+struct CertificationBudgetsUsed {
+    policy_version: u32,
+    test_jobs: BudgetValue,
+    test_timeout_ms: BudgetValue,
+    autogen_max_cases: BudgetValue,
+    sim_max_cases: BudgetValue,
+    fuzz_max_cases: BudgetValue,
+    mutation_max_cases: BudgetValue,
+    autogen_time_cap_ms: BudgetValue,
+    sim_time_cap_ms: BudgetValue,
+    fuzz_time_cap_ms: BudgetValue,
+    mutation_time_cap_ms: BudgetValue,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConnectorCoverageCassette {
+    request: ConnectorCoverageRequest,
+    response: ConnectorCoverageResponse,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConnectorCoverageRequest {
+    service: String,
+    endpoint: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConnectorCoverageResponse {
+    status: u16,
+}
+
+#[derive(Serialize)]
+struct BuildPerfEvent {
+    event: &'static str,
+    perf: BuildPerfPayload,
+}
+
+#[derive(Serialize)]
+struct BuildPerfPayload {
+    cache: BuildPerfCache,
+    timings: BuildPerfTimings,
+}
+
+#[derive(Serialize)]
+struct BuildPerfCache {
+    hit: bool,
+    hash: String,
+    reason: String,
+}
+
+#[derive(Serialize)]
+struct BuildPerfTimings {
+    certification_ms: u128,
+    mir_compile_ms: u128,
+    codegen_ms: u128,
+    cert_report_ms: u128,
+    total_ms: u128,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct BudgetValue {
+    value: u64,
+    default: u64,
+    ceiling: u64,
+    provenance: BudgetProvenance,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct BudgetProvenance {
+    source: String,
+    key: String,
+    requested: u64,
+    clamped_to_ceiling: bool,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct BudgetPolicyV1 {
+    policy_version: u32,
+    test_jobs: BudgetValue,
+    test_timeout_ms: BudgetValue,
+    autogen_max_cases: BudgetValue,
+    sim_max_cases: BudgetValue,
+    fuzz_max_cases: BudgetValue,
+    mutation_max_cases: BudgetValue,
+    autogen_time_cap_ms: BudgetValue,
+    sim_time_cap_ms: BudgetValue,
+    fuzz_time_cap_ms: BudgetValue,
+    mutation_time_cap_ms: BudgetValue,
+}
+
+#[derive(Serialize)]
+struct TestMaintenanceSummary {
+    version: u32,
+    generated_at_unix_ms: u128,
+    workspace_root: String,
+    mode_record: bool,
+    mode_update_public_surface: bool,
+    exit_code: i32,
+    deployable_artifacts_emitted: bool,
+}
+
+#[derive(Serialize)]
+struct BuildCertCacheJsonEvent {
+    event: &'static str,
+    cache_hit: bool,
+    cache_hash: String,
+    cache_dir: String,
+}
+
+#[derive(Clone, Serialize)]
+struct CertSelectionJsonEvent {
+    event: &'static str,
+    mode: String,
+    changed_files: Vec<String>,
+    changed_src_modules: Vec<String>,
+    impacted_src_modules: Vec<String>,
+    selected_test_count: usize,
+    selected_stage_count: usize,
+    stages: Vec<CertSelectionStage>,
+    reasons: Vec<String>,
+}
+
+#[derive(Clone, Serialize)]
+struct CertSelectionStage {
+    lane: String,
+    selected: bool,
+    reason: String,
+}
+
+#[derive(Clone, Default)]
+struct CertSelectionReport {
+    mode: String,
+    changed_files: Vec<String>,
+    changed_src_modules: Vec<String>,
+    impacted_src_modules: Vec<String>,
+    stages: Vec<CertSelectionStage>,
+    reasons: Vec<String>,
+}
+
+fn write_certification_report(
+    entry_path: &Path,
+    workspace_root: &Path,
+    artifact_path: &Path,
+    budgets_used: &BudgetPolicyV1,
+    toolchain_version: &str,
+    source_hash: &str,
+    cache_hash: &str,
+    differential_results_hash: Option<&str>,
+    mutation_summary_hash: Option<&str>,
+) -> Result<(), String> {
+    let generated_at_unix_ms = now_unix_ms();
+    let binary_hash = hash_file_fingerprint(artifact_path)?;
+    let compiler_version = env!("CARGO_PKG_VERSION").to_string();
+    let compiler_git_sha = resolve_compiler_git_sha();
+    let runtime_version = resolve_runtime_version();
+    let report = CertificationReport {
+        cert_schema_version: CERT_SCHEMA_VERSION,
+        generated_at_unix_ms,
+        entry_path: entry_path.display().to_string(),
+        workspace_root: workspace_root.display().to_string(),
+        artifact_path: artifact_path.display().to_string(),
+        tests_passed: true,
+        toolchain_version: toolchain_version.to_string(),
+        compiler_version,
+        compiler_git_sha,
+        runtime_version,
+        gate_versions_marker: CERT_GATE_VERSIONS_MARKER.to_string(),
+        source_hash: source_hash.to_string(),
+        seeds_used: CertificationSeedsUsed {
+            sim: 0x5A17,
+            autogen: 0xA670,
+            fuzz: 0xF022,
+        },
+        budgets_used: certification_budgets_used(budgets_used),
+        coverage_summary_hash: None,
+        mutation_summary_hash: mutation_summary_hash.map(str::to_string),
+        differential_results_hash: differential_results_hash.map(str::to_string),
+        impact_manifest: build_certified_impact_manifest(workspace_root).ok(),
+        binary_hash: binary_hash.clone(),
+    };
+    let payload = serde_json::to_vec_pretty(&report).map_err(|err| err.to_string())?;
+    let adjacent_path = artifact_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("cert.json");
+    fs::write(&adjacent_path, &payload).map_err(|err| {
+        format!(
+            "failed to write adjacent cert report {}: {}",
+            adjacent_path.display(),
+            err
+        )
+    })?;
+    let cache_dir = workspace_root
+        .join("target")
+        .join("wrela_cert")
+        .join(cache_hash);
+    fs::create_dir_all(&cache_dir).map_err(|err| {
+        format!(
+            "failed to create cert cache {}: {}",
+            cache_dir.display(),
+            err
+        )
+    })?;
+    let cache_path = cache_dir.join("cert.json");
+    fs::write(&cache_path, &payload).map_err(|err| {
+        format!(
+            "failed to write cached cert report {}: {}",
+            cache_path.display(),
+            err
+        )
+    })?;
+    if binary_hash != cache_hash {
+        let compat_dir = workspace_root
+            .join("target")
+            .join("wrela_cert")
+            .join(&binary_hash);
+        fs::create_dir_all(&compat_dir).map_err(|err| {
+            format!(
+                "failed to create compatibility cert cache {}: {}",
+                compat_dir.display(),
+                err
+            )
+        })?;
+        let compat_path = compat_dir.join("cert.json");
+        fs::write(&compat_path, &payload).map_err(|err| {
+            format!(
+                "failed to write compatibility cached cert report {}: {}",
+                compat_path.display(),
+                err
+            )
+        })?;
+    }
+    let latest_success_path = workspace_root
+        .join("target")
+        .join("wrela_cert")
+        .join("last_success_cert.json");
+    fs::write(&latest_success_path, &payload).map_err(|err| {
+        format!(
+            "failed to write latest successful cert report {}: {}",
+            latest_success_path.display(),
+            err
+        )
+    })?;
+    Ok(())
+}
+
+fn certification_budgets_used(policy: &BudgetPolicyV1) -> CertificationBudgetsUsed {
+    CertificationBudgetsUsed {
+        policy_version: policy.policy_version,
+        test_jobs: policy.test_jobs.clone(),
+        test_timeout_ms: policy.test_timeout_ms.clone(),
+        autogen_max_cases: policy.autogen_max_cases.clone(),
+        sim_max_cases: policy.sim_max_cases.clone(),
+        fuzz_max_cases: policy.fuzz_max_cases.clone(),
+        mutation_max_cases: policy.mutation_max_cases.clone(),
+        autogen_time_cap_ms: policy.autogen_time_cap_ms.clone(),
+        sim_time_cap_ms: policy.sim_time_cap_ms.clone(),
+        fuzz_time_cap_ms: policy.fuzz_time_cap_ms.clone(),
+        mutation_time_cap_ms: policy.mutation_time_cap_ms.clone(),
+    }
+}
+
+fn resolve_compiler_git_sha() -> Option<String> {
+    if let Some(sha) = option_env!("WRELA_GIT_SHA")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return Some(sha.to_string());
+    }
+    if let Some(sha) = std::env::var("WRELA_GIT_SHA")
+        .ok()
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return Some(sha.to_string());
+    }
+    if let Some(sha) = std::env::var("GITHUB_SHA")
+        .ok()
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return Some(sha.to_string());
+    }
+
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(manifest_dir)
+        .args(["rev-parse", "--verify", "HEAD"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if sha.is_empty() { None } else { Some(sha) }
+}
+
+fn resolve_runtime_version() -> String {
+    if let Some(version) = parse_cargo_package_version(RUNTIME_CARGO_TOML) {
+        return version;
+    }
+    "unknown".to_string()
+}
+
+fn resolve_toolchain_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
+fn certification_cache_hash(source_hash: &str, toolchain_version: &str) -> String {
+    let mut hasher = Fnv1a64::new();
+    hasher.update(b"wrela-cert-cache-v2");
+    hasher.update(&[0]);
+    hasher.update(b"source_hash:");
+    hasher.update(source_hash.as_bytes());
+    hasher.update(&[0]);
+    hasher.update(b"toolchain_version:");
+    hasher.update(toolchain_version.as_bytes());
+    hasher.finish_hex()
+}
+
+fn emit_certification_cache_hit(output_format: OutputFormat, cache_hash: &str, cache_dir: &Path) {
+    match output_format {
+        OutputFormat::Pretty => {
+            eprintln!("certification cache hit: {}", cache_hash);
+        }
+        OutputFormat::Json => {
+            let event = BuildCertCacheJsonEvent {
+                event: "certification_cache",
+                cache_hit: true,
+                cache_hash: cache_hash.to_string(),
+                cache_dir: cache_dir.display().to_string(),
+            };
+            println!(
+                "{}",
+                serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_string())
+            );
+        }
+    }
+}
+
+fn emit_build_perf_event(
+    output_format: OutputFormat,
+    cache_hit: bool,
+    cache_hash: String,
+    cache_reason: String,
+    timings: BuildPerfTimings,
+) {
+    if !matches!(output_format, OutputFormat::Json) {
+        return;
+    }
+    let event = BuildPerfEvent {
+        event: "build_perf",
+        perf: BuildPerfPayload {
+            cache: BuildPerfCache {
+                hit: cache_hit,
+                hash: cache_hash,
+                reason: cache_reason,
+            },
+            timings,
+        },
+    };
+    println!(
+        "{}",
+        serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_string())
+    );
+}
+
+fn emit_cert_selection_report(
+    output_format: OutputFormat,
+    report: &CertSelectionReport,
+    selected_test_count: usize,
+) {
+    let selected_stage_count = report.stages.iter().filter(|stage| stage.selected).count();
+    match output_format {
+        OutputFormat::Pretty => {
+            eprintln!(
+                "certification selection: mode={} selected_tests={} selected_stages={}",
+                report.mode, selected_test_count, selected_stage_count
+            );
+            if !report.changed_files.is_empty() {
+                eprintln!("  changed_files: {}", report.changed_files.join(", "));
+            }
+            if !report.changed_src_modules.is_empty() {
+                eprintln!(
+                    "  changed_src_modules: {}",
+                    report.changed_src_modules.join(", ")
+                );
+            }
+            if !report.impacted_src_modules.is_empty() {
+                eprintln!(
+                    "  impacted_src_modules: {}",
+                    report.impacted_src_modules.join(", ")
+                );
+            }
+            for stage in &report.stages {
+                eprintln!(
+                    "  stage={} selected={} reason={}",
+                    stage.lane, stage.selected, stage.reason
+                );
+            }
+            for reason in &report.reasons {
+                eprintln!("  reason: {reason}");
+            }
+        }
+        OutputFormat::Json => {
+            let event = CertSelectionJsonEvent {
+                event: "certification_selection",
+                mode: report.mode.clone(),
+                changed_files: report.changed_files.clone(),
+                changed_src_modules: report.changed_src_modules.clone(),
+                impacted_src_modules: report.impacted_src_modules.clone(),
+                selected_test_count,
+                selected_stage_count,
+                stages: report.stages.clone(),
+                reasons: report.reasons.clone(),
+            };
+            println!(
+                "{}",
+                serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_string())
+            );
+        }
+    }
+}
+
+fn resolve_certification_test_selection(
+    workspace_root: &Path,
+    output_format: OutputFormat,
+) -> TestSelection {
+    let mut selection = TestSelection::default();
+    let latest_success_path = workspace_root
+        .join("target")
+        .join("wrela_cert")
+        .join("last_success_cert.json");
+    if !latest_success_path.is_file() {
+        selection.cert_selection_report = Some(CertSelectionReport {
+            mode: "full".to_string(),
+            stages: vec![
+                CertSelectionStage {
+                    lane: "spec".to_string(),
+                    selected: true,
+                    reason: "safe default".to_string(),
+                },
+                CertSelectionStage {
+                    lane: "integration".to_string(),
+                    selected: true,
+                    reason: "safe default".to_string(),
+                },
+                CertSelectionStage {
+                    lane: "sim".to_string(),
+                    selected: true,
+                    reason: "safe default".to_string(),
+                },
+                CertSelectionStage {
+                    lane: "model".to_string(),
+                    selected: true,
+                    reason: "safe default".to_string(),
+                },
+                CertSelectionStage {
+                    lane: "default".to_string(),
+                    selected: true,
+                    reason: "safe default".to_string(),
+                },
+            ],
+            reasons: vec![
+                "no previous successful cert manifest; running full certification suite"
+                    .to_string(),
+            ],
+            ..CertSelectionReport::default()
+        });
+        return selection;
+    }
+
+    let previous_report = match read_certification_report(&latest_success_path) {
+        Ok(report) => report,
+        Err(err) => {
+            selection.cert_selection_report = Some(CertSelectionReport {
+                mode: "full".to_string(),
+                stages: vec![
+                    CertSelectionStage {
+                        lane: "spec".to_string(),
+                        selected: true,
+                        reason: "safe default".to_string(),
+                    },
+                    CertSelectionStage {
+                        lane: "integration".to_string(),
+                        selected: true,
+                        reason: "safe default".to_string(),
+                    },
+                    CertSelectionStage {
+                        lane: "sim".to_string(),
+                        selected: true,
+                        reason: "safe default".to_string(),
+                    },
+                    CertSelectionStage {
+                        lane: "model".to_string(),
+                        selected: true,
+                        reason: "safe default".to_string(),
+                    },
+                    CertSelectionStage {
+                        lane: "default".to_string(),
+                        selected: true,
+                        reason: "safe default".to_string(),
+                    },
+                ],
+                reasons: vec![format!(
+                    "failed to parse previous successful cert manifest ({}): {}",
+                    latest_success_path.display(),
+                    err
+                )],
+                ..CertSelectionReport::default()
+            });
+            return selection;
+        }
+    };
+
+    let Some(previous_manifest) = previous_report.impact_manifest else {
+        selection.cert_selection_report = Some(CertSelectionReport {
+            mode: "full".to_string(),
+            stages: vec![
+                CertSelectionStage {
+                    lane: "spec".to_string(),
+                    selected: true,
+                    reason: "safe default".to_string(),
+                },
+                CertSelectionStage {
+                    lane: "integration".to_string(),
+                    selected: true,
+                    reason: "safe default".to_string(),
+                },
+                CertSelectionStage {
+                    lane: "sim".to_string(),
+                    selected: true,
+                    reason: "safe default".to_string(),
+                },
+                CertSelectionStage {
+                    lane: "model".to_string(),
+                    selected: true,
+                    reason: "safe default".to_string(),
+                },
+                CertSelectionStage {
+                    lane: "default".to_string(),
+                    selected: true,
+                    reason: "safe default".to_string(),
+                },
+            ],
+            reasons: vec![
+                "previous successful cert is missing impact manifest; running full suite"
+                    .to_string(),
+            ],
+            ..CertSelectionReport::default()
+        });
+        return selection;
+    };
+
+    let current_manifest = match build_certified_impact_manifest(workspace_root) {
+        Ok(manifest) => manifest,
+        Err(err) => {
+            selection.cert_selection_report = Some(CertSelectionReport {
+                mode: "full".to_string(),
+                stages: vec![
+                    CertSelectionStage {
+                        lane: "spec".to_string(),
+                        selected: true,
+                        reason: "safe default".to_string(),
+                    },
+                    CertSelectionStage {
+                        lane: "integration".to_string(),
+                        selected: true,
+                        reason: "safe default".to_string(),
+                    },
+                    CertSelectionStage {
+                        lane: "sim".to_string(),
+                        selected: true,
+                        reason: "safe default".to_string(),
+                    },
+                    CertSelectionStage {
+                        lane: "model".to_string(),
+                        selected: true,
+                        reason: "safe default".to_string(),
+                    },
+                    CertSelectionStage {
+                        lane: "default".to_string(),
+                        selected: true,
+                        reason: "safe default".to_string(),
+                    },
+                ],
+                reasons: vec![format!("failed to build current impact manifest: {err}")],
+                ..CertSelectionReport::default()
+            });
+            return selection;
+        }
+    };
+
+    let changed_files = diff_changed_files(&previous_manifest, &current_manifest);
+    let changed_src_modules = diff_changed_src_modules(&previous_manifest, &current_manifest);
+    let impacted_src_modules =
+        impacted_src_modules_from_changed(&current_manifest.src_modules, &changed_src_modules);
+    let runtime_sensitive_impacted = impacted_src_modules.iter().any(|module_path| {
+        current_manifest
+            .src_modules
+            .iter()
+            .find(|module| &module.module_path == module_path)
+            .is_some_and(|module| module.runtime_sensitive)
+    });
+
+    let mut tests = Vec::new();
+    let tests_root = workspace_root.join("tests");
+    if !tests_root.is_dir() || collect_tests(&tests_root, &tests_root, &mut tests).is_err() {
+        return selection;
+    }
+    tests.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
+
+    let integration_reachability = integration_reachability_to_impacted(
+        workspace_root,
+        &current_manifest,
+        &impacted_src_modules,
+    );
+    let mut selected_ids = HashSet::new();
+    for test in &tests {
+        match test.lane {
+            TestLane::Spec => {
+                selected_ids.insert(test.id.clone());
+            }
+            TestLane::Integration => {
+                if integration_reachability
+                    .get(&test.module_path)
+                    .copied()
+                    .unwrap_or(false)
+                {
+                    selected_ids.insert(test.id.clone());
+                }
+            }
+            TestLane::Sim => {
+                if runtime_sensitive_impacted {
+                    selected_ids.insert(test.id.clone());
+                }
+            }
+            TestLane::Model | TestLane::Default => {
+                selected_ids.insert(test.id.clone());
+            }
+        }
+    }
+    let lane_selected_ids = selected_ids.clone();
+
+    let previous_index_hash = certification_cache_hash(
+        &previous_report.source_hash,
+        &previous_report.toolchain_version,
+    );
+    match load_function_test_coverage_index(workspace_root, &previous_index_hash) {
+        Ok(index) if index.is_empty() => {
+            if !changed_src_modules.is_empty() {
+                selection_reasons_push(
+                    &mut selection,
+                    "previous certification coverage index is empty; keeping lane-based selection"
+                        .to_string(),
+                );
+            }
+        }
+        Ok(index) => {
+            let changed_function_ids = changed_function_ids_from_modules(
+                workspace_root,
+                &current_manifest,
+                &changed_src_modules,
+            );
+            if changed_function_ids.is_empty() {
+                selection_reasons_push(
+                    &mut selection,
+                    "no changed top-level functions/checks extracted from changed src modules; keeping lane-based selection"
+                        .to_string(),
+                );
+            } else {
+                let mut mapped_test_ids = BTreeSet::new();
+                let mut unmapped_function_count = 0usize;
+                for function_id in &changed_function_ids {
+                    if let Some(test_ids) = index.get(function_id) {
+                        for test_id in test_ids {
+                            mapped_test_ids.insert(test_id.clone());
+                        }
+                    } else {
+                        unmapped_function_count += 1;
+                    }
+                }
+                if mapped_test_ids.is_empty() {
+                    selection_reasons_push(
+                        &mut selection,
+                        format!(
+                            "coverage index has no mapped tests for {} changed function ids (likely stale); keeping lane-based selection",
+                            changed_function_ids.len()
+                        ),
+                    );
+                } else {
+                    let mut trimmed_ids = selected_ids
+                        .iter()
+                        .filter(|id| mapped_test_ids.contains(*id))
+                        .cloned()
+                        .collect::<HashSet<_>>();
+                    if trimmed_ids.is_empty() {
+                        selection_reasons_push(
+                            &mut selection,
+                            format!(
+                                "coverage index mapping would prune all selected tests (lane_selected={} mapped={} changed_functions={}); keeping lane-based selection",
+                                lane_selected_ids.len(),
+                                mapped_test_ids.len(),
+                                changed_function_ids.len()
+                            ),
+                        );
+                    } else {
+                        selected_ids.clear();
+                        selected_ids.extend(trimmed_ids.drain());
+                        selection_reasons_push(
+                            &mut selection,
+                            format!(
+                                "coverage index trim applied: lane_selected={} trimmed={} changed_functions={} unmapped_functions={}",
+                                lane_selected_ids.len(),
+                                selected_ids.len(),
+                                changed_function_ids.len(),
+                                unmapped_function_count
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+        Err(err) => {
+            if !changed_src_modules.is_empty() {
+                selection_reasons_push(
+                    &mut selection,
+                    format!(
+                        "coverage index unavailable for previous cert hash {}: {}; keeping lane-based selection",
+                        previous_index_hash, err
+                    ),
+                );
+            }
+        }
+    }
+    if selected_ids.is_empty() && !lane_selected_ids.is_empty() {
+        selected_ids = lane_selected_ids.clone();
+        selection_reasons_push(
+            &mut selection,
+            "selection safety guard restored lane-based selection to avoid empty certification set"
+                .to_string(),
+        );
+    }
+
+    let mut stage_counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for test in &tests {
+        *stage_counts.entry(test.lane.as_str()).or_insert(0) += 1;
+    }
+    let mut selected_stage_counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for test in &tests {
+        if selected_ids.contains(&test.id) {
+            *selected_stage_counts.entry(test.lane.as_str()).or_insert(0) += 1;
+        }
+    }
+    let stage_names = ["spec", "integration", "sim", "model", "default"];
+    let stages = stage_names
+        .iter()
+        .map(|lane| {
+            let total = stage_counts.get(lane).copied().unwrap_or(0);
+            let selected = selected_stage_counts.get(lane).copied().unwrap_or(0);
+            let reason = match *lane {
+                "spec" => "always selected".to_string(),
+                "integration" => format!(
+                    "selected modules that transitively import impacted src modules ({selected}/{total})"
+                ),
+                "sim" => {
+                    if runtime_sensitive_impacted {
+                        "runtime-sensitive impacted src modules detected".to_string()
+                    } else {
+                        "no runtime-sensitive impacted src modules detected".to_string()
+                    }
+                }
+                _ => "safe behavior: run all".to_string(),
+            };
+            CertSelectionStage {
+                lane: (*lane).to_string(),
+                selected: selected > 0 || total == 0,
+                reason,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let mut reasons = Vec::new();
+    if changed_files.is_empty() {
+        reasons.push("no source file deltas observed between manifests".to_string());
+    }
+    reasons.push(format!(
+        "changed_files={} changed_src_modules={} impacted_src_modules={}",
+        changed_files.len(),
+        changed_src_modules.len(),
+        impacted_src_modules.len()
+    ));
+    if matches!(output_format, OutputFormat::Pretty) {
+        if changed_src_modules.is_empty() {
+            reasons.push(
+                "no src module deltas; integration and sim lanes reduced by policy".to_string(),
+            );
+        }
+    }
+    if let Some(report) = selection.cert_selection_report.as_ref() {
+        reasons.extend(report.reasons.clone());
+    }
+
+    selection.include_ids = Some(selected_ids);
+    selection.cert_selection_report = Some(CertSelectionReport {
+        mode: "incremental".to_string(),
+        changed_files,
+        changed_src_modules,
+        impacted_src_modules,
+        stages,
+        reasons,
+    });
+    selection
+}
+
+fn selection_reasons_push(selection: &mut TestSelection, reason: String) {
+    let report = selection
+        .cert_selection_report
+        .get_or_insert_with(CertSelectionReport::default);
+    report.reasons.push(reason);
+}
+
+fn changed_function_ids_from_modules(
+    workspace_root: &Path,
+    current_manifest: &CertifiedImpactManifest,
+    changed_src_modules: &[String],
+) -> BTreeSet<String> {
+    use wrela::parser::ast::AstNode;
+
+    let module_to_rel_path: BTreeMap<&str, &str> = current_manifest
+        .src_modules
+        .iter()
+        .map(|module| (module.module_path.as_str(), module.rel_path.as_str()))
+        .collect();
+    let mut function_ids = BTreeSet::new();
+    for module_path in changed_src_modules {
+        let Some(rel_path) = module_to_rel_path.get(module_path.as_str()) else {
+            continue;
+        };
+        let source_path = workspace_root.join(rel_path);
+        let Ok(source) = fs::read_to_string(&source_path) else {
+            continue;
+        };
+        let (syntax, parse_errors) = parser::parse_with_errors(&source);
+        if !parse_errors.is_empty() {
+            continue;
+        }
+        let Some(root) = parser::ast::Root::cast(syntax) else {
+            continue;
+        };
+        let lowered = hir::lower::lower(root);
+        for (_, function) in lowered.functions.iter() {
+            if matches!(
+                function.kind,
+                hir::FunctionKind::Function | hir::FunctionKind::Check
+            ) {
+                let qualified_identity =
+                    qualified_function_identity(module_path, function.name.as_str());
+                function_ids.insert(stable_function_id(&qualified_identity));
+            }
+        }
+    }
+    function_ids
+}
+
+fn read_certification_report(path: &Path) -> Result<CertificationReport, String> {
+    let payload = fs::read_to_string(path)
+        .map_err(|err| format!("failed to read {}: {}", path.display(), err))?;
+    serde_json::from_str(&payload)
+        .map_err(|err| format!("failed to parse {} as cert json: {}", path.display(), err))
+}
+
+fn diff_changed_files(
+    previous: &CertifiedImpactManifest,
+    current: &CertifiedImpactManifest,
+) -> Vec<String> {
+    let previous_map: BTreeMap<&str, &str> = previous
+        .source_files
+        .iter()
+        .map(|file| (file.rel_path.as_str(), file.hash.as_str()))
+        .collect();
+    let current_map: BTreeMap<&str, &str> = current
+        .source_files
+        .iter()
+        .map(|file| (file.rel_path.as_str(), file.hash.as_str()))
+        .collect();
+    let all_paths: BTreeSet<&str> = previous_map
+        .keys()
+        .copied()
+        .chain(current_map.keys().copied())
+        .collect();
+    all_paths
+        .into_iter()
+        .filter(|path| previous_map.get(path) != current_map.get(path))
+        .map(|path| path.to_string())
+        .collect()
+}
+
+fn diff_changed_src_modules(
+    previous: &CertifiedImpactManifest,
+    current: &CertifiedImpactManifest,
+) -> Vec<String> {
+    let previous_map: BTreeMap<&str, &str> = previous
+        .src_modules
+        .iter()
+        .map(|module| (module.module_path.as_str(), module.hash.as_str()))
+        .collect();
+    let current_map: BTreeMap<&str, &str> = current
+        .src_modules
+        .iter()
+        .map(|module| (module.module_path.as_str(), module.hash.as_str()))
+        .collect();
+    let all_modules: BTreeSet<&str> = previous_map
+        .keys()
+        .copied()
+        .chain(current_map.keys().copied())
+        .collect();
+    all_modules
+        .into_iter()
+        .filter(|module| previous_map.get(module) != current_map.get(module))
+        .map(|module| module.to_string())
+        .collect()
+}
+
+fn impacted_src_modules_from_changed(
+    src_modules: &[CertifiedSrcModuleSnapshot],
+    changed_src_modules: &[String],
+) -> Vec<String> {
+    let module_set: HashSet<&str> = src_modules
+        .iter()
+        .map(|module| module.module_path.as_str())
+        .collect();
+    let mut reverse: HashMap<&str, Vec<&str>> = HashMap::new();
+    for module in src_modules {
+        for dep in &module.uses {
+            if module_set.contains(dep.as_str()) {
+                reverse
+                    .entry(dep.as_str())
+                    .or_default()
+                    .push(module.module_path.as_str());
+            }
+        }
+    }
+    let mut queue = VecDeque::new();
+    let mut impacted = BTreeSet::new();
+    for module in changed_src_modules {
+        if module_set.contains(module.as_str()) {
+            impacted.insert(module.clone());
+            queue.push_back(module.clone());
+        }
+    }
+    while let Some(module) = queue.pop_front() {
+        if let Some(users) = reverse.get(module.as_str()) {
+            for user in users {
+                if impacted.insert((*user).to_string()) {
+                    queue.push_back((*user).to_string());
+                }
+            }
+        }
+    }
+    impacted.into_iter().collect()
+}
+
+fn integration_reachability_to_impacted(
+    workspace_root: &Path,
+    manifest: &CertifiedImpactManifest,
+    impacted_src_modules: &[String],
+) -> HashMap<String, bool> {
+    let tests_root = workspace_root.join("tests");
+    if !tests_root.is_dir() {
+        return HashMap::new();
+    }
+    let mut module_sources = Vec::new();
+    if collect_wr_modules(&tests_root, &tests_root, "tests", &mut module_sources).is_err() {
+        return HashMap::new();
+    }
+
+    let src_module_set: HashSet<&str> = manifest
+        .src_modules
+        .iter()
+        .map(|module| module.module_path.as_str())
+        .collect();
+    let test_module_set: HashSet<&str> = module_sources
+        .iter()
+        .map(|module| module.module_path.as_str())
+        .collect();
+    let known_modules: HashSet<&str> = src_module_set
+        .iter()
+        .copied()
+        .chain(test_module_set.iter().copied())
+        .collect();
+    let mut adjacency: HashMap<String, Vec<String>> = HashMap::new();
+    for module in &manifest.src_modules {
+        let deps = module
+            .uses
+            .iter()
+            .filter(|dep| known_modules.contains(dep.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        adjacency.insert(module.module_path.clone(), deps);
+    }
+    for module in &module_sources {
+        let deps = module
+            .uses
+            .iter()
+            .filter(|dep| known_modules.contains(dep.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        adjacency.insert(module.module_path.clone(), deps);
+    }
+
+    let impacted: HashSet<&str> = impacted_src_modules
+        .iter()
+        .map(|module| module.as_str())
+        .collect();
+    let mut result = HashMap::new();
+    for module in module_sources {
+        if infer_test_lane(&module.module_path) != TestLane::Integration {
+            continue;
+        }
+        result.insert(
+            module.module_path.clone(),
+            module_reaches_impacted(&module.module_path, &adjacency, &impacted),
+        );
+    }
+    result
+}
+
+fn module_reaches_impacted(
+    start: &str,
+    adjacency: &HashMap<String, Vec<String>>,
+    impacted: &HashSet<&str>,
+) -> bool {
+    let mut queue = VecDeque::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    queue.push_back(start.to_string());
+    seen.insert(start.to_string());
+    while let Some(module) = queue.pop_front() {
+        if impacted.contains(module.as_str()) {
+            return true;
+        }
+        if let Some(deps) = adjacency.get(&module) {
+            for dep in deps {
+                if seen.insert(dep.clone()) {
+                    queue.push_back(dep.clone());
+                }
+            }
+        }
+    }
+    false
+}
+
+fn parse_cargo_package_version(cargo_toml: &str) -> Option<String> {
+    let mut in_package = false;
+    for raw in cargo_toml.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') {
+            in_package = line == "[package]";
+            continue;
+        }
+        if !in_package {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() != "version" {
+            continue;
+        }
+        let trimmed = value.trim();
+        let unquoted = trimmed.strip_prefix('"')?.strip_suffix('"')?;
+        return Some(unquoted.to_string());
+    }
+    None
+}
+
+fn resolve_budget_policy_v1(
+    test_jobs: Option<usize>,
+    test_timeout_ms: Option<u64>,
+) -> BudgetPolicyV1 {
+    BudgetPolicyV1 {
+        policy_version: BUDGET_POLICY_VERSION,
+        test_jobs: resolve_budget_value(
+            DEFAULT_TEST_JOBS,
+            CEILING_TEST_JOBS,
+            test_jobs.map(|v| (v as u64, "--jobs")),
+            "WRELA_BUDGET_TEST_JOBS",
+        ),
+        test_timeout_ms: resolve_budget_value(
+            DEFAULT_TEST_TIMEOUT_MS,
+            CEILING_TEST_TIMEOUT_MS,
+            test_timeout_ms.map(|v| (v, "--test-timeout-ms")),
+            "WRELA_BUDGET_TEST_TIMEOUT_MS",
+        ),
+        autogen_max_cases: resolve_budget_value(
+            DEFAULT_AUTOGEN_MAX_CASES,
+            CEILING_AUTOGEN_MAX_CASES,
+            None,
+            "WRELA_BUDGET_AUTOGEN_MAX_CASES",
+        ),
+        sim_max_cases: resolve_budget_value(
+            DEFAULT_SIM_MAX_CASES,
+            CEILING_SIM_MAX_CASES,
+            None,
+            "WRELA_BUDGET_SIM_MAX_CASES",
+        ),
+        fuzz_max_cases: resolve_budget_value(
+            DEFAULT_FUZZ_MAX_CASES,
+            CEILING_FUZZ_MAX_CASES,
+            None,
+            "WRELA_BUDGET_FUZZ_MAX_CASES",
+        ),
+        mutation_max_cases: resolve_budget_value(
+            DEFAULT_MUTATION_MAX_CASES,
+            CEILING_MUTATION_MAX_CASES,
+            None,
+            "WRELA_BUDGET_MUTATION_MAX_CASES",
+        ),
+        autogen_time_cap_ms: resolve_budget_value(
+            DEFAULT_AUTOGEN_TIME_CAP_MS,
+            CEILING_AUTOGEN_TIME_CAP_MS,
+            None,
+            "WRELA_BUDGET_AUTOGEN_TIME_CAP_MS",
+        ),
+        sim_time_cap_ms: resolve_budget_value(
+            DEFAULT_SIM_TIME_CAP_MS,
+            CEILING_SIM_TIME_CAP_MS,
+            None,
+            "WRELA_BUDGET_SIM_TIME_CAP_MS",
+        ),
+        fuzz_time_cap_ms: resolve_budget_value(
+            DEFAULT_FUZZ_TIME_CAP_MS,
+            CEILING_FUZZ_TIME_CAP_MS,
+            None,
+            "WRELA_BUDGET_FUZZ_TIME_CAP_MS",
+        ),
+        mutation_time_cap_ms: resolve_budget_value(
+            DEFAULT_MUTATION_TIME_CAP_MS,
+            CEILING_MUTATION_TIME_CAP_MS,
+            None,
+            "WRELA_BUDGET_MUTATION_TIME_CAP_MS",
+        ),
+    }
+}
+
+fn resolve_budget_value(
+    default: u64,
+    ceiling: u64,
+    cli_override: Option<(u64, &str)>,
+    env_key: &str,
+) -> BudgetValue {
+    if let Some((requested, key)) = cli_override {
+        return budget_value(default, ceiling, requested, "cli", key);
+    }
+    if let Some(requested) = parse_budget_env_u64(env_key) {
+        return budget_value(default, ceiling, requested, "env", env_key);
+    }
+    budget_value(default, ceiling, default, "default", "hardcoded")
+}
+
+fn parse_budget_env_u64(key: &str) -> Option<u64> {
+    std::env::var(key).ok()?.trim().parse::<u64>().ok()
+}
+
+fn budget_value(
+    default: u64,
+    ceiling: u64,
+    requested: u64,
+    source: &str,
+    key: &str,
+) -> BudgetValue {
+    let requested = requested.max(1);
+    BudgetValue {
+        value: requested.min(ceiling),
+        default,
+        ceiling,
+        provenance: BudgetProvenance {
+            source: source.to_string(),
+            key: key.to_string(),
+            requested,
+            clamped_to_ceiling: requested > ceiling,
+        },
+    }
+}
+
+fn verify_certification_report(cert_path: &Path) -> Result<(), String> {
+    if !cert_path.exists() {
+        return Err(format!(
+            "verify-cert failed:\n  - cert path not found: {}",
+            cert_path.display()
+        ));
+    }
+
+    let payload = fs::read_to_string(cert_path).map_err(|err| {
+        format!(
+            "verify-cert failed:\n  - failed to read cert {}: {}",
+            cert_path.display(),
+            err
+        )
+    })?;
+    let cert_json: serde_json::Value = serde_json::from_str(&payload).map_err(|err| {
+        format!(
+            "verify-cert failed:\n  - invalid cert JSON at {}: {}",
+            cert_path.display(),
+            err
+        )
+    })?;
+    let cert_schema_version = cert_json
+        .get("cert_schema_version")
+        .and_then(serde_json::Value::as_u64);
+    if cert_schema_version != Some(CERT_SCHEMA_VERSION as u64) {
+        let got = cert_schema_version
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "missing".to_string());
+        return Err(format!(
+            "verify-cert failed:\n  - schema mismatch: expected {} but got {}",
+            CERT_SCHEMA_VERSION, got
+        ));
+    }
+
+    let report: CertificationReport = serde_json::from_value(cert_json).map_err(|err| {
+        format!(
+            "verify-cert failed:\n  - cert schema {} parse error: {}",
+            CERT_SCHEMA_VERSION, err
+        )
+    })?;
+
+    let mut failures: Vec<String> = Vec::new();
+    if report.gate_versions_marker != CERT_GATE_VERSIONS_MARKER {
+        failures.push(format!(
+            "gate versions marker mismatch: expected '{}' but got '{}'",
+            CERT_GATE_VERSIONS_MARKER, report.gate_versions_marker
+        ));
+    }
+    if report.compiler_version.trim().is_empty() {
+        failures.push("compiler version is empty".to_string());
+    }
+    if report.runtime_version.trim().is_empty() {
+        failures.push("runtime version is empty".to_string());
+    }
+
+    let cert_dir = cert_path.parent().unwrap_or_else(|| Path::new("."));
+    let artifact_path = resolve_cert_path(&report.artifact_path, cert_dir);
+    if !artifact_path.exists() {
+        failures.push(format!("binary path missing: {}", artifact_path.display()));
+    } else {
+        match hash_file_fingerprint(&artifact_path) {
+            Ok(actual_binary_hash) => {
+                if actual_binary_hash != report.binary_hash {
+                    failures.push(format!(
+                        "binary hash mismatch: expected {} but got {} ({})",
+                        report.binary_hash,
+                        actual_binary_hash,
+                        artifact_path.display()
+                    ));
+                }
+            }
+            Err(err) => failures.push(format!("binary hash failed: {err}")),
+        }
+    }
+
+    let workspace_root = resolve_cert_path(&report.workspace_root, cert_dir);
+    if workspace_root.exists() {
+        match hash_source_fingerprint(&workspace_root) {
+            Ok(actual_source_hash) => {
+                if actual_source_hash != report.source_hash {
+                    failures.push(format!(
+                        "source hash mismatch: expected {} but got {} ({})",
+                        report.source_hash,
+                        actual_source_hash,
+                        workspace_root.display()
+                    ));
+                }
+            }
+            Err(err) => failures.push(format!("source hash failed: {err}")),
+        }
+    } else if !report.workspace_root.trim().is_empty() {
+        failures.push(format!(
+            "workspace root missing for source hash verification: {}",
+            workspace_root.display()
+        ));
+    }
+
+    if failures.is_empty() {
+        return Ok(());
+    }
+    let body = failures
+        .into_iter()
+        .map(|line| format!("  - {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Err(format!("verify-cert failed:\n{body}"))
+}
+
+fn resolve_cert_path(raw: &str, cert_dir: &Path) -> PathBuf {
+    let path = PathBuf::from(raw);
+    if path.is_absolute() {
+        path
+    } else {
+        cert_dir.join(path)
+    }
+}
+
+fn write_test_maintenance_summary(
+    workspace_root: &Path,
+    mode_record: bool,
+    mode_update_public_surface: bool,
+    exit_code: i32,
+) -> Result<(), String> {
+    let generated_at_unix_ms = now_unix_ms();
+    let summary = TestMaintenanceSummary {
+        version: 1,
+        generated_at_unix_ms,
+        workspace_root: workspace_root.display().to_string(),
+        mode_record,
+        mode_update_public_surface,
+        exit_code,
+        deployable_artifacts_emitted: false,
+    };
+    let payload = serde_json::to_vec_pretty(&summary).map_err(|err| err.to_string())?;
+    let artifact_dir = workspace_root
+        .join("tests")
+        .join(".artifacts")
+        .join("maintenance");
+    fs::create_dir_all(&artifact_dir).map_err(|err| {
+        format!(
+            "failed to create maintenance artifact directory {}: {}",
+            artifact_dir.display(),
+            err
+        )
+    })?;
+    let summary_path = artifact_dir.join(format!("maintenance-{}.json", generated_at_unix_ms));
+    let latest_path = artifact_dir.join("maintenance-latest.json");
+    fs::write(&summary_path, &payload).map_err(|err| {
+        format!(
+            "failed to write maintenance summary {}: {}",
+            summary_path.display(),
+            err
+        )
+    })?;
+    fs::write(&latest_path, payload).map_err(|err| {
+        format!(
+            "failed to write maintenance latest summary {}: {}",
+            latest_path.display(),
+            err
+        )
+    })?;
+    Ok(())
+}
+
+fn hash_file_fingerprint(path: &Path) -> Result<String, String> {
+    let bytes = fs::read(path)
+        .map_err(|err| format!("failed to read hash input {}: {}", path.display(), err))?;
+    Ok(fnv1a64_hex(&bytes))
+}
+
+fn hash_source_fingerprint(workspace_root: &Path) -> Result<String, String> {
+    let mut files: Vec<(String, PathBuf)> = Vec::new();
+    collect_hash_files(&workspace_root.join("src"), "src", "wr", &mut files)?;
+    collect_hash_files(&workspace_root.join("tests"), "tests", "wr", &mut files)?;
+    collect_hash_files(
+        &workspace_root.join("tests").join("cassettes"),
+        "tests/cassettes",
+        "json",
+        &mut files,
+    )?;
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut hasher = Fnv1a64::new();
+    for (rel, path) in files {
+        hasher.update(b"file:");
+        hasher.update(rel.as_bytes());
+        hasher.update(&[0]);
+        let bytes = fs::read(&path).map_err(|err| {
+            format!(
+                "failed to read source hash input {}: {}",
+                path.display(),
+                err
+            )
+        })?;
+        hasher.update(&(bytes.len() as u64).to_le_bytes());
+        hasher.update(&bytes);
+    }
+    Ok(hasher.finish_hex())
+}
+
+fn collect_hash_files(
+    dir: &Path,
+    dir_label: &str,
+    extension: &str,
+    out: &mut Vec<(String, PathBuf)>,
+) -> Result<(), String> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    let entries = fs::read_dir(dir)
+        .map_err(|err| format!("failed to read source directory {}: {}", dir.display(), err))?;
+    let mut children: Vec<PathBuf> = entries
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("failed to list source directory {}: {}", dir.display(), err))?
+        .into_iter()
+        .map(|entry| entry.path())
+        .collect();
+    children.sort_by(|a, b| path_sort_key(a).cmp(&path_sort_key(b)));
+    for child in children {
+        if child.is_dir() {
+            let child_name = child
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| format!("non-utf8 path in source tree: {}", child.display()))?;
+            let next_label = format!("{dir_label}/{child_name}");
+            collect_hash_files(&child, &next_label, extension, out)?;
+        } else if child.is_file() {
+            if child.extension().and_then(|ext| ext.to_str()) != Some(extension) {
+                continue;
+            }
+            let child_name = child
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| format!("non-utf8 path in source tree: {}", child.display()))?;
+            out.push((format!("{dir_label}/{child_name}"), child));
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone)]
+struct WrModuleSource {
+    module_path: String,
+    rel_path: String,
+    source: String,
+    hash: String,
+    uses: Vec<String>,
+}
+
+fn build_certified_impact_manifest(
+    workspace_root: &Path,
+) -> Result<CertifiedImpactManifest, String> {
+    let mut files: Vec<(String, PathBuf)> = Vec::new();
+    collect_hash_files(&workspace_root.join("src"), "src", "wr", &mut files)?;
+    collect_hash_files(&workspace_root.join("tests"), "tests", "wr", &mut files)?;
+    collect_hash_files(
+        &workspace_root.join("tests").join("cassettes"),
+        "tests/cassettes",
+        "json",
+        &mut files,
+    )?;
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    let source_files = files
+        .iter()
+        .map(|(rel_path, path)| {
+            let hash = hash_file_fingerprint(path)?;
+            Ok(CertifiedSourceFileFingerprint {
+                rel_path: rel_path.clone(),
+                hash,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+
+    let src_root = workspace_root.join("src");
+    let mut src_modules = Vec::new();
+    collect_wr_modules(&src_root, &src_root, "src", &mut src_modules)?;
+    let mut src_snapshots = src_modules
+        .into_iter()
+        .map(|module| CertifiedSrcModuleSnapshot {
+            module_path: module.module_path,
+            rel_path: module.rel_path,
+            hash: module.hash,
+            uses: module.uses,
+            runtime_sensitive: source_looks_runtime_sensitive(&module.source),
+        })
+        .collect::<Vec<_>>();
+    src_snapshots.sort_by(|a, b| a.module_path.cmp(&b.module_path));
+
+    Ok(CertifiedImpactManifest {
+        source_files,
+        src_modules: src_snapshots,
+    })
+}
+
+fn collect_wr_modules(
+    root: &Path,
+    strip_root: &Path,
+    root_label: &str,
+    out: &mut Vec<WrModuleSource>,
+) -> Result<(), String> {
+    if !root.exists() {
+        return Ok(());
+    }
+    let entries = fs::read_dir(root).map_err(|err| {
+        format!(
+            "failed to read source directory {}: {}",
+            root.display(),
+            err
+        )
+    })?;
+    let mut children: Vec<PathBuf> = entries
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| {
+            format!(
+                "failed to list source directory {}: {}",
+                root.display(),
+                err
+            )
+        })?
+        .into_iter()
+        .map(|entry| entry.path())
+        .collect();
+    children.sort_by(|a, b| path_sort_key(a).cmp(&path_sort_key(b)));
+    for child in children {
+        if child.is_dir() {
+            collect_wr_modules(&child, strip_root, root_label, out)?;
+            continue;
+        }
+        if child.extension().and_then(|ext| ext.to_str()) != Some("wr") {
+            continue;
+        }
+        let source = fs::read_to_string(&child)
+            .map_err(|err| format!("failed to read source file {}: {}", child.display(), err))?;
+        let hash = fnv1a64_hex(source.as_bytes());
+        let module_path = module_path_for_wr_file(&child, strip_root, root_label)?;
+        let rel = child.strip_prefix(strip_root).map_err(|_| {
+            format!(
+                "file {} must live under {}",
+                child.display(),
+                strip_root.display()
+            )
+        })?;
+        let rel_path = format!(
+            "{}/{}",
+            root_label,
+            rel.to_string_lossy().replace('\\', "/")
+        );
+        let uses = parse_wr_use_edges(&source);
+        out.push(WrModuleSource {
+            module_path,
+            rel_path,
+            source,
+            hash,
+            uses,
+        });
+    }
+    Ok(())
+}
+
+fn module_path_for_wr_file(path: &Path, root: &Path, root_label: &str) -> Result<String, String> {
+    let rel = path
+        .strip_prefix(root)
+        .map_err(|_| format!("file {} must live under {}", path.display(), root.display()))?;
+    let mut rel = rel.to_path_buf();
+    rel.set_extension("");
+    let parts: Vec<String> = rel
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().to_string())
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    if root_label == "tests" {
+        Ok(format!("tests/{}", parts.join("/")))
+    } else {
+        Ok(parts.join("/"))
+    }
+}
+
+fn parse_wr_use_edges(source: &str) -> Vec<String> {
+    use wrela::parser::ast::AstNode;
+
+    let (syntax, parse_errors) = parser::parse_with_errors(source);
+    if !parse_errors.is_empty() {
+        return Vec::new();
+    }
+    let Some(root) = parser::ast::Root::cast(syntax) else {
+        return Vec::new();
+    };
+    let module = hir::lower::lower(root);
+    let mut uses = module
+        .uses
+        .iter()
+        .map(|use_stmt| use_stmt.module.to_string())
+        .filter(|module| !module.trim().is_empty())
+        .collect::<Vec<_>>();
+    uses.sort();
+    uses.dedup();
+    uses
+}
+
+fn source_looks_runtime_sensitive(source: &str) -> bool {
+    let normalized = source.to_ascii_lowercase();
+    [
+        "actor", "pool", "runtime", "__wr_", "detach", "mailbox", "sched_",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+}
+
+fn enforce_public_surface_gate(workspace_root: &Path) -> Result<(), String> {
+    let snapshot = build_public_surface_snapshot(workspace_root)?;
+    let current_path = workspace_root.join(PUBLIC_SURFACE_CURRENT_REL_PATH);
+    write_public_surface_snapshot(&current_path, &snapshot)?;
+    let baseline_path = workspace_root.join(PUBLIC_SURFACE_BASELINE_REL_PATH);
+    if !baseline_path.is_file() {
+        return Ok(());
+    }
+    let baseline = load_public_surface_snapshot(&baseline_path)?;
+    if baseline == snapshot {
+        return Ok(());
+    }
+    let summary = summarize_public_surface_diff(&baseline, &snapshot);
+    Err(format!(
+        "public surface gate failed:\n  baseline: {}\n  current: {}\n{}\nrun `wrela test --update-public-surface` to accept the new public surface",
+        baseline_path.display(),
+        current_path.display(),
+        summary
+    ))
+}
+
+fn enforce_importable_coverage_gate(
+    workspace_root: &Path,
+    function_coverage: &BTreeMap<String, u64>,
+) -> Result<(), String> {
+    let snapshot = build_public_surface_snapshot(workspace_root)?;
+    let mut uncovered = snapshot
+        .items
+        .iter()
+        .filter(|item| is_importable_coverage_target(&item.qualified_name))
+        .filter_map(|item| {
+            let function_id = stable_function_id(&item.qualified_name);
+            let hits = function_coverage.get(&function_id).copied().unwrap_or(0);
+            (hits == 0).then_some(item.qualified_name.clone())
+        })
+        .collect::<Vec<_>>();
+    uncovered.sort();
+    if uncovered.is_empty() {
+        return Ok(());
+    }
+    let details = uncovered
+        .iter()
+        .map(|name| format!("  - {name}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Err(format!(
+        "coverage gate failed: expected 100% function coverage for importable items under src/domain/** and src/application/**.\nuncovered importable functions/checks ({}):\n{}\naction: add tests that execute each uncovered item, or mark it private if it is internal-only",
+        uncovered.len(),
+        details
+    ))
+}
+
+fn is_importable_coverage_target(qualified_name: &str) -> bool {
+    qualified_name.starts_with("domain/") || qualified_name.starts_with("application/")
+}
+
+fn update_public_surface_baseline(workspace_root: &Path) -> Result<(), String> {
+    let snapshot = build_public_surface_snapshot(workspace_root)?;
+    let current_path = workspace_root.join(PUBLIC_SURFACE_CURRENT_REL_PATH);
+    write_public_surface_snapshot(&current_path, &snapshot)?;
+    let baseline_path = workspace_root.join(PUBLIC_SURFACE_BASELINE_REL_PATH);
+    write_public_surface_snapshot(&baseline_path, &snapshot)?;
+    println!(
+        "public surface baseline updated: {}",
+        baseline_path.display()
+    );
+    Ok(())
+}
+
+fn build_public_surface_snapshot(workspace_root: &Path) -> Result<PublicSurfaceSnapshot, String> {
+    use wrela::parser::ast::AstNode;
+
+    let src_root = workspace_root.join("src");
+    let mut modules = Vec::new();
+    collect_wr_modules(&src_root, &src_root, "src", &mut modules)?;
+    modules.sort_by(|a, b| a.module_path.cmp(&b.module_path));
+    let mut items = Vec::new();
+    for module in modules {
+        let (syntax, parse_errors) = parser::parse_with_errors(&module.source);
+        if !parse_errors.is_empty() {
+            continue;
+        }
+        let Some(root) = parser::ast::Root::cast(syntax) else {
+            continue;
+        };
+        let lowered = hir::lower::lower(root);
+        for (_, function) in lowered.functions.iter() {
+            if function.visibility != hir::Visibility::Public {
+                continue;
+            }
+            if !matches!(
+                function.kind,
+                hir::FunctionKind::Function | hir::FunctionKind::Check
+            ) {
+                continue;
+            }
+            let qualified_name = format!("{}::{}", module.module_path, function.name);
+            let signature = render_public_function_signature(function);
+            let connector_literals = function
+                .body
+                .as_ref()
+                .map(collect_public_surface_connector_literals)
+                .unwrap_or_default();
+            items.push(PublicSurfaceItem {
+                qualified_name,
+                signature,
+                connector_literals,
+            });
+        }
+    }
+    items.sort_by(|a, b| a.qualified_name.cmp(&b.qualified_name));
+    Ok(PublicSurfaceSnapshot { version: 1, items })
+}
+
+fn render_public_function_signature(function: &hir::Function) -> String {
+    let params = function
+        .params
+        .iter()
+        .map(|param| {
+            let ty = param
+                .ty
+                .as_ref()
+                .map(render_public_surface_type)
+                .unwrap_or_else(|| "_".to_string());
+            format!("{}: {}", param.name, ty)
+        })
+        .collect::<Vec<_>>();
+    let ret = function
+        .ret_type
+        .as_ref()
+        .map(render_public_surface_type)
+        .unwrap_or_else(|| "Nothing".to_string());
+    format!("({}) -> {ret}", params.join(", "))
+}
+
+fn render_public_surface_type(ty: &hir::TypeRef) -> String {
+    if ty.args.is_empty() {
+        return ty.name.to_string();
+    }
+    let args = ty
+        .args
+        .iter()
+        .map(render_public_surface_type)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{}[{args}]", ty.name)
+}
+
+fn collect_public_surface_connector_literals(
+    body: &hir::Body,
+) -> Vec<PublicSurfaceConnectorLiteral> {
+    let mut literals = BTreeSet::new();
+    collect_public_surface_connector_literals_from_stmts(body, &body.root_stmts, &mut literals);
+    literals.into_iter().collect()
+}
+
+fn collect_public_surface_connector_literals_from_stmts(
+    body: &hir::Body,
+    stmts: &[hir::arena::Idx<hir::Stmt>],
+    out: &mut BTreeSet<PublicSurfaceConnectorLiteral>,
+) {
+    for stmt_idx in stmts {
+        match &body.stmts[*stmt_idx] {
+            hir::Stmt::Expr(expr)
+            | hir::Stmt::IgnoreResult { expr }
+            | hir::Stmt::Capture { value: expr, .. }
+            | hir::Stmt::Require {
+                condition: expr, ..
+            } => {
+                collect_public_surface_connector_literals_from_expr(body, *expr, out);
+            }
+            hir::Stmt::Assert { expr, .. } => {
+                collect_public_surface_connector_literals_from_expr(body, *expr, out);
+            }
+            hir::Stmt::Let { value, .. } | hir::Stmt::Assign { value, .. } => {
+                collect_public_surface_connector_literals_from_expr(body, *value, out);
+            }
+            hir::Stmt::Optimize { body: block, .. } => {
+                collect_public_surface_connector_literals_from_stmts(body, block, out);
+            }
+            hir::Stmt::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                collect_public_surface_connector_literals_from_expr(body, *condition, out);
+                collect_public_surface_connector_literals_from_stmts(body, then_branch, out);
+                if let Some(else_branch) = else_branch {
+                    collect_public_surface_connector_literals_from_stmts(body, else_branch, out);
+                }
+            }
+            hir::Stmt::For {
+                iterable,
+                body: block,
+                ..
+            } => {
+                collect_public_surface_connector_literals_from_expr(body, *iterable, out);
+                collect_public_surface_connector_literals_from_stmts(body, block, out);
+            }
+            hir::Stmt::Match {
+                subject,
+                cases,
+                otherwise,
+            } => {
+                collect_public_surface_connector_literals_from_expr(body, *subject, out);
+                for case in cases {
+                    collect_public_surface_connector_literals_from_stmts(body, &case.body, out);
+                }
+                if let Some(otherwise) = otherwise {
+                    collect_public_surface_connector_literals_from_stmts(body, otherwise, out);
+                }
+            }
+            hir::Stmt::While {
+                condition,
+                body: block,
+            } => {
+                collect_public_surface_connector_literals_from_expr(body, *condition, out);
+                collect_public_surface_connector_literals_from_stmts(body, block, out);
+            }
+            hir::Stmt::Return(Some(value)) | hir::Stmt::Defer { expr: value } => {
+                collect_public_surface_connector_literals_from_expr(body, *value, out);
+            }
+            hir::Stmt::Return(None)
+            | hir::Stmt::Use { .. }
+            | hir::Stmt::Break
+            | hir::Stmt::Continue => {}
+        }
+    }
+}
+
+fn collect_public_surface_connector_literals_from_expr(
+    body: &hir::Body,
+    expr_idx: hir::arena::Idx<hir::Expr>,
+    out: &mut BTreeSet<PublicSurfaceConnectorLiteral>,
+) {
+    match &body.exprs[expr_idx] {
+        hir::Expr::Literal(_) | hir::Expr::Variable(_) => {}
+        hir::Expr::Detach { target, .. }
+        | hir::Expr::Unary { expr: target, .. }
+        | hir::Expr::TypeApply { callee: target, .. }
+        | hir::Expr::Crash { expr: target } => {
+            collect_public_surface_connector_literals_from_expr(body, *target, out);
+        }
+        hir::Expr::Binary { lhs, rhs, .. } => {
+            collect_public_surface_connector_literals_from_expr(body, *lhs, out);
+            collect_public_surface_connector_literals_from_expr(body, *rhs, out);
+        }
+        hir::Expr::Call { callee, args, .. } | hir::Expr::GivenCall { callee, args, .. } => {
+            if is_try_to_http_call(body, *callee)
+                && let Some(literal) = extract_try_to_http_literal_tuple(body, args)
+            {
+                out.insert(literal);
+            }
+            collect_public_surface_connector_literals_from_expr(body, *callee, out);
+            for arg in args {
+                match arg {
+                    hir::Arg::Positional { value, .. } | hir::Arg::Named { value, .. } => {
+                        collect_public_surface_connector_literals_from_expr(body, *value, out);
+                    }
+                }
+            }
+        }
+        hir::Expr::Member { object, .. } => {
+            collect_public_surface_connector_literals_from_expr(body, *object, out);
+        }
+        hir::Expr::List(items) => {
+            for item in items {
+                collect_public_surface_connector_literals_from_expr(body, *item, out);
+            }
+        }
+        hir::Expr::Map(entries) => {
+            for (key, value) in entries {
+                collect_public_surface_connector_literals_from_expr(body, *key, out);
+                collect_public_surface_connector_literals_from_expr(body, *value, out);
+            }
+        }
+        hir::Expr::StringInterp(parts) => {
+            for part in parts {
+                if let hir::StringPart::Expr(expr) = part {
+                    collect_public_surface_connector_literals_from_expr(body, *expr, out);
+                }
+            }
+        }
+    }
+}
+
+fn is_try_to_http_call(body: &hir::Body, callee: hir::arena::Idx<hir::Expr>) -> bool {
+    match &body.exprs[callee] {
+        hir::Expr::Variable(name) => name == "try_to_http_call",
+        hir::Expr::TypeApply { callee, .. } => is_try_to_http_call(body, *callee),
+        _ => false,
+    }
+}
+
+fn extract_try_to_http_literal_tuple(
+    body: &hir::Body,
+    args: &[hir::Arg],
+) -> Option<PublicSurfaceConnectorLiteral> {
+    let positional = args
+        .iter()
+        .filter_map(|arg| match arg {
+            hir::Arg::Positional { value, .. } => Some(*value),
+            hir::Arg::Named { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    if positional.len() < 4 {
+        return None;
+    }
+    let service = extract_literal_string(body, positional[0])?;
+    let endpoint = extract_literal_string(body, positional[1])?;
+    let method = extract_literal_string(body, positional[2])?;
+    let url = extract_literal_string(body, positional[3])?;
+    Some(PublicSurfaceConnectorLiteral {
+        service,
+        endpoint,
+        method,
+        url,
+    })
+}
+
+fn extract_literal_string(body: &hir::Body, expr: hir::arena::Idx<hir::Expr>) -> Option<String> {
+    match &body.exprs[expr] {
+        hir::Expr::Literal(hir::Literal::String(value)) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn write_public_surface_snapshot(
+    path: &Path,
+    snapshot: &PublicSurfaceSnapshot,
+) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed to create {}: {}", parent.display(), err))?;
+    }
+    let bytes = serde_json::to_vec_pretty(snapshot).map_err(|err| err.to_string())?;
+    fs::write(path, bytes).map_err(|err| format!("failed to write {}: {}", path.display(), err))
+}
+
+fn load_public_surface_snapshot(path: &Path) -> Result<PublicSurfaceSnapshot, String> {
+    let bytes =
+        fs::read(path).map_err(|err| format!("failed to read {}: {}", path.display(), err))?;
+    serde_json::from_slice::<PublicSurfaceSnapshot>(&bytes)
+        .map_err(|err| format!("failed to parse {}: {}", path.display(), err))
+}
+
+fn summarize_public_surface_diff(
+    baseline: &PublicSurfaceSnapshot,
+    current: &PublicSurfaceSnapshot,
+) -> String {
+    let baseline_by_name = baseline
+        .items
+        .iter()
+        .map(|item| (item.qualified_name.as_str(), item))
+        .collect::<BTreeMap<_, _>>();
+    let current_by_name = current
+        .items
+        .iter()
+        .map(|item| (item.qualified_name.as_str(), item))
+        .collect::<BTreeMap<_, _>>();
+    let added = current_by_name
+        .keys()
+        .filter(|name| !baseline_by_name.contains_key(*name))
+        .copied()
+        .collect::<Vec<_>>();
+    let removed = baseline_by_name
+        .keys()
+        .filter(|name| !current_by_name.contains_key(*name))
+        .copied()
+        .collect::<Vec<_>>();
+    let changed = baseline_by_name
+        .iter()
+        .filter_map(|(name, baseline_item)| {
+            let current_item = current_by_name.get(name)?;
+            if *baseline_item == *current_item {
+                None
+            } else {
+                Some((*name, *baseline_item, *current_item))
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let mut lines = Vec::new();
+    if !added.is_empty() {
+        lines.push(format!("  added importable items ({}):", added.len()));
+        lines.extend(added.into_iter().map(|name| format!("    + {name}")));
+    }
+    if !removed.is_empty() {
+        lines.push(format!("  removed importable items ({}):", removed.len()));
+        lines.extend(removed.into_iter().map(|name| format!("    - {name}")));
+    }
+    if !changed.is_empty() {
+        lines.push(format!("  changed importable items ({}):", changed.len()));
+        for (name, baseline_item, current_item) in changed {
+            lines.push(format!("    ~ {name}"));
+            if baseline_item.signature != current_item.signature {
+                lines.push(format!(
+                    "      signature: {} -> {}",
+                    baseline_item.signature, current_item.signature
+                ));
+            }
+            if baseline_item.connector_literals != current_item.connector_literals {
+                lines.push(format!(
+                    "      connector_literals: {} -> {}",
+                    baseline_item.connector_literals.len(),
+                    current_item.connector_literals.len()
+                ));
+            }
+        }
+    }
+    if lines.is_empty() {
+        lines.push("  public surface changed (unable to summarize details)".to_string());
+    }
+    lines.join("\n")
+}
+
+fn evaluate_connector_contract_gate(workspace_root: &Path) -> Result<(), String> {
+    let root = fs::canonicalize(workspace_root).unwrap_or_else(|_| workspace_root.to_path_buf());
+    let cassette_root = root.join("tests").join("cassettes");
+    if !cassette_root.is_dir() {
+        return Ok(());
+    }
+    let mut cassette_files = Vec::new();
+    collect_json_files_recursive(&cassette_root, &mut cassette_files)?;
+    if cassette_files.is_empty() {
+        return Ok(());
+    }
+    let mut coverage: std::collections::BTreeMap<(String, String), (bool, bool)> =
+        std::collections::BTreeMap::new();
+    for file in cassette_files {
+        let bytes = fs::read(&file)
+            .map_err(|err| format!("failed to read cassette {}: {err}", file.display()))?;
+        let cassette: ConnectorCoverageCassette = serde_json::from_slice(&bytes)
+            .map_err(|err| format!("invalid cassette schema in {}: {err}", file.display()))?;
+        let key = (
+            cassette.request.service.clone(),
+            cassette.request.endpoint.clone(),
+        );
+        let entry = coverage.entry(key).or_insert((false, false));
+        if cassette.response.status < 400 {
+            entry.0 = true;
+        } else {
+            entry.1 = true;
+        }
+    }
+
+    let mut missing = Vec::new();
+    for ((service, endpoint), (has_success, has_failure)) in coverage {
+        if !has_success || !has_failure {
+            missing.push(format!(
+                "  - {service}/{endpoint}: success_replay={} failure_replay={}",
+                has_success, has_failure
+            ));
+        }
+    }
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "connector contract coverage requires both success and failure replay cassettes per endpoint:\n{}",
+        missing.join("\n")
+    ))
+}
+
+fn collect_json_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    let entries =
+        fs::read_dir(dir).map_err(|err| format!("failed to read {}: {err}", dir.display()))?;
+    let mut children: Vec<PathBuf> = entries
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("failed to list {}: {err}", dir.display()))?
+        .into_iter()
+        .map(|entry| entry.path())
+        .collect();
+    children.sort_by(|a, b| path_sort_key(a).cmp(&path_sort_key(b)));
+    for child in children {
+        if child.is_dir() {
+            collect_json_files_recursive(&child, out)?;
+        } else if child.extension().and_then(|ext| ext.to_str()) == Some("json") {
+            out.push(child);
+        }
+    }
+    Ok(())
+}
+
+fn path_sort_key(path: &Path) -> (usize, String) {
+    let rank = match (path.is_file(), path.is_dir()) {
+        (true, _) => 0,
+        (_, true) => 1,
+        _ => 2,
+    };
+    (rank, path.to_string_lossy().to_string())
+}
+
+const FNV1A64_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+const FNV1A64_PRIME: u64 = 0x100000001b3;
+
+struct Fnv1a64 {
+    state: u64,
+}
+
+impl Fnv1a64 {
+    fn new() -> Self {
+        Self {
+            state: FNV1A64_OFFSET_BASIS,
+        }
+    }
+
+    fn update(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.state ^= *byte as u64;
+            self.state = self.state.wrapping_mul(FNV1A64_PRIME);
+        }
+    }
+
+    fn finish_hex(&self) -> String {
+        format!("{:016x}", self.state)
+    }
+
+    fn finish_u64(&self) -> u64 {
+        self.state
+    }
+}
+
+fn fnv1a64_hex(bytes: &[u8]) -> String {
+    let mut hasher = Fnv1a64::new();
+    hasher.update(bytes);
+    hasher.finish_hex()
+}
+
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hasher = Fnv1a64::new();
+    hasher.update(bytes);
+    hasher.finish_u64()
 }
 
 #[derive(Serialize)]
@@ -685,6 +3283,7 @@ fn is_command(arg: &str) -> bool {
             | "check"
             | "build"
             | "compile"
+            | "verify-cert"
             | "run"
             | "dev"
             | "test"
@@ -985,9 +3584,193 @@ fn resolve_test_target(path_arg: Option<&str>) -> Result<TestTarget, String> {
 
 #[derive(Clone)]
 struct TestCase {
+    id: String,
+    lane: TestLane,
     name: String,
     module_path: String,
     func_name: String,
+    is_serial: bool,
+    allows_env_set: bool,
+    allows_fs_escape: bool,
+    has_oracle: bool,
+    generated_call_body: Option<String>,
+    generated_case_kind: Option<GeneratedCaseKind>,
+    generated_entry_source: Option<String>,
+    autogen_module_source: Option<String>,
+    autogen_seed: Option<u64>,
+    autogen_span: Option<String>,
+    sim_seed: Option<u64>,
+    canonical_id: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TestLane {
+    Spec,
+    Integration,
+    Sim,
+    Model,
+    Default,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GeneratedCaseKind {
+    Autogen,
+    Fuzz,
+}
+
+impl TestLane {
+    fn as_str(self) -> &'static str {
+        match self {
+            TestLane::Spec => "spec",
+            TestLane::Integration => "integration",
+            TestLane::Sim => "sim",
+            TestLane::Model => "model",
+            TestLane::Default => "default",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum HttpCassetteMode {
+    Replay,
+    Record,
+}
+
+#[derive(Clone, Copy)]
+enum DifferentialPipeline {
+    Baseline,
+    Alt,
+}
+
+impl DifferentialPipeline {
+    fn as_env_value(self) -> &'static str {
+        match self {
+            DifferentialPipeline::Baseline => "baseline",
+            DifferentialPipeline::Alt => "alt",
+        }
+    }
+}
+
+#[derive(Clone)]
+struct AutogenCheckDecl {
+    module_path: String,
+    func_name: String,
+    params: Vec<AutogenCheckParam>,
+    module_source: String,
+    source_span: Option<String>,
+}
+
+const REPRO_SCHEMA_VERSION: u32 = 2;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+enum ReproArtifact {
+    Autogen(AutogenReproArtifact),
+    Fuzz(FuzzReproArtifact),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AutogenReproArtifact {
+    version: u32,
+    generated_at_unix_ms: u64,
+    workspace_root: String,
+    test_id: String,
+    module_path: String,
+    func_name: String,
+    seed: u64,
+    span: Option<String>,
+    original_call: String,
+    shrunk_call: Option<String>,
+    replay_call: String,
+    failure: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct FuzzReproArtifact {
+    version: u32,
+    generated_at_unix_ms: u64,
+    workspace_root: String,
+    test_id: String,
+    module_path: String,
+    func_name: String,
+    seed: u64,
+    span: Option<String>,
+    call: String,
+    uses_bytes_helper: bool,
+    failure: String,
+}
+
+#[derive(Clone)]
+struct AutogenCheckParam {
+    name: String,
+    ty: AutogenScalarType,
+}
+
+#[derive(Clone)]
+struct FuzzTargetDecl {
+    module_path: String,
+    func_name: String,
+    param_name: String,
+    param_ty: FuzzParamType,
+    module_source: String,
+    source_span: Option<String>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FuzzParamType {
+    String,
+    Bytes,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AutogenScalarType {
+    Integer,
+    Boolean,
+    String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MutationGateReport {
+    version: u32,
+    generated_at_unix_ms: u128,
+    total_mutants: usize,
+    valid_mutants: usize,
+    invalid_mutants: usize,
+    killed_mutants: usize,
+    survived_mutants: usize,
+    no_covering_tests_mutants: usize,
+    kill_rate_pct: f64,
+    domain_application_kill_rate_pct: Option<f64>,
+    mutants: Vec<MutationMutantResult>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MutationMutantResult {
+    function: String,
+    function_id: String,
+    mutation_type: String,
+    tests_ran: Vec<String>,
+    status: String,
+    reason: Option<String>,
+}
+
+impl HttpCassetteMode {
+    fn as_env_value(self) -> &'static str {
+        match self {
+            HttpCassetteMode::Replay => "replay",
+            HttpCassetteMode::Record => "record",
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct TestSelection {
+    list: bool,
+    id: Option<String>,
+    filter: Option<String>,
+    lane: Option<TestLane>,
+    include_ids: Option<HashSet<String>>,
+    cert_selection_report: Option<CertSelectionReport>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1052,6 +3835,8 @@ struct MetricsDump {
     sched_dispatch_loop_ns_p99: u128,
     #[serde(default)]
     queue_burst_drain_avg: f64,
+    #[serde(default)]
+    function_coverage: BTreeMap<String, u64>,
 }
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
@@ -1114,6 +3899,8 @@ struct MetricsTotals {
     sched_dispatch_loop_ns_p99: u128,
     #[serde(default)]
     queue_burst_drain_avg: f64,
+    #[serde(default)]
+    function_coverage: BTreeMap<String, u64>,
 }
 
 impl MetricsTotals {
@@ -1160,6 +3947,12 @@ impl MetricsTotals {
         self.queue_burst_drain_avg = self
             .queue_burst_drain_avg
             .max(metrics.queue_burst_drain_avg);
+        for (function_id, hits) in &metrics.function_coverage {
+            *self
+                .function_coverage
+                .entry(function_id.clone())
+                .or_insert(0) += *hits;
+        }
     }
 
     fn total_allocs(&self) -> u64 {
@@ -1172,14 +3965,78 @@ impl MetricsTotals {
     }
 }
 
+struct TestExecution {
+    exit: i32,
+    summary: Option<PerfSummary>,
+    differential_results_hash: Option<String>,
+    mutation_summary_hash: Option<String>,
+}
+
 struct TestRun {
     metrics: Option<MetricsDump>,
-    compile_ns: u128,
     runtime_ns: u128,
+}
+
+struct TestHarness {
+    exe_path: PathBuf,
+    compile_ns: u128,
+}
+
+#[derive(Serialize)]
+struct TestJsonSummary {
+    run: TestJsonRunMetadata,
+    tests: Vec<TestJsonCase>,
+    timings: TestJsonTimings,
+}
+
+#[derive(Serialize)]
+struct TestJsonRunMetadata {
+    seed: u64,
+    lane: String,
+    jobs: usize,
+    budgets_used: BudgetPolicyV1,
+}
+
+#[derive(Serialize)]
+struct TestJsonCase {
+    id: String,
+    name: String,
+    lane: String,
+    status: String,
+    duration_ms: u128,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+#[derive(Serialize)]
+struct TestJsonTimings {
+    discovery_ms: u128,
+    selection_ms: u128,
+    execution_ms: u128,
+    total_ms: u128,
+}
+
+const TEST_JSON_SUMMARY_SEED: u64 = 0x5A17;
+
+#[derive(Clone)]
+struct DeterminismSignature {
+    hash: String,
+    outcomes: Vec<DeterminismOutcome>,
+}
+
+#[derive(Clone, Serialize, PartialEq, Eq)]
+struct DeterminismOutcome {
+    id: String,
+    name: String,
+    lane: String,
+    status: String,
+    error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PerfCaseSample {
+    #[serde(default)]
+    id: String,
     name: String,
     compile_ns: u128,
     runtime_ns: u128,
@@ -1304,24 +4161,157 @@ struct PerfGateConfig {
 
 fn run_tests(
     target: &TestTarget,
+    budget_policy: &BudgetPolicyV1,
     jobs: usize,
     timeout: Duration,
     output_format: OutputFormat,
     perf_debug: bool,
     perf_gate: Option<&PerfGateConfig>,
-) -> i32 {
-    let (exit, summary) = run_tests_once(
+    selection: &TestSelection,
+    enforce_determinism_gate: bool,
+    http_mode: HttpCassetteMode,
+    sim_seed_override: Option<u64>,
+) -> TestExecution {
+    let (exit, summary, signature) = run_tests_once(
         target,
+        budget_policy,
         jobs,
         timeout,
         output_format,
         perf_debug,
         perf_gate.is_some(),
+        selection,
+        true,
+        true,
+        http_mode,
+        sim_seed_override,
+        enforce_determinism_gate,
+        DifferentialPipeline::Baseline,
     );
-    if exit != EXIT_OK {
-        return exit;
+    let mut differential_results_hash = None;
+    let mut mutation_summary_hash = None;
+    if enforce_determinism_gate {
+        let Some(first_signature) = signature else {
+            if exit != EXIT_OK {
+                return TestExecution {
+                    exit,
+                    summary: None,
+                    differential_results_hash: None,
+                    mutation_summary_hash: None,
+                };
+            }
+            return TestExecution {
+                exit: EXIT_OK,
+                summary,
+                differential_results_hash: None,
+                mutation_summary_hash: None,
+            };
+        };
+        let (alt_exit, _, alt_signature) = run_tests_once(
+            target,
+            budget_policy,
+            jobs,
+            timeout,
+            output_format,
+            perf_debug,
+            perf_gate.is_some(),
+            selection,
+            false,
+            false,
+            http_mode,
+            sim_seed_override,
+            enforce_determinism_gate,
+            DifferentialPipeline::Alt,
+        );
+        let Some(alt_signature) = alt_signature else {
+            eprintln!("differential gate failed: alt pipeline produced no signature");
+            return TestExecution {
+                exit: EXIT_CODEGEN,
+                summary: None,
+                differential_results_hash: None,
+                mutation_summary_hash: None,
+            };
+        };
+        differential_results_hash = Some(fnv1a64_hex(
+            format!("{}:{}", first_signature.hash, alt_signature.hash).as_bytes(),
+        ));
+        if alt_exit != exit || first_signature.hash != alt_signature.hash {
+            eprintln!("differential gate failed: baseline and alt pipelines diverged");
+            eprintln!("  baseline exit: {exit}");
+            eprintln!("  alt exit: {alt_exit}");
+            eprintln!("  baseline signature: {}", first_signature.hash);
+            eprintln!("  alt signature: {}", alt_signature.hash);
+            if let Some(detail) =
+                first_signature_mismatch_detail(&first_signature.outcomes, &alt_signature.outcomes)
+            {
+                eprintln!("  mismatch detail: {detail}");
+            }
+            return TestExecution {
+                exit: EXIT_CODEGEN,
+                summary: None,
+                differential_results_hash,
+                mutation_summary_hash: None,
+            };
+        }
+        let (repeat_exit, _, repeat_signature) = run_tests_once(
+            target,
+            budget_policy,
+            jobs,
+            timeout,
+            output_format,
+            perf_debug,
+            perf_gate.is_some(),
+            selection,
+            false,
+            false,
+            http_mode,
+            sim_seed_override,
+            enforce_determinism_gate,
+            DifferentialPipeline::Baseline,
+        );
+        let Some(second_signature) = repeat_signature else {
+            eprintln!(
+                "determinism gate failed: replay did not produce a certification outcome signature"
+            );
+            return TestExecution {
+                exit: EXIT_CODEGEN,
+                summary: None,
+                differential_results_hash,
+                mutation_summary_hash: None,
+            };
+        };
+        if repeat_exit != exit || first_signature.hash != second_signature.hash {
+            eprintln!(
+                "determinism gate failed: certified suite produced inconsistent outcomes with seed {:#x}",
+                TEST_JSON_SUMMARY_SEED
+            );
+            eprintln!("  first run exit: {exit}");
+            eprintln!("  replay exit: {repeat_exit}");
+            eprintln!("  first signature: {}", first_signature.hash);
+            eprintln!("  replay signature: {}", second_signature.hash);
+            if let Some(detail) = first_signature_mismatch_detail(
+                &first_signature.outcomes,
+                &second_signature.outcomes,
+            ) {
+                eprintln!("  mismatch detail: {detail}");
+            }
+            return TestExecution {
+                exit: EXIT_CODEGEN,
+                summary: None,
+                differential_results_hash,
+                mutation_summary_hash: None,
+            };
+        }
     }
-    if let (Some(gate), Some(summary)) = (perf_gate, summary.as_ref()) {
+    if exit != EXIT_OK {
+        return TestExecution {
+            exit,
+            summary: None,
+            differential_results_hash,
+            mutation_summary_hash: None,
+        };
+    }
+    if let (Some(gate), Some(perf_summary)) = (perf_gate, summary.as_ref()) {
         let baseline = match load_perf_baseline_summary(&gate.baseline_path) {
             Ok(baseline) => baseline,
             Err(err) => {
@@ -1330,11 +4320,16 @@ fn run_tests(
                     gate.baseline_path.display(),
                     err
                 );
-                return EXIT_CODEGEN;
+                return TestExecution {
+                    exit: EXIT_CODEGEN,
+                    summary,
+                    differential_results_hash,
+                    mutation_summary_hash: None,
+                };
             }
         };
         let failures = evaluate_perf_gate(
-            summary,
+            perf_summary,
             &baseline,
             gate.max_regression_pct,
             &gate.kpi_thresholds,
@@ -1348,93 +4343,269 @@ fn run_tests(
             for failure in failures {
                 eprintln!("  - {failure}");
             }
-            return EXIT_CODEGEN;
+            return TestExecution {
+                exit: EXIT_CODEGEN,
+                summary,
+                differential_results_hash,
+                mutation_summary_hash: None,
+            };
         }
     }
-    EXIT_OK
+    if enforce_determinism_gate
+        && let TestTarget::ProjectRoot(root) = target
+        && let Err(err) = evaluate_connector_contract_gate(root)
+    {
+        eprintln!("connector contract gate failed:\n{err}");
+        return TestExecution {
+            exit: EXIT_CODEGEN,
+            summary,
+            differential_results_hash,
+            mutation_summary_hash: None,
+        };
+    }
+    if enforce_determinism_gate
+        && let TestTarget::ProjectRoot(root) = target
+        && let Some(perf_summary) = summary.as_ref()
+    {
+        match run_mutation_gate(
+            root,
+            perf_summary,
+            budget_policy.mutation_max_cases.value as usize,
+            budget_policy.mutation_time_cap_ms.value,
+        ) {
+            Ok(hash) => mutation_summary_hash = hash,
+            Err(err) => {
+                eprintln!("mutation gate failed:\n{err}");
+                return TestExecution {
+                    exit: EXIT_CODEGEN,
+                    summary,
+                    differential_results_hash,
+                    mutation_summary_hash: None,
+                };
+            }
+        }
+    }
+    TestExecution {
+        exit: EXIT_OK,
+        summary,
+        differential_results_hash,
+        mutation_summary_hash,
+    }
 }
 
 fn run_tests_once(
     target: &TestTarget,
+    budget_policy: &BudgetPolicyV1,
     jobs: usize,
     timeout: Duration,
     output_format: OutputFormat,
     perf_debug: bool,
     perf_lane: bool,
-) -> (i32, Option<PerfSummary>) {
+    selection: &TestSelection,
+    emit_json_summary: bool,
+    emit_pretty_output: bool,
+    http_mode: HttpCassetteMode,
+    sim_seed_override: Option<u64>,
+    certify_mode: bool,
+    pipeline: DifferentialPipeline,
+) -> (i32, Option<PerfSummary>, Option<DeterminismSignature>) {
     configure_runtime_for_test_lane(perf_lane, perf_debug);
+    let total_start = Instant::now();
+    let discovery_start = Instant::now();
     let mut tests = Vec::new();
     let (workspace_root, compile_root, tests_root, missing_path_msg) = match target {
         TestTarget::ProjectRoot(root) => {
-            let src_root = root.join("src");
-            let tests_root = root.join("tests");
-            if !tests_root.is_dir() {
-                eprintln!("no tests found at {}", tests_root.display());
-                return (EXIT_OK, None);
+            let workspace_root = fs::canonicalize(root).unwrap_or_else(|_| root.clone());
+            let src_root = workspace_root.join("src");
+            let tests_root = workspace_root.join("tests");
+            let tests_root_opt = if tests_root.is_dir() {
+                if let Err(err) = collect_tests(&tests_root, &tests_root, &mut tests) {
+                    eprintln!("test discovery error: {err}");
+                    return (EXIT_USAGE, None, None);
+                }
+                Some(tests_root.clone())
+            } else {
+                None
+            };
+            match collect_autogen_spec_tests(
+                &workspace_root,
+                budget_policy.autogen_max_cases.value,
+                budget_policy.autogen_time_cap_ms.value,
+            ) {
+                Ok(mut generated) => tests.append(&mut generated),
+                Err(err) => {
+                    eprintln!("test discovery error: {err}");
+                    return (EXIT_USAGE, None, None);
+                }
             }
-            if let Err(err) = collect_tests(&tests_root, &tests_root, &mut tests) {
-                eprintln!("test discovery error: {err}");
-                return (EXIT_USAGE, None);
+            if certify_mode {
+                match collect_fuzz_tests(
+                    &workspace_root,
+                    budget_policy.fuzz_max_cases.value,
+                    budget_policy.fuzz_time_cap_ms.value,
+                ) {
+                    Ok(mut generated) => tests.append(&mut generated),
+                    Err(err) => {
+                        eprintln!("test discovery error: {err}");
+                        return (EXIT_USAGE, None, None);
+                    }
+                }
             }
-            (
-                root.clone(),
-                src_root,
-                Some(tests_root.clone()),
-                tests_root.display().to_string(),
-            )
+            let missing_path_msg = tests_root_opt
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| workspace_root.display().to_string());
+            (workspace_root, src_root, tests_root_opt, missing_path_msg)
         }
         TestTarget::SingleFile(path) => {
             let Some(parent) = path.parent() else {
                 eprintln!("test discovery error: file has no parent directory");
-                return (EXIT_USAGE, None);
+                return (EXIT_USAGE, None, None);
             };
             let source = match fs::read_to_string(path) {
                 Ok(source) => source,
                 Err(err) => {
                     eprintln!("test discovery error: {err}");
-                    return (EXIT_USAGE, None);
+                    return (EXIT_USAGE, None, None);
                 }
             };
             let module_path = match module_path_for_single_file(path) {
                 Ok(module_path) => module_path,
                 Err(err) => {
                     eprintln!("test discovery error: {err}");
-                    return (EXIT_USAGE, None);
+                    return (EXIT_USAGE, None, None);
                 }
             };
-            for func in extract_test_functions(&source) {
-                tests.push(TestCase {
-                    name: format!("{module_path}::{func}"),
-                    module_path: module_path.clone(),
-                    func_name: func,
-                });
+            if let Err(err) = collect_tests_from_source(&source, &module_path, &mut tests) {
+                eprintln!("test discovery error: {err}");
+                return (EXIT_USAGE, None, None);
             }
+            let workspace_root = fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
             (
-                parent.to_path_buf(),
-                parent.to_path_buf(),
+                workspace_root.clone(),
+                workspace_root,
                 None,
                 path.display().to_string(),
             )
         }
     };
+    let discovery_ms = discovery_start.elapsed().as_millis();
 
-    if tests.is_empty() {
-        eprintln!("no tests found at {}", missing_path_msg);
-        return (EXIT_OK, None);
+    let selection_start = Instant::now();
+    tests.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
+    let selected_tests = select_tests(tests, selection);
+    let canonical_authored_selected: Vec<TestCase> = selected_tests
+        .iter()
+        .filter(|test| test.generated_case_kind.is_none() && test.sim_seed.is_none())
+        .cloned()
+        .collect();
+    if certify_mode
+        && !selection.list
+        && let Err(err) = enforce_serial_test_cap(&canonical_authored_selected)
+    {
+        eprintln!("serial gate failed: {err}");
+        return (EXIT_CODEGEN, None, None);
+    }
+    let tests = if selection.list {
+        selected_tests
+    } else {
+        expand_sim_seed_cases(selected_tests, sim_seed_override, certify_mode)
+    };
+    let selection_ms = selection_start.elapsed().as_millis();
+    if (emit_pretty_output || emit_json_summary)
+        && let Some(report) = selection.cert_selection_report.as_ref()
+    {
+        emit_cert_selection_report(output_format, report, tests.len());
     }
 
-    let queue = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from(
-        tests,
-    )));
-    let (tx, rx) = std::sync::mpsc::channel::<(String, bool, Duration, String, Option<TestRun>)>();
-    let mut handles = Vec::new();
+    if tests.is_empty() {
+        if selection.id.is_some() || selection.filter.is_some() {
+            eprintln!("no tests matched selection at {}", missing_path_msg);
+        } else {
+            eprintln!("no tests found at {}", missing_path_msg);
+        }
+        return (EXIT_OK, None, None);
+    }
 
-    for _ in 0..jobs {
+    if selection.list {
+        match output_format {
+            OutputFormat::Pretty => list_tests(&tests),
+            OutputFormat::Json => {
+                let summary = TestJsonSummary {
+                    run: TestJsonRunMetadata {
+                        seed: TEST_JSON_SUMMARY_SEED,
+                        lane: summarize_run_lane(&tests),
+                        jobs,
+                        budgets_used: budget_policy.clone(),
+                    },
+                    tests: tests
+                        .iter()
+                        .map(|test| TestJsonCase {
+                            id: test.id.clone(),
+                            name: test.name.clone(),
+                            lane: test.lane.as_str().to_string(),
+                            status: "listed".to_string(),
+                            duration_ms: 0,
+                            error: None,
+                        })
+                        .collect(),
+                    timings: TestJsonTimings {
+                        discovery_ms,
+                        selection_ms,
+                        execution_ms: 0,
+                        total_ms: total_start.elapsed().as_millis(),
+                    },
+                };
+                emit_test_json_summary(&summary);
+            }
+        }
+        return (EXIT_OK, None, None);
+    }
+
+    let missing_oracles: Vec<&TestCase> = tests.iter().filter(|test| !test.has_oracle).collect();
+    if !missing_oracles.is_empty() {
+        eprintln!(
+            "oracle gate failed: test functions must contain at least one `assert` or `require`"
+        );
+        for test in missing_oracles {
+            eprintln!("  - {}: no assertion oracle found", test.name);
+        }
+        return (EXIT_CODEGEN, None, None);
+    }
+
+    let harness = match compile_test_harness(
+        &workspace_root,
+        &compile_root,
+        tests_root.as_deref(),
+        &tests,
+        output_format,
+    ) {
+        Ok(harness) => harness,
+        Err(err) => {
+            eprintln!("test harness error: {err}");
+            return (EXIT_CODEGEN, None, None);
+        }
+    };
+
+    let total_tests = tests.len();
+    let base_compile_ns = harness.compile_ns / total_tests as u128;
+    let compile_ns_remainder = harness.compile_ns % total_tests as u128;
+
+    let execution_start = Instant::now();
+    let (serial_tests, parallel_tests): (Vec<TestCase>, Vec<TestCase>) =
+        tests.into_iter().partition(|test| test.is_serial);
+    let queue = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from(
+        parallel_tests,
+    )));
+    let (tx, rx) =
+        std::sync::mpsc::channel::<(TestCase, bool, Duration, String, Option<TestRun>)>();
+    let mut handles = Vec::new();
+    let worker_count = jobs.max(1);
+    for _ in 0..worker_count {
         let queue = std::sync::Arc::clone(&queue);
         let tx = tx.clone();
-        let compile_root = compile_root.clone();
+        let harness_exe_path = harness.exe_path.clone();
         let workspace_root = workspace_root.clone();
-        let tests_root = tests_root.clone();
         handles.push(std::thread::spawn(move || {
             loop {
                 let next = {
@@ -1443,20 +4614,17 @@ fn run_tests_once(
                 };
                 let Some(test) = next else { break };
                 let start = Instant::now();
-                let result = run_single_test(
+                let (ok, err, run) = execute_test_case(
+                    &harness_exe_path,
                     &workspace_root,
-                    &compile_root,
-                    tests_root.as_deref(),
                     &test,
                     timeout,
                     output_format,
+                    http_mode,
+                    pipeline,
+                    certify_mode,
                 );
-                let dur = start.elapsed();
-                let (ok, err, run) = match result {
-                    Ok(run) => (true, String::new(), Some(run)),
-                    Err(msg) => (false, msg, None),
-                };
-                let _ = tx.send((test.name.clone(), ok, dur, err, run));
+                let _ = tx.send((test, ok, start.elapsed(), err, run));
             }
         }));
     }
@@ -1469,46 +4637,162 @@ fn run_tests_once(
     let mut cases: Vec<PerfCaseSample> = Vec::new();
     let mut metrics_totals = MetricsTotals::default();
     let mut metrics_count = 0usize;
-    for (name, ok, dur, err, run) in rx.iter() {
+    let mut json_cases = Vec::new();
+    let mut completed = 0usize;
+    for (test, ok, dur, err, run) in rx.iter() {
+        let compile_slice_ns = if completed < compile_ns_remainder as usize {
+            base_compile_ns + 1
+        } else {
+            base_compile_ns
+        };
+        completed += 1;
+        compile_ns.push(compile_slice_ns);
+
         if let Some(run) = run.as_ref() {
-            compile_ns.push(run.compile_ns);
             runtime_ns.push(run.runtime_ns);
             if let Some(metrics) = run.metrics.as_ref() {
                 metrics_totals.add(metrics);
                 metrics_count += 1;
             }
             cases.push(PerfCaseSample {
-                name: name.clone(),
-                compile_ns: run.compile_ns,
+                id: test.id.clone(),
+                name: test.name.clone(),
+                compile_ns: compile_slice_ns,
                 runtime_ns: run.runtime_ns,
                 metrics: run.metrics.clone(),
             });
         }
+        json_cases.push(TestJsonCase {
+            id: test.id,
+            name: test.name.clone(),
+            lane: test.lane.as_str().to_string(),
+            status: if ok {
+                "ok".to_string()
+            } else {
+                "fail".to_string()
+            },
+            duration_ms: dur.as_millis(),
+            error: if ok { None } else { Some(err.clone()) },
+        });
         if ok {
-            println!("ok   {:>7?}  {}", dur, name);
+            if emit_pretty_output && matches!(output_format, OutputFormat::Pretty) {
+                println!("ok   {:>7?}  {}", dur, test.name);
+            }
             ok_count += 1;
         } else {
-            println!("fail {:>7?}  {}  {}", dur, name, err);
+            if emit_pretty_output && matches!(output_format, OutputFormat::Pretty) {
+                println!("fail {:>7?}  {}  {}", dur, test.name, err);
+            }
+            fail_count += 1;
+        }
+    }
+    for test in serial_tests {
+        let start = Instant::now();
+        let (ok, err, run) = execute_test_case(
+            &harness.exe_path,
+            &workspace_root,
+            &test,
+            timeout,
+            output_format,
+            http_mode,
+            pipeline,
+            certify_mode,
+        );
+        let dur = start.elapsed();
+        let compile_slice_ns = if completed < compile_ns_remainder as usize {
+            base_compile_ns + 1
+        } else {
+            base_compile_ns
+        };
+        completed += 1;
+        compile_ns.push(compile_slice_ns);
+        if let Some(run) = run.as_ref() {
+            runtime_ns.push(run.runtime_ns);
+            if let Some(metrics) = run.metrics.as_ref() {
+                metrics_totals.add(metrics);
+                metrics_count += 1;
+            }
+            cases.push(PerfCaseSample {
+                id: test.id.clone(),
+                name: test.name.clone(),
+                compile_ns: compile_slice_ns,
+                runtime_ns: run.runtime_ns,
+                metrics: run.metrics.clone(),
+            });
+        }
+        json_cases.push(TestJsonCase {
+            id: test.id,
+            name: test.name.clone(),
+            lane: test.lane.as_str().to_string(),
+            status: if ok {
+                "ok".to_string()
+            } else {
+                "fail".to_string()
+            },
+            duration_ms: dur.as_millis(),
+            error: if ok { None } else { Some(err.clone()) },
+        });
+        if ok {
+            if emit_pretty_output && matches!(output_format, OutputFormat::Pretty) {
+                println!("ok   {:>7?}  {}", dur, test.name);
+            }
+            ok_count += 1;
+        } else {
+            if emit_pretty_output && matches!(output_format, OutputFormat::Pretty) {
+                println!("fail {:>7?}  {}  {}", dur, test.name, err);
+            }
             fail_count += 1;
         }
     }
     for handle in handles {
         let _ = handle.join();
     }
-    println!("tests: {} passed, {} failed", ok_count, fail_count);
+    json_cases.sort_by(|a, b| {
+        a.id.cmp(&b.id)
+            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| a.lane.cmp(&b.lane))
+    });
+    let execution_ms = execution_start.elapsed().as_millis();
+    let total_ms = total_start.elapsed().as_millis();
+    let summary_lane = summarize_run_lane_from_json_cases(&json_cases);
+    if emit_pretty_output && matches!(output_format, OutputFormat::Pretty) {
+        println!("tests: {} passed, {} failed", ok_count, fail_count);
+    }
+    let signature = build_determinism_signature(&json_cases);
+    if matches!(output_format, OutputFormat::Json) && emit_json_summary {
+        let summary = TestJsonSummary {
+            run: TestJsonRunMetadata {
+                seed: TEST_JSON_SUMMARY_SEED,
+                lane: summary_lane,
+                jobs,
+                budgets_used: budget_policy.clone(),
+            },
+            tests: json_cases,
+            timings: TestJsonTimings {
+                discovery_ms,
+                selection_ms,
+                execution_ms,
+                total_ms,
+            },
+        };
+        emit_test_json_summary(&summary);
+    }
     if fail_count != 0 || runtime_ns.is_empty() {
-        return (EXIT_CODEGEN, None);
+        return (EXIT_CODEGEN, None, Some(signature));
     }
     let mut summary = build_perf_summary(&compile_ns, &runtime_ns, metrics_count, &metrics_totals);
     // Attach per-test samples so perf consumers (macrobench) can compute per-scenario
     // percentiles without changing the core gate logic.
     summary.cases = Some(cases);
-    print_perf_summary(&summary, perf_debug);
-    (EXIT_OK, Some(summary))
+    if emit_pretty_output && matches!(output_format, OutputFormat::Pretty) {
+        print_perf_summary(&summary, perf_debug);
+    }
+    (EXIT_OK, Some(summary), Some(signature))
 }
 
 fn run_perf_harness(
     target: &TestTarget,
+    budget_policy: &BudgetPolicyV1,
     jobs: usize,
     timeout: Duration,
     output_format: OutputFormat,
@@ -1521,8 +4805,22 @@ fn run_perf_harness(
     let mut samples = Vec::new();
     for idx in 0..runs {
         println!("perf-run {}/{}", idx + 1, runs);
-        let (exit, summary) =
-            run_tests_once(target, jobs, timeout, output_format, perf_debug, true);
+        let (exit, summary, _) = run_tests_once(
+            target,
+            budget_policy,
+            jobs,
+            timeout,
+            output_format,
+            perf_debug,
+            true,
+            &TestSelection::default(),
+            false,
+            true,
+            HttpCassetteMode::Replay,
+            None,
+            false,
+            DifferentialPipeline::Baseline,
+        );
         if exit != EXIT_OK {
             return exit;
         }
@@ -1620,6 +4918,45 @@ fn run_perf_harness(
     }
     println!("perf baseline written: {}", baseline_out.display());
     EXIT_OK
+}
+
+fn build_determinism_signature(cases: &[TestJsonCase]) -> DeterminismSignature {
+    let outcomes: Vec<DeterminismOutcome> = cases
+        .iter()
+        .map(|case| DeterminismOutcome {
+            id: case.id.clone(),
+            name: case.name.clone(),
+            lane: case.lane.clone(),
+            status: case.status.clone(),
+            error: case.error.clone(),
+        })
+        .collect();
+    let payload = serde_json::to_vec(&(TEST_JSON_SUMMARY_SEED, &outcomes))
+        .unwrap_or_else(|_| TEST_JSON_SUMMARY_SEED.to_le_bytes().to_vec());
+    let hash = fnv1a64_hex(&payload);
+    DeterminismSignature { hash, outcomes }
+}
+
+fn first_signature_mismatch_detail(
+    first: &[DeterminismOutcome],
+    second: &[DeterminismOutcome],
+) -> Option<String> {
+    if first.len() != second.len() {
+        return Some(format!(
+            "case count differs: first={} replay={}",
+            first.len(),
+            second.len()
+        ));
+    }
+    for (lhs, rhs) in first.iter().zip(second.iter()) {
+        if lhs != rhs {
+            return Some(format!(
+                "{} => first(status={}, error={:?}) replay(status={}, error={:?})",
+                lhs.name, lhs.status, lhs.error, rhs.status, rhs.error
+            ));
+        }
+    }
+    None
 }
 
 fn configure_runtime_for_test_lane(perf_lane: bool, _perf_debug: bool) {
@@ -2165,9 +5502,13 @@ fn percentile(samples: &[u128], pct: f64) -> u128 {
 }
 
 fn collect_tests(root: &Path, tests_root: &Path, out: &mut Vec<TestCase>) -> io::Result<()> {
-    for entry in fs::read_dir(root)? {
-        let entry = entry?;
-        let path = entry.path();
+    let mut children: Vec<PathBuf> = fs::read_dir(root)?
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .map(|entry| entry.path())
+        .collect();
+    children.sort_by(|a, b| path_sort_key(a).cmp(&path_sort_key(b)));
+    for path in children {
         if path.is_dir() {
             collect_tests(&path, tests_root, out)?;
             continue;
@@ -2177,15 +5518,8 @@ fn collect_tests(root: &Path, tests_root: &Path, out: &mut Vec<TestCase>) -> io:
         }
         let source = fs::read_to_string(&path)?;
         let module_path = module_path_for_test_file(&path, tests_root)?;
-        let names = extract_test_functions(&source);
-        for func in names {
-            let name = format!("{module_path}::{func}");
-            out.push(TestCase {
-                name,
-                module_path: module_path.clone(),
-                func_name: func,
-            });
-        }
+        collect_tests_from_source(&source, &module_path, out)
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
     }
     Ok(())
 }
@@ -2217,72 +5551,1607 @@ fn module_path_for_single_file(path: &Path) -> io::Result<String> {
     Ok(stem.to_string())
 }
 
-fn extract_test_functions(source: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    for line in source.lines() {
-        let trimmed = line.trim_start();
-        if !trimmed.starts_with("to test_") {
+fn collect_tests_from_source(
+    source: &str,
+    module_path: &str,
+    out: &mut Vec<TestCase>,
+) -> Result<(), String> {
+    use wrela::parser::ast::AstNode;
+
+    let (syntax, parse_errors) = parser::parse_with_errors(source);
+    if !parse_errors.is_empty() {
+        return Ok(());
+    }
+    let root = parser::ast::Root::cast(syntax)
+        .ok_or_else(|| "internal parser error: expected root syntax node".to_string())?;
+    let module = hir::lower::lower(root);
+    let lane = infer_test_lane(module_path);
+    let mut discovered = Vec::new();
+    for (_, func) in module.functions.iter() {
+        if func.kind != hir::FunctionKind::Function {
             continue;
         }
-        let rest = trimmed.trim_start_matches("to ").trim();
-        let name_end = rest.find('(').unwrap_or(rest.len());
-        let name = rest[..name_end].trim();
-        if name.starts_with("test_") && !name.is_empty() {
-            out.push(name.to_string());
+        let func_name = func.name.to_string();
+        if !is_test_function_name(&func_name) {
+            continue;
+        }
+        let attrs = parse_test_attributes(func);
+        if !attrs.unknown.is_empty() {
+            return Err(format!(
+                "test attribute error: {}::{} uses unsupported attributes [{}]; allowed attributes are @serial, @allows_env_set, @allows_fs_escape",
+                module_path,
+                func_name,
+                attrs.unknown.join(", ")
+            ));
+        }
+        if lane == TestLane::Spec && (attrs.allows_env_set || attrs.allows_fs_escape) {
+            return Err(format!(
+                "teacher: spec lane forbids capability exceptions; remove @allows_* from {}::{} or move the test under tests/integration/**",
+                module_path, func_name
+            ));
+        }
+        if lane != TestLane::Integration && (attrs.allows_env_set || attrs.allows_fs_escape) {
+            return Err(format!(
+                "test attribute error: capability exceptions are only allowed in integration lane; move {}::{} under tests/integration/**",
+                module_path, func_name
+            ));
+        }
+        let stable_id = stable_test_id(module_path, &func_name);
+        discovered.push(TestCase {
+            id: stable_id.clone(),
+            lane,
+            name: format!("{module_path}::{func_name}"),
+            module_path: module_path.to_string(),
+            func_name,
+            is_serial: attrs.serial,
+            allows_env_set: attrs.allows_env_set,
+            allows_fs_escape: attrs.allows_fs_escape,
+            has_oracle: function_has_oracle(func),
+            generated_call_body: None,
+            generated_case_kind: None,
+            generated_entry_source: None,
+            autogen_module_source: None,
+            autogen_seed: None,
+            autogen_span: None,
+            sim_seed: None,
+            canonical_id: stable_id,
+        });
+    }
+    discovered.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
+    out.extend(discovered);
+    Ok(())
+}
+
+#[derive(Default)]
+struct ParsedTestAttributes {
+    serial: bool,
+    allows_env_set: bool,
+    allows_fs_escape: bool,
+    unknown: Vec<String>,
+}
+
+fn parse_test_attributes(func: &hir::Function) -> ParsedTestAttributes {
+    let mut parsed = ParsedTestAttributes::default();
+    for attr in &func.attributes {
+        match attr.as_str() {
+            "serial" => parsed.serial = true,
+            "allows_env_set" => parsed.allows_env_set = true,
+            "allows_fs_escape" => parsed.allows_fs_escape = true,
+            other => parsed.unknown.push(format!("@{other}")),
+        }
+    }
+    parsed
+}
+
+fn collect_autogen_spec_tests(
+    workspace_root: &Path,
+    max_cases: u64,
+    time_cap_ms: u64,
+) -> Result<Vec<TestCase>, String> {
+    let max_cases = max_cases as usize;
+    if max_cases == 0 {
+        return Ok(Vec::new());
+    }
+    let checks = discover_autogen_checks(workspace_root)?;
+    Ok(generate_autogen_spec_tests(&checks, max_cases, time_cap_ms))
+}
+
+fn discover_autogen_checks(workspace_root: &Path) -> Result<Vec<AutogenCheckDecl>, String> {
+    use wrela::parser::ast::AstNode;
+
+    let mut modules = Vec::new();
+    let src_root = workspace_root.join("src");
+    collect_wr_modules(&src_root, &src_root, "src", &mut modules)?;
+    let tests_root = workspace_root.join("tests");
+    let spec_root = tests_root.join("spec");
+    collect_wr_modules(&spec_root, &tests_root, "tests", &mut modules)?;
+
+    let mut discovered = Vec::new();
+    for module_source in modules {
+        let (syntax, parse_errors) = parser::parse_with_errors(&module_source.source);
+        if !parse_errors.is_empty() {
+            continue;
+        }
+        let Some(root) = parser::ast::Root::cast(syntax) else {
+            continue;
+        };
+        let module = hir::lower::lower(root);
+        for (_, func) in module.functions.iter() {
+            if func.kind != hir::FunctionKind::Check {
+                continue;
+            }
+            let Some(check) = autogen_check_decl_from_function(
+                &module_source.module_path,
+                func.name.as_str(),
+                func,
+                module_source.source.as_str(),
+            ) else {
+                continue;
+            };
+            discovered.push(check);
+        }
+    }
+    discovered.sort_by(|a, b| {
+        a.module_path
+            .cmp(&b.module_path)
+            .then(a.func_name.cmp(&b.func_name))
+    });
+    Ok(discovered)
+}
+
+fn autogen_check_decl_from_function(
+    module_path: &str,
+    func_name: &str,
+    func: &hir::Function,
+    module_source: &str,
+) -> Option<AutogenCheckDecl> {
+    let ret = func.ret_type.as_ref()?;
+    if !autogen_type_ref_is_scalar(ret, AutogenScalarType::Boolean) {
+        return None;
+    }
+    let mut params = Vec::with_capacity(func.params.len());
+    for param in &func.params {
+        let ty = param.ty.as_ref()?;
+        let scalar = autogen_scalar_type_from_ref(ty)?;
+        params.push(AutogenCheckParam {
+            name: param.name.to_string(),
+            ty: scalar,
+        });
+    }
+    Some(AutogenCheckDecl {
+        module_path: module_path.to_string(),
+        func_name: func_name.to_string(),
+        params,
+        module_source: module_source.to_string(),
+        source_span: func
+            .name_span
+            .map(|span| format!("{}..{}", u32::from(span.start()), u32::from(span.end()))),
+    })
+}
+
+fn autogen_scalar_type_from_ref(ty: &hir::TypeRef) -> Option<AutogenScalarType> {
+    if !ty.args.is_empty() {
+        return None;
+    }
+    match ty.name.as_str() {
+        "Integer" => Some(AutogenScalarType::Integer),
+        "Boolean" => Some(AutogenScalarType::Boolean),
+        "String" => Some(AutogenScalarType::String),
+        _ => None,
+    }
+}
+
+fn autogen_type_ref_is_scalar(ty: &hir::TypeRef, expected: AutogenScalarType) -> bool {
+    autogen_scalar_type_from_ref(ty) == Some(expected)
+}
+
+fn generate_autogen_spec_tests(
+    checks: &[AutogenCheckDecl],
+    max_cases: usize,
+    time_cap_ms: u64,
+) -> Vec<TestCase> {
+    let mut generated = Vec::new();
+    if checks.is_empty() || max_cases == 0 {
+        return generated;
+    }
+    let started = Instant::now();
+    let time_cap = Duration::from_millis(time_cap_ms.max(1));
+    let mut case_index = 0usize;
+    while generated.len() < max_cases && started.elapsed() < time_cap {
+        let before = generated.len();
+        for check in checks {
+            if generated.len() >= max_cases {
+                break;
+            }
+            if started.elapsed() >= time_cap {
+                break;
+            }
+            let case_seed = fnv1a64(
+                format!("{}::{}::{case_index}", check.module_path, check.func_name).as_bytes(),
+            );
+            let call_body = autogen_given_call(check, case_index);
+            generated.push(TestCase {
+                id: stable_autogen_test_id(&check.module_path, &check.func_name, case_index),
+                lane: TestLane::Spec,
+                name: format!(
+                    "{}::{}::autogen_case_{:04}",
+                    check.module_path, check.func_name, case_index
+                ),
+                module_path: check.module_path.clone(),
+                func_name: check.func_name.clone(),
+                is_serial: false,
+                allows_env_set: false,
+                allows_fs_escape: false,
+                has_oracle: true,
+                generated_call_body: Some(call_body.clone()),
+                generated_case_kind: Some(GeneratedCaseKind::Autogen),
+                generated_entry_source: Some(autogen_standalone_entry_source(
+                    &check.module_source,
+                    &call_body,
+                )),
+                autogen_module_source: Some(check.module_source.clone()),
+                autogen_seed: Some(case_seed),
+                autogen_span: check.source_span.clone(),
+                sim_seed: None,
+                canonical_id: stable_autogen_test_id(
+                    &check.module_path,
+                    &check.func_name,
+                    case_index,
+                ),
+            });
+        }
+        if generated.len() == before {
+            break;
+        }
+        case_index = case_index.saturating_add(1);
+    }
+    generated
+}
+
+fn stable_autogen_test_id(module_path: &str, func_name: &str, case_index: usize) -> String {
+    format!(
+        "autogen:{}",
+        fnv1a64_hex(format!("{module_path}::{func_name}::{case_index}").as_bytes())
+    )
+}
+
+fn autogen_given_call(check: &AutogenCheckDecl, case_index: usize) -> String {
+    if check.params.is_empty() {
+        return format!("{} given", check.func_name);
+    }
+    let mut args = Vec::with_capacity(check.params.len());
+    for (param_index, param) in check.params.iter().enumerate() {
+        let value = autogen_scalar_literal(
+            param.ty,
+            &check.module_path,
+            &check.func_name,
+            case_index,
+            param_index,
+        );
+        args.push(format!("{}={value}", param.name));
+    }
+    format!("{} given {}", check.func_name, args.join(", "))
+}
+
+fn autogen_standalone_entry_source(module_source: &str, call_body: &str) -> String {
+    let rewritten = module_source.replacen("to run(", "to autogen_hidden_run(", 1);
+    format!(
+        "{rewritten}\n\nto run() -> Integer:\n    assert value ({call_body}) == true\n    return 0\n"
+    )
+}
+
+fn autogen_scalar_literal(
+    ty: AutogenScalarType,
+    module_path: &str,
+    func_name: &str,
+    case_index: usize,
+    param_index: usize,
+) -> String {
+    let boundary_index = case_index / 2 + param_index;
+    if case_index % 2 == 0 {
+        return autogen_boundary_literal(ty, boundary_index);
+    }
+    let seed =
+        fnv1a64(format!("{module_path}::{func_name}::{case_index}::{param_index}").as_bytes());
+    autogen_random_literal(ty, seed)
+}
+
+fn autogen_boundary_literal(ty: AutogenScalarType, boundary_index: usize) -> String {
+    match ty {
+        AutogenScalarType::Integer => {
+            let values = ["0", "1", "-1", "2147483647", "-2147483648"];
+            values[boundary_index % values.len()].to_string()
+        }
+        AutogenScalarType::Boolean => {
+            if boundary_index % 2 == 0 {
+                "false".to_string()
+            } else {
+                "true".to_string()
+            }
+        }
+        AutogenScalarType::String => {
+            let values = ["\"\"", "\"a\"", "\"edge\"", "\"hello0\"", "\"z9\""];
+            values[boundary_index % values.len()].to_string()
+        }
+    }
+}
+
+fn autogen_random_literal(ty: AutogenScalarType, seed: u64) -> String {
+    let mut state = autogen_mix64(seed ^ 0xA670);
+    match ty {
+        AutogenScalarType::Integer => {
+            state = autogen_mix64(state);
+            let value = (state % 2001) as i64 - 1000;
+            value.to_string()
+        }
+        AutogenScalarType::Boolean => {
+            state = autogen_mix64(state);
+            if state % 2 == 0 {
+                "false".to_string()
+            } else {
+                "true".to_string()
+            }
+        }
+        AutogenScalarType::String => {
+            state = autogen_mix64(state);
+            let len = ((state % 8) + 1) as usize;
+            let mut out = String::with_capacity(len + 2);
+            out.push('"');
+            for _ in 0..len {
+                state = autogen_mix64(state);
+                let ch = match state % 36 {
+                    value @ 0..=25 => (b'a' + value as u8) as char,
+                    value => (b'0' + (value as u8 - 26)) as char,
+                };
+                out.push(ch);
+            }
+            out.push('"');
+            out
+        }
+    }
+}
+
+fn autogen_mix64(mut value: u64) -> u64 {
+    value ^= value >> 30;
+    value = value.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value ^= value >> 27;
+    value = value.wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
+}
+
+fn collect_fuzz_tests(
+    workspace_root: &Path,
+    max_cases: u64,
+    time_cap_ms: u64,
+) -> Result<Vec<TestCase>, String> {
+    let max_cases = max_cases as usize;
+    if max_cases == 0 {
+        return Ok(Vec::new());
+    }
+    let targets = discover_fuzz_targets(workspace_root)?;
+    Ok(generate_fuzz_tests(&targets, max_cases, time_cap_ms))
+}
+
+fn discover_fuzz_targets(workspace_root: &Path) -> Result<Vec<FuzzTargetDecl>, String> {
+    use wrela::parser::ast::AstNode;
+
+    let mut modules = Vec::new();
+    let src_root = workspace_root.join("src");
+    collect_wr_modules(&src_root, &src_root, "src", &mut modules)?;
+
+    let mut discovered = Vec::new();
+    for module_source in modules {
+        let (syntax, parse_errors) = parser::parse_with_errors(&module_source.source);
+        if !parse_errors.is_empty() {
+            continue;
+        }
+        let Some(root) = parser::ast::Root::cast(syntax) else {
+            continue;
+        };
+        let module = hir::lower::lower(root);
+        for (_, func) in module.functions.iter() {
+            if func.kind != hir::FunctionKind::Function {
+                continue;
+            }
+            let Some(target) = fuzz_target_decl_from_function(
+                &module_source.module_path,
+                func.name.as_str(),
+                func,
+                module_source.source.as_str(),
+            ) else {
+                continue;
+            };
+            discovered.push(target);
+        }
+    }
+    discovered.sort_by(|a, b| {
+        a.module_path
+            .cmp(&b.module_path)
+            .then(a.func_name.cmp(&b.func_name))
+    });
+    Ok(discovered)
+}
+
+fn fuzz_target_decl_from_function(
+    module_path: &str,
+    func_name: &str,
+    func: &hir::Function,
+    module_source: &str,
+) -> Option<FuzzTargetDecl> {
+    let is_target = func_name.starts_with("try_to_parse_")
+        || func_name.starts_with("try_to_decode_")
+        || func_name.starts_with("try_to_deserialize_");
+    if !is_target {
+        return None;
+    }
+    if func.params.len() != 1 {
+        return None;
+    }
+    let param = &func.params[0];
+    let ty = param.ty.as_ref()?;
+    let param_ty = fuzz_param_type_from_ref(ty)?;
+    Some(FuzzTargetDecl {
+        module_path: module_path.to_string(),
+        func_name: func_name.to_string(),
+        param_name: param.name.to_string(),
+        param_ty,
+        module_source: module_source.to_string(),
+        source_span: func
+            .name_span
+            .map(|span| format!("{}..{}", u32::from(span.start()), u32::from(span.end()))),
+    })
+}
+
+fn fuzz_param_type_from_ref(ty: &hir::TypeRef) -> Option<FuzzParamType> {
+    if !ty.args.is_empty() {
+        return None;
+    }
+    match ty.name.as_str() {
+        "String" => Some(FuzzParamType::String),
+        "Bytes" => Some(FuzzParamType::Bytes),
+        _ => None,
+    }
+}
+
+fn generate_fuzz_tests(
+    targets: &[FuzzTargetDecl],
+    max_cases: usize,
+    time_cap_ms: u64,
+) -> Vec<TestCase> {
+    let mut generated = Vec::new();
+    if targets.is_empty() || max_cases == 0 {
+        return generated;
+    }
+    let started = Instant::now();
+    let time_cap = Duration::from_millis(time_cap_ms.max(1));
+    let mut case_index = 0usize;
+    while generated.len() < max_cases && started.elapsed() < time_cap {
+        let before = generated.len();
+        for target in targets {
+            if generated.len() >= max_cases || started.elapsed() >= time_cap {
+                break;
+            }
+            let seed = fnv1a64(
+                format!(
+                    "fuzz::{}::{}::{case_index}",
+                    target.module_path, target.func_name
+                )
+                .as_bytes(),
+            );
+            let call_body = fuzz_given_call(target, seed, case_index);
+            let case_id = stable_fuzz_test_id(&target.module_path, &target.func_name, case_index);
+            generated.push(TestCase {
+                id: case_id.clone(),
+                lane: TestLane::Integration,
+                name: format!(
+                    "{}::{}::fuzz_case_{:04}",
+                    target.module_path, target.func_name, case_index
+                ),
+                module_path: target.module_path.clone(),
+                func_name: target.func_name.clone(),
+                is_serial: false,
+                allows_env_set: false,
+                allows_fs_escape: false,
+                has_oracle: true,
+                generated_call_body: Some(call_body.clone()),
+                generated_case_kind: Some(GeneratedCaseKind::Fuzz),
+                generated_entry_source: Some(fuzz_standalone_entry_source(
+                    &target.module_source,
+                    &call_body,
+                    target.param_ty == FuzzParamType::Bytes,
+                )),
+                autogen_module_source: Some(target.module_source.clone()),
+                autogen_seed: Some(seed),
+                autogen_span: target.source_span.clone(),
+                sim_seed: None,
+                canonical_id: case_id,
+            });
+        }
+        if generated.len() == before {
+            break;
+        }
+        case_index = case_index.saturating_add(1);
+    }
+    generated
+}
+
+fn stable_fuzz_test_id(module_path: &str, func_name: &str, case_index: usize) -> String {
+    format!(
+        "fuzz:{}",
+        fnv1a64_hex(format!("{module_path}::{func_name}::{case_index}").as_bytes())
+    )
+}
+
+fn fuzz_given_call(target: &FuzzTargetDecl, seed: u64, case_index: usize) -> String {
+    let values = fuzz_input_bytes(seed, case_index);
+    let arg = match target.param_ty {
+        FuzzParamType::String => fuzz_string_literal(&values),
+        FuzzParamType::Bytes => format!(
+            "get_bytes_from_list(items=[{}])",
+            values
+                .iter()
+                .map(|value| value.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    format!("{} given {}={arg}", target.func_name, target.param_name)
+}
+
+fn fuzz_input_bytes(seed: u64, case_index: usize) -> Vec<u8> {
+    let mut state = autogen_mix64(seed ^ 0xF022_9E37 ^ case_index as u64);
+    let len = ((state % 24) + 1) as usize;
+    let mut out = Vec::with_capacity(len);
+    for _ in 0..len {
+        state = autogen_mix64(state);
+        out.push((state % 256) as u8);
+    }
+    out
+}
+
+fn fuzz_string_literal(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() + 2);
+    out.push('"');
+    for byte in bytes {
+        let c = match byte {
+            b'"' => "\\\"".to_string(),
+            b'\\' => "\\\\".to_string(),
+            32..=126 => (*byte as char).to_string(),
+            _ => {
+                let mapped = b'a' + (byte % 26);
+                (mapped as char).to_string()
+            }
+        };
+        out.push_str(&c);
+    }
+    out.push('"');
+    out
+}
+
+fn fuzz_standalone_entry_source(
+    module_source: &str,
+    call_body: &str,
+    include_bytes_helper: bool,
+) -> String {
+    let rewritten = module_source.replacen("to run(", "to fuzz_hidden_run(", 1);
+    let bytes_use = if include_bytes_helper {
+        "use get_bytes_from_list from bytes\n\n"
+    } else {
+        ""
+    };
+    format!(
+        "{rewritten}\n\n{bytes_use}to run() -> Integer:\n    ignore result {call_body}\n    return 0\n"
+    )
+}
+
+fn is_test_function_name(name: &str) -> bool {
+    name.starts_with("test_")
+}
+
+fn function_has_oracle(func: &hir::Function) -> bool {
+    let Some(body) = func.body.as_ref() else {
+        return false;
+    };
+    body_has_oracle(body, &body.root_stmts)
+}
+
+fn body_has_oracle(body: &hir::Body, stmts: &[hir::Idx<hir::Stmt>]) -> bool {
+    for stmt_id in stmts {
+        match &body.stmts[*stmt_id] {
+            hir::Stmt::Assert { .. } | hir::Stmt::Require { .. } => return true,
+            hir::Stmt::Optimize { body: nested, .. } => {
+                if body_has_oracle(body, nested) {
+                    return true;
+                }
+            }
+            hir::Stmt::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                if body_has_oracle(body, then_branch)
+                    || else_branch
+                        .as_ref()
+                        .is_some_and(|branch| body_has_oracle(body, branch))
+                {
+                    return true;
+                }
+            }
+            hir::Stmt::For {
+                body: loop_body, ..
+            }
+            | hir::Stmt::While {
+                body: loop_body, ..
+            } => {
+                if body_has_oracle(body, loop_body) {
+                    return true;
+                }
+            }
+            hir::Stmt::Match {
+                cases, otherwise, ..
+            } => {
+                if cases.iter().any(|case| body_has_oracle(body, &case.body))
+                    || otherwise
+                        .as_ref()
+                        .is_some_and(|branch| body_has_oracle(body, branch))
+                {
+                    return true;
+                }
+            }
+            hir::Stmt::Expr(_)
+            | hir::Stmt::Let { .. }
+            | hir::Stmt::Assign { .. }
+            | hir::Stmt::IgnoreResult { .. }
+            | hir::Stmt::Capture { .. }
+            | hir::Stmt::Defer { .. }
+            | hir::Stmt::Return(_)
+            | hir::Stmt::Use { .. }
+            | hir::Stmt::Break
+            | hir::Stmt::Continue => {}
+        }
+    }
+    false
+}
+
+fn stable_test_id(module_path: &str, func_name: &str) -> String {
+    fnv1a64_hex(format!("{module_path}::{func_name}").as_bytes())
+}
+
+fn stable_function_id(function_identity: &str) -> String {
+    fnv1a64(function_identity.as_bytes()).to_string()
+}
+
+fn stable_legacy_function_id(function_name: &str) -> String {
+    fnv1a64(function_name.as_bytes()).to_string()
+}
+
+fn qualified_function_identity(module_path: &str, function_name: &str) -> String {
+    format!("{module_path}::{function_name}")
+}
+
+fn infer_test_lane(module_path: &str) -> TestLane {
+    let canonical = module_path.replace('\\', "/").to_ascii_lowercase();
+    let segments: Vec<&str> = canonical
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    let lane_segment = segments
+        .windows(2)
+        .find(|window| window[0] == "tests")
+        .map(|window| window[1])
+        .or_else(|| segments.first().copied())
+        .unwrap_or_default();
+    match lane_segment {
+        "spec" => TestLane::Spec,
+        "integration" => TestLane::Integration,
+        "sim" => TestLane::Sim,
+        "model" => TestLane::Model,
+        _ => TestLane::Default,
+    }
+}
+
+fn parse_test_lane_filter(value: &str) -> Option<TestLane> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "spec" => Some(TestLane::Spec),
+        "integration" => Some(TestLane::Integration),
+        "sim" => Some(TestLane::Sim),
+        "model" => Some(TestLane::Model),
+        "default" => Some(TestLane::Default),
+        _ => None,
+    }
+}
+
+fn enforce_serial_test_cap(tests: &[TestCase]) -> Result<(), String> {
+    let total = tests.len();
+    if total == 0 {
+        return Ok(());
+    }
+    let serial_count = tests.iter().filter(|test| test.is_serial).count();
+    if serial_count == 0 {
+        return Ok(());
+    }
+    let pct_cap = ((total as f64) * 0.05).ceil() as usize;
+    let pct_cap = pct_cap.max(1);
+    if serial_count <= pct_cap && serial_count <= 10 {
+        return Ok(());
+    }
+    Err(format!(
+        "serial test cap exceeded: {} serial tests out of {} total. policy is <=5% (cap {}) and <=10 absolute. reduce @serial usage or redesign tests to run in parallel",
+        serial_count, total, pct_cap
+    ))
+}
+
+fn select_tests(mut tests: Vec<TestCase>, selection: &TestSelection) -> Vec<TestCase> {
+    if let Some(include_ids) = selection.include_ids.as_ref() {
+        tests.retain(|test| include_ids.contains(&test.id));
+    }
+    if let Some(id) = selection.id.as_ref() {
+        tests.retain(|test| test.id == *id);
+    }
+    if let Some(pattern) = selection.filter.as_ref() {
+        tests.retain(|test| {
+            test.name.contains(pattern)
+                || test.id.contains(pattern)
+                || test.module_path.contains(pattern)
+                || test.lane.as_str().contains(pattern)
+        });
+    }
+    if let Some(lane) = selection.lane {
+        tests.retain(|test| test.lane == lane);
+    }
+    tests
+}
+
+fn expand_sim_seed_cases(
+    tests: Vec<TestCase>,
+    sim_seed_override: Option<u64>,
+    certify_mode: bool,
+) -> Vec<TestCase> {
+    let mut expanded = Vec::new();
+    for test in tests {
+        if test.lane != TestLane::Sim && test.lane != TestLane::Model {
+            expanded.push(test);
+            continue;
+        }
+        if let Some(seed) = sim_seed_override {
+            expanded.push(sim_seed_variant(&test, seed));
+            continue;
+        }
+        if certify_mode {
+            let max_seed = if test.lane == TestLane::Sim {
+                256u64
+            } else {
+                64u64
+            };
+            for seed in 0..max_seed {
+                expanded.push(sim_seed_variant(&test, seed));
+            }
+            continue;
+        }
+        expanded.push(sim_seed_variant(&test, TEST_JSON_SUMMARY_SEED));
+    }
+    expanded
+}
+
+fn sim_seed_variant(test: &TestCase, seed: u64) -> TestCase {
+    let mut variant = test.clone();
+    variant.sim_seed = Some(seed);
+    variant.id = format!("{}::seed:{seed}", test.id);
+    variant.name = format!("{} [seed={}]", test.name, seed);
+    variant
+}
+
+fn list_tests(tests: &[TestCase]) {
+    for test in tests {
+        let mut attrs = Vec::new();
+        if test.is_serial {
+            attrs.push("@serial");
+        }
+        if test.allows_env_set {
+            attrs.push("@allows_env_set");
+        }
+        if test.allows_fs_escape {
+            attrs.push("@allows_fs_escape");
+        }
+        let attrs_suffix = if attrs.is_empty() {
+            String::new()
+        } else {
+            format!(" attrs={}", attrs.join(","))
+        };
+        println!(
+            "id={} lane={} name={}{}",
+            test.id,
+            test.lane.as_str(),
+            test.name,
+            attrs_suffix
+        );
+    }
+    println!("tests: {} listed", tests.len());
+}
+
+fn summarize_run_lane(tests: &[TestCase]) -> String {
+    let Some(first) = tests.first() else {
+        return "none".to_string();
+    };
+    let first_lane = first.lane.as_str();
+    if tests.iter().all(|test| test.lane.as_str() == first_lane) {
+        first_lane.to_string()
+    } else {
+        "mixed".to_string()
+    }
+}
+
+fn summarize_run_lane_from_json_cases(cases: &[TestJsonCase]) -> String {
+    let Some(first) = cases.first() else {
+        return "none".to_string();
+    };
+    let first_lane = first.lane.as_str();
+    if cases.iter().all(|case| case.lane == first_lane) {
+        first_lane.to_string()
+    } else {
+        "mixed".to_string()
+    }
+}
+
+fn emit_test_json_summary(summary: &TestJsonSummary) {
+    println!(
+        "{}",
+        serde_json::to_string(summary).unwrap_or_else(|_| "{}".to_string())
+    );
+}
+
+fn compile_test_harness(
+    workspace_root: &Path,
+    compile_root: &Path,
+    tests_root: Option<&Path>,
+    tests: &[TestCase],
+    output_format: OutputFormat,
+) -> Result<TestHarness, String> {
+    let temp_dir = workspace_root.join("target").join("wrela_tests");
+    fs::create_dir_all(&temp_dir)
+        .map_err(|err| format!("failed to create test temp directory: {err}"))?;
+    let harness_key = format!(
+        "harness_{}_{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::from_secs(0))
+            .as_nanos()
+    );
+    let run_dir = temp_dir.join(&harness_key);
+    fs::create_dir_all(&run_dir)
+        .map_err(|err| format!("failed to create harness directory: {err}"))?;
+    let entry_path = run_dir.join("entry.wr");
+    let exe_path = run_dir.join("harness_bin");
+
+    let mut source = String::new();
+    let harness_tests: Vec<&TestCase> = tests
+        .iter()
+        .filter(|test| test.generated_entry_source.is_none())
+        .collect();
+    let mut dispatch_arms: Vec<(String, String)> = Vec::with_capacity(harness_tests.len());
+
+    let use_wrappers = tests_root.is_some() && has_duplicate_test_function_names(&harness_tests);
+    let mut wrappers_root: Option<PathBuf> = None;
+    if use_wrappers {
+        let tests_root = tests_root.expect("project tests root");
+        let wrappers_dir = tests_root
+            .join("wrela_harness")
+            .join(&harness_key)
+            .join("cases");
+        fs::create_dir_all(&wrappers_dir).map_err(|err| {
+            format!(
+                "failed to create harness cases directory {}: {err}",
+                wrappers_dir.display()
+            )
+        })?;
+        wrappers_root = Some(tests_root.join("wrela_harness").join(&harness_key));
+        for (idx, test) in harness_tests.iter().enumerate() {
+            let wrapper_func = format!("run_case_{idx}");
+            let wrapper_module = format!("tests/wrela_harness/{harness_key}/cases/case_{idx}");
+            let wrapper_source = format!(
+                "use {func} from {module}\n\nto {wrapper_func}() -> Nothing:\n    {dispatch}\n",
+                func = test.func_name,
+                module = test.module_path,
+                dispatch = test_case_dispatch_stmt(test)
+            );
+            let wrapper_path = wrappers_dir.join(format!("case_{idx}.wr"));
+            fs::write(&wrapper_path, wrapper_source)
+                .map_err(|err| format!("failed to write harness case wrapper: {err}"))?;
+            source.push_str(&format!("use {wrapper_func} from {wrapper_module}\n"));
+            dispatch_arms.push((test.id.clone(), wrapper_func));
+        }
+    } else {
+        let mut helpers = String::new();
+        for (idx, test) in harness_tests.iter().enumerate() {
+            let dispatch_func = format!("run_case_{idx}");
+            source.push_str(&format!(
+                "use {func} from {module}\n",
+                func = test.func_name,
+                module = test.module_path
+            ));
+            helpers.push_str(&format!(
+                "to {dispatch_func}() -> Nothing:\n    {dispatch}\n",
+                dispatch = test_case_dispatch_stmt(test)
+            ));
+            dispatch_arms.push((test.id.clone(), dispatch_func));
+        }
+        source.push('\n');
+        source.push_str(&helpers);
+    }
+    source.push('\n');
+    source.push_str("to run() -> Integer:\n");
+    source.push_str("    selected_value = __wr_env_get(\"WRELA_TEST_ID\")\n");
+    source.push_str("    mutable selected = \"\"\n");
+    source.push_str("    match selected_value:\n");
+    source.push_str("        String:\n");
+    source.push_str("            selected = selected_value\n");
+    source.push_str("        otherwise:\n");
+    source.push_str("            selected = \"\"\n");
+    for (id, dispatch_func) in &dispatch_arms {
+        source.push_str(&format!("    if selected == \"{id}\":\n"));
+        source.push_str(&format!("        {dispatch_func}()\n"));
+        source.push_str("        return 0\n");
+    }
+    source.push_str("    return 4\n");
+
+    fs::write(&entry_path, source).map_err(|err| format!("failed to write test harness: {err}"))?;
+
+    let trace = std::env::var("WRELA_BUILD_TRACE").is_ok();
+    if trace {
+        eprintln!(
+            "build: test harness compile start ({} dispatched tests)",
+            harness_tests.len()
+        );
+    }
+    let compile_start = Instant::now();
+    let mir_module = compile_to_mir_with_root(&entry_path, compile_root, tests_root, output_format)
+        .map_err(|_| "compile failed".to_string())?;
+    wrela::backend::cranelift::compile_to_executable(&mir_module, &exe_path)
+        .map_err(|err| format!("codegen error: {}", err.0))?;
+    let compile_ns = compile_start.elapsed().as_nanos();
+    if trace {
+        eprintln!(
+            "build: test harness compile done ({:.2?})",
+            compile_start.elapsed()
+        );
+    }
+    if let Some(path) = wrappers_root {
+        let _ = fs::remove_dir_all(path);
+    }
+    Ok(TestHarness {
+        exe_path,
+        compile_ns,
+    })
+}
+
+fn test_case_dispatch_stmt(test: &TestCase) -> String {
+    if let Some(call_body) = test.generated_call_body.as_ref() {
+        format!("assert value ({call_body}) == true")
+    } else {
+        format!("{}()", test.func_name)
+    }
+}
+
+fn has_duplicate_test_function_names(tests: &[&TestCase]) -> bool {
+    let mut names = HashSet::new();
+    for test in tests {
+        if !names.insert(test.func_name.clone()) {
+            return true;
+        }
+    }
+    false
+}
+
+fn run_single_test(
+    harness_exe_path: &Path,
+    workspace_root: &Path,
+    test: &TestCase,
+    timeout: Duration,
+    output_format: OutputFormat,
+    http_mode: HttpCassetteMode,
+    pipeline: DifferentialPipeline,
+) -> Result<TestRun, String> {
+    let temp_dir = harness_exe_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    let _ = fs::create_dir_all(&temp_dir);
+    let file_stem = test.id.replace('/', "_").replace(':', "_");
+    let metrics_path = temp_dir.join(format!("{}_metrics.json", file_stem));
+    let _ = fs::remove_file(&metrics_path);
+    let test_temp_dir = temp_dir
+        .join("cases")
+        .join(sanitize_test_path_component(&test.id));
+    fs::create_dir_all(&test_temp_dir)
+        .map_err(|err| format!("failed to create per-test temp directory: {err}"))?;
+    let runtime_start = Instant::now();
+    if let Some(delay_ms) = synthetic_slowdown_ms() {
+        std::thread::sleep(Duration::from_millis(delay_ms));
+    }
+    let mut extra_env_owned: Vec<(String, String)> = vec![
+        ("WRELA_TEST_ID".to_string(), test.id.clone()),
+        (
+            "WRELA_TEST_TEMP".to_string(),
+            test_temp_dir.to_string_lossy().to_string(),
+        ),
+        (
+            "WRELA_WORKSPACE_ROOT".to_string(),
+            workspace_root.to_string_lossy().to_string(),
+        ),
+        (
+            "WRELA_HTTP_MODE".to_string(),
+            http_mode.as_env_value().to_string(),
+        ),
+        (
+            "WRELA_DIFF_PIPELINE".to_string(),
+            pipeline.as_env_value().to_string(),
+        ),
+    ];
+    if test.lane == TestLane::Spec || test.lane == TestLane::Sim {
+        extra_env_owned.push(("WRELA_TEST_VIRTUAL_TIME".to_string(), "1".to_string()));
+        extra_env_owned.push(("WRELA_VIRTUAL_TIME_START_NS".to_string(), "0".to_string()));
+    }
+    if test.lane == TestLane::Spec {
+        extra_env_owned.push((
+            "WRELA_SPEC_FS_ROOT".to_string(),
+            test_temp_dir.to_string_lossy().to_string(),
+        ));
+    }
+    if let Some(seed) = test.sim_seed {
+        let seed_value = seed.to_string();
+        if test.lane == TestLane::Sim {
+            extra_env_owned.push(("WRELA_SCHED_SEED".to_string(), seed_value.clone()));
+        }
+        if test.lane == TestLane::Model {
+            extra_env_owned.push(("WRELA_MODEL_SEED".to_string(), seed_value));
+        }
+    }
+    let extra_env: Vec<(&str, &str)> = extra_env_owned
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
+    let local_autogen_exe = if let Some(source) = test.generated_entry_source.as_ref() {
+        let entry_path = test_temp_dir.join("autogen_entry.wr");
+        fs::write(&entry_path, source)
+            .map_err(|err| format!("failed to write autogen test entry: {err}"))?;
+        let autogen_exe = test_temp_dir.join("autogen_bin");
+        let src_root = workspace_root.join("src");
+        let tests_root = workspace_root.join("tests");
+        let mir_module = compile_to_mir_with_root(
+            &entry_path,
+            &src_root,
+            tests_root.is_dir().then_some(tests_root.as_path()),
+            output_format,
+        )
+        .map_err(|_| format!("autogen compile failed: {}", test.name))?;
+        wrela::backend::cranelift::compile_to_executable(&mir_module, &autogen_exe)
+            .map_err(|err| format!("autogen codegen error: {}", err.0))?;
+        Some(autogen_exe)
+    } else {
+        None
+    };
+    let exec_path = local_autogen_exe.as_deref().unwrap_or(harness_exe_path);
+
+    run_with_timeout(
+        exec_path,
+        timeout,
+        Some(&metrics_path),
+        Some(&test_temp_dir),
+        &[],
+        &extra_env,
+    )?;
+    let runtime_ns = runtime_start.elapsed().as_nanos();
+    let metrics = read_metrics_dump(&metrics_path);
+    Ok(TestRun {
+        metrics,
+        runtime_ns,
+    })
+}
+
+fn execute_test_case(
+    harness_exe_path: &Path,
+    workspace_root: &Path,
+    test: &TestCase,
+    timeout: Duration,
+    output_format: OutputFormat,
+    http_mode: HttpCassetteMode,
+    pipeline: DifferentialPipeline,
+    certify_mode: bool,
+) -> (bool, String, Option<TestRun>) {
+    let result = run_single_test(
+        harness_exe_path,
+        workspace_root,
+        test,
+        timeout,
+        output_format,
+        http_mode,
+        pipeline,
+    );
+    match result {
+        Ok(run) => (true, String::new(), Some(run)),
+        Err(msg) => {
+            let mut detail = String::new();
+            let mut failure_msg = msg;
+            if test.lane == TestLane::Sim || test.lane == TestLane::Model {
+                if let Some(seed) = test.sim_seed {
+                    if certify_mode && test.lane == TestLane::Sim {
+                        let mut replay_ok = 0usize;
+                        for _ in 0..3 {
+                            if run_single_test(
+                                harness_exe_path,
+                                workspace_root,
+                                test,
+                                timeout,
+                                output_format,
+                                http_mode,
+                                pipeline,
+                            )
+                            .is_ok()
+                            {
+                                replay_ok += 1;
+                            }
+                        }
+                        if replay_ok > 0 {
+                            failure_msg.push_str(&format!(
+                                " | determinism confirmation failed: {replay_ok}/3 reruns passed unexpectedly"
+                            ));
+                        }
+                    }
+                    let replay_hint = format!(
+                        "wrela test --lane={} --seed={seed} --id={} .",
+                        test.lane.as_str(),
+                        test.canonical_id
+                    );
+                    detail.push_str(&format!(" replay=`{replay_hint}`"));
+                    let trace_path = if test.lane == TestLane::Sim {
+                        write_sim_trace_artifact(workspace_root, test, &failure_msg)
+                    } else {
+                        write_model_trace_artifact(workspace_root, test, &failure_msg)
+                    };
+                    if let Ok(path) = trace_path {
+                        detail.push_str(&format!(" trace={}", path.display()));
+                    }
+                }
+            }
+            if let Some(call) = test.generated_call_body.as_ref() {
+                match test.generated_case_kind {
+                    Some(GeneratedCaseKind::Autogen) => {
+                        detail.push_str(&format!(
+                            " | autogen failure: check={}::{} seed={} span={} call=`{}`",
+                            test.module_path,
+                            test.func_name,
+                            test.autogen_seed.unwrap_or(TEST_JSON_SUMMARY_SEED),
+                            test.autogen_span.as_deref().unwrap_or("unknown"),
+                            call
+                        ));
+                        match repro::write_autogen_repro_artifact(
+                            workspace_root,
+                            harness_exe_path,
+                            test,
+                            timeout,
+                            output_format,
+                            http_mode,
+                            &failure_msg,
+                        ) {
+                            Ok((path, shrunk_call)) => {
+                                if let Some(shrunk) = shrunk_call {
+                                    detail.push_str(&format!(" shrunk_call=`{shrunk}`"));
+                                }
+                                detail.push_str(&format!(" repro={}", path.display()));
+                            }
+                            Err(err) => {
+                                detail
+                                    .push_str(&format!(" repro_error={}", err.replace('\n', " ")));
+                            }
+                        }
+                    }
+                    Some(GeneratedCaseKind::Fuzz) => {
+                        detail.push_str(&format!(
+                            " | fuzz failure: target={}::{} seed={} span={} call=`{}`",
+                            test.module_path,
+                            test.func_name,
+                            test.autogen_seed.unwrap_or(TEST_JSON_SUMMARY_SEED),
+                            test.autogen_span.as_deref().unwrap_or("unknown"),
+                            call
+                        ));
+                        match repro::write_fuzz_repro_artifact(workspace_root, test, &failure_msg) {
+                            Ok(path) => {
+                                detail.push_str(&format!(" repro={}", path.display()));
+                            }
+                            Err(err) => {
+                                detail
+                                    .push_str(&format!(" repro_error={}", err.replace('\n', " ")));
+                            }
+                        }
+                    }
+                    None => {}
+                }
+            }
+            (false, format!("{failure_msg}{detail}"), None)
+        }
+    }
+}
+
+fn write_sim_trace_artifact(
+    workspace_root: &Path,
+    test: &TestCase,
+    failure: &str,
+) -> Result<PathBuf, String> {
+    #[derive(Serialize)]
+    struct SimTraceArtifact {
+        version: u32,
+        generated_at_unix_ms: u128,
+        test_id: String,
+        canonical_test_id: String,
+        lane: String,
+        seed: u64,
+        failure: String,
+        event_log: Vec<String>,
+    }
+
+    let seed = test.sim_seed.unwrap_or(TEST_JSON_SUMMARY_SEED);
+    let artifact_dir = workspace_root
+        .join("tests")
+        .join(".artifacts")
+        .join("sim")
+        .join(sanitize_test_path_component(&test.canonical_id));
+    fs::create_dir_all(&artifact_dir).map_err(|err| {
+        format!(
+            "failed to create sim artifact directory {}: {}",
+            artifact_dir.display(),
+            err
+        )
+    })?;
+    let artifact_path = artifact_dir.join(format!("{seed}.json"));
+    let payload = serde_json::to_vec_pretty(&SimTraceArtifact {
+        version: 1,
+        generated_at_unix_ms: now_unix_ms(),
+        test_id: test.id.clone(),
+        canonical_test_id: test.canonical_id.clone(),
+        lane: test.lane.as_str().to_string(),
+        seed,
+        failure: failure.to_string(),
+        event_log: vec![
+            format!("dispatch.start seed={seed}"),
+            format!("dispatch.fail test={} seed={seed}", test.canonical_id),
+        ],
+    })
+    .map_err(|err| err.to_string())?;
+    fs::write(&artifact_path, payload).map_err(|err| {
+        format!(
+            "failed to write sim trace artifact {}: {}",
+            artifact_path.display(),
+            err
+        )
+    })?;
+    Ok(artifact_path)
+}
+
+fn write_model_trace_artifact(
+    workspace_root: &Path,
+    test: &TestCase,
+    failure: &str,
+) -> Result<PathBuf, String> {
+    #[derive(Serialize)]
+    struct ModelTraceArtifact {
+        version: u32,
+        generated_at_unix_ms: u128,
+        test_id: String,
+        canonical_test_id: String,
+        lane: String,
+        seed: u64,
+        failure: String,
+        command_trace: Vec<String>,
+    }
+
+    let seed = test.sim_seed.unwrap_or(TEST_JSON_SUMMARY_SEED);
+    let artifact_dir = workspace_root
+        .join("tests")
+        .join(".artifacts")
+        .join("model")
+        .join(sanitize_test_path_component(&test.canonical_id));
+    fs::create_dir_all(&artifact_dir).map_err(|err| {
+        format!(
+            "failed to create model artifact directory {}: {}",
+            artifact_dir.display(),
+            err
+        )
+    })?;
+    let artifact_path = artifact_dir.join(format!("{seed}.json"));
+    let payload = serde_json::to_vec_pretty(&ModelTraceArtifact {
+        version: 1,
+        generated_at_unix_ms: now_unix_ms(),
+        test_id: test.id.clone(),
+        canonical_test_id: test.canonical_id.clone(),
+        lane: test.lane.as_str().to_string(),
+        seed,
+        failure: failure.to_string(),
+        command_trace: vec![
+            format!("model.seed={seed}"),
+            format!("model.failure test={} seed={seed}", test.canonical_id),
+        ],
+    })
+    .map_err(|err| err.to_string())?;
+    fs::write(&artifact_path, payload).map_err(|err| {
+        format!(
+            "failed to write model trace artifact {}: {}",
+            artifact_path.display(),
+            err
+        )
+    })?;
+    Ok(artifact_path)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AutogenValue {
+    Integer(i64),
+    Boolean(bool),
+    String(String),
+    List(Vec<AutogenValue>),
+    Raw(String),
+}
+
+fn shrink_autogen_call(
+    harness_exe_path: &Path,
+    workspace_root: &Path,
+    test: &TestCase,
+    timeout: Duration,
+    output_format: OutputFormat,
+    http_mode: HttpCassetteMode,
+) -> Option<String> {
+    let call = test.generated_call_body.as_ref()?;
+    let (func_name, mut args) = parse_autogen_call(call)?;
+    if args.is_empty() {
+        return None;
+    }
+    let mut changed = false;
+    let mut attempts = 0usize;
+    for idx in 0..args.len() {
+        loop {
+            if attempts >= 128 {
+                break;
+            }
+            let candidates = shrink_value_candidates(&args[idx].1);
+            let mut improved = false;
+            for candidate in candidates {
+                if candidate == args[idx].1 {
+                    continue;
+                }
+                let mut trial_args = args.clone();
+                trial_args[idx].1 = candidate;
+                let trial_call = render_autogen_call(&func_name, &trial_args);
+                if autogen_call_still_fails(
+                    harness_exe_path,
+                    workspace_root,
+                    test,
+                    timeout,
+                    output_format,
+                    http_mode,
+                    &trial_call,
+                ) {
+                    args = trial_args;
+                    changed = true;
+                    improved = true;
+                    attempts += 1;
+                    break;
+                }
+                attempts += 1;
+                if attempts >= 128 {
+                    break;
+                }
+            }
+            if !improved {
+                break;
+            }
+        }
+    }
+    if changed {
+        Some(render_autogen_call(&func_name, &args))
+    } else {
+        None
+    }
+}
+
+fn autogen_call_still_fails(
+    harness_exe_path: &Path,
+    workspace_root: &Path,
+    test: &TestCase,
+    timeout: Duration,
+    output_format: OutputFormat,
+    http_mode: HttpCassetteMode,
+    candidate_call: &str,
+) -> bool {
+    let Some(candidate_test) = autogen_test_with_call(test, candidate_call) else {
+        return false;
+    };
+    run_single_test(
+        harness_exe_path,
+        workspace_root,
+        &candidate_test,
+        timeout,
+        output_format,
+        http_mode,
+        DifferentialPipeline::Baseline,
+    )
+    .is_err()
+}
+
+fn autogen_test_with_call(test: &TestCase, call_body: &str) -> Option<TestCase> {
+    let module_source = test.autogen_module_source.as_ref()?;
+    let mut candidate = test.clone();
+    candidate.generated_call_body = Some(call_body.to_string());
+    candidate.generated_entry_source =
+        Some(autogen_standalone_entry_source(module_source, call_body));
+    Some(candidate)
+}
+
+fn parse_autogen_call(call: &str) -> Option<(String, Vec<(String, AutogenValue)>)> {
+    let (func_name, args_raw) = call.split_once(" given ")?;
+    let func_name = func_name.trim().to_string();
+    if func_name.is_empty() {
+        return None;
+    }
+    if args_raw.trim().is_empty() {
+        return Some((func_name, Vec::new()));
+    }
+    let mut args = Vec::new();
+    for chunk in split_top_level(args_raw, ',') {
+        let trimmed = chunk.trim();
+        let (name, value_raw) = trimmed.split_once('=')?;
+        let value_raw = value_raw.trim();
+        args.push((name.trim().to_string(), parse_autogen_value(value_raw)));
+    }
+    Some((func_name, args))
+}
+
+fn parse_autogen_value(raw: &str) -> AutogenValue {
+    let trimmed = raw.trim();
+    if trimmed == "true" {
+        return AutogenValue::Boolean(true);
+    }
+    if trimmed == "false" {
+        return AutogenValue::Boolean(false);
+    }
+    if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
+        return AutogenValue::String(trimmed[1..trimmed.len() - 1].to_string());
+    }
+    if trimmed.starts_with('[') && trimmed.ends_with(']') {
+        let inner = &trimmed[1..trimmed.len() - 1];
+        if inner.trim().is_empty() {
+            return AutogenValue::List(Vec::new());
+        }
+        let elements = split_top_level(inner, ',')
+            .into_iter()
+            .map(|part| parse_autogen_value(part.trim()))
+            .collect();
+        return AutogenValue::List(elements);
+    }
+    if let Ok(value) = trimmed.parse::<i64>() {
+        return AutogenValue::Integer(value);
+    }
+    AutogenValue::Raw(trimmed.to_string())
+}
+
+fn render_autogen_call(func_name: &str, args: &[(String, AutogenValue)]) -> String {
+    if args.is_empty() {
+        return format!("{func_name} given");
+    }
+    let rendered_args = args
+        .iter()
+        .map(|(name, value)| format!("{name}={}", render_autogen_value(value)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{func_name} given {rendered_args}")
+}
+
+fn render_autogen_value(value: &AutogenValue) -> String {
+    match value {
+        AutogenValue::Integer(v) => v.to_string(),
+        AutogenValue::Boolean(v) => {
+            if *v {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            }
+        }
+        AutogenValue::String(v) => format!("\"{}\"", v.replace('\"', "\\\"")),
+        AutogenValue::List(values) => format!(
+            "[{}]",
+            values
+                .iter()
+                .map(render_autogen_value)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        AutogenValue::Raw(v) => v.clone(),
+    }
+}
+
+fn shrink_value_candidates(value: &AutogenValue) -> Vec<AutogenValue> {
+    let mut candidates = Vec::new();
+    match value {
+        AutogenValue::Integer(v) => {
+            if *v != 0 {
+                candidates.push(AutogenValue::Integer(0));
+                let half = v / 2;
+                if half != *v && half != 0 {
+                    candidates.push(AutogenValue::Integer(half));
+                }
+                if *v > 1 {
+                    candidates.push(AutogenValue::Integer(1));
+                } else if *v < -1 {
+                    candidates.push(AutogenValue::Integer(-1));
+                }
+            }
+        }
+        AutogenValue::String(v) => {
+            if !v.is_empty() {
+                candidates.push(AutogenValue::String(String::new()));
+                let half_len = v.chars().count() / 2;
+                if half_len > 0 {
+                    let shorter = v.chars().take(half_len).collect::<String>();
+                    if shorter.len() < v.len() {
+                        candidates.push(AutogenValue::String(shorter));
+                    }
+                }
+            }
+        }
+        AutogenValue::List(items) => {
+            if !items.is_empty() {
+                candidates.push(AutogenValue::List(Vec::new()));
+                if items.len() > 1 {
+                    candidates.push(AutogenValue::List(items[..items.len() / 2].to_vec()));
+                }
+                candidates.push(AutogenValue::List(items[..items.len() - 1].to_vec()));
+            }
+        }
+        AutogenValue::Boolean(true) => {
+            candidates.push(AutogenValue::Boolean(false));
+        }
+        AutogenValue::Boolean(false) | AutogenValue::Raw(_) => {}
+    }
+    dedupe_autogen_values(candidates)
+}
+
+fn dedupe_autogen_values(values: Vec<AutogenValue>) -> Vec<AutogenValue> {
+    let mut out = Vec::new();
+    for value in values {
+        if !out.contains(&value) {
+            out.push(value);
         }
     }
     out
 }
 
-fn run_single_test(
-    workspace_root: &Path,
-    compile_root: &Path,
-    tests_root: Option<&Path>,
-    test: &TestCase,
-    timeout: Duration,
-    output_format: OutputFormat,
-) -> Result<TestRun, String> {
-    let temp_dir = workspace_root.join("target").join("wrela_tests");
-    let _ = fs::create_dir_all(&temp_dir);
-    let file_stem = test
-        .name
-        .replace('/', "_")
-        .replace(':', "_")
-        .replace("::", "_");
-    let entry_path = temp_dir.join(format!("{}_entry.wr", file_stem));
-    let exe_path = temp_dir.join(format!("{}_bin", file_stem));
-    let entry = format!(
-        "use {func} from {module}\n\nto run() -> Integer:\n    {func}()\n    return 0\n",
-        func = test.func_name,
-        module = test.module_path
-    );
-    if let Err(err) = fs::write(&entry_path, entry) {
-        return Err(format!("failed to write test entry: {err}"));
+fn split_top_level(input: &str, delimiter: char) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let bytes = input.as_bytes();
+    let mut idx = 0usize;
+    while idx < bytes.len() {
+        let ch = bytes[idx] as char;
+        match ch {
+            '"' => {
+                let escaped = idx > 0 && bytes[idx - 1] == b'\\';
+                if !escaped {
+                    in_string = !in_string;
+                }
+            }
+            '[' if !in_string => depth = depth.saturating_add(1),
+            ']' if !in_string && depth > 0 => depth -= 1,
+            _ if ch == delimiter && !in_string && depth == 0 => {
+                parts.push(input[start..idx].to_string());
+                start = idx + ch.len_utf8();
+            }
+            _ => {}
+        }
+        idx += ch.len_utf8();
     }
-    let compile_start = Instant::now();
-    let mir_module =
-        match compile_to_mir_with_root(&entry_path, compile_root, tests_root, output_format) {
-            Ok(mir) => mir,
-            Err(_) => return Err("compile failed".to_string()),
-        };
-    if let Err(err) = wrela::backend::cranelift::compile_to_executable(&mir_module, &exe_path) {
-        return Err(format!("codegen error: {}", err.0));
-    }
-    let compile_ns = compile_start.elapsed().as_nanos();
-    let metrics_path = temp_dir.join(format!("{}_metrics.json", file_stem));
-    let _ = fs::remove_file(&metrics_path);
-    let runtime_start = Instant::now();
-    if let Some(delay_ms) = synthetic_slowdown_ms() {
-        std::thread::sleep(Duration::from_millis(delay_ms));
-    }
-    run_with_timeout(&exe_path, timeout, Some(&metrics_path)).map_err(|e| e)?;
-    let runtime_ns = runtime_start.elapsed().as_nanos();
-    let metrics = read_metrics_dump(&metrics_path);
-    Ok(TestRun {
-        metrics,
-        compile_ns,
-        runtime_ns,
-    })
+    parts.push(input[start..].to_string());
+    parts
 }
 
 fn synthetic_slowdown_ms() -> Option<u64> {
@@ -2290,19 +7159,955 @@ fn synthetic_slowdown_ms() -> Option<u64> {
     raw.parse::<u64>().ok()
 }
 
+fn sanitize_test_path_component(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        "test".to_string()
+    } else {
+        out
+    }
+}
+
+fn inherited_test_env_keys() -> &'static [&'static str] {
+    &[
+        "PATH",
+        "HOME",
+        "USERPROFILE",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "SYSTEMROOT",
+        "WINDIR",
+        "COMSPEC",
+        "PATHEXT",
+        "LANG",
+        "LC_ALL",
+        "TZ",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "LD_LIBRARY_PATH",
+        "DYLD_LIBRARY_PATH",
+    ]
+}
+
 fn read_metrics_dump(path: &Path) -> Option<MetricsDump> {
     let data = fs::read(path).ok()?;
     serde_json::from_slice(&data).ok()
+}
+
+fn write_function_coverage_snapshot(
+    path: &Path,
+    snapshot: &BTreeMap<String, u64>,
+) -> Result<(), String> {
+    #[derive(Serialize)]
+    struct FunctionCoverageSnapshotArtifact<'a> {
+        schema_version: u32,
+        function_coverage: &'a BTreeMap<String, u64>,
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed to create {}: {}", parent.display(), err))?;
+    }
+    let payload = serde_json::to_vec(&FunctionCoverageSnapshotArtifact {
+        schema_version: COVERAGE_SNAPSHOT_SCHEMA_VERSION,
+        function_coverage: snapshot,
+    })
+    .map_err(|err| {
+        format!(
+            "failed to serialize function coverage snapshot {}: {}",
+            path.display(),
+            err
+        )
+    })?;
+    fs::write(path, payload).map_err(|err| format!("failed to write {}: {}", path.display(), err))
+}
+
+fn load_function_coverage_snapshot(path: &Path) -> Result<BTreeMap<String, u64>, String> {
+    #[derive(Deserialize)]
+    struct FunctionCoverageSnapshotArtifact {
+        schema_version: u32,
+        function_coverage: BTreeMap<String, u64>,
+    }
+    let payload =
+        fs::read(path).map_err(|err| format!("failed to read {}: {}", path.display(), err))?;
+    let artifact: FunctionCoverageSnapshotArtifact = serde_json::from_slice(&payload)
+        .map_err(|err| format!("failed to parse {}: {}", path.display(), err))?;
+    if artifact.schema_version != COVERAGE_SNAPSHOT_SCHEMA_VERSION {
+        return Err(format!(
+            "stale function coverage snapshot schema in {}: expected {}, got {}",
+            path.display(),
+            COVERAGE_SNAPSHOT_SCHEMA_VERSION,
+            artifact.schema_version
+        ));
+    }
+    Ok(artifact.function_coverage)
+}
+
+fn certification_coverage_index_path(workspace_root: &Path, cert_cache_hash: &str) -> PathBuf {
+    workspace_root
+        .join("target")
+        .join("wrela_cert")
+        .join("index")
+        .join(format!("{cert_cache_hash}.json"))
+}
+
+fn write_function_test_coverage_index(
+    path: &Path,
+    index: &BTreeMap<String, Vec<String>>,
+) -> Result<(), String> {
+    #[derive(Serialize)]
+    struct FunctionCoverageIndexArtifact<'a> {
+        schema_version: u32,
+        function_to_tests: &'a BTreeMap<String, Vec<String>>,
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed to create {}: {}", parent.display(), err))?;
+    }
+    let payload = serde_json::to_vec(&FunctionCoverageIndexArtifact {
+        schema_version: COVERAGE_INDEX_SCHEMA_VERSION,
+        function_to_tests: index,
+    })
+    .map_err(|err| {
+        format!(
+            "failed to serialize function test coverage index {}: {}",
+            path.display(),
+            err
+        )
+    })?;
+    fs::write(path, payload).map_err(|err| format!("failed to write {}: {}", path.display(), err))
+}
+
+fn load_function_test_coverage_index(
+    workspace_root: &Path,
+    cert_cache_hash: &str,
+) -> Result<BTreeMap<String, Vec<String>>, String> {
+    #[derive(Deserialize)]
+    struct FunctionCoverageIndexArtifact {
+        schema_version: u32,
+        function_to_tests: BTreeMap<String, Vec<String>>,
+    }
+    let path = certification_coverage_index_path(workspace_root, cert_cache_hash);
+    let payload =
+        fs::read(&path).map_err(|err| format!("failed to read {}: {}", path.display(), err))?;
+    let artifact: FunctionCoverageIndexArtifact = serde_json::from_slice(&payload)
+        .map_err(|err| format!("failed to parse {}: {}", path.display(), err))?;
+    if artifact.schema_version != COVERAGE_INDEX_SCHEMA_VERSION {
+        return Err(format!(
+            "stale function coverage index schema in {}: expected {}, got {}",
+            path.display(),
+            COVERAGE_INDEX_SCHEMA_VERSION,
+            artifact.schema_version
+        ));
+    }
+    Ok(artifact.function_to_tests)
+}
+
+fn build_function_test_coverage_index(
+    summary: Option<&PerfSummary>,
+    legacy_to_qualified_ids: &BTreeMap<String, String>,
+) -> BTreeMap<String, Vec<String>> {
+    let mut grouped: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let Some(cases) = summary.and_then(|value| value.cases.as_ref()) else {
+        return BTreeMap::new();
+    };
+    for case in cases {
+        let test_id = if case.id.is_empty() {
+            match case.name.rsplit_once("::") {
+                Some((module_path, func_name)) => stable_test_id(module_path, func_name),
+                None => continue,
+            }
+        } else {
+            case.id.clone()
+        };
+        let Some(metrics) = case.metrics.as_ref() else {
+            continue;
+        };
+        for (function_id, hits) in &metrics.function_coverage {
+            if *hits == 0 {
+                continue;
+            }
+            let canonical_function_id = legacy_to_qualified_ids
+                .get(function_id)
+                .cloned()
+                .unwrap_or_else(|| function_id.clone());
+            grouped
+                .entry(canonical_function_id)
+                .or_default()
+                .insert(test_id.clone());
+        }
+    }
+    grouped
+        .into_iter()
+        .map(|(function_id, test_ids)| (function_id, test_ids.into_iter().collect()))
+        .collect()
+}
+
+fn canonicalize_function_coverage(
+    function_coverage: &BTreeMap<String, u64>,
+    legacy_to_qualified_ids: &BTreeMap<String, String>,
+) -> BTreeMap<String, u64> {
+    let mut canonical = BTreeMap::new();
+    for (function_id, hits) in function_coverage {
+        let canonical_id = legacy_to_qualified_ids
+            .get(function_id)
+            .cloned()
+            .unwrap_or_else(|| function_id.clone());
+        *canonical.entry(canonical_id).or_insert(0) += *hits;
+    }
+    canonical
+}
+
+fn collect_source_function_id_aliases(
+    workspace_root: &Path,
+) -> Result<BTreeMap<String, String>, String> {
+    use wrela::parser::ast::AstNode;
+
+    let src_root = workspace_root.join("src");
+    let mut modules = Vec::new();
+    collect_wr_modules(&src_root, &src_root, "src", &mut modules)?;
+    modules.sort_by(|a, b| a.module_path.cmp(&b.module_path));
+
+    let mut aliases = BTreeMap::new();
+    for module in modules {
+        let (syntax, parse_errors) = parser::parse_with_errors(&module.source);
+        if !parse_errors.is_empty() {
+            let first = &parse_errors[0];
+            return Err(format!(
+                "coverage id mapping requires parse-clean src modules: {} ({} parse error(s), first: {})",
+                module.rel_path,
+                parse_errors.len(),
+                first.message
+            ));
+        }
+        let Some(root) = parser::ast::Root::cast(syntax) else {
+            return Err(format!(
+                "coverage id mapping failed: parser produced no root for {}",
+                module.rel_path
+            ));
+        };
+        let lowered = hir::lower::lower(root);
+        for (_, function) in lowered.functions.iter() {
+            if !matches!(
+                function.kind,
+                hir::FunctionKind::Function | hir::FunctionKind::Check
+            ) {
+                continue;
+            }
+            let qualified_identity =
+                qualified_function_identity(&module.module_path, function.name.as_str());
+            let legacy_id = stable_legacy_function_id(function.name.as_str());
+            let canonical_id = stable_function_id(&qualified_identity);
+            if let Some(previous) = aliases.get(&legacy_id)
+                && previous != &canonical_id
+            {
+                return Err(format!(
+                    "coverage id collision during hard cutover: legacy id {} maps to multiple functions; this build must be resolved before certification",
+                    legacy_id
+                ));
+            }
+            aliases.insert(legacy_id, canonical_id);
+        }
+    }
+    Ok(aliases)
+}
+
+fn run_mutation_gate(
+    workspace_root: &Path,
+    summary: &PerfSummary,
+    max_cases: usize,
+    time_cap_ms: u64,
+) -> Result<Option<String>, String> {
+    if max_cases == 0 {
+        return Ok(None);
+    }
+    let started = Instant::now();
+    let time_cap = Duration::from_millis(time_cap_ms.max(1));
+    let legacy_to_qualified_ids = collect_source_function_id_aliases(workspace_root)?;
+    let coverage_index =
+        build_function_test_coverage_index(Some(summary), &legacy_to_qualified_ids);
+    let snapshot = build_public_surface_snapshot(workspace_root)?;
+    let authored_tests = discover_authored_tests_for_mutation(workspace_root)?;
+    let src_root = workspace_root.join("src");
+    let tests_root = workspace_root.join("tests");
+    let mut importable_by_module: BTreeMap<String, BTreeMap<String, ImportableFunctionInfo>> =
+        BTreeMap::new();
+    for item in snapshot
+        .items
+        .iter()
+        .filter(|item| is_importable_coverage_target(&item.qualified_name))
+    {
+        let Some((module_path, function_name)) = item.qualified_name.rsplit_once("::") else {
+            continue;
+        };
+        let function_id = stable_function_id(&item.qualified_name);
+        importable_by_module
+            .entry(module_path.to_string())
+            .or_default()
+            .insert(
+                function_name.to_string(),
+                ImportableFunctionInfo {
+                    qualified_name: item.qualified_name.clone(),
+                    function_id,
+                },
+            );
+    }
+    let discovery_root = workspace_root
+        .join("target")
+        .join("wrela_mutation")
+        .join("discovery");
+    fs::create_dir_all(&discovery_root)
+        .map_err(|err| format!("failed to create {}: {}", discovery_root.display(), err))?;
+    let mut candidates = Vec::new();
+    let mut seen_candidates = BTreeSet::new();
+    for (module_path, functions) in importable_by_module {
+        let imports = functions.keys().cloned().collect::<Vec<_>>().join(", ");
+        let discovery_entry_source =
+            format!("use {imports} from {module_path}\n\nto run() -> Integer:\n    return 0\n");
+        let entry_path = discovery_root.join(format!(
+            "{}_{}.wr",
+            sanitize_test_path_component(&module_path),
+            fnv1a64_hex(module_path.as_bytes())
+        ));
+        fs::write(&entry_path, discovery_entry_source).map_err(|err| {
+            format!(
+                "mutation gate failed to write discovery entry {}: {}",
+                entry_path.display(),
+                err
+            )
+        })?;
+        let mir_module = compile_to_mir_with_root(
+            &entry_path,
+            &src_root,
+            tests_root.is_dir().then_some(tests_root.as_path()),
+            OutputFormat::Pretty,
+        )
+        .map_err(|code| {
+            format!(
+                "mutation gate failed to compile MIR discovery entry {} (exit code {code})",
+                entry_path.display()
+            )
+        })?;
+        for candidate in discover_mir_mutation_candidates(&mir_module, &functions) {
+            let key = mutation_candidate_key(&candidate);
+            if seen_candidates.insert(key) {
+                candidates.push(candidate);
+            }
+        }
+    }
+    candidates.sort_by(|a, b| {
+        a.qualified_name
+            .cmp(&b.qualified_name)
+            .then(a.function_name.cmp(&b.function_name))
+            .then(a.op_index.cmp(&b.op_index))
+            .then(a.mutation_type.cmp(b.mutation_type))
+    });
+    let authored_by_id: HashMap<String, TestCase> = authored_tests
+        .into_iter()
+        .map(|test| (test.id.clone(), test))
+        .collect();
+
+    let mut mutants = Vec::new();
+    let mut total = 0usize;
+    let mut valid = 0usize;
+    let mut invalid = 0usize;
+    let mut killed = 0usize;
+    let mut survived = 0usize;
+    let mut no_covering = 0usize;
+    for candidate in candidates.into_iter().take(max_cases) {
+        if started.elapsed() >= time_cap {
+            break;
+        }
+        total += 1;
+        let selected_ids = coverage_index
+            .get(&candidate.function_id)
+            .cloned()
+            .unwrap_or_default();
+        let tests_to_run: Vec<TestCase> = selected_ids
+            .iter()
+            .filter_map(|id| authored_by_id.get(id).cloned())
+            .collect();
+        if tests_to_run.is_empty() {
+            valid += 1;
+            survived += 1;
+            no_covering += 1;
+            mutants.push(MutationMutantResult {
+                function: candidate.qualified_name.clone(),
+                function_id: candidate.function_id.clone(),
+                mutation_type: candidate.mutation_type.to_string(),
+                tests_ran: Vec::new(),
+                status: "survived".to_string(),
+                reason: Some("no-covering-tests".to_string()),
+            });
+            continue;
+        }
+
+        let mut tests_ran = Vec::new();
+        let mut is_killed = false;
+        let mut invalid_reason = None;
+        for test in tests_to_run {
+            tests_ran.push(test.id.clone());
+            match run_mutant_against_test(workspace_root, &candidate, &test) {
+                Ok(killed_by_test) => {
+                    if killed_by_test {
+                        is_killed = true;
+                        break;
+                    }
+                }
+                Err(err) => {
+                    invalid_reason = Some(err);
+                    break;
+                }
+            }
+        }
+
+        if let Some(reason) = invalid_reason {
+            invalid += 1;
+            mutants.push(MutationMutantResult {
+                function: candidate.qualified_name.clone(),
+                function_id: candidate.function_id.clone(),
+                mutation_type: candidate.mutation_type.to_string(),
+                tests_ran,
+                status: "invalid-mutant".to_string(),
+                reason: Some(reason),
+            });
+            continue;
+        }
+
+        valid += 1;
+        if is_killed {
+            killed += 1;
+            mutants.push(MutationMutantResult {
+                function: candidate.qualified_name.clone(),
+                function_id: candidate.function_id.clone(),
+                mutation_type: candidate.mutation_type.to_string(),
+                tests_ran,
+                status: "killed".to_string(),
+                reason: None,
+            });
+        } else {
+            survived += 1;
+            mutants.push(MutationMutantResult {
+                function: candidate.qualified_name.clone(),
+                function_id: candidate.function_id.clone(),
+                mutation_type: candidate.mutation_type.to_string(),
+                tests_ran,
+                status: "survived".to_string(),
+                reason: None,
+            });
+        }
+    }
+    let kill_rate_pct = if valid == 0 {
+        100.0
+    } else {
+        (killed as f64 / valid as f64) * 100.0
+    };
+    let domain_kill_rate_pct = if valid == 0 {
+        None
+    } else {
+        Some(kill_rate_pct)
+    };
+
+    let report = MutationGateReport {
+        version: 3,
+        generated_at_unix_ms: now_unix_ms(),
+        total_mutants: total,
+        valid_mutants: valid,
+        invalid_mutants: invalid,
+        killed_mutants: killed,
+        survived_mutants: survived,
+        no_covering_tests_mutants: no_covering,
+        kill_rate_pct,
+        domain_application_kill_rate_pct: domain_kill_rate_pct,
+        mutants,
+    };
+    let report_path = workspace_root
+        .join("tests")
+        .join(".artifacts")
+        .join("mutation")
+        .join("report.json");
+    if let Some(parent) = report_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed to create {}: {}", parent.display(), err))?;
+    }
+    let payload = serde_json::to_vec_pretty(&report)
+        .map_err(|err| format!("failed to serialize mutation report: {err}"))?;
+    fs::write(&report_path, &payload).map_err(|err| {
+        format!(
+            "failed to write mutation report {}: {}",
+            report_path.display(),
+            err
+        )
+    })?;
+    let summary_hash = fnv1a64_hex(&payload);
+
+    let mut failures = Vec::new();
+    if report.survived_mutants > 0 {
+        let survivors = report
+            .mutants
+            .iter()
+            .filter(|mutant| mutant.status == "survived")
+            .map(|mutant| {
+                let reason = mutant.reason.as_deref().unwrap_or("tests-passed");
+                format!("  - {} [{}]", mutant.function, reason)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        failures.push(format!(
+            "mutation gate failed: {} survived mutants detected under src/domain/** and src/application/**.\nsurvivors:\n{}\naction: add assertions/tests that kill these mutants",
+            report.survived_mutants,
+            survivors
+        ));
+    }
+    if let Some(rate) = report.domain_application_kill_rate_pct
+        && rate < 85.0
+    {
+        failures.push(format!(
+            "domain/application mutation kill rate {:.2}% is below required 85.00%",
+            rate
+        ));
+    }
+    if !failures.is_empty() {
+        return Err(format!(
+            "{}\nmutation report: {}",
+            failures.join("\n"),
+            report_path.display()
+        ));
+    }
+    Ok(Some(summary_hash))
+}
+
+#[derive(Clone, Copy)]
+enum MutationSite {
+    Branch { block_idx: usize },
+    Comparison { block_idx: usize, stmt_idx: usize },
+    IntegerLiteralUse { block_idx: usize, stmt_idx: usize },
+    IntegerLiteralBinaryLhs { block_idx: usize, stmt_idx: usize },
+    IntegerLiteralBinaryRhs { block_idx: usize, stmt_idx: usize },
+    ResultGuard { block_idx: usize, stmt_idx: usize },
+}
+
+#[derive(Clone)]
+struct MirMutationCandidate {
+    qualified_name: String,
+    function_name: String,
+    function_id: String,
+    mutation_type: &'static str,
+    op_index: usize,
+    site: MutationSite,
+}
+
+#[derive(Clone)]
+struct ImportableFunctionInfo {
+    qualified_name: String,
+    function_id: String,
+}
+
+fn discover_mir_mutation_candidates(
+    module: &mir::ir::MirModule,
+    importable_functions: &BTreeMap<String, ImportableFunctionInfo>,
+) -> Vec<MirMutationCandidate> {
+    let mut candidates = Vec::new();
+    for function in &module.functions {
+        let function_name = function.name.to_string();
+        let Some(importable) = importable_functions.get(&function_name) else {
+            continue;
+        };
+        let mut op_index = 0usize;
+        for (block_idx, block) in function.blocks.iter().enumerate() {
+            if let mir::ir::Terminator::Branch { .. } = block.terminator {
+                candidates.push(MirMutationCandidate {
+                    qualified_name: importable.qualified_name.clone(),
+                    function_name: function_name.clone(),
+                    function_id: importable.function_id.clone(),
+                    mutation_type: "conditional_branch_inversion",
+                    op_index,
+                    site: MutationSite::Branch { block_idx },
+                });
+                op_index += 1;
+            }
+            for (stmt_idx, stmt) in block.stmts.iter().enumerate() {
+                let mir::ir::Stmt::Assign { value, .. } = stmt else {
+                    continue;
+                };
+                match value {
+                    mir::ir::Rvalue::Binary { op, lhs, rhs } => {
+                        if invertible_comparison(*op).is_some() {
+                            candidates.push(MirMutationCandidate {
+                                qualified_name: importable.qualified_name.clone(),
+                                function_name: function_name.clone(),
+                                function_id: importable.function_id.clone(),
+                                mutation_type: "comparison_inversion",
+                                op_index,
+                                site: MutationSite::Comparison {
+                                    block_idx,
+                                    stmt_idx,
+                                },
+                            });
+                            op_index += 1;
+                        }
+                        if matches!(lhs, mir::ir::Value::Const(hir::Literal::Integer(_))) {
+                            candidates.push(MirMutationCandidate {
+                                qualified_name: importable.qualified_name.clone(),
+                                function_name: function_name.clone(),
+                                function_id: importable.function_id.clone(),
+                                mutation_type: "integer_literal_perturbation",
+                                op_index,
+                                site: MutationSite::IntegerLiteralBinaryLhs {
+                                    block_idx,
+                                    stmt_idx,
+                                },
+                            });
+                            op_index += 1;
+                        }
+                        if matches!(rhs, mir::ir::Value::Const(hir::Literal::Integer(_))) {
+                            candidates.push(MirMutationCandidate {
+                                qualified_name: importable.qualified_name.clone(),
+                                function_name: function_name.clone(),
+                                function_id: importable.function_id.clone(),
+                                mutation_type: "integer_literal_perturbation",
+                                op_index,
+                                site: MutationSite::IntegerLiteralBinaryRhs {
+                                    block_idx,
+                                    stmt_idx,
+                                },
+                            });
+                            op_index += 1;
+                        }
+                    }
+                    mir::ir::Rvalue::Use(mir::ir::Value::Const(hir::Literal::Integer(_))) => {
+                        candidates.push(MirMutationCandidate {
+                            qualified_name: importable.qualified_name.clone(),
+                            function_name: function_name.clone(),
+                            function_id: importable.function_id.clone(),
+                            mutation_type: "integer_literal_perturbation",
+                            op_index,
+                            site: MutationSite::IntegerLiteralUse {
+                                block_idx,
+                                stmt_idx,
+                            },
+                        });
+                        op_index += 1;
+                    }
+                    mir::ir::Rvalue::ResultIsOk { .. } => {
+                        candidates.push(MirMutationCandidate {
+                            qualified_name: importable.qualified_name.clone(),
+                            function_name: function_name.clone(),
+                            function_id: importable.function_id.clone(),
+                            mutation_type: "result_guard_perturbation",
+                            op_index,
+                            site: MutationSite::ResultGuard {
+                                block_idx,
+                                stmt_idx,
+                            },
+                        });
+                        op_index += 1;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    candidates
+}
+
+fn discover_authored_tests_for_mutation(workspace_root: &Path) -> Result<Vec<TestCase>, String> {
+    let tests_root = workspace_root.join("tests");
+    if !tests_root.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut discovered = Vec::new();
+    collect_tests(&tests_root, &tests_root, &mut discovered).map_err(|err| err.to_string())?;
+    discovered.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
+    Ok(expand_sim_seed_cases(discovered, None, true))
+}
+
+fn mutation_candidate_key(candidate: &MirMutationCandidate) -> String {
+    let site = match candidate.site {
+        MutationSite::Branch { block_idx } => format!("branch:{block_idx}"),
+        MutationSite::Comparison {
+            block_idx,
+            stmt_idx,
+        } => {
+            format!("comparison:{block_idx}:{stmt_idx}")
+        }
+        MutationSite::IntegerLiteralUse {
+            block_idx,
+            stmt_idx,
+        } => {
+            format!("int_use:{block_idx}:{stmt_idx}")
+        }
+        MutationSite::IntegerLiteralBinaryLhs {
+            block_idx,
+            stmt_idx,
+        } => {
+            format!("int_lhs:{block_idx}:{stmt_idx}")
+        }
+        MutationSite::IntegerLiteralBinaryRhs {
+            block_idx,
+            stmt_idx,
+        } => {
+            format!("int_rhs:{block_idx}:{stmt_idx}")
+        }
+        MutationSite::ResultGuard {
+            block_idx,
+            stmt_idx,
+        } => {
+            format!("result_guard:{block_idx}:{stmt_idx}")
+        }
+    };
+    format!(
+        "{}|{}|{}|{}",
+        candidate.qualified_name, candidate.function_name, candidate.mutation_type, site
+    )
+}
+
+fn run_mutant_against_test(
+    workspace_root: &Path,
+    candidate: &MirMutationCandidate,
+    test: &TestCase,
+) -> Result<bool, String> {
+    let mutation_root = workspace_root
+        .join("target")
+        .join("wrela_mutation")
+        .join(sanitize_test_path_component(&format!(
+            "{}__{}__{}",
+            candidate.function_name, candidate.mutation_type, candidate.op_index
+        )))
+        .join(sanitize_test_path_component(&test.id));
+    fs::create_dir_all(&mutation_root)
+        .map_err(|err| format!("failed to create mutation temp directory: {err}"))?;
+    let entry_path = mutation_root.join("entry.wr");
+    let exe_path = mutation_root.join("mutant_bin");
+    fs::write(&entry_path, single_test_entry_source(test))
+        .map_err(|err| format!("failed to write mutation harness entry: {err}"))?;
+
+    let src_root = workspace_root.join("src");
+    let tests_root = workspace_root.join("tests");
+    let mut module = compile_to_mir_with_root(
+        &entry_path,
+        &src_root,
+        tests_root.is_dir().then_some(tests_root.as_path()),
+        OutputFormat::Pretty,
+    )
+    .map_err(|code| format!("mutant compile failed before mutation (exit code {code})"))?;
+    apply_mir_mutation(&mut module, candidate)?;
+    wrela::backend::cranelift::compile_to_executable(&module, &exe_path)
+        .map_err(|err| format!("mutant codegen error: {}", err.0))?;
+
+    let timeout = Duration::from_millis(DEFAULT_TEST_TIMEOUT_MS);
+    let run = run_single_test(
+        &exe_path,
+        workspace_root,
+        test,
+        timeout,
+        OutputFormat::Pretty,
+        HttpCassetteMode::Replay,
+        DifferentialPipeline::Baseline,
+    );
+    match run {
+        Ok(_) => Ok(false),
+        Err(_) => Ok(true),
+    }
+}
+
+fn single_test_entry_source(test: &TestCase) -> String {
+    format!(
+        "use {func} from {module}\n\nto run() -> Integer:\n    {dispatch}\n    return 0\n",
+        func = test.func_name,
+        module = test.module_path,
+        dispatch = test_case_dispatch_stmt(test)
+    )
+}
+
+fn apply_mir_mutation(
+    module: &mut mir::ir::MirModule,
+    candidate: &MirMutationCandidate,
+) -> Result<(), String> {
+    let mut matching_indices = module
+        .functions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, func)| {
+            (func.name.as_str() == candidate.function_name).then_some(index)
+        })
+        .collect::<Vec<_>>();
+    if matching_indices.is_empty() {
+        return Err(format!(
+            "function '{}' not found while applying mutant",
+            candidate.function_name
+        ));
+    }
+    if matching_indices.len() > 1 {
+        return Err(format!(
+            "ambiguous mutation target '{}': {} MIR functions match by name",
+            candidate.function_name,
+            matching_indices.len()
+        ));
+    }
+    let function_index = matching_indices.pop().unwrap_or(0);
+    let function = &mut module.functions[function_index];
+    match candidate.site {
+        MutationSite::Branch { block_idx } => {
+            let block = function
+                .blocks
+                .get_mut(block_idx)
+                .ok_or_else(|| format!("invalid branch mutation block index {}", block_idx))?;
+            let mir::ir::Terminator::Branch {
+                then_target,
+                else_target,
+                ..
+            } = &mut block.terminator
+            else {
+                return Err("branch mutation site no longer contains a branch".to_string());
+            };
+            std::mem::swap(then_target, else_target);
+        }
+        MutationSite::Comparison {
+            block_idx,
+            stmt_idx,
+        } => {
+            let stmt = mutation_assign_stmt(function, block_idx, stmt_idx)?;
+            let mir::ir::Rvalue::Binary { op, .. } = stmt else {
+                return Err("comparison mutation site no longer contains a binary op".to_string());
+            };
+            *op = invertible_comparison(*op)
+                .ok_or_else(|| "comparison mutation site is not invertible".to_string())?;
+        }
+        MutationSite::IntegerLiteralUse {
+            block_idx,
+            stmt_idx,
+        } => {
+            let stmt = mutation_assign_stmt(function, block_idx, stmt_idx)?;
+            let mir::ir::Rvalue::Use(mir::ir::Value::Const(hir::Literal::Integer(value))) = stmt
+            else {
+                return Err(
+                    "integer mutation site no longer contains a constant literal".to_string(),
+                );
+            };
+            *value = perturb_integer(*value);
+        }
+        MutationSite::IntegerLiteralBinaryLhs {
+            block_idx,
+            stmt_idx,
+        } => {
+            let stmt = mutation_assign_stmt(function, block_idx, stmt_idx)?;
+            let mir::ir::Rvalue::Binary { lhs, .. } = stmt else {
+                return Err("integer mutation lhs site no longer contains a binary op".to_string());
+            };
+            let mir::ir::Value::Const(hir::Literal::Integer(value)) = lhs else {
+                return Err(
+                    "integer mutation lhs site no longer contains an integer literal".to_string(),
+                );
+            };
+            *value = perturb_integer(*value);
+        }
+        MutationSite::IntegerLiteralBinaryRhs {
+            block_idx,
+            stmt_idx,
+        } => {
+            let stmt = mutation_assign_stmt(function, block_idx, stmt_idx)?;
+            let mir::ir::Rvalue::Binary { rhs, .. } = stmt else {
+                return Err("integer mutation rhs site no longer contains a binary op".to_string());
+            };
+            let mir::ir::Value::Const(hir::Literal::Integer(value)) = rhs else {
+                return Err(
+                    "integer mutation rhs site no longer contains an integer literal".to_string(),
+                );
+            };
+            *value = perturb_integer(*value);
+        }
+        MutationSite::ResultGuard {
+            block_idx,
+            stmt_idx,
+        } => {
+            let stmt = mutation_assign_stmt(function, block_idx, stmt_idx)?;
+            if !matches!(stmt, mir::ir::Rvalue::ResultIsOk { .. }) {
+                return Err("result-guard mutation site no longer contains ResultIsOk".to_string());
+            }
+            *stmt = mir::ir::Rvalue::Use(mir::ir::Value::Const(hir::Literal::Boolean(true)));
+        }
+    }
+    Ok(())
+}
+
+fn mutation_assign_stmt(
+    function: &mut mir::ir::MirFunction,
+    block_idx: usize,
+    stmt_idx: usize,
+) -> Result<&mut mir::ir::Rvalue, String> {
+    let block = function
+        .blocks
+        .get_mut(block_idx)
+        .ok_or_else(|| format!("invalid mutation block index {}", block_idx))?;
+    let stmt = block
+        .stmts
+        .get_mut(stmt_idx)
+        .ok_or_else(|| format!("invalid mutation stmt index {}", stmt_idx))?;
+    let mir::ir::Stmt::Assign { value, .. } = stmt else {
+        return Err("mutation site no longer contains an assignment".to_string());
+    };
+    Ok(value)
+}
+
+fn invertible_comparison(op: hir::BinaryOp) -> Option<hir::BinaryOp> {
+    match op {
+        hir::BinaryOp::Eq => Some(hir::BinaryOp::Ne),
+        hir::BinaryOp::Ne => Some(hir::BinaryOp::Eq),
+        hir::BinaryOp::Lt => Some(hir::BinaryOp::Ge),
+        hir::BinaryOp::Gt => Some(hir::BinaryOp::Le),
+        hir::BinaryOp::Le => Some(hir::BinaryOp::Gt),
+        hir::BinaryOp::Ge => Some(hir::BinaryOp::Lt),
+        _ => None,
+    }
+}
+
+fn perturb_integer(value: i64) -> i64 {
+    if value >= 0 {
+        value.saturating_add(1)
+    } else {
+        value.saturating_sub(1)
+    }
 }
 
 fn run_with_timeout(
     exe: &Path,
     timeout: Duration,
     metrics_path: Option<&Path>,
+    cwd: Option<&Path>,
+    args: &[&str],
+    extra_env: &[(&str, &str)],
 ) -> Result<(), String> {
-    let mut command = Command::new(exe);
+    let exe_path = if exe.is_absolute() {
+        exe.to_path_buf()
+    } else {
+        env::current_dir()
+            .map_err(|err| format!("failed to read current directory: {err}"))?
+            .join(exe)
+    };
+    let mut command = Command::new(exe_path);
+    command.args(args);
+    if let Some(path) = cwd {
+        command.current_dir(path);
+    }
+    command.env_clear();
+    for key in inherited_test_env_keys() {
+        if let Some(value) = env::var_os(key) {
+            command.env(key, value);
+        }
+    }
     if let Some(path) = metrics_path {
         command.env("WRELA_METRICS_PATH", path);
+    }
+    for (key, value) in extra_env {
+        command.env(key, value);
     }
     let mut child = command.spawn().map_err(|e| format!("failed to run: {e}"))?;
     let start = Instant::now();
@@ -2424,6 +8229,17 @@ fn resolve_entry_path(path_arg: Option<&str>) -> Result<PathBuf, String> {
         return Err(format!("path not found: {}", path.display()));
     }
     Ok(path)
+}
+
+fn project_root_for_entry(entry_path: &Path) -> PathBuf {
+    for ancestor in entry_path.ancestors() {
+        if ancestor.file_name().is_some_and(|name| name == "src") {
+            if let Some(parent) = ancestor.parent() {
+                return parent.to_path_buf();
+            }
+        }
+    }
+    entry_path.parent().unwrap_or(entry_path).to_path_buf()
 }
 
 fn compile_to_mir(
@@ -3003,5 +8819,59 @@ mod tests {
         let failures = evaluate_perf_gate(&current, &baseline, 5.0, &thresholds);
 
         assert!(failures.is_empty());
+    }
+
+    #[test]
+    fn sim_seed_expansion_uses_256_seeds_in_cert_mode() {
+        let base = TestCase {
+            id: "sim-id".to_string(),
+            lane: TestLane::Sim,
+            name: "tests/sim/foo::test_bar".to_string(),
+            module_path: "tests/sim/foo".to_string(),
+            func_name: "test_bar".to_string(),
+            is_serial: false,
+            allows_env_set: false,
+            allows_fs_escape: false,
+            has_oracle: true,
+            generated_call_body: None,
+            generated_case_kind: None,
+            generated_entry_source: None,
+            autogen_module_source: None,
+            autogen_seed: None,
+            autogen_span: None,
+            sim_seed: None,
+            canonical_id: "sim-id".to_string(),
+        };
+        let expanded = expand_sim_seed_cases(vec![base], None, true);
+        assert_eq!(expanded.len(), 256);
+        assert_eq!(expanded.first().and_then(|t| t.sim_seed), Some(0));
+        assert_eq!(expanded.last().and_then(|t| t.sim_seed), Some(255));
+    }
+
+    #[test]
+    fn model_seed_expansion_uses_multiple_seeds_in_cert_mode() {
+        let base = TestCase {
+            id: "model-id".to_string(),
+            lane: TestLane::Model,
+            name: "tests/model/foo::test_bar".to_string(),
+            module_path: "tests/model/foo".to_string(),
+            func_name: "test_bar".to_string(),
+            is_serial: false,
+            allows_env_set: false,
+            allows_fs_escape: false,
+            has_oracle: true,
+            generated_call_body: None,
+            generated_case_kind: None,
+            generated_entry_source: None,
+            autogen_module_source: None,
+            autogen_seed: None,
+            autogen_span: None,
+            sim_seed: None,
+            canonical_id: "model-id".to_string(),
+        };
+        let expanded = expand_sim_seed_cases(vec![base], None, true);
+        assert_eq!(expanded.len(), 64);
+        assert_eq!(expanded.first().and_then(|t| t.sim_seed), Some(0));
+        assert_eq!(expanded.last().and_then(|t| t.sim_seed), Some(63));
     }
 }

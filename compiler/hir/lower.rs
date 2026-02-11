@@ -125,6 +125,11 @@ impl LoweringContext {
     }
 
     fn lower_func(&mut self, f: ast::FuncDef) -> Function {
+        let attributes = f
+            .attributes()
+            .filter_map(|attribute| attribute.name())
+            .map(|token| SmolStr::new(token.text()))
+            .collect();
         let name = f.name().map(|t| SmolStr::new(t.text())).unwrap_or_default();
         let name_span = f.name().map(|t| t.text_range());
         let visibility = visibility_for_node_default(f.syntax());
@@ -140,6 +145,7 @@ impl LoweringContext {
         Function {
             name,
             name_span,
+            attributes,
             visibility,
             kind: FunctionKind::Function,
             params,
@@ -149,6 +155,11 @@ impl LoweringContext {
     }
 
     fn lower_check(&mut self, c: ast::CheckDef) -> Function {
+        let attributes = c
+            .attributes()
+            .filter_map(|attribute| attribute.name())
+            .map(|token| SmolStr::new(token.text()))
+            .collect();
         let name = c.name().map(|t| SmolStr::new(t.text())).unwrap_or_default();
         let name_span = c.name().map(|t| t.text_range());
         let visibility = visibility_for_node_default(c.syntax());
@@ -164,6 +175,7 @@ impl LoweringContext {
         Function {
             name,
             name_span,
+            attributes,
             visibility,
             kind: FunctionKind::Check,
             params,
@@ -327,6 +339,7 @@ impl LoweringContext {
         Function {
             name,
             name_span,
+            attributes: Vec::new(),
             visibility,
             kind: FunctionKind::Method,
             params,
@@ -351,6 +364,7 @@ impl LoweringContext {
         Function {
             name,
             name_span,
+            attributes: Vec::new(),
             visibility,
             kind: FunctionKind::CheckMethod,
             params,
@@ -375,6 +389,7 @@ impl LoweringContext {
         Function {
             name,
             name_span,
+            attributes: Vec::new(),
             visibility,
             kind: FunctionKind::Derived,
             params,

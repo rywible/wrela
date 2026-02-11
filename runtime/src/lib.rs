@@ -12,15 +12,21 @@ use data::object::drop_object;
 use data::value::int_value;
 pub use data::value::{TypeId, Value};
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicI64, AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+#[cfg(test)]
+use std::sync::atomic::AtomicU8;
 use std::sync::{Arc, Mutex, OnceLock};
 
 const WR_REACTOR_EVENT_READABLE: i32 = 1;
 const WR_REACTOR_EVENT_TIMER: i32 = 2;
+#[cfg(test)]
 const ABI_TYPED_LANE_UNKNOWN: u8 = 0;
+#[cfg(all(test, feature = "abi_typed_fast_path"))]
 const ABI_TYPED_LANE_ENABLED: u8 = 1;
+#[cfg(all(test, feature = "abi_typed_fast_path"))]
 const ABI_TYPED_LANE_DISABLED: u8 = 2;
 
+#[cfg(test)]
 static ABI_TYPED_LANE_CACHE: AtomicU8 = AtomicU8::new(ABI_TYPED_LANE_UNKNOWN);
 
 struct ReactorRegistry {
@@ -792,6 +798,32 @@ pub extern "C" fn wr_fs_write_bytes(path: Value, contents: Value) -> Value {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn wr_external_call(
+    service: Value,
+    endpoint: Value,
+    method: Value,
+    url: Value,
+    headers: Value,
+    body: Value,
+    timeout_ms: Value,
+) -> Value {
+    host::external_call(service, endpoint, method, url, headers, body, timeout_ms)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_http_call(
+    service: Value,
+    endpoint: Value,
+    method: Value,
+    url: Value,
+    headers: Value,
+    body: Value,
+    timeout_ms: Value,
+) -> Value {
+    host::http_call(service, endpoint, method, url, headers, body, timeout_ms)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn wr_result_ok(val: Value) -> Value {
     result::result_ok(val)
 }
@@ -1076,6 +1108,12 @@ pub extern "C" fn wr_metrics_reset() {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn wr_coverage_hit(function_id: i64) -> i64 {
+    metrics::coverage_hit(function_id as u64);
+    function_id
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn wr_runtime_configure(config: Value) -> Value {
     config::runtime_configure(config)
 }
@@ -1269,7 +1307,7 @@ enum NumKind {
     Float(f64),
 }
 
-#[allow(dead_code)]
+#[cfg(all(test, feature = "abi_typed_fast_path"))]
 fn abi_flag_truthy(name: &str) -> bool {
     let Some(raw) = std::env::var_os(name) else {
         return false;
@@ -1278,7 +1316,7 @@ fn abi_flag_truthy(name: &str) -> bool {
     matches!(lower.as_str(), "1" | "true" | "on" | "yes")
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 fn abi_typed_lane_enabled() -> bool {
     #[cfg(feature = "abi_typed_fast_path")]
     {
@@ -1305,12 +1343,12 @@ fn abi_typed_lane_enabled() -> bool {
     }
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 fn abi_refresh_typed_lane_cache() {
     ABI_TYPED_LANE_CACHE.store(ABI_TYPED_LANE_UNKNOWN, Ordering::Relaxed);
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 fn abi_roundtrip_i64(val: i64) -> i64 {
     if abi_typed_lane_enabled() {
         metrics::inc_abi_typed_lane();
@@ -1325,7 +1363,7 @@ fn abi_roundtrip_i64(val: i64) -> i64 {
     out
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 fn abi_roundtrip_value(val: Value) -> Value {
     let input = int_value(val).unwrap_or(0);
     Value::from_int(abi_roundtrip_i64(input))
@@ -1334,6 +1372,7 @@ fn abi_roundtrip_value(val: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use crate::*;
+    use sha2::Digest;
     use std::hint::black_box;
     use std::sync::{Mutex, OnceLock};
     use std::time::Instant;
@@ -1512,6 +1551,155 @@ mod tests {
         dec(key);
         dec(val);
         dec(got);
+    }
+
+    #[test]
+    fn external_call_stub_is_deterministic() {
+        let service = str_value("billing");
+        let endpoint = str_value("charge");
+        let method = str_value("POST");
+        let url = str_value("https://api.example.test/charges");
+        let body = str_value("amount=100");
+        let headers = wr_map_new();
+        let header_key = str_value("x-request-id");
+        let header_val = str_value("abc");
+        let _ = wr_map_set(headers, header_key, header_val);
+        let timeout_ms = Value::from_int(2500);
+
+        let first = wr_external_call(service, endpoint, method, url, headers, body, timeout_ms);
+        let second = wr_external_call(service, endpoint, method, url, headers, body, timeout_ms);
+
+        assert!(wr_result_is_ok(first).as_bool());
+        assert!(wr_result_is_ok(second).as_bool());
+        let first_text = wr_result_unwrap(first);
+        let second_text = wr_result_unwrap(second);
+        assert_eq!(
+            value_to_string(first_text),
+            "external.stub:service=billing;endpoint=charge;method=POST;url=https://api.example.test/charges;headers=1;body_len=10;timeout_ms=2500"
+        );
+        assert_eq!(value_to_string(first_text), value_to_string(second_text));
+
+        dec(service);
+        dec(endpoint);
+        dec(method);
+        dec(url);
+        dec(body);
+        dec(headers);
+        dec(header_key);
+        dec(header_val);
+        dec(first);
+        dec(second);
+        dec(first_text);
+        dec(second_text);
+    }
+
+    #[test]
+    fn http_call_replay_missing_cassette_returns_teacher_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        unsafe {
+            std::env::set_var("WRELA_HTTP_MODE", "replay");
+            std::env::set_var("WRELA_CASSETTE_DIR", dir.path());
+        }
+
+        let service = str_value("billing");
+        let endpoint = str_value("charge");
+        let method = str_value("POST");
+        let url = str_value("http://127.0.0.1:9/missing");
+        let body = str_value("amount=100");
+        let headers = wr_map_new();
+        let timeout_ms = Value::from_int(500);
+
+        let result = wr_http_call(service, endpoint, method, url, headers, body, timeout_ms);
+        assert!(!wr_result_is_ok(result).as_bool());
+        let err = wr_result_err_unwrap(result);
+        let err_text = value_to_string(err);
+        assert!(err_text.contains("cassette missing for replay mode"));
+        assert!(err_text.contains("wrela test --record"));
+
+        dec(service);
+        dec(endpoint);
+        dec(method);
+        dec(url);
+        dec(body);
+        dec(headers);
+        dec(result);
+        dec(err);
+    }
+
+    #[test]
+    fn http_call_replay_rejects_unknown_cassette_version() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let service_name = "billing";
+        let endpoint_name = "charge";
+        let method_name = "post";
+        let url_value = "http://127.0.0.1:9/missing";
+        let body_value = "";
+        let body_hash = {
+            let mut hasher = sha2::Sha256::new();
+            sha2::Digest::update(&mut hasher, body_value.as_bytes());
+            format!("{:x}", sha2::Digest::finalize(hasher))
+        };
+        let url_hash = {
+            let mut hasher = sha2::Sha256::new();
+            sha2::Digest::update(&mut hasher, url_value.as_bytes());
+            format!("{:x}", sha2::Digest::finalize(hasher))
+        };
+        let headers_hash = {
+            let mut hasher = sha2::Sha256::new();
+            sha2::Digest::update(&mut hasher, b"");
+            format!("{:x}", sha2::Digest::finalize(hasher))
+        };
+        let cassette = dir.path().join(format!(
+            "{}__{}__{}__{}__{}__{}.json",
+            service_name, endpoint_name, method_name, url_hash, body_hash, headers_hash
+        ));
+        std::fs::write(
+            &cassette,
+            r#"{
+  "version": 99,
+  "request": {
+    "service": "billing",
+    "endpoint": "charge",
+    "method": "POST",
+    "url": "http://127.0.0.1:9/missing",
+    "headers_redacted": {},
+    "body_base64": ""
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body_base64": ""
+  }
+}"#,
+        )
+        .expect("write cassette");
+
+        unsafe {
+            std::env::set_var("WRELA_HTTP_MODE", "replay");
+            std::env::set_var("WRELA_CASSETTE_DIR", dir.path());
+        }
+        let service = str_value(service_name);
+        let endpoint = str_value(endpoint_name);
+        let method = str_value("POST");
+        let url = str_value(url_value);
+        let body = str_value(body_value);
+        let headers = wr_map_new();
+        let timeout_ms = Value::from_int(500);
+
+        let result = wr_http_call(service, endpoint, method, url, headers, body, timeout_ms);
+        assert!(!wr_result_is_ok(result).as_bool());
+        let err = wr_result_err_unwrap(result);
+        let err_text = value_to_string(err);
+        assert!(err_text.contains("unsupported cassette version"));
+
+        dec(service);
+        dec(endpoint);
+        dec(method);
+        dec(url);
+        dec(body);
+        dec(headers);
+        dec(result);
+        dec(err);
     }
 
     #[test]

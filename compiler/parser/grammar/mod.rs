@@ -24,6 +24,9 @@ pub fn root(p: &mut Parser) {
 }
 
 pub(crate) fn parse_statement(p: &mut Parser) {
+    if func::attributed_func_or_check_def(p) {
+        return;
+    }
     if p.at(SyntaxKind::PrivateKw) && p.peek_nontrivia_at(1) == SyntaxKind::Colon {
         parse_private_block(p);
         return;

@@ -220,6 +220,48 @@ pub enum SemanticError {
         span: SourceSpan,
     },
 
+    #[error("certified tests cannot use `assert true`")]
+    #[diagnostic(
+        code(lang::sem::trivial_assert_true),
+        help(
+            "Assert an observed behavior instead, for example `assert value compute_value() == 1`."
+        )
+    )]
+    TrivialAssertTrue {
+        #[label("trivial assert here")]
+        span: SourceSpan,
+    },
+
+    #[error("certified tests cannot compare two literals in an assert")]
+    #[diagnostic(
+        code(lang::sem::trivial_assert_literal_equality),
+        help(
+            "Compare a computed/runtime value against the expected literal so the test exercises real behavior."
+        )
+    )]
+    TrivialAssertLiteralEquality {
+        #[label("trivial assert here")]
+        span: SourceSpan,
+        #[label("literal operand")]
+        lhs_span: SourceSpan,
+        #[label("literal operand")]
+        rhs_span: SourceSpan,
+    },
+
+    #[error("certified tests cannot assert self-equality")]
+    #[diagnostic(
+        code(lang::sem::trivial_assert_self_equality),
+        help(
+            "Use a real expected value or invariant; `x == x` is tautological and provides no certification signal."
+        )
+    )]
+    TrivialAssertSelfEquality {
+        #[label("trivial assert here")]
+        span: SourceSpan,
+        #[label("same expression used on both sides")]
+        side_span: SourceSpan,
+    },
+
     #[error("function '{name}' returns forbidden boolean predicate type")]
     #[diagnostic(code(lang::sem::boolean_function_should_be_check))]
     BooleanFunctionShouldBeCheck {
@@ -354,6 +396,27 @@ pub enum SemanticError {
         #[label("reserved method defined here")]
         span: SourceSpan,
     },
+    #[error("unknown attribute '@{attribute}' on function '{function}'")]
+    #[diagnostic(
+        code(lang::sem::unknown_test_attribute),
+        help("Allowed attributes are @serial, @allows_env_set, and @allows_fs_escape.")
+    )]
+    UnknownTestAttribute {
+        attribute: SmolStr,
+        function: SmolStr,
+        #[label("attribute attached here")]
+        span: SourceSpan,
+    },
+    #[error("attribute '@{attribute}' is only valid on test_* functions")]
+    #[diagnostic(
+        code(lang::sem::invalid_test_attribute_target),
+        help("Rename this function to test_* or remove the attribute.")
+    )]
+    InvalidTestAttributeTarget {
+        attribute: SmolStr,
+        #[label("attribute attached here")]
+        span: SourceSpan,
+    },
 }
 
 #[derive(Debug, Error, Diagnostic, Clone)]
@@ -410,6 +473,9 @@ impl SemanticError {
             SemanticError::CheckMustReturnBoolean { span } => *span,
             SemanticError::CheckMutation { span } => *span,
             SemanticError::CheckInvalidKeyword { span, .. } => *span,
+            SemanticError::TrivialAssertTrue { span } => *span,
+            SemanticError::TrivialAssertLiteralEquality { span, .. } => *span,
+            SemanticError::TrivialAssertSelfEquality { span, .. } => *span,
             SemanticError::BooleanFunctionShouldBeCheck { span, .. } => *span,
             SemanticError::BooleanFunctionImpure { span, .. } => *span,
             SemanticError::BooleanInterfaceMethodShouldBeMustCheck { span, .. } => *span,
@@ -428,6 +494,8 @@ impl SemanticError {
             SemanticError::InvalidPoolTarget { span } => *span,
             SemanticError::MatchBindingsMultiLabel { span } => *span,
             SemanticError::ReservedStdlibMethod { span, .. } => *span,
+            SemanticError::UnknownTestAttribute { span, .. } => *span,
+            SemanticError::InvalidTestAttributeTarget { span, .. } => *span,
         }
     }
 }
@@ -492,6 +560,7 @@ struct Checker<'a> {
     in_method: bool,
     in_derived: bool,
     in_check: bool,
+    in_certified_flow: bool,
 }
 
 pub struct SemanticDiagnostics {
@@ -534,6 +603,7 @@ impl<'a> Checker<'a> {
             in_method: false,
             in_derived: false,
             in_check: false,
+            in_certified_flow: false,
         }
     }
 
@@ -699,6 +769,7 @@ impl<'a> Checker<'a> {
         let prev_method = self.in_method;
         let prev_derived = self.in_derived;
         let prev_check = self.in_check;
+        let prev_certified_flow = self.in_certified_flow;
         let prev_require_objective = self.current_objective_required;
         self.current_objective_required = self
             .objective_required_by_fn
@@ -708,6 +779,24 @@ impl<'a> Checker<'a> {
         self.in_method = is_method;
         self.in_derived = func.kind == FunctionKind::Derived;
         self.in_check = matches!(func.kind, FunctionKind::Check | FunctionKind::CheckMethod);
+        self.in_certified_flow = func.name.starts_with("test_");
+        for attr in &func.attributes {
+            match attr.as_str() {
+                "serial" | "allows_env_set" | "allows_fs_escape" => {
+                    if !self.in_certified_flow {
+                        self.errors.push(SemanticError::InvalidTestAttributeTarget {
+                            attribute: attr.clone(),
+                            span: span_from_option(func.name_span),
+                        });
+                    }
+                }
+                _ => self.errors.push(SemanticError::UnknownTestAttribute {
+                    attribute: attr.clone(),
+                    function: func.name.clone(),
+                    span: span_from_option(func.name_span),
+                }),
+            }
+        }
 
         if self.in_check {
             let ret_span = func
@@ -808,6 +897,7 @@ impl<'a> Checker<'a> {
         self.in_derived = prev_derived;
         self.in_method = prev_method;
         self.in_check = prev_check;
+        self.in_certified_flow = prev_certified_flow;
         self.current_objective_required = prev_require_objective;
     }
 
@@ -821,6 +911,9 @@ impl<'a> Checker<'a> {
                         keyword: "assert",
                         span: span_from_range(body.stmt_span(stmt_id)),
                     });
+                }
+                if self.in_certified_flow {
+                    self.reject_trivial_assert_in_certified_flow(body, stmt_id, *expr);
                 }
                 self.check_expr_with_ctx(body, *expr, false, true);
             }
@@ -1118,6 +1211,46 @@ impl<'a> Checker<'a> {
             Stmt::IgnoreResult { expr } => {
                 self.check_expr_with_ctx(body, *expr, false, false);
             }
+        }
+    }
+
+    fn reject_trivial_assert_in_certified_flow(
+        &mut self,
+        body: &Body,
+        stmt_id: Idx<Stmt>,
+        expr_id: Idx<Expr>,
+    ) {
+        let stmt_span = span_from_range(body.stmt_span(stmt_id));
+        match &body.exprs[expr_id] {
+            Expr::Literal(Literal::Boolean(true)) => {
+                self.errors
+                    .push(SemanticError::TrivialAssertTrue { span: stmt_span });
+            }
+            Expr::Binary {
+                lhs,
+                op: BinaryOp::Eq,
+                rhs,
+                ..
+            } => {
+                if matches!(body.exprs[*lhs], Expr::Literal(_))
+                    && matches!(body.exprs[*rhs], Expr::Literal(_))
+                {
+                    self.errors
+                        .push(SemanticError::TrivialAssertLiteralEquality {
+                            span: stmt_span,
+                            lhs_span: span_from_range(body.expr_span(*lhs)),
+                            rhs_span: span_from_range(body.expr_span(*rhs)),
+                        });
+                    return;
+                }
+                if lhs == rhs {
+                    self.errors.push(SemanticError::TrivialAssertSelfEquality {
+                        span: stmt_span,
+                        side_span: span_from_range(body.expr_span(*lhs)),
+                    });
+                }
+            }
+            _ => {}
         }
     }
 
@@ -2596,6 +2729,8 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
         (SmolStr::new("__wr_bytes_len"), BindingKind::Function),
         (SmolStr::new("__wr_fs_read_bytes"), BindingKind::Function),
         (SmolStr::new("__wr_fs_write_bytes"), BindingKind::Function),
+        (SmolStr::new("__wr_external_call"), BindingKind::Function),
+        (SmolStr::new("__wr_http_call"), BindingKind::Function),
         (SmolStr::new("__wr_list_push"), BindingKind::Function),
         (SmolStr::new("__wr_map_new"), BindingKind::Function),
         (SmolStr::new("__wr_map_get"), BindingKind::Function),
@@ -3316,6 +3451,84 @@ A Pred:
                 err,
                 SemanticError::BooleanInterfaceMethodShouldBeMustCheck { name, help, .. }
                     if name == "ready" && help.contains("must check ready")
+            )
+        }));
+    }
+
+    #[test]
+    fn test_certified_flow_rejects_assert_true() {
+        let input = "to test_truthy() -> Nothing:\n    assert value true";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let diagnostics = check_module(&module);
+        assert!(
+            diagnostics
+                .errors
+                .iter()
+                .any(|err| { matches!(err, SemanticError::TrivialAssertTrue { .. }) })
+        );
+    }
+
+    #[test]
+    fn test_certified_flow_rejects_literal_equality_assert() {
+        let input = "to test_literals() -> Nothing:\n    assert value 1 == 2";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let diagnostics = check_module(&module);
+        assert!(
+            diagnostics
+                .errors
+                .iter()
+                .any(|err| { matches!(err, SemanticError::TrivialAssertLiteralEquality { .. }) })
+        );
+    }
+
+    #[test]
+    fn test_non_certified_flow_allows_literal_equality_assert() {
+        let input = "to helper() -> Nothing:\n    assert value 1 == 2";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let diagnostics = check_module(&module);
+        assert!(!diagnostics.errors.iter().any(|err| {
+            matches!(
+                err,
+                SemanticError::TrivialAssertTrue { .. }
+                    | SemanticError::TrivialAssertLiteralEquality { .. }
+                    | SemanticError::TrivialAssertSelfEquality { .. }
+            )
+        }));
+    }
+
+    #[test]
+    fn test_test_attributes_rejected_on_non_test_function() {
+        let input = "@serial\nto helper() -> Nothing:\n    return";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let diagnostics = check_module(&module);
+        assert!(diagnostics.errors.iter().any(|err| {
+            matches!(
+                err,
+                SemanticError::InvalidTestAttributeTarget { attribute, .. } if attribute == "serial"
+            )
+        }));
+    }
+
+    #[test]
+    fn test_unknown_attributes_are_errors() {
+        let input = "@based\nto test_lol() -> Nothing:\n    assert value true == true";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let diagnostics = check_module(&module);
+        assert!(diagnostics.errors.iter().any(|err| {
+            matches!(
+                err,
+                SemanticError::UnknownTestAttribute { attribute, function, .. }
+                    if attribute == "based" && function == "test_lol"
             )
         }));
     }

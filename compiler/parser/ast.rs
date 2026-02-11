@@ -528,6 +528,10 @@ impl AstNode for FuncDef {
 }
 
 impl FuncDef {
+    pub fn attributes(&self) -> impl Iterator<Item = Attribute> {
+        self.0.children().filter_map(Attribute::cast)
+    }
+
     pub fn name(&self) -> Option<SyntaxToken> {
         self.0
             .children_with_tokens()
@@ -580,6 +584,10 @@ impl AstNode for CheckDef {
 }
 
 impl CheckDef {
+    pub fn attributes(&self) -> impl Iterator<Item = Attribute> {
+        self.0.children().filter_map(Attribute::cast)
+    }
+
     pub fn name(&self) -> Option<SyntaxToken> {
         self.0
             .children_with_tokens()
@@ -611,6 +619,32 @@ impl CheckDef {
                     .collect::<Vec<_>>()
                     .into_iter()
             })
+    }
+}
+
+pub struct Attribute(SyntaxNode);
+impl AstNode for Attribute {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::Attribute
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(Attribute(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl Attribute {
+    pub fn name(&self) -> Option<SyntaxToken> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .find(|it| it.kind() == SyntaxKind::Ident)
     }
 }
 

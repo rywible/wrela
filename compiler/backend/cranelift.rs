@@ -35,6 +35,8 @@ const NANBOX_IMM_TRUE: u64 = 2;
 const NANBOX_INT_MIN: i64 = -(1i64 << (NANBOX_TAG_SHIFT - 1));
 const NANBOX_INT_MAX: i64 = (1i64 << (NANBOX_TAG_SHIFT - 1)) - 1;
 const RUNTIME_ABI_VERSION: i64 = 4;
+const FNV1A_OFFSET_BASIS_64: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV1A_PRIME_64: u64 = 0x0000_0100_0000_01b3;
 
 #[derive(Debug)]
 pub struct CodegenError(pub String);
@@ -158,6 +160,15 @@ fn nanbox_bool_const(value: bool) -> i64 {
             NANBOX_IMM_FALSE
         },
     )
+}
+
+fn stable_function_coverage_id(name: &str) -> u64 {
+    let mut hash = FNV1A_OFFSET_BASIS_64;
+    for byte in name.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV1A_PRIME_64);
+    }
+    hash
 }
 
 fn declare_method_wrappers(
@@ -803,9 +814,16 @@ fn lower_function(
                 }
             }
         }
-        if block_idx == func.entry.0 && func.name == "main" {
-            emit_runtime_init_and_check(&mut builder, module, runtime)?;
-            emit_method_registrations(&mut builder, module, runtime, method_wrappers, classes)?;
+        if block_idx == func.entry.0 {
+            let coverage_id = stable_function_coverage_id(func.name.as_str());
+            let coverage_fn = runtime_fn_coverage_hit(module, runtime)?;
+            let coverage_callee = module.declare_func_in_func(coverage_fn, builder.func);
+            let coverage_arg = builder.ins().iconst(types::I64, coverage_id as i64);
+            builder.ins().call(coverage_callee, &[coverage_arg]);
+            if func.name == "main" {
+                emit_runtime_init_and_check(&mut builder, module, runtime)?;
+                emit_method_registrations(&mut builder, module, runtime, method_wrappers, classes)?;
+            }
         }
         for stmt in &block.stmts {
             lower_stmt(
@@ -1621,6 +1639,12 @@ fn lower_rvalue(
                                     "__wr_fs_write_bytes" => {
                                         Some(runtime_fn_fs_write_bytes(module, runtime)?)
                                     }
+                                    "__wr_external_call" => {
+                                        Some(runtime_fn_external_call(module, runtime)?)
+                                    }
+                                    "__wr_http_call" => {
+                                        Some(runtime_fn_http_call(module, runtime)?)
+                                    }
                                     _ => None,
                                 }
                             }
@@ -2203,6 +2227,14 @@ fn runtime_fn_rc_inc(
     runtime.get_func(module, "wr_rc_inc", sig)
 }
 
+fn runtime_fn_coverage_hit(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_coverage_hit", sig)
+}
+
 fn runtime_fn_num_add(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
@@ -2339,15 +2371,6 @@ fn runtime_fn_identity_eq(
     runtime.get_func(module, "wr_identity_eq", sig)
 }
 
-fn runtime_fn_str_from_utf8(
-    module: &mut ObjectModule,
-    runtime: &mut RuntimeRegistry,
-) -> Result<cranelift_module::FuncId, CodegenError> {
-    let ptr_ty = module.target_config().pointer_type();
-    let sig = RuntimeRegistry::runtime_sig(module, &[ptr_ty, ptr_ty], &[types::I64]);
-    runtime.get_func(module, "wr_str_from_utf8", sig)
-}
-
 fn runtime_fn_str_intern_utf8(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
@@ -2355,14 +2378,6 @@ fn runtime_fn_str_intern_utf8(
     let ptr_ty = module.target_config().pointer_type();
     let sig = RuntimeRegistry::runtime_sig(module, &[ptr_ty, ptr_ty], &[types::I64]);
     runtime.get_func(module, "wr_str_intern_utf8", sig)
-}
-
-fn runtime_fn_str_intern(
-    module: &mut ObjectModule,
-    runtime: &mut RuntimeRegistry,
-) -> Result<cranelift_module::FuncId, CodegenError> {
-    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
-    runtime.get_func(module, "wr_str_intern", sig)
 }
 
 fn runtime_fn_bytes_from_string(
@@ -2419,6 +2434,46 @@ fn runtime_fn_fs_write_bytes(
 ) -> Result<cranelift_module::FuncId, CodegenError> {
     let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
     runtime.get_func(module, "wr_fs_write_bytes", sig)
+}
+
+fn runtime_fn_external_call(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(
+        module,
+        &[
+            types::I64,
+            types::I64,
+            types::I64,
+            types::I64,
+            types::I64,
+            types::I64,
+            types::I64,
+        ],
+        &[types::I64],
+    );
+    runtime.get_func(module, "wr_external_call", sig)
+}
+
+fn runtime_fn_http_call(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(
+        module,
+        &[
+            types::I64,
+            types::I64,
+            types::I64,
+            types::I64,
+            types::I64,
+            types::I64,
+            types::I64,
+        ],
+        &[types::I64],
+    );
+    runtime.get_func(module, "wr_http_call", sig)
 }
 
 fn runtime_fn_str_concat(
@@ -3449,8 +3504,13 @@ fn ty_to_clif(ty: &MirType) -> Result<cranelift_codegen::ir::Type, CodegenError>
 
 #[cfg(test)]
 mod tests {
-    use super::runtime_numeric_symbol;
-    use crate::hir::BinaryOp;
+    use super::{compile_to_object, runtime_numeric_symbol};
+    use crate::hir::{BinaryOp, Literal};
+    use crate::mir::ir::{
+        BasicBlock, BlockId, CallKind, CallTarget, MirFunction, MirModule, MirType, Place, Rvalue,
+        Stmt, Temp, TempId, Terminator, Value,
+    };
+    use rowan::TextRange;
 
     #[test]
     fn runtime_numeric_symbol_maps_supported_binary_ops() {
@@ -3464,5 +3524,68 @@ mod tests {
         assert_eq!(runtime_numeric_symbol(BinaryOp::Le), Some("wr_num_le"));
         assert_eq!(runtime_numeric_symbol(BinaryOp::Ge), Some("wr_num_ge"));
         assert_eq!(runtime_numeric_symbol(BinaryOp::Eq), None);
+    }
+
+    #[test]
+    fn compile_to_object_supports_external_call_builtin() {
+        let span = TextRange::new(0.into(), 0.into());
+        let headers_temp = TempId(0);
+        let call_temp = TempId(1);
+        let func = MirFunction {
+            name: "run".into(),
+            params: Vec::new(),
+            locals: Vec::new(),
+            temps: vec![
+                Temp {
+                    ty: MirType::Unknown,
+                },
+                Temp {
+                    ty: MirType::Unknown,
+                },
+            ],
+            blocks: vec![BasicBlock {
+                stmts: vec![
+                    Stmt::Assign {
+                        place: Place::Temp(headers_temp),
+                        value: Rvalue::Call {
+                            kind: CallKind::Sync,
+                            target: CallTarget::Function("__wr_map_new".into()),
+                            args: Vec::new(),
+                        },
+                        span,
+                    },
+                    Stmt::Assign {
+                        place: Place::Temp(call_temp),
+                        value: Rvalue::Call {
+                            kind: CallKind::Sync,
+                            target: CallTarget::Function("__wr_external_call".into()),
+                            args: vec![
+                                Value::Const(Literal::String("svc".into())),
+                                Value::Const(Literal::String("ep".into())),
+                                Value::Const(Literal::String("GET".into())),
+                                Value::Const(Literal::String("https://example.test".into())),
+                                Value::Temp(headers_temp),
+                                Value::Const(Literal::String("body".into())),
+                                Value::Const(Literal::Integer(100)),
+                            ],
+                        },
+                        span,
+                    },
+                ],
+                terminator: Terminator::Return {
+                    value: Some(Value::Temp(call_temp)),
+                    span,
+                },
+            }],
+            entry: BlockId(0),
+            suspendable: false,
+        };
+        let mir = MirModule {
+            functions: vec![func],
+            type_tags: Vec::new(),
+            classes: Vec::new(),
+        };
+        let obj = compile_to_object(&mir).expect("compile object");
+        assert!(!obj.is_empty(), "expected non-empty object bytes");
     }
 }

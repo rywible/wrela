@@ -118,23 +118,21 @@ pub(crate) mod logging {
     fn write_json_map(buf: &mut Vec<u8>, map_ref: *mut map::MapObj) {
         buf.push(b'{');
         let mut first = true;
-        unsafe {
-            let mut iter = map::map_iter(map_ref);
-            while let Some((key, value)) = iter.next() {
-                if string::with_string_bytes(key.0, |bytes| {
-                    let text = String::from_utf8_lossy(bytes);
-                    if !first {
-                        buf.push(b',');
-                    }
-                    first = false;
-                    write_json_string(buf, text.as_ref());
-                    buf.push(b':');
-                    write_json_value(buf, value);
-                })
-                .is_none()
-                {
-                    continue;
+        let mut iter = map::map_iter(map_ref);
+        while let Some((key, value)) = iter.next() {
+            if string::with_string_bytes(key.0, |bytes| {
+                let text = String::from_utf8_lossy(bytes);
+                if !first {
+                    buf.push(b',');
                 }
+                first = false;
+                write_json_string(buf, text.as_ref());
+                buf.push(b':');
+                write_json_value(buf, value);
+            })
+            .is_none()
+            {
+                continue;
             }
         }
         buf.push(b'}');
@@ -305,11 +303,24 @@ pub(crate) mod logging {
 }
 
 use crate::bytes;
+use crate::map;
 use crate::result;
 use crate::string;
 use crate::value::{Value, int_value};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
+use std::io::{ErrorKind, Read, Write};
+use std::net::TcpStream;
+use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
-use std::time::Instant;
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+#[cfg(test)]
+use std::sync::atomic::AtomicI8;
+use std::thread;
+use std::time::{Duration, Instant};
 
 pub(crate) fn print(val: Value) -> Value {
     if val.is_ptr() {
@@ -343,6 +354,59 @@ fn string_bytes(val: Value) -> Option<Vec<u8>> {
     string::with_string_bytes(val, |bytes| bytes.to_vec())
 }
 
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => out.push(prefix.as_os_str()),
+            Component::RootDir => out.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::Normal(part) => out.push(part),
+        }
+    }
+    out
+}
+
+fn resolve_for_policy(raw_path: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(raw_path);
+    if path.is_absolute() {
+        return Ok(normalize_path(&path));
+    }
+    let cwd = std::env::current_dir().map_err(|err| format!("failed to read cwd: {err}"))?;
+    Ok(normalize_path(&cwd.join(path)))
+}
+
+fn canonicalize_for_policy(path: &Path) -> PathBuf {
+    if let Ok(real) = std::fs::canonicalize(path) {
+        return normalize_path(&real);
+    }
+    if let (Some(parent), Some(name)) = (path.parent(), path.file_name()) {
+        if let Ok(real_parent) = std::fs::canonicalize(parent) {
+            return normalize_path(&real_parent.join(name));
+        }
+    }
+    normalize_path(path)
+}
+
+fn enforce_spec_fs_write_scope(raw_path: &str) -> Result<(), String> {
+    let Some(scope_raw) = std::env::var_os("WRELA_SPEC_FS_ROOT") else {
+        return Ok(());
+    };
+    let scope = canonicalize_for_policy(Path::new(&scope_raw));
+    let resolved = canonicalize_for_policy(&resolve_for_policy(raw_path)?);
+    if resolved == scope || resolved.starts_with(&scope) {
+        return Ok(());
+    }
+    Err(format!(
+        "spec lane forbids writing outside isolated test directory: attempted '{}', allowed root '{}'",
+        resolved.display(),
+        scope.display()
+    ))
+}
+
 pub(crate) fn fs_read_bytes(path: Value) -> Value {
     let Some(bytes) = string_bytes(path) else {
         return result::result_err(builtin_error("fs_read_bytes expects a String"));
@@ -362,10 +426,699 @@ pub(crate) fn fs_write_bytes(path: Value, contents: Value) -> Value {
         return result::result_err(builtin_error("fs_write_bytes expects Bytes contents"));
     };
     let path_str = String::from_utf8_lossy(&path_bytes);
+    if let Err(message) = enforce_spec_fs_write_scope(path_str.as_ref()) {
+        return result::result_err(builtin_error(&message));
+    }
     match std::fs::write(path_str.as_ref(), contents_bytes) {
         Ok(()) => result::result_ok(Value::nil()),
         Err(err) => result::result_err(builtin_error(&format!("fs_write_bytes: {err}"))),
     }
+}
+
+const HTTP_CASSETTE_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HttpMode {
+    Replay,
+    Record,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct HttpCassetteV1 {
+    version: u32,
+    request: HttpCassetteRequestV1,
+    response: HttpCassetteResponseV1,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct HttpCassetteRequestV1 {
+    service: String,
+    endpoint: String,
+    method: String,
+    url: String,
+    headers_redacted: BTreeMap<String, String>,
+    body_base64: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct HttpCassetteResponseV1 {
+    status: u16,
+    headers: BTreeMap<String, String>,
+    body_base64: String,
+}
+
+#[derive(Debug)]
+struct HttpRuntimeResponse {
+    status: u16,
+    headers: BTreeMap<String, String>,
+    body: Vec<u8>,
+}
+
+#[derive(Debug)]
+struct HttpCassetteKey {
+    service: String,
+    endpoint: String,
+    method: String,
+    url_hash: String,
+    body_hash: String,
+    headers_hash: String,
+}
+
+impl HttpCassetteKey {
+    fn file_name(&self) -> String {
+        format!(
+            "{}__{}__{}__{}__{}__{}.json",
+            sanitize_key_component(&self.service),
+            sanitize_key_component(&self.endpoint),
+            sanitize_key_component(&self.method),
+            self.url_hash,
+            self.body_hash,
+            self.headers_hash
+        )
+    }
+}
+
+fn sanitize_key_component(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() { "_".to_string() } else { out }
+}
+
+fn http_mode_from_env() -> HttpMode {
+    match std::env::var("WRELA_HTTP_MODE")
+        .ok()
+        .as_deref()
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("record") => HttpMode::Record,
+        _ => HttpMode::Replay,
+    }
+}
+
+fn workspace_root_from_env() -> Option<PathBuf> {
+    let raw = std::env::var("WRELA_WORKSPACE_ROOT").ok()?;
+    if raw.trim().is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(raw.trim());
+    if path.is_absolute() {
+        Some(path)
+    } else {
+        std::env::current_dir().ok().map(|cwd| cwd.join(path))
+    }
+}
+
+fn cassette_root() -> Result<PathBuf, String> {
+    if let Ok(raw) = std::env::var("WRELA_CASSETTE_DIR") {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            let path = PathBuf::from(trimmed);
+            return Ok(if path.is_absolute() {
+                path
+            } else if let Some(workspace_root) = workspace_root_from_env() {
+                workspace_root.join(path)
+            } else {
+                std::env::current_dir()
+                    .map_err(|err| format!("failed to read current directory: {err}"))?
+                    .join(path)
+            });
+        }
+    }
+    if let Some(workspace_root) = workspace_root_from_env() {
+        return Ok(workspace_root.join("tests").join("cassettes"));
+    }
+    Ok(std::env::current_dir()
+        .map_err(|err| format!("failed to read current directory: {err}"))?
+        .join("tests")
+        .join("cassettes"))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
+fn is_secret_header(key: &str) -> bool {
+    matches!(
+        key,
+        "authorization"
+            | "proxy-authorization"
+            | "cookie"
+            | "set-cookie"
+            | "x-api-key"
+            | "x-auth-token"
+    )
+}
+
+fn is_redacted_json_key(key: &str) -> bool {
+    matches!(key, "api_key" | "token" | "secret" | "password")
+}
+
+fn is_volatile_response_header(key: &str) -> bool {
+    matches!(
+        key,
+        "date" | "server" | "x-request-id" | "x-amzn-requestid" | "cf-ray"
+    )
+}
+
+fn redacted_response_headers_map(headers: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for (key, value) in headers {
+        let redacted = if key == "set-cookie" {
+            "<redacted>".to_string()
+        } else {
+            value.clone()
+        };
+        out.insert(key.clone(), redacted);
+    }
+    out
+}
+
+fn redact_json_value(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(obj) => {
+            for (key, val) in obj.iter_mut() {
+                if is_redacted_json_key(&key.to_ascii_lowercase()) {
+                    *val = serde_json::Value::String("<redacted>".to_string());
+                } else {
+                    redact_json_value(val);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                redact_json_value(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn redact_json_body_bytes(bytes: &[u8]) -> Vec<u8> {
+    let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        return bytes.to_vec();
+    };
+    redact_json_value(&mut value);
+    match serde_json::to_vec_pretty(&value) {
+        Ok(redacted) => redacted,
+        Err(_) => bytes.to_vec(),
+    }
+}
+
+fn lock_path_for(cassette_path: &Path) -> PathBuf {
+    let file_name = cassette_path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "cassette".to_string());
+    cassette_path.with_file_name(format!("{file_name}.lock"))
+}
+
+fn temp_path_for(cassette_path: &Path) -> PathBuf {
+    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+    let pid = std::process::id();
+    let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let file_name = cassette_path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "cassette".to_string());
+    cassette_path.with_file_name(format!("{file_name}.tmp.{pid}.{counter}"))
+}
+
+struct CassetteLockGuard {
+    lock_path: PathBuf,
+}
+
+impl Drop for CassetteLockGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.lock_path);
+    }
+}
+
+fn acquire_cassette_lock(
+    cassette_path: &Path,
+    timeout: Duration,
+) -> Result<CassetteLockGuard, String> {
+    let lock_path = lock_path_for(cassette_path);
+    let start = Instant::now();
+    loop {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            Ok(_) => {
+                return Ok(CassetteLockGuard { lock_path });
+            }
+            Err(err) if err.kind() == ErrorKind::AlreadyExists => {
+                if start.elapsed() >= timeout {
+                    return Err(format!(
+                        "timed out waiting for cassette lock '{}'",
+                        lock_path.display()
+                    ));
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(err) => {
+                return Err(format!(
+                    "failed to create cassette lock '{}': {err}",
+                    lock_path.display()
+                ));
+            }
+        }
+    }
+}
+
+fn write_cassette_atomic(cassette_path: &Path, payload: &[u8]) -> Result<(), String> {
+    if let Some(parent) = cassette_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| {
+            format!(
+                "failed to create cassette directory '{}': {err}",
+                parent.display()
+            )
+        })?;
+    }
+
+    let _guard = acquire_cassette_lock(cassette_path, Duration::from_secs(10))?;
+    let temp_path = temp_path_for(cassette_path);
+    let mut temp = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp_path)
+        .map_err(|err| {
+            format!(
+                "failed to create temporary cassette '{}': {err}",
+                temp_path.display()
+            )
+        })?;
+    if let Err(err) = temp.write_all(payload) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(format!(
+            "failed to write temporary cassette '{}': {err}",
+            temp_path.display()
+        ));
+    }
+    if let Err(err) = temp.sync_all() {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(format!(
+            "failed to sync temporary cassette '{}': {err}",
+            temp_path.display()
+        ));
+    }
+    drop(temp);
+    if let Err(err) = std::fs::rename(&temp_path, cassette_path) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(format!(
+            "failed to atomically replace cassette '{}' from '{}': {err}",
+            cassette_path.display(),
+            temp_path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn collect_headers(headers: Value) -> Result<Vec<(String, String)>, String> {
+    let Some(headers_ref) = map::as_map_ref(headers) else {
+        return Err("http_call expects Map headers".to_string());
+    };
+    let mut pairs = Vec::new();
+    let mut iter = map::map_iter(headers_ref);
+    while let Some((key, value)) = iter.next() {
+        let Some(key_text) = string::with_string_bytes(key.0, |bytes| {
+            String::from_utf8_lossy(bytes).trim().to_ascii_lowercase()
+        }) else {
+            return Err("http_call expects String header keys".to_string());
+        };
+        let Some(value_text) = string::with_string_bytes(value, |bytes| {
+            String::from_utf8_lossy(bytes).trim().to_string()
+        }) else {
+            return Err("http_call expects String header values".to_string());
+        };
+        if !key_text.is_empty() {
+            pairs.push((key_text, value_text));
+        }
+    }
+    pairs.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    Ok(pairs)
+}
+
+fn stable_headers_materialized(headers: &[(String, String)]) -> String {
+    let mut out = String::new();
+    for (key, value) in headers {
+        let stable_value = if is_secret_header(key) {
+            "<redacted>"
+        } else {
+            value.as_str()
+        };
+        out.push_str(key);
+        out.push(':');
+        out.push_str(stable_value);
+        out.push('\n');
+    }
+    out
+}
+
+fn redacted_headers_map(headers: &[(String, String)]) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for (key, value) in headers {
+        let redacted = if is_secret_header(key) {
+            "<redacted>".to_string()
+        } else {
+            value.clone()
+        };
+        out.insert(key.clone(), redacted);
+    }
+    out
+}
+
+fn cassette_key(
+    service: &str,
+    endpoint: &str,
+    method: &str,
+    url: &str,
+    headers: &[(String, String)],
+    body: &str,
+) -> HttpCassetteKey {
+    HttpCassetteKey {
+        service: service.to_string(),
+        endpoint: endpoint.to_string(),
+        method: method.to_ascii_lowercase(),
+        url_hash: sha256_hex(url.as_bytes()),
+        body_hash: sha256_hex(body.as_bytes()),
+        headers_hash: sha256_hex(stable_headers_materialized(headers).as_bytes()),
+    }
+}
+
+fn cassette_path(root: &Path, key: &HttpCassetteKey) -> PathBuf {
+    root.join(key.file_name())
+}
+
+fn parse_http_url(url: &str) -> Result<(String, u16, String), String> {
+    let without_scheme = url.strip_prefix("http://").ok_or_else(|| {
+        "http_call currently supports only http:// URLs in record mode".to_string()
+    })?;
+    let (authority, path) = match without_scheme.split_once('/') {
+        Some((authority, rest)) => (authority, format!("/{rest}")),
+        None => (without_scheme, "/".to_string()),
+    };
+    if authority.is_empty() {
+        return Err("http_call requires a host in URL".to_string());
+    }
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port_raw)) if !host.is_empty() => {
+            let port = port_raw
+                .parse::<u16>()
+                .map_err(|_| format!("invalid URL port: {port_raw}"))?;
+            (host.to_string(), port)
+        }
+        _ => (authority.to_string(), 80u16),
+    };
+    Ok((host, port, path))
+}
+
+fn perform_http_call_record(
+    method: &str,
+    url: &str,
+    headers: &[(String, String)],
+    body: &str,
+    timeout_ms: i64,
+) -> Result<HttpRuntimeResponse, String> {
+    if timeout_ms <= 0 {
+        return Err("http_call timeout_ms must be > 0".to_string());
+    }
+    let (host, port, path) = parse_http_url(url)?;
+    let mut stream = TcpStream::connect((host.as_str(), port))
+        .map_err(|err| format!("http connect failed: {err}"))?;
+    let timeout = Duration::from_millis(timeout_ms as u64);
+    stream
+        .set_read_timeout(Some(timeout))
+        .map_err(|err| format!("http read timeout setup failed: {err}"))?;
+    stream
+        .set_write_timeout(Some(timeout))
+        .map_err(|err| format!("http write timeout setup failed: {err}"))?;
+
+    let mut request = String::new();
+    request.push_str(&format!(
+        "{} {} HTTP/1.1\r\n",
+        method.to_ascii_uppercase(),
+        path
+    ));
+    request.push_str(&format!("Host: {host}\r\n"));
+    for (key, value) in headers {
+        if key == "host" || key == "content-length" {
+            continue;
+        }
+        request.push_str(&format!("{key}: {value}\r\n"));
+    }
+    request.push_str(&format!("Content-Length: {}\r\n", body.len()));
+    request.push_str("Connection: close\r\n\r\n");
+    stream
+        .write_all(request.as_bytes())
+        .and_then(|_| stream.write_all(body.as_bytes()))
+        .map_err(|err| format!("http write failed: {err}"))?;
+
+    let mut raw = Vec::new();
+    stream
+        .read_to_end(&mut raw)
+        .map_err(|err| format!("http read failed: {err}"))?;
+    parse_http_response(&raw)
+}
+
+fn parse_http_response(raw: &[u8]) -> Result<HttpRuntimeResponse, String> {
+    let split = raw
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or_else(|| "http response missing header/body separator".to_string())?;
+    let head = &raw[..split];
+    let body = raw[(split + 4)..].to_vec();
+    let head_text = String::from_utf8_lossy(head);
+    let mut lines = head_text.lines();
+    let status_line = lines
+        .next()
+        .ok_or_else(|| "http response missing status line".to_string())?;
+    let status = status_line
+        .split_whitespace()
+        .nth(1)
+        .ok_or_else(|| "http response malformed status line".to_string())?
+        .parse::<u16>()
+        .map_err(|_| "http response has invalid status code".to_string())?;
+
+    let mut headers = BTreeMap::new();
+    for line in lines {
+        let Some((raw_key, raw_value)) = line.split_once(':') else {
+            continue;
+        };
+        let key = raw_key.trim().to_ascii_lowercase();
+        if key.is_empty() || is_volatile_response_header(&key) {
+            continue;
+        }
+        headers.insert(key, raw_value.trim().to_string());
+    }
+
+    Ok(HttpRuntimeResponse {
+        status,
+        headers,
+        body,
+    })
+}
+
+pub(crate) fn http_call(
+    service: Value,
+    endpoint: Value,
+    method: Value,
+    url: Value,
+    headers: Value,
+    body: Value,
+    timeout_ms: Value,
+) -> Value {
+    let Some(service) = value_to_string(service) else {
+        return result::result_err(builtin_error("http_call expects String service"));
+    };
+    let Some(endpoint) = value_to_string(endpoint) else {
+        return result::result_err(builtin_error("http_call expects String endpoint"));
+    };
+    let Some(method) = value_to_string(method) else {
+        return result::result_err(builtin_error("http_call expects String method"));
+    };
+    let Some(url) = value_to_string(url) else {
+        return result::result_err(builtin_error("http_call expects String url"));
+    };
+    let Some(body) = value_to_string(body) else {
+        return result::result_err(builtin_error("http_call expects String body"));
+    };
+    let Some(timeout_ms) = int_value(timeout_ms) else {
+        return result::result_err(builtin_error("http_call expects Integer timeout_ms"));
+    };
+    let headers = match collect_headers(headers) {
+        Ok(headers) => headers,
+        Err(message) => return result::result_err(builtin_error(&message)),
+    };
+    let key = cassette_key(&service, &endpoint, &method, &url, &headers, &body);
+    let cassette_root = match cassette_root() {
+        Ok(path) => path,
+        Err(message) => return result::result_err(builtin_error(&message)),
+    };
+    let cassette_path = cassette_path(&cassette_root, &key);
+
+    match http_mode_from_env() {
+        HttpMode::Replay => {
+            let payload = match std::fs::read_to_string(&cassette_path) {
+                Ok(payload) => payload,
+                Err(_) => {
+                    let message = format!(
+                        "cassette missing for replay mode: expected '{}' (run `wrela test --record` to create it)",
+                        cassette_path.display()
+                    );
+                    return result::result_err(builtin_error(&message));
+                }
+            };
+            let cassette: HttpCassetteV1 = match serde_json::from_str(&payload) {
+                Ok(cassette) => cassette,
+                Err(err) => {
+                    let message = format!(
+                        "cassette parse failed at '{}': {err}",
+                        cassette_path.display()
+                    );
+                    return result::result_err(builtin_error(&message));
+                }
+            };
+            if cassette.version != HTTP_CASSETTE_SCHEMA_VERSION {
+                let message = format!(
+                    "unsupported cassette version {} at '{}' (expected version {})",
+                    cassette.version,
+                    cassette_path.display(),
+                    HTTP_CASSETTE_SCHEMA_VERSION
+                );
+                return result::result_err(builtin_error(&message));
+            }
+            let body_bytes = match BASE64.decode(cassette.response.body_base64.as_bytes()) {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    let message = format!(
+                        "cassette response body decode failed at '{}': {err}",
+                        cassette_path.display()
+                    );
+                    return result::result_err(builtin_error(&message));
+                }
+            };
+            let response_text = match String::from_utf8(body_bytes) {
+                Ok(text) => text,
+                Err(_) => {
+                    let message = format!(
+                        "cassette response body at '{}' is not valid UTF-8",
+                        cassette_path.display()
+                    );
+                    return result::result_err(builtin_error(&message));
+                }
+            };
+            result::result_ok(string::str_from_bytes(response_text.as_bytes()))
+        }
+        HttpMode::Record => {
+            let response =
+                match perform_http_call_record(&method, &url, &headers, &body, timeout_ms) {
+                    Ok(response) => response,
+                    Err(message) => {
+                        return result::result_err(builtin_error(&format!(
+                            "http record failed: {message}"
+                        )));
+                    }
+                };
+            let request_headers_redacted = redacted_headers_map(&headers);
+            let request_body_redacted = redact_json_body_bytes(body.as_bytes());
+            let response_headers_redacted = redacted_response_headers_map(&response.headers);
+            let response_body_redacted = redact_json_body_bytes(&response.body);
+            let cassette = HttpCassetteV1 {
+                version: HTTP_CASSETTE_SCHEMA_VERSION,
+                request: HttpCassetteRequestV1 {
+                    service,
+                    endpoint,
+                    method,
+                    url,
+                    headers_redacted: request_headers_redacted,
+                    body_base64: BASE64.encode(&request_body_redacted),
+                },
+                response: HttpCassetteResponseV1 {
+                    status: response.status,
+                    headers: response_headers_redacted,
+                    body_base64: BASE64.encode(&response_body_redacted),
+                },
+            };
+            let payload = match serde_json::to_vec_pretty(&cassette) {
+                Ok(payload) => payload,
+                Err(err) => {
+                    return result::result_err(builtin_error(&format!(
+                        "failed to serialize cassette: {err}"
+                    )));
+                }
+            };
+            if let Err(err) = write_cassette_atomic(&cassette_path, &payload) {
+                return result::result_err(builtin_error(&format!(
+                    "failed to write cassette atomically '{}': {err}",
+                    cassette_path.display()
+                )));
+            }
+            let response_text = match String::from_utf8(response.body) {
+                Ok(text) => text,
+                Err(_) => {
+                    return result::result_err(builtin_error(
+                        "http response body is not valid UTF-8 for current String API",
+                    ));
+                }
+            };
+            result::result_ok(string::str_from_bytes(response_text.as_bytes()))
+        }
+    }
+}
+
+pub(crate) fn external_call(
+    service: Value,
+    endpoint: Value,
+    method: Value,
+    url: Value,
+    headers: Value,
+    body: Value,
+    timeout_ms: Value,
+) -> Value {
+    let Some(service) = value_to_string(service) else {
+        return result::result_err(builtin_error("external_call expects String service"));
+    };
+    let Some(endpoint) = value_to_string(endpoint) else {
+        return result::result_err(builtin_error("external_call expects String endpoint"));
+    };
+    let Some(method) = value_to_string(method) else {
+        return result::result_err(builtin_error("external_call expects String method"));
+    };
+    let Some(url) = value_to_string(url) else {
+        return result::result_err(builtin_error("external_call expects String url"));
+    };
+    let Some(body) = value_to_string(body) else {
+        return result::result_err(builtin_error("external_call expects String body"));
+    };
+    let Some(timeout_ms) = int_value(timeout_ms) else {
+        return result::result_err(builtin_error("external_call expects Integer timeout_ms"));
+    };
+    let Some(headers_ref) = map::as_map_ref(headers) else {
+        return result::result_err(builtin_error("external_call expects Map headers"));
+    };
+    let headers_len = map::map_len(headers_ref);
+    let response = format!(
+        "external.stub:service={service};endpoint={endpoint};method={method};url={url};headers={headers_len};body_len={};timeout_ms={timeout_ms}",
+        body.len()
+    );
+    result::result_ok(string::str_from_bytes(response.as_bytes()))
 }
 
 fn value_to_string(val: Value) -> Option<String> {
@@ -399,13 +1152,183 @@ pub(crate) fn env_set(key: Value, val: Value) -> Value {
 }
 
 pub(crate) fn clock_ns() -> Value {
+    if virtual_time_enabled() {
+        return Value::from_int(virtual_clock_ns().load(Ordering::Relaxed));
+    }
     static START: OnceLock<Instant> = OnceLock::new();
     let start = START.get_or_init(Instant::now);
-    let ns = start.elapsed().as_nanos() as i64;
-    Value::from_int(ns)
+    Value::from_int(start.elapsed().as_nanos() as i64)
 }
 
 pub(crate) fn sleep_ms(ms_val: Value) -> Value {
     let ms = int_value(ms_val).unwrap_or(0);
+    if virtual_time_enabled() {
+        if ms > 0 {
+            let delta_ns = ms.saturating_mul(1_000_000);
+            virtual_clock_ns().fetch_add(delta_ns, Ordering::Relaxed);
+        }
+        return crate::actor::sleep_ms(0);
+    }
     crate::actor::sleep_ms(ms)
+}
+
+fn virtual_time_enabled() -> bool {
+    #[cfg(test)]
+    {
+        match virtual_time_test_override().load(Ordering::Relaxed) {
+            0 => return false,
+            1 => return true,
+            _ => {}
+        }
+    }
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("WRELA_TEST_VIRTUAL_TIME")
+            .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    })
+}
+
+fn virtual_clock_ns() -> &'static AtomicI64 {
+    static CLOCK: OnceLock<AtomicI64> = OnceLock::new();
+    CLOCK.get_or_init(|| {
+        let start = std::env::var("WRELA_VIRTUAL_TIME_START_NS")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<i64>().ok())
+            .unwrap_or(0);
+        AtomicI64::new(start)
+    })
+}
+
+#[cfg(test)]
+fn set_virtual_clock_ns_for_tests(value: i64) {
+    virtual_clock_ns().store(value, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+fn virtual_time_test_override() -> &'static AtomicI8 {
+    static OVERRIDE: OnceLock<AtomicI8> = OnceLock::new();
+    OVERRIDE.get_or_init(|| AtomicI8::new(-1))
+}
+
+#[cfg(test)]
+fn set_virtual_time_enabled_for_tests(value: bool) {
+    virtual_time_test_override().store(if value { 1 } else { 0 }, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+fn clear_virtual_time_enabled_for_tests() {
+    virtual_time_test_override().store(-1, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Barrier};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn redact_json_body_bytes_redacts_secret_keys_recursively() {
+        let body = br#"{
+  "api_key":"abc",
+  "nested":{"token":"xyz","safe":"ok"},
+  "items":[{"password":"pw"},{"secret":"shh"}]
+}"#;
+        let redacted = redact_json_body_bytes(body);
+        let json: serde_json::Value = serde_json::from_slice(&redacted).expect("json parse");
+        assert_eq!(json["api_key"], "<redacted>");
+        assert_eq!(json["nested"]["token"], "<redacted>");
+        assert_eq!(json["nested"]["safe"], "ok");
+        assert_eq!(json["items"][0]["password"], "<redacted>");
+        assert_eq!(json["items"][1]["secret"], "<redacted>");
+    }
+
+    #[test]
+    fn redact_json_body_bytes_keeps_non_json_body_unchanged() {
+        let body = b"not-json";
+        let redacted = redact_json_body_bytes(body);
+        assert_eq!(redacted, body);
+    }
+
+    #[test]
+    fn redacted_response_headers_map_redacts_set_cookie_only() {
+        let mut headers = BTreeMap::new();
+        headers.insert(
+            "set-cookie".to_string(),
+            "session=abc; HttpOnly".to_string(),
+        );
+        headers.insert("content-type".to_string(), "application/json".to_string());
+        let redacted = redacted_response_headers_map(&headers);
+        assert_eq!(
+            redacted.get("set-cookie").map(String::as_str),
+            Some("<redacted>")
+        );
+        assert_eq!(
+            redacted.get("content-type").map(String::as_str),
+            Some("application/json")
+        );
+    }
+
+    #[test]
+    fn write_cassette_atomic_concurrent_writers_produce_valid_json() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cassette_path = dir.path().join("shared.json");
+        let workers = 16usize;
+        let barrier = Arc::new(Barrier::new(workers));
+        let mut handles = Vec::with_capacity(workers);
+        for i in 0..workers {
+            let barrier = Arc::clone(&barrier);
+            let cassette_path = cassette_path.clone();
+            handles.push(std::thread::spawn(move || {
+                let payload = format!("{{\"worker\":{},\"token\":\"s{}\",\"safe\":\"ok\"}}", i, i);
+                barrier.wait();
+                write_cassette_atomic(&cassette_path, payload.as_bytes())
+            }));
+        }
+        for handle in handles {
+            handle.join().expect("thread join").expect("atomic write");
+        }
+
+        let final_payload = std::fs::read(&cassette_path).expect("read cassette");
+        let parsed: serde_json::Value = serde_json::from_slice(&final_payload).expect("valid json");
+        assert!(parsed.get("worker").is_some());
+        assert!(parsed.get("token").is_some());
+        assert_eq!(parsed["safe"], "ok");
+
+        let entries = std::fs::read_dir(dir.path()).expect("read dir");
+        for entry in entries {
+            let entry = entry.expect("dir entry");
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            assert!(!name.contains(".lock"), "lock file leaked: {name}");
+            assert!(!name.contains(".tmp."), "temp file leaked: {name}");
+        }
+    }
+
+    #[test]
+    fn virtual_clock_ns_is_deterministic_when_enabled() {
+        set_virtual_time_enabled_for_tests(true);
+        set_virtual_clock_ns_for_tests(123);
+        let first = int_value(clock_ns()).expect("clock first");
+        let second = int_value(clock_ns()).expect("clock second");
+        assert_eq!(first, 123);
+        assert_eq!(second, 123);
+        clear_virtual_time_enabled_for_tests();
+    }
+
+    #[test]
+    fn virtual_sleep_advances_clock_without_wall_delay() {
+        set_virtual_time_enabled_for_tests(true);
+        set_virtual_clock_ns_for_tests(0);
+        let started = Instant::now();
+        let pending = sleep_ms(Value::from_int(1000));
+        unsafe {
+            crate::wr_rc_dec(pending);
+        }
+        let elapsed = started.elapsed();
+        let now = int_value(clock_ns()).expect("clock");
+        assert!(elapsed < Duration::from_millis(100));
+        assert_eq!(now, 1_000_000_000);
+        clear_virtual_time_enabled_for_tests();
+    }
 }
