@@ -559,5 +559,51 @@ fn domain_network_effect_reports_teacher_fix_recipe() {
         .iter()
         .find(|err| err.message.contains("Network effect"))
         .expect("missing network effect diagnostic");
-    assert!(network_diag.message.contains("teacher fix recipe:"));
+    assert!(network_diag.message.contains("domain code must stay pure"));
+}
+
+#[test]
+fn domain_async_orchestration_keywords_are_rejected() {
+    let base = tempfile::tempdir().expect("tempdir");
+    let entry_path = base.path().join("src").join("main.wr");
+    let domain_path = base.path().join("src").join("domain").join("service.wr");
+
+    write_temp(
+        &entry_path,
+        "use run_service from domain/service\n\nto run() -> Integer:\n    return run_service()\n",
+    );
+    write_temp(
+        &domain_path,
+        "A Worker:\n    derives ping() -> Integer:\n        return 1\n\nto run_service() -> Integer:\n    worker = detach Worker() * 1\n    return 1\n",
+    );
+
+    let errors = match load_project(&entry_path) {
+        Ok(_) => panic!("expected domain async orchestration diagnostic"),
+        Err(err) => err,
+    };
+    assert!(errors.iter().any(|err| {
+        err.message.contains("uses 'detach'")
+            && err.message.contains("domain deterministic and synchronous")
+    }));
+}
+
+#[test]
+fn domain_result_modeling_is_allowed() {
+    let base = tempfile::tempdir().expect("tempdir");
+    let entry_path = base.path().join("src").join("main.wr");
+    let domain_path = base.path().join("src").join("domain").join("service.wr");
+
+    write_temp(
+        &entry_path,
+        "use compute from domain/service\n\nto run() -> Integer:\n    compute()\n    return 1\n",
+    );
+    write_temp(
+        &domain_path,
+        "to compute() -> Result[Integer, Error]:\n    return 7\n",
+    );
+
+    match load_project(&entry_path) {
+        Ok(_) => {}
+        Err(err) => panic!("domain Result modeling should be allowed: {err:?}"),
+    }
 }

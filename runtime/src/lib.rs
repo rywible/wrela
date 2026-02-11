@@ -12,9 +12,9 @@ use data::object::drop_object;
 use data::value::int_value;
 pub use data::value::{TypeId, Value};
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 #[cfg(test)]
 use std::sync::atomic::AtomicU8;
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 const WR_REACTOR_EVENT_READABLE: i32 = 1;

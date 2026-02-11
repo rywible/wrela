@@ -711,7 +711,6 @@ pub(crate) mod actor {
             self.head.store(head + 1, Ordering::Release);
             Some((msg, enqueued_at_ns))
         }
-
     }
 
     static METHODS: OnceLock<Mutex<HashMap<u32, HashMap<u32, MethodFn>>>> = OnceLock::new();

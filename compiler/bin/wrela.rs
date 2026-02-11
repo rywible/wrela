@@ -391,6 +391,15 @@ fn main() {
                     std::process::exit(EXIT_USAGE);
                 }
             };
+            if find_src_root(&entry_path).is_none() {
+                eprintln!(
+                    "error: `wrela build` requires project layout (`src/**`) because single-file mode bypasses architecture checks"
+                );
+                eprintln!(
+                    "help: move entrypoint to `src/main.wr` and run `wrela build <project-or-src/main.wr>`"
+                );
+                std::process::exit(EXIT_USAGE);
+            }
             let workspace_root = project_root_for_entry(&entry_path);
             let budget_policy = resolve_budget_policy_v1(test_jobs, test_timeout_ms);
             let jobs = budget_policy.test_jobs.value as usize;
@@ -660,6 +669,16 @@ fn main() {
                     std::process::exit(EXIT_USAGE);
                 }
             };
+            if let TestTarget::SingleFile(path) = &target {
+                eprintln!(
+                    "error: `wrela test` no longer supports single-file targets because they bypass architecture checks: {}",
+                    path.display()
+                );
+                eprintln!(
+                    "help: use project layout (`src/**`, `tests/**`) and run `wrela test <project-root>`"
+                );
+                std::process::exit(EXIT_USAGE);
+            }
             if repro_artifact_path.is_some()
                 && (test_record
                     || test_update_public_surface
