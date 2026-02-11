@@ -1,0 +1,168 @@
+{
+  "cert_schema_version": 3,
+  "generated_at_unix_ms": 1770827188868,
+  "entry_path": "/var/folders/7q/dwfwcd8j2rx4yw372sjclmy40000gn/T/.tmpQoap2Z/src/main.wr",
+  "workspace_root": "/var/folders/7q/dwfwcd8j2rx4yw372sjclmy40000gn/T/.tmpQoap2Z",
+  "artifact_path": "wrela.out",
+  "tests_passed": true,
+  "toolchain_version": "0.1.0",
+  "compiler_version": "0.1.0",
+  "compiler_git_sha": "ff6ea00d26f804ab5510f4cb8564fb1ee261e93b",
+  "runtime_version": "0.1.0",
+  "gate_versions_marker": "wrela-cert-gates-v1",
+  "source_hash": "13024a4887b9dbdb",
+  "seeds_used": {
+    "sim": 23063,
+    "autogen": 42608,
+    "fuzz": 61474
+  },
+  "budgets_used": {
+    "policy_version": 1,
+    "test_jobs": {
+      "value": 1,
+      "default": 1,
+      "ceiling": 64,
+      "provenance": {
+        "source": "default",
+        "key": "hardcoded",
+        "requested": 1,
+        "clamped_to_ceiling": false
+      }
+    },
+    "test_timeout_ms": {
+      "value": 5000,
+      "default": 5000,
+      "ceiling": 120000,
+      "provenance": {
+        "source": "default",
+        "key": "hardcoded",
+        "requested": 5000,
+        "clamped_to_ceiling": false
+      }
+    },
+    "autogen_max_cases": {
+      "value": 64,
+      "default": 64,
+      "ceiling": 1024,
+      "provenance": {
+        "source": "default",
+        "key": "hardcoded",
+        "requested": 64,
+        "clamped_to_ceiling": false
+      }
+    },
+    "sim_max_cases": {
+      "value": 256,
+      "default": 256,
+      "ceiling": 4096,
+      "provenance": {
+        "source": "default",
+        "key": "hardcoded",
+        "requested": 256,
+        "clamped_to_ceiling": false
+      }
+    },
+    "fuzz_max_cases": {
+      "value": 128,
+      "default": 128,
+      "ceiling": 4096,
+      "provenance": {
+        "source": "default",
+        "key": "hardcoded",
+        "requested": 128,
+        "clamped_to_ceiling": false
+      }
+    },
+    "mutation_max_cases": {
+      "value": 32,
+      "default": 32,
+      "ceiling": 512,
+      "provenance": {
+        "source": "default",
+        "key": "hardcoded",
+        "requested": 32,
+        "clamped_to_ceiling": false
+      }
+    },
+    "autogen_time_cap_ms": {
+      "value": 5000,
+      "default": 5000,
+      "ceiling": 60000,
+      "provenance": {
+        "source": "default",
+        "key": "hardcoded",
+        "requested": 5000,
+        "clamped_to_ceiling": false
+      }
+    },
+    "sim_time_cap_ms": {
+      "value": 10000,
+      "default": 10000,
+      "ceiling": 120000,
+      "provenance": {
+        "source": "default",
+        "key": "hardcoded",
+        "requested": 10000,
+        "clamped_to_ceiling": false
+      }
+    },
+    "fuzz_time_cap_ms": {
+      "value": 15000,
+      "default": 15000,
+      "ceiling": 120000,
+      "provenance": {
+        "source": "default",
+        "key": "hardcoded",
+        "requested": 15000,
+        "clamped_to_ceiling": false
+      }
+    },
+    "mutation_time_cap_ms": {
+      "value": 20000,
+      "default": 20000,
+      "ceiling": 180000,
+      "provenance": {
+        "source": "default",
+        "key": "hardcoded",
+        "requested": 20000,
+        "clamped_to_ceiling": false
+      }
+    }
+  },
+  "coverage_summary_hash": null,
+  "mutation_summary_hash": "cc9fba02bc9890ed",
+  "differential_results_hash": "1525ca2386116777",
+  "impact_manifest": {
+    "source_files": [
+      {
+        "rel_path": "src/domain/logic.wr",
+        "hash": "9820de79d9889b9a"
+      },
+      {
+        "rel_path": "src/main.wr",
+        "hash": "d3c123bf9d2ca279"
+      },
+      {
+        "rel_path": "tests/mutation.wr",
+        "hash": "1f692e32407c53f6"
+      }
+    ],
+    "src_modules": [
+      {
+        "module_path": "domain/logic",
+        "rel_path": "src/domain/logic.wr",
+        "hash": "9820de79d9889b9a",
+        "uses": [],
+        "runtime_sensitive": false
+      },
+      {
+        "module_path": "main",
+        "rel_path": "src/main.wr",
+        "hash": "d3c123bf9d2ca279",
+        "uses": [],
+        "runtime_sensitive": false
+      }
+    ]
+  },
+  "binary_hash": "6e9d32968bfc69c0"
+}

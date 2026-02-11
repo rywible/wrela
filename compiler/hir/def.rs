@@ -31,6 +31,7 @@ pub enum FunctionKind {
 pub struct Function {
     pub name: SmolStr,
     pub name_span: Option<TextRange>,
+    pub attributes: Vec<SmolStr>,
     pub visibility: Visibility,
     pub kind: FunctionKind,
     pub params: Vec<Param>,

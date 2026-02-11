@@ -97,18 +97,6 @@ pub(crate) mod arena {
         ArenaGuard { previous }
     }
 
-    pub fn reset_current() {
-        ACTIVE_ARENA.with(|slot| {
-            let ptr = slot.get();
-            if ptr.is_null() {
-                return;
-            }
-            unsafe {
-                (*ptr).reset();
-            }
-        });
-    }
-
     pub fn alloc_in_current<T>(value: T) -> Option<*mut T> {
         ACTIVE_ARENA.with(|slot| {
             let arena_ptr = slot.get();
@@ -1036,6 +1024,7 @@ pub(crate) mod map {
     }
 
     impl MapInlineCache {
+        #[cfg(test)]
         fn clear(&mut self) {
             *self = Self::default();
         }
@@ -1120,7 +1109,7 @@ pub(crate) mod map {
 
     // Minimal open-addressing table for immediate integer keys.
     // No delete support (language maps don't expose deletion today), so we can keep it simple.
-    struct IntMap {
+    pub(crate) struct IntMap {
         len: usize,
         mask: usize,
         slots: Vec<IntSlot>,
@@ -1212,7 +1201,7 @@ pub(crate) mod map {
         }
     }
 
-    struct IntMapIter<'a> {
+    pub(crate) struct IntMapIter<'a> {
         map: &'a IntMap,
         idx: usize,
     }
@@ -2462,6 +2451,7 @@ pub(crate) mod value {
         Value::from_ptr(Box::into_raw(obj) as *mut ObjHeader)
     }
 
+    #[cfg(test)]
     pub fn force_boxed_int(val: i64) -> Value {
         box_int(val)
     }

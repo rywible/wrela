@@ -960,6 +960,38 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
+            SmolStr::new("__wr_external_call"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("service"), Type::String),
+                    (SmolStr::new("endpoint"), Type::String),
+                    (SmolStr::new("method"), Type::String),
+                    (SmolStr::new("url"), Type::String),
+                    (SmolStr::new("headers"), Type::Unknown),
+                    (SmolStr::new("body"), Type::String),
+                    (SmolStr::new("timeout_ms"), Type::Integer),
+                ],
+                ret: Type::Result(Box::new(Type::String), Box::new(err.clone())),
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_http_call"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("service"), Type::String),
+                    (SmolStr::new("endpoint"), Type::String),
+                    (SmolStr::new("method"), Type::String),
+                    (SmolStr::new("url"), Type::String),
+                    (SmolStr::new("headers"), Type::Unknown),
+                    (SmolStr::new("body"), Type::String),
+                    (SmolStr::new("timeout_ms"), Type::Integer),
+                ],
+                ret: Type::Result(Box::new(Type::String), Box::new(err.clone())),
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
             SmolStr::new("__wr_list_push"),
             FunctionSig {
                 params: vec![
@@ -5963,6 +5995,32 @@ A Whale:\n    can swim() -> Boolean:\n        return true\n\nto f() -> Result:\n
     #[test]
     fn test_builtin_fallible_otherwise_ok() {
         let input = "to f() -> Integer:\n    return __wr_bytes_len(__wr_fs_read_bytes(\"x\") otherwise __wr_bytes_from_string(\"1\"))";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let errors = check_module(&module);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_builtin_external_call_requires_handling() {
+        let input = "\
+to f() -> Nothing:\n    headers = __wr_map_new()\n    __wr_external_call(\"svc\", \"ep\", \"GET\", \"https://example\", headers, \"\", 10)\n";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let errors = check_module(&module);
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::UnhandledResult { .. }))
+        );
+    }
+
+    #[test]
+    fn test_builtin_external_call_otherwise_ok() {
+        let input = "\
+to f() -> String:\n    headers = __wr_map_new()\n    return __wr_external_call(\"svc\", \"ep\", \"GET\", \"https://example\", headers, \"\", 10) otherwise \"fallback\"\n";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);

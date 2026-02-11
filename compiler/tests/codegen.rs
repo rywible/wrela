@@ -859,6 +859,73 @@ to run() -> Integer:
 }
 
 #[test]
+fn native_builtin_external_call_stub() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = r#"
+use try_to_call_external from host/external
+
+to run() -> Integer:
+    headers = __wr_map_new()
+    response = try_to_call_external(
+        "billing",
+        "charge",
+        "POST",
+        "https://api.example.test/charges",
+        headers,
+        "amount=100",
+        2500
+    ) otherwise "bad"
+
+    if response == "bad":
+        return 0
+    return 1
+"#;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let entry_path = dir
+        .path()
+        .join("src")
+        .join("infrastructure")
+        .join("integrations")
+        .join("main.wr");
+    fs::create_dir_all(entry_path.parent().unwrap()).expect("create src dir");
+    fs::write(&entry_path, source).expect("write source");
+
+    let project = load_project(&entry_path).expect("load project");
+    let module = project.module;
+    let semantic = hir::semantic::check_module(&module);
+    assert!(
+        semantic.errors.is_empty(),
+        "semantic errors: {:?}",
+        semantic.errors
+    );
+    let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+    assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
+
+    let check_ir = hir::checkir::extract_module(&module);
+    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    optimize_mir_module(&mut mir_module, Some(&check_ir));
+    let mir_errors = mir::validate::validate_module(&mir_module);
+    assert!(mir_errors.is_empty(), "mir errors: {mir_errors:?}");
+
+    let out = dir.path().join("wr_external_call_stub");
+    wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
+    let output = Command::new(&out).output().expect("run failed");
+    let expected = expected_int_exit(1);
+    match output.status.code() {
+        Some(code) => assert_eq!(code, expected),
+        None => {
+            panic!(
+                "process terminated by signal {:?}: {}",
+                output.status.signal(),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+}
+
+#[test]
 fn native_actor_match_await() {
     if std::env::var("WR_SKIP_NATIVE").is_ok() {
         return;
@@ -1142,8 +1209,10 @@ to run() -> Integer:
         fire c.ping(1)
         len = queue_len(c) + get_mailbox_length(c)
         resume(c)
+        observed = await c.ping(2) otherwise 0
         if len >= 1:
-            return 1
+            if observed == 2:
+                return 1
         return 0
 "#;
 

@@ -91,11 +91,6 @@ pub(crate) mod actor {
         }
 
         #[inline]
-        fn is_empty(&self) -> bool {
-            self.len() == 0
-        }
-
-        #[inline]
         unsafe fn rc_inc_all(&self) {
             match self {
                 Self::None => {}
@@ -600,14 +595,7 @@ pub(crate) mod actor {
             accepted
         }
 
-        fn push(&self, msg: Message) -> Result<(), Message> {
-            let node = message_node_from_message(msg);
-            match self.push_node(node) {
-                Ok(()) => Ok(()),
-                Err(node) => Err(message_node_into_message(node)),
-            }
-        }
-
+        #[cfg(test)]
         fn pop(&self) -> Option<Message> {
             self.pop_node().map(message_node_into_message)
         }
@@ -631,11 +619,6 @@ pub(crate) mod actor {
                 producer_tid: AtomicU64::new(0),
                 slots: slots.into_boxed_slice(),
             }
-        }
-
-        #[inline]
-        fn is_empty(&self) -> bool {
-            self.head.load(Ordering::Acquire) == self.tail.load(Ordering::Acquire)
         }
 
         #[inline]
@@ -729,11 +712,6 @@ pub(crate) mod actor {
             Some((msg, enqueued_at_ns))
         }
 
-        fn drain_into(&self, out: &mut Vec<(Message, u64)>) {
-            while let Some(item) = self.try_pop() {
-                out.push(item);
-            }
-        }
     }
 
     static METHODS: OnceLock<Mutex<HashMap<u32, HashMap<u32, MethodFn>>>> = OnceLock::new();
@@ -753,7 +731,7 @@ pub(crate) mod actor {
     const BURST_MAX_STAGE: usize = 4096;
     const MAILBOX_BATCH_ENQUEUE_SPIN_LIMIT: usize = 2;
     const SPACE_NOTIFY_COALESCE_WINDOW: u64 = 1;
-    const DEFAULT_MAILBOX_BURST_DRAIN_MAX: usize = 0;
+    #[cfg(test)]
     const DEFAULT_MAILBOX_RESCUE_WAKE_NS: u64 = 0;
     static MONOTONIC_EPOCH: OnceLock<Instant> = OnceLock::new();
     static QUEUE_KPI_ENABLED: OnceLock<bool> = OnceLock::new();
@@ -1080,15 +1058,6 @@ pub(crate) mod actor {
     fn drop_message_node(node: MessageNodeHandle) {
         let msg = message_node_into_message(node);
         drop_message(msg);
-    }
-
-    fn process_message_node(
-        mailbox: &Mailbox,
-        method_cache: &mut MethodCache,
-        node: MessageNodeHandle,
-    ) {
-        let msg = message_node_into_message(node);
-        process_message(mailbox, method_cache, msg);
     }
 
     fn burst_target_from_handle(handle: Value) -> Option<BurstTarget> {
@@ -2179,61 +2148,9 @@ pub(crate) mod actor {
         }
     }
 
+    #[cfg(test)]
     fn enqueue_message(mailbox: Arc<Mailbox>, msg: Message) {
         enqueue_message_ref(&mailbox, msg);
-    }
-
-    fn enqueue_messages_ref(mailbox: &Mailbox, msgs: Vec<Message>) {
-        if mailbox.closed.load(Ordering::Acquire) {
-            for msg in msgs {
-                drop_message(msg);
-                inc_mailbox_enqueue_fail();
-                inc_messages_dropped();
-            }
-            return;
-        }
-        let queue_kpi = queue_kpi_enabled();
-        let enqueue_ns = if queue_kpi { monotonic_now_ns() } else { 0 };
-        let mut remaining: Vec<Message> = Vec::new();
-        for msg in msgs {
-            if mailbox.spsc.can_use() {
-                match mailbox.spsc.try_push(msg, enqueue_ns) {
-                    Ok(was_empty) => {
-                        if crate::metrics::is_enabled() {
-                            update_mailbox_high_water(mailbox.spsc.len() + mailbox.queue.len());
-                        }
-                        crate::metrics::inc_mailbox_enqueue_ok();
-                        crate::metrics::inc_messages_sent();
-                        if mailbox.rescue_wake_ns > 0 {
-                            mailbox
-                                .last_progress_ns
-                                .store(monotonic_now_ns(), Ordering::Release);
-                        }
-                        if mailbox.wake_coalesce {
-                            if was_empty && mailbox.queue.is_empty() {
-                                if !mailbox.wake_pending.swap(true, Ordering::AcqRel) {
-                                    mailbox.work_notify.notify_one();
-                                } else if queue_kpi {
-                                    crate::metrics::inc_mailbox_wake_coalesced();
-                                }
-                            }
-                        } else if was_empty && mailbox.queue.is_empty() {
-                            mailbox.work_notify.notify_one();
-                        }
-                    }
-                    Err(msg) => remaining.push(msg),
-                }
-            } else {
-                remaining.push(msg)
-            }
-        }
-        if !remaining.is_empty() {
-            let nodes = remaining
-                .into_iter()
-                .map(message_node_from_message)
-                .collect::<Vec<_>>();
-            enqueue_node_batch_ref(mailbox, &nodes);
-        }
     }
 
     fn enqueue_message_ref(mailbox: &Mailbox, msg: Message) {
@@ -4475,6 +4392,7 @@ pub(crate) mod config {
         runtime_config().sched_tick_ms
     }
 
+    #[allow(dead_code)]
     pub fn sched_ready_cap() -> usize {
         runtime_config().sched_ready_cap
     }
@@ -4578,6 +4496,7 @@ pub(crate) mod config {
         runtime_config().mailbox_rescue_wake_ns
     }
 
+    #[cfg(target_os = "linux")]
     pub fn reactor_disable_io_uring() -> bool {
         runtime_config().reactor_disable_io_uring
     }
@@ -4700,13 +4619,12 @@ pub(crate) mod diagnostics {
 }
 
 pub(crate) mod metrics {
+    use std::collections::HashMap;
     use std::env;
     use std::fs;
     use std::path::PathBuf;
-    #[cfg(test)]
-    use std::sync::Mutex;
-    use std::sync::OnceLock;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Mutex, OnceLock};
 
     pub const METRIC_ALLOC_STRING: u32 = 1;
     pub const METRIC_ALLOC_LIST: u32 = 2;
@@ -4788,6 +4706,7 @@ pub(crate) mod metrics {
     static METRICS_DUMP_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
     static DUMP_HOOK_INSTALLED: OnceLock<()> = OnceLock::new();
     static METRICS_ENABLED: OnceLock<bool> = OnceLock::new();
+    static FUNCTION_COVERAGE: OnceLock<Mutex<HashMap<u64, u64>>> = OnceLock::new();
 
     #[cfg(test)]
     pub fn test_lock() -> &'static Mutex<()> {
@@ -4808,6 +4727,10 @@ pub(crate) mod metrics {
     #[inline(always)]
     pub fn is_enabled() -> bool {
         enabled()
+    }
+
+    fn function_coverage() -> &'static Mutex<HashMap<u64, u64>> {
+        FUNCTION_COVERAGE.get_or_init(|| Mutex::new(HashMap::new()))
     }
 
     #[inline(always)]
@@ -4840,6 +4763,7 @@ pub(crate) mod metrics {
             .unwrap_or(0)
     }
 
+    #[cfg(test)]
     pub fn metrics_get_raw(id: u32) -> u64 {
         get(id)
     }
@@ -4864,6 +4788,10 @@ pub(crate) mod metrics {
         BURST_DRAIN_TOTAL.store(0, Ordering::Relaxed);
         BURST_DRAIN_SAMPLES.store(0, Ordering::Relaxed);
         SCHED_SAMPLE_COUNTER.store(0, Ordering::Relaxed);
+        function_coverage()
+            .lock()
+            .expect("function coverage lock")
+            .clear();
     }
 
     pub fn install_dump_hook() {
@@ -4935,8 +4863,23 @@ pub(crate) mod metrics {
         } else {
             burst_total as f64 / burst_samples as f64
         };
+        let function_coverage = {
+            let mut entries = function_coverage()
+                .lock()
+                .expect("function coverage lock")
+                .iter()
+                .map(|(function_id, hits)| (*function_id, *hits))
+                .collect::<Vec<_>>();
+            entries.sort_unstable_by_key(|(function_id, _)| *function_id);
+            let body = entries
+                .into_iter()
+                .map(|(function_id, hits)| format!("\"{function_id}\":{hits}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("{{{body}}}")
+        };
         let data = format!(
-            "{{\"messages_sent\":{},\"messages_dropped\":{},\"pending_resolved\":{},\"pending_dropped\":{},\"mailbox_high_water\":{},\"rc_inc\":{},\"rc_dec\":{},\"alloc_list\":{},\"alloc_map\":{},\"alloc_string\":{},\"alloc_bytes\":{},\"alloc_result\":{},\"alloc_pending\":{},\"mailbox_enqueue_ok\":{},\"mailbox_enqueue_fail\":{},\"mailbox_dequeue\":{},\"sched_dispatched\":{},\"sched_skipped_no_credit\":{},\"sched_profile_switch\":{},\"sched_starvation_violation\":{},\"sched_cross_shard_migration\":{},\"abi_typed_lane\":{},\"abi_boxed_lane\":{},\"queue_cas_retry_total\":{},\"mailbox_wake_coalesced_count\":{},\"mailbox_rescue_wake_count\":{},\"sched_local_dispatch_count\":{},\"sched_global_dispatch_count\":{},\"sched_plan_recompute_count\":{},\"sched_steal_attempts\":{},\"sched_steal_success\":{},\"sched_migration_blocked_hysteresis\":{},\"sched_migration_blocked_cooldown\":{},\"message_build_noargs_count\":{},\"message_build_args_count\":{},\"message_instance_rc_skipped_count\":{},\"message_instance_is_arena_count\":{},\"actor_spawn_instance_is_ptr_count\":{},\"actor_spawn_instance_not_ptr_count\":{},\"actor_spawn_instance_promoted_count\":{},\"actor_spawn_instance_type_id\":{},\"actor_method_panic_count\":{},\"actor_method_missing_count\":{},\"actor_arena_lock_count\":{},\"mailbox_batch_reserve_success\":{},\"mailbox_batch_reserve_failed\":{},\"queue_enqueue_p99_ns\":{},\"queue_dequeue_p99_ns\":{},\"queue_age_p99_ns\":{},\"sched_dispatch_loop_ns_p99\":{},\"queue_burst_drain_avg\":{:.2}}}",
+            "{{\"messages_sent\":{},\"messages_dropped\":{},\"pending_resolved\":{},\"pending_dropped\":{},\"mailbox_high_water\":{},\"rc_inc\":{},\"rc_dec\":{},\"alloc_list\":{},\"alloc_map\":{},\"alloc_string\":{},\"alloc_bytes\":{},\"alloc_result\":{},\"alloc_pending\":{},\"mailbox_enqueue_ok\":{},\"mailbox_enqueue_fail\":{},\"mailbox_dequeue\":{},\"sched_dispatched\":{},\"sched_skipped_no_credit\":{},\"sched_profile_switch\":{},\"sched_starvation_violation\":{},\"sched_cross_shard_migration\":{},\"abi_typed_lane\":{},\"abi_boxed_lane\":{},\"queue_cas_retry_total\":{},\"mailbox_wake_coalesced_count\":{},\"mailbox_rescue_wake_count\":{},\"sched_local_dispatch_count\":{},\"sched_global_dispatch_count\":{},\"sched_plan_recompute_count\":{},\"sched_steal_attempts\":{},\"sched_steal_success\":{},\"sched_migration_blocked_hysteresis\":{},\"sched_migration_blocked_cooldown\":{},\"message_build_noargs_count\":{},\"message_build_args_count\":{},\"message_instance_rc_skipped_count\":{},\"message_instance_is_arena_count\":{},\"actor_spawn_instance_is_ptr_count\":{},\"actor_spawn_instance_not_ptr_count\":{},\"actor_spawn_instance_promoted_count\":{},\"actor_spawn_instance_type_id\":{},\"actor_method_panic_count\":{},\"actor_method_missing_count\":{},\"actor_arena_lock_count\":{},\"mailbox_batch_reserve_success\":{},\"mailbox_batch_reserve_failed\":{},\"queue_enqueue_p99_ns\":{},\"queue_dequeue_p99_ns\":{},\"queue_age_p99_ns\":{},\"sched_dispatch_loop_ns_p99\":{},\"queue_burst_drain_avg\":{:.2},\"function_coverage\":{}}}",
             get(METRIC_MESSAGES_SENT),
             get(METRIC_MESSAGES_DROPPED),
             get(METRIC_PENDING_RESOLVED),
@@ -4988,8 +4931,17 @@ pub(crate) mod metrics {
             queue_age_p99,
             sched_dispatch_loop_p99,
             burst_avg,
+            function_coverage,
         );
         let _ = fs::write(path, data.as_bytes());
+    }
+
+    pub fn coverage_hit(function_id: u64) {
+        if !enabled() {
+            return;
+        }
+        let mut coverage = function_coverage().lock().expect("function coverage lock");
+        *coverage.entry(function_id).or_insert(0) += 1;
     }
 
     pub fn inc_alloc_string() {
@@ -5106,6 +5058,7 @@ pub(crate) mod metrics {
     pub fn inc_message_instance_rc_skipped() {
         bump(METRIC_MESSAGE_INSTANCE_RC_SKIPPED)
     }
+    #[allow(dead_code)]
     pub fn inc_actor_arena_lock() {
         bump(METRIC_ACTOR_ARENA_LOCK)
     }
@@ -5170,9 +5123,11 @@ pub(crate) mod metrics {
         let n = SCHED_SAMPLE_COUNTER.fetch_add(1, Ordering::Relaxed);
         n % (sample_rate as u64) == 0
     }
+    #[cfg(test)]
     pub fn inc_abi_typed_lane() {
         bump(METRIC_ABI_TYPED_LANE)
     }
+    #[cfg(test)]
     pub fn inc_abi_boxed_lane() {
         bump(METRIC_ABI_BOXED_LANE)
     }
@@ -5278,7 +5233,7 @@ pub(crate) mod scheduler {
                     profiles: BASE_DISPATCH_PROFILES,
                     migration_budget: sched_migration_interval_cap(),
                 },
-                cursor: 0,
+                cursor: scheduler_seed_offset(),
                 starvation_bound_ticks: STARVATION_BOUND_TICKS,
                 tune_tick: 0,
             }
@@ -5544,6 +5499,7 @@ pub(crate) mod scheduler {
         })
     }
 
+    #[allow(dead_code)]
     pub fn snapshot() -> String {
         let Some(shards) = SHARDS.get() else {
             return "scheduler: not initialized".to_string();
@@ -6037,10 +5993,6 @@ pub(crate) mod scheduler {
             })
         }
 
-        fn ready_depth(&self) -> [usize; OBJECTIVE_COUNT] {
-            std::array::from_fn(|idx| self.ready_by_objective[idx].len())
-        }
-
         fn ready_depth_with_local(
             &self,
             local_ready: &[VecDeque<usize>; OBJECTIVE_COUNT],
@@ -6053,13 +6005,28 @@ pub(crate) mod scheduler {
         }
 
         fn pop_ready_any(&self) -> Option<(usize, usize)> {
-            for objective in 0..OBJECTIVE_COUNT {
+            let offset = scheduler_seed_offset();
+            for step in 0..OBJECTIVE_COUNT {
+                let objective = (offset + step) % OBJECTIVE_COUNT;
                 if let Some(pool_ptr) = self.ready_by_objective[objective].pop() {
                     return Some((objective, pool_ptr));
                 }
             }
             None
         }
+    }
+
+    fn scheduler_seed_offset() -> usize {
+        static OFFSET: OnceLock<usize> = OnceLock::new();
+        *OFFSET.get_or_init(scheduler_seed_offset_from_env)
+    }
+
+    fn scheduler_seed_offset_from_env() -> usize {
+        let seed = std::env::var("WRELA_SCHED_SEED")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u64>().ok())
+            .unwrap_or(0);
+        (seed as usize) % OBJECTIVE_COUNT
     }
 
     #[cfg(test)]
@@ -6074,6 +6041,24 @@ pub(crate) mod scheduler {
         use std::sync::Arc;
         use std::sync::Mutex;
         use std::sync::OnceLock;
+
+        #[test]
+        fn scheduler_seed_offset_is_stable_for_same_seed() {
+            unsafe {
+                std::env::set_var("WRELA_SCHED_SEED", "7");
+            }
+            let a = scheduler_seed_offset_from_env();
+            let b = scheduler_seed_offset_from_env();
+            assert_eq!(a, b);
+            unsafe {
+                std::env::set_var("WRELA_SCHED_SEED", "13");
+            }
+            let c = scheduler_seed_offset_from_env();
+            assert_ne!(a, c);
+            unsafe {
+                std::env::remove_var("WRELA_SCHED_SEED");
+            }
+        }
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::time::{Duration, Instant};
 

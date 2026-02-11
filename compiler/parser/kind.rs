@@ -131,6 +131,7 @@ pub enum SyntaxKind {
     TypeRef,
     TypeArgList,
     IsAClause,
+    Attribute,
     Block,
     HasBlock,
 

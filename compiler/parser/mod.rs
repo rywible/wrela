@@ -684,4 +684,42 @@ if true:
         let stmts: Vec<_> = block.statements().collect();
         assert_eq!(stmts.len(), 1);
     }
+
+    #[test]
+    fn test_function_attributes_parse_without_errors() {
+        let text = "\
+@serial
+@allows_env_set
+to test_sample() -> Nothing:
+    assert value true == true
+";
+        let (_node, errors) = parse_with_errors(text);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_function_attributes_attach_to_function_ast() {
+        use ast::{AstNode, Stmt};
+        let text = "\
+@serial
+@allows_fs_escape
+to test_sample() -> Nothing:
+    assert value true == true
+";
+        let node = parse(text);
+        let root = ast::Root::cast(node).unwrap();
+        let func = match root.statements().next().unwrap() {
+            Stmt::FuncDef(f) => f,
+            _ => panic!("Expected function definition"),
+        };
+        let attrs: Vec<String> = func
+            .attributes()
+            .filter_map(|attr| attr.name())
+            .map(|token| token.text().to_string())
+            .collect();
+        assert_eq!(
+            attrs,
+            vec!["serial".to_string(), "allows_fs_escape".to_string()]
+        );
+    }
 }

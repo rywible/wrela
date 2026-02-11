@@ -3304,6 +3304,8 @@ fn builtin_function_names() -> Vec<SmolStr> {
         SmolStr::new("__wr_bytes_len"),
         SmolStr::new("__wr_fs_read_bytes"),
         SmolStr::new("__wr_fs_write_bytes"),
+        SmolStr::new("__wr_external_call"),
+        SmolStr::new("__wr_http_call"),
         SmolStr::new("__wr_map_new"),
         SmolStr::new("__wr_list_push"),
         SmolStr::new("__wr_map_get"),

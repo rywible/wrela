@@ -1,6 +1,9 @@
 use crate::hir::arena::Idx;
 use crate::hir::lower::{lower, lower_root_body};
-use crate::hir::{Body, Function, FunctionKind, Module, Stmt, UseName, UseNameKind, Visibility};
+use crate::hir::{
+    Arg, Body, Expr, Function, FunctionKind, Literal, Module, Stmt, UseName, UseNameKind,
+    Visibility,
+};
 use crate::parser;
 use crate::parser::ast::AstNode;
 use miette::SourceSpan;
@@ -13,6 +16,7 @@ pub struct LoadedProject {
     pub module: Module,
     pub entry_source: String,
     pub warnings: Vec<ProjectWarning>,
+    pub function_effects: Vec<FunctionEffectEntry>,
 }
 
 #[derive(Debug, Clone)]
@@ -29,6 +33,32 @@ pub struct ProjectWarning {
     pub source: String,
     pub message: String,
     pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum FunctionEffect {
+    Pure,
+    HostRead,
+    HostWrite,
+    Network,
+}
+
+impl std::fmt::Display for FunctionEffect {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FunctionEffect::Pure => write!(f, "Pure"),
+            FunctionEffect::HostRead => write!(f, "HostRead"),
+            FunctionEffect::HostWrite => write!(f, "HostWrite"),
+            FunctionEffect::Network => write!(f, "Network"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FunctionEffectEntry {
+    pub module: SmolStr,
+    pub function: SmolStr,
+    pub effect: FunctionEffect,
 }
 
 struct LoadedModule {
@@ -54,13 +84,46 @@ enum DefinitionKind {
     Class,
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum ProjectMode {
+    Project,
+    SingleFile,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum ModuleLayer {
+    Domain,
+    Application,
+    CompositionRoot,
+    Infrastructure,
+    Other,
+}
+
 struct ProjectLoader {
     root_dir: PathBuf,
     #[allow(dead_code)]
     tests_dir: Option<PathBuf>,
+    project_mode: ProjectMode,
     modules: HashMap<SmolStr, LoadedModule>,
     errors: Vec<ProjectError>,
     warnings: Vec<ProjectWarning>,
+}
+
+#[derive(Clone)]
+struct ClassifiedFunctionEffect {
+    entry: FunctionEffectEntry,
+    name_span: Option<TextRange>,
+    direct_effect: FunctionEffect,
+}
+
+#[derive(Clone)]
+struct EffectNode {
+    module: SmolStr,
+    function: SmolStr,
+    function_idx: Idx<Function>,
+    name_span: Option<TextRange>,
+    direct: FunctionEffect,
+    callees: Vec<usize>,
 }
 
 fn build_trace() -> bool {
@@ -108,9 +171,11 @@ pub fn load_project_with_roots(
     tests_dir: Option<PathBuf>,
     enforce_entrypoint: bool,
 ) -> Result<LoadedProject, Vec<ProjectError>> {
+    let project_mode = detect_project_mode(entry_path, root_dir);
     let mut loader = ProjectLoader {
         root_dir: root_dir.to_path_buf(),
         tests_dir,
+        project_mode,
         modules: HashMap::new(),
         errors: Vec::new(),
         warnings: Vec::new(),
@@ -128,6 +193,11 @@ pub fn load_project_with_roots(
     loader.validate_uses();
     loader.detect_cycles();
     loader.analyze_imports();
+    loader.enforce_architecture_rules();
+    loader.enforce_external_call_policy();
+    let classified_effects = loader.classify_function_effects();
+    loader.enforce_network_boundary_policy(&classified_effects);
+    loader.enforce_domain_network_policy(&classified_effects);
     if !loader.errors.is_empty() {
         return Err(loader.errors);
     }
@@ -343,6 +413,10 @@ pub fn load_project_with_roots(
         module: merged,
         entry_source,
         warnings: loader.warnings,
+        function_effects: classified_effects
+            .into_iter()
+            .map(|entry| entry.entry)
+            .collect(),
     })
 }
 
@@ -931,6 +1005,1035 @@ impl ProjectLoader {
             }
         }
     }
+
+    fn enforce_architecture_rules(&mut self) {
+        if self.project_mode != ProjectMode::Project {
+            return;
+        }
+
+        let mut module_names: Vec<SmolStr> = self.modules.keys().cloned().collect();
+        module_names.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        for module_name in module_names {
+            let Some(module) = self.modules.get(&module_name) else {
+                continue;
+            };
+            let source_layer = classify_module_layer(module.name.as_str());
+            for use_site in &module.uses {
+                let target_layer = classify_module_layer(use_site.module.as_str());
+                if !architecture_import_allowed(source_layer, target_layer) {
+                    self.errors.push(ProjectError {
+                        path: module.path.clone(),
+                        source: module.source.clone(),
+                        message: architecture_layer_violation_message(
+                            source_layer,
+                            target_layer,
+                            use_site.module.as_str(),
+                        ),
+                        span: span_from_range(
+                            use_site.module_span.unwrap_or_else(|| use_site.span),
+                        ),
+                    });
+                }
+                if is_host_module(use_site.module.as_str()) && !host_import_allowed(source_layer) {
+                    self.errors.push(ProjectError {
+                        path: module.path.clone(),
+                        source: module.source.clone(),
+                        message: host_import_violation_message(
+                            source_layer,
+                            use_site.module.as_str(),
+                        ),
+                        span: span_from_range(
+                            use_site.module_span.unwrap_or_else(|| use_site.span),
+                        ),
+                    });
+                }
+                if is_host_http_module(use_site.module.as_str())
+                    && !is_infrastructure_integration_module(module.name.as_str())
+                {
+                    self.errors.push(ProjectError {
+                        path: module.path.clone(),
+                        source: module.source.clone(),
+                        message: host_http_import_violation_message(module.name.as_str()),
+                        span: span_from_range(
+                            use_site.module_span.unwrap_or_else(|| use_site.span),
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
+    fn enforce_external_call_policy(&mut self) {
+        if self.project_mode != ProjectMode::Project {
+            return;
+        }
+
+        let mut public_functions: HashMap<SmolStr, HashSet<SmolStr>> = HashMap::new();
+        for (module_name, module) in &self.modules {
+            let mut exports = HashSet::new();
+            for (_, func) in module.module.functions.iter() {
+                if matches!(func.visibility, Visibility::Public) {
+                    exports.insert(func.name.clone());
+                }
+            }
+            public_functions.insert(module_name.clone(), exports);
+        }
+
+        let mut module_names: Vec<SmolStr> = self.modules.keys().cloned().collect();
+        module_names.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+
+        for module_name in module_names {
+            let Some(module) = self.modules.get(&module_name) else {
+                continue;
+            };
+            if is_stdlib_host_module(module.name.as_str()) {
+                continue;
+            }
+            let imported = imported_function_bindings(module, &public_functions);
+            for (_, func) in module.module.functions.iter() {
+                let Some(body) = &func.body else {
+                    continue;
+                };
+                enforce_external_call_policy_in_block(
+                    body,
+                    &body.root_stmts,
+                    &imported,
+                    module.name.as_str(),
+                    &func.name,
+                    &module.path,
+                    &module.source,
+                    &mut self.errors,
+                );
+            }
+        }
+    }
+
+    fn classify_function_effects(&self) -> Vec<ClassifiedFunctionEffect> {
+        let mut public_functions: HashMap<SmolStr, HashSet<SmolStr>> = HashMap::new();
+        for (module_name, module) in &self.modules {
+            let mut exports = HashSet::new();
+            for (_, func) in module.module.functions.iter() {
+                if is_effect_trackable_function(func)
+                    && matches!(func.visibility, Visibility::Public)
+                {
+                    exports.insert(func.name.clone());
+                }
+            }
+            public_functions.insert(module_name.clone(), exports);
+        }
+
+        let mut module_names: Vec<SmolStr> = self.modules.keys().cloned().collect();
+        module_names.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+
+        let mut nodes = Vec::new();
+        let mut node_index_by_symbol: HashMap<(SmolStr, SmolStr), usize> = HashMap::new();
+        for module_name in &module_names {
+            let Some(module) = self.modules.get(module_name) else {
+                continue;
+            };
+            let mut funcs: Vec<(Idx<Function>, &Function)> = module
+                .module
+                .functions
+                .iter()
+                .filter(|(_, func)| is_effect_trackable_function(func))
+                .collect();
+            funcs.sort_by(|(a_idx, a), (b_idx, b)| {
+                a.name
+                    .as_str()
+                    .cmp(b.name.as_str())
+                    .then_with(|| a_idx.into_raw().cmp(&b_idx.into_raw()))
+            });
+            for (func_idx, func) in funcs {
+                let node_idx = nodes.len();
+                nodes.push(EffectNode {
+                    module: module_name.clone(),
+                    function: func.name.clone(),
+                    function_idx: func_idx,
+                    name_span: func.name_span,
+                    direct: FunctionEffect::Pure,
+                    callees: Vec::new(),
+                });
+                node_index_by_symbol.insert((module_name.clone(), func.name.clone()), node_idx);
+            }
+        }
+
+        for node_idx in 0..nodes.len() {
+            let module_name = nodes[node_idx].module.clone();
+            let Some(module) = self.modules.get(&module_name) else {
+                continue;
+            };
+            let func = &module.module.functions[nodes[node_idx].function_idx];
+            let imported = imported_function_bindings(module, &public_functions);
+            let mut called = Vec::new();
+            if let Some(body) = &func.body {
+                collect_called_functions(body, &body.root_stmts, &mut called);
+            }
+
+            let mut direct = FunctionEffect::Pure;
+            let mut callees = HashSet::new();
+            for callee_name in called {
+                direct = direct.max(effect_for_builtin_symbol(callee_name.as_str()));
+                if let Some(target_module) = imported.get(&callee_name) {
+                    direct = direct.max(effect_for_imported_symbol(
+                        target_module.as_str(),
+                        callee_name.as_str(),
+                    ));
+                    if let Some(target_idx) =
+                        node_index_by_symbol.get(&(target_module.clone(), callee_name.clone()))
+                    {
+                        callees.insert(*target_idx);
+                    }
+                    continue;
+                }
+                if let Some(target_idx) =
+                    node_index_by_symbol.get(&(module_name.clone(), callee_name.clone()))
+                {
+                    callees.insert(*target_idx);
+                }
+            }
+            let mut callee_list: Vec<usize> = callees.into_iter().collect();
+            callee_list.sort_unstable();
+            nodes[node_idx].direct = direct;
+            nodes[node_idx].callees = callee_list;
+        }
+
+        let mut effects: Vec<FunctionEffect> = nodes.iter().map(|node| node.direct).collect();
+        loop {
+            let mut changed = false;
+            for idx in 0..nodes.len() {
+                let mut effect = nodes[idx].direct;
+                for callee in &nodes[idx].callees {
+                    effect = effect.max(effects[*callee]);
+                }
+                if effect != effects[idx] {
+                    effects[idx] = effect;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+
+        let mut out = Vec::with_capacity(nodes.len());
+        for (idx, node) in nodes.into_iter().enumerate() {
+            out.push(ClassifiedFunctionEffect {
+                entry: FunctionEffectEntry {
+                    module: node.module,
+                    function: node.function,
+                    effect: effects[idx],
+                },
+                name_span: node.name_span,
+                direct_effect: node.direct,
+            });
+        }
+        out
+    }
+
+    fn enforce_domain_network_policy(&mut self, effects: &[ClassifiedFunctionEffect]) {
+        if self.project_mode != ProjectMode::Project {
+            return;
+        }
+        for effect in effects {
+            if classify_module_layer(effect.entry.module.as_str()) != ModuleLayer::Domain {
+                continue;
+            }
+            if effect.entry.effect != FunctionEffect::Network {
+                continue;
+            }
+            let Some(module) = self.modules.get(&effect.entry.module) else {
+                continue;
+            };
+            self.errors.push(ProjectError {
+                path: module.path.clone(),
+                source: module.source.clone(),
+                message: format!(
+                    "domain function '{}::{}' is classified as {} effect. teacher fix recipe: define a domain interface, move the network call into infrastructure, and wire the implementation in application/composition",
+                    effect.entry.module,
+                    effect.entry.function,
+                    effect.entry.effect
+                ),
+                span: span_from_range(effect.name_span.unwrap_or_else(|| TextRange::empty(0.into()))),
+            });
+        }
+    }
+
+    fn enforce_network_boundary_policy(&mut self, effects: &[ClassifiedFunctionEffect]) {
+        if self.project_mode != ProjectMode::Project {
+            return;
+        }
+        for effect in effects {
+            if effect.direct_effect != FunctionEffect::Network {
+                continue;
+            }
+            if is_stdlib_host_module(effect.entry.module.as_str()) {
+                continue;
+            }
+            if is_infrastructure_integration_module(effect.entry.module.as_str()) {
+                continue;
+            }
+            let Some(module) = self.modules.get(&effect.entry.module) else {
+                continue;
+            };
+            self.errors.push(ProjectError {
+                path: module.path.clone(),
+                source: module.source.clone(),
+                message: format!(
+                    "network function '{}::{}' uses external network I/O outside infrastructure/integrations. help: move this call into src/infrastructure/integrations/** and invoke it through a domain/application interface",
+                    effect.entry.module, effect.entry.function
+                ),
+                span: span_from_range(effect.name_span.unwrap_or_else(|| TextRange::empty(0.into()))),
+            });
+        }
+    }
+}
+
+fn is_effect_trackable_function(func: &Function) -> bool {
+    matches!(func.kind, FunctionKind::Function | FunctionKind::Check)
+}
+
+fn imported_function_bindings(
+    module: &LoadedModule,
+    public_functions: &HashMap<SmolStr, HashSet<SmolStr>>,
+) -> HashMap<SmolStr, SmolStr> {
+    let mut bindings = HashMap::new();
+    for use_site in &module.uses {
+        for name in &use_site.names {
+            match &name.kind {
+                UseNameKind::Name(item) => {
+                    bindings.insert(item.clone(), use_site.module.clone());
+                }
+                UseNameKind::Glob => {
+                    let mut exports: Vec<SmolStr> = public_functions
+                        .get(&use_site.module)
+                        .cloned()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .collect();
+                    exports.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+                    for export in exports {
+                        bindings.insert(export, use_site.module.clone());
+                    }
+                }
+            }
+        }
+    }
+    bindings
+}
+
+fn effect_for_builtin_symbol(name: &str) -> FunctionEffect {
+    match name {
+        "__wr_env_get" | "__wr_clock_ns" | "__wr_fs_read_bytes" => FunctionEffect::HostRead,
+        "__wr_env_set" | "__wr_fs_write_bytes" => FunctionEffect::HostWrite,
+        "try_to_http_call" => FunctionEffect::Network,
+        _ if name.starts_with("__wr_http_")
+            || name.starts_with("__wr_net_")
+            || name.contains("external_call") =>
+        {
+            FunctionEffect::Network
+        }
+        _ => FunctionEffect::Pure,
+    }
+}
+
+fn effect_for_imported_symbol(module_name: &str, function_name: &str) -> FunctionEffect {
+    if is_host_http_module(module_name) {
+        return FunctionEffect::Network;
+    }
+    if module_name == "host/env" {
+        if function_name.contains("set_") {
+            return FunctionEffect::HostWrite;
+        }
+        return FunctionEffect::HostRead;
+    }
+    if module_name == "host/time" {
+        return FunctionEffect::HostRead;
+    }
+    if module_name == "host/fs" {
+        if function_name.contains("write") {
+            return FunctionEffect::HostWrite;
+        }
+        return FunctionEffect::HostRead;
+    }
+    FunctionEffect::Pure
+}
+
+fn is_host_http_module(module_name: &str) -> bool {
+    module_name == "host/http" || module_name.starts_with("host/http/")
+}
+
+fn is_infrastructure_integration_module(module_name: &str) -> bool {
+    module_name == "infrastructure/integrations"
+        || module_name.starts_with("infrastructure/integrations/")
+}
+
+fn is_stdlib_host_module(module_name: &str) -> bool {
+    module_name == "host" || module_name.starts_with("host/")
+}
+
+fn collect_called_functions(body: &Body, stmts: &[Idx<Stmt>], called: &mut Vec<SmolStr>) {
+    for stmt_id in stmts {
+        match &body.stmts[*stmt_id] {
+            Stmt::Expr(expr) => collect_called_functions_in_expr(body, *expr, called),
+            Stmt::Assert { expr, .. } => collect_called_functions_in_expr(body, *expr, called),
+            Stmt::Require { condition, message } => {
+                collect_called_functions_in_expr(body, *condition, called);
+                collect_called_functions_in_expr(body, *message, called);
+            }
+            Stmt::Let { value, .. } => collect_called_functions_in_expr(body, *value, called),
+            Stmt::Assign { value, .. } => collect_called_functions_in_expr(body, *value, called),
+            Stmt::Optimize { body: opt_body, .. } => {
+                collect_called_functions(body, opt_body, called)
+            }
+            Stmt::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                collect_called_functions_in_expr(body, *condition, called);
+                collect_called_functions(body, then_branch, called);
+                if let Some(branch) = else_branch {
+                    collect_called_functions(body, branch, called);
+                }
+            }
+            Stmt::For {
+                iterable,
+                body: loop_body,
+                ..
+            } => {
+                collect_called_functions_in_expr(body, *iterable, called);
+                collect_called_functions(body, loop_body, called);
+            }
+            Stmt::Match {
+                subject,
+                cases,
+                otherwise,
+            } => {
+                collect_called_functions_in_expr(body, *subject, called);
+                for case in cases {
+                    collect_called_functions(body, &case.body, called);
+                }
+                if let Some(otherwise_body) = otherwise {
+                    collect_called_functions(body, otherwise_body, called);
+                }
+            }
+            Stmt::IgnoreResult { expr }
+            | Stmt::Capture { value: expr, .. }
+            | Stmt::Defer { expr } => collect_called_functions_in_expr(body, *expr, called),
+            Stmt::While {
+                condition,
+                body: loop_body,
+            } => {
+                collect_called_functions_in_expr(body, *condition, called);
+                collect_called_functions(body, loop_body, called);
+            }
+            Stmt::Return(expr) => {
+                if let Some(expr) = expr {
+                    collect_called_functions_in_expr(body, *expr, called);
+                }
+            }
+            Stmt::Use { .. } | Stmt::Break | Stmt::Continue => {}
+        }
+    }
+}
+
+fn enforce_external_call_policy_in_block(
+    body: &Body,
+    stmts: &[Idx<Stmt>],
+    imported: &HashMap<SmolStr, SmolStr>,
+    module_name: &str,
+    function_name: &SmolStr,
+    path: &Path,
+    source: &str,
+    errors: &mut Vec<ProjectError>,
+) {
+    for stmt_id in stmts {
+        match &body.stmts[*stmt_id] {
+            Stmt::Expr(expr) => enforce_external_call_policy_in_expr(
+                body,
+                *expr,
+                imported,
+                module_name,
+                function_name,
+                path,
+                source,
+                errors,
+            ),
+            Stmt::Assert { expr, .. } => enforce_external_call_policy_in_expr(
+                body,
+                *expr,
+                imported,
+                module_name,
+                function_name,
+                path,
+                source,
+                errors,
+            ),
+            Stmt::Require { condition, message } => {
+                enforce_external_call_policy_in_expr(
+                    body,
+                    *condition,
+                    imported,
+                    module_name,
+                    function_name,
+                    path,
+                    source,
+                    errors,
+                );
+                enforce_external_call_policy_in_expr(
+                    body,
+                    *message,
+                    imported,
+                    module_name,
+                    function_name,
+                    path,
+                    source,
+                    errors,
+                );
+            }
+            Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::Capture { value, .. } => {
+                enforce_external_call_policy_in_expr(
+                    body,
+                    *value,
+                    imported,
+                    module_name,
+                    function_name,
+                    path,
+                    source,
+                    errors,
+                );
+            }
+            Stmt::Optimize { body: opt_body, .. } => enforce_external_call_policy_in_block(
+                body,
+                opt_body,
+                imported,
+                module_name,
+                function_name,
+                path,
+                source,
+                errors,
+            ),
+            Stmt::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                enforce_external_call_policy_in_expr(
+                    body,
+                    *condition,
+                    imported,
+                    module_name,
+                    function_name,
+                    path,
+                    source,
+                    errors,
+                );
+                enforce_external_call_policy_in_block(
+                    body,
+                    then_branch,
+                    imported,
+                    module_name,
+                    function_name,
+                    path,
+                    source,
+                    errors,
+                );
+                if let Some(branch) = else_branch {
+                    enforce_external_call_policy_in_block(
+                        body,
+                        branch,
+                        imported,
+                        module_name,
+                        function_name,
+                        path,
+                        source,
+                        errors,
+                    );
+                }
+            }
+            Stmt::For {
+                iterable,
+                body: loop_body,
+                ..
+            } => {
+                enforce_external_call_policy_in_expr(
+                    body,
+                    *iterable,
+                    imported,
+                    module_name,
+                    function_name,
+                    path,
+                    source,
+                    errors,
+                );
+                enforce_external_call_policy_in_block(
+                    body,
+                    loop_body,
+                    imported,
+                    module_name,
+                    function_name,
+                    path,
+                    source,
+                    errors,
+                );
+            }
+            Stmt::Match {
+                subject,
+                cases,
+                otherwise,
+            } => {
+                enforce_external_call_policy_in_expr(
+                    body,
+                    *subject,
+                    imported,
+                    module_name,
+                    function_name,
+                    path,
+                    source,
+                    errors,
+                );
+                for case in cases {
+                    enforce_external_call_policy_in_block(
+                        body,
+                        &case.body,
+                        imported,
+                        module_name,
+                        function_name,
+                        path,
+                        source,
+                        errors,
+                    );
+                }
+                if let Some(otherwise_body) = otherwise {
+                    enforce_external_call_policy_in_block(
+                        body,
+                        otherwise_body,
+                        imported,
+                        module_name,
+                        function_name,
+                        path,
+                        source,
+                        errors,
+                    );
+                }
+            }
+            Stmt::IgnoreResult { expr } | Stmt::Defer { expr } => {
+                enforce_external_call_policy_in_expr(
+                    body,
+                    *expr,
+                    imported,
+                    module_name,
+                    function_name,
+                    path,
+                    source,
+                    errors,
+                );
+            }
+            Stmt::While {
+                condition,
+                body: loop_body,
+            } => {
+                enforce_external_call_policy_in_expr(
+                    body,
+                    *condition,
+                    imported,
+                    module_name,
+                    function_name,
+                    path,
+                    source,
+                    errors,
+                );
+                enforce_external_call_policy_in_block(
+                    body,
+                    loop_body,
+                    imported,
+                    module_name,
+                    function_name,
+                    path,
+                    source,
+                    errors,
+                );
+            }
+            Stmt::Return(expr) => {
+                if let Some(expr) = expr {
+                    enforce_external_call_policy_in_expr(
+                        body,
+                        *expr,
+                        imported,
+                        module_name,
+                        function_name,
+                        path,
+                        source,
+                        errors,
+                    );
+                }
+            }
+            Stmt::Use { .. } | Stmt::Break | Stmt::Continue => {}
+        }
+    }
+}
+
+fn enforce_external_call_policy_in_expr(
+    body: &Body,
+    expr_id: Idx<Expr>,
+    imported: &HashMap<SmolStr, SmolStr>,
+    module_name: &str,
+    function_name: &SmolStr,
+    path: &Path,
+    source: &str,
+    errors: &mut Vec<ProjectError>,
+) {
+    match &body.exprs[expr_id] {
+        Expr::Literal(_) | Expr::Variable(_) => {}
+        Expr::Detach { target, .. }
+        | Expr::Unary { expr: target, .. }
+        | Expr::Crash { expr: target } => {
+            enforce_external_call_policy_in_expr(
+                body,
+                *target,
+                imported,
+                module_name,
+                function_name,
+                path,
+                source,
+                errors,
+            );
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            enforce_external_call_policy_in_expr(
+                body,
+                *lhs,
+                imported,
+                module_name,
+                function_name,
+                path,
+                source,
+                errors,
+            );
+            enforce_external_call_policy_in_expr(
+                body,
+                *rhs,
+                imported,
+                module_name,
+                function_name,
+                path,
+                source,
+                errors,
+            );
+        }
+        Expr::TypeApply { callee, .. } => {
+            enforce_external_call_policy_in_expr(
+                body,
+                *callee,
+                imported,
+                module_name,
+                function_name,
+                path,
+                source,
+                errors,
+            );
+        }
+        Expr::Call { callee, args, .. } | Expr::GivenCall { callee, args, .. } => {
+            if let Expr::Variable(name) = &body.exprs[*callee] {
+                if let Some(kind) = external_connector_call_kind(name, imported) {
+                    let call_span = body.expr_span(expr_id);
+                    if !is_infrastructure_integration_module(module_name) {
+                        errors.push(ProjectError {
+                            path: path.to_path_buf(),
+                            source: source.to_string(),
+                            message: format!(
+                                "external connector call '{}::{}' is outside src/infrastructure/integrations/** (module '{}'). teacher fix: move this call to an integration adapter under src/infrastructure/integrations/** and invoke it via a domain/application interface",
+                                module_name, function_name, module_name
+                            ),
+                            span: span_from_range(call_span),
+                        });
+                    }
+                    for (field, value_expr) in
+                        external_connector_literal_violations(body, args, kind)
+                    {
+                        let expected = match field {
+                            ExternalMetadataField::TimeoutMs => "an integer literal",
+                            _ => "a string literal",
+                        };
+                        errors.push(ProjectError {
+                            path: path.to_path_buf(),
+                            source: source.to_string(),
+                            message: format!(
+                                "external call metadata field '{}' must be {}. teacher fix: pass a literal for `{}` directly in {}(...) and keep dynamic values in headers/body instead",
+                                field.as_str(),
+                                expected,
+                                field.as_str(),
+                                name
+                            ),
+                            span: span_from_range(body.expr_span(value_expr)),
+                        });
+                    }
+                }
+            }
+            enforce_external_call_policy_in_expr(
+                body,
+                *callee,
+                imported,
+                module_name,
+                function_name,
+                path,
+                source,
+                errors,
+            );
+            for arg in args {
+                match arg {
+                    Arg::Positional { value, .. } | Arg::Named { value, .. } => {
+                        enforce_external_call_policy_in_expr(
+                            body,
+                            *value,
+                            imported,
+                            module_name,
+                            function_name,
+                            path,
+                            source,
+                            errors,
+                        );
+                    }
+                }
+            }
+        }
+        Expr::Member { object, .. } => {
+            enforce_external_call_policy_in_expr(
+                body,
+                *object,
+                imported,
+                module_name,
+                function_name,
+                path,
+                source,
+                errors,
+            );
+        }
+        Expr::List(items) => {
+            for item in items {
+                enforce_external_call_policy_in_expr(
+                    body,
+                    *item,
+                    imported,
+                    module_name,
+                    function_name,
+                    path,
+                    source,
+                    errors,
+                );
+            }
+        }
+        Expr::Map(items) => {
+            for (key, value) in items {
+                enforce_external_call_policy_in_expr(
+                    body,
+                    *key,
+                    imported,
+                    module_name,
+                    function_name,
+                    path,
+                    source,
+                    errors,
+                );
+                enforce_external_call_policy_in_expr(
+                    body,
+                    *value,
+                    imported,
+                    module_name,
+                    function_name,
+                    path,
+                    source,
+                    errors,
+                );
+            }
+        }
+        Expr::StringInterp(parts) => {
+            for part in parts {
+                if let crate::hir::StringPart::Expr(expr) = part {
+                    enforce_external_call_policy_in_expr(
+                        body,
+                        *expr,
+                        imported,
+                        module_name,
+                        function_name,
+                        path,
+                        source,
+                        errors,
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[derive(Copy, Clone)]
+enum ExternalConnectorCallKind {
+    Builtin,
+    Wrapper,
+}
+
+#[derive(Copy, Clone)]
+enum ExternalMetadataField {
+    Service,
+    Endpoint,
+    Method,
+    Url,
+    TimeoutMs,
+}
+
+impl ExternalMetadataField {
+    fn as_str(self) -> &'static str {
+        match self {
+            ExternalMetadataField::Service => "service",
+            ExternalMetadataField::Endpoint => "endpoint",
+            ExternalMetadataField::Method => "method",
+            ExternalMetadataField::Url => "url",
+            ExternalMetadataField::TimeoutMs => "timeout_ms",
+        }
+    }
+}
+
+fn external_connector_call_kind(
+    callee: &SmolStr,
+    imported: &HashMap<SmolStr, SmolStr>,
+) -> Option<ExternalConnectorCallKind> {
+    if callee == "__wr_external_call" || callee == "__wr_http_call" {
+        return Some(ExternalConnectorCallKind::Builtin);
+    }
+    if !matches!(callee.as_str(), "try_to_call_external" | "try_to_http_call") {
+        return None;
+    }
+    match imported.get(callee) {
+        Some(module_name) if module_name == "host/external" || module_name == "host/http" => {
+            Some(ExternalConnectorCallKind::Wrapper)
+        }
+        None if callee == "try_to_http_call" => Some(ExternalConnectorCallKind::Wrapper),
+        _ => None,
+    }
+}
+
+fn external_connector_literal_violations(
+    body: &Body,
+    args: &[Arg],
+    kind: ExternalConnectorCallKind,
+) -> Vec<(ExternalMetadataField, Idx<Expr>)> {
+    let mut out = Vec::new();
+    for &(field, expected_string) in external_metadata_requirements(kind) {
+        let Some(value_expr) = external_call_arg_expr(args, field) else {
+            continue;
+        };
+        let literal_ok = if expected_string {
+            matches!(&body.exprs[value_expr], Expr::Literal(Literal::String(_)))
+        } else {
+            matches!(&body.exprs[value_expr], Expr::Literal(Literal::Integer(_)))
+        };
+        if !literal_ok {
+            out.push((field, value_expr));
+        }
+    }
+    out
+}
+
+fn external_metadata_requirements(
+    _kind: ExternalConnectorCallKind,
+) -> &'static [(ExternalMetadataField, bool)] {
+    &[
+        (ExternalMetadataField::Service, true),
+        (ExternalMetadataField::Endpoint, true),
+        (ExternalMetadataField::Method, true),
+        (ExternalMetadataField::Url, true),
+        (ExternalMetadataField::TimeoutMs, false),
+    ]
+}
+
+fn external_call_arg_expr(args: &[Arg], field: ExternalMetadataField) -> Option<Idx<Expr>> {
+    let (position, name) = match field {
+        ExternalMetadataField::Service => (0usize, "service"),
+        ExternalMetadataField::Endpoint => (1usize, "endpoint"),
+        ExternalMetadataField::Method => (2usize, "method"),
+        ExternalMetadataField::Url => (3usize, "url"),
+        ExternalMetadataField::TimeoutMs => (6usize, "timeout_ms"),
+    };
+    for arg in args {
+        if let Arg::Named {
+            name: arg_name,
+            value,
+            ..
+        } = arg
+        {
+            if arg_name.as_str() == name {
+                return Some(*value);
+            }
+        }
+    }
+    let mut positional_index = 0usize;
+    for arg in args {
+        if let Arg::Positional { value, .. } = arg {
+            if positional_index == position {
+                return Some(*value);
+            }
+            positional_index += 1;
+        }
+    }
+    None
+}
+
+fn collect_called_functions_in_expr(
+    body: &Body,
+    expr_id: Idx<crate::hir::Expr>,
+    called: &mut Vec<SmolStr>,
+) {
+    use crate::hir::Expr;
+    match &body.exprs[expr_id] {
+        Expr::Literal(_) | Expr::Variable(_) => {}
+        Expr::Detach { target, .. }
+        | Expr::Unary { expr: target, .. }
+        | Expr::Crash { expr: target } => {
+            collect_called_functions_in_expr(body, *target, called);
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            collect_called_functions_in_expr(body, *lhs, called);
+            collect_called_functions_in_expr(body, *rhs, called);
+        }
+        Expr::TypeApply { callee, .. } => {
+            collect_called_functions_in_expr(body, *callee, called);
+        }
+        Expr::Call { callee, args, .. } | Expr::GivenCall { callee, args, .. } => {
+            if let Expr::Variable(name) = &body.exprs[*callee] {
+                called.push(name.clone());
+            }
+            collect_called_functions_in_expr(body, *callee, called);
+            for arg in args {
+                match arg {
+                    crate::hir::Arg::Positional { value, .. }
+                    | crate::hir::Arg::Named { value, .. } => {
+                        collect_called_functions_in_expr(body, *value, called);
+                    }
+                }
+            }
+        }
+        Expr::Member { object, .. } => {
+            collect_called_functions_in_expr(body, *object, called);
+        }
+        Expr::List(items) => {
+            for item in items {
+                collect_called_functions_in_expr(body, *item, called);
+            }
+        }
+        Expr::Map(items) => {
+            for (key, value) in items {
+                collect_called_functions_in_expr(body, *key, called);
+                collect_called_functions_in_expr(body, *value, called);
+            }
+        }
+        Expr::StringInterp(parts) => {
+            for part in parts {
+                if let crate::hir::StringPart::Expr(expr) = part {
+                    collect_called_functions_in_expr(body, *expr, called);
+                }
+            }
+        }
+    }
 }
 
 fn removed_core_stdlib_module_message(module_name: &str) -> Option<String> {
@@ -1040,11 +2143,111 @@ fn make_main_wrapper() -> crate::hir::Function {
     crate::hir::Function {
         name: SmolStr::new("main"),
         name_span: None,
+        attributes: Vec::new(),
         visibility: Visibility::Private,
         kind: FunctionKind::Function,
         params: Vec::new(),
         ret_type: None,
         body: Some(body),
+    }
+}
+
+fn detect_project_mode(entry_path: &Path, root_dir: &Path) -> ProjectMode {
+    if root_dir.file_name().and_then(|name| name.to_str()) == Some("src")
+        && entry_path.starts_with(root_dir)
+    {
+        ProjectMode::Project
+    } else {
+        ProjectMode::SingleFile
+    }
+}
+
+fn classify_module_layer(module_name: &str) -> ModuleLayer {
+    let mut parts = module_name.split('/');
+    match (parts.next(), parts.next()) {
+        (Some("domain"), _) => ModuleLayer::Domain,
+        (Some("application"), Some("composition")) => ModuleLayer::CompositionRoot,
+        (Some("application"), _) => ModuleLayer::Application,
+        (Some("infrastructure"), _) => ModuleLayer::Infrastructure,
+        _ => ModuleLayer::Other,
+    }
+}
+
+fn architecture_import_allowed(source: ModuleLayer, target: ModuleLayer) -> bool {
+    use ModuleLayer::{Application, CompositionRoot, Domain, Infrastructure, Other};
+    match (source, target) {
+        (Other, _) | (_, Other) => true,
+        (CompositionRoot, _) => true,
+        (Domain, Domain) => true,
+        (Domain, _) => false,
+        (Application, Domain | Application) => true,
+        (Application, _) => false,
+        (Infrastructure, Domain | Infrastructure) => true,
+        (Infrastructure, _) => false,
+    }
+}
+
+fn host_import_allowed(source: ModuleLayer) -> bool {
+    !matches!(source, ModuleLayer::Domain | ModuleLayer::Application)
+}
+
+fn is_host_module(module_name: &str) -> bool {
+    module_name == "host" || module_name.starts_with("host/")
+}
+
+fn architecture_layer_violation_message(
+    source: ModuleLayer,
+    target: ModuleLayer,
+    imported_module: &str,
+) -> String {
+    let recipe = match source {
+        ModuleLayer::Domain => {
+            "move this dependency to application or infrastructure, and keep domain dependencies inside domain/* only"
+        }
+        ModuleLayer::Application => {
+            "depend on domain/* interfaces from application/*, or move integration code into application/composition or infrastructure"
+        }
+        ModuleLayer::Infrastructure => {
+            "depend on domain/* abstractions and keep orchestration in application/composition"
+        }
+        ModuleLayer::CompositionRoot => {
+            "composition root can import all layers; this error indicates a classification mismatch"
+        }
+        ModuleLayer::Other => {
+            "place this module under src/domain, src/application, or src/infrastructure for explicit layering"
+        }
+    };
+    format!(
+        "{} modules cannot import {} modules (import '{}'). help: {}",
+        layer_label(source),
+        layer_label(target),
+        imported_module,
+        recipe
+    )
+}
+
+fn host_import_violation_message(source: ModuleLayer, imported_module: &str) -> String {
+    format!(
+        "{} modules cannot import host module '{}'. help: route host access through an interface and implement it in infrastructure, or wire it in application/composition",
+        layer_label(source),
+        imported_module
+    )
+}
+
+fn host_http_import_violation_message(source_module: &str) -> String {
+    format!(
+        "module '{}' cannot import host/http outside infrastructure/integrations. help: move this module under src/infrastructure/integrations/** or route through an integration adapter",
+        source_module
+    )
+}
+
+fn layer_label(layer: ModuleLayer) -> &'static str {
+    match layer {
+        ModuleLayer::Domain => "domain",
+        ModuleLayer::Application => "application",
+        ModuleLayer::CompositionRoot => "application/composition",
+        ModuleLayer::Infrastructure => "infrastructure",
+        ModuleLayer::Other => "other",
     }
 }
 
@@ -1244,6 +2447,8 @@ fn is_builtin_value_name(name: &SmolStr) -> bool {
             | "__wr_env_get"
             | "__wr_env_set"
             | "__wr_runtime_configure"
+            | "__wr_external_call"
+            | "__wr_http_call"
             | "Pool"
             | "queue"
             | "drop"
@@ -1494,7 +2699,11 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let entry_path = base.join("src").join("main.wr");
+        let entry_path = base
+            .join("src")
+            .join("infrastructure")
+            .join("integrations")
+            .join("main.wr");
         let mod_path = base.join("src").join("bar.wr");
 
         write_temp(
@@ -1549,7 +2758,11 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let entry_path = base.join("src").join("main.wr");
+        let entry_path = base
+            .join("src")
+            .join("infrastructure")
+            .join("integrations")
+            .join("main.wr");
         write_temp(&entry_path, "__wr_print(\"hi\")\n");
 
         let project = load_project(&entry_path);
@@ -1566,7 +2779,11 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let entry_path = base.join("src").join("main.wr");
+        let entry_path = base
+            .join("src")
+            .join("infrastructure")
+            .join("integrations")
+            .join("main.wr");
         let mod_path = base.join("src").join("bar.wr");
 
         write_temp(
@@ -1646,6 +2863,87 @@ mod tests {
         assert_eq!(canonical_stdlib_module_name("parse"), Some("data/parse"));
         assert_eq!(canonical_stdlib_module_name("env"), Some("host/env"));
         assert_eq!(canonical_stdlib_module_name("metrics"), None);
+    }
+
+    #[test]
+    fn test_module_layer_classification_is_deterministic() {
+        assert_eq!(
+            classify_module_layer("application/composition/main"),
+            ModuleLayer::CompositionRoot
+        );
+        assert_eq!(
+            classify_module_layer("application/service/user"),
+            ModuleLayer::Application
+        );
+        assert_eq!(classify_module_layer("domain/user"), ModuleLayer::Domain);
+        assert_eq!(
+            classify_module_layer("infrastructure/postgres"),
+            ModuleLayer::Infrastructure
+        );
+        assert_eq!(classify_module_layer("main"), ModuleLayer::Other);
+    }
+
+    #[test]
+    fn test_host_import_policy_by_layer() {
+        assert!(!host_import_allowed(ModuleLayer::Domain));
+        assert!(!host_import_allowed(ModuleLayer::Application));
+        assert!(host_import_allowed(ModuleLayer::Infrastructure));
+        assert!(host_import_allowed(ModuleLayer::CompositionRoot));
+        assert!(host_import_allowed(ModuleLayer::Other));
+    }
+
+    #[test]
+    fn test_project_mode_detection_is_stable() {
+        let project_entry = PathBuf::from("/tmp/sample/src/main.wr");
+        let project_root = PathBuf::from("/tmp/sample/src");
+        assert_eq!(
+            detect_project_mode(&project_entry, &project_root),
+            ProjectMode::Project
+        );
+
+        let single_entry = PathBuf::from("/tmp/sample/spec.wr");
+        let single_root = PathBuf::from("/tmp/sample");
+        assert_eq!(
+            detect_project_mode(&single_entry, &single_root),
+            ProjectMode::SingleFile
+        );
+    }
+
+    #[test]
+    fn test_function_effect_classification_is_deterministic() {
+        let base = std::env::temp_dir().join(format!(
+            "wrela_project_effects_deterministic_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let entry_path = base
+            .join("src")
+            .join("infrastructure")
+            .join("integrations")
+            .join("main.wr");
+
+        write_temp(
+            &entry_path,
+            "use try_to_http_call from host/http\n\nto pure_math() -> Integer:\n    return 1 + 2\n\nto call_api() -> Integer:\n    headers = __wr_map_new()\n    response = try_to_http_call(\"svc\", \"ep\", \"GET\", \"http://127.0.0.1:9/ping\", headers, \"\", 200) otherwise \"fallback\"\n    if response == \"fallback\":\n        return 0\n    return 200\n\nto run() -> Integer:\n    return pure_math() + call_api()\n",
+        );
+
+        let first = load_project(&entry_path).expect("first load");
+        let second = load_project(&entry_path).expect("second load");
+        assert_eq!(first.function_effects, second.function_effects);
+        assert!(
+            first
+                .function_effects
+                .iter()
+                .any(|entry| entry.function == "pure_math" && entry.effect == FunctionEffect::Pure)
+        );
+        assert!(
+            first.function_effects.iter().any(
+                |entry| entry.function == "call_api" && entry.effect == FunctionEffect::Network
+            )
+        );
     }
 
     #[test]
