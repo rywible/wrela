@@ -1,7 +1,8 @@
 use crate::hir::{CheckBinaryOp, CheckDagShapeFamily, CheckIrFunction, CheckValue, DecisionNode};
 use crate::hir::{Objective, PoolSize};
 use crate::mir::ir::{
-    CallKind, CallTarget, MirFunction, MirModule, MirType, Place, Rvalue, Stmt, Terminator, Value,
+    AllocKind, CallKind, CallTarget, MirFunction, MirModule, MirType, Place, Rvalue, Stmt,
+    Terminator, Value,
 };
 use cranelift_codegen::ir::{
     AbiParam, Function, InstBuilder, MemFlags, Signature, StackSlotData, StackSlotKind, types,
@@ -596,13 +597,24 @@ fn macos_sdk_path() -> Result<Option<String>, CodegenError> {
 }
 
 fn temp_object_path(output: &Path) -> PathBuf {
-    let mut path = std::env::temp_dir();
+    // The old implementation wrote to `$TMPDIR/<output_name>.o`, which collides when tests/codegen
+    // compile the same basename in parallel (corrupt object during link -> runtime crashes).
+    //
+    // Make the object path unique and preferably colocated with the output binary.
+    static OBJ_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = OBJ_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let pid = std::process::id();
+
+    let mut dir = output
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
     let name = output
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("wr_obj");
-    path.push(format!("{}.o", name));
-    path
+    dir.push(format!("{name}.{pid}.{seq}.o"));
+    dir
 }
 
 fn find_runtime_archive(target_dir: &Path) -> Option<PathBuf> {
@@ -1390,6 +1402,21 @@ fn lower_rvalue(
             };
             Ok(val)
         }
+        Rvalue::StrConcat { parts, alloc } => {
+            let ptr_ty = module.target_config().pointer_type();
+            let mut lowered = Vec::with_capacity(parts.len());
+            for part in parts {
+                lowered.push(lower_value(part, builder, locals, temps, module, runtime)?);
+            }
+            let (args_ptr, args_len) = build_value_array(builder, ptr_ty, &lowered);
+            let func_id = match alloc {
+                AllocKind::LocalTemp => runtime_fn_str_concat_local(module, runtime)?,
+                AllocKind::Escaping => runtime_fn_str_concat(module, runtime)?,
+            };
+            let callee = module.declare_func_in_func(func_id, builder.func);
+            let call = builder.ins().call(callee, &[args_ptr, args_len]);
+            Ok(builder.inst_results(call)[0])
+        }
         Rvalue::ResultOk { value } => {
             let v = lower_value(value, builder, locals, temps, module, runtime)?;
             let func_id = runtime_fn_result_ok(module, runtime)?;
@@ -1478,7 +1505,9 @@ fn lower_rvalue(
                                     }
                                     "__wr_map_new" => Some(runtime_fn_map_new(module, runtime)?),
                                     "__wr_map_get" => Some(runtime_fn_map_get(module, runtime)?),
+                                    "__wr_map_len" => Some(runtime_fn_map_len(module, runtime)?),
                                     "__wr_map_set" => Some(runtime_fn_map_set(module, runtime)?),
+                                    "__wr_str_len" => Some(runtime_fn_str_len(module, runtime)?),
                                     "__wr_runtime_cpu_count" => {
                                         Some(runtime_fn_runtime_cpu_count(module, runtime)?)
                                     }
@@ -2319,6 +2348,15 @@ fn runtime_fn_str_from_utf8(
     runtime.get_func(module, "wr_str_from_utf8", sig)
 }
 
+fn runtime_fn_str_intern_utf8(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let ptr_ty = module.target_config().pointer_type();
+    let sig = RuntimeRegistry::runtime_sig(module, &[ptr_ty, ptr_ty], &[types::I64]);
+    runtime.get_func(module, "wr_str_intern_utf8", sig)
+}
+
 fn runtime_fn_str_intern(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
@@ -2401,6 +2439,14 @@ fn runtime_fn_str_concat_local(
     runtime.get_func(module, "wr_str_concat_local", sig)
 }
 
+fn runtime_fn_str_len(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_str_len", sig)
+}
+
 fn runtime_fn_list_new(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
@@ -2442,6 +2488,14 @@ fn runtime_fn_map_get(
 ) -> Result<cranelift_module::FuncId, CodegenError> {
     let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
     runtime.get_func(module, "wr_map_get", sig)
+}
+
+fn runtime_fn_map_len(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_map_len", sig)
 }
 
 fn runtime_fn_map_set(
@@ -3324,14 +3378,11 @@ fn lower_string_literal(
     text: &str,
 ) -> Result<cranelift_codegen::ir::Value, CodegenError> {
     let (addr, len_val) = lower_bytes_literal(builder, module, runtime, text)?;
-    let func_id = runtime_fn_str_from_utf8(module, runtime)?;
+    // String literals are hot in loops; don't allocate a temporary string just to intern it.
+    let func_id = runtime_fn_str_intern_utf8(module, runtime)?;
     let callee = module.declare_func_in_func(func_id, builder.func);
     let call = builder.ins().call(callee, &[addr, len_val]);
-    let str_val = builder.inst_results(call)[0];
-    let intern_id = runtime_fn_str_intern(module, runtime)?;
-    let intern_callee = module.declare_func_in_func(intern_id, builder.func);
-    let intern_call = builder.ins().call(intern_callee, &[str_val]);
-    Ok(builder.inst_results(intern_call)[0])
+    Ok(builder.inst_results(call)[0])
 }
 
 fn lower_bytes_literal(

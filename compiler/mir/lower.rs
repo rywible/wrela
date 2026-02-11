@@ -9,6 +9,14 @@ use smol_str::SmolStr;
 use std::collections::{HashMap, HashSet};
 use std::env;
 
+fn is_syntactic_stringish(body: &hir::Body, expr: hir::Idx<hir::Expr>) -> bool {
+    match &body.exprs[expr] {
+        Expr::Literal(Literal::String(_)) => true,
+        Expr::StringInterp(_) => true,
+        _ => false,
+    }
+}
+
 pub fn lower_module(module: &Module) -> MirModule {
     lower_module_with_types(module, None)
 }
@@ -532,6 +540,7 @@ struct FunctionLowerer {
     returns_result: bool,
     type_info: Option<FunctionTypeInfo>,
     defers: Vec<hir::Idx<hir::Expr>>,
+    objective_stack: Vec<hir::Objective>,
 }
 
 impl FunctionLowerer {
@@ -570,7 +579,12 @@ impl FunctionLowerer {
             returns_result,
             type_info: type_info.cloned(),
             defers: Vec::new(),
+            objective_stack: Vec::new(),
         }
+    }
+
+    fn current_objective(&self) -> Option<hir::Objective> {
+        self.objective_stack.last().copied()
     }
 
     fn new_block(&mut self) -> BlockId {
@@ -834,12 +848,16 @@ impl FunctionLowerer {
                 let _ = self.lower_expr(body, *expr);
             }
             HirStmt::Optimize {
+                objective,
                 body: optimize_body,
                 ..
             } => {
+                self.objective_stack.push(*objective);
                 self.enter_scope();
                 self.lower_stmt_block(body, optimize_body);
                 self.exit_scope();
+                let popped = self.objective_stack.pop();
+                debug_assert_eq!(popped, Some(*objective));
             }
             HirStmt::If {
                 condition,
@@ -1917,6 +1935,24 @@ impl FunctionLowerer {
                     self.current_block = join_block;
                     Value::Local(result_local)
                 } else {
+                    if matches!(op, BinaryOp::Add)
+                        && (is_syntactic_stringish(body, *lhs)
+                            || is_syntactic_stringish(body, *rhs))
+                    {
+                        let lhs = self.lower_expr(body, *lhs);
+                        let rhs = self.lower_expr(body, *rhs);
+                        let temp = self.new_temp_for_expr(expr_id);
+                        self.push_stmt(MirStmt::Assign {
+                            place: Place::Temp(temp),
+                            value: Rvalue::StrConcat {
+                                parts: vec![lhs, rhs],
+                                // Escape analysis will refine this to LocalTemp when possible.
+                                alloc: AllocKind::Escaping,
+                            },
+                            span,
+                        });
+                        return Value::Temp(temp);
+                    }
                     let lhs = self.lower_expr(body, *lhs);
                     let rhs = self.lower_expr(body, *rhs);
                     let temp = self.new_temp_for_expr(expr_id);
@@ -2168,7 +2204,9 @@ impl FunctionLowerer {
     ) -> Value {
         let mut target_expr = target_expr;
         let mut size = size;
-        let mut objective = objective;
+        // If the detach site didn't specify an objective, inherit it from the nearest
+        // surrounding `optimize <objective>:` block.
+        let mut objective = objective.or_else(|| self.current_objective());
         let mut config = SpawnConfig::default();
         let mut min_size = None;
         let mut max_size = None;
@@ -2333,7 +2371,9 @@ impl FunctionLowerer {
         span: TextRange,
     ) -> Option<Value> {
         let class = self.class_target_info(body, target_expr)?;
-        let objective = objective.unwrap_or(hir::Objective::Balance);
+        let objective = objective
+            .or_else(|| self.current_objective())
+            .unwrap_or(hir::Objective::Balance);
         let mut handles = Vec::with_capacity(count);
         for _ in 0..count {
             let instance = self.build_class_instance(&class, span);
@@ -2391,7 +2431,9 @@ impl FunctionLowerer {
         span: TextRange,
     ) -> Option<Value> {
         let class = self.class_target_info(body, target_expr)?;
-        let objective = objective.unwrap_or(hir::Objective::Balance);
+        let objective = objective
+            .or_else(|| self.current_objective())
+            .unwrap_or(hir::Objective::Balance);
         let obj_code = objective_code(objective);
         let resolved_size = compile_time_auto_pool_size(
             obj_code,
@@ -3265,7 +3307,9 @@ fn builtin_function_names() -> Vec<SmolStr> {
         SmolStr::new("__wr_map_new"),
         SmolStr::new("__wr_list_push"),
         SmolStr::new("__wr_map_get"),
+        SmolStr::new("__wr_map_len"),
         SmolStr::new("__wr_map_set"),
+        SmolStr::new("__wr_str_len"),
         SmolStr::new("__wr_log"),
         SmolStr::new("__wr_log_configure"),
         SmolStr::new("__wr_runtime_cpu_count"),

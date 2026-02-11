@@ -205,6 +205,7 @@ fn cli_test_perf_summary() {
     let dir = tempfile::tempdir().expect("tempdir");
     write_test_project(dir.path());
     let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .current_dir(dir.path())
         .arg("test")
         .arg(dir.path())
         .output()
@@ -222,6 +223,7 @@ fn cli_test_perf_debug() {
     let dir = tempfile::tempdir().expect("tempdir");
     write_test_project(dir.path());
     let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .current_dir(dir.path())
         .arg("test")
         .arg("--perf-debug")
         .arg(dir.path())

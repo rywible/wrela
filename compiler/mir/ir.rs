@@ -150,6 +150,10 @@ pub enum Rvalue {
         lhs: Value,
         rhs: Value,
     },
+    StrConcat {
+        parts: Vec<Value>,
+        alloc: AllocKind,
+    },
     ResultOk {
         value: Value,
     },

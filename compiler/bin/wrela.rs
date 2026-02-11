@@ -990,7 +990,7 @@ struct TestCase {
     func_name: String,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 struct MetricsDump {
     messages_sent: u64,
     messages_dropped: u64,
@@ -1179,6 +1179,15 @@ struct TestRun {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct PerfCaseSample {
+    name: String,
+    compile_ns: u128,
+    runtime_ns: u128,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metrics: Option<MetricsDump>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct PerfSummary {
     sample_count: usize,
     compile_throughput_tests_per_sec: f64,
@@ -1224,6 +1233,8 @@ struct PerfSummary {
     mailbox_rescue_wake_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     queue_cas_retry_total: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cases: Option<Vec<PerfCaseSample>>,
     metrics: MetricsTotals,
 }
 
@@ -1455,6 +1466,7 @@ fn run_tests_once(
     let mut fail_count = 0usize;
     let mut compile_ns: Vec<u128> = Vec::new();
     let mut runtime_ns: Vec<u128> = Vec::new();
+    let mut cases: Vec<PerfCaseSample> = Vec::new();
     let mut metrics_totals = MetricsTotals::default();
     let mut metrics_count = 0usize;
     for (name, ok, dur, err, run) in rx.iter() {
@@ -1465,6 +1477,12 @@ fn run_tests_once(
                 metrics_totals.add(metrics);
                 metrics_count += 1;
             }
+            cases.push(PerfCaseSample {
+                name: name.clone(),
+                compile_ns: run.compile_ns,
+                runtime_ns: run.runtime_ns,
+                metrics: run.metrics.clone(),
+            });
         }
         if ok {
             println!("ok   {:>7?}  {}", dur, name);
@@ -1481,7 +1499,10 @@ fn run_tests_once(
     if fail_count != 0 || runtime_ns.is_empty() {
         return (EXIT_CODEGEN, None);
     }
-    let summary = build_perf_summary(&compile_ns, &runtime_ns, metrics_count, &metrics_totals);
+    let mut summary = build_perf_summary(&compile_ns, &runtime_ns, metrics_count, &metrics_totals);
+    // Attach per-test samples so perf consumers (macrobench) can compute per-scenario
+    // percentiles without changing the core gate logic.
+    summary.cases = Some(cases);
     print_perf_summary(&summary, perf_debug);
     (EXIT_OK, Some(summary))
 }
@@ -1689,6 +1710,7 @@ fn build_perf_summary(
         mailbox_wake_coalesced_count: Some(metrics_totals.mailbox_wake_coalesced_count),
         mailbox_rescue_wake_count: Some(metrics_totals.mailbox_rescue_wake_count),
         queue_cas_retry_total: Some(metrics_totals.queue_cas_retry_total),
+        cases: None,
         metrics: metrics_totals.clone(),
     }
 }
@@ -1845,6 +1867,7 @@ fn aggregate_perf_samples(samples: &[PerfSummary]) -> PerfSummary {
         }),
         mailbox_rescue_wake_count: average_optional_u64(samples, |s| s.mailbox_rescue_wake_count),
         queue_cas_retry_total: average_optional_u64(samples, |s| s.queue_cas_retry_total),
+        cases: None,
         metrics,
     }
 }
@@ -2887,6 +2910,7 @@ mod tests {
             mailbox_wake_coalesced_count: Some(2),
             mailbox_rescue_wake_count: Some(0),
             queue_cas_retry_total: Some(1),
+            cases: None,
             metrics: MetricsTotals::default(),
         }
     }

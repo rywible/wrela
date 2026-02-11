@@ -436,6 +436,11 @@ pub extern "C" fn wr_str_intern(val: Value) -> Value {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn wr_str_intern_utf8(ptr: *const u8, len: usize) -> Value {
+    string::str_intern_utf8(ptr, len)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn wr_str_concat(parts_ptr: *const Value, parts_len: usize) -> Value {
     string::str_concat(parts_ptr, parts_len)
 }
@@ -443,6 +448,15 @@ pub extern "C" fn wr_str_concat(parts_ptr: *const Value, parts_len: usize) -> Va
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_str_concat_local(parts_ptr: *const Value, parts_len: usize) -> Value {
     string::str_concat_local(parts_ptr, parts_len)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_str_len(val: Value) -> Value {
+    if let Some(len) = crate::string::with_string_bytes(val, |b| b.len()) {
+        Value::from_int(len as i64)
+    } else {
+        Value::nil()
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -572,6 +586,14 @@ pub extern "C" fn wr_map_new_local() -> Value {
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_map_get(map_val: Value, key: Value) -> Value {
     map::map_get(map_val, key)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_map_len(map_val: Value) -> Value {
+    let Some(map) = map::as_map_ref(map_val) else {
+        return Value::nil();
+    };
+    Value::from_int(map::map_len(map) as i64)
 }
 
 #[unsafe(no_mangle)]

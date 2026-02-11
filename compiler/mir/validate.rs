@@ -243,7 +243,8 @@ fn check_stmt_uses(
         Stmt::Assign { place, value, .. } => {
             if let Rvalue::BuildList { alloc, .. }
             | Rvalue::BuildMap { alloc, .. }
-            | Rvalue::StringInterp { alloc, .. } = value
+            | Rvalue::StringInterp { alloc, .. }
+            | Rvalue::StrConcat { alloc, .. } = value
             {
                 if matches!(alloc, crate::mir::ir::AllocKind::LocalTemp)
                     && !matches!(place, Place::Temp(_))
@@ -456,6 +457,11 @@ fn check_rvalue_uses(
         Rvalue::BuildMap { items, .. } => {
             for (key, value) in items {
                 check_value_use(func, block_idx, key, defined, errors);
+                check_value_use(func, block_idx, value, defined, errors);
+            }
+        }
+        Rvalue::StrConcat { parts, .. } => {
+            for value in parts {
                 check_value_use(func, block_idx, value, defined, errors);
             }
         }

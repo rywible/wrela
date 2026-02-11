@@ -1,6 +1,7 @@
 pub(crate) mod arena {
     use std::cell::Cell;
     use std::collections::HashSet;
+    use std::mem::{align_of, size_of};
 
     thread_local! {
         static ACTIVE_ARENA: Cell<*mut Arena> = const { Cell::new(std::ptr::null_mut()) };
@@ -10,13 +11,29 @@ pub(crate) mod arena {
     struct ObjAllocation {
         ptr: usize,
         layout: std::alloc::Layout,
+        dealloc: bool,
     }
 
     #[derive(Default)]
     pub struct Arena {
         allocations: Vec<ObjAllocation>,
         allocation_set: HashSet<usize>,
-        bytes_allocations: Vec<(usize, usize, usize)>,
+        obj_chunks: Vec<Chunk>,
+        bytes_chunks: Vec<BytesChunk>,
+    }
+
+    struct Chunk {
+        ptr: usize,
+        cap: usize,
+        used: usize,
+        align: usize,
+    }
+
+    struct BytesChunk {
+        ptr: usize,
+        cap: usize,
+        used: usize,
+        align: usize,
     }
 
     impl Arena {
@@ -28,21 +45,30 @@ pub(crate) mod arena {
             for allocation in self.allocations.drain(..) {
                 unsafe {
                     drop_object_in_arena(allocation.ptr as *mut crate::object::ObjHeader);
-                    std::alloc::dealloc(allocation.ptr as *mut u8, allocation.layout);
+                    if allocation.dealloc {
+                        std::alloc::dealloc(allocation.ptr as *mut u8, allocation.layout);
+                    }
                 }
             }
             self.allocation_set.clear();
-            for (ptr, len, align) in self.bytes_allocations.drain(..) {
+            for chunk in self.obj_chunks.drain(..) {
                 unsafe {
                     let layout =
-                        std::alloc::Layout::from_size_align_unchecked(len.max(1), align.max(1));
-                    std::alloc::dealloc(ptr as *mut u8, layout);
+                        std::alloc::Layout::from_size_align_unchecked(chunk.cap, chunk.align);
+                    std::alloc::dealloc(chunk.ptr as *mut u8, layout);
+                }
+            }
+            for chunk in self.bytes_chunks.drain(..) {
+                unsafe {
+                    let layout =
+                        std::alloc::Layout::from_size_align_unchecked(chunk.cap, chunk.align);
+                    std::alloc::dealloc(chunk.ptr as *mut u8, layout);
                 }
             }
         }
 
         pub fn live(&self) -> usize {
-            self.allocations.len() + self.bytes_allocations.len()
+            self.allocations.len() + self.obj_chunks.len() + self.bytes_chunks.len()
         }
     }
 
@@ -89,18 +115,64 @@ pub(crate) mod arena {
             if arena_ptr.is_null() {
                 return None;
             }
-            let boxed = Box::new(value);
-            let raw = Box::into_raw(boxed);
+            // Bump allocate objects in the arena to avoid per-object allocator overhead.
+            // Destructors still run via `drop_object_in_arena` at reset; memory is reclaimed by
+            // freeing the chunk (no per-object dealloc).
+            let arena = unsafe { &mut *arena_ptr };
+            let size = size_of::<T>().max(1);
+            let align = align_of::<T>().max(1);
+            if !align.is_power_of_two() {
+                return None;
+            }
+            let ptr = alloc_from_chunks(&mut arena.obj_chunks, size, align)?;
+            let raw = ptr as *mut T;
             unsafe {
-                let ptr = raw as usize;
-                (*arena_ptr).allocations.push(ObjAllocation {
+                raw.write(value);
+                arena.allocations.push(ObjAllocation {
                     ptr,
                     layout: std::alloc::Layout::new::<T>(),
+                    dealloc: false,
                 });
-                (*arena_ptr).allocation_set.insert(ptr);
+                arena.allocation_set.insert(ptr);
             }
             Some(raw)
         })
+    }
+
+    fn alloc_from_chunks(chunks: &mut Vec<Chunk>, want: usize, align: usize) -> Option<usize> {
+        debug_assert!(want > 0);
+        debug_assert!(align.is_power_of_two());
+        if let Some(chunk) = chunks.last_mut() {
+            if chunk.align >= align {
+                let mask = align - 1;
+                let aligned = (chunk.used + mask) & !mask;
+                if aligned.saturating_add(want) <= chunk.cap {
+                    let out = chunk.ptr + aligned;
+                    chunk.used = aligned + want;
+                    return Some(out);
+                }
+            }
+        }
+        const DEFAULT_CHUNK: usize = 64 * 1024;
+        let cap = DEFAULT_CHUNK.max(want.next_power_of_two());
+        let chunk_align = align.max(16);
+        let layout = std::alloc::Layout::from_size_align(cap, chunk_align).ok()?;
+        let ptr = unsafe { std::alloc::alloc(layout) } as usize;
+        if ptr == 0 {
+            return None;
+        }
+        let mut chunk = Chunk {
+            ptr,
+            cap,
+            used: 0,
+            align: chunk_align,
+        };
+        let mask = align - 1;
+        let aligned = (chunk.used + mask) & !mask;
+        let out = chunk.ptr + aligned;
+        chunk.used = aligned + want;
+        chunks.push(chunk);
+        Some(out)
     }
 
     pub fn alloc_bytes_in_current(len: usize, align: usize) -> Option<*mut u8> {
@@ -109,17 +181,49 @@ pub(crate) mod arena {
             if arena_ptr.is_null() {
                 return None;
             }
-            let layout = std::alloc::Layout::from_size_align(len.max(1), align.max(1)).ok()?;
+            // Fast bump allocation for arena-backed byte buffers (strings/bytes local temps).
+            // Align is typically 1; keep this general but simple.
+            let want = len.max(1);
+            let align = align.max(1);
+            if !align.is_power_of_two() {
+                return None;
+            }
+            let arena = unsafe { &mut *arena_ptr };
+
+            // Find an existing chunk with enough space.
+            if let Some(chunk) = arena.bytes_chunks.last_mut() {
+                if chunk.align >= align {
+                    let mask = align - 1;
+                    let aligned = (chunk.used + mask) & !mask;
+                    if aligned.saturating_add(want) <= chunk.cap {
+                        let out = unsafe { (chunk.ptr as *mut u8).add(aligned) };
+                        chunk.used = aligned + want;
+                        return Some(out);
+                    }
+                }
+            }
+
+            // Allocate a new chunk.
+            const DEFAULT_CHUNK: usize = 64 * 1024;
+            let cap = DEFAULT_CHUNK.max(want.next_power_of_two());
+            let chunk_align = align.max(16);
+            let layout = std::alloc::Layout::from_size_align(cap, chunk_align).ok()?;
             let ptr = unsafe { std::alloc::alloc(layout) };
             if ptr.is_null() {
                 return None;
             }
-            unsafe {
-                (*arena_ptr)
-                    .bytes_allocations
-                    .push((ptr as usize, len.max(1), align.max(1)));
-            }
-            Some(ptr)
+            let mut chunk = BytesChunk {
+                ptr: ptr as usize,
+                cap,
+                used: 0,
+                align: chunk_align,
+            };
+            let mask = align - 1;
+            let aligned = (chunk.used + mask) & !mask;
+            let out = unsafe { (chunk.ptr as *mut u8).add(aligned) };
+            chunk.used = aligned + want;
+            arena.bytes_chunks.push(chunk);
+            Some(out)
         })
     }
 
@@ -527,13 +631,11 @@ pub(crate) mod class {
 pub(crate) mod iter {
     use crate::list::as_list_ref;
     use crate::map::{
-        MapEntries, MapKey, as_map_ref, map_inline_entry, map_inline_len, map_is_inline,
-        map_version,
+        MapIter, as_map_ref, map_inline_entry, map_inline_len, map_is_inline, map_iter, map_version,
     };
     use crate::object::ObjHeader;
     use crate::value::{TypeId, Value, header};
     use crate::{wr_rc_dec, wr_rc_inc};
-    use std::collections::hash_map;
 
     #[repr(C)]
     pub struct IterObj {
@@ -550,7 +652,7 @@ pub(crate) mod iter {
         Map {
             map: Value,
             index: usize,
-            iter: Option<hash_map::Iter<'static, MapKey, Value>>,
+            iter: Option<MapIter<'static>>,
             version: u64,
         },
     }
@@ -573,18 +675,7 @@ pub(crate) mod iter {
             let iter = if map_is_inline(map) {
                 None
             } else {
-                let iter = unsafe {
-                    match &(*map).entries {
-                        MapEntries::Heap(entries) => Some(entries.iter()),
-                        _ => None,
-                    }
-                };
-                iter.map(|iter| unsafe {
-                    std::mem::transmute::<
-                        hash_map::Iter<'_, MapKey, Value>,
-                        hash_map::Iter<'static, MapKey, Value>,
-                    >(iter)
-                })
+                Some(map_iter(map))
             };
             let obj = Box::new(IterObj {
                 header: header(TypeId::Iterator),
@@ -837,9 +928,74 @@ pub(crate) mod map {
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::collections::hash_map::{Entry, Iter as HashIter};
+    use std::hash::BuildHasherDefault;
     use std::hash::{Hash, Hasher};
     use std::mem::MaybeUninit;
+    #[cfg(test)]
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    // Default `std::collections::HashMap` uses SipHash, which is great for adversarial keys and
+    // terrible for perf macrobenches. Wrela's map is a runtime primitive; for now we bias hard
+    // toward throughput and accept that this is non-cryptographic.
+    //
+    // This is intentionally simple and fast (fxhash-style).
+    #[derive(Default)]
+    pub(crate) struct FastHasher {
+        hash: u64,
+    }
+
+    impl Hasher for FastHasher {
+        #[inline]
+        fn finish(&self) -> u64 {
+            self.hash
+        }
+
+        #[inline]
+        fn write(&mut self, bytes: &[u8]) {
+            // FNV-ish: cheap and decent for small keys.
+            let mut h = self.hash;
+            for &b in bytes {
+                h ^= b as u64;
+                h = h.wrapping_mul(0x100_0000_01b3);
+            }
+            self.hash = h;
+        }
+
+        #[inline]
+        fn write_u64(&mut self, i: u64) {
+            // Mix 64-bit chunks with a single multiply; good enough for ints/pointers.
+            let mut h = self.hash ^ i;
+            h = h.wrapping_mul(0x517c_c1b7_2722_0a95);
+            self.hash = h;
+        }
+
+        #[inline]
+        fn write_i64(&mut self, i: i64) {
+            self.write_u64(i as u64);
+        }
+
+        #[inline]
+        fn write_usize(&mut self, i: usize) {
+            self.write_u64(i as u64);
+        }
+    }
+
+    type FastBuildHasher = BuildHasherDefault<FastHasher>;
+    type FastHashMap<K, V> = HashMap<K, V, FastBuildHasher>;
+
+    #[inline]
+    unsafe fn rc_inc_if_managed(val: Value) {
+        if val.is_ptr() && !arena::is_arena_value(val) {
+            unsafe { wr_rc_inc(val) };
+        }
+    }
+
+    #[inline]
+    unsafe fn rc_dec_if_managed(val: Value) {
+        if val.is_ptr() && !arena::is_arena_value(val) {
+            unsafe { wr_rc_dec(val) };
+        }
+    }
 
     #[repr(C)]
     pub struct MapObj {
@@ -920,7 +1076,9 @@ pub(crate) mod map {
         static MAP_INLINE_CACHE: RefCell<MapInlineCache> = RefCell::new(MapInlineCache::default());
     }
 
+    #[cfg(test)]
     static MAP_IC_HITS: AtomicU64 = AtomicU64::new(0);
+    #[cfg(test)]
     static MAP_IC_MISSES: AtomicU64 = AtomicU64::new(0);
 
     pub(crate) enum MapEntries {
@@ -928,7 +1086,9 @@ pub(crate) mod map {
             len: usize,
             entries: [MaybeUninit<(MapKey, Value)>; INLINE_CAP],
         },
-        Heap(HashMap<MapKey, Value>),
+        HeapGeneric(FastHashMap<MapKey, Value>),
+        // Fast path for the common hot case: immediate integer keys.
+        HeapInt(IntMap),
     }
 
     pub(crate) enum MapIter<'a> {
@@ -937,7 +1097,140 @@ pub(crate) mod map {
             index: usize,
             len: usize,
         },
-        Heap(HashIter<'a, MapKey, Value>),
+        HeapGeneric(HashIter<'a, MapKey, Value>),
+        HeapInt(IntMapIter<'a>),
+    }
+
+    #[derive(Clone, Copy)]
+    struct IntSlot {
+        key: i64,
+        val: Value,
+        full: bool,
+    }
+
+    impl Default for IntSlot {
+        fn default() -> Self {
+            Self {
+                key: 0,
+                val: Value::nil(),
+                full: false,
+            }
+        }
+    }
+
+    // Minimal open-addressing table for immediate integer keys.
+    // No delete support (language maps don't expose deletion today), so we can keep it simple.
+    struct IntMap {
+        len: usize,
+        mask: usize,
+        slots: Vec<IntSlot>,
+    }
+
+    impl IntMap {
+        fn new(cap: usize) -> Self {
+            let cap = cap.max(16).next_power_of_two();
+            Self {
+                len: 0,
+                mask: cap - 1,
+                slots: vec![IntSlot::default(); cap],
+            }
+        }
+
+        #[inline(always)]
+        fn len(&self) -> usize {
+            self.len
+        }
+
+        #[inline(always)]
+        fn hash(key: i64) -> usize {
+            // A simple mix that's good enough for consecutive integer keys.
+            let mut x = key as u64;
+            x ^= x >> 33;
+            x = x.wrapping_mul(0xff51afd7ed558ccd);
+            x ^= x >> 33;
+            x = x.wrapping_mul(0xc4ceb9fe1a85ec53);
+            x ^= x >> 33;
+            x as usize
+        }
+
+        fn load_factor_exceeded(&self) -> bool {
+            // Keep probing short: ~70% load.
+            self.len * 10 >= self.slots.len() * 7
+        }
+
+        fn get(&self, key: i64) -> Option<Value> {
+            let mut idx = Self::hash(key) & self.mask;
+            loop {
+                let slot = unsafe { self.slots.get_unchecked(idx) };
+                if !slot.full {
+                    return None;
+                }
+                if slot.key == key {
+                    return Some(slot.val);
+                }
+                idx = (idx + 1) & self.mask;
+            }
+        }
+
+        fn insert(&mut self, key: i64, val: Value) -> Option<Value> {
+            if self.load_factor_exceeded() {
+                self.grow();
+            }
+            let mut idx = Self::hash(key) & self.mask;
+            loop {
+                let slot = unsafe { self.slots.get_unchecked_mut(idx) };
+                if !slot.full {
+                    slot.full = true;
+                    slot.key = key;
+                    slot.val = val;
+                    self.len += 1;
+                    return None;
+                }
+                if slot.key == key {
+                    let old = slot.val;
+                    slot.val = val;
+                    return Some(old);
+                }
+                idx = (idx + 1) & self.mask;
+            }
+        }
+
+        fn grow(&mut self) {
+            let mut next = IntMap::new(self.slots.len() * 2);
+            for slot in self.slots.iter_mut() {
+                if slot.full {
+                    let key = slot.key;
+                    let val = slot.val;
+                    let _ = next.insert(key, val);
+                }
+            }
+            *self = next;
+        }
+
+        fn iter(&self) -> IntMapIter<'_> {
+            IntMapIter { map: self, idx: 0 }
+        }
+    }
+
+    struct IntMapIter<'a> {
+        map: &'a IntMap,
+        idx: usize,
+    }
+
+    impl<'a> Iterator for IntMapIter<'a> {
+        type Item = (i64, Value);
+
+        fn next(&mut self) -> Option<Self::Item> {
+            while self.idx < self.map.slots.len() {
+                let i = self.idx;
+                self.idx += 1;
+                let slot = unsafe { self.map.slots.get_unchecked(i) };
+                if slot.full {
+                    return Some((slot.key, slot.val));
+                }
+            }
+            None
+        }
     }
 
     impl<'a> MapIter<'a> {
@@ -955,7 +1248,8 @@ pub(crate) mod map {
                     *index += 1;
                     Some(*entry)
                 }
-                MapIter::Heap(iter) => iter.next().map(|(k, v)| (*k, *v)),
+                MapIter::HeapGeneric(iter) => iter.next().map(|(k, v)| (*k, *v)),
+                MapIter::HeapInt(iter) => iter.next().map(|(k, v)| (MapKey(Value::from_int(k)), v)),
             }
         }
     }
@@ -984,22 +1278,6 @@ pub(crate) mod map {
                     Some(*entry)
                 }
                 _ => None,
-            }
-        }
-
-        fn promote(&mut self) -> &mut HashMap<MapKey, Value> {
-            let entries = std::mem::replace(self, MapEntries::new_inline());
-            if let MapEntries::Inline { len, entries } = entries {
-                let mut map = HashMap::with_capacity(len + 1);
-                for idx in 0..len {
-                    let (key, val) = unsafe { entries[idx].assume_init_read() };
-                    map.insert(key, val);
-                }
-                *self = MapEntries::Heap(map);
-            }
-            match self {
-                MapEntries::Heap(map) => map,
-                MapEntries::Inline { .. } => unreachable!("promote should yield heap"),
             }
         }
     }
@@ -1034,10 +1312,36 @@ pub(crate) mod map {
             Some(map) => map,
             None => return Value::nil(),
         };
+        // The inline-cache is aimed at stable maps. For heap maps that are frequently mutated,
+        // it becomes pure overhead (version changes every set). Skip it and do a direct lookup.
+        unsafe {
+            match &(*map).entries {
+                MapEntries::HeapGeneric(entries) => {
+                    if let Some(val) = entries.get(&MapKey(key)).copied() {
+                        rc_inc_if_managed(val);
+                        return val;
+                    }
+                    return Value::nil();
+                }
+                MapEntries::HeapInt(entries) => {
+                    let Some(i) = int_value(key) else {
+                        return Value::nil();
+                    };
+                    if let Some(val) = entries.get(i) {
+                        rc_inc_if_managed(val);
+                        return val;
+                    }
+                    return Value::nil();
+                }
+                _ => {}
+            }
+        }
         if let Some(val) = map_get_ic_hit(map, key) {
+            #[cfg(test)]
             MAP_IC_HITS.fetch_add(1, Ordering::Relaxed);
             return val;
         }
+        #[cfg(test)]
         MAP_IC_MISSES.fetch_add(1, Ordering::Relaxed);
         map_get_ic_miss(map, key)
     }
@@ -1059,8 +1363,8 @@ pub(crate) mod map {
                     if *stored_key == MapKey(key_val) {
                         let old = *stored_val;
                         *stored_val = val;
-                        wr_rc_inc(val);
-                        wr_rc_dec(old);
+                        rc_inc_if_managed(val);
+                        rc_dec_if_managed(old);
                         (*map).version = (*map).version.wrapping_add(1);
                         return;
                     }
@@ -1068,31 +1372,90 @@ pub(crate) mod map {
                 if *len < INLINE_CAP {
                     entries[*len].write((MapKey(key_val), val));
                     *len += 1;
-                    wr_rc_inc(key_val);
-                    wr_rc_inc(val);
+                    rc_inc_if_managed(key_val);
+                    rc_inc_if_managed(val);
                     (*map).version = (*map).version.wrapping_add(1);
                     return;
                 }
             }
             if let MapEntries::Inline { .. } = &mut *entries_ptr {
-                let map_entries = (&mut *entries_ptr).promote();
-                map_entries.insert(MapKey(key_val), val);
-                wr_rc_inc(key_val);
-                wr_rc_inc(val);
-                (*map).version = (*map).version.wrapping_add(1);
-                return;
+                // Promote inline -> heap. If all keys are immediate integers, use the int-key fast
+                // path to avoid MapKey hashing / value_eq overhead in hot lanes.
+                let old = std::mem::replace(&mut *entries_ptr, MapEntries::new_inline());
+                if let MapEntries::Inline { len, entries } = old {
+                    let mut all_int = true;
+                    let mut int_map = IntMap::new(len + 1);
+                    let mut generic_map: Option<FastHashMap<MapKey, Value>> = None;
+                    for idx in 0..len {
+                        let (k, v) = entries[idx].assume_init_read();
+                        if all_int {
+                            if let Some(i) = int_value(k.0) {
+                                let _ = int_map.insert(i, v);
+                                continue;
+                            }
+                            all_int = false;
+                            let mut g: FastHashMap<MapKey, Value> =
+                                HashMap::with_capacity_and_hasher(len + 1, Default::default());
+                            // Move existing int entries into the generic map.
+                            for (ik, iv) in int_map.iter() {
+                                g.insert(MapKey(Value::from_int(ik)), iv);
+                            }
+                            g.insert(k, v);
+                            generic_map = Some(g);
+                            continue;
+                        }
+                        if let Some(g) = generic_map.as_mut() {
+                            g.insert(k, v);
+                        }
+                    }
+                    if all_int {
+                        *entries_ptr = MapEntries::HeapInt(int_map);
+                    } else {
+                        *entries_ptr = MapEntries::HeapGeneric(generic_map.unwrap());
+                    }
+                }
             }
-            if let MapEntries::Heap(entries) = &mut *entries_ptr {
+            match &mut *entries_ptr {
+                MapEntries::HeapInt(entries) => {
+                    if let Some(i) = int_value(key_val) {
+                        if let Some(old) = entries.insert(i, val) {
+                            rc_inc_if_managed(val);
+                            rc_dec_if_managed(old);
+                        } else {
+                            rc_inc_if_managed(val);
+                        }
+                        (*map).version = (*map).version.wrapping_add(1);
+                        return;
+                    }
+                    // Upgrade int-only heap map -> generic for non-int keys.
+                    let old = std::mem::replace(&mut *entries_ptr, MapEntries::new_inline());
+                    if let MapEntries::HeapInt(old_int) = old {
+                        let mut g: FastHashMap<MapKey, Value> = HashMap::with_capacity_and_hasher(
+                            old_int.len() + 1,
+                            Default::default(),
+                        );
+                        for (ik, iv) in old_int.iter() {
+                            g.insert(MapKey(Value::from_int(ik)), iv);
+                        }
+                        *entries_ptr = MapEntries::HeapGeneric(g);
+                    } else {
+                        // Put it back. Should be impossible, but don't corrupt the map.
+                        *entries_ptr = old;
+                    }
+                }
+                _ => {}
+            }
+            if let MapEntries::HeapGeneric(entries) = &mut *entries_ptr {
                 match entries.entry(MapKey(key_val)) {
                     Entry::Occupied(mut entry) => {
                         let old = entry.insert(val);
-                        wr_rc_inc(val);
-                        wr_rc_dec(old);
+                        rc_inc_if_managed(val);
+                        rc_dec_if_managed(old);
                     }
                     Entry::Vacant(entry) => {
                         entry.insert(val);
-                        wr_rc_inc(key_val);
-                        wr_rc_inc(val);
+                        rc_inc_if_managed(key_val);
+                        rc_inc_if_managed(val);
                     }
                 }
                 (*map).version = (*map).version.wrapping_add(1);
@@ -1107,14 +1470,19 @@ pub(crate) mod map {
                 MapEntries::Inline { len, entries } => {
                     for idx in 0..*len {
                         let (key, val) = entries[idx].assume_init_ref();
-                        wr_rc_dec(key.0);
-                        wr_rc_dec(*val);
+                        rc_dec_if_managed(key.0);
+                        rc_dec_if_managed(*val);
                     }
                 }
-                MapEntries::Heap(entries) => {
+                MapEntries::HeapGeneric(entries) => {
                     for (key, val) in entries.iter() {
-                        wr_rc_dec(key.0);
-                        wr_rc_dec(*val);
+                        rc_dec_if_managed(key.0);
+                        rc_dec_if_managed(*val);
+                    }
+                }
+                MapEntries::HeapInt(entries) => {
+                    for (_k, v) in entries.iter() {
+                        rc_dec_if_managed(v);
                     }
                 }
             }
@@ -1129,14 +1497,19 @@ pub(crate) mod map {
                 MapEntries::Inline { len, entries } => {
                     for idx in 0..*len {
                         let (key, val) = entries[idx].assume_init_ref();
-                        wr_rc_dec(key.0);
-                        wr_rc_dec(*val);
+                        rc_dec_if_managed(key.0);
+                        rc_dec_if_managed(*val);
                     }
                 }
-                MapEntries::Heap(entries) => {
+                MapEntries::HeapGeneric(entries) => {
                     for (key, val) in entries.iter() {
-                        wr_rc_dec(key.0);
-                        wr_rc_dec(*val);
+                        rc_dec_if_managed(key.0);
+                        rc_dec_if_managed(*val);
+                    }
+                }
+                MapEntries::HeapInt(entries) => {
+                    for (_k, v) in entries.iter() {
+                        rc_dec_if_managed(v);
                     }
                 }
             }
@@ -1161,7 +1534,8 @@ pub(crate) mod map {
         unsafe {
             match &(*map).entries {
                 MapEntries::Inline { len, .. } => *len,
-                MapEntries::Heap(entries) => entries.len(),
+                MapEntries::HeapGeneric(entries) => entries.len(),
+                MapEntries::HeapInt(entries) => entries.len(),
             }
         }
     }
@@ -1174,12 +1548,18 @@ pub(crate) mod map {
                     index: 0,
                     len: *len,
                 },
-                MapEntries::Heap(entries) => {
+                MapEntries::HeapGeneric(entries) => {
                     let iter = entries.iter();
-                    MapIter::Heap(std::mem::transmute::<
+                    MapIter::HeapGeneric(std::mem::transmute::<
                         HashIter<'_, MapKey, Value>,
                         HashIter<'static, MapKey, Value>,
                     >(iter))
+                }
+                MapEntries::HeapInt(entries) => {
+                    let iter = entries.iter();
+                    MapIter::HeapInt(std::mem::transmute::<IntMapIter<'_>, IntMapIter<'static>>(
+                        iter,
+                    ))
                 }
             }
         }
@@ -1197,7 +1577,13 @@ pub(crate) mod map {
                     }
                     None
                 }
-                MapEntries::Heap(entries) => entries.get(&key).copied(),
+                MapEntries::HeapGeneric(entries) => entries.get(&key).copied(),
+                MapEntries::HeapInt(entries) => {
+                    let Some(i) = int_value(key.0) else {
+                        return None;
+                    };
+                    entries.get(i)
+                }
             }
         }
     }
@@ -1246,7 +1632,7 @@ pub(crate) mod map {
                         MapEntries::Inline { len, entries } if cache.inline_index < *len => {
                             let (stored_key, val) = entries[cache.inline_index].assume_init_ref();
                             if *stored_key == MapKey(key) {
-                                wr_rc_inc(*val);
+                                rc_inc_if_managed(*val);
                                 Some(*val)
                             } else {
                                 None
@@ -1255,9 +1641,9 @@ pub(crate) mod map {
                         _ => None,
                     },
                     CACHE_SHAPE_HEAP_KEY => match &(*map).entries {
-                        MapEntries::Heap(entries) => {
+                        MapEntries::HeapGeneric(entries) => {
                             entries.get(&MapKey(key)).copied().inspect(|v| {
-                                wr_rc_inc(*v);
+                                rc_inc_if_managed(*v);
                             })
                         }
                         _ => None,
@@ -1280,19 +1666,20 @@ pub(crate) mod map {
                             MAP_INLINE_CACHE.with(|cache| {
                                 cache.borrow_mut().store_inline_slot(map, version, key, idx)
                             });
-                            wr_rc_inc(*val);
+                            rc_inc_if_managed(*val);
                             return *val;
                         }
                     }
                 }
-                MapEntries::Heap(entries) => {
+                MapEntries::HeapGeneric(entries) => {
                     if let Some(val) = entries.get(&MapKey(key)).copied() {
                         MAP_INLINE_CACHE
                             .with(|cache| cache.borrow_mut().store_heap_key(map, version, key));
-                        wr_rc_inc(val);
+                        rc_inc_if_managed(val);
                         return val;
                     }
                 }
+                MapEntries::HeapInt(_) => {}
             }
         }
         MAP_INLINE_CACHE.with(|cache| cache.borrow_mut().store_missing(map, version, key));
@@ -1520,6 +1907,37 @@ pub(crate) mod string {
         #[cfg(feature = "metrics")]
         inc_alloc_string();
         Value::from_ptr(Box::into_raw(s) as *mut ObjHeader)
+    }
+
+    // Intern a UTF-8 string literal from static bytes without allocating a temporary string first.
+    //
+    // This is designed for compiler-emitted string literals that are treated as constants:
+    // callers typically do not participate in RC for the returned Value.
+    pub fn str_intern_utf8(ptr: *const u8, len: usize) -> Value {
+        if ptr.is_null() && len != 0 {
+            return Value::nil();
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+        if std::str::from_utf8(bytes).is_err() {
+            return Value::nil();
+        }
+        let mut map = intern_map().lock().expect("intern map lock");
+        if let Some(existing) = map.get(bytes) {
+            // Do NOT rc_inc here: string literals are treated as constants by the compiler.
+            return *existing;
+        }
+        let s = Box::new(StrObj {
+            header: header(TypeId::String),
+            bytes: bytes.to_vec(),
+            arena_backed: false,
+        });
+        #[cfg(feature = "metrics")]
+        inc_alloc_string();
+        let val = Value::from_ptr(Box::into_raw(s) as *mut ObjHeader);
+        // Keep one ref alive for the intern table.
+        map.insert(bytes.to_vec(), val);
+        unsafe { wr_rc_inc(val) };
+        val
     }
 
     pub fn str_from_bytes(bytes: &[u8]) -> Value {

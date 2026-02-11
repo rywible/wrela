@@ -993,6 +993,17 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
+            SmolStr::new("__wr_map_len"),
+            FunctionSig {
+                params: vec![(
+                    SmolStr::new("map"),
+                    Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown)),
+                )],
+                ret: Type::Integer,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
             SmolStr::new("__wr_map_set"),
             FunctionSig {
                 params: vec![
@@ -1004,6 +1015,14 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("value"), Type::Unknown),
                 ],
                 ret: Type::Nil,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_str_len"),
+            FunctionSig {
+                params: vec![(SmolStr::new("text"), Type::String)],
+                ret: Type::Integer,
                 kind: FunctionKind::Function,
             },
         ),

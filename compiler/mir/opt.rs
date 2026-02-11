@@ -4,7 +4,7 @@ use crate::mir::analysis::{CallGraph, FunctionTypes, analyze_module};
 use crate::mir::effect_ir;
 use crate::mir::ir::{
     AllocKind, BasicBlock, CallKind, CallTarget, Local, LocalId, MirFunction, MirModule, MirType,
-    Place, Rvalue, Stmt, SwitchCase, Terminator, TypeTagId, Value,
+    Place, Rvalue, Stmt, SwitchCase, TempId, Terminator, TypeTagId, Value,
 };
 use crate::mir::rewrite::{RewriteBudget, RewriteReport, mine_admit_and_apply};
 use rowan::TextRange;
@@ -18,6 +18,7 @@ pub fn run_function_passes(func: &mut MirFunction) {
 pub fn run_function_passes_with(func: &mut MirFunction, types: Option<&FunctionTypes>) {
     devirtualize_calls(func, types);
     specialize_container_ops(func, types);
+    flatten_string_concat_chains(func);
     if std::env::var("WRELA_DISABLE_ESCAPE_ANALYSIS").is_err() {
         annotate_allocs(func);
     }
@@ -34,6 +35,507 @@ pub fn run_function_passes_with(func: &mut MirFunction, types: Option<&FunctionT
     scalar_replace_literals(func);
     strength_reduce_mods(func);
     insert_rc(func);
+    // RC insertion can introduce new dead stores (e.g., removed by earlier peepholes but kept
+    // alive via pre-RC liveness assumptions). Clean it up so we don't keep doing useless work.
+    dead_code_elim(func);
+}
+
+fn flatten_string_concat_chains(func: &mut MirFunction) {
+    let temps = func.temps.iter().map(|t| t.ty.clone()).collect::<Vec<_>>();
+    let locals = func.locals.iter().map(|l| l.ty.clone()).collect::<Vec<_>>();
+    if temps.is_empty() {
+        return;
+    }
+
+    let mut use_counts = vec![0u32; temps.len()];
+    let mut defs: Vec<Option<Rvalue>> = vec![None; temps.len()];
+    let mut local_use_counts = vec![0u32; locals.len()];
+
+    for block in &func.blocks {
+        for stmt in &block.stmts {
+            match stmt {
+                Stmt::Assign { place, value, .. } => {
+                    if let Place::Temp(t) = place {
+                        if t.0 < defs.len() {
+                            defs[t.0] = Some(value.clone());
+                        }
+                    }
+                    bump_uses_rvalue(value, &mut use_counts);
+                }
+                Stmt::SetField { base, value, .. } => {
+                    bump_use(base, &mut use_counts);
+                    bump_use(value, &mut use_counts);
+                }
+                Stmt::RcInc { value, .. } | Stmt::RcDec { value, .. } => {
+                    bump_use(value, &mut use_counts);
+                }
+                Stmt::Await { pending, .. } => bump_use(pending, &mut use_counts),
+                Stmt::Fire { pending, .. } => bump_use(pending, &mut use_counts),
+                Stmt::IterInit { iterable, .. } => bump_use(iterable, &mut use_counts),
+                Stmt::IterNext { iter, .. } => bump_use(iter, &mut use_counts),
+                Stmt::Phi { .. } => {}
+            }
+        }
+        bump_uses_terminator(&block.terminator, &mut use_counts);
+    }
+
+    // Also count reads of locals so we can safely inline "local = temp" aliases into concats.
+    for block in &func.blocks {
+        for stmt in &block.stmts {
+            bump_local_reads_in_stmt(stmt, &mut local_use_counts);
+        }
+        bump_local_reads_in_terminator(&block.terminator, &mut local_use_counts);
+    }
+
+    for block in &mut func.blocks {
+        let mut local_temp_alias: HashMap<LocalId, TempId> = HashMap::new();
+        for stmt in &mut block.stmts {
+            let Stmt::Assign { place, value, .. } = stmt else {
+                continue;
+            };
+            // Track `local = temp` aliases within the block so we can flatten
+            // `s0 = "...{i}"; s1 = s0 + "..."; s2 = s1 + "..."` into a single concat.
+            if let Place::Local(local_id) = &*place {
+                if let Rvalue::Use(Value::Temp(temp_id)) = &*value {
+                    local_temp_alias.insert(*local_id, *temp_id);
+                } else {
+                    local_temp_alias.remove(local_id);
+                }
+            }
+
+            let Place::Temp(dst) = place.clone() else {
+                continue;
+            };
+            if temps.get(dst.0) != Some(&MirType::String) {
+                continue;
+            }
+            let Rvalue::Binary {
+                op: BinaryOp::Add,
+                lhs,
+                rhs,
+            } = &*value
+            else {
+                continue;
+            };
+            if value_ty_with_slices(lhs, &locals, &temps) != MirType::String
+                || value_ty_with_slices(rhs, &locals, &temps) != MirType::String
+            {
+                continue;
+            }
+            let mut parts = Vec::new();
+            collect_string_concat_parts(lhs, &locals, &temps, &defs, &use_counts, &mut parts);
+            parts.push(rhs.clone());
+            if parts.len() < 3 {
+                continue;
+            }
+            *value = Rvalue::StrConcat {
+                parts,
+                alloc: AllocKind::Escaping,
+            };
+        }
+    }
+
+    // Second pass: flatten nested StrConcat/StringInterp temps (and local aliases to temps)
+    // into a single StrConcat when it creates a meaningful arity win.
+    for block in &mut func.blocks {
+        let mut local_temp_alias: HashMap<LocalId, TempId> = HashMap::new();
+        for stmt in &mut block.stmts {
+            let Stmt::Assign { place, value, .. } = stmt else {
+                continue;
+            };
+            if let Place::Local(local_id) = &*place {
+                if let Rvalue::Use(Value::Temp(temp_id)) = &*value {
+                    local_temp_alias.insert(*local_id, *temp_id);
+                } else {
+                    local_temp_alias.remove(local_id);
+                }
+                continue;
+            }
+
+            let Place::Temp(dst) = place.clone() else {
+                continue;
+            };
+            if temps.get(dst.0) != Some(&MirType::String) {
+                continue;
+            }
+
+            let (orig_parts, alloc_kind) = match value {
+                Rvalue::StrConcat { parts, alloc } => (parts.clone(), *alloc),
+                Rvalue::StringInterp { parts, alloc } => {
+                    let mut out = Vec::new();
+                    for part in parts {
+                        match part {
+                            crate::mir::ir::StringPartValue::Literal(s) => {
+                                if !s.is_empty() {
+                                    out.push(Value::Const(Literal::String(s.clone())));
+                                }
+                            }
+                            crate::mir::ir::StringPartValue::Value(v) => out.push(v.clone()),
+                        }
+                    }
+                    (out, *alloc)
+                }
+                _ => continue,
+            };
+
+            let mut flattened: Vec<Value> = Vec::new();
+            for part in &orig_parts {
+                collect_stringish_concat_parts(
+                    part,
+                    &locals,
+                    &temps,
+                    &defs,
+                    &use_counts,
+                    &local_use_counts,
+                    &local_temp_alias,
+                    &mut flattened,
+                );
+            }
+            // Drop empty string literals; they are common from interpolation and create noise.
+            flattened.retain(|v| !is_empty_string_const(v));
+            if flattened.len() < 3 {
+                continue;
+            }
+            *value = Rvalue::StrConcat {
+                parts: flattened,
+                alloc: alloc_kind,
+            };
+        }
+    }
+}
+
+fn collect_string_concat_parts(
+    value: &Value,
+    locals: &[MirType],
+    temps: &[MirType],
+    defs: &[Option<Rvalue>],
+    use_counts: &[u32],
+    out: &mut Vec<Value>,
+) {
+    if let Value::Temp(t) = value {
+        if use_counts.get(t.0).copied().unwrap_or(0) == 1 {
+            if let Some(Rvalue::Binary {
+                op: BinaryOp::Add,
+                lhs,
+                rhs,
+            }) = defs.get(t.0).and_then(|v| v.clone())
+            {
+                if value_ty_with_slices(&lhs, locals, temps) == MirType::String
+                    && value_ty_with_slices(&rhs, locals, temps) == MirType::String
+                {
+                    collect_string_concat_parts(&lhs, locals, temps, defs, use_counts, out);
+                    out.push(rhs);
+                    return;
+                }
+            }
+        }
+    }
+    out.push(value.clone());
+}
+
+fn collect_stringish_concat_parts(
+    value: &Value,
+    locals: &[MirType],
+    temps: &[MirType],
+    defs: &[Option<Rvalue>],
+    use_counts: &[u32],
+    local_use_counts: &[u32],
+    local_temp_alias: &HashMap<LocalId, TempId>,
+    out: &mut Vec<Value>,
+) {
+    match value {
+        Value::Local(local_id) => {
+            if let Some(temp_id) = local_temp_alias.get(local_id) {
+                // Only inline through the alias if the temp is a pure concat building block and
+                // the local is only read once in the IR (so we don't duplicate work).
+                if local_use_counts.get(local_id.0).copied().unwrap_or(0) <= 1 {
+                    collect_stringish_concat_parts(
+                        &Value::Temp(*temp_id),
+                        locals,
+                        temps,
+                        defs,
+                        use_counts,
+                        local_use_counts,
+                        local_temp_alias,
+                        out,
+                    );
+                    return;
+                }
+            }
+        }
+        Value::Temp(temp_id) => {
+            if use_counts.get(temp_id.0).copied().unwrap_or(0) == 1 {
+                if let Some(def) = defs.get(temp_id.0).and_then(|v| v.clone()) {
+                    match def {
+                        Rvalue::Binary {
+                            op: BinaryOp::Add,
+                            lhs,
+                            rhs,
+                        } => {
+                            if value_ty_with_slices(&lhs, locals, temps) == MirType::String
+                                && value_ty_with_slices(&rhs, locals, temps) == MirType::String
+                            {
+                                collect_stringish_concat_parts(
+                                    &lhs,
+                                    locals,
+                                    temps,
+                                    defs,
+                                    use_counts,
+                                    local_use_counts,
+                                    local_temp_alias,
+                                    out,
+                                );
+                                collect_stringish_concat_parts(
+                                    &rhs,
+                                    locals,
+                                    temps,
+                                    defs,
+                                    use_counts,
+                                    local_use_counts,
+                                    local_temp_alias,
+                                    out,
+                                );
+                                return;
+                            }
+                        }
+                        Rvalue::StrConcat { parts, .. } => {
+                            for part in &parts {
+                                collect_stringish_concat_parts(
+                                    part,
+                                    locals,
+                                    temps,
+                                    defs,
+                                    use_counts,
+                                    local_use_counts,
+                                    local_temp_alias,
+                                    out,
+                                );
+                            }
+                            return;
+                        }
+                        Rvalue::StringInterp { parts, .. } => {
+                            for part in &parts {
+                                match part {
+                                    crate::mir::ir::StringPartValue::Literal(s) => {
+                                        if !s.is_empty() {
+                                            out.push(Value::Const(Literal::String(s.clone())));
+                                        }
+                                    }
+                                    crate::mir::ir::StringPartValue::Value(v) => {
+                                        collect_stringish_concat_parts(
+                                            v,
+                                            locals,
+                                            temps,
+                                            defs,
+                                            use_counts,
+                                            local_use_counts,
+                                            local_temp_alias,
+                                            out,
+                                        );
+                                    }
+                                }
+                            }
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    out.push(value.clone());
+}
+
+fn is_empty_string_const(value: &Value) -> bool {
+    matches!(value, Value::Const(Literal::String(s)) if s.is_empty())
+}
+
+fn bump_local_reads_in_value(value: &Value, local_use_counts: &mut [u32]) {
+    if let Value::Local(local_id) = value {
+        if let Some(slot) = local_use_counts.get_mut(local_id.0) {
+            *slot = slot.saturating_add(1);
+        }
+    }
+}
+
+fn bump_local_reads_in_rvalue(value: &Rvalue, local_use_counts: &mut [u32]) {
+    match value {
+        Rvalue::Use(v) => bump_local_reads_in_value(v, local_use_counts),
+        Rvalue::Unary { operand, .. } => bump_local_reads_in_value(operand, local_use_counts),
+        Rvalue::Binary { lhs, rhs, .. } => {
+            bump_local_reads_in_value(lhs, local_use_counts);
+            bump_local_reads_in_value(rhs, local_use_counts);
+        }
+        Rvalue::StrConcat { parts, .. } => {
+            for p in parts {
+                bump_local_reads_in_value(p, local_use_counts);
+            }
+        }
+        Rvalue::StringInterp { parts, .. } => {
+            for p in parts {
+                if let crate::mir::ir::StringPartValue::Value(v) = p {
+                    bump_local_reads_in_value(v, local_use_counts);
+                }
+            }
+        }
+        Rvalue::ResultOk { value }
+        | Rvalue::ResultErr { value }
+        | Rvalue::ResultIsOk { value }
+        | Rvalue::ResultUnwrap { value }
+        | Rvalue::ResultErrUnwrap { value }
+        | Rvalue::Crash { value } => bump_local_reads_in_value(value, local_use_counts),
+        Rvalue::GetField { base, .. } => bump_local_reads_in_value(base, local_use_counts),
+        Rvalue::Call { args, target, .. } => {
+            match target {
+                CallTarget::Method { receiver, .. } => {
+                    bump_local_reads_in_value(receiver, local_use_counts)
+                }
+                CallTarget::Indirect(v) => bump_local_reads_in_value(v, local_use_counts),
+                _ => {}
+            }
+            for a in args {
+                bump_local_reads_in_value(a, local_use_counts);
+            }
+        }
+        Rvalue::ClassInit { .. } => {}
+        Rvalue::Spawn {
+            target, instance, ..
+        } => {
+            bump_local_reads_in_value(target, local_use_counts);
+            bump_local_reads_in_value(instance, local_use_counts);
+        }
+        Rvalue::PoolNew { handles, .. } => {
+            bump_local_reads_in_value(handles, local_use_counts);
+        }
+        Rvalue::BuildList { items, .. } => {
+            for it in items {
+                bump_local_reads_in_value(it, local_use_counts);
+            }
+        }
+        Rvalue::BuildMap { items, .. } => {
+            for (k, v) in items {
+                bump_local_reads_in_value(k, local_use_counts);
+                bump_local_reads_in_value(v, local_use_counts);
+            }
+        }
+    }
+}
+
+fn bump_local_reads_in_stmt(stmt: &Stmt, local_use_counts: &mut [u32]) {
+    match stmt {
+        Stmt::Assign { value, .. } => bump_local_reads_in_rvalue(value, local_use_counts),
+        Stmt::SetField { base, value, .. } => {
+            bump_local_reads_in_value(base, local_use_counts);
+            bump_local_reads_in_value(value, local_use_counts);
+        }
+        Stmt::RcInc { value, .. } | Stmt::RcDec { value, .. } => {
+            bump_local_reads_in_value(value, local_use_counts);
+        }
+        Stmt::Await { pending, .. } => bump_local_reads_in_value(pending, local_use_counts),
+        Stmt::Fire { pending, .. } => bump_local_reads_in_value(pending, local_use_counts),
+        Stmt::IterInit { iterable, .. } => bump_local_reads_in_value(iterable, local_use_counts),
+        Stmt::IterNext { iter, .. } => bump_local_reads_in_value(iter, local_use_counts),
+        Stmt::Phi { sources, .. } => {
+            for (_bid, v) in sources {
+                bump_local_reads_in_value(v, local_use_counts);
+            }
+        }
+    }
+}
+
+fn bump_local_reads_in_terminator(term: &Terminator, local_use_counts: &mut [u32]) {
+    match term {
+        Terminator::Return { value: Some(v), .. } => bump_local_reads_in_value(v, local_use_counts),
+        Terminator::Return { value: None, .. } => {}
+        Terminator::Jump { .. } => {}
+        Terminator::Branch { cond, .. } => bump_local_reads_in_value(cond, local_use_counts),
+        Terminator::Switch { scrutinee, .. } => {
+            bump_local_reads_in_value(scrutinee, local_use_counts)
+        }
+        Terminator::Unreachable { .. } => {}
+    }
+}
+
+fn bump_use(value: &Value, use_counts: &mut [u32]) {
+    if let Value::Temp(t) = value {
+        if let Some(slot) = use_counts.get_mut(t.0) {
+            *slot = slot.saturating_add(1);
+        }
+    }
+}
+
+fn bump_uses_terminator(term: &Terminator, use_counts: &mut [u32]) {
+    match term {
+        Terminator::Return { value, .. } => {
+            if let Some(v) = value {
+                bump_use(v, use_counts);
+            }
+        }
+        Terminator::Jump { .. } => {}
+        Terminator::Branch { cond, .. } => bump_use(cond, use_counts),
+        Terminator::Switch { scrutinee, .. } => bump_use(scrutinee, use_counts),
+        Terminator::Unreachable { .. } => {}
+    }
+}
+
+fn bump_uses_rvalue(value: &Rvalue, use_counts: &mut [u32]) {
+    match value {
+        Rvalue::Use(v) => bump_use(v, use_counts),
+        Rvalue::Unary { operand, .. } => bump_use(operand, use_counts),
+        Rvalue::Binary { lhs, rhs, .. } => {
+            bump_use(lhs, use_counts);
+            bump_use(rhs, use_counts);
+        }
+        Rvalue::StrConcat { parts, .. } => {
+            for v in parts {
+                bump_use(v, use_counts);
+            }
+        }
+        Rvalue::ResultOk { value }
+        | Rvalue::ResultErr { value }
+        | Rvalue::ResultIsOk { value }
+        | Rvalue::ResultUnwrap { value }
+        | Rvalue::ResultErrUnwrap { value }
+        | Rvalue::Crash { value } => bump_use(value, use_counts),
+        Rvalue::GetField { base, .. } => bump_use(base, use_counts),
+        Rvalue::Call { target, args, .. } => {
+            match target {
+                CallTarget::Method { receiver, .. } => bump_use(receiver, use_counts),
+                CallTarget::Indirect(v) => bump_use(v, use_counts),
+                _ => {}
+            }
+            for arg in args {
+                bump_use(arg, use_counts);
+            }
+        }
+        Rvalue::ClassInit { .. } => {}
+        Rvalue::Spawn {
+            target, instance, ..
+        } => {
+            bump_use(target, use_counts);
+            bump_use(instance, use_counts);
+        }
+        Rvalue::PoolNew { handles, .. } => bump_use(handles, use_counts),
+        Rvalue::BuildList { items, .. } => {
+            for item in items {
+                bump_use(item, use_counts);
+            }
+        }
+        Rvalue::BuildMap { items, .. } => {
+            for (k, v) in items {
+                bump_use(k, use_counts);
+                bump_use(v, use_counts);
+            }
+        }
+        Rvalue::StringInterp { parts, .. } => {
+            for part in parts {
+                if let crate::mir::ir::StringPartValue::Value(v) = part {
+                    bump_use(v, use_counts);
+                }
+            }
+        }
+    }
 }
 
 pub fn run_function_passes_with_types(func: &mut MirFunction, types: Option<&FunctionTypes>) {
@@ -621,7 +1123,8 @@ fn annotate_allocs(func: &mut MirFunction) {
                     match value {
                         Rvalue::BuildList { alloc: slot, .. }
                         | Rvalue::BuildMap { alloc: slot, .. }
-                        | Rvalue::StringInterp { alloc: slot, .. } => {
+                        | Rvalue::StringInterp { alloc: slot, .. }
+                        | Rvalue::StrConcat { alloc: slot, .. } => {
                             *slot = alloc;
                         }
                         _ => {}
@@ -1093,6 +1596,11 @@ fn rename_rvalue(value: &mut Rvalue, stacks: &[Vec<LocalId>]) {
                 if let crate::mir::ir::StringPartValue::Value(value) = part {
                     rename_value(value, stacks);
                 }
+            }
+        }
+        Rvalue::StrConcat { parts, .. } => {
+            for part in parts {
+                rename_value(part, stacks);
             }
         }
     }
@@ -1612,6 +2120,11 @@ fn collect_temp_ids_rvalue(value: &Rvalue, out: &mut Vec<usize>) {
                 }
             }
         }
+        Rvalue::StrConcat { parts, .. } => {
+            for part in parts {
+                collect_temp_ids_in_value(part, out);
+            }
+        }
     }
 }
 
@@ -1776,6 +2289,7 @@ fn is_pure_rvalue(value: &Rvalue) -> bool {
         Rvalue::Use(_)
             | Rvalue::Unary { .. }
             | Rvalue::Binary { .. }
+            | Rvalue::StrConcat { .. }
             | Rvalue::ResultOk { .. }
             | Rvalue::ResultErr { .. }
             | Rvalue::ResultIsOk { .. }
@@ -1882,6 +2396,11 @@ fn collect_rvalue(value: &Rvalue, used: &mut HashSet<usize>) {
                 if let crate::mir::ir::StringPartValue::Value(value) = part {
                     collect_value(value, used);
                 }
+            }
+        }
+        Rvalue::StrConcat { parts, .. } => {
+            for part in parts {
+                collect_value(part, used);
             }
         }
     }
@@ -2483,6 +3002,13 @@ fn collect_rvalue_uses(value: &Rvalue, locals_len: usize, out: &mut Vec<usize>) 
                     if let Some(idx) = value_idx(value, locals_len) {
                         out.push(idx);
                     }
+                }
+            }
+        }
+        Rvalue::StrConcat { parts, .. } => {
+            for part in parts {
+                if let Some(idx) = value_idx(part, locals_len) {
+                    out.push(idx);
                 }
             }
         }

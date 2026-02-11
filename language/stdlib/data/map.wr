@@ -9,6 +9,10 @@ so: Get a map entry by key.
 to get(map: Map, key: Any) -> Any:
     return __wr_map_get(map, key)
 
+so: Return the number of entries in the map.
+to get_length(map: Map) -> Integer:
+    return __wr_map_len(map)
+
 so: Set a map entry by key.
 to set(map: Map, key: Any, value: Any) -> Nothing:
     __wr_map_set(map, key, value)

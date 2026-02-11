@@ -7,4 +7,4 @@ to get_current_nanoseconds_since_epoch() -> Integer:
 
 so: Sleep for the given duration in milliseconds.
 to sleep(milliseconds: Integer) -> Pending[Nothing]:
-    return __wr_sleep_ms(ms)
+    return __wr_sleep_ms(milliseconds)

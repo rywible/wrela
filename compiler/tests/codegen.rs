@@ -1,4 +1,5 @@
 use std::fs;
+use std::os::unix::process::ExitStatusExt;
 use std::process::Command;
 use wrela::hir;
 use wrela::hir::project::load_project;
@@ -22,11 +23,18 @@ fn expected_int_exit(val: i64) -> i32 {
     (val as i32) & 0xFF
 }
 
-fn optimize_mir_module(mir_module: &mut mir::ir::MirModule) {
+fn optimize_mir_module(
+    mir_module: &mut mir::ir::MirModule,
+    check_ir: Option<&hir::checkir::CheckIrModule>,
+) {
+    // Keep codegen tests aligned with the real CLI pipeline, otherwise we end up "testing" a
+    // non-production compiler configuration (and getting misleading failures).
+    let analysis = mir::analysis::analyze_module(mir_module);
     for func in &mut mir_module.functions {
-        mir::opt::run_function_passes(func);
+        let types = analysis.type_map.function(&func.name);
+        mir::opt::run_function_passes_with_types(func, types);
     }
-    mir::opt::run_module_passes(mir_module);
+    let _ = mir::opt::run_module_passes_with_rulepack(mir_module, check_ir);
 }
 
 fn compile_and_run_native_source(source: &str, executable_name: &str) -> std::process::Output {
@@ -40,8 +48,9 @@ fn compile_and_run_native_source(source: &str, executable_name: &str) -> std::pr
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
+    let check_ir = hir::checkir::extract_module(&module);
     let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
-    optimize_mir_module(&mut mir_module);
+    optimize_mir_module(&mut mir_module, Some(&check_ir));
     let mir_errors = mir::validate::validate_module(&mir_module);
     assert!(mir_errors.is_empty(), "mir errors: {mir_errors:?}");
 
@@ -84,10 +93,9 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
+    let check_ir = hir::checkir::extract_module(&module);
     let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
-    for func in &mut mir_module.functions {
-        mir::opt::run_function_passes(func);
-    }
+    optimize_mir_module(&mut mir_module, Some(&check_ir));
     let mir_errors = mir::validate::validate_module(&mir_module);
     assert!(mir_errors.is_empty(), "mir errors: {mir_errors:?}");
 
@@ -127,10 +135,9 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
+    let check_ir = hir::checkir::extract_module(&module);
     let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
-    for func in &mut mir_module.functions {
-        mir::opt::run_function_passes(func);
-    }
+    optimize_mir_module(&mut mir_module, Some(&check_ir));
     let mir_errors = mir::validate::validate_module(&mir_module);
     assert!(mir_errors.is_empty(), "mir errors: {mir_errors:?}");
 
@@ -1198,7 +1205,7 @@ A Counter:
         return x
 
 to run() -> Integer:
-    Runtime(pause_queue_cap=1).__configure__()
+    Runtime(paused_queue_cap=1).__configure__()
     optimize balance:
         c = detach Counter() * 2
         pause(c)
@@ -1699,7 +1706,8 @@ to run() -> Integer:
         fire c.add(2)
         fire c.add(3)
         __wr_actor_fire_burst_end(c)
-        v = await c.add(4) otherwise 0
+        d = 0
+        v = await c.add(4) otherwise d
         return v
 "#;
 
@@ -1724,9 +1732,23 @@ to run() -> Integer:
     let out = dir.path().join("wr_actor_fire_burst_smoke");
     wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
 
-    let status = Command::new(&out).status().expect("run failed");
+    let keep_native = std::env::var("WR_KEEP_NATIVE_BIN").is_ok();
+    if keep_native {
+        eprintln!("WR_KEEP_NATIVE_BIN={}", out.display());
+        std::mem::forget(dir);
+    }
+
+    let output = Command::new(&out).output().expect("run failed");
     let expected = expected_int_exit(9);
-    assert_eq!(status.code().unwrap_or(-1), expected);
+    let code = output.status.code().unwrap_or(-1);
+    assert_eq!(
+        code,
+        expected,
+        "native exited code={code} signal={:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status.signal(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -1749,7 +1771,8 @@ to run() -> Integer:
         fire p.add(1)
         fire p.add(2)
         __wr_actor_fire_burst_end(p)
-        v = await p.add(3) otherwise 0
+        d = 0
+        v = await p.add(3) otherwise d
         return v
 "#;
 
@@ -1774,9 +1797,23 @@ to run() -> Integer:
     let out = dir.path().join("wr_pool_fire_burst_smoke");
     wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
 
-    let status = Command::new(&out).status().expect("run failed");
+    let keep_native = std::env::var("WR_KEEP_NATIVE_BIN").is_ok();
+    if keep_native {
+        eprintln!("WR_KEEP_NATIVE_BIN={}", out.display());
+        std::mem::forget(dir);
+    }
+
+    let output = Command::new(&out).output().expect("run failed");
     let expected = expected_int_exit(6);
-    assert_eq!(status.code().unwrap_or(-1), expected);
+    let code = output.status.code().unwrap_or(-1);
+    assert_eq!(
+        code,
+        expected,
+        "native exited code={code} signal={:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status.signal(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -2032,8 +2069,9 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
+    let check_ir = hir::checkir::extract_module(&module);
     let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
-    optimize_mir_module(&mut mir_module);
+    optimize_mir_module(&mut mir_module, Some(&check_ir));
 
     let call_fn = mir_module
         .functions
@@ -2113,8 +2151,9 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
+    let check_ir = hir::checkir::extract_module(&module);
     let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
-    optimize_mir_module(&mut mir_module);
+    optimize_mir_module(&mut mir_module, Some(&check_ir));
 
     let call_fn = mir_module
         .functions

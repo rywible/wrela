@@ -72,12 +72,89 @@ pub(crate) mod actor {
         state: Arc<PendingState>,
     }
 
+    enum MessageArgs {
+        None,
+        Inline1(Value),
+        Inline2(Value, Value),
+        Heap(Vec<Value>),
+    }
+
+    impl MessageArgs {
+        #[inline]
+        fn len(&self) -> usize {
+            match self {
+                Self::None => 0,
+                Self::Inline1(_) => 1,
+                Self::Inline2(_, _) => 2,
+                Self::Heap(v) => v.len(),
+            }
+        }
+
+        #[inline]
+        fn is_empty(&self) -> bool {
+            self.len() == 0
+        }
+
+        #[inline]
+        unsafe fn rc_inc_all(&self) {
+            match self {
+                Self::None => {}
+                Self::Inline1(a0) => unsafe {
+                    if a0.is_ptr() {
+                        wr_rc_inc(*a0);
+                    }
+                },
+                Self::Inline2(a0, a1) => unsafe {
+                    if a0.is_ptr() {
+                        wr_rc_inc(*a0);
+                    }
+                    if a1.is_ptr() {
+                        wr_rc_inc(*a1);
+                    }
+                },
+                Self::Heap(v) => unsafe {
+                    for arg in v.iter().copied() {
+                        if arg.is_ptr() {
+                            wr_rc_inc(arg);
+                        }
+                    }
+                },
+            }
+        }
+
+        #[inline]
+        unsafe fn rc_dec_all(&self) {
+            match self {
+                Self::None => {}
+                Self::Inline1(a0) => unsafe {
+                    if a0.is_ptr() {
+                        wr_rc_dec(*a0);
+                    }
+                },
+                Self::Inline2(a0, a1) => unsafe {
+                    if a0.is_ptr() {
+                        wr_rc_dec(*a0);
+                    }
+                    if a1.is_ptr() {
+                        wr_rc_dec(*a1);
+                    }
+                },
+                Self::Heap(v) => unsafe {
+                    for arg in v.iter().copied() {
+                        if arg.is_ptr() {
+                            wr_rc_dec(arg);
+                        }
+                    }
+                },
+            }
+        }
+    }
+
     struct Message {
         method_id: u32,
         instance: Value,
         // User-provided args only (receiver lives in `instance`).
-        // `None` avoids allocating a Vec for argc=0 hot paths.
-        args: Option<Vec<Value>>,
+        args: MessageArgs,
         pending: Option<Arc<PendingState>>,
     }
 
@@ -181,18 +258,18 @@ pub(crate) mod actor {
     // logically actor-thread only. We enforce that via `MailboxArena::with`.
     unsafe impl Sync for MailboxArena {}
 
-	    struct Mailbox {
-	        spsc: MailboxSpscQueue,
-	        queue: MailboxQueue,
-	        work_notify: TaskSignal,
-	        space_notify: TaskSignal,
-	        space_notify_epoch: AtomicU64,
-	        space_notify_inflight: AtomicBool,
-	        inflight: AtomicUsize,
-	        closed: AtomicBool,
-	        paused: AtomicBool,
-	        pause_notify: TaskSignal,
-	        pause_epoch: AtomicUsize,
+    struct Mailbox {
+        spsc: MailboxSpscQueue,
+        queue: MailboxQueue,
+        work_notify: TaskSignal,
+        space_notify: TaskSignal,
+        space_notify_epoch: AtomicU64,
+        space_notify_inflight: AtomicBool,
+        inflight: AtomicUsize,
+        closed: AtomicBool,
+        paused: AtomicBool,
+        pause_notify: TaskSignal,
+        pause_epoch: AtomicUsize,
         pause_ack: AtomicUsize,
         pause_ack_notify: TaskSignal,
         wake_pending: AtomicBool,
@@ -1232,7 +1309,6 @@ pub(crate) mod actor {
             pool.push(state);
         }
     }
-
     pub fn register_method(class_id: u32, method_id: u32, func: MethodFn) {
         let mut map = method_registry().lock().expect("method registry lock");
         map.entry(class_id)
@@ -1702,12 +1778,15 @@ pub(crate) mod actor {
             }
             let p = &*(pending.as_ptr() as *const PendingObj);
             loop {
+                // Snapshot epoch first, then check the condition, then wait.
+                // This avoids a missed-wake race where the resolver increments the epoch between
+                // dropping the lock and taking the snapshot, causing `wait(epoch)` to park forever.
+                let observed_epoch = p.state.notify.snapshot();
                 let guard = p.state.lock.lock().expect("pending lock");
                 if let Some(val) = *guard {
                     return result::result_ok(val);
                 }
                 drop(guard);
-                let observed_epoch = p.state.notify.snapshot();
                 let _ = p.state.notify.wait(observed_epoch);
             }
         }
@@ -1772,14 +1851,12 @@ pub(crate) mod actor {
         unsafe { Some((*actor).instance) }
     }
 
-	    fn mailbox_len(actor: *const ActorHandle) -> usize {
-	        unsafe {
-	            let mailbox = &(*actor).mailbox;
-	            mailbox.spsc.len()
-	                + mailbox.queue.len()
-	                + mailbox.inflight.load(Ordering::Acquire)
-	        }
-	    }
+    fn mailbox_len(actor: *const ActorHandle) -> usize {
+        unsafe {
+            let mailbox = &(*actor).mailbox;
+            mailbox.spsc.len() + mailbox.queue.len() + mailbox.inflight.load(Ordering::Acquire)
+        }
+    }
 
     fn mailbox_set_paused(actor: *const ActorHandle, paused: bool) {
         unsafe {
@@ -1825,14 +1902,25 @@ pub(crate) mod actor {
         // We intentionally do not RC-inc/dec the receiver; it's rooted elsewhere (ActorHandle)
         // and the per-message churn is pure overhead on hot lanes.
         crate::metrics::inc_message_instance_rc_skipped();
-        let args = if args.is_empty() {
-            crate::metrics::inc_message_build_noargs();
-            None
-        } else {
-            crate::metrics::inc_message_build_args();
-            let mut args_vec = take_args_vec();
-            args_vec.extend_from_slice(args);
-            Some(args_vec)
+        let args = match args.len() {
+            0 => {
+                crate::metrics::inc_message_build_noargs();
+                MessageArgs::None
+            }
+            1 => {
+                crate::metrics::inc_message_build_args();
+                MessageArgs::Inline1(args[0])
+            }
+            2 => {
+                crate::metrics::inc_message_build_args();
+                MessageArgs::Inline2(args[0], args[1])
+            }
+            _ => {
+                crate::metrics::inc_message_build_args();
+                let mut args_vec = take_args_vec();
+                args_vec.extend_from_slice(args);
+                MessageArgs::Heap(args_vec)
+            }
         };
         let msg = Message {
             method_id,
@@ -1840,13 +1928,7 @@ pub(crate) mod actor {
             args,
             pending,
         };
-        unsafe {
-            if let Some(args) = msg.args.as_ref() {
-                for arg in args.iter().copied() {
-                    wr_rc_inc(arg);
-                }
-            }
-        }
+        unsafe { msg.args.rc_inc_all() };
         Some(msg)
     }
 
@@ -1879,16 +1961,17 @@ pub(crate) mod actor {
         Some(PoolMessage { mailbox, node })
     }
 
-	    fn mailbox_should_drop_paused(actor: *const ActorHandle) -> bool {
-	        unsafe {
-	            let mailbox = &(*actor).mailbox;
-	            if !mailbox.paused.load(Ordering::Acquire) {
-	                return false;
-	            }
-	            let cap = crate::config::pause_queue_cap();
-	            mailbox.spsc.len() + mailbox.queue.len() + mailbox.inflight.load(Ordering::Acquire) >= cap
-	        }
-	    }
+    fn mailbox_should_drop_paused(actor: *const ActorHandle) -> bool {
+        unsafe {
+            let mailbox = &(*actor).mailbox;
+            if !mailbox.paused.load(Ordering::Acquire) {
+                return false;
+            }
+            let cap = crate::config::pause_queue_cap();
+            mailbox.spsc.len() + mailbox.queue.len() + mailbox.inflight.load(Ordering::Acquire)
+                >= cap
+        }
+    }
 
     fn mailbox_wait_paused(actor: *const ActorHandle) {
         unsafe {
@@ -1907,7 +1990,7 @@ pub(crate) mod actor {
             let msg = Message {
                 method_id: u32::MAX,
                 instance: Value::nil(),
-                args: None,
+                args: MessageArgs::None,
                 pending: None,
             };
             enqueue_message_ref(&*(*actor).mailbox, msg);
@@ -1949,7 +2032,37 @@ pub(crate) mod actor {
             }
             let (state, allocated) = take_pending_state();
 
-            if (*pool).pool_size == 1 && !(*pool).drop_on_full && (*pool).queue.len() == 0 {
+            if (*pool).drop_on_full {
+                let Some(msg) =
+                    build_message_local(actor, method_id, argc, argv_ptr, Some(state.clone()))
+                else {
+                    recycle_pending_state(state);
+                    return Value::nil();
+                };
+                if !try_enqueue_message_drop_on_full(&*(*actor).mailbox, msg) {
+                    recycle_pending_state(state);
+                    return Value::nil();
+                }
+                #[cfg(feature = "metrics")]
+                if allocated {
+                    inc_alloc_pending();
+                }
+                let pending = Box::new(PendingObj {
+                    header: header(TypeId::Pending),
+                    state,
+                });
+                return Value::from_ptr(Box::into_raw(pending) as *mut ObjHeader);
+            }
+
+            // Throughput fast path: bypass the scheduler and enqueue directly to the selected
+            // actor mailbox. This avoids the scheduler/queue protocol tax on hot RPC-style lanes.
+            //
+            // Correctness is preserved: the actor still handles messages on its own run loop,
+            // serialized; we're only skipping the intermediary scheduling queue.
+            if !(*pool).drop_on_full
+                && (*pool).alive.load(Ordering::Acquire)
+                && (*pool).objective == OBJECTIVE_THROUGHPUT
+            {
                 let Some(msg) =
                     build_message_local(actor, method_id, argc, argv_ptr, Some(state.clone()))
                 else {
@@ -2008,7 +2121,18 @@ pub(crate) mod actor {
                 inc_messages_dropped_paused();
                 return;
             }
-            if (*pool).pool_size == 1 && !(*pool).drop_on_full && (*pool).queue.len() == 0 {
+            if (*pool).drop_on_full {
+                let Some(msg) = build_message_local(actor, method_id, argc, argv_ptr, None) else {
+                    return;
+                };
+                let _ = try_enqueue_message_drop_on_full(&*(*actor).mailbox, msg);
+                return;
+            }
+            // Same direct-enqueue fast path as pool_send for throughput lanes.
+            if !(*pool).drop_on_full
+                && (*pool).alive.load(Ordering::Acquire)
+                && (*pool).objective == OBJECTIVE_THROUGHPUT
+            {
                 let Some(msg) = build_message_local(actor, method_id, argc, argv_ptr, None) else {
                     return;
                 };
@@ -2158,6 +2282,111 @@ pub(crate) mod actor {
         enqueue_node_ref(mailbox, message_node_from_message(msg))
     }
 
+    // Best-effort enqueue used for pools configured with `backpressure=drop`.
+    // This must never block (no timeout waits) and must not return a Pending
+    // unless the message is actually enqueued.
+    fn try_enqueue_message_drop_on_full(mailbox: &Mailbox, msg: Message) -> bool {
+        if mailbox.closed.load(Ordering::Acquire) {
+            drop_message(msg);
+            inc_mailbox_enqueue_fail();
+            inc_messages_dropped();
+            return false;
+        }
+        let queue_kpi = queue_kpi_enabled();
+        let enqueue_ns = if queue_kpi { monotonic_now_ns() } else { 0 };
+
+        if mailbox.spsc.can_use() {
+            match mailbox.spsc.try_push(msg, enqueue_ns) {
+                Ok(was_empty) => {
+                    if crate::metrics::is_enabled() {
+                        update_mailbox_high_water(mailbox.spsc.len() + mailbox.queue.len());
+                    }
+                    crate::metrics::inc_mailbox_enqueue_ok();
+                    crate::metrics::inc_messages_sent();
+                    if mailbox.rescue_wake_ns > 0 {
+                        mailbox
+                            .last_progress_ns
+                            .store(monotonic_now_ns(), Ordering::Release);
+                    }
+                    if mailbox.wake_coalesce {
+                        if was_empty && mailbox.queue.is_empty() {
+                            if !mailbox.wake_pending.swap(true, Ordering::AcqRel) {
+                                mailbox.work_notify.notify_one();
+                            } else if queue_kpi {
+                                crate::metrics::inc_mailbox_wake_coalesced();
+                            }
+                        }
+                    } else if was_empty && mailbox.queue.is_empty() {
+                        mailbox.work_notify.notify_one();
+                    }
+                    mailbox
+                        .space_notify_inflight
+                        .store(false, Ordering::Release);
+                    return true;
+                }
+                Err(msg) => {
+                    // Fall through to the bounded MPSC queue.
+                    let node = message_node_from_message(msg);
+                    if mailbox.queue.push_node(node).is_ok() {
+                        if crate::metrics::is_enabled() {
+                            update_mailbox_high_water(mailbox.spsc.len() + mailbox.queue.len());
+                        }
+                        crate::metrics::inc_mailbox_enqueue_ok();
+                        crate::metrics::inc_messages_sent();
+                        if mailbox.rescue_wake_ns > 0 {
+                            mailbox
+                                .last_progress_ns
+                                .store(monotonic_now_ns(), Ordering::Release);
+                        }
+                        if mailbox.wake_coalesce {
+                            if !mailbox.wake_pending.swap(true, Ordering::AcqRel) {
+                                mailbox.work_notify.notify_one();
+                            } else if queue_kpi {
+                                crate::metrics::inc_mailbox_wake_coalesced();
+                            }
+                        } else {
+                            mailbox.work_notify.notify_one();
+                        }
+                        return true;
+                    }
+                    drop_message_node(node);
+                    inc_mailbox_enqueue_fail();
+                    inc_messages_dropped();
+                    return false;
+                }
+            }
+        }
+
+        let node = message_node_from_message(msg);
+        if mailbox.queue.push_node(node).is_ok() {
+            if crate::metrics::is_enabled() {
+                update_mailbox_high_water(mailbox.spsc.len() + mailbox.queue.len());
+            }
+            crate::metrics::inc_mailbox_enqueue_ok();
+            crate::metrics::inc_messages_sent();
+            if mailbox.rescue_wake_ns > 0 {
+                mailbox
+                    .last_progress_ns
+                    .store(monotonic_now_ns(), Ordering::Release);
+            }
+            if mailbox.wake_coalesce {
+                if !mailbox.wake_pending.swap(true, Ordering::AcqRel) {
+                    mailbox.work_notify.notify_one();
+                } else if queue_kpi {
+                    crate::metrics::inc_mailbox_wake_coalesced();
+                }
+            } else {
+                mailbox.work_notify.notify_one();
+            }
+            return true;
+        }
+
+        drop_message_node(node);
+        inc_mailbox_enqueue_fail();
+        inc_messages_dropped();
+        false
+    }
+
     fn enqueue_node_ref(mailbox: &Mailbox, node: MessageNodeHandle) {
         if fast_send_try_enqueue_node(mailbox, node).is_ok() {
             return;
@@ -2287,7 +2516,7 @@ pub(crate) mod actor {
         }
     }
 
-	    fn actor_loop(class_id: u32, mailbox: Arc<Mailbox>) {
+    fn actor_loop(class_id: u32, mailbox: Arc<Mailbox>) {
         let mailbox_ptr = Arc::as_ptr(&mailbox);
         let fast_path = actor_fast_path_enabled();
         if fast_path {
@@ -2298,41 +2527,41 @@ pub(crate) mod actor {
         let arena_ptr = mailbox.arena.ptr();
         let _arena_enter_guard = arena::enter(arena_ptr);
         let mut method_cache = MethodCache::new(class_id);
-	        loop {
-	            let msg = match mailbox_recv(&mailbox, fast_path) {
-	                Some(pair) => pair,
-	                None => break,
-	            };
-	            mailbox.inflight.store(1, Ordering::Release);
-	            while mailbox.paused.load(Ordering::Acquire) {
-	                let epoch = mailbox.pause_epoch.load(Ordering::Acquire);
-	                mailbox.pause_ack.store(epoch, Ordering::Release);
-	                mailbox.pause_ack_notify.notify_waiters();
-	                let _ = mailbox.pause_notify.wait(mailbox.pause_notify.snapshot());
-	            }
-	            if handle_message(&mailbox, msg, &mut method_cache) {
-	                mailbox.inflight.store(0, Ordering::Release);
-	            } else {
-	                mailbox.inflight.store(0, Ordering::Release);
-	                break;
-	            }
-	            if fast_path {
-	                let enqueued = fast_send_take_enqueued_count(&mailbox);
-	                if enqueued > 0 {
-	                    crate::metrics::inc_mailbox_enqueue_ok_n(enqueued);
+        loop {
+            let msg = match mailbox_recv(&mailbox, fast_path) {
+                Some(pair) => pair,
+                None => break,
+            };
+            mailbox.inflight.store(1, Ordering::Release);
+            while mailbox.paused.load(Ordering::Acquire) {
+                let epoch = mailbox.pause_epoch.load(Ordering::Acquire);
+                mailbox.pause_ack.store(epoch, Ordering::Release);
+                mailbox.pause_ack_notify.notify_waiters();
+                let _ = mailbox.pause_notify.wait(mailbox.pause_notify.snapshot());
+            }
+            if handle_message(&mailbox, msg, &mut method_cache) {
+                mailbox.inflight.store(0, Ordering::Release);
+            } else {
+                mailbox.inflight.store(0, Ordering::Release);
+                break;
+            }
+            if fast_path {
+                let enqueued = fast_send_take_enqueued_count(&mailbox);
+                if enqueued > 0 {
+                    crate::metrics::inc_mailbox_enqueue_ok_n(enqueued);
                     crate::metrics::inc_messages_sent_n(enqueued);
                 }
             }
         }
-	        if fast_path {
+        if fast_path {
             let enqueued = fast_send_take_enqueued_count(&mailbox);
             if enqueued > 0 {
                 crate::metrics::inc_mailbox_enqueue_ok_n(enqueued);
                 crate::metrics::inc_messages_sent_n(enqueued);
             }
             fast_send_context_exit(mailbox_ptr);
-	        }
-	    }
+        }
+    }
 
     struct RecvMessage {
         msg: Message,
@@ -2375,13 +2604,15 @@ pub(crate) mod actor {
     }
 
     #[inline]
-	    fn mailbox_total_len(mailbox: &Mailbox) -> usize {
-	        mailbox.spsc.len() + mailbox.queue.len() + mailbox.inflight.load(Ordering::Acquire)
-	    }
+    fn mailbox_total_len(mailbox: &Mailbox) -> usize {
+        mailbox.spsc.len() + mailbox.queue.len() + mailbox.inflight.load(Ordering::Acquire)
+    }
 
     fn mailbox_recv(mailbox: &Mailbox, fast_path: bool) -> Option<RecvMessage> {
         let queue_kpi = queue_kpi_enabled();
         let mut spins = 0u32;
+        let mut yields = 0u32;
+        const THROUGHPUT_EMPTY_YIELD_LIMIT: u32 = 8;
         loop {
             let recv_start_ns = if queue_kpi { monotonic_now_ns() } else { 0 };
             if let Some(msg) = mailbox_try_pop_now(mailbox, fast_path) {
@@ -2406,6 +2637,14 @@ pub(crate) mod actor {
             if mailbox.empty_spin > 0 && spins < mailbox.empty_spin {
                 spins = spins.saturating_add(1);
                 std::hint::spin_loop();
+                continue;
+            }
+            if mailbox.empty_spin > 0 && yields < THROUGHPUT_EMPTY_YIELD_LIMIT {
+                // Throughput objective: extend the empty wait window a bit with yields before
+                // falling back to an OS wait.
+                spins = 0;
+                yields = yields.saturating_add(1);
+                std::thread::yield_now();
                 continue;
             }
             let observed = mailbox.work_notify.snapshot();
@@ -2524,47 +2763,40 @@ pub(crate) mod actor {
                 "actor: missing method class_id={} method_id={} argc={}",
                 method_cache.class_id,
                 msg.method_id,
-                1 + msg.args.as_ref().map(|args| args.len()).unwrap_or(0)
+                1 + msg.args.len()
             );
         }
         let catch_panic = actor_catch_panic_enabled();
         let result = if let Some(func) = func {
             // Fast-path for argc=1 (receiver only). Avoids initializing a fixed-size inline argv.
-            if msg.args.is_none() {
-                let argv_ptr: *const Value = &msg.instance;
-                if catch_panic {
-                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        func(1, argv_ptr)
-                    })) {
-                        Ok(val) => val,
-                        Err(_) => {
-                            crate::metrics::inc_actor_method_panic();
-                            Value::nil()
+            match &msg.args {
+                MessageArgs::None => {
+                    let argv_ptr: *const Value = &msg.instance;
+                    if catch_panic {
+                        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            func(1, argv_ptr)
+                        })) {
+                            Ok(val) => val,
+                            Err(_) => {
+                                crate::metrics::inc_actor_method_panic();
+                                Value::nil()
+                            }
                         }
+                    } else {
+                        // WARNING: if `func` panics, unwinding across an `extern "C"` boundary is UB.
+                        // Only disable catch-panic in controlled internal perf lanes where panics are
+                        // treated as fatal anyway.
+                        func(1, argv_ptr)
                     }
-                } else {
-                    // WARNING: if `func` panics, unwinding across an `extern "C"` boundary is UB.
-                    // Only disable catch-panic in controlled internal perf lanes where panics are
-                    // treated as fatal anyway.
-                    func(1, argv_ptr)
                 }
-            } else {
-                // Only used on "wide" calls; kept in scope so argv_ptr stays valid.
-                let mut heap_argv: Vec<Value> = Vec::new();
-                let args = msg.args.as_ref().expect("args present");
-                if args.len() <= 8 {
-                    let mut inline: [MaybeUninit<Value>; 9] = [const { MaybeUninit::uninit() }; 9];
+                MessageArgs::Inline1(a0) => {
+                    let mut inline: [MaybeUninit<Value>; 2] = [const { MaybeUninit::uninit() }; 2];
                     inline[0].write(msg.instance);
-                    for (dst, src) in inline[1..(1 + args.len())]
-                        .iter_mut()
-                        .zip(args.iter().copied())
-                    {
-                        dst.write(src);
-                    }
+                    inline[1].write(*a0);
                     let argv_ptr = inline.as_ptr() as *const Value;
                     if catch_panic {
                         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            func(1 + args.len(), argv_ptr)
+                            func(2, argv_ptr)
                         })) {
                             Ok(val) => val,
                             Err(_) => {
@@ -2573,15 +2805,18 @@ pub(crate) mod actor {
                             }
                         }
                     } else {
-                        func(1 + args.len(), argv_ptr)
+                        func(2, argv_ptr)
                     }
-                } else {
-                    heap_argv.reserve(1 + args.len());
-                    heap_argv.push(msg.instance);
-                    heap_argv.extend_from_slice(args);
+                }
+                MessageArgs::Inline2(a0, a1) => {
+                    let mut inline: [MaybeUninit<Value>; 3] = [const { MaybeUninit::uninit() }; 3];
+                    inline[0].write(msg.instance);
+                    inline[1].write(*a0);
+                    inline[2].write(*a1);
+                    let argv_ptr = inline.as_ptr() as *const Value;
                     if catch_panic {
                         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            func(heap_argv.len(), heap_argv.as_ptr())
+                            func(3, argv_ptr)
                         })) {
                             Ok(val) => val,
                             Err(_) => {
@@ -2590,7 +2825,53 @@ pub(crate) mod actor {
                             }
                         }
                     } else {
-                        func(heap_argv.len(), heap_argv.as_ptr())
+                        func(3, argv_ptr)
+                    }
+                }
+                MessageArgs::Heap(args) => {
+                    // Only used on "wide" calls; kept in scope so argv_ptr stays valid.
+                    let mut heap_argv: Vec<Value> = Vec::new();
+                    if args.len() <= 8 {
+                        let mut inline: [MaybeUninit<Value>; 9] =
+                            [const { MaybeUninit::uninit() }; 9];
+                        inline[0].write(msg.instance);
+                        for (dst, src) in inline[1..(1 + args.len())]
+                            .iter_mut()
+                            .zip(args.iter().copied())
+                        {
+                            dst.write(src);
+                        }
+                        let argv_ptr = inline.as_ptr() as *const Value;
+                        if catch_panic {
+                            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                func(1 + args.len(), argv_ptr)
+                            })) {
+                                Ok(val) => val,
+                                Err(_) => {
+                                    crate::metrics::inc_actor_method_panic();
+                                    Value::nil()
+                                }
+                            }
+                        } else {
+                            func(1 + args.len(), argv_ptr)
+                        }
+                    } else {
+                        heap_argv.reserve(1 + args.len());
+                        heap_argv.push(msg.instance);
+                        heap_argv.extend_from_slice(args);
+                        if catch_panic {
+                            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                func(heap_argv.len(), heap_argv.as_ptr())
+                            })) {
+                                Ok(val) => val,
+                                Err(_) => {
+                                    crate::metrics::inc_actor_method_panic();
+                                    Value::nil()
+                                }
+                            }
+                        } else {
+                            func(heap_argv.len(), heap_argv.as_ptr())
+                        }
                     }
                 }
             }
@@ -2611,14 +2892,8 @@ pub(crate) mod actor {
         if let Some(pending) = msg.pending {
             resolve_pending(pending, result);
         }
-        unsafe {
-            if let Some(args) = msg.args.as_ref() {
-                for arg in args.iter().copied() {
-                    wr_rc_dec(arg);
-                }
-            }
-        }
-        if let Some(args) = msg.args {
+        unsafe { msg.args.rc_dec_all() };
+        if let MessageArgs::Heap(args) = msg.args {
             return_args_vec(args);
         }
     }
@@ -2627,14 +2902,8 @@ pub(crate) mod actor {
         if let Some(pending) = msg.pending {
             resolve_pending(pending, Value::nil());
         }
-        unsafe {
-            if let Some(args) = msg.args.as_ref() {
-                for arg in args.iter().copied() {
-                    wr_rc_dec(arg);
-                }
-            }
-        }
-        if let Some(args) = msg.args {
+        unsafe { msg.args.rc_dec_all() };
+        if let MessageArgs::Heap(args) = msg.args {
             return_args_vec(args);
         }
     }
@@ -2690,19 +2959,19 @@ pub(crate) mod actor {
             LOCK.get_or_init(|| Mutex::new(()))
         }
 
-	        fn dummy_mailbox() -> Arc<Mailbox> {
-	            Arc::new(Mailbox {
-	                spsc: MailboxSpscQueue::new(1),
-	                queue: MailboxQueue::new(1),
-	                work_notify: TaskSignal::new(),
-	                space_notify: TaskSignal::new(),
-	                space_notify_epoch: AtomicU64::new(0),
-	                space_notify_inflight: AtomicBool::new(false),
-	                inflight: AtomicUsize::new(0),
-	                closed: AtomicBool::new(false),
-	                paused: AtomicBool::new(false),
-	                pause_notify: TaskSignal::new(),
-	                pause_epoch: AtomicUsize::new(0),
+        fn dummy_mailbox() -> Arc<Mailbox> {
+            Arc::new(Mailbox {
+                spsc: MailboxSpscQueue::new(1),
+                queue: MailboxQueue::new(1),
+                work_notify: TaskSignal::new(),
+                space_notify: TaskSignal::new(),
+                space_notify_epoch: AtomicU64::new(0),
+                space_notify_inflight: AtomicBool::new(false),
+                inflight: AtomicUsize::new(0),
+                closed: AtomicBool::new(false),
+                paused: AtomicBool::new(false),
+                pause_notify: TaskSignal::new(),
+                pause_epoch: AtomicUsize::new(0),
                 pause_ack: AtomicUsize::new(0),
                 pause_ack_notify: TaskSignal::new(),
                 wake_pending: AtomicBool::new(false),
@@ -2719,19 +2988,19 @@ pub(crate) mod actor {
             })
         }
 
-	        fn test_mailbox() -> Arc<Mailbox> {
-	            let mailbox = Arc::new(Mailbox {
-	                spsc: MailboxSpscQueue::new(1),
-	                queue: MailboxQueue::new(1),
-	                work_notify: TaskSignal::new(),
-	                space_notify: TaskSignal::new(),
-	                space_notify_epoch: AtomicU64::new(0),
-	                space_notify_inflight: AtomicBool::new(false),
-	                inflight: AtomicUsize::new(0),
-	                closed: AtomicBool::new(false),
-	                paused: AtomicBool::new(false),
-	                pause_notify: TaskSignal::new(),
-	                pause_epoch: AtomicUsize::new(0),
+        fn test_mailbox() -> Arc<Mailbox> {
+            let mailbox = Arc::new(Mailbox {
+                spsc: MailboxSpscQueue::new(1),
+                queue: MailboxQueue::new(1),
+                work_notify: TaskSignal::new(),
+                space_notify: TaskSignal::new(),
+                space_notify_epoch: AtomicU64::new(0),
+                space_notify_inflight: AtomicBool::new(false),
+                inflight: AtomicUsize::new(0),
+                closed: AtomicBool::new(false),
+                paused: AtomicBool::new(false),
+                pause_notify: TaskSignal::new(),
+                pause_epoch: AtomicUsize::new(0),
                 pause_ack: AtomicUsize::new(0),
                 pause_ack_notify: TaskSignal::new(),
                 wake_pending: AtomicBool::new(false),
@@ -2870,7 +3139,7 @@ pub(crate) mod actor {
             let msg = Message {
                 method_id: 0,
                 instance: Value::nil(),
-                args: None,
+                args: MessageArgs::None,
                 pending: None,
             };
             enqueue_message(mailbox.clone(), msg);
@@ -2909,7 +3178,7 @@ pub(crate) mod actor {
             let msg = Message {
                 method_id: 0,
                 instance: Value::nil(),
-                args: None,
+                args: MessageArgs::None,
                 pending: None,
             };
             enqueue_message(mailbox, msg);
@@ -2927,12 +3196,10 @@ pub(crate) mod actor {
             metrics::reset();
 
             let make_node = |tag: i64| {
-                let mut args = take_args_vec();
-                args.push(Value::from_int(tag));
                 message_node_from_message(Message {
                     method_id: 0,
                     instance: Value::nil(),
-                    args: Some(args),
+                    args: MessageArgs::Inline1(Value::from_int(tag)),
                     pending: None,
                 })
             };
@@ -3150,7 +3417,7 @@ pub(crate) mod actor {
                 let msg = Message {
                     method_id: 0,
                     instance: Value::nil(),
-                    args: Some(args),
+                    args: MessageArgs::Heap(args),
                     pending: None,
                 };
                 enqueue_message(mailbox.clone(), msg);
@@ -3176,7 +3443,7 @@ pub(crate) mod actor {
                 let msg = Message {
                     method_id: 0,
                     instance: Value::nil(),
-                    args: Some(args),
+                    args: MessageArgs::Heap(args),
                     pending: None,
                 };
                 enqueue_message(mailbox.clone(), msg);
@@ -3198,7 +3465,7 @@ pub(crate) mod actor {
                 nodes.push(message_node_from_message(Message {
                     method_id: 7,
                     instance: Value::nil(),
-                    args: Some(args),
+                    args: MessageArgs::Heap(args),
                     pending: None,
                 }));
             }
@@ -3207,11 +3474,12 @@ pub(crate) mod actor {
             let mut out = Vec::new();
             while let Some(node) = queue.pop_node() {
                 let msg = message_node_into_message(node);
-                let tag = msg
-                    .args
-                    .as_ref()
-                    .and_then(|args| crate::value::int_value(args[0]))
-                    .unwrap_or_default();
+                let tag = match &msg.args {
+                    MessageArgs::Inline1(v) => crate::value::int_value(*v).unwrap_or_default(),
+                    MessageArgs::Inline2(v, _) => crate::value::int_value(*v).unwrap_or_default(),
+                    MessageArgs::Heap(args) => crate::value::int_value(args[0]).unwrap_or_default(),
+                    MessageArgs::None => 0,
+                };
                 out.push(tag);
                 drop_message(msg);
             }
@@ -3230,7 +3498,7 @@ pub(crate) mod actor {
                     .push_node(message_node_from_message(Message {
                         method_id: 1,
                         instance: Value::nil(),
-                        args: Some(args),
+                        args: MessageArgs::Heap(args),
                         pending: None,
                     }))
                     .expect("prefill push");
@@ -3249,7 +3517,7 @@ pub(crate) mod actor {
                 nodes.push(message_node_from_message(Message {
                     method_id: 2,
                     instance: Value::nil(),
-                    args: Some(args),
+                    args: MessageArgs::Heap(args),
                     pending: None,
                 }));
             }
@@ -3259,11 +3527,12 @@ pub(crate) mod actor {
             let mut out = Vec::new();
             while let Some(node) = queue.pop_node() {
                 let msg = message_node_into_message(node);
-                let tag = msg
-                    .args
-                    .as_ref()
-                    .and_then(|args| int_value(args[0]))
-                    .unwrap_or_default();
+                let tag = match &msg.args {
+                    MessageArgs::Inline1(v) => int_value(*v).unwrap_or_default(),
+                    MessageArgs::Inline2(v, _) => int_value(*v).unwrap_or_default(),
+                    MessageArgs::Heap(args) => int_value(args[0]).unwrap_or_default(),
+                    MessageArgs::None => 0,
+                };
                 out.push(tag);
                 drop_message(msg);
             }
@@ -3282,7 +3551,7 @@ pub(crate) mod actor {
                     .push_node(message_node_from_message(Message {
                         method_id: 9,
                         instance: Value::nil(),
-                        args: Some(args),
+                        args: MessageArgs::Heap(args),
                         pending: None,
                     }))
                     .expect("prefill push");
@@ -3295,7 +3564,7 @@ pub(crate) mod actor {
                 nodes.push(message_node_from_message(Message {
                     method_id: 9,
                     instance: Value::nil(),
-                    args: Some(args),
+                    args: MessageArgs::Heap(args),
                     pending: None,
                 }));
             }
@@ -3309,11 +3578,12 @@ pub(crate) mod actor {
             let mut out = Vec::new();
             while let Some(node) = queue.pop_node() {
                 let msg = message_node_into_message(node);
-                let tag = msg
-                    .args
-                    .as_ref()
-                    .and_then(|args| int_value(args[0]))
-                    .unwrap_or_default();
+                let tag = match &msg.args {
+                    MessageArgs::Inline1(v) => int_value(*v).unwrap_or_default(),
+                    MessageArgs::Inline2(v, _) => int_value(*v).unwrap_or_default(),
+                    MessageArgs::Heap(args) => int_value(args[0]).unwrap_or_default(),
+                    MessageArgs::None => 0,
+                };
                 out.push(tag);
                 drop_message(msg);
             }
@@ -3321,19 +3591,19 @@ pub(crate) mod actor {
         }
 
         #[test]
-	        fn burst_flush_uses_single_wake_edge() {
-	            let mailbox = Arc::new(Mailbox {
-	                spsc: MailboxSpscQueue::new(8),
-	                queue: MailboxQueue::new(8),
-	                work_notify: TaskSignal::new(),
-	                space_notify: TaskSignal::new(),
-	                space_notify_epoch: AtomicU64::new(0),
-	                space_notify_inflight: AtomicBool::new(false),
-	                inflight: AtomicUsize::new(0),
-	                closed: AtomicBool::new(false),
-	                paused: AtomicBool::new(false),
-	                pause_notify: TaskSignal::new(),
-	                pause_epoch: AtomicUsize::new(0),
+        fn burst_flush_uses_single_wake_edge() {
+            let mailbox = Arc::new(Mailbox {
+                spsc: MailboxSpscQueue::new(8),
+                queue: MailboxQueue::new(8),
+                work_notify: TaskSignal::new(),
+                space_notify: TaskSignal::new(),
+                space_notify_epoch: AtomicU64::new(0),
+                space_notify_inflight: AtomicBool::new(false),
+                inflight: AtomicUsize::new(0),
+                closed: AtomicBool::new(false),
+                paused: AtomicBool::new(false),
+                pause_notify: TaskSignal::new(),
+                pause_epoch: AtomicUsize::new(0),
                 pause_ack: AtomicUsize::new(0),
                 pause_ack_notify: TaskSignal::new(),
                 wake_pending: AtomicBool::new(false),
@@ -3353,7 +3623,7 @@ pub(crate) mod actor {
                 nodes.push(message_node_from_message(Message {
                     method_id: 0,
                     instance: Value::nil(),
-                    args: None,
+                    args: MessageArgs::None,
                     pending: None,
                 }));
             }
@@ -3410,7 +3680,7 @@ pub(crate) mod actor {
                     node: message_node_from_message(Message {
                         method_id: 1,
                         instance: Value::nil(),
-                        args: Some(args),
+                        args: MessageArgs::Heap(args),
                         pending: None,
                     }),
                 });
@@ -3420,11 +3690,12 @@ pub(crate) mod actor {
             let mut out = Vec::new();
             while let Some(msg) = unsafe { (*pool_ptr).queue.pop() } {
                 let inner = message_node_into_message(msg.node);
-                let tag = inner
-                    .args
-                    .as_ref()
-                    .and_then(|args| crate::value::int_value(args[0]))
-                    .unwrap_or_default();
+                let tag = match &inner.args {
+                    MessageArgs::Inline1(v) => crate::value::int_value(*v).unwrap_or_default(),
+                    MessageArgs::Inline2(v, _) => crate::value::int_value(*v).unwrap_or_default(),
+                    MessageArgs::Heap(args) => crate::value::int_value(args[0]).unwrap_or_default(),
+                    MessageArgs::None => 0,
+                };
                 out.push(tag);
                 drop_message(inner);
             }
@@ -3445,7 +3716,7 @@ pub(crate) mod actor {
                     node: message_node_from_message(Message {
                         method_id: 2,
                         instance: Value::nil(),
-                        args: Some(args),
+                        args: MessageArgs::Heap(args),
                         pending: None,
                     }),
                 });
@@ -3479,7 +3750,7 @@ pub(crate) mod actor {
                             node: message_node_from_message(Message {
                                 method_id: 0,
                                 instance: Value::nil(),
-                                args: None,
+                                args: MessageArgs::None,
                                 pending: None,
                             }),
                         };
@@ -3524,6 +3795,49 @@ pub(crate) mod actor {
         }
 
         #[test]
+        fn pool_drop_on_full_still_delivers_messages_when_not_full() {
+            // Regression: `backpressure=drop` pools (queue_cap=0) must still enqueue work.
+            // The scheduler queue is bypassed; messages are sent directly to the selected actor.
+            let class_id = 200u64;
+            extern "C" fn add_one(argc: usize, argv: *const Value) -> Value {
+                if argc < 2 || argv.is_null() {
+                    return Value::nil();
+                }
+                unsafe {
+                    let arg = *argv.add(1);
+                    let x = crate::value::int_value(arg).unwrap_or(0);
+                    Value::from_int(x + 1)
+                }
+            }
+            register_method(class_id as u32, 0, add_one);
+
+            let a0 = actor_spawn(class_id, Value::nil(), 1, 3, 256, 10, 64);
+            let a1 = actor_spawn(class_id, Value::nil(), 1, 3, 256, 10, 64);
+            let handles = crate::list::list_new(0);
+            crate::list::list_push(handles, a0);
+            crate::list::list_push(handles, a1);
+
+            // queue_cap=0 => drop_on_full=true.
+            let pool = pool_new(handles, 3, 0, 0, 0, 0);
+            let arg = Value::from_int(41);
+            let pending = actor_send(pool, 0, 1, &arg as *const Value);
+            assert!(!pending.is_nil(), "pool send should return a pending");
+
+            let out = pending_await(pending);
+            let out = crate::result::result_unwrap(out);
+            assert_eq!(crate::value::int_value(out).unwrap_or_default(), 42);
+
+            unsafe {
+                wr_rc_dec(pending);
+                wr_rc_dec(out);
+                wr_rc_dec(pool);
+                wr_rc_dec(handles);
+                wr_rc_dec(a0);
+                wr_rc_dec(a1);
+            }
+        }
+
+        #[test]
         #[ignore]
         fn pool_queue_mpsc_perf_sanity() {
             let queue = Arc::new(PoolQueue::new(1024));
@@ -3543,7 +3857,7 @@ pub(crate) mod actor {
                             node: message_node_from_message(Message {
                                 method_id: 0,
                                 instance: Value::nil(),
-                                args: None,
+                                args: MessageArgs::None,
                                 pending: None,
                             }),
                         };
@@ -3594,7 +3908,7 @@ pub(crate) mod actor {
                 node: message_node_from_message(Message {
                     method_id: 0,
                     instance: Value::nil(),
-                    args: None,
+                    args: MessageArgs::None,
                     pending: None,
                 }),
             };
@@ -3832,9 +4146,9 @@ pub(crate) mod config {
     const OBJECTIVE_CONSERVATION_BURST_DRAIN_MAX: usize = 128;
     const OBJECTIVE_BALANCE_BURST_DRAIN_MAX: usize = 256;
     const OBJECTIVE_LATENCY_EMPTY_SPIN: u32 = 0;
-    // Empty spinning is extremely workload/hardware dependent and can steal CPU from producers.
-    // Default to 0 across profiles; enable explicitly via `runtime_configure` when desired.
-    const OBJECTIVE_THROUGHPUT_EMPTY_SPIN: u32 = 0;
+    // Throughput profile is allowed to trade CPU for lower wake latency.
+    // This is intentionally bounded; tune with `Runtime(mailbox_empty_spin=...)` when needed.
+    const OBJECTIVE_THROUGHPUT_EMPTY_SPIN: u32 = 256;
     const OBJECTIVE_CONSERVATION_EMPTY_SPIN: u32 = 0;
     const OBJECTIVE_BALANCE_EMPTY_SPIN: u32 = 0;
 
@@ -3968,13 +4282,17 @@ pub(crate) mod config {
         if let Some(val) = config_field_usize(config, "actor_batch_limit") {
             out.actor_batch_limit = val;
         }
-        if let Some(val) = config_field_usize(config, "pause_queue_cap") {
+        if let Some(val) = config_field_usize(config, "paused_queue_cap")
+            .or_else(|| config_field_usize(config, "pause_queue_cap"))
+        {
             out.pause_queue_cap = val;
         }
         if let Some(val) = config_field_bool(config, "deterministic") {
             out.deterministic = val;
         }
-        if let Some(val) = config_field_bool(config, "debug_actor") {
+        if let Some(val) = config_field_bool(config, "actor_debug")
+            .or_else(|| config_field_bool(config, "debug_actor"))
+        {
             out.debug_actor = val;
         }
         if let Some(val) = config_field_u64(config, "actor_watchdog_ms") {
@@ -4237,7 +4555,12 @@ pub(crate) mod config {
     pub fn mailbox_empty_spin_for_objective(objective: u8) -> u32 {
         let configured = runtime_config().mailbox_empty_spin;
         if configured > 0 {
-            return configured;
+            // Only apply empty spinning to throughput objective; other objectives prefer
+            // cooperativeness and reduced CPU/energy usage.
+            if objective == 1 {
+                return configured;
+            }
+            return 0;
         }
         match objective {
             0 => OBJECTIVE_LATENCY_EMPTY_SPIN,
@@ -4274,7 +4597,7 @@ pub(crate) mod config {
         );
         assert!(
             config.pause_queue_cap > 0,
-            "runtime config `pause_queue_cap` must be > 0"
+            "runtime config `paused_queue_cap` must be > 0"
         );
         assert!(
             config.sched_shards > 0,
