@@ -436,6 +436,7 @@ fn main() {
             let certification_start = Instant::now();
             let mut differential_results_hash: Option<String> = None;
             let mut mutation_summary_hash: Option<String> = None;
+            let mut cert_timings = CertPerfTimings::default();
             let mut cached_coverage_snapshot = None;
             if cert_cache_hit {
                 emit_certification_cache_hit(output_format, &cert_cache_hash, &cert_cache_dir);
@@ -474,6 +475,7 @@ fn main() {
                 }
                 differential_results_hash = cert_result.differential_results_hash.clone();
                 mutation_summary_hash = cert_result.mutation_summary_hash.clone();
+                cert_timings = cert_result.cert_timings;
                 let raw_snapshot = cert_result
                     .summary
                     .as_ref()
@@ -568,6 +570,12 @@ fn main() {
                 cert_cache_reason,
                 BuildPerfTimings {
                     certification_ms,
+                    cert_collect_tests_ms: cert_timings.collect_tests_ms,
+                    cert_compile_harness_ms: cert_timings.compile_harness_ms,
+                    cert_determinism_ms: cert_timings.determinism_ms,
+                    cert_mutation_discovery_ms: cert_timings.mutation_discovery_ms,
+                    cert_mutation_execution_ms: cert_timings.mutation_execution_ms,
+                    cert_diff_ms: cert_timings.differential_ms,
                     mir_compile_ms,
                     codegen_ms,
                     cert_report_ms,
@@ -939,6 +947,9 @@ const CERT_SCHEMA_VERSION: u32 = 3;
 const CERT_GATE_VERSIONS_MARKER: &str = "wrela-cert-gates-v1";
 const COVERAGE_SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 const COVERAGE_INDEX_SCHEMA_VERSION: u32 = 2;
+const MUTATION_CACHE_SCHEMA_VERSION: u32 = 1;
+const MUTATION_KILL_HISTORY_SCHEMA_VERSION: u32 = 1;
+const MUTATION_CACHE_ENGINE_TAG: &str = "wrela-mutation-cache-v1";
 const RUNTIME_CARGO_TOML: &str = include_str!("../../runtime/Cargo.toml");
 const BUDGET_POLICY_VERSION: u32 = 1;
 const DEFAULT_TEST_JOBS: u64 = 1;
@@ -1092,6 +1103,12 @@ struct BuildPerfCache {
 #[derive(Serialize)]
 struct BuildPerfTimings {
     certification_ms: u128,
+    cert_collect_tests_ms: u128,
+    cert_compile_harness_ms: u128,
+    cert_determinism_ms: u128,
+    cert_mutation_discovery_ms: u128,
+    cert_mutation_execution_ms: u128,
+    cert_diff_ms: u128,
     mir_compile_ms: u128,
     codegen_ms: u128,
     cert_report_ms: u128,
@@ -3752,6 +3769,14 @@ enum AutogenScalarType {
 struct MutationGateReport {
     version: u32,
     generated_at_unix_ms: u128,
+    discovery_ms: u128,
+    execution_ms: u128,
+    compile_total_ms: u128,
+    test_run_total_ms: u128,
+    parallel_workers: usize,
+    cache_hits: usize,
+    cache_misses: usize,
+    cache_invalidations: usize,
     total_mutants: usize,
     valid_mutants: usize,
     invalid_mutants: usize,
@@ -3769,8 +3794,81 @@ struct MutationMutantResult {
     function_id: String,
     mutation_type: String,
     tests_ran: Vec<String>,
+    compile_ms: u128,
+    test_run_ms: u128,
     status: String,
     reason: Option<String>,
+}
+
+struct MutationGateOutcome {
+    summary_hash: Option<String>,
+    discovery_ms: u128,
+    execution_ms: u128,
+}
+
+struct MutationExecutionResult {
+    job_index: usize,
+    mutant: MutationMutantResult,
+    cache_hits: usize,
+    cache_misses: usize,
+    cache_invalidations: usize,
+}
+
+#[derive(Clone)]
+struct MutationCandidateJob {
+    job_index: usize,
+    candidate: MirMutationCandidate,
+    tests_to_run: Vec<TestCase>,
+}
+
+#[derive(Clone)]
+struct MutationExecutionContext {
+    workspace_root: PathBuf,
+    source_hash: String,
+    toolchain_version: String,
+    cache_root: PathBuf,
+    cache_enabled: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+struct MutationCacheMetadata {
+    schema_version: u32,
+    toolchain_version: String,
+    source_hash: String,
+    candidate_key: String,
+    mutant_binary_path: String,
+    build_status: String,
+    invalid_reason: Option<String>,
+    compile_ms: u128,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct MutationKillHistoryArtifact {
+    schema_version: u32,
+    entries: BTreeMap<String, MutationKillHistoryEntry>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct MutationKillHistoryEntry {
+    kills: u64,
+    attempts: u64,
+    last_seen_unix_ms: u128,
+}
+
+struct MutantCompileSuccess {
+    exe_path: PathBuf,
+    compile_ms: u128,
+    cache_hits: usize,
+    cache_misses: usize,
+    cache_invalidations: usize,
+}
+
+struct MutantCompileFailure {
+    reason: String,
+    compile_ms: u128,
+    cache_hits: usize,
+    cache_misses: usize,
+    cache_invalidations: usize,
 }
 
 impl HttpCassetteMode {
@@ -3989,6 +4087,17 @@ struct TestExecution {
     summary: Option<PerfSummary>,
     differential_results_hash: Option<String>,
     mutation_summary_hash: Option<String>,
+    cert_timings: CertPerfTimings,
+}
+
+#[derive(Clone, Copy, Default)]
+struct CertPerfTimings {
+    collect_tests_ms: u128,
+    compile_harness_ms: u128,
+    determinism_ms: u128,
+    mutation_discovery_ms: u128,
+    mutation_execution_ms: u128,
+    differential_ms: u128,
 }
 
 struct TestRun {
@@ -3996,9 +4105,16 @@ struct TestRun {
     runtime_ns: u128,
 }
 
+#[derive(Clone)]
 struct TestHarness {
     exe_path: PathBuf,
     compile_ns: u128,
+}
+
+#[derive(Default)]
+struct RunOnceTimings {
+    collect_tests_ms: u128,
+    compile_harness_ms: u128,
 }
 
 #[derive(Serialize)]
@@ -4191,6 +4307,9 @@ fn run_tests(
     http_mode: HttpCassetteMode,
     sim_seed_override: Option<u64>,
 ) -> TestExecution {
+    let mut cert_timings = CertPerfTimings::default();
+    let mut harness_cache: HashMap<String, TestHarness> = HashMap::new();
+    let mut first_run_timings = RunOnceTimings::default();
     let (exit, summary, signature) = run_tests_once(
         target,
         budget_policy,
@@ -4206,10 +4325,15 @@ fn run_tests(
         sim_seed_override,
         enforce_determinism_gate,
         DifferentialPipeline::Baseline,
+        Some(&mut first_run_timings),
+        Some(&mut harness_cache),
     );
+    cert_timings.collect_tests_ms += first_run_timings.collect_tests_ms;
+    cert_timings.compile_harness_ms += first_run_timings.compile_harness_ms;
     let mut differential_results_hash = None;
     let mut mutation_summary_hash = None;
     if enforce_determinism_gate {
+        let determinism_start = Instant::now();
         let Some(first_signature) = signature else {
             if exit != EXIT_OK {
                 return TestExecution {
@@ -4217,6 +4341,7 @@ fn run_tests(
                     summary: None,
                     differential_results_hash: None,
                     mutation_summary_hash: None,
+                    cert_timings,
                 };
             }
             return TestExecution {
@@ -4224,8 +4349,11 @@ fn run_tests(
                 summary,
                 differential_results_hash: None,
                 mutation_summary_hash: None,
+                cert_timings,
             };
         };
+        let mut alt_timings = RunOnceTimings::default();
+        let diff_start = Instant::now();
         let (alt_exit, _, alt_signature) = run_tests_once(
             target,
             budget_policy,
@@ -4241,7 +4369,11 @@ fn run_tests(
             sim_seed_override,
             enforce_determinism_gate,
             DifferentialPipeline::Alt,
+            Some(&mut alt_timings),
+            Some(&mut harness_cache),
         );
+        cert_timings.collect_tests_ms += alt_timings.collect_tests_ms;
+        cert_timings.compile_harness_ms += alt_timings.compile_harness_ms;
         let Some(alt_signature) = alt_signature else {
             eprintln!("differential gate failed: alt pipeline produced no signature");
             return TestExecution {
@@ -4249,8 +4381,10 @@ fn run_tests(
                 summary: None,
                 differential_results_hash: None,
                 mutation_summary_hash: None,
+                cert_timings,
             };
         };
+        cert_timings.differential_ms += diff_start.elapsed().as_millis();
         differential_results_hash = Some(fnv1a64_hex(
             format!("{}:{}", first_signature.hash, alt_signature.hash).as_bytes(),
         ));
@@ -4270,8 +4404,10 @@ fn run_tests(
                 summary: None,
                 differential_results_hash,
                 mutation_summary_hash: None,
+                cert_timings,
             };
         }
+        let mut replay_timings = RunOnceTimings::default();
         let (repeat_exit, _, repeat_signature) = run_tests_once(
             target,
             budget_policy,
@@ -4287,7 +4423,11 @@ fn run_tests(
             sim_seed_override,
             enforce_determinism_gate,
             DifferentialPipeline::Baseline,
+            Some(&mut replay_timings),
+            Some(&mut harness_cache),
         );
+        cert_timings.collect_tests_ms += replay_timings.collect_tests_ms;
+        cert_timings.compile_harness_ms += replay_timings.compile_harness_ms;
         let Some(second_signature) = repeat_signature else {
             eprintln!(
                 "determinism gate failed: replay did not produce a certification outcome signature"
@@ -4297,6 +4437,7 @@ fn run_tests(
                 summary: None,
                 differential_results_hash,
                 mutation_summary_hash: None,
+                cert_timings,
             };
         };
         if repeat_exit != exit || first_signature.hash != second_signature.hash {
@@ -4319,8 +4460,10 @@ fn run_tests(
                 summary: None,
                 differential_results_hash,
                 mutation_summary_hash: None,
+                cert_timings,
             };
         }
+        cert_timings.determinism_ms += determinism_start.elapsed().as_millis();
     }
     if exit != EXIT_OK {
         return TestExecution {
@@ -4328,6 +4471,7 @@ fn run_tests(
             summary: None,
             differential_results_hash,
             mutation_summary_hash: None,
+            cert_timings,
         };
     }
     if let (Some(gate), Some(perf_summary)) = (perf_gate, summary.as_ref()) {
@@ -4344,6 +4488,7 @@ fn run_tests(
                     summary,
                     differential_results_hash,
                     mutation_summary_hash: None,
+                    cert_timings,
                 };
             }
         };
@@ -4367,6 +4512,7 @@ fn run_tests(
                 summary,
                 differential_results_hash,
                 mutation_summary_hash: None,
+                cert_timings,
             };
         }
     }
@@ -4380,6 +4526,7 @@ fn run_tests(
             summary,
             differential_results_hash,
             mutation_summary_hash: None,
+            cert_timings,
         };
     }
     if enforce_determinism_gate
@@ -4392,7 +4539,11 @@ fn run_tests(
             budget_policy.mutation_max_cases.value as usize,
             budget_policy.mutation_time_cap_ms.value,
         ) {
-            Ok(hash) => mutation_summary_hash = hash,
+            Ok(outcome) => {
+                mutation_summary_hash = outcome.summary_hash;
+                cert_timings.mutation_discovery_ms += outcome.discovery_ms;
+                cert_timings.mutation_execution_ms += outcome.execution_ms;
+            }
             Err(err) => {
                 eprintln!("mutation gate failed:\n{err}");
                 return TestExecution {
@@ -4400,6 +4551,7 @@ fn run_tests(
                     summary,
                     differential_results_hash,
                     mutation_summary_hash: None,
+                    cert_timings,
                 };
             }
         }
@@ -4409,6 +4561,7 @@ fn run_tests(
         summary,
         differential_results_hash,
         mutation_summary_hash,
+        cert_timings,
     }
 }
 
@@ -4427,6 +4580,8 @@ fn run_tests_once(
     sim_seed_override: Option<u64>,
     certify_mode: bool,
     pipeline: DifferentialPipeline,
+    mut run_timing_out: Option<&mut RunOnceTimings>,
+    harness_cache: Option<&mut HashMap<String, TestHarness>>,
 ) -> (i32, Option<PerfSummary>, Option<DeterminismSignature>) {
     configure_runtime_for_test_lane(perf_lane, perf_debug);
     let total_start = Instant::now();
@@ -4495,7 +4650,7 @@ fn run_tests_once(
                     return (EXIT_USAGE, None, None);
                 }
             };
-            if let Err(err) = collect_tests_from_source(&source, &module_path, &mut tests) {
+            if let Err(err) = collect_tests_from_source(&source, &module_path, false, &mut tests) {
                 eprintln!("test discovery error: {err}");
                 return (EXIT_USAGE, None, None);
             }
@@ -4531,6 +4686,9 @@ fn run_tests_once(
         expand_sim_seed_cases(selected_tests, sim_seed_override, certify_mode)
     };
     let selection_ms = selection_start.elapsed().as_millis();
+    if let Some(timing) = run_timing_out.as_deref_mut() {
+        timing.collect_tests_ms = discovery_ms + selection_ms;
+    }
     if (emit_pretty_output || emit_json_summary)
         && let Some(report) = selection.cert_selection_report.as_ref()
     {
@@ -4598,6 +4756,7 @@ fn run_tests_once(
         tests_root.as_deref(),
         &tests,
         output_format,
+        harness_cache,
     ) {
         Ok(harness) => harness,
         Err(err) => {
@@ -4605,6 +4764,9 @@ fn run_tests_once(
             return (EXIT_CODEGEN, None, None);
         }
     };
+    if let Some(timing) = run_timing_out.as_deref_mut() {
+        timing.compile_harness_ms = harness.compile_ns / 1_000_000;
+    }
 
     let total_tests = tests.len();
     let base_compile_ns = harness.compile_ns / total_tests as u128;
@@ -4839,6 +5001,8 @@ fn run_perf_harness(
             None,
             false,
             DifferentialPipeline::Baseline,
+            None,
+            None,
         );
         if exit != EXIT_OK {
             return exit;
@@ -5535,10 +5699,27 @@ fn collect_tests(root: &Path, tests_root: &Path, out: &mut Vec<TestCase>) -> io:
         if path.extension().and_then(|s| s.to_str()) != Some("wr") {
             continue;
         }
+        enforce_test_file_suffix(&path)?;
         let source = fs::read_to_string(&path)?;
         let module_path = module_path_for_test_file(&path, tests_root)?;
-        collect_tests_from_source(&source, &module_path, out)
+        collect_tests_from_source(&source, &module_path, true, out)
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    }
+    Ok(())
+}
+
+fn enforce_test_file_suffix(path: &Path) -> io::Result<()> {
+    let name = path.file_name().and_then(|s| s.to_str()).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid test file name: {}", path.display()),
+        )
+    })?;
+    if !name.ends_with("_test.wr") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("test file must end with `_test.wr`: {}", path.display()),
+        ));
     }
     Ok(())
 }
@@ -5550,13 +5731,18 @@ fn module_path_for_test_file(path: &Path, tests_root: &Path) -> io::Result<Strin
             format!("test file must live under {}", tests_root.display()),
         )
     })?;
-    let mut rel = rel.to_path_buf();
-    rel.set_extension("");
-    let parts: Vec<String> = rel
+    let mut rel_path = rel.to_path_buf();
+    rel_path.set_extension("");
+    let mut parts: Vec<String> = rel_path
         .components()
         .map(|c| c.as_os_str().to_string_lossy().to_string())
         .filter(|s| !s.is_empty())
         .collect();
+    if let Some(last) = parts.last_mut() {
+        if let Some(stripped) = last.strip_suffix("_test") {
+            *last = stripped.to_string();
+        }
+    }
     Ok(format!("tests/{}", parts.join("/")))
 }
 
@@ -5573,6 +5759,7 @@ fn module_path_for_single_file(path: &Path) -> io::Result<String> {
 fn collect_tests_from_source(
     source: &str,
     module_path: &str,
+    enforce_function_name_contract: bool,
     out: &mut Vec<TestCase>,
 ) -> Result<(), String> {
     use wrela::parser::ast::AstNode;
@@ -5591,6 +5778,15 @@ fn collect_tests_from_source(
             continue;
         }
         let func_name = func.name.to_string();
+        if enforce_function_name_contract
+            && func_name.starts_with("test")
+            && !is_test_function_name(&func_name)
+        {
+            return Err(format!(
+                "test naming error: {}::{} must start with `test_`",
+                module_path, func_name
+            ));
+        }
         if !is_test_function_name(&func_name) {
             continue;
         }
@@ -5635,6 +5831,12 @@ fn collect_tests_from_source(
             sim_seed: None,
             canonical_id: stable_id,
         });
+    }
+    if enforce_function_name_contract && discovered.is_empty() {
+        return Err(format!(
+            "test discovery error: {} must define at least one `test_` function",
+            module_path
+        ));
     }
     discovered.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
     out.extend(discovered);
@@ -6425,18 +6627,35 @@ fn compile_test_harness(
     tests_root: Option<&Path>,
     tests: &[TestCase],
     output_format: OutputFormat,
+    harness_cache: Option<&mut HashMap<String, TestHarness>>,
 ) -> Result<TestHarness, String> {
     let temp_dir = workspace_root.join("target").join("wrela_tests");
     fs::create_dir_all(&temp_dir)
         .map_err(|err| format!("failed to create test temp directory: {err}"))?;
-    let harness_key = format!(
-        "harness_{}_{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or(Duration::from_secs(0))
-            .as_nanos()
-    );
+    let mut cache_key_hasher = Fnv1a64::new();
+    cache_key_hasher.update(compile_root.to_string_lossy().as_bytes());
+    cache_key_hasher.update(&[0]);
+    if let Some(root) = tests_root {
+        cache_key_hasher.update(root.to_string_lossy().as_bytes());
+        cache_key_hasher.update(&[0]);
+    }
+    for test in tests {
+        cache_key_hasher.update(test.id.as_bytes());
+        cache_key_hasher.update(&[0]);
+        cache_key_hasher.update(test.module_path.as_bytes());
+        cache_key_hasher.update(&[0]);
+        cache_key_hasher.update(test.func_name.as_bytes());
+        cache_key_hasher.update(&[0]);
+    }
+    let harness_key = format!("harness_{}", cache_key_hasher.finish_hex());
+    if let Some(cache) = harness_cache.as_ref()
+        && let Some(existing) = cache.get(&harness_key)
+    {
+        return Ok(TestHarness {
+            exe_path: existing.exe_path.clone(),
+            compile_ns: 0,
+        });
+    }
     let run_dir = temp_dir.join(&harness_key);
     fs::create_dir_all(&run_dir)
         .map_err(|err| format!("failed to create harness directory: {err}"))?;
@@ -6538,10 +6757,14 @@ fn compile_test_harness(
     if let Some(path) = wrappers_root {
         let _ = fs::remove_dir_all(path);
     }
-    Ok(TestHarness {
+    let harness = TestHarness {
         exe_path,
         compile_ns,
-    })
+    };
+    if let Some(cache) = harness_cache {
+        cache.insert(harness_key, harness.clone());
+    }
+    Ok(harness)
 }
 
 fn test_case_dispatch_stmt(test: &TestCase) -> String {
@@ -7443,19 +7666,22 @@ fn run_mutation_gate(
     summary: &PerfSummary,
     max_cases: usize,
     time_cap_ms: u64,
-) -> Result<Option<String>, String> {
+) -> Result<MutationGateOutcome, String> {
     if max_cases == 0 {
-        return Ok(None);
+        return Ok(MutationGateOutcome {
+            summary_hash: None,
+            discovery_ms: 0,
+            execution_ms: 0,
+        });
     }
     let started = Instant::now();
     let time_cap = Duration::from_millis(time_cap_ms.max(1));
+    let discovery_start = Instant::now();
     let legacy_to_qualified_ids = collect_source_function_id_aliases(workspace_root)?;
     let coverage_index =
         build_function_test_coverage_index(Some(summary), &legacy_to_qualified_ids);
     let snapshot = build_public_surface_snapshot(workspace_root)?;
     let authored_tests = discover_authored_tests_for_mutation(workspace_root)?;
-    let src_root = workspace_root.join("src");
-    let tests_root = workspace_root.join("tests");
     let mut importable_by_module: BTreeMap<String, BTreeMap<String, ImportableFunctionInfo>> =
         BTreeMap::new();
     for item in snapshot
@@ -7478,43 +7704,11 @@ fn run_mutation_gate(
                 },
             );
     }
-    let discovery_root = workspace_root
-        .join("target")
-        .join("wrela_mutation")
-        .join("discovery");
-    fs::create_dir_all(&discovery_root)
-        .map_err(|err| format!("failed to create {}: {}", discovery_root.display(), err))?;
+    let mir_module = compile_mutation_discovery_module(workspace_root, &importable_by_module)?;
     let mut candidates = Vec::new();
     let mut seen_candidates = BTreeSet::new();
-    for (module_path, functions) in importable_by_module {
-        let imports = functions.keys().cloned().collect::<Vec<_>>().join(", ");
-        let discovery_entry_source =
-            format!("use {imports} from {module_path}\n\nto run() -> Integer:\n    return 0\n");
-        let entry_path = discovery_root.join(format!(
-            "{}_{}.wr",
-            sanitize_test_path_component(&module_path),
-            fnv1a64_hex(module_path.as_bytes())
-        ));
-        fs::write(&entry_path, discovery_entry_source).map_err(|err| {
-            format!(
-                "mutation gate failed to write discovery entry {}: {}",
-                entry_path.display(),
-                err
-            )
-        })?;
-        let mir_module = compile_to_mir_with_root(
-            &entry_path,
-            &src_root,
-            tests_root.is_dir().then_some(tests_root.as_path()),
-            OutputFormat::Pretty,
-        )
-        .map_err(|code| {
-            format!(
-                "mutation gate failed to compile MIR discovery entry {} (exit code {code})",
-                entry_path.display()
-            )
-        })?;
-        for candidate in discover_mir_mutation_candidates(&mir_module, &functions) {
+    for functions in importable_by_module.values() {
+        for candidate in discover_mir_mutation_candidates(&mir_module, functions) {
             let key = mutation_candidate_key(&candidate);
             if seen_candidates.insert(key) {
                 candidates.push(candidate);
@@ -7528,19 +7722,28 @@ fn run_mutation_gate(
             .then(a.op_index.cmp(&b.op_index))
             .then(a.mutation_type.cmp(b.mutation_type))
     });
+    let discovery_ms = discovery_start.elapsed().as_millis();
     let authored_by_id: HashMap<String, TestCase> = authored_tests
         .into_iter()
         .map(|test| (test.id.clone(), test))
         .collect();
+    let source_hash = hash_source_fingerprint(workspace_root)
+        .map_err(|err| format!("mutation cache source hash error: {err}"))?;
+    let toolchain_version = resolve_toolchain_version();
+    let cache_enabled = mutation_cache_enabled();
+    let cache_root = mutation_cache_root(workspace_root);
+    if cache_enabled {
+        let _ = fs::create_dir_all(&cache_root);
+    }
+    let history_path = mutation_kill_history_path(&cache_root);
+    let mut history = load_mutation_kill_history(&history_path);
 
-    let mut mutants = Vec::new();
+    let execution_start = Instant::now();
+    let mut queued_jobs = Vec::new();
+    let mut ordered_results = Vec::new();
     let mut total = 0usize;
-    let mut valid = 0usize;
-    let mut invalid = 0usize;
-    let mut killed = 0usize;
-    let mut survived = 0usize;
-    let mut no_covering = 0usize;
-    for candidate in candidates.into_iter().take(max_cases) {
+    let mutation_cap = max_cases.min(candidates.len());
+    for (job_index, candidate) in candidates.into_iter().take(mutation_cap).enumerate() {
         if started.elapsed() >= time_cap {
             break;
         }
@@ -7554,75 +7757,121 @@ fn run_mutation_gate(
             .filter_map(|id| authored_by_id.get(id).cloned())
             .collect();
         if tests_to_run.is_empty() {
-            valid += 1;
-            survived += 1;
-            no_covering += 1;
-            mutants.push(MutationMutantResult {
-                function: candidate.qualified_name.clone(),
-                function_id: candidate.function_id.clone(),
-                mutation_type: candidate.mutation_type.to_string(),
-                tests_ran: Vec::new(),
-                status: "survived".to_string(),
-                reason: Some("no-covering-tests".to_string()),
-            });
+            ordered_results.push((
+                job_index,
+                MutationMutantResult {
+                    function: candidate.qualified_name.clone(),
+                    function_id: candidate.function_id.clone(),
+                    mutation_type: candidate.mutation_type.to_string(),
+                    tests_ran: Vec::new(),
+                    compile_ms: 0,
+                    test_run_ms: 0,
+                    status: "survived".to_string(),
+                    reason: Some("no-covering-tests".to_string()),
+                },
+                0usize,
+                0usize,
+                0usize,
+            ));
             continue;
         }
+        let ordered_tests = order_tests_for_mutation_candidate(&candidate, tests_to_run, &history);
+        queued_jobs.push(MutationCandidateJob {
+            job_index,
+            candidate,
+            tests_to_run: ordered_tests,
+        });
+    }
 
-        let mut tests_ran = Vec::new();
-        let mut is_killed = false;
-        let mut invalid_reason = None;
-        for test in tests_to_run {
-            tests_ran.push(test.id.clone());
-            match run_mutant_against_test(workspace_root, &candidate, &test) {
-                Ok(killed_by_test) => {
-                    if killed_by_test {
-                        is_killed = true;
-                        break;
-                    }
-                }
-                Err(err) => {
-                    invalid_reason = Some(err);
-                    break;
-                }
+    let mutation_workers = resolve_mutation_workers();
+    let worker_count = mutation_workers.min(queued_jobs.len().max(1));
+    let queue = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from(
+        queued_jobs,
+    )));
+    let (tx, rx) = std::sync::mpsc::channel::<MutationExecutionResult>();
+    let context = std::sync::Arc::new(MutationExecutionContext {
+        workspace_root: workspace_root.to_path_buf(),
+        source_hash,
+        toolchain_version,
+        cache_root,
+        cache_enabled,
+    });
+    let mut handles = Vec::new();
+    for _ in 0..worker_count {
+        let queue = std::sync::Arc::clone(&queue);
+        let tx = tx.clone();
+        let worker_context = std::sync::Arc::clone(&context);
+        handles.push(std::thread::spawn(move || {
+            loop {
+                let next_job = match queue.lock() {
+                    Ok(mut guard) => guard.pop_front(),
+                    Err(_) => None,
+                };
+                let Some(job) = next_job else { break };
+                let (mutant, cache_hits, cache_misses, cache_invalidations) =
+                    run_mutation_job(&worker_context, &job);
+                let _ = tx.send(MutationExecutionResult {
+                    job_index: job.job_index,
+                    mutant,
+                    cache_hits,
+                    cache_misses,
+                    cache_invalidations,
+                });
             }
-        }
-
-        if let Some(reason) = invalid_reason {
-            invalid += 1;
-            mutants.push(MutationMutantResult {
-                function: candidate.qualified_name.clone(),
-                function_id: candidate.function_id.clone(),
-                mutation_type: candidate.mutation_type.to_string(),
-                tests_ran,
-                status: "invalid-mutant".to_string(),
-                reason: Some(reason),
-            });
-            continue;
-        }
-
-        valid += 1;
-        if is_killed {
-            killed += 1;
-            mutants.push(MutationMutantResult {
-                function: candidate.qualified_name.clone(),
-                function_id: candidate.function_id.clone(),
-                mutation_type: candidate.mutation_type.to_string(),
-                tests_ran,
-                status: "killed".to_string(),
-                reason: None,
-            });
-        } else {
-            survived += 1;
-            mutants.push(MutationMutantResult {
-                function: candidate.qualified_name.clone(),
-                function_id: candidate.function_id.clone(),
-                mutation_type: candidate.mutation_type.to_string(),
-                tests_ran,
-                status: "survived".to_string(),
-                reason: None,
-            });
+        }));
+    }
+    drop(tx);
+    for result in rx {
+        ordered_results.push((
+            result.job_index,
+            result.mutant,
+            result.cache_hits,
+            result.cache_misses,
+            result.cache_invalidations,
+        ));
+    }
+    for handle in handles {
+        if handle.join().is_err() {
+            return Err(
+                "mutation gate worker panic: mutation execution aborted before report completion"
+                    .to_string(),
+            );
         }
     }
+    ordered_results.sort_by_key(|(job_index, _, _, _, _)| *job_index);
+    let cache_hits: usize = ordered_results.iter().map(|(_, _, hits, _, _)| *hits).sum();
+    let cache_misses: usize = ordered_results
+        .iter()
+        .map(|(_, _, _, misses, _)| *misses)
+        .sum();
+    let cache_invalidations: usize = ordered_results
+        .iter()
+        .map(|(_, _, _, _, invalidations)| *invalidations)
+        .sum();
+    let mutants: Vec<MutationMutantResult> = ordered_results
+        .into_iter()
+        .map(|(_, mutant, _, _, _)| mutant)
+        .collect();
+    update_mutation_kill_history_from_mutants(&mut history, &mutants);
+    let _ = write_mutation_kill_history(&history_path, &history);
+
+    let invalid = mutants
+        .iter()
+        .filter(|mutant| mutant.status == "invalid-mutant")
+        .count();
+    let survived = mutants
+        .iter()
+        .filter(|mutant| mutant.status == "survived")
+        .count();
+    let killed = mutants
+        .iter()
+        .filter(|mutant| mutant.status == "killed")
+        .count();
+    let no_covering = mutants
+        .iter()
+        .filter(|mutant| mutant.reason.as_deref() == Some("no-covering-tests"))
+        .count();
+    let valid = killed + survived;
     let kill_rate_pct = if valid == 0 {
         100.0
     } else {
@@ -7635,8 +7884,16 @@ fn run_mutation_gate(
     };
 
     let report = MutationGateReport {
-        version: 3,
+        version: 4,
         generated_at_unix_ms: now_unix_ms(),
+        discovery_ms,
+        execution_ms: execution_start.elapsed().as_millis(),
+        compile_total_ms: mutants.iter().map(|mutant| mutant.compile_ms).sum(),
+        test_run_total_ms: mutants.iter().map(|mutant| mutant.test_run_ms).sum(),
+        parallel_workers: worker_count.max(1),
+        cache_hits,
+        cache_misses,
+        cache_invalidations,
         total_mutants: total,
         valid_mutants: valid,
         invalid_mutants: invalid,
@@ -7666,6 +7923,7 @@ fn run_mutation_gate(
         )
     })?;
     let summary_hash = fnv1a64_hex(&payload);
+    let execution_ms = report.execution_ms;
 
     let mut failures = Vec::new();
     if report.survived_mutants > 0 {
@@ -7700,7 +7958,56 @@ fn run_mutation_gate(
             report_path.display()
         ));
     }
-    Ok(Some(summary_hash))
+    Ok(MutationGateOutcome {
+        summary_hash: Some(summary_hash),
+        discovery_ms,
+        execution_ms,
+    })
+}
+
+fn compile_mutation_discovery_module(
+    workspace_root: &Path,
+    importable_by_module: &BTreeMap<String, BTreeMap<String, ImportableFunctionInfo>>,
+) -> Result<mir::ir::MirModule, String> {
+    let mut source = String::new();
+    for (module_path, functions) in importable_by_module {
+        if functions.is_empty() {
+            continue;
+        }
+        let imports = functions.keys().cloned().collect::<Vec<_>>().join(", ");
+        source.push_str(&format!("use {imports} from {module_path}\n"));
+    }
+    source.push_str("\nto run() -> Integer:\n    return 0\n");
+
+    let discovery_root = workspace_root
+        .join("target")
+        .join("wrela_mutation")
+        .join("discovery");
+    fs::create_dir_all(&discovery_root)
+        .map_err(|err| format!("failed to create {}: {}", discovery_root.display(), err))?;
+    let entry_path = discovery_root.join(format!("project_{}.wr", fnv1a64_hex(source.as_bytes())));
+    fs::write(&entry_path, source).map_err(|err| {
+        format!(
+            "mutation gate failed to write discovery entry {}: {}",
+            entry_path.display(),
+            err
+        )
+    })?;
+
+    let src_root = workspace_root.join("src");
+    let tests_root = workspace_root.join("tests");
+    compile_to_mir_with_root(
+        &entry_path,
+        &src_root,
+        tests_root.is_dir().then_some(tests_root.as_path()),
+        OutputFormat::Pretty,
+    )
+    .map_err(|code| {
+        format!(
+            "mutation gate failed to compile MIR discovery entry {} (exit code {code})",
+            entry_path.display()
+        )
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -7888,62 +8195,499 @@ fn mutation_candidate_key(candidate: &MirMutationCandidate) -> String {
     )
 }
 
-fn run_mutant_against_test(
-    workspace_root: &Path,
+fn resolve_mutation_workers() -> usize {
+    const DEFAULT_WORKER_CAP: usize = 4;
+    const ABSOLUTE_WORKER_CAP: usize = 16;
+    let default_workers = std::thread::available_parallelism()
+        .map(|value| value.get().min(DEFAULT_WORKER_CAP))
+        .unwrap_or(1);
+    let requested = std::env::var("WRELA_MUTATION_WORKERS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(default_workers);
+    requested.clamp(1, ABSOLUTE_WORKER_CAP)
+}
+
+fn run_mutation_job(
+    context: &MutationExecutionContext,
+    job: &MutationCandidateJob,
+) -> (MutationMutantResult, usize, usize, usize) {
+    let compile_attempt_start = Instant::now();
+    let mut tests_ran = Vec::new();
+    let compile_result =
+        compile_mutant_binary_for_tests(context, &job.candidate, &job.tests_to_run);
+    let compile = match compile_result {
+        Ok(outcome) => outcome,
+        Err(failure) => {
+            if context.cache_enabled {
+                let _ = persist_invalid_mutation_cache_entry(
+                    context,
+                    &job.candidate,
+                    &failure.reason,
+                    failure.compile_ms,
+                );
+            }
+            return (
+                MutationMutantResult {
+                    function: job.candidate.qualified_name.clone(),
+                    function_id: job.candidate.function_id.clone(),
+                    mutation_type: job.candidate.mutation_type.to_string(),
+                    tests_ran,
+                    compile_ms: failure
+                        .compile_ms
+                        .max(compile_attempt_start.elapsed().as_millis()),
+                    test_run_ms: 0,
+                    status: "invalid-mutant".to_string(),
+                    reason: Some(failure.reason),
+                },
+                failure.cache_hits,
+                failure.cache_misses,
+                failure.cache_invalidations,
+            );
+        }
+    };
+
+    let timeout = Duration::from_millis(DEFAULT_TEST_TIMEOUT_MS);
+    let run_start = Instant::now();
+    let mut killed = false;
+    for test in &job.tests_to_run {
+        tests_ran.push(test.id.clone());
+        let run = run_single_test(
+            &compile.exe_path,
+            &context.workspace_root,
+            test,
+            timeout,
+            OutputFormat::Pretty,
+            HttpCassetteMode::Replay,
+            DifferentialPipeline::Baseline,
+        );
+        if run.is_err() {
+            killed = true;
+            break;
+        }
+    }
+    let test_run_ms = run_start.elapsed().as_millis();
+    (
+        MutationMutantResult {
+            function: job.candidate.qualified_name.clone(),
+            function_id: job.candidate.function_id.clone(),
+            mutation_type: job.candidate.mutation_type.to_string(),
+            tests_ran,
+            compile_ms: compile.compile_ms,
+            test_run_ms,
+            status: if killed {
+                "killed".to_string()
+            } else {
+                "survived".to_string()
+            },
+            reason: None,
+        },
+        compile.cache_hits,
+        compile.cache_misses,
+        compile.cache_invalidations,
+    )
+}
+
+fn compile_mutant_binary_for_tests(
+    context: &MutationExecutionContext,
     candidate: &MirMutationCandidate,
-    test: &TestCase,
-) -> Result<bool, String> {
-    let mutation_root = workspace_root
+    tests: &[TestCase],
+) -> Result<MutantCompileSuccess, MutantCompileFailure> {
+    let candidate_key = mutation_candidate_key(candidate);
+    let cache_key = mutation_cache_key(
+        &context.source_hash,
+        &context.toolchain_version,
+        &candidate_key,
+    );
+    let cache_entry_dir = context.cache_root.join(&cache_key);
+    let cache_metadata_path = cache_entry_dir.join("metadata.json");
+    let cache_bin_path = cache_entry_dir.join("mutant_bin");
+    let mut cache_invalidations = 0usize;
+    if context.cache_enabled
+        && let Some(metadata) = load_mutation_cache_metadata(&cache_metadata_path)
+    {
+        let valid_metadata = metadata.schema_version == MUTATION_CACHE_SCHEMA_VERSION
+            && metadata.toolchain_version == context.toolchain_version
+            && metadata.source_hash == context.source_hash
+            && metadata.candidate_key == candidate_key;
+        if valid_metadata && metadata.build_status == "ok" && cache_bin_path.is_file() {
+            return Ok(MutantCompileSuccess {
+                exe_path: cache_bin_path,
+                compile_ms: 0,
+                cache_hits: 1,
+                cache_misses: 0,
+                cache_invalidations: 0,
+            });
+        }
+        if valid_metadata && metadata.build_status == "invalid" {
+            return Err(MutantCompileFailure {
+                reason: metadata
+                    .invalid_reason
+                    .unwrap_or_else(|| "cached invalid mutant".to_string()),
+                compile_ms: 0,
+                cache_hits: 1,
+                cache_misses: 0,
+                cache_invalidations: 0,
+            });
+        }
+        cache_invalidations += 1;
+        let _ = fs::remove_dir_all(&cache_entry_dir);
+    }
+
+    let mutation_key = sanitize_test_path_component(&format!(
+        "{}__{}__{}",
+        candidate.function_name, candidate.mutation_type, candidate.op_index
+    ));
+    let mutation_root = context
+        .workspace_root
         .join("target")
         .join("wrela_mutation")
-        .join(sanitize_test_path_component(&format!(
-            "{}__{}__{}",
-            candidate.function_name, candidate.mutation_type, candidate.op_index
-        )))
-        .join(sanitize_test_path_component(&test.id));
-    fs::create_dir_all(&mutation_root)
-        .map_err(|err| format!("failed to create mutation temp directory: {err}"))?;
+        .join(&mutation_key);
+    fs::create_dir_all(&mutation_root).map_err(|err| MutantCompileFailure {
+        reason: format!("failed to create mutation temp directory: {err}"),
+        compile_ms: 0,
+        cache_hits: 0,
+        cache_misses: usize::from(context.cache_enabled),
+        cache_invalidations,
+    })?;
     let entry_path = mutation_root.join("entry.wr");
-    let exe_path = mutation_root.join("mutant_bin");
-    fs::write(&entry_path, single_test_entry_source(test))
-        .map_err(|err| format!("failed to write mutation harness entry: {err}"))?;
+    let exe_path = if context.cache_enabled {
+        if let Err(err) = fs::create_dir_all(&cache_entry_dir) {
+            return Err(MutantCompileFailure {
+                reason: format!(
+                    "failed to create mutation cache directory {}: {err}",
+                    cache_entry_dir.display()
+                ),
+                compile_ms: 0,
+                cache_hits: 0,
+                cache_misses: usize::from(context.cache_enabled),
+                cache_invalidations,
+            });
+        }
+        cache_bin_path.clone()
+    } else {
+        mutation_root.join("mutant_bin")
+    };
 
-    let src_root = workspace_root.join("src");
-    let tests_root = workspace_root.join("tests");
+    let (entry_source, wrappers_root) =
+        mutation_dispatch_entry_source(&context.workspace_root, &mutation_key, tests).map_err(
+            |err| MutantCompileFailure {
+                reason: err,
+                compile_ms: 0,
+                cache_hits: 0,
+                cache_misses: usize::from(context.cache_enabled),
+                cache_invalidations,
+            },
+        )?;
+    fs::write(&entry_path, entry_source).map_err(|err| MutantCompileFailure {
+        reason: format!("failed to write mutation harness entry: {err}"),
+        compile_ms: 0,
+        cache_hits: 0,
+        cache_misses: usize::from(context.cache_enabled),
+        cache_invalidations,
+    })?;
+
+    let compile_start = Instant::now();
+    let src_root = context.workspace_root.join("src");
+    let tests_root = context.workspace_root.join("tests");
     let mut module = compile_to_mir_with_root(
         &entry_path,
         &src_root,
         tests_root.is_dir().then_some(tests_root.as_path()),
         OutputFormat::Pretty,
     )
-    .map_err(|code| format!("mutant compile failed before mutation (exit code {code})"))?;
-    apply_mir_mutation(&mut module, candidate)?;
-    wrela::backend::cranelift::compile_to_executable(&module, &exe_path)
-        .map_err(|err| format!("mutant codegen error: {}", err.0))?;
+    .map_err(|code| MutantCompileFailure {
+        reason: format!("mutant compile failed before mutation (exit code {code})"),
+        compile_ms: compile_start.elapsed().as_millis(),
+        cache_hits: 0,
+        cache_misses: usize::from(context.cache_enabled),
+        cache_invalidations,
+    })?;
+    apply_mir_mutation(&mut module, candidate).map_err(|err| MutantCompileFailure {
+        reason: err,
+        compile_ms: compile_start.elapsed().as_millis(),
+        cache_hits: 0,
+        cache_misses: usize::from(context.cache_enabled),
+        cache_invalidations,
+    })?;
+    wrela::backend::cranelift::compile_to_executable(&module, &exe_path).map_err(|err| {
+        MutantCompileFailure {
+            reason: format!("mutant codegen error: {}", err.0),
+            compile_ms: compile_start.elapsed().as_millis(),
+            cache_hits: 0,
+            cache_misses: usize::from(context.cache_enabled),
+            cache_invalidations,
+        }
+    })?;
+    let compile_ms = compile_start.elapsed().as_millis();
+    let _ = fs::remove_dir_all(wrappers_root);
 
-    let timeout = Duration::from_millis(DEFAULT_TEST_TIMEOUT_MS);
-    let run = run_single_test(
-        &exe_path,
-        workspace_root,
-        test,
-        timeout,
-        OutputFormat::Pretty,
-        HttpCassetteMode::Replay,
-        DifferentialPipeline::Baseline,
-    );
-    match run {
-        Ok(_) => Ok(false),
-        Err(_) => Ok(true),
+    if context.cache_enabled {
+        let metadata = MutationCacheMetadata {
+            schema_version: MUTATION_CACHE_SCHEMA_VERSION,
+            toolchain_version: context.toolchain_version.clone(),
+            source_hash: context.source_hash.clone(),
+            candidate_key,
+            mutant_binary_path: exe_path.display().to_string(),
+            build_status: "ok".to_string(),
+            invalid_reason: None,
+            compile_ms,
+        };
+        let _ = write_json_atomic(&cache_metadata_path, &metadata);
+    }
+
+    Ok(MutantCompileSuccess {
+        exe_path,
+        compile_ms,
+        cache_hits: 0,
+        cache_misses: usize::from(context.cache_enabled),
+        cache_invalidations,
+    })
+}
+
+fn mutation_cache_enabled() -> bool {
+    match std::env::var("WRELA_MUTATION_CACHE") {
+        Ok(value) => !matches!(value.to_ascii_lowercase().as_str(), "off" | "false" | "0"),
+        Err(_) => true,
     }
 }
 
-fn single_test_entry_source(test: &TestCase) -> String {
-    format!(
-        "use {func} from {module}\n\nto run() -> Integer:\n    {dispatch}\n    return 0\n",
-        func = test.func_name,
-        module = test.module_path,
-        dispatch = test_case_dispatch_stmt(test)
-    )
+fn mutation_cache_root(workspace_root: &Path) -> PathBuf {
+    workspace_root.join("target").join("wrela_mutation_cache")
+}
+
+fn mutation_kill_history_path(cache_root: &Path) -> PathBuf {
+    cache_root.join("kill_history.json")
+}
+
+fn mutation_cache_key(source_hash: &str, toolchain_version: &str, candidate_key: &str) -> String {
+    let mut hasher = Fnv1a64::new();
+    hasher.update(MUTATION_CACHE_ENGINE_TAG.as_bytes());
+    hasher.update(&[0]);
+    hasher.update(source_hash.as_bytes());
+    hasher.update(&[0]);
+    hasher.update(toolchain_version.as_bytes());
+    hasher.update(&[0]);
+    hasher.update(candidate_key.as_bytes());
+    hasher.finish_hex()
+}
+
+fn persist_invalid_mutation_cache_entry(
+    context: &MutationExecutionContext,
+    candidate: &MirMutationCandidate,
+    reason: &str,
+    compile_ms: u128,
+) -> Result<(), String> {
+    let candidate_key = mutation_candidate_key(candidate);
+    let cache_key = mutation_cache_key(
+        &context.source_hash,
+        &context.toolchain_version,
+        &candidate_key,
+    );
+    let entry_dir = context.cache_root.join(cache_key);
+    let metadata_path = entry_dir.join("metadata.json");
+    let metadata = MutationCacheMetadata {
+        schema_version: MUTATION_CACHE_SCHEMA_VERSION,
+        toolchain_version: context.toolchain_version.clone(),
+        source_hash: context.source_hash.clone(),
+        candidate_key,
+        mutant_binary_path: entry_dir.join("mutant_bin").display().to_string(),
+        build_status: "invalid".to_string(),
+        invalid_reason: Some(reason.to_string()),
+        compile_ms,
+    };
+    write_json_atomic(&metadata_path, &metadata)
+}
+
+fn load_mutation_cache_metadata(path: &Path) -> Option<MutationCacheMetadata> {
+    let bytes = fs::read(path).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn load_mutation_kill_history(path: &Path) -> MutationKillHistoryArtifact {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return MutationKillHistoryArtifact {
+                schema_version: MUTATION_KILL_HISTORY_SCHEMA_VERSION,
+                entries: BTreeMap::new(),
+            };
+        }
+    };
+    let artifact: MutationKillHistoryArtifact = match serde_json::from_slice(&bytes) {
+        Ok(artifact) => artifact,
+        Err(_) => {
+            return MutationKillHistoryArtifact {
+                schema_version: MUTATION_KILL_HISTORY_SCHEMA_VERSION,
+                entries: BTreeMap::new(),
+            };
+        }
+    };
+    if artifact.schema_version != MUTATION_KILL_HISTORY_SCHEMA_VERSION {
+        return MutationKillHistoryArtifact {
+            schema_version: MUTATION_KILL_HISTORY_SCHEMA_VERSION,
+            entries: BTreeMap::new(),
+        };
+    }
+    artifact
+}
+
+fn write_mutation_kill_history(
+    path: &Path,
+    history: &MutationKillHistoryArtifact,
+) -> Result<(), String> {
+    write_json_atomic(path, history)
+}
+
+fn mutation_history_key(function_id: &str, mutation_type: &str, test_id: &str) -> String {
+    format!("{function_id}|{mutation_type}|{test_id}")
+}
+
+fn order_tests_for_mutation_candidate(
+    candidate: &MirMutationCandidate,
+    mut tests: Vec<TestCase>,
+    history: &MutationKillHistoryArtifact,
+) -> Vec<TestCase> {
+    tests.sort_by(|a, b| {
+        let key_a = mutation_history_key(&candidate.function_id, candidate.mutation_type, &a.id);
+        let key_b = mutation_history_key(&candidate.function_id, candidate.mutation_type, &b.id);
+        let score_a = history.entries.get(&key_a);
+        let score_b = history.entries.get(&key_b);
+        let kills_a = score_a.map(|entry| entry.kills).unwrap_or(0);
+        let attempts_a = score_a.map(|entry| entry.attempts).unwrap_or(0);
+        let kills_b = score_b.map(|entry| entry.kills).unwrap_or(0);
+        let attempts_b = score_b.map(|entry| entry.attempts).unwrap_or(0);
+        let rate_lhs = (kills_a as u128) * (attempts_b.max(1) as u128);
+        let rate_rhs = (kills_b as u128) * (attempts_a.max(1) as u128);
+        rate_rhs
+            .cmp(&rate_lhs)
+            .then(attempts_b.cmp(&attempts_a))
+            .then(a.id.cmp(&b.id))
+    });
+    tests
+}
+
+fn update_mutation_kill_history_from_mutants(
+    history: &mut MutationKillHistoryArtifact,
+    mutants: &[MutationMutantResult],
+) {
+    history.schema_version = MUTATION_KILL_HISTORY_SCHEMA_VERSION;
+    let seen_at = now_unix_ms();
+    for mutant in mutants {
+        if mutant.status != "killed" && mutant.status != "survived" {
+            continue;
+        }
+        let killer = (mutant.status == "killed")
+            .then(|| mutant.tests_ran.last().cloned())
+            .flatten();
+        for test_id in &mutant.tests_ran {
+            let key = mutation_history_key(&mutant.function_id, &mutant.mutation_type, test_id);
+            let entry = history
+                .entries
+                .entry(key)
+                .or_insert(MutationKillHistoryEntry {
+                    kills: 0,
+                    attempts: 0,
+                    last_seen_unix_ms: seen_at,
+                });
+            entry.attempts = entry.attempts.saturating_add(1);
+            if killer.as_deref() == Some(test_id.as_str()) {
+                entry.kills = entry.kills.saturating_add(1);
+            }
+            entry.last_seen_unix_ms = seen_at;
+        }
+    }
+}
+
+fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
+    let bytes = serde_json::to_vec_pretty(value)
+        .map_err(|err| format!("failed to serialize {}: {}", path.display(), err))?;
+    write_bytes_atomic(path, &bytes)
+}
+
+fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let Some(parent) = path.parent() else {
+        return Err(format!(
+            "atomic write target has no parent: {}",
+            path.display()
+        ));
+    };
+    fs::create_dir_all(parent)
+        .map_err(|err| format!("failed to create {}: {}", parent.display(), err))?;
+    let tmp_path = parent.join(format!(".tmp-{}-{}", std::process::id(), now_unix_ms()));
+    fs::write(&tmp_path, bytes).map_err(|err| {
+        format!(
+            "failed to write temporary file {}: {}",
+            tmp_path.display(),
+            err
+        )
+    })?;
+    fs::rename(&tmp_path, path).map_err(|err| {
+        format!(
+            "failed to atomically rename {} -> {}: {}",
+            tmp_path.display(),
+            path.display(),
+            err
+        )
+    })?;
+    Ok(())
+}
+
+fn mutation_dispatch_entry_source(
+    workspace_root: &Path,
+    mutation_key: &str,
+    tests: &[TestCase],
+) -> Result<(String, PathBuf), String> {
+    let tests_root = workspace_root.join("tests");
+    if !tests_root.is_dir() {
+        return Err("mutation harness generation requires tests/ directory".to_string());
+    }
+    let wrappers_root = tests_root.join("wrela_mutation").join(mutation_key);
+    let wrappers_dir = wrappers_root.join("cases");
+    fs::create_dir_all(&wrappers_dir).map_err(|err| {
+        format!(
+            "failed to create mutation wrapper directory {}: {err}",
+            wrappers_dir.display()
+        )
+    })?;
+    let mut source = String::new();
+    let mut dispatch_arms = Vec::with_capacity(tests.len());
+    for (idx, test) in tests.iter().enumerate() {
+        let wrapper_func = format!("run_case_{idx}");
+        let wrapper_module = format!("tests/wrela_mutation/{mutation_key}/cases/case_{idx}");
+        let wrapper_source = format!(
+            "use {func} from {module}\n\nto {wrapper_func}() -> Nothing:\n    {dispatch}\n",
+            func = test.func_name,
+            module = test.module_path,
+            dispatch = test_case_dispatch_stmt(test)
+        );
+        let wrapper_path = wrappers_dir.join(format!("case_{idx}.wr"));
+        fs::write(&wrapper_path, wrapper_source).map_err(|err| {
+            format!(
+                "failed to write mutation wrapper {}: {}",
+                wrapper_path.display(),
+                err
+            )
+        })?;
+        source.push_str(&format!("use {wrapper_func} from {wrapper_module}\n"));
+        dispatch_arms.push((test.id.clone(), wrapper_func));
+    }
+    source.push('\n');
+    source.push_str("to run() -> Integer:\n");
+    source.push_str("    selected_value = __wr_env_get(\"WRELA_TEST_ID\")\n");
+    source.push_str("    mutable selected = \"\"\n");
+    source.push_str("    match selected_value:\n");
+    source.push_str("        String:\n");
+    source.push_str("            selected = selected_value\n");
+    source.push_str("        otherwise:\n");
+    source.push_str("            selected = \"\"\n");
+    for (id, dispatch_func) in &dispatch_arms {
+        source.push_str(&format!("    if selected == \"{id}\":\n"));
+        source.push_str(&format!("        {dispatch_func}()\n"));
+        source.push_str("        return 0\n");
+    }
+    source.push_str("    return 4\n");
+    Ok((source, wrappers_root))
 }
 
 fn apply_mir_mutation(

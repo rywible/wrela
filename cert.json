@@ -1,16 +1,16 @@
 {
   "cert_schema_version": 3,
-  "generated_at_unix_ms": 1770825524351,
-  "entry_path": "/var/folders/7q/dwfwcd8j2rx4yw372sjclmy40000gn/T/tmp.HqEyd6NmER/src/main.wr",
-  "workspace_root": "/var/folders/7q/dwfwcd8j2rx4yw372sjclmy40000gn/T/tmp.HqEyd6NmER",
+  "generated_at_unix_ms": 1770854101775,
+  "entry_path": "apps/ledger-lite/src/main.wr",
+  "workspace_root": "apps/ledger-lite",
   "artifact_path": "wrela.out",
   "tests_passed": true,
   "toolchain_version": "0.1.0",
   "compiler_version": "0.1.0",
-  "compiler_git_sha": "ff6ea00d26f804ab5510f4cb8564fb1ee261e93b",
+  "compiler_git_sha": "d66af58f0fb93361552ce61e4b5b227e73b53963",
   "runtime_version": "0.1.0",
   "gate_versions_marker": "wrela-cert-gates-v1",
-  "source_hash": "74e85c2d41a5ddd5",
+  "source_hash": "60d29b097490962e",
   "seeds_used": {
     "sim": 23063,
     "autogen": 42608,
@@ -130,52 +130,54 @@
     }
   },
   "coverage_summary_hash": null,
-  "mutation_summary_hash": "acc0b09ec0af0820",
-  "differential_results_hash": "8b46a535cf0f5293",
+  "mutation_summary_hash": null,
+  "differential_results_hash": null,
   "impact_manifest": {
     "source_files": [
       {
-        "rel_path": "src/application/orders.wr",
-        "hash": "30845c2ff908fea7"
+        "rel_path": "src/application/service.wr",
+        "hash": "8e2d288869bcb70e"
       },
       {
-        "rel_path": "src/domain/logic.wr",
-        "hash": "0babf518717b8c80"
+        "rel_path": "src/domain/ledger.wr",
+        "hash": "59f8ee93a05a9f11"
       },
       {
         "rel_path": "src/main.wr",
-        "hash": "d3c123bf9d2ca279"
+        "hash": "31622e7d29e707e7"
       },
       {
-        "rel_path": "tests/t.wr",
-        "hash": "741e73756076160e"
+        "rel_path": "tests/spec/ledger_test.wr",
+        "hash": "b625e152c9c9ba3e"
       }
     ],
     "src_modules": [
       {
-        "module_path": "application/orders",
-        "rel_path": "src/application/orders.wr",
-        "hash": "30845c2ff908fea7",
+        "module_path": "application/service",
+        "rel_path": "src/application/service.wr",
+        "hash": "8e2d288869bcb70e",
         "uses": [
-          "domain/logic"
+          "domain/ledger"
         ],
         "runtime_sensitive": false
       },
       {
-        "module_path": "domain/logic",
-        "rel_path": "src/domain/logic.wr",
-        "hash": "0babf518717b8c80",
+        "module_path": "domain/ledger",
+        "rel_path": "src/domain/ledger.wr",
+        "hash": "59f8ee93a05a9f11",
         "uses": [],
         "runtime_sensitive": false
       },
       {
         "module_path": "main",
         "rel_path": "src/main.wr",
-        "hash": "d3c123bf9d2ca279",
-        "uses": [],
+        "hash": "31622e7d29e707e7",
+        "uses": [
+          "application/service"
+        ],
         "runtime_sensitive": false
       }
     ]
   },
-  "binary_hash": "6913691eb65f1ea9"
+  "binary_hash": "3635a6864450f54c"
 }

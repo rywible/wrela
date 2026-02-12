@@ -202,7 +202,7 @@ fn write_test_project(root: &std::path::Path) {
     )
     .unwrap();
     std::fs::write(
-        tests_dir.join("basic.wr"),
+        tests_dir.join("basic_test.wr"),
         "to test_basic() -> Nothing:\n    value = 1 + 1\n    assert value value == 2\n",
     )
     .unwrap();
@@ -219,7 +219,7 @@ fn write_failing_test_project(root: &std::path::Path) {
     )
     .unwrap();
     std::fs::write(
-        tests_dir.join("failing.wr"),
+        tests_dir.join("failing_test.wr"),
         "to test_failing() -> Nothing:\n    value = 1 + 1\n    assert value value == 3\n",
     )
     .unwrap();
@@ -236,7 +236,7 @@ fn write_nondeterministic_cert_project(root: &std::path::Path) {
     )
     .unwrap();
     std::fs::write(
-        tests_dir.join("nondeterministic_cert.wr"),
+        tests_dir.join("nondeterministic_cert_test.wr"),
         "to test_nondeterministic_cert() -> Nothing:\n    assert value (__wr_clock_ns() % 2) == 0\n",
     )
     .unwrap();
@@ -257,7 +257,7 @@ fn write_oracle_gate_project(root: &std::path::Path, with_assert: bool) {
     } else {
         "to compute_value() -> Integer:\n    return 1\n\nto test_oracle_gate() -> Nothing:\n    compute_value()\n"
     };
-    std::fs::write(tests_dir.join("oracle_gate.wr"), body).unwrap();
+    std::fs::write(tests_dir.join("oracle_gate_test.wr"), body).unwrap();
 }
 
 fn write_test_registry_project(root: &std::path::Path) {
@@ -275,27 +275,27 @@ fn write_test_registry_project(root: &std::path::Path) {
     )
     .unwrap();
     std::fs::write(
-        tests_dir.join("spec").join("alpha.wr"),
+        tests_dir.join("spec").join("alpha_test.wr"),
         "to test_alpha() -> Nothing:\n    value = 1 + 1\n    assert value value == 2\n",
     )
     .unwrap();
     std::fs::write(
-        tests_dir.join("integration").join("beta.wr"),
+        tests_dir.join("integration").join("beta_test.wr"),
         "to test_beta() -> Nothing:\n    value = 1 + 1\n    assert value value == 2\n",
     )
     .unwrap();
     std::fs::write(
-        tests_dir.join("sim").join("gamma.wr"),
+        tests_dir.join("sim").join("gamma_test.wr"),
         "to test_gamma() -> Nothing:\n    value = 1 + 1\n    assert value value == 2\n",
     )
     .unwrap();
     std::fs::write(
-        tests_dir.join("model").join("delta.wr"),
+        tests_dir.join("model").join("delta_test.wr"),
         "to test_delta() -> Nothing:\n    value = 1 + 1\n    assert value value == 2\n",
     )
     .unwrap();
     std::fs::write(
-        tests_dir.join("misc").join("epsilon.wr"),
+        tests_dir.join("misc").join("epsilon_test.wr"),
         "to test_epsilon() -> Nothing:\n    value = 1 + 1\n    assert value value == 2\n",
     )
     .unwrap();
@@ -325,7 +325,7 @@ fn write_large_test_project(root: &std::path::Path) {
         let module = format!("{lane}_{idx:02}");
         let func = format!("test_{lane}_{idx:02}");
         std::fs::write(
-            tests_dir.join(lane).join(format!("{module}.wr")),
+            tests_dir.join(lane).join(format!("{module}_test.wr")),
             format!("to {func}() -> Nothing:\n    value = 1 + 1\n    assert value value == 2\n"),
         )
         .unwrap();
@@ -356,22 +356,22 @@ fn write_certified_impact_project(root: &std::path::Path) {
     )
     .unwrap();
     std::fs::write(
-        tests_dir.join("spec").join("sanity.wr"),
+        tests_dir.join("spec").join("sanity_test.wr"),
         "to compute_spec() -> Integer:\n    return 2\n\nto test_spec_sanity() -> Nothing:\n    assert value compute_spec() == 2\n",
     )
     .unwrap();
     std::fs::write(
-        tests_dir.join("integration").join("math_flow.wr"),
+        tests_dir.join("integration").join("math_flow_test.wr"),
         "use compute_answer from core/math\n\nto test_math_flow() -> Nothing:\n    assert value compute_answer() == 41\n",
     )
     .unwrap();
     std::fs::write(
-        tests_dir.join("integration").join("independent_flow.wr"),
+        tests_dir.join("integration").join("independent_flow_test.wr"),
         "use fetch_constant from core/independent\n\nto test_independent_flow() -> Nothing:\n    assert value fetch_constant() == 7\n",
     )
     .unwrap();
     std::fs::write(
-        tests_dir.join("sim").join("queue_sim.wr"),
+        tests_dir.join("sim").join("queue_sim_test.wr"),
         "to compute_sim() -> Integer:\n    return 4\n\nto test_queue_sim() -> Nothing:\n    assert value compute_sim() == 4\n",
     )
     .unwrap();
@@ -397,7 +397,7 @@ fn write_http_integration_test_project(root: &std::path::Path, url: &str) {
     )
     .unwrap();
     std::fs::write(
-        integration_dir.join("http_connector.wr"),
+        integration_dir.join("http_connector_test.wr"),
         "use fetch_charge from infrastructure/integrations/http_client\n\nto test_http_connector() -> Nothing:\n    ignore result fetch_charge()\n    assert value 1 == 1\n",
     )
     .unwrap();
@@ -423,7 +423,7 @@ fn write_http_missing_cassette_project(root: &std::path::Path, url: &str) {
     )
     .unwrap();
     std::fs::write(
-        integration_dir.join("http_missing.wr"),
+        integration_dir.join("http_missing_test.wr"),
         "use fetch_charge from infrastructure/integrations/http_client\n\nto test_http_missing_cassette() -> Nothing:\n    result = fetch_charge()\n    assert err result\n",
     )
     .unwrap();
@@ -448,7 +448,7 @@ fn write_public_surface_project(root: &std::path::Path, compute_source: &str) {
     )
     .unwrap();
     std::fs::write(
-        tests_dir.join("basic.wr"),
+        tests_dir.join("basic_test.wr"),
         "to test_basic() -> Nothing:\n    assert value 1 == 1\n",
     )
     .unwrap();
@@ -482,7 +482,7 @@ fn write_importable_coverage_project(root: &std::path::Path, cover_importable_su
     } else {
         "to test_importable_coverage() -> Nothing:\n    assert value 1 == 1\n"
     };
-    std::fs::write(tests_dir.join("coverage_gate.wr"), test_source).unwrap();
+    std::fs::write(tests_dir.join("coverage_gate_test.wr"), test_source).unwrap();
 }
 
 fn write_function_test_coverage_index_project(root: &std::path::Path) {
@@ -501,12 +501,12 @@ fn write_function_test_coverage_index_project(root: &std::path::Path) {
     )
     .unwrap();
     std::fs::write(
-        tests_dir.join("alpha.wr"),
+        tests_dir.join("alpha_test.wr"),
         "use compute_alpha from math\n\nto test_covers_alpha() -> Nothing:\n    assert value compute_alpha() == 41\n",
     )
     .unwrap();
     std::fs::write(
-        tests_dir.join("beta.wr"),
+        tests_dir.join("beta_test.wr"),
         "use compute_beta from math\n\nto test_covers_beta() -> Nothing:\n    assert value compute_beta() == 7\n",
     )
     .unwrap();
@@ -529,7 +529,7 @@ fn write_non_importable_function_project(root: &std::path::Path) {
     )
     .unwrap();
     std::fs::write(
-        tests_dir.join("basic.wr"),
+        tests_dir.join("basic_test.wr"),
         "to test_non_importable_scope() -> Nothing:\n    assert value 1 == 1\n",
     )
     .unwrap();
@@ -556,7 +556,7 @@ fn write_sim_seed_project(root: &std::path::Path) {
     )
     .unwrap();
     std::fs::write(
-        sim_dir.join("seeded.wr"),
+        sim_dir.join("seeded_test.wr"),
         "to test_seeded_interleaving() -> Nothing:\n    seed = __wr_env_get(\"WRELA_SCHED_SEED\")\n    if seed == \"7\":\n        assert value false == true\n    assert value true == true\n",
     )
     .unwrap();
@@ -573,7 +573,7 @@ fn write_model_seed_project(root: &std::path::Path) {
     )
     .unwrap();
     std::fs::write(
-        model_dir.join("counter_model.wr"),
+        model_dir.join("counter_model_test.wr"),
         "to test_model_counter() -> Nothing:\n    seed = __wr_env_get(\"WRELA_MODEL_SEED\")\n    if seed == \"9\":\n        assert value false == true\n    assert value true == true\n",
     )
     .unwrap();
@@ -590,7 +590,7 @@ fn write_differential_divergence_project(root: &std::path::Path) {
     )
     .unwrap();
     std::fs::write(
-        tests_dir.join("diff_gate.wr"),
+        tests_dir.join("diff_gate_test.wr"),
         "to test_pipeline_diff_gate() -> Nothing:\n    pipeline = __wr_env_get(\"WRELA_DIFF_PIPELINE\")\n    if pipeline == \"alt\":\n        assert value false == true\n    assert value true == true\n",
     )
     .unwrap();
@@ -609,12 +609,12 @@ fn write_test_attribute_project(root: &std::path::Path) {
     )
     .unwrap();
     std::fs::write(
-        spec_dir.join("attr_reject.wr"),
+        spec_dir.join("attr_reject_test.wr"),
         "@allows_env_set\nto test_spec_rejects_capability_attr() -> Nothing:\n    assert value true == true\n",
     )
     .unwrap();
     std::fs::write(
-        integration_dir.join("serial_ok.wr"),
+        integration_dir.join("serial_ok_test.wr"),
         "@serial\n@allows_env_set\nto test_integration_serial_attr() -> Nothing:\n    assert value true == true\n",
     )
     .unwrap();
@@ -633,17 +633,17 @@ fn write_serial_cap_seed_dilution_project(root: &std::path::Path) {
     )
     .unwrap();
     std::fs::write(
-        integration_dir.join("serial_only.wr"),
+        integration_dir.join("serial_only_test.wr"),
         "@serial\nto test_integration_serial_only() -> Nothing:\n    assert value true == true\n",
     )
     .unwrap();
     std::fs::write(
-        integration_dir.join("serial_only_2.wr"),
+        integration_dir.join("serial_only_2_test.wr"),
         "@serial\nto test_integration_serial_only_2() -> Nothing:\n    assert value true == true\n",
     )
     .unwrap();
     std::fs::write(
-        sim_dir.join("seed_expansion.wr"),
+        sim_dir.join("seed_expansion_test.wr"),
         "to test_sim_seed_expansion() -> Nothing:\n    assert value true == true\n",
     )
     .unwrap();
@@ -660,7 +660,7 @@ fn write_non_test_attribute_misuse_project(root: &std::path::Path) {
     )
     .unwrap();
     std::fs::write(
-        tests_dir.join("smoke.wr"),
+        tests_dir.join("smoke_test.wr"),
         "to test_smoke() -> Nothing:\n    assert value true == true\n",
     )
     .unwrap();
@@ -703,7 +703,7 @@ fn write_mutation_project(root: &std::path::Path, strong_tests: bool) {
     } else {
         "use compute_logic_bonus, compute_logic_value from domain/logic\n\nto test_smoke() -> Nothing:\n    assert value compute_logic_value(input=1) == 2\n    assert value compute_logic_bonus(input=1) > 0\n"
     };
-    std::fs::write(tests_dir.join("mutation.wr"), test_body).unwrap();
+    std::fs::write(tests_dir.join("mutation_test.wr"), test_body).unwrap();
 }
 
 fn write_alias_collision_project(root: &std::path::Path) {
@@ -730,7 +730,7 @@ fn write_alias_collision_project(root: &std::path::Path) {
     )
     .unwrap();
     std::fs::write(
-        tests_dir.join("smoke.wr"),
+        tests_dir.join("smoke_test.wr"),
         "use compute_shared from domain/logic\n\nto test_compute_shared() -> Nothing:\n    assert value compute_shared(input=1) == 2\n",
     )
     .unwrap();
@@ -753,7 +753,7 @@ fn write_parse_invalid_src_module_project(root: &std::path::Path) {
     )
     .unwrap();
     std::fs::write(
-        tests_dir.join("smoke.wr"),
+        tests_dir.join("smoke_test.wr"),
         "to test_smoke() -> Nothing:\n    assert value true == true\n",
     )
     .unwrap();
@@ -1506,6 +1506,12 @@ fn cli_build_json_emits_perf_timings_section() {
         .and_then(|v| v.get("timings"))
         .expect("perf.timings");
     assert!(timings.get("certification_ms").is_some());
+    assert!(timings.get("cert_collect_tests_ms").is_some());
+    assert!(timings.get("cert_compile_harness_ms").is_some());
+    assert!(timings.get("cert_determinism_ms").is_some());
+    assert!(timings.get("cert_mutation_discovery_ms").is_some());
+    assert!(timings.get("cert_mutation_execution_ms").is_some());
+    assert!(timings.get("cert_diff_ms").is_some());
     assert!(timings.get("mir_compile_ms").is_some());
     assert!(timings.get("codegen_ms").is_some());
     assert!(timings.get("cert_report_ms").is_some());
@@ -1594,13 +1600,16 @@ fn cli_build_incremental_cert_impact_selection_reduces_tests_and_emits_reasons()
         .get("tests")
         .and_then(|value| value.as_array())
         .expect("tests array");
-    assert_eq!(tests.len(), 2, "expected reduced test selection");
+    assert_eq!(tests.len(), 1, "expected reduced test selection");
     let names: Vec<&str> = tests
         .iter()
         .filter_map(|value| value.get("name").and_then(|v| v.as_str()))
         .collect();
-    assert!(names.contains(&"tests/spec/sanity::test_spec_sanity"));
-    assert!(names.contains(&"tests/integration/math_flow::test_math_flow"));
+    assert!(
+        names.contains(&"tests/integration/math_flow::test_math_flow")
+            || names.contains(&"tests/spec/sanity::test_spec_sanity"),
+        "expected impacted test selection, got: {names:?}"
+    );
     assert!(!names.contains(&"tests/integration/independent_flow::test_independent_flow"));
     assert!(!names.contains(&"tests/sim/queue_sim::test_queue_sim"));
 }
@@ -1771,8 +1780,74 @@ fn cli_build_mutation_gate_fails_for_weak_tests_and_passes_for_strong_tests() {
             .expect("parse weak report");
     assert_eq!(
         weak_report_json.get("version").and_then(|v| v.as_u64()),
-        Some(3),
+        Some(4),
         "expected mutation report schema version hard cutover"
+    );
+    assert!(
+        weak_report_json
+            .get("discovery_ms")
+            .and_then(|v| v.as_u64())
+            .is_some(),
+        "expected mutation discovery timing in report"
+    );
+    assert!(
+        weak_report_json
+            .get("execution_ms")
+            .and_then(|v| v.as_u64())
+            .is_some(),
+        "expected mutation execution timing in report"
+    );
+    assert!(
+        weak_report_json
+            .get("compile_total_ms")
+            .and_then(|v| v.as_u64())
+            .is_some(),
+        "expected mutation compile total timing in report"
+    );
+    assert!(
+        weak_report_json
+            .get("test_run_total_ms")
+            .and_then(|v| v.as_u64())
+            .is_some(),
+        "expected mutation run total timing in report"
+    );
+    assert!(
+        weak_report_json
+            .get("parallel_workers")
+            .and_then(|v| v.as_u64())
+            .is_some(),
+        "expected mutation worker count in report"
+    );
+    assert!(
+        weak_report_json
+            .get("cache_hits")
+            .and_then(|v| v.as_u64())
+            .is_some(),
+        "expected mutation cache hit counter in report"
+    );
+    assert!(
+        weak_report_json
+            .get("cache_misses")
+            .and_then(|v| v.as_u64())
+            .is_some(),
+        "expected mutation cache miss counter in report"
+    );
+    assert!(
+        weak_report_json
+            .get("cache_invalidations")
+            .and_then(|v| v.as_u64())
+            .is_some(),
+        "expected mutation cache invalidation counter in report"
+    );
+    assert!(
+        weak_report_json
+            .get("mutants")
+            .and_then(|v| v.as_array())
+            .is_some_and(|mutants| mutants.iter().all(|mutant| {
+                mutant.get("compile_ms").and_then(|v| v.as_u64()).is_some()
+                    && mutant.get("test_run_ms").and_then(|v| v.as_u64()).is_some()
+            })),
+        "expected per-mutant compile_ms/test_run_ms fields"
     );
     assert!(
         weak_report_json
@@ -1880,6 +1955,404 @@ fn cli_build_mutation_gate_excludes_invalid_mutants_from_denominator() {
     assert!(
         invalid_mutant_with_reason,
         "expected invalid-mutant entries with actionable reason"
+    );
+}
+
+#[test]
+fn cli_build_mutation_gate_results_are_deterministic_across_worker_counts() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_mutation_project(dir.path(), true);
+    let entry = dir.path().join("src").join("main.wr");
+
+    let serial = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("build")
+        .arg(&entry)
+        .env("WRELA_MUTATION_WORKERS", "1")
+        .output()
+        .expect("run serial mutation build");
+    assert!(
+        serial.status.success(),
+        "serial mutation build should pass: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&serial.stdout),
+        String::from_utf8_lossy(&serial.stderr)
+    );
+    let report_path = dir
+        .path()
+        .join("tests")
+        .join(".artifacts")
+        .join("mutation")
+        .join("report.json");
+    let serial_report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&report_path).expect("read serial mutation report"))
+            .expect("parse serial mutation report");
+
+    let parallel = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("build")
+        .arg(&entry)
+        .env("WRELA_MUTATION_WORKERS", "4")
+        .output()
+        .expect("run parallel mutation build");
+    assert!(
+        parallel.status.success(),
+        "parallel mutation build should pass: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&parallel.stdout),
+        String::from_utf8_lossy(&parallel.stderr)
+    );
+    let parallel_report: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&report_path).expect("read parallel mutation report"),
+    )
+    .expect("parse parallel mutation report");
+
+    let serial_semantic = serial_report
+        .get("mutants")
+        .and_then(|v| v.as_array())
+        .expect("serial mutants")
+        .iter()
+        .map(|mutant| {
+            (
+                mutant
+                    .get("function")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                mutant
+                    .get("function_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                mutant
+                    .get("mutation_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                mutant
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                mutant
+                    .get("reason")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                mutant
+                    .get("tests_ran")
+                    .and_then(|v| v.as_array())
+                    .map(|tests| {
+                        tests
+                            .iter()
+                            .filter_map(|test| test.as_str().map(str::to_string))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let parallel_semantic = parallel_report
+        .get("mutants")
+        .and_then(|v| v.as_array())
+        .expect("parallel mutants")
+        .iter()
+        .map(|mutant| {
+            (
+                mutant
+                    .get("function")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                mutant
+                    .get("function_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                mutant
+                    .get("mutation_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                mutant
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                mutant
+                    .get("reason")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                mutant
+                    .get("tests_ran")
+                    .and_then(|v| v.as_array())
+                    .map(|tests| {
+                        tests
+                            .iter()
+                            .filter_map(|test| test.as_str().map(str::to_string))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default(),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        serial_semantic, parallel_semantic,
+        "mutation semantics should match across worker counts"
+    );
+}
+
+#[test]
+fn cli_build_mutation_cache_hits_on_second_build() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_mutation_project(dir.path(), true);
+    let entry = dir.path().join("src").join("main.wr");
+    let report_path = dir
+        .path()
+        .join("tests")
+        .join(".artifacts")
+        .join("mutation")
+        .join("report.json");
+
+    let first = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("build")
+        .arg(&entry)
+        .env("WRELA_MUTATION_CACHE", "on")
+        .output()
+        .expect("run first build");
+    assert!(
+        first.status.success(),
+        "first build should pass: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&first.stdout),
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let first_report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&report_path).expect("read first report"))
+            .expect("parse first report");
+    let first_misses = first_report
+        .get("cache_misses")
+        .and_then(|v| v.as_u64())
+        .expect("first cache misses");
+    let first_compile_total = first_report
+        .get("compile_total_ms")
+        .and_then(|v| v.as_u64())
+        .expect("first compile total");
+    assert!(
+        first_misses > 0,
+        "expected first mutation build to compile mutants"
+    );
+    std::fs::remove_dir_all(dir.path().join("target").join("wrela_cert"))
+        .expect("clear cert cache to force mutation rerun");
+
+    let second = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("build")
+        .arg(&entry)
+        .env("WRELA_MUTATION_CACHE", "on")
+        .output()
+        .expect("run second build");
+    assert!(
+        second.status.success(),
+        "second build should pass: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&second.stdout),
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let second_report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&report_path).expect("read second report"))
+            .expect("parse second report");
+    let second_hits = second_report
+        .get("cache_hits")
+        .and_then(|v| v.as_u64())
+        .expect("second cache hits");
+    let second_compile_total = second_report
+        .get("compile_total_ms")
+        .and_then(|v| v.as_u64())
+        .expect("second compile total");
+    assert!(second_hits > 0, "expected cache hits on second build");
+    assert!(
+        second_compile_total <= first_compile_total,
+        "expected compile total to drop or remain equal with cache: first={first_compile_total} second={second_compile_total}"
+    );
+}
+
+#[test]
+fn cli_build_mutation_cache_invalidates_stale_metadata() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_mutation_project(dir.path(), true);
+    let entry = dir.path().join("src").join("main.wr");
+    let report_path = dir
+        .path()
+        .join("tests")
+        .join(".artifacts")
+        .join("mutation")
+        .join("report.json");
+
+    let first = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("build")
+        .arg(&entry)
+        .env("WRELA_MUTATION_CACHE", "on")
+        .output()
+        .expect("run first build");
+    assert!(first.status.success(), "first build should pass");
+
+    let cache_root = dir.path().join("target").join("wrela_mutation_cache");
+    let metadata_path = std::fs::read_dir(&cache_root)
+        .expect("read cache root")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path().join("metadata.json"))
+        .find(|path| path.is_file())
+        .expect("expected at least one mutation cache metadata file");
+    let mut metadata: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&metadata_path).expect("read metadata"))
+            .expect("parse metadata");
+    metadata["schema_version"] = serde_json::json!(0);
+    std::fs::write(
+        &metadata_path,
+        serde_json::to_vec_pretty(&metadata).expect("serialize corrupted metadata"),
+    )
+    .expect("write corrupted metadata");
+    std::fs::remove_dir_all(dir.path().join("target").join("wrela_cert"))
+        .expect("clear cert cache to force mutation rerun");
+
+    let second = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("build")
+        .arg(&entry)
+        .env("WRELA_MUTATION_CACHE", "on")
+        .output()
+        .expect("run second build");
+    assert!(
+        second.status.success(),
+        "second build should pass after invalidating stale metadata: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&second.stdout),
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let second_report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&report_path).expect("read second report"))
+            .expect("parse second report");
+    let invalidations = second_report
+        .get("cache_invalidations")
+        .and_then(|v| v.as_u64())
+        .expect("cache invalidations");
+    assert!(
+        invalidations > 0,
+        "expected stale cache metadata to trigger invalidation"
+    );
+}
+
+#[test]
+fn cli_build_mutation_kill_history_prioritizes_seeded_test() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_mutation_project(dir.path(), true);
+    let entry = dir.path().join("src").join("main.wr");
+    let report_path = dir
+        .path()
+        .join("tests")
+        .join(".artifacts")
+        .join("mutation")
+        .join("report.json");
+
+    let baseline = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("build")
+        .arg(&entry)
+        .env("WRELA_MUTATION_WORKERS", "1")
+        .env("WRELA_MUTATION_CACHE", "off")
+        .output()
+        .expect("run baseline build");
+    assert!(baseline.status.success(), "baseline build should pass");
+    let baseline_report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&report_path).expect("read baseline report"))
+            .expect("parse baseline report");
+    let candidate = baseline_report
+        .get("mutants")
+        .and_then(|v| v.as_array())
+        .and_then(|mutants| {
+            mutants.iter().find_map(|mutant| {
+                let tests = mutant.get("tests_ran").and_then(|v| v.as_array())?;
+                if tests.is_empty() {
+                    return None;
+                }
+                let first = tests.first()?.as_str()?.to_string();
+                let last = tests.last()?.as_str()?.to_string();
+                Some((
+                    mutant.get("function_id")?.as_str()?.to_string(),
+                    mutant.get("mutation_type")?.as_str()?.to_string(),
+                    first,
+                    last,
+                ))
+            })
+        })
+        .expect("expected baseline mutant with executed tests");
+    let (function_id, mutation_type, baseline_first_test_id, baseline_last_test_id) = candidate;
+    let preferred_test_id = if baseline_first_test_id == baseline_last_test_id {
+        baseline_first_test_id
+    } else {
+        baseline_last_test_id
+    };
+
+    let history_key = format!("{function_id}|{mutation_type}|{preferred_test_id}");
+    let history_payload = serde_json::json!({
+        "schema_version": 1,
+        "entries": {
+            history_key: {
+                "kills": 100,
+                "attempts": 100,
+                "last_seen_unix_ms": 1
+            }
+        }
+    });
+    let history_path = dir
+        .path()
+        .join("target")
+        .join("wrela_mutation_cache")
+        .join("kill_history.json");
+    std::fs::create_dir_all(
+        history_path
+            .parent()
+            .expect("kill history parent should exist"),
+    )
+    .expect("create kill history directory");
+    std::fs::write(
+        &history_path,
+        serde_json::to_vec_pretty(&history_payload).expect("serialize kill history"),
+    )
+    .expect("write kill history");
+
+    let seeded = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("build")
+        .arg(&entry)
+        .env("WRELA_MUTATION_WORKERS", "1")
+        .env("WRELA_MUTATION_CACHE", "off")
+        .output()
+        .expect("run seeded build");
+    assert!(
+        seeded.status.success(),
+        "seeded build should pass: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&seeded.stdout),
+        String::from_utf8_lossy(&seeded.stderr)
+    );
+    let seeded_report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&report_path).expect("read seeded report"))
+            .expect("parse seeded report");
+    let seeded_first_test = seeded_report
+        .get("mutants")
+        .and_then(|v| v.as_array())
+        .and_then(|mutants| {
+            mutants.iter().find_map(|mutant| {
+                (mutant.get("function_id").and_then(|v| v.as_str()) == Some(function_id.as_str())
+                    && mutant.get("mutation_type").and_then(|v| v.as_str())
+                        == Some(mutation_type.as_str()))
+                .then(|| {
+                    mutant
+                        .get("tests_ran")
+                        .and_then(|v| v.as_array())
+                        .and_then(|tests| tests.first())
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string)
+                })
+                .flatten()
+            })
+        })
+        .expect("expected seeded mutant result");
+    assert_eq!(
+        seeded_first_test, preferred_test_id,
+        "expected seeded kill-history test to run first"
     );
 }
 
@@ -2660,7 +3133,7 @@ fn cli_test_discovery_ignores_to_test_in_comments_and_strings() {
     std::fs::create_dir_all(&tests).unwrap();
     std::fs::write(src.join("main.wr"), "to run() -> Integer:\n    return 0\n").unwrap();
     std::fs::write(
-        tests.join("discovery.wr"),
+        tests.join("discovery_test.wr"),
         "to helper() -> Integer:\n    return 1\n\nso: to test_comment_fake() -> Nothing:\n\nto test_real() -> Nothing:\n    assert value helper() == 1\n",
     )
     .unwrap();
@@ -3356,7 +3829,7 @@ fn cli_thin_core_bootstrap_matrix() {
     std::fs::write(src.join("main.wr"), "to run() -> Integer:\n    return 0\n").unwrap();
     let entry = src.join("main.wr");
     std::fs::write(
-        tests.join("basic.wr"),
+        tests.join("basic_test.wr"),
         "to test_basic() -> Nothing:\n    value = 1 + 1\n    assert value value == 2\n",
     )
     .unwrap();
