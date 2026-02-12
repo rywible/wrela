@@ -1,0 +1,2 @@
+to compute_replay_transition(current_state: Integer, event_code: Integer) -> Integer:
+    return ((current_state * 17) + event_code) % 1000003

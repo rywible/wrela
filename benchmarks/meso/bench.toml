@@ -1,0 +1,134 @@
+version = 1
+suite = "meso"
+
+[profiles.smoke]
+warmup_pairs = 2
+measure_pairs = 6
+coverage = "critical"
+
+[profiles.standard]
+warmup_pairs = 3
+measure_pairs = 10
+coverage = "all"
+
+[profiles.deep]
+warmup_pairs = 5
+measure_pairs = 18
+coverage = "all"
+
+[[scenarios]]
+id = "backpressure_drop_on_full_vs_queue"
+test_name = "tests/default/meso::test_backpressure_drop_on_full_vs_queue_ops_1200000"
+ops = 1200000
+class = "critical"
+min_runtime_ms = 1000
+timeout_ms = 120000
+allow_unstable = false
+
+[[scenarios]]
+id = "paused_mailbox_drop_behavior"
+test_name = "tests/default/meso::test_paused_mailbox_drop_behavior_ops_1000000"
+ops = 1000000
+class = "critical"
+min_runtime_ms = 1000
+timeout_ms = 120000
+allow_unstable = false
+
+[[scenarios]]
+id = "scheduler_multi_shard_steal_migration"
+test_name = "tests/default/meso::test_scheduler_multi_shard_steal_migration_ops_1500000"
+ops = 1500000
+class = "critical"
+min_runtime_ms = 1200
+timeout_ms = 120000
+allow_unstable = false
+
+[[scenarios]]
+id = "deterministic_mode_overhead"
+test_name = "tests/default/meso::test_deterministic_mode_overhead_ops_1200000"
+ops = 1200000
+class = "critical"
+min_runtime_ms = 1000
+timeout_ms = 120000
+allow_unstable = false
+
+[[scenarios]]
+id = "producer_burst_begin_end_vs_single_fire"
+test_name = "tests/default/meso::test_producer_burst_begin_end_vs_single_fire_ops_1800000"
+ops = 1800000
+class = "critical"
+min_runtime_ms = 1200
+timeout_ms = 120000
+allow_unstable = false
+
+[[scenarios]]
+id = "mailbox_wake_coalesce_rescue_matrix"
+test_name = "tests/default/meso::test_mailbox_wake_coalesce_rescue_matrix_ops_1200000"
+ops = 1200000
+class = "critical"
+min_runtime_ms = 1200
+timeout_ms = 120000
+allow_unstable = false
+
+[[scenarios]]
+id = "objective_policy_matrix_under_contention"
+test_name = "tests/default/meso::test_objective_policy_matrix_under_contention_ops_1500000"
+ops = 1500000
+class = "critical"
+min_runtime_ms = 1200
+timeout_ms = 120000
+allow_unstable = false
+
+[[scenarios]]
+id = "actor_rpc_hot_loop"
+test_name = "tests/default/meso::test_actor_rpc_hot_loop_ops_2000000"
+ops = 2000000
+class = "critical"
+min_runtime_ms = 1200
+timeout_ms = 120000
+allow_unstable = false
+
+[[scenarios]]
+id = "fanout_fanin_pipeline"
+test_name = "tests/default/meso::test_fanout_fanin_pipeline_ops_1200000"
+ops = 1200000
+class = "informational"
+min_runtime_ms = 1000
+timeout_ms = 120000
+allow_unstable = true
+
+[[scenarios]]
+id = "workqueue_round_robin"
+test_name = "tests/default/meso::test_workqueue_round_robin_ops_2000000"
+ops = 2000000
+class = "informational"
+min_runtime_ms = 1000
+timeout_ms = 120000
+allow_unstable = true
+
+[[scenarios]]
+id = "pool_weighted_fairness"
+test_name = "tests/default/meso::test_pool_weighted_fairness_ops_1200000"
+ops = 1200000
+class = "informational"
+min_runtime_ms = 1000
+timeout_ms = 120000
+allow_unstable = true
+
+[[scenarios]]
+id = "pause_resume_storm"
+test_name = "tests/default/meso::test_pause_resume_storm_ops_800000"
+ops = 800000
+class = "informational"
+min_runtime_ms = 800
+timeout_ms = 120000
+allow_unstable = true
+
+[[scenarios]]
+id = "mixed_objective_competing_pools"
+test_name = "tests/default/meso::test_mixed_objective_competing_pools_ops_1400000"
+ops = 1400000
+class = "informational"
+min_runtime_ms = 1000
+timeout_ms = 120000
+allow_unstable = true

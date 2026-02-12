@@ -1,0 +1,239 @@
+to compute_checksum_mix(current: Integer, value: Integer) -> Integer:
+    return (current * 33) + value
+
+
+to normalize_queue_capacity(requested_queue_capacity: Integer, default_queue_capacity: Integer) -> Integer:
+    if requested_queue_capacity < 0:
+        return default_queue_capacity
+    if requested_queue_capacity == 0:
+        return 1
+    return requested_queue_capacity
+
+
+to normalize_mailbox_capacity(requested_capacity: Integer, default_capacity: Integer) -> Integer:
+    if requested_capacity < 0:
+        return default_capacity
+    if requested_capacity == 0:
+        return 1
+    return requested_capacity
+
+
+to normalize_batch_limit(requested_batch_limit: Integer, default_batch_limit: Integer) -> Integer:
+    if requested_batch_limit < 0:
+        return default_batch_limit
+    if requested_batch_limit == 0:
+        return 1
+    return requested_batch_limit
+
+
+to normalize_enqueue_timeout_milliseconds(requested_timeout_milliseconds: Integer, default_timeout_milliseconds: Integer) -> Integer:
+    if requested_timeout_milliseconds < 0:
+        return default_timeout_milliseconds
+    return requested_timeout_milliseconds
+
+
+to compute_dispatch_budget(queue_depth: Integer, configured_batch_limit: Integer, fairness_budget: Integer) -> Integer:
+    budget = configured_batch_limit
+    if budget > fairness_budget:
+        budget = fairness_budget
+    if budget > queue_depth:
+        return queue_depth
+    if budget <= 0:
+        return 1
+    return budget
+
+
+to normalize_shard_count(requested_shard_count: Integer, is_deterministic_mode: Boolean) -> Integer:
+    if requested_shard_count <= 0:
+        return 1
+    if is_deterministic_mode and requested_shard_count > 4:
+        return 4
+    return requested_shard_count
+
+
+to choose_next_shard(pool_identifier: Integer, shard_count: Integer, is_deterministic_mode: Boolean) -> Integer:
+    if shard_count <= 1:
+        return 0
+    if is_deterministic_mode:
+        return pool_identifier % shard_count
+    return ((pool_identifier * 17) + 3) % shard_count
+
+
+to compute_refilled_credits(minimum_share: Integer, maximum_share: Integer, weight: Integer, current_credits: Integer) -> Integer:
+    step = minimum_share * weight
+    next_credits = current_credits + step
+    if next_credits > maximum_share:
+        return minimum_share
+    return next_credits
+
+
+to compute_drop_on_full_flag(requested_queue_capacity: Integer) -> Integer:
+    if requested_queue_capacity == 0:
+        return 1
+    return 0
+
+
+to compute_paused_drop_flag(is_paused: Boolean, mailbox_length: Integer, pause_queue_capacity: Integer) -> Integer:
+    if is_paused and mailbox_length >= pause_queue_capacity:
+        return 1
+    return 0
+
+
+to compute_should_steal_flag(local_ready_count: Integer, remote_ready_count: Integer, is_deterministic_mode: Boolean) -> Integer:
+    if is_deterministic_mode:
+        return 0
+    if remote_ready_count > local_ready_count:
+        return 1
+    return 0
+
+
+to test_backpressure_drop_on_full_vs_queue_ops_1200000() -> Nothing:
+    mutable checksum = 0
+    for i in 1...1200000:
+        requested_capacity = i % 5
+        queue_capacity = normalize_queue_capacity(requested_capacity, 128)
+        drop_flag = compute_drop_on_full_flag(requested_capacity)
+        if drop_flag == 1:
+            checksum = compute_checksum_mix(checksum, queue_capacity % 17)
+        otherwise:
+            checksum = compute_checksum_mix(checksum, queue_capacity % 29)
+    assert value checksum != 0
+
+
+to test_paused_mailbox_drop_behavior_ops_1000000() -> Nothing:
+    mutable dropped = 0
+    for i in 1...1000000:
+        is_paused = i % 3 != 0
+        mailbox_length = i % 256
+        drop_flag = compute_paused_drop_flag(is_paused, mailbox_length, 128)
+        if drop_flag == 1:
+            dropped += 1
+    assert value dropped > 0
+
+
+to test_scheduler_multi_shard_steal_migration_ops_1500000() -> Nothing:
+    mutable checksum = 0
+    mutable credits = 0
+    for i in 1...1500000:
+        shard_count = normalize_shard_count(12, false)
+        shard_id = choose_next_shard(i, shard_count, false)
+        steal_flag = compute_should_steal_flag(i % 3, (i + 1) % 7, false)
+        credits = compute_refilled_credits(1, 64, (i % 4) + 1, credits)
+        if steal_flag == 1:
+            checksum = compute_checksum_mix(checksum, shard_id + credits)
+        otherwise:
+            checksum = compute_checksum_mix(checksum, credits - shard_id)
+    assert value checksum != 0
+
+
+to test_deterministic_mode_overhead_ops_1200000() -> Nothing:
+    mutable deterministic_checksum = 0
+    mutable normal_checksum = 0
+    for i in 1...1200000:
+        deterministic_shards = normalize_shard_count(32, true)
+        normal_shards = normalize_shard_count(32, false)
+        deterministic_shard = choose_next_shard(i, deterministic_shards, true)
+        normal_shard = choose_next_shard(i, normal_shards, false)
+        deterministic_checksum = compute_checksum_mix(deterministic_checksum, deterministic_shard)
+        normal_checksum = compute_checksum_mix(normal_checksum, normal_shard)
+    assert value deterministic_checksum != normal_checksum
+
+
+to test_producer_burst_begin_end_vs_single_fire_ops_1800000() -> Nothing:
+    mutable batched_checksum = 0
+    mutable single_checksum = 0
+    for i in 1...1800000:
+        batched_budget = compute_dispatch_budget((i % 64) + 1, 64, 256)
+        single_budget = compute_dispatch_budget(1, 1, 256)
+        batched_checksum = compute_checksum_mix(batched_checksum, batched_budget)
+        single_checksum = compute_checksum_mix(single_checksum, single_budget)
+    assert value batched_checksum != single_checksum
+
+
+to test_mailbox_wake_coalesce_rescue_matrix_ops_1200000() -> Nothing:
+    mutable checksum = 0
+    for i in 1...1200000:
+        timeout_value = normalize_enqueue_timeout_milliseconds(i % 5, 10)
+        batch_value = normalize_batch_limit((i % 8) + 1, 64)
+        budget = compute_dispatch_budget((i % 32) + 1, batch_value, 512)
+        checksum = compute_checksum_mix(checksum, timeout_value + budget)
+    assert value checksum != 0
+
+
+to test_objective_policy_matrix_under_contention_ops_1500000() -> Nothing:
+    mutable checksum = 0
+    for i in 1...1500000:
+        mailbox_capacity = normalize_mailbox_capacity(-1, 256)
+        batch_limit = normalize_batch_limit(-1, 64)
+        weight = (i % 3) + 1
+        pool_size = normalize_queue_capacity(weight * 2, 8)
+        checksum = compute_checksum_mix(checksum, mailbox_capacity + batch_limit + pool_size)
+    assert value checksum != 0
+
+
+to test_actor_rpc_hot_loop_ops_2000000() -> Nothing:
+    mutable checksum = 0
+    mutable signal_epoch = 0
+    mutable counter = 0
+    for i in 1...2000000:
+        signal_epoch += 1
+        previous = counter
+        counter += (i % 3) + 1
+        checksum = compute_checksum_mix(checksum, signal_epoch + previous)
+    assert value checksum != 0
+    assert value counter > 0
+
+
+to test_fanout_fanin_pipeline_ops_1200000() -> Nothing:
+    mutable checksum = 0
+    mutable fanout_cursor = 0
+    for i in 1...1200000:
+        fanout_cursor = (fanout_cursor + (i % 5)) % 97
+        left_budget = compute_dispatch_budget((i % 17) + 1, 32, 128)
+        right_budget = compute_dispatch_budget((i % 19) + 1, 16, 128)
+        checksum = compute_checksum_mix(checksum, fanout_cursor + left_budget + right_budget)
+    assert value checksum != 0
+
+
+to test_workqueue_round_robin_ops_2000000() -> Nothing:
+    mutable checksum = 0
+    for i in 1...2000000:
+        shard = choose_next_shard(i, 8, false)
+        queue_capacity = normalize_queue_capacity(-1, 256)
+        checksum = compute_checksum_mix(checksum, shard + queue_capacity)
+    assert value checksum != 0
+
+
+to test_pool_weighted_fairness_ops_1200000() -> Nothing:
+    mutable checksum = 0
+    mutable credits = 0
+    for i in 1...1200000:
+        credits = compute_refilled_credits(1, 32, (i % 8) + 1, credits)
+        checksum = compute_checksum_mix(checksum, credits)
+    assert value checksum != 0
+
+
+to test_pause_resume_storm_ops_800000() -> Nothing:
+    mutable checksum = 0
+    for i in 1...800000:
+        is_paused = i % 2 == 0
+        drop_flag = compute_paused_drop_flag(is_paused, i % 64, 32)
+        if drop_flag == 1:
+            checksum = compute_checksum_mix(checksum, 7)
+        otherwise:
+            checksum = compute_checksum_mix(checksum, 3)
+    assert value checksum != 0
+
+
+to test_mixed_objective_competing_pools_ops_1400000() -> Nothing:
+    mutable checksum = 0
+    for i in 1...1400000:
+        latency_size = normalize_queue_capacity(2, 8)
+        throughput_size = normalize_queue_capacity(4, 16)
+        conservation_size = normalize_queue_capacity(2, 8)
+        balance_size = normalize_queue_capacity(3, 12)
+        checksum = compute_checksum_mix(
+            checksum,
+            latency_size + throughput_size + conservation_size + balance_size + (i % 13)
+        )
+    assert value checksum != 0

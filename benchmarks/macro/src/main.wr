@@ -1,0 +1,4 @@
+use run_macro_sanity from application/service
+
+to run() -> Integer:
+    return run_macro_sanity()

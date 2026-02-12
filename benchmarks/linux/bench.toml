@@ -1,0 +1,54 @@
+version = 1
+suite = "linux"
+optional = true
+
+[profiles.smoke]
+warmup_pairs = 2
+measure_pairs = 6
+coverage = "all"
+
+[profiles.standard]
+warmup_pairs = 3
+measure_pairs = 10
+coverage = "all"
+
+[profiles.deep]
+warmup_pairs = 5
+measure_pairs = 18
+coverage = "all"
+
+[[scenarios]]
+id = "reactor_timer_fanout_latency"
+test_name = "tests/default/linux::test_reactor_timer_fanout_latency_ops_500000"
+ops = 500000
+class = "informational"
+min_runtime_ms = 1000
+timeout_ms = 120000
+allow_unstable = true
+
+[[scenarios]]
+id = "reactor_backend_selection_overhead"
+test_name = "tests/default/linux::test_reactor_backend_selection_overhead_ops_500000"
+ops = 500000
+class = "informational"
+min_runtime_ms = 1000
+timeout_ms = 120000
+allow_unstable = true
+
+[[scenarios]]
+id = "mailbox_empty_spin_throughput_tradeoff"
+test_name = "tests/default/linux::test_mailbox_empty_spin_throughput_tradeoff_ops_1500000"
+ops = 1500000
+class = "informational"
+min_runtime_ms = 1200
+timeout_ms = 120000
+allow_unstable = true
+
+[[scenarios]]
+id = "sched_shards_scaling"
+test_name = "tests/default/linux::test_sched_shards_scaling_ops_2000000"
+ops = 2000000
+class = "informational"
+min_runtime_ms = 1200
+timeout_ms = 120000
+allow_unstable = true

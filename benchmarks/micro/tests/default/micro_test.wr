@@ -1,0 +1,102 @@
+use:
+    create_map,
+    get,
+    set
+from data/map
+
+
+to compute_checksum_mix(current: Integer, value: Integer) -> Integer:
+    return (current * 31) + value
+
+check value_is_even(value: Integer) -> Boolean:
+    return value % 2 == 0
+
+
+to try_to_parse_small(value: Integer) -> Result[Integer]:
+    if value % 7 == 0:
+        return error "skip"
+    return value + 1
+
+
+A SmallObject:
+    has:
+        value: Integer
+
+
+to test_typed_integer_loop_ops_20000000() -> Nothing:
+    mutable checksum = 0
+    for i in 1...20000000:
+        checksum = compute_checksum_mix(checksum, i % 17)
+    assert value checksum != 0
+
+
+to test_check_given_boolean_lane_ops_12000000() -> Nothing:
+    mutable matches = 0
+    for i in 1...12000000:
+        if value_is_even given i:
+            matches += 1
+    assert value matches == 6000000
+
+
+to test_result_unwrap_fastpath_ops_8000000() -> Nothing:
+    mutable checksum = 0
+    for i in 1...8000000:
+        parsed = try_to_parse_small(i)
+        match parsed:
+            Ok(value):
+                checksum = compute_checksum_mix(checksum, value % 23)
+            Err(_):
+                checksum = compute_checksum_mix(checksum, 3)
+            otherwise:
+                checksum = compute_checksum_mix(checksum, 5)
+    assert value checksum > 0
+
+
+to test_map_mutate_lookup_mix_ops_6000000() -> Nothing:
+    buckets = create_map()
+    set(buckets, 0, 0)
+    set(buckets, 1, 0)
+    set(buckets, 2, 0)
+    set(buckets, 3, 0)
+
+    mutable checksum = 0
+    for i in 1...6000000:
+        key = i % 4
+        current = get(buckets, key)
+        updated = current + 1
+        set(buckets, key, updated)
+        checksum = compute_checksum_mix(checksum, updated % 19)
+    assert value checksum > 0
+
+
+to test_string_concat_interpolation_ops_5000000() -> Nothing:
+    mutable checksum = 0
+    mutable cursor = "seed"
+    for i in 1...5000000:
+        cursor = "{cursor}:{i % 100}"
+        if i % 8 == 0:
+            cursor = "{cursor}/edge"
+        checksum = compute_checksum_mix(checksum, i % 11)
+    assert value checksum > 0
+
+
+to test_list_append_iterate_ops_7000000() -> Nothing:
+    mutable checksum = 0
+    mutable stage = []
+    for i in 1...7000000:
+        __wr_list_push(stage, i % 13)
+        if i % 1024 == 0:
+            mutable inner = 0
+            for value in stage:
+                inner = (inner + value) % 97
+            checksum = compute_checksum_mix(checksum, inner)
+            stage = []
+    assert value checksum >= 0
+
+
+to test_class_instance_churn_ops_4000000() -> Nothing:
+    mutable checksum = 0
+    for i in 1...4000000:
+        item = SmallObject(value=i % 29)
+        checksum = compute_checksum_mix(checksum, item.value)
+    assert value checksum > 0

@@ -1,0 +1,84 @@
+use:
+    handle_ledger_entry,
+    handle_order_entry,
+    handle_policy_entry,
+    handle_replay_entry
+from application/service
+
+
+to compute_checksum_mix(current: Integer, value: Integer) -> Integer:
+    return (current * 37) + value
+
+
+to test_ledger_settlement_batch_small_ops_300000() -> Nothing:
+    mutable balance = 1000
+    mutable checksum = 0
+    for i in 1...300000:
+        delta = (i % 11) + 1
+        balance = handle_ledger_entry(balance, delta)
+        checksum = compute_checksum_mix(checksum, balance % 97)
+    assert value checksum != 0
+    assert value balance > 0
+
+
+to test_ledger_settlement_batch_large_ops_1200000() -> Nothing:
+    mutable balance = 2000
+    mutable checksum = 0
+    for i in 1...1200000:
+        delta = (i % 13) + 1
+        balance = handle_ledger_entry(balance, delta)
+        checksum = compute_checksum_mix(checksum, balance % 101)
+    assert value checksum != 0
+    assert value balance > 0
+
+
+to test_order_ingest_route_small_ops_200000() -> Nothing:
+    mutable checksum = 0
+    for i in 1...200000:
+        score = handle_order_entry(order_id=i, quantity=(i % 9) + 1, lane_count=8)
+        checksum = compute_checksum_mix(checksum, score)
+    assert value checksum != 0
+
+
+to test_order_ingest_route_large_ops_900000() -> Nothing:
+    mutable checksum = 0
+    for i in 1...900000:
+        score = handle_order_entry(order_id=i, quantity=(i % 15) + 1, lane_count=16)
+        checksum = compute_checksum_mix(checksum, score % 113)
+    assert value checksum != 0
+
+
+to test_policy_decision_engine_small_ops_300000() -> Nothing:
+    mutable checksum = 0
+    for i in 1...300000:
+        policy = handle_policy_entry(account_id=i % 1000, action_code=i % 41)
+        checksum = compute_checksum_mix(checksum, policy)
+    assert value checksum != 0
+
+
+to test_policy_decision_engine_large_ops_1200000() -> Nothing:
+    mutable checksum = 0
+    for i in 1...1200000:
+        policy = handle_policy_entry(account_id=i % 5000, action_code=i % 67)
+        checksum = compute_checksum_mix(checksum, policy)
+    assert value checksum != 0
+
+
+to test_stateful_replay_pipeline_small_ops_250000() -> Nothing:
+    mutable state = 0
+    mutable checksum = 0
+    for i in 1...250000:
+        state = handle_replay_entry(current_state=state, event_code=i % 97)
+        checksum = compute_checksum_mix(checksum, state % 89)
+    assert value checksum != 0
+    assert value state >= 0
+
+
+to test_stateful_replay_pipeline_large_ops_1000000() -> Nothing:
+    mutable state = 1
+    mutable checksum = 0
+    for i in 1...1000000:
+        state = handle_replay_entry(current_state=state, event_code=(i % 127) + 1)
+        checksum = compute_checksum_mix(checksum, state % 131)
+    assert value checksum != 0
+    assert value state >= 0
