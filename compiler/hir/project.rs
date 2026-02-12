@@ -884,7 +884,17 @@ impl ProjectLoader {
                 if candidate_wr.is_file() {
                     return Some(candidate_wr);
                 }
+                rel = PathBuf::from(format!("{test_rel}_test"));
+                let candidate_wr = tests_root.join(rel.with_extension("wr"));
+                if candidate_wr.is_file() {
+                    return Some(candidate_wr);
+                }
                 rel = PathBuf::from(test_rel);
+                let candidate_sp = tests_root.join(rel.with_extension("sp"));
+                if candidate_sp.is_file() {
+                    return Some(candidate_sp);
+                }
+                rel = PathBuf::from(format!("{test_rel}_test"));
                 let candidate_sp = tests_root.join(rel.with_extension("sp"));
                 if candidate_sp.is_file() {
                     return Some(candidate_sp);

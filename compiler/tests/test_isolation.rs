@@ -33,7 +33,11 @@ fn test_runner_isolates_relative_paths_and_env_between_tests() {
         "to run() -> Integer:\n    return 0\n",
     );
     write_temp(
-        &root.path().join("tests").join("spec").join("isolation.wr"),
+        &root
+            .path()
+            .join("tests")
+            .join("spec")
+            .join("isolation_test.wr"),
         r#"to read_text_or(path: String, fallback: String) -> String:
     raw = __wr_fs_read_bytes(path) otherwise __wr_bytes_from_string(fallback)
     text = __wr_bytes_to_string(raw)
@@ -116,7 +120,11 @@ fn spec_lane_rejects_write_escape_outside_test_temp_root() {
         "to run() -> Integer:\n    return 0\n",
     );
     write_temp(
-        &root.path().join("tests").join("spec").join("escape.wr"),
+        &root
+            .path()
+            .join("tests")
+            .join("spec")
+            .join("escape_test.wr"),
         r#"to test_escape_write_is_blocked() -> Nothing:
     payload = __wr_bytes_from_string("blocked")
     attempt = __wr_fs_write_bytes("../escape.txt", payload)
