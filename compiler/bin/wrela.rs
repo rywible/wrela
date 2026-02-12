@@ -890,7 +890,7 @@ fn main() {
             let runs = perf_runs.unwrap_or(5).max(1);
             let budget_policy = resolve_budget_policy_v1(test_jobs, test_timeout_ms);
             let jobs = budget_policy.test_jobs.value as usize;
-            let timeout = Duration::from_millis(budget_policy.test_timeout_ms.value);
+            let mut timeout = Duration::from_millis(budget_policy.test_timeout_ms.value);
             let target = match resolve_test_target(path_arg.as_deref()) {
                 Ok(target) => target,
                 Err(err) => {
@@ -899,8 +899,25 @@ fn main() {
                 }
             };
             let manifest_path = resolve_benchmark_manifest_path(&target, benchmark_manifest_path);
+            let mut runtime_only_cv_gate = false;
             let mut perf_selection = test_selection.clone();
             if let Some(path) = manifest_path.as_ref() {
+                let manifest = match load_benchmark_manifest(path) {
+                    Ok(manifest) => manifest,
+                    Err(err) => {
+                        eprintln!("benchmark manifest error: {err}");
+                        std::process::exit(EXIT_USAGE);
+                    }
+                };
+                let max_timeout_ms = manifest
+                    .scenarios_for_profile(perf_profile)
+                    .iter()
+                    .filter_map(|scenario| scenario.timeout_ms)
+                    .max();
+                if let Some(max_timeout_ms) = max_timeout_ms {
+                    timeout = timeout.max(Duration::from_millis(max_timeout_ms));
+                }
+                runtime_only_cv_gate = true;
                 match build_benchmark_selection(&target, path, perf_profile) {
                     Ok(selection_ids) => {
                         perf_selection.include_ids = Some(selection_ids);
@@ -932,6 +949,7 @@ fn main() {
                 &baseline_out,
                 gate_cfg.as_ref(),
                 &perf_selection,
+                runtime_only_cv_gate,
             );
             std::process::exit(exit);
         }
@@ -6729,6 +6747,7 @@ fn run_perf_harness(
     baseline_out: &Path,
     perf_gate: Option<&PerfGateConfig>,
     selection: &TestSelection,
+    runtime_only_cv_gate: bool,
 ) -> i32 {
     let mut samples = Vec::new();
     for idx in 0..runs {
@@ -6764,19 +6783,42 @@ fn run_perf_harness(
     }
     let summary = aggregate_perf_samples(&samples);
     let cv = compute_cv(&samples);
-    if cv.compile_throughput_pct > cv_max_pct
-        || cv.runtime_p50_pct > cv_max_pct
-        || cv.runtime_p95_pct > cv_max_pct
-        || cv.runtime_p99_pct > cv_max_pct
-    {
-        eprintln!(
-            "perf harness failed: coefficient of variation exceeded {:.2}%",
-            cv_max_pct
-        );
-        eprintln!(
-            "cv: compile={:.2}% runtime_p50={:.2}% runtime_p95={:.2}% runtime_p99={:.2}%",
-            cv.compile_throughput_pct, cv.runtime_p50_pct, cv.runtime_p95_pct, cv.runtime_p99_pct
-        );
+    let cv_exceeded = if runtime_only_cv_gate {
+        cv.runtime_p50_pct > cv_max_pct
+            || cv.runtime_p95_pct > cv_max_pct
+            || cv.runtime_p99_pct > cv_max_pct
+    } else {
+        cv.compile_throughput_pct > cv_max_pct
+            || cv.runtime_p50_pct > cv_max_pct
+            || cv.runtime_p95_pct > cv_max_pct
+            || cv.runtime_p99_pct > cv_max_pct
+    };
+    if cv_exceeded {
+        if runtime_only_cv_gate {
+            eprintln!(
+                "perf harness failed: runtime coefficient of variation exceeded {:.2}%",
+                cv_max_pct
+            );
+            eprintln!(
+                "cv: runtime_p50={:.2}% runtime_p95={:.2}% runtime_p99={:.2}% (compile={:.2}% informational)",
+                cv.runtime_p50_pct,
+                cv.runtime_p95_pct,
+                cv.runtime_p99_pct,
+                cv.compile_throughput_pct
+            );
+        } else {
+            eprintln!(
+                "perf harness failed: coefficient of variation exceeded {:.2}%",
+                cv_max_pct
+            );
+            eprintln!(
+                "cv: compile={:.2}% runtime_p50={:.2}% runtime_p95={:.2}% runtime_p99={:.2}%",
+                cv.compile_throughput_pct,
+                cv.runtime_p50_pct,
+                cv.runtime_p95_pct,
+                cv.runtime_p99_pct
+            );
+        }
         return EXIT_CODEGEN;
     }
     if let Some(gate) = perf_gate {

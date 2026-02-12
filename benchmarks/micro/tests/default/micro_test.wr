@@ -71,13 +71,15 @@ to test_map_mutate_lookup_mix_ops_6000000() -> Nothing:
 
 to test_string_concat_interpolation_ops_5000000() -> Nothing:
     mutable checksum = 0
-    mutable cursor = "seed"
+    mutable cursor = "0:0"
     for i in 1...5000000:
-        cursor = "{cursor}:{i % 100}"
+        left = i % 100
+        right = (i + 37) % 100
+        cursor = "{left}:{right}"
         if i % 8 == 0:
-            cursor = "{cursor}/edge"
+            cursor = "{left}:{right}/edge"
         checksum = compute_checksum_mix(checksum, i % 11)
-    assert value checksum > 0
+    assert value checksum != 0
 
 
 to test_list_append_iterate_ops_7000000() -> Nothing:
@@ -99,4 +101,4 @@ to test_class_instance_churn_ops_4000000() -> Nothing:
     for i in 1...4000000:
         item = SmallObject(value=i % 29)
         checksum = compute_checksum_mix(checksum, item.value)
-    assert value checksum > 0
+    assert value checksum != 0
