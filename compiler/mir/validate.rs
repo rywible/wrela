@@ -1,11 +1,15 @@
+use crate::diag::catalog::MirDiagKind;
 use crate::mir::ir::{
     CallKind, CallTarget, MirFunction, MirModule, MirType, Place, Rvalue, Stmt, Terminator, Value,
 };
+use miette::SourceSpan;
 use std::collections::VecDeque;
 
 #[derive(Debug, Clone)]
 pub struct MirValidationError {
+    pub kind: MirDiagKind,
     pub message: String,
+    pub span: Option<SourceSpan>,
 }
 
 pub fn validate_module(module: &MirModule) -> Vec<MirValidationError> {
@@ -25,7 +29,9 @@ fn validate_function(func: &MirFunction) -> Vec<MirValidationError> {
     for (idx, block) in func.blocks.iter().enumerate() {
         if matches!(block.terminator, Terminator::Unreachable { .. }) {
             errors.push(MirValidationError {
+                kind: MirDiagKind::MissingTerminator,
                 message: format!("block {idx} has no terminator"),
+                span: None,
             });
         }
         if block
@@ -38,7 +44,9 @@ fn validate_function(func: &MirFunction) -> Vec<MirValidationError> {
     }
     if has_await && !func.suspendable {
         errors.push(MirValidationError {
+            kind: MirDiagKind::AwaitSuspendableMismatch,
             message: "await present but function is not marked suspendable".to_string(),
+            span: None,
         });
     }
 
@@ -55,7 +63,9 @@ fn validate_function(func: &MirFunction) -> Vec<MirValidationError> {
                 Stmt::Phi { .. } => {
                     if seen_non_phi {
                         errors.push(MirValidationError {
+                            kind: MirDiagKind::PhiOrder,
                             message: format!("phi after non-phi in block {idx}"),
+                            span: None,
                         });
                     }
                 }
@@ -250,9 +260,11 @@ fn check_stmt_uses(
                     && !matches!(place, Place::Temp(_))
                 {
                     errors.push(MirValidationError {
+                        kind: MirDiagKind::Internal,
                         message: format!(
                             "local-temp alloc assigned to non-temp place in block {block_idx}"
                         ),
+                        span: None,
                     });
                 }
             }
@@ -267,6 +279,8 @@ fn check_stmt_uses(
             if let Some(kind) = value_type(func, value) {
                 if !kind.is_ref() {
                     errors.push(MirValidationError {
+                        kind: MirDiagKind::Internal,
+                        span: None,
                         message: format!("rc op on non-ref value in block {block_idx}"),
                     });
                 }
@@ -276,6 +290,8 @@ fn check_stmt_uses(
                     || matches!(value, Value::Const(crate::hir::Literal::Float(_)))
                 {
                     errors.push(MirValidationError {
+                        kind: MirDiagKind::Internal,
+                        span: None,
                         message: format!("rc op on non-ref literal in block {block_idx}"),
                     });
                 }
@@ -304,6 +320,8 @@ fn validate_phi_sources(
     if preds.is_empty() {
         if !sources.is_empty() {
             errors.push(MirValidationError {
+                kind: MirDiagKind::Internal,
+                span: None,
                 message: format!("phi in entry block {block_idx} has sources"),
             });
         }
@@ -313,6 +331,8 @@ fn validate_phi_sources(
     for (pred, value) in sources {
         if pred.0 >= out_states.len() {
             errors.push(MirValidationError {
+                kind: MirDiagKind::Internal,
+                span: None,
                 message: format!(
                     "phi source references invalid block {} in {block_idx}",
                     pred.0
@@ -322,6 +342,8 @@ fn validate_phi_sources(
         }
         if !preds.contains(&pred.0) {
             errors.push(MirValidationError {
+                kind: MirDiagKind::Internal,
+                span: None,
                 message: format!(
                     "phi source from non-predecessor block {} in {block_idx}",
                     pred.0
@@ -330,6 +352,8 @@ fn validate_phi_sources(
         }
         if !seen.insert(pred.0) {
             errors.push(MirValidationError {
+                kind: MirDiagKind::Internal,
+                span: None,
                 message: format!(
                     "phi has duplicate source from block {} in {block_idx}",
                     pred.0
@@ -341,6 +365,8 @@ fn validate_phi_sources(
     for pred in preds {
         if !seen.contains(pred) {
             errors.push(MirValidationError {
+                kind: MirDiagKind::Internal,
+                span: None,
                 message: format!("phi missing source from block {} in {block_idx}", pred),
             });
         }
@@ -386,6 +412,8 @@ fn check_rvalue_uses(
                     if matches!(kind, CallKind::Actor) {
                         if method_id.is_none() {
                             errors.push(MirValidationError {
+                                kind: MirDiagKind::Internal,
+                                span: None,
                                 message: format!(
                                     "actor call missing method id in block {block_idx}"
                                 ),
@@ -394,6 +422,8 @@ fn check_rvalue_uses(
                         if let Some(receiver_ty) = value_type(func, receiver) {
                             if !matches!(receiver_ty, MirType::Actor(_)) {
                                 errors.push(MirValidationError {
+                                    kind: MirDiagKind::Internal,
+                                    span: None,
                                     message: format!(
                                         "actor call on non-actor value in block {block_idx}"
                                     ),
@@ -405,6 +435,8 @@ fn check_rvalue_uses(
                 CallTarget::GuardedInterface { fast_paths, .. } => {
                     if !matches!(kind, CallKind::Sync) {
                         errors.push(MirValidationError {
+                            kind: MirDiagKind::Internal,
+                            span: None,
                             message: format!(
                                 "guarded interface call must be sync in block {block_idx}"
                             ),
@@ -412,6 +444,8 @@ fn check_rvalue_uses(
                     }
                     if args.is_empty() {
                         errors.push(MirValidationError {
+                            kind: MirDiagKind::Internal,
+                            span: None,
                             message: format!(
                                 "guarded interface call missing receiver arg in block {block_idx}"
                             ),
@@ -421,6 +455,8 @@ fn check_rvalue_uses(
                     }
                     if fast_paths.is_empty() {
                         errors.push(MirValidationError {
+                            kind: MirDiagKind::Internal,
+                            span: None,
                             message: format!(
                                 "guarded interface call missing fast paths in block {block_idx}"
                             ),
@@ -431,6 +467,8 @@ fn check_rvalue_uses(
                     check_value_use(func, block_idx, value, defined, errors);
                     if matches!(kind, CallKind::Actor) {
                         errors.push(MirValidationError {
+                            kind: MirDiagKind::Internal,
+                            span: None,
                             message: format!("actor call on indirect target in block {block_idx}"),
                         });
                     }
@@ -510,6 +548,8 @@ fn check_value_use(
 ) {
     if !defined.is_defined(value) {
         errors.push(MirValidationError {
+            kind: MirDiagKind::Internal,
+            span: None,
             message: format!(
                 "use-before-def in block {block_idx}: {}",
                 value_label(func, value)

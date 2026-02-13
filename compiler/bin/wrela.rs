@@ -10,6 +10,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
+use wrela::diag::catalog::{mir_descriptor, project_descriptor};
+use wrela::diag::suppress::suppress_cascades;
+use wrela::diag::{
+    DiagFix, DiagLabel, DiagRecord, DiagSeverity, DiagSpan, DiagStage, dedupe_records,
+};
 use wrela::hir;
 use wrela::mir;
 use wrela::parser;
@@ -3397,11 +3402,21 @@ struct JsonDiag {
     path: String,
     span: JsonSpan,
     #[serde(skip_serializing_if = "Option::is_none")]
+    stage: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    severity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     rule: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     help: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    labels: Option<Vec<JsonLabel>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    notes: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    diag_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     suggestions: Option<Vec<JsonSuggestion>>,
 }
@@ -3412,65 +3427,189 @@ struct JsonSuggestion {
     span: JsonSpan,
     rationale: String,
     confidence: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    safety_tier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason_code: Option<String>,
 }
 
-#[derive(Default)]
-struct JsonDiagMetadata {
-    code: Option<String>,
-    rule: Option<String>,
-    help: Option<String>,
-    suggestions: Option<Vec<JsonSuggestion>>,
-}
-
-fn emit_diag(
-    format: OutputFormat,
-    kind: &str,
+#[derive(Serialize)]
+struct JsonLabel {
     message: String,
-    span: SourceSpan,
-    path: String,
-    source: String,
-) {
+    span: JsonSpan,
+    is_primary: bool,
+}
+
+fn emit_diag_record(format: OutputFormat, record: &DiagRecord, source: &str) {
+    let primary = record.labels.first().cloned().unwrap_or_else(|| DiagLabel {
+        message: "here".to_string(),
+        span: DiagSpan {
+            path: "<unknown>".to_string(),
+            offset: 0,
+            len: 0,
+        },
+        is_primary: true,
+    });
+    let span = SourceSpan::from((primary.span.offset, primary.span.len));
     match format {
         OutputFormat::Pretty => {
-            let report = Report::new(ProjectDiag { message, span })
-                .with_source_code(NamedSource::new(path, source));
-            if kind == "warning" {
+            let report = Report::new(ProjectDiag {
+                message: record.message.clone(),
+                span,
+            })
+            .with_source_code(NamedSource::new(
+                primary.span.path.clone(),
+                source.to_string(),
+            ));
+            if matches!(record.severity, DiagSeverity::Warning) {
                 eprintln!("warning: {report:?}");
             } else {
                 eprintln!("{report:?}");
             }
+            if let Some(code) = &record.code {
+                eprintln!("code: {code}");
+            }
+            if let Some(help) = &record.help {
+                eprintln!("help: {help}");
+            }
+            let (primary_line, primary_col) = line_col_at_offset(source, primary.span.offset);
+            let related = record
+                .labels
+                .iter()
+                .filter(|label| {
+                    if label.is_primary {
+                        return false;
+                    }
+                    if label.span.path != primary.span.path {
+                        return true;
+                    }
+                    if primary.span.offset.abs_diff(label.span.offset) <= 1 {
+                        return false;
+                    }
+                    let (line, col) = line_col_at_offset(source, label.span.offset);
+                    line != primary_line || col != primary_col
+                })
+                .collect::<Vec<_>>();
+            if !related.is_empty() {
+                eprintln!("related:");
+                for label in related {
+                    let (line, col) = line_col_at_offset(source, label.span.offset);
+                    eprintln!(
+                        "  - {} at {}:{}:{}",
+                        if label.message.is_empty() {
+                            "related location"
+                        } else {
+                            label.message.as_str()
+                        },
+                        label.span.path,
+                        line,
+                        col
+                    );
+                }
+            }
+            for note in &record.notes {
+                eprintln!("note: {note}");
+            }
+            for fix in &record.fixes {
+                eprintln!(
+                    "suggested fix [{}] (confidence {:.2}): {}",
+                    fix.safety_tier, fix.confidence, fix.rationale
+                );
+            }
         }
         OutputFormat::Json => {
-            emit_json_diag(kind, message, span, path);
+            emit_json_diag_for_record(record);
         }
     }
 }
 
-fn emit_json_diag(kind: &str, message: String, span: SourceSpan, path: String) {
-    emit_json_diag_with_metadata(kind, message, span, path, None);
+fn line_col_at_offset(source: &str, offset: usize) -> (usize, usize) {
+    let clamped = offset.min(source.len());
+    let mut line = 1usize;
+    let mut col = 1usize;
+    for b in source.as_bytes().iter().take(clamped) {
+        if *b == b'\n' {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+    (line, col)
 }
 
-fn emit_json_diag_with_metadata(
-    kind: &str,
-    message: String,
-    span: SourceSpan,
-    path: String,
-    metadata: Option<JsonDiagMetadata>,
-) {
-    let span = JsonSpan {
-        offset: span.offset(),
-        len: span.len(),
-    };
-    let metadata = metadata.unwrap_or_default();
+fn emit_json_diag_for_record(record: &DiagRecord) {
+    let primary = record.labels.first().cloned().unwrap_or_else(|| DiagLabel {
+        message: "here".to_string(),
+        span: DiagSpan {
+            path: "<unknown>".to_string(),
+            offset: 0,
+            len: 0,
+        },
+        is_primary: true,
+    });
     let json = JsonDiag {
-        kind: kind.to_string(),
-        message,
-        path,
-        span,
-        code: metadata.code,
-        rule: metadata.rule,
-        help: metadata.help,
-        suggestions: metadata.suggestions,
+        kind: if matches!(record.severity, DiagSeverity::Warning) {
+            "warning".to_string()
+        } else {
+            "error".to_string()
+        },
+        message: record.message.clone(),
+        path: primary.span.path,
+        span: JsonSpan {
+            offset: primary.span.offset,
+            len: primary.span.len,
+        },
+        stage: Some(format!("{:?}", record.stage).to_ascii_lowercase()),
+        severity: Some(if matches!(record.severity, DiagSeverity::Warning) {
+            "warning".to_string()
+        } else {
+            "error".to_string()
+        }),
+        code: record.code.clone(),
+        rule: record.rule.clone(),
+        help: record.help.clone(),
+        labels: Some(
+            record
+                .labels
+                .iter()
+                .map(|label| JsonLabel {
+                    message: label.message.clone(),
+                    span: JsonSpan {
+                        offset: label.span.offset,
+                        len: label.span.len,
+                    },
+                    is_primary: label.is_primary,
+                })
+                .collect(),
+        ),
+        notes: if record.notes.is_empty() {
+            None
+        } else {
+            Some(record.notes.clone())
+        },
+        diag_id: Some(record.diag_id.clone()),
+        suggestions: if record.fixes.is_empty() {
+            None
+        } else {
+            Some(
+                record
+                    .fixes
+                    .iter()
+                    .map(|fix| JsonSuggestion {
+                        replacement: fix.replacement.clone(),
+                        span: JsonSpan {
+                            offset: fix.span.offset,
+                            len: fix.span.len,
+                        },
+                        rationale: fix.rationale.clone(),
+                        confidence: fix.confidence,
+                        safety_tier: Some(fix.safety_tier.clone()),
+                        reason_code: Some(fix.reason_code.clone()),
+                    })
+                    .collect(),
+            )
+        },
     };
     println!(
         "{}",
@@ -3478,31 +3617,161 @@ fn emit_json_diag_with_metadata(
     );
 }
 
-fn naming_rule_from_code(code: &str) -> Option<String> {
-    let (_, rule) = code.split_once("lang::naming::")?;
-    Some(rule.to_string())
+fn emit_deduped_records_with_sources(format: OutputFormat, records: Vec<(DiagRecord, String)>) {
+    let mut source_by_id = HashMap::new();
+    let mut deduped = Vec::new();
+    for (record, source) in records {
+        source_by_id.entry(record.diag_id.clone()).or_insert(source);
+        deduped.push(record);
+    }
+    for record in suppress_cascades(dedupe_records(deduped)) {
+        let source = source_by_id
+            .get(&record.diag_id)
+            .cloned()
+            .unwrap_or_default();
+        emit_diag_record(format, &record, &source);
+    }
 }
 
-fn extract_json_metadata(diag: &dyn Diagnostic) -> Option<JsonDiagMetadata> {
-    let code = diag.code().map(|value| value.to_string())?;
-    let rule = naming_rule_from_code(&code)?;
-    let help = diag.help().map(|value| value.to_string());
-    Some(JsonDiagMetadata {
-        code: Some(code),
-        rule: Some(rule),
-        help,
-        suggestions: Some(Vec::new()),
-    })
-}
-
-fn emit_json_diag_for_diagnostic(
-    kind: &str,
-    diag: &dyn Diagnostic,
-    span: SourceSpan,
+fn project_record(
+    kind: wrela::diag::catalog::ProjectDiagKind,
+    severity: DiagSeverity,
+    message: String,
     path: String,
-) {
-    let metadata = extract_json_metadata(diag);
-    emit_json_diag_with_metadata(kind, diag.to_string(), span, path, metadata);
+    span: SourceSpan,
+) -> DiagRecord {
+    let desc = project_descriptor(kind);
+    DiagRecord::new(desc.stage, severity, message, path, span)
+        .with_code(Some(desc.code.to_string()))
+        .with_help(Some(desc.help_template.to_string()))
+}
+
+fn conservative_naming_fixes(err: &hir::naming::NamingError, path: &str) -> Vec<DiagFix> {
+    let span = err.primary_span();
+    let span = DiagSpan {
+        path: path.to_string(),
+        offset: span.offset(),
+        len: span.len(),
+    };
+    match err {
+        hir::naming::NamingError::SnakeCaseRequired { name, .. } => {
+            let replacement = to_snake_case(name.as_str());
+            if replacement.is_empty() || replacement == name.as_str() {
+                Vec::new()
+            } else {
+                vec![DiagFix {
+                    replacement,
+                    span,
+                    rationale: "convert to ASCII snake_case".to_string(),
+                    confidence: 0.99,
+                    safety_tier: "safe".to_string(),
+                    reason_code: "naming.snake_case_transform".to_string(),
+                }]
+            }
+        }
+        hir::naming::NamingError::PascalCaseRequired { name, .. } => {
+            let replacement = to_pascal_case(name.as_str());
+            if replacement.is_empty() || replacement == name.as_str() {
+                Vec::new()
+            } else {
+                vec![DiagFix {
+                    replacement,
+                    span,
+                    rationale: "convert to ASCII PascalCase".to_string(),
+                    confidence: 0.99,
+                    safety_tier: "safe".to_string(),
+                    reason_code: "naming.pascal_case_transform".to_string(),
+                }]
+            }
+        }
+        hir::naming::NamingError::BooleanPrefixRequired { name, .. } => {
+            if name.starts_with("is_") || name.starts_with("has_") {
+                Vec::new()
+            } else {
+                vec![DiagFix {
+                    replacement: format!("is_{}", to_snake_case(name.as_str())),
+                    span,
+                    rationale: "boolean identifiers should start with `is_` or `has_`".to_string(),
+                    confidence: 0.96,
+                    safety_tier: "safe".to_string(),
+                    reason_code: "naming.boolean_prefix_transform".to_string(),
+                }]
+            }
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn to_snake_case(input: &str) -> String {
+    let mut out = String::new();
+    let mut prev_was_sep = true;
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if ch.is_ascii_uppercase() {
+                if !out.is_empty() && !prev_was_sep {
+                    out.push('_');
+                }
+                out.push(ch.to_ascii_lowercase());
+            } else {
+                out.push(ch.to_ascii_lowercase());
+            }
+            prev_was_sep = false;
+        } else if !prev_was_sep {
+            out.push('_');
+            prev_was_sep = true;
+        }
+    }
+    while out.ends_with('_') {
+        out.pop();
+    }
+    out
+}
+
+fn to_pascal_case(input: &str) -> String {
+    let mut out = String::new();
+    let mut cap = true;
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if cap {
+                out.push(ch.to_ascii_uppercase());
+            } else {
+                out.push(ch.to_ascii_lowercase());
+            }
+            cap = false;
+        } else {
+            cap = true;
+        }
+    }
+    out
+}
+
+fn resolve_path_from_owner_spans(
+    span: SourceSpan,
+    provenance: &hir::project::ProjectProvenance,
+    default_path: &str,
+) -> String {
+    let offset = span.offset();
+    let mut candidates = provenance
+        .function_owner_span_by_id
+        .iter()
+        .filter_map(|(func_id, owner_span)| {
+            let start = usize::from(owner_span.start());
+            let end = usize::from(owner_span.end());
+            if offset >= start && offset <= end {
+                provenance
+                    .function_owner_path_by_id
+                    .get(func_id)
+                    .map(|path| (end.saturating_sub(start), path.display().to_string()))
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|(width, _)| *width);
+    candidates
+        .first()
+        .map(|(_, path)| path.clone())
+        .unwrap_or_else(|| default_path.to_string())
 }
 
 fn is_command(arg: &str) -> bool {
@@ -10684,78 +10953,110 @@ fn compile_to_mir_with_root(
     tests_dir: Option<&Path>,
     output_format: OutputFormat,
 ) -> Result<mir::ir::MirModule, i32> {
-    let (module, source, source_name) = match hir::project::load_project_with_roots(
+    let project = match hir::project::load_project_with_roots(
         entry_path,
         root_dir,
         tests_dir.map(|p| p.to_path_buf()),
         true,
     ) {
-        Ok(project) => {
-            for warn in project.warnings {
-                emit_diag(
-                    output_format,
-                    "warning",
-                    warn.message,
-                    warn.span,
-                    warn.path.display().to_string(),
-                    warn.source,
-                );
-            }
-            (
-                project.module,
-                project.entry_source,
-                entry_path.display().to_string(),
-            )
-        }
+        Ok(project) => project,
         Err(errors) => {
+            let mut records = Vec::new();
             for err in errors {
-                emit_diag(
-                    output_format,
-                    "error",
+                let record = project_record(
+                    err.kind,
+                    DiagSeverity::Error,
                     err.message,
-                    err.span,
                     err.path.display().to_string(),
-                    err.source,
+                    err.span,
                 );
+                records.push((record, err.source));
             }
+            emit_deduped_records_with_sources(output_format, records);
             return Err(EXIT_PARSE);
         }
     };
-    let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
-    if let Some(err) = type_errors.into_iter().next() {
-        emit_diag(
-            output_format,
-            "error",
-            err.to_string(),
-            err.primary_span(),
-            source_name.clone(),
-            source.clone(),
+    let module = project.module.clone();
+    let source = project.entry_source.clone();
+    let source_name = entry_path.display().to_string();
+    let mut source_by_path = project.module_sources.clone();
+    let provenance = project.provenance.clone();
+    source_by_path
+        .entry(entry_path.to_path_buf())
+        .or_insert_with(|| source.clone());
+    let default_source = source.clone();
+    let default_path = source_name.clone();
+    for warn in project.warnings {
+        let record = project_record(
+            warn.kind,
+            DiagSeverity::Warning,
+            warn.message,
+            warn.path.display().to_string(),
+            warn.span,
         );
-        return Err(EXIT_TYPE);
+        emit_diag_record(output_format, &record, &warn.source);
+    }
+    let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+    let mut had_errors = false;
+    let mut records = Vec::new();
+    for err in type_errors {
+        let path = resolve_path_from_owner_spans(err.primary_span(), &provenance, &default_path);
+        let record = DiagRecord::from_diagnostic(
+            DiagStage::Type,
+            DiagSeverity::Error,
+            &err,
+            path,
+            err.primary_span(),
+        );
+        records.push(record);
+        had_errors = true;
     }
     let naming_errors = hir::naming::check_module(&module, &type_info);
-    if let Some(err) = naming_errors.into_iter().next() {
-        emit_diag(
-            output_format,
-            "error",
-            err.to_string(),
+    for err in naming_errors {
+        let path = resolve_path_from_owner_spans(err.primary_span(), &provenance, &default_path);
+        let fixes = conservative_naming_fixes(&err, &path);
+        let record = DiagRecord::from_diagnostic(
+            DiagStage::Naming,
+            DiagSeverity::Error,
+            &err,
+            path,
             err.primary_span(),
-            source_name.clone(),
-            source.clone(),
-        );
+        )
+        .with_fixes(fixes);
+        records.push(record);
+        had_errors = true;
+    }
+    for record in suppress_cascades(dedupe_records(records)) {
+        let source_for_record = source_by_path
+            .get(std::path::Path::new(
+                &record
+                    .labels
+                    .first()
+                    .map(|label| label.span.path.clone())
+                    .unwrap_or_else(|| default_path.clone()),
+            ))
+            .cloned()
+            .unwrap_or_else(|| default_source.clone());
+        emit_diag_record(output_format, &record, &source_for_record);
+    }
+    if had_errors {
         return Err(EXIT_TYPE);
     }
     let mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
-    let mut had_errors = false;
+    had_errors = false;
     for err in mir::validate::validate_module(&mir_module) {
-        emit_diag(
-            output_format,
-            "error",
+        let desc = mir_descriptor(err.kind);
+        let record = DiagRecord::new(
+            desc.stage,
+            DiagSeverity::Error,
             err.message,
-            SourceSpan::from((0usize, 0usize)),
             source_name.clone(),
-            source.clone(),
-        );
+            err.span
+                .unwrap_or_else(|| SourceSpan::from((0usize, 0usize))),
+        )
+        .with_code(Some(desc.code.to_string()))
+        .with_help(Some(desc.help_template.to_string()));
+        emit_diag_record(output_format, &record, &source);
         had_errors = true;
     }
     if had_errors {
@@ -10811,132 +11112,124 @@ fn compile_to_mir(
     if trace {
         eprintln!("build: start {:?}", entry_path);
     }
-    let (module, source, source_name) =
-        match hir::project::load_project_with_entrypoint(entry_path, require_entrypoint) {
-            Ok(project) => {
-                for warn in project.warnings {
-                    emit_diag(
-                        output_format,
-                        "warning",
-                        warn.message,
-                        warn.span,
-                        warn.path.display().to_string(),
-                        warn.source,
-                    );
+    let project = match hir::project::load_project_with_entrypoint(entry_path, require_entrypoint) {
+        Ok(project) => project,
+        Err(errors) => {
+            let mut missing_run = false;
+            let mut records = Vec::new();
+            for err in errors {
+                if err.message.contains("define 'to run()'") {
+                    missing_run = true;
                 }
-                (
-                    project.module,
-                    project.entry_source,
-                    entry_path.display().to_string(),
-                )
+                let record = project_record(
+                    err.kind,
+                    DiagSeverity::Error,
+                    err.message,
+                    err.path.display().to_string(),
+                    err.span,
+                );
+                records.push((record, err.source));
             }
-            Err(errors) => {
-                let mut missing_run = false;
-                for err in errors {
-                    if err.message.contains("define 'to run()'") {
-                        missing_run = true;
-                    }
-                    emit_diag(
-                        output_format,
-                        "error",
-                        err.message,
-                        err.span,
-                        err.path.display().to_string(),
-                        err.source,
-                    );
-                }
-                if missing_run
-                    && require_entrypoint
-                    && matches!(output_format, OutputFormat::Pretty)
-                {
-                    eprintln!(
-                        "note: add `to run()` in your entry file to define the program entrypoint"
-                    );
-                }
-                return Err(EXIT_PARSE);
+            emit_deduped_records_with_sources(output_format, records);
+            if missing_run && require_entrypoint && matches!(output_format, OutputFormat::Pretty) {
+                eprintln!(
+                    "note: add `to run()` in your entry file to define the program entrypoint"
+                );
             }
-        };
+            return Err(EXIT_PARSE);
+        }
+    };
+    let module = project.module.clone();
+    let source = project.entry_source.clone();
+    let source_name = entry_path.display().to_string();
+    let mut source_by_path = project.module_sources.clone();
+    let provenance = project.provenance.clone();
+    source_by_path
+        .entry(entry_path.to_path_buf())
+        .or_insert_with(|| source.clone());
+    for warn in project.warnings {
+        let record = project_record(
+            warn.kind,
+            DiagSeverity::Warning,
+            warn.message,
+            warn.path.display().to_string(),
+            warn.span,
+        );
+        emit_diag_record(output_format, &record, &warn.source);
+    }
     stage("load_project", &start);
 
     let mut had_errors = false;
     let semantic = hir::semantic::check_module(&module);
     stage("semantic", &start);
+    let mut records = Vec::new();
     for err in semantic.errors {
-        match output_format {
-            OutputFormat::Pretty => {
-                let report = Report::new(err)
-                    .with_source_code(NamedSource::new(source_name.clone(), source.clone()));
-                eprintln!("{report:?}");
-            }
-            OutputFormat::Json => {
-                emit_json_diag_for_diagnostic(
-                    "error",
-                    &err,
-                    err.primary_span(),
-                    source_name.clone(),
-                );
-            }
-        }
+        let path = resolve_path_from_owner_spans(err.primary_span(), &provenance, &source_name);
+        let record = DiagRecord::from_diagnostic(
+            DiagStage::Semantic,
+            DiagSeverity::Error,
+            &err,
+            path,
+            err.primary_span(),
+        );
+        records.push(record);
         had_errors = true;
     }
     for warn in semantic.warnings {
-        match output_format {
-            OutputFormat::Pretty => {
-                let report = Report::new(warn)
-                    .with_source_code(NamedSource::new(source_name.clone(), source.clone()));
-                eprintln!("warning: {report:?}");
-            }
-            OutputFormat::Json => {
-                emit_json_diag_for_diagnostic(
-                    "warning",
-                    &warn,
-                    warn.primary_span(),
-                    source_name.clone(),
-                );
-            }
-        }
+        let path = resolve_path_from_owner_spans(warn.primary_span(), &provenance, &source_name);
+        let record = DiagRecord::from_diagnostic(
+            DiagStage::Semantic,
+            DiagSeverity::Warning,
+            &warn,
+            path,
+            warn.primary_span(),
+        );
+        records.push(record);
     }
 
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     stage("typeck", &start);
     for err in type_errors {
-        match output_format {
-            OutputFormat::Pretty => {
-                let report = Report::new(err)
-                    .with_source_code(NamedSource::new(source_name.clone(), source.clone()));
-                eprintln!("{report:?}");
-            }
-            OutputFormat::Json => {
-                emit_json_diag_for_diagnostic(
-                    "error",
-                    &err,
-                    err.primary_span(),
-                    source_name.clone(),
-                );
-            }
-        }
+        let path = resolve_path_from_owner_spans(err.primary_span(), &provenance, &source_name);
+        let record = DiagRecord::from_diagnostic(
+            DiagStage::Type,
+            DiagSeverity::Error,
+            &err,
+            path,
+            err.primary_span(),
+        );
+        records.push(record);
         had_errors = true;
     }
 
     let naming_errors = hir::naming::check_module(&module, &type_info);
     stage("naming", &start);
     for err in naming_errors {
-        match output_format {
-            OutputFormat::Pretty => {
-                let report = Report::new(err)
-                    .with_source_code(NamedSource::new(source_name.clone(), source.clone()));
-                eprintln!("{report:?}");
-            }
-            OutputFormat::Json => {
-                emit_json_diag(
-                    "error",
-                    err.to_string(),
-                    err.primary_span(),
-                    source_name.clone(),
-                );
-            }
-        }
+        let path = resolve_path_from_owner_spans(err.primary_span(), &provenance, &source_name);
+        let fixes = conservative_naming_fixes(&err, &path);
+        let record = DiagRecord::from_diagnostic(
+            DiagStage::Naming,
+            DiagSeverity::Error,
+            &err,
+            path,
+            err.primary_span(),
+        )
+        .with_fixes(fixes);
+        records.push(record);
         had_errors = true;
+    }
+    for record in suppress_cascades(dedupe_records(records)) {
+        let source_for_record = source_by_path
+            .get(std::path::Path::new(
+                &record
+                    .labels
+                    .first()
+                    .map(|label| label.span.path.clone())
+                    .unwrap_or_else(|| source_name.clone()),
+            ))
+            .cloned()
+            .unwrap_or_else(|| source.clone());
+        emit_diag_record(output_format, &record, &source_for_record);
     }
 
     if had_errors {
@@ -10991,7 +11284,14 @@ fn compile_to_mir(
         println!("{:#?}", mir_module);
     }
     for err in mir::validate::validate_module(&mir_module) {
-        eprintln!("mir validation error: {}", err.message);
+        let record = DiagRecord::new(
+            DiagStage::Mir,
+            DiagSeverity::Error,
+            err.message,
+            source_name.clone(),
+            SourceSpan::from((0usize, 0usize)),
+        );
+        emit_diag_record(output_format, &record, &source);
         had_errors = true;
     }
 

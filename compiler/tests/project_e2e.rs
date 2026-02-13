@@ -31,6 +31,63 @@ fn project_imports_from_subdir() {
 }
 
 #[test]
+fn project_provenance_tracks_owner_paths_for_merged_symbols() {
+    let base = tempfile::tempdir().expect("tempdir");
+    let entry_path = base.path().join("src").join("main.wr");
+    let mod_path = base.path().join("src").join("domain").join("orders.wr");
+
+    write_temp(
+        &entry_path,
+        "use run_app from domain/orders\n\nto run() -> Integer:\n    return run_app()\n",
+    );
+    write_temp(
+        &mod_path,
+        "to run_app() -> Integer:\n    return 1\n\nA Order:\n    has:\n        id: Integer\n\nA State is either:\n    Open\n\nA Renderer:\n    must render() -> String\n",
+    );
+
+    let project = load_project(&entry_path).expect("load project");
+    let (func_idx, _) = project
+        .module
+        .functions
+        .iter()
+        .find(|(_, func)| func.name == "run_app")
+        .expect("missing run_app");
+    let owner = project
+        .provenance
+        .function_owner_path_by_id
+        .get(&func_idx.into_raw())
+        .expect("missing function owner path");
+    assert_eq!(owner, &mod_path);
+    let owner_by_name = project
+        .provenance
+        .function_owner_path_by_name
+        .get("run_app")
+        .expect("missing function owner path by name");
+    assert_eq!(owner_by_name, &mod_path);
+
+    let class_owner = project
+        .provenance
+        .class_owner_path_by_name
+        .get("Order")
+        .expect("missing class owner path");
+    assert_eq!(class_owner, &mod_path);
+
+    let enum_owner = project
+        .provenance
+        .enum_owner_path_by_name
+        .get("State")
+        .expect("missing enum owner path");
+    assert_eq!(enum_owner, &mod_path);
+
+    let interface_owner = project
+        .provenance
+        .interface_owner_path_by_name
+        .get("Renderer")
+        .expect("missing interface owner path");
+    assert_eq!(interface_owner, &mod_path);
+}
+
+#[test]
 fn project_missing_module_has_span() {
     let base = tempfile::tempdir().expect("tempdir");
     let entry_path = base.path().join("src").join("main.wr");

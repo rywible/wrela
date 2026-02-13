@@ -135,6 +135,20 @@ pub enum TypeError {
         span: SourceSpan,
     },
 
+    #[error("if condition must be Boolean")]
+    #[diagnostic(code(lang::ty::if_condition_boolean))]
+    IfConditionNotBoolean {
+        #[label("condition here")]
+        span: SourceSpan,
+    },
+
+    #[error("while condition must be Boolean")]
+    #[diagnostic(code(lang::ty::while_condition_boolean))]
+    WhileConditionNotBoolean {
+        #[label("condition here")]
+        span: SourceSpan,
+    },
+
     #[error("require message must be a String")]
     #[diagnostic(code(lang::ty::require_message_string))]
     RequireMessageNotString {
@@ -370,6 +384,8 @@ impl TypeError {
             TypeError::CheckRequiresGiven { span } => *span,
             TypeError::GivenRequiresCheck { span } => *span,
             TypeError::RequireConditionNotBoolean { span } => *span,
+            TypeError::IfConditionNotBoolean { span } => *span,
+            TypeError::WhileConditionNotBoolean { span } => *span,
             TypeError::RequireMessageNotString { span } => *span,
             TypeError::CaptureRequiresResult { span } => *span,
             TypeError::IgnoreResultRequiresResult { span } => *span,
@@ -1718,7 +1734,7 @@ fn check_stmt(
             then_branch,
             else_branch,
         } => {
-            infer_expr(
+            let cond_ty = infer_expr(
                 body,
                 *condition,
                 ctx,
@@ -1731,6 +1747,11 @@ fn check_stmt(
                 returns_result,
                 returns_result,
             );
+            if types_known(&Type::Boolean, &cond_ty) && !matches!(cond_ty, Type::Boolean) {
+                errors.push(TypeError::IfConditionNotBoolean {
+                    span: span_from_range(body.expr_span(*condition)),
+                });
+            }
             ctx.enter_scope();
             for stmt in then_branch {
                 check_stmt(
@@ -1889,7 +1910,7 @@ fn check_stmt(
             condition,
             body: loop_body,
         } => {
-            infer_expr(
+            let cond_ty = infer_expr(
                 body,
                 *condition,
                 ctx,
@@ -1902,6 +1923,11 @@ fn check_stmt(
                 returns_result,
                 returns_result,
             );
+            if types_known(&Type::Boolean, &cond_ty) && !matches!(cond_ty, Type::Boolean) {
+                errors.push(TypeError::WhileConditionNotBoolean {
+                    span: span_from_range(body.expr_span(*condition)),
+                });
+            }
             ctx.enter_scope();
             for stmt in loop_body {
                 check_stmt(
@@ -5533,6 +5559,48 @@ to f(r: Result[Integer]) -> Integer:
             errors
                 .iter()
                 .any(|err| matches!(err, TypeError::ReturnTypeMismatch { .. }))
+        );
+    }
+
+    #[test]
+    fn test_if_condition_must_be_boolean() {
+        let input = "to f() -> Integer:\n    if 1:\n        return 1\n    return 0";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let errors = check_module(&module);
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::IfConditionNotBoolean { .. }))
+        );
+    }
+
+    #[test]
+    fn test_while_condition_must_be_boolean() {
+        let input = "to f() -> Integer:\n    while 1:\n        return 1\n    return 0";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let errors = check_module(&module);
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::WhileConditionNotBoolean { .. }))
+        );
+    }
+
+    #[test]
+    fn test_logical_and_requires_boolean_rhs() {
+        let input = "to f() -> Boolean:\n    flag = true\n    return flag and 1";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let errors = check_module(&module);
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::InvalidBinaryOperands { .. }))
         );
     }
 

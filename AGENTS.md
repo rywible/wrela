@@ -1,5 +1,7 @@
 # Repository Guidelines
 
+The language spec (language/spec/spec.wr) is sacred. Don't you dare touch it.
+
 ## Project Structure & Module Organization
 
 Wrela is a Rust workspace with two crates and language assets:

@@ -66,10 +66,38 @@ fn cli_json_diagnostics() {
     let value: serde_json::Value = serde_json::from_str(first).expect("valid json");
     assert!(value.get("message").is_some());
     assert!(value.get("span").is_some());
-    assert!(value.get("code").is_none());
-    assert!(value.get("rule").is_none());
-    assert!(value.get("help").is_none());
-    assert!(value.get("suggestions").is_none());
+    assert!(
+        value
+            .get("code")
+            .and_then(|value| value.as_str())
+            .is_some_and(|code| !code.is_empty())
+    );
+    assert!(
+        value
+            .get("rule")
+            .and_then(|value| value.as_str())
+            .is_some_and(|rule| !rule.is_empty())
+    );
+    assert!(value.get("help").is_some());
+    assert!(
+        value
+            .get("stage")
+            .and_then(|value| value.as_str())
+            .is_some_and(|stage| !stage.is_empty())
+    );
+    assert!(
+        value
+            .get("severity")
+            .and_then(|value| value.as_str())
+            .is_some_and(|severity| severity == "error" || severity == "warning")
+    );
+    assert!(
+        value
+            .get("labels")
+            .and_then(|value| value.as_array())
+            .is_some_and(|labels| !labels.is_empty())
+    );
+    assert!(value.get("diag_id").is_some());
 }
 
 #[test]
@@ -130,8 +158,254 @@ fn cli_json_naming_diagnostics_include_metadata_fields_when_present() {
             assert!(suggestion.get("span").is_some());
             assert!(suggestion.get("rationale").is_some());
             assert!(suggestion.get("confidence").is_some());
+            assert!(
+                suggestion
+                    .get("safety_tier")
+                    .and_then(|value| value.as_str())
+                    .is_some_and(|tier| tier == "safe" || tier == "review")
+            );
+            assert!(
+                suggestion
+                    .get("reason_code")
+                    .and_then(|value| value.as_str())
+                    .is_some_and(|code| !code.is_empty())
+            );
         }
     }
+}
+
+#[test]
+fn cli_json_diag_id_is_stable_across_runs() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("main.wr");
+    std::fs::write(&path, "to run() -> Integer:\n    return 1 +\n").unwrap();
+
+    let first = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("--format=json")
+        .arg(&path)
+        .output()
+        .expect("run wrela");
+    let second = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("--format=json")
+        .arg(&path)
+        .output()
+        .expect("run wrela");
+    assert!(!first.status.success());
+    assert!(!second.status.success());
+
+    let first_stdout = String::from_utf8_lossy(&first.stdout);
+    let first_diag = first_stdout
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .expect("first json line");
+    let second_stdout = String::from_utf8_lossy(&second.stdout);
+    let second_diag = second_stdout
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .expect("second json line");
+    let first_json: serde_json::Value = serde_json::from_str(first_diag).expect("valid json");
+    let second_json: serde_json::Value = serde_json::from_str(second_diag).expect("valid json");
+    assert_eq!(
+        first_json.get("diag_id").and_then(|value| value.as_str()),
+        second_json.get("diag_id").and_then(|value| value.as_str())
+    );
+}
+
+#[test]
+fn cli_json_contract_matches_required_and_optional_key_fixtures() {
+    let required = include_str!("fixtures/diagnostics/json_required_keys.txt")
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>();
+    let optional = include_str!("fixtures/diagnostics/json_optional_keys.txt")
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>();
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("main.wr");
+    std::fs::write(&path, "to run() -> Integer:\n    return 1 +\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("--format=json")
+        .arg(&path)
+        .output()
+        .expect("run wrela");
+    assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let first = stdout
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .expect("json line");
+    let value: serde_json::Value = serde_json::from_str(first).expect("valid json");
+    let object = value.as_object().expect("diagnostic is object");
+
+    for key in required {
+        assert!(object.contains_key(key), "missing required key: {key}");
+    }
+    for key in optional {
+        if object.contains_key(key) {
+            assert_ne!(key, "kind");
+        }
+    }
+}
+
+#[test]
+fn cli_json_parse_diagnostics_use_specific_parse_codes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("main.wr");
+    std::fs::write(&path, "to run() -> Integer:\n    return 1 +\n").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("--format=json")
+        .arg(&path)
+        .output()
+        .expect("run wrela");
+    assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let diagnostics: Vec<serde_json::Value> = stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("valid json"))
+        .collect();
+    let parse_codes = diagnostics
+        .iter()
+        .filter_map(|diag| diag.get("code").and_then(|value| value.as_str()))
+        .filter(|code| code.starts_with("lang::parse::"))
+        .collect::<Vec<_>>();
+    assert!(
+        parse_codes
+            .iter()
+            .any(|code| *code != "lang::parse::syntax_error"),
+        "expected at least one specific parse code, got: {parse_codes:?}"
+    );
+}
+
+#[test]
+fn cli_test_harness_json_aggregates_multiple_type_errors() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let src_dir = dir.path().join("src");
+    let module_path = src_dir.join("broken.wr");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::write(
+        src_dir.join("main.wr"),
+        "use bad from broken\n\nto run() -> Integer:\n    return bad()\n",
+    )
+    .unwrap();
+    std::fs::write(
+        module_path,
+        "to bad() -> Integer:\n    x = 1 + true\n    y = 1 + false\n    return 0\n",
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("check")
+        .arg("--format=json")
+        .arg(src_dir.join("main.wr"))
+        .output()
+        .expect("run wrela");
+
+    assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let diagnostics: Vec<serde_json::Value> = stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("valid json"))
+        .collect();
+    let type_errors: Vec<&serde_json::Value> = diagnostics
+        .iter()
+        .filter(|diag| {
+            diag.get("code")
+                .and_then(|value| value.as_str())
+                .is_some_and(|code| code.starts_with("lang::ty::"))
+        })
+        .collect();
+    assert!(
+        type_errors.len() >= 2,
+        "expected aggregated type diagnostics, got:\n{}",
+        stdout
+    );
+}
+
+#[test]
+fn cli_json_reports_multifile_type_error_path() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let src_dir = dir.path().join("src");
+    let module_path = src_dir.join("domain").join("broken.wr");
+    std::fs::create_dir_all(module_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        src_dir.join("main.wr"),
+        "use compute from domain/broken\n\nto run() -> Integer:\n    return compute()\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &module_path,
+        "to padding0() -> Integer:\n    return 0\n\nto padding1() -> Integer:\n    return 1\n\nto padding2() -> Integer:\n    return 2\n\nto compute() -> Integer:\n    return true\n",
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("check")
+        .arg("--format=json")
+        .arg(src_dir.join("main.wr"))
+        .output()
+        .expect("run wrela");
+    assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let diagnostics: Vec<serde_json::Value> = stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("valid json"))
+        .collect();
+    let path_hit = diagnostics.iter().any(|diag| {
+        diag.get("path")
+            .and_then(|value| value.as_str())
+            .is_some_and(|path| path.ends_with("domain/broken.wr"))
+    });
+    assert!(
+        path_hit,
+        "expected diagnostic path to point to imported module, got:\n{}",
+        stdout
+    );
+}
+
+#[test]
+fn cli_json_multimodule_same_symbol_names_report_correct_owner_path() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let src_dir = dir.path().join("src");
+    let billing_path = src_dir.join("domain").join("billing.wr");
+    let orders_path = src_dir.join("domain").join("orders.wr");
+    std::fs::create_dir_all(billing_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        src_dir.join("main.wr"),
+        "use compute from domain/orders\n\nto run() -> Integer:\n    return compute()\n",
+    )
+    .unwrap();
+    std::fs::write(&billing_path, "to compute() -> Integer:\n    return 1\n").unwrap();
+    std::fs::write(&orders_path, "to compute() -> Integer:\n    return true\n").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("check")
+        .arg("--format=json")
+        .arg(src_dir.join("main.wr"))
+        .output()
+        .expect("run wrela");
+    assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let diagnostics: Vec<serde_json::Value> = stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("valid json"))
+        .collect();
+    let orders_hit = diagnostics.iter().any(|diag| {
+        diag.get("path")
+            .and_then(|value| value.as_str())
+            .is_some_and(|path| path.ends_with("domain/orders.wr"))
+    });
+    assert!(
+        orders_hit,
+        "expected diagnostic path to point at symbol owner module, got:\n{}",
+        stdout
+    );
 }
 
 #[test]
