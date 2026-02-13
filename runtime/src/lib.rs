@@ -4,6 +4,7 @@ mod data;
 mod host;
 mod kernel;
 pub mod reactor;
+mod unsafe_primitives;
 
 pub(crate) use data::{arena, bytes, class, iter, list, map, object, result, string, value};
 pub(crate) use kernel::{actor, config, diagnostics, metrics, scheduler};
@@ -244,6 +245,11 @@ pub extern "C" fn wr_runtime_init() {
 pub extern "C" fn wr_runtime_abi() -> u32 {
     diagnostics::runtime_init();
     diagnostics::RUNTIME_ABI_VERSION
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_runtime_caps() -> u64 {
+    unsafe_primitives::runtime_caps_mask()
 }
 
 #[unsafe(no_mangle)]
@@ -1953,5 +1959,15 @@ mod tests {
             cfg!(feature = "abi_typed_fast_path")
         );
         std::fs::write(&artifact_path, body).expect("write perf artifact");
+    }
+
+    #[test]
+    fn runtime_caps_export_is_non_zero() {
+        let caps = wr_runtime_caps();
+        assert_ne!(caps, 0);
+        assert_eq!(
+            caps & crate::unsafe_primitives::RUNTIME_CAP_ABI_NEGOTIATION_MARKER,
+            crate::unsafe_primitives::RUNTIME_CAP_ABI_NEGOTIATION_MARKER
+        );
     }
 }

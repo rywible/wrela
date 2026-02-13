@@ -1,0 +1,13 @@
+# Files that are allowed to contain Rust `unsafe` tokens.
+# This list is intentionally narrow and runtime-focused, with a small number
+# of compiler-side compatibility exceptions that are being tracked explicitly.
+
+runtime/src/data.rs
+runtime/src/lib.rs
+runtime/src/reactor/mod.rs
+runtime/src/unsafe_primitives.rs
+compiler/bin/wrela/command_handlers.rs
+compiler/hir/typeck.rs
+compiler/parser/kind.rs
+runtime/src/host.rs
+runtime/src/kernel.rs

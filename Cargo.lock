@@ -1142,6 +1142,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "wrela_v2_scaffold"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "zerocopy"
 version = "0.8.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
