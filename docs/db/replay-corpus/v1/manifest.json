@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "artifacts": [
+    {
+      "path": "model/demo/11.json",
+      "signature": "v=1|lane=model|seed=11|test=tests/model/demo::test_demo|#0:dispatch:start:pre-commit:started|#1:dispatch:commit:failed:failed|"
+    },
+    {
+      "path": "sim/demo/7.json",
+      "signature": "v=1|lane=sim|seed=7|test=tests/sim/demo::test_demo|#0:dispatch:start:pre-commit:started|#1:dispatch:commit:failed:failed|"
+    }
+  ]
+}

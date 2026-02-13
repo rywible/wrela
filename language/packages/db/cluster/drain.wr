@@ -1,0 +1,9 @@
+so:
+    Region draining orchestration contract.
+
+class DrainPlan:
+    let region: String
+    let strict: Bool
+
+to drain_region(region: String) -> DrainPlan:
+    return DrainPlan(region, true)

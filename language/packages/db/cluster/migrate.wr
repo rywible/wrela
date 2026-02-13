@@ -1,0 +1,16 @@
+so:
+    Shard migration orchestration contract.
+
+class MigrationPlan:
+    let migration_id: String
+    let shard_id: Integer
+    let source_region: String
+    let target_region: String
+
+to plan_migration(
+    migration_id: String,
+    shard_id: Integer,
+    source_region: String,
+    target_region: String
+) -> MigrationPlan:
+    return MigrationPlan(migration_id, shard_id, source_region, target_region)

@@ -1,0 +1,19 @@
+so:
+    Erasure policy contract for delete propagation across CDC and backups.
+
+class ErasureMode:
+    variant hard_delete
+    variant cryptoshred
+
+class ErasureRequest:
+    let intent_id: String
+    let mode: ErasureMode
+    let legal_hold_until_commit_seq: Integer
+    let tombstone_retention_commits: Integer
+    let residency_scope: String
+
+to request_hard_delete(intent_id: String, residency_scope: String) -> ErasureRequest:
+    return ErasureRequest(intent_id, ErasureMode.hard_delete, -1, 0, residency_scope)
+
+to has_legal_hold(request: ErasureRequest) -> Bool:
+    return request.legal_hold_until_commit_seq >= 0

@@ -1,0 +1,9 @@
+so:
+    Node replacement orchestration contract.
+
+class ReplacePlan:
+    let old_node: String
+    let new_node: String
+
+to replace_node(old_node: String, new_node: String) -> ReplacePlan:
+    return ReplacePlan(old_node, new_node)

@@ -1,0 +1,44 @@
+so:
+    Policy intent DSL surface for DB autopilot compile inputs.
+
+class SurvivabilityIntent:
+    variant single_region
+    variant region_failure
+    variant two_region_failure
+
+class CostTier:
+    variant economy
+    variant balanced
+    variant performance
+
+class BudgetClass:
+    variant constrained
+    variant standard
+    variant flexible
+
+class PolicyIntent:
+    let policy_id: String
+    let survivability: SurvivabilityIntent
+    let latency_target_ms: Integer
+    let residency_scope: String
+    let cost_tier: CostTier
+    let budget_class: BudgetClass
+
+to default_policy_intent(policy_id: String, residency_scope: String) -> PolicyIntent:
+    return PolicyIntent(
+        policy_id,
+        SurvivabilityIntent.region_failure,
+        80,
+        residency_scope,
+        CostTier.balanced,
+        BudgetClass.standard
+    )
+
+to has_required_intent_fields(intent: PolicyIntent) -> Bool:
+    if intent.policy_id is "":
+        return false
+    if intent.latency_target_ms <= 0:
+        return false
+    if intent.residency_scope is "":
+        return false
+    return true

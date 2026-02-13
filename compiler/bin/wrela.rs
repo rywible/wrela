@@ -14,6 +14,8 @@ use wrela::hir;
 use wrela::mir;
 use wrela::parser;
 
+#[path = "wrela/replay_trace.rs"]
+mod replay_trace;
 #[path = "wrela/repro.rs"]
 mod repro;
 
@@ -60,6 +62,7 @@ fn main() {
     let mut test_lane: Option<String> = None;
     let mut test_seed: Option<u64> = None;
     let mut repro_artifact_path: Option<String> = None;
+    let mut replay_trace_artifact_path: Option<String> = None;
     let mut perf_debug = false;
     let mut perf_runs: Option<usize> = None;
     let mut perf_baseline_out: Option<String> = None;
@@ -175,6 +178,18 @@ fn main() {
                 continue;
             }
             eprintln!("error: missing path for --repro");
+            std::process::exit(EXIT_USAGE);
+        }
+        if let Some(path) = arg.strip_prefix("--replay-trace=") {
+            replay_trace_artifact_path = Some(path.to_string());
+            continue;
+        }
+        if arg == "--replay-trace" {
+            if let Some(path) = iter.next() {
+                replay_trace_artifact_path = Some(path);
+                continue;
+            }
+            eprintln!("error: missing path for --replay-trace");
             std::process::exit(EXIT_USAGE);
         }
         if arg == "--perf-debug" {
@@ -371,6 +386,10 @@ fn main() {
     }
     if command != "test" && repro_artifact_path.is_some() {
         eprintln!("error: --repro is only valid with `wrela test`");
+        std::process::exit(EXIT_USAGE);
+    }
+    if command != "test" && replay_trace_artifact_path.is_some() {
+        eprintln!("error: --replay-trace is only valid with `wrela test`");
         std::process::exit(EXIT_USAGE);
     }
     if command != "perf" && command != "perfcmp" && benchmark_manifest_path.is_some() {
@@ -786,7 +805,11 @@ fn main() {
                 );
                 std::process::exit(EXIT_USAGE);
             }
-            if repro_artifact_path.is_some()
+            if repro_artifact_path.is_some() && replay_trace_artifact_path.is_some() {
+                eprintln!("error: --repro and --replay-trace cannot be combined");
+                std::process::exit(EXIT_USAGE);
+            }
+            if (repro_artifact_path.is_some() || replay_trace_artifact_path.is_some())
                 && (test_record
                     || test_update_public_surface
                     || test_selection.list
@@ -794,7 +817,7 @@ fn main() {
                     || test_selection.filter.is_some())
             {
                 eprintln!(
-                    "error: --repro cannot be combined with --record, --update-public-surface, --list, --id, or --filter"
+                    "error: --repro/--replay-trace cannot be combined with --record, --update-public-surface, --list, --id, or --filter"
                 );
                 std::process::exit(EXIT_USAGE);
             }
@@ -819,6 +842,32 @@ fn main() {
                     &budget_policy,
                 );
                 std::process::exit(exit);
+            }
+            if let Some(replay_trace_path) = replay_trace_artifact_path.as_deref() {
+                let signature = match replay_trace::replay_signature_from_artifact(Path::new(
+                    replay_trace_path,
+                )) {
+                    Ok(signature) => signature,
+                    Err(err) => {
+                        eprintln!("replay trace error: {err}");
+                        std::process::exit(EXIT_USAGE);
+                    }
+                };
+                if matches!(output_format, OutputFormat::Json) {
+                    let payload = serde_json::json!({
+                        "status": "ok",
+                        "artifact": replay_trace_path,
+                        "signature": signature,
+                    });
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".to_string())
+                    );
+                } else {
+                    println!("replay trace verified: {}", replay_trace_path);
+                    println!("signature: {signature}");
+                }
+                std::process::exit(EXIT_OK);
             }
             if test_record {
                 eprintln!(
@@ -1088,6 +1137,7 @@ options:\n\
   --benchmark-manifest=PATH  benchmark manifest path (bench.toml)\n\
   --profile=NAME        benchmark profile (smoke|standard|deep)\n\
   --repro PATH          replay a single typed repro artifact (autogen|fuzz)\n\
+  --replay-trace PATH   validate deterministic replay trace artifact and emit signature\n\
   --perf-debug          dump perf counters after tests\n\
   --runs=N              perf harness run count (default: 5)\n\
   --baseline-out=PATH   perf baseline JSON output path\n\
@@ -8809,54 +8859,21 @@ fn write_sim_trace_artifact(
     test: &TestCase,
     failure: &str,
 ) -> Result<PathBuf, String> {
-    #[derive(Serialize)]
-    struct SimTraceArtifact {
-        version: u32,
-        generated_at_unix_ms: u128,
-        test_id: String,
-        canonical_test_id: String,
-        lane: String,
-        seed: u64,
-        failure: String,
-        event_log: Vec<String>,
-    }
-
     let seed = test.sim_seed.unwrap_or(TEST_JSON_SUMMARY_SEED);
-    let artifact_dir = workspace_root
-        .join("tests")
-        .join(".artifacts")
-        .join("sim")
-        .join(sanitize_test_path_component(&test.canonical_id));
-    fs::create_dir_all(&artifact_dir).map_err(|err| {
-        format!(
-            "failed to create sim artifact directory {}: {}",
-            artifact_dir.display(),
-            err
-        )
-    })?;
-    let artifact_path = artifact_dir.join(format!("{seed}.json"));
-    let payload = serde_json::to_vec_pretty(&SimTraceArtifact {
-        version: 1,
-        generated_at_unix_ms: now_unix_ms(),
-        test_id: test.id.clone(),
-        canonical_test_id: test.canonical_id.clone(),
-        lane: test.lane.as_str().to_string(),
+    let input = replay_trace::ReplayTraceInput {
+        test_id: &test.id,
+        canonical_test_id: &test.canonical_id,
+        lane: test.lane.as_str(),
         seed,
-        failure: failure.to_string(),
-        event_log: vec![
-            format!("dispatch.start seed={seed}"),
-            format!("dispatch.fail test={} seed={seed}", test.canonical_id),
-        ],
-    })
-    .map_err(|err| err.to_string())?;
-    fs::write(&artifact_path, payload).map_err(|err| {
-        format!(
-            "failed to write sim trace artifact {}: {}",
-            artifact_path.display(),
-            err
-        )
-    })?;
-    Ok(artifact_path)
+        failure,
+    };
+    replay_trace::write_failure_trace_artifact(
+        workspace_root,
+        "sim",
+        &sanitize_test_path_component(&test.canonical_id),
+        now_unix_ms(),
+        &input,
+    )
 }
 
 fn write_model_trace_artifact(
@@ -8864,54 +8881,21 @@ fn write_model_trace_artifact(
     test: &TestCase,
     failure: &str,
 ) -> Result<PathBuf, String> {
-    #[derive(Serialize)]
-    struct ModelTraceArtifact {
-        version: u32,
-        generated_at_unix_ms: u128,
-        test_id: String,
-        canonical_test_id: String,
-        lane: String,
-        seed: u64,
-        failure: String,
-        command_trace: Vec<String>,
-    }
-
     let seed = test.sim_seed.unwrap_or(TEST_JSON_SUMMARY_SEED);
-    let artifact_dir = workspace_root
-        .join("tests")
-        .join(".artifacts")
-        .join("model")
-        .join(sanitize_test_path_component(&test.canonical_id));
-    fs::create_dir_all(&artifact_dir).map_err(|err| {
-        format!(
-            "failed to create model artifact directory {}: {}",
-            artifact_dir.display(),
-            err
-        )
-    })?;
-    let artifact_path = artifact_dir.join(format!("{seed}.json"));
-    let payload = serde_json::to_vec_pretty(&ModelTraceArtifact {
-        version: 1,
-        generated_at_unix_ms: now_unix_ms(),
-        test_id: test.id.clone(),
-        canonical_test_id: test.canonical_id.clone(),
-        lane: test.lane.as_str().to_string(),
+    let input = replay_trace::ReplayTraceInput {
+        test_id: &test.id,
+        canonical_test_id: &test.canonical_id,
+        lane: test.lane.as_str(),
         seed,
-        failure: failure.to_string(),
-        command_trace: vec![
-            format!("model.seed={seed}"),
-            format!("model.failure test={} seed={seed}", test.canonical_id),
-        ],
-    })
-    .map_err(|err| err.to_string())?;
-    fs::write(&artifact_path, payload).map_err(|err| {
-        format!(
-            "failed to write model trace artifact {}: {}",
-            artifact_path.display(),
-            err
-        )
-    })?;
-    Ok(artifact_path)
+        failure,
+    };
+    replay_trace::write_failure_trace_artifact(
+        workspace_root,
+        "model",
+        &sanitize_test_path_component(&test.canonical_id),
+        now_unix_ms(),
+        &input,
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

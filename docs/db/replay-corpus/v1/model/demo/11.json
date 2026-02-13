@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "generated_at_unix_ms": 456,
+  "test_id": "tests/model/demo::test_demo",
+  "canonical_test_id": "tests/model/demo::test_demo",
+  "lane": "model",
+  "seed": 11,
+  "failure": "assertion failed",
+  "events": [
+    {
+      "seq": 0,
+      "operation": {
+        "phase": "dispatch",
+        "action": "start",
+        "commit_state": "pre-commit"
+      },
+      "route": {
+        "lane": "model",
+        "scheduler_seed": 11,
+        "target": "tests/model/demo::test_demo"
+      },
+      "timing": {
+        "logical_step": 0,
+        "observed_unix_ms": 456
+      },
+      "fault": null,
+      "outcome": "started"
+    },
+    {
+      "seq": 1,
+      "operation": {
+        "phase": "dispatch",
+        "action": "commit",
+        "commit_state": "failed"
+      },
+      "route": {
+        "lane": "model",
+        "scheduler_seed": 11,
+        "target": "tests/model/demo::test_demo"
+      },
+      "timing": {
+        "logical_step": 1,
+        "observed_unix_ms": 456
+      },
+      "fault": {
+        "kind": "injected_failure",
+        "source": "lane_runtime",
+        "seed": 11,
+        "detail": "assertion failed"
+      },
+      "outcome": "failed"
+    }
+  ]
+}

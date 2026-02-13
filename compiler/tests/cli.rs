@@ -33,6 +33,7 @@ fn cli_help() {
     assert!(stdout.contains("--list"));
     assert!(stdout.contains("--id=ID"));
     assert!(stdout.contains("--filter=PATTERN"));
+    assert!(stdout.contains("--replay-trace"));
     assert!(stdout.contains("run certification"));
     assert!(!stdout.contains("--no-certify"));
 }
@@ -3760,6 +3761,19 @@ fn cli_test_sim_lane_seed_filter_and_trace_artifact() {
     let mut files = Vec::new();
     collect_json_files(&sim_artifacts, &mut files);
     assert!(!files.is_empty(), "expected sim trace artifact");
+    let payload = std::fs::read_to_string(&files[0]).expect("read sim trace artifact");
+    let json: serde_json::Value = serde_json::from_str(&payload).expect("parse sim trace artifact");
+    assert_eq!(json.get("version").and_then(|v| v.as_u64()), Some(1));
+    assert_eq!(json.get("lane").and_then(|v| v.as_str()), Some("sim"));
+    let events = json
+        .get("events")
+        .and_then(|v| v.as_array())
+        .expect("sim trace events");
+    assert!(
+        events.len() >= 2,
+        "expected at least two trace events, got {}",
+        events.len()
+    );
 
     let passing = Command::new(env!("CARGO_BIN_EXE_wrela"))
         .current_dir(dir.path())
@@ -3806,6 +3820,20 @@ fn cli_test_model_lane_seed_filter_and_artifact() {
     let mut files = Vec::new();
     collect_json_files(&model_artifacts, &mut files);
     assert!(!files.is_empty(), "expected model artifact");
+    let payload = std::fs::read_to_string(&files[0]).expect("read model trace artifact");
+    let json: serde_json::Value =
+        serde_json::from_str(&payload).expect("parse model trace artifact");
+    assert_eq!(json.get("version").and_then(|v| v.as_u64()), Some(1));
+    assert_eq!(json.get("lane").and_then(|v| v.as_str()), Some("model"));
+    let events = json
+        .get("events")
+        .and_then(|v| v.as_array())
+        .expect("model trace events");
+    assert!(
+        events.len() >= 2,
+        "expected at least two trace events, got {}",
+        events.len()
+    );
 
     let passing = Command::new(env!("CARGO_BIN_EXE_wrela"))
         .current_dir(dir.path())
@@ -3816,6 +3844,127 @@ fn cli_test_model_lane_seed_filter_and_artifact() {
         .output()
         .expect("run model seed=10");
     assert!(passing.status.success(), "seed 10 should pass");
+}
+
+#[test]
+fn cli_test_replay_trace_validation_emits_signature() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(dir.path().join("src")).expect("create src");
+    std::fs::write(
+        dir.path().join("src").join("main.wr"),
+        "to run() -> Integer:\n    return 0\n",
+    )
+    .expect("write main");
+    let trace_path = dir.path().join("trace.json");
+    std::fs::write(
+        &trace_path,
+        serde_json::json!({
+            "version": 1,
+            "generated_at_unix_ms": 1,
+            "test_id": "tests/sim/demo::test_demo",
+            "canonical_test_id": "tests/sim/demo::test_demo",
+            "lane": "sim",
+            "seed": 7,
+            "failure": "fail",
+            "events": [
+                {
+                    "seq": 0,
+                    "operation": { "phase": "dispatch", "action": "start", "commit_state": "pre-commit" },
+                    "route": { "lane": "sim", "scheduler_seed": 7, "target": "tests/sim/demo::test_demo" },
+                    "timing": { "logical_step": 0, "observed_unix_ms": 1 },
+                    "fault": null,
+                    "outcome": "started"
+                },
+                {
+                    "seq": 1,
+                    "operation": { "phase": "dispatch", "action": "commit", "commit_state": "failed" },
+                    "route": { "lane": "sim", "scheduler_seed": 7, "target": "tests/sim/demo::test_demo" },
+                    "timing": { "logical_step": 1, "observed_unix_ms": 1 },
+                    "fault": { "kind": "injected_failure", "source": "lane_runtime", "seed": 7, "detail": "fail" },
+                    "outcome": "failed"
+                }
+            ]
+        })
+        .to_string(),
+    )
+    .expect("write trace");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .current_dir(dir.path())
+        .arg("test")
+        .arg("--replay-trace")
+        .arg(&trace_path)
+        .arg(".")
+        .output()
+        .expect("run replay trace");
+    assert!(
+        output.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("replay trace verified"));
+    assert!(stdout.contains("signature:"));
+}
+
+#[test]
+fn cli_test_replay_trace_validation_rejects_sequence_drift() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(dir.path().join("src")).expect("create src");
+    std::fs::write(
+        dir.path().join("src").join("main.wr"),
+        "to run() -> Integer:\n    return 0\n",
+    )
+    .expect("write main");
+    let trace_path = dir.path().join("trace_bad.json");
+    std::fs::write(
+        &trace_path,
+        serde_json::json!({
+            "version": 1,
+            "generated_at_unix_ms": 1,
+            "test_id": "tests/model/demo::test_demo",
+            "canonical_test_id": "tests/model/demo::test_demo",
+            "lane": "model",
+            "seed": 9,
+            "failure": "fail",
+            "events": [
+                {
+                    "seq": 0,
+                    "operation": { "phase": "dispatch", "action": "start", "commit_state": "pre-commit" },
+                    "route": { "lane": "model", "scheduler_seed": 9, "target": "tests/model/demo::test_demo" },
+                    "timing": { "logical_step": 0, "observed_unix_ms": 1 },
+                    "fault": null,
+                    "outcome": "started"
+                },
+                {
+                    "seq": 3,
+                    "operation": { "phase": "dispatch", "action": "commit", "commit_state": "failed" },
+                    "route": { "lane": "model", "scheduler_seed": 9, "target": "tests/model/demo::test_demo" },
+                    "timing": { "logical_step": 1, "observed_unix_ms": 1 },
+                    "fault": { "kind": "injected_failure", "source": "lane_runtime", "seed": 9, "detail": "fail" },
+                    "outcome": "failed"
+                }
+            ]
+        })
+        .to_string(),
+    )
+    .expect("write trace");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .current_dir(dir.path())
+        .arg("test")
+        .arg("--replay-trace")
+        .arg(&trace_path)
+        .arg(".")
+        .output()
+        .expect("run replay trace");
+    assert!(!output.status.success(), "expected failure");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("replay trace error: non-deterministic event sequence"),
+        "stderr:\n{}",
+        stderr
+    );
 }
 
 #[test]

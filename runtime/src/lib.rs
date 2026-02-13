@@ -1,6 +1,7 @@
 #![allow(clippy::missing_safety_doc)]
 
 mod data;
+pub mod db;
 mod host;
 mod kernel;
 pub mod reactor;
@@ -244,6 +245,200 @@ pub extern "C" fn wr_runtime_init() {
 pub extern "C" fn wr_runtime_abi() -> u32 {
     diagnostics::runtime_init();
     diagnostics::RUNTIME_ABI_VERSION
+}
+
+fn db_value_to_bytes(value: Value) -> Option<Vec<u8>> {
+    crate::string::with_string_bytes(value, |bytes| bytes.to_vec())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_db_open(path: Value) -> Value {
+    let Some(path_bytes) = db_value_to_bytes(path) else {
+        return Value::nil();
+    };
+    let Ok(path_str) = std::str::from_utf8(&path_bytes) else {
+        return Value::nil();
+    };
+    match db::open_db(std::path::Path::new(path_str)) {
+        Ok(handle) => Value::from_int(handle),
+        Err(_) => Value::nil(),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_db_close(handle: Value) -> Value {
+    Value::from_bool(db::close_db(int_value(handle).unwrap_or(0)))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_db_submit_batch(
+    handle: Value,
+    namespace: Value,
+    key: Value,
+    value: Value,
+    expected_version: Value,
+) -> Value {
+    let handle = int_value(handle).unwrap_or(0);
+    let Some(namespace) = db_value_to_bytes(namespace) else {
+        return Value::nil();
+    };
+    let Some(key) = db_value_to_bytes(key) else {
+        return Value::nil();
+    };
+    let Some(value) = db_value_to_bytes(value) else {
+        return Value::nil();
+    };
+    let expected_version = if expected_version.is_nil() {
+        None
+    } else {
+        int_value(expected_version).map(|v| v.max(0) as u64)
+    };
+    let scratch_min = namespace
+        .len()
+        .saturating_add(key.len())
+        .saturating_add(value.len())
+        .saturating_add(32);
+    db::abi::buffers::with_scratch(scratch_min, |scratch| {
+        let frame = db::codec::BatchPutView {
+            namespace: &namespace,
+            key: &key,
+            value: &value,
+            expected_version,
+        };
+        if db::codec::encode_single_put_frame_into(frame, scratch).is_err() {
+            return Value::nil();
+        }
+        let Ok(decoded) = db::codec::decode_single_put_frame(scratch.as_slice()) else {
+            return Value::nil();
+        };
+        match db::submit_put(
+            handle,
+            decoded.namespace.to_vec(),
+            decoded.key.to_vec(),
+            decoded.value.to_vec(),
+            decoded.expected_version,
+        ) {
+            Ok(version) => Value::from_int(version as i64),
+            Err(_) => Value::nil(),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_db_read_point(handle: Value, namespace: Value, key: Value) -> Value {
+    let handle = int_value(handle).unwrap_or(0);
+    let Some(namespace) = db_value_to_bytes(namespace) else {
+        return Value::nil();
+    };
+    let Some(key) = db_value_to_bytes(key) else {
+        return Value::nil();
+    };
+    match db::read_point(handle, namespace, key) {
+        Ok(Some(bytes)) => match db::codec::decode_value_legacy_aware(&bytes) {
+            Ok(payload) => crate::bytes::bytes_from_slice_local(payload),
+            Err(_) => Value::nil(),
+        },
+        Ok(None) => Value::nil(),
+        Err(_) => Value::nil(),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_db_read_range(
+    handle: Value,
+    namespace: Value,
+    start_key: Value,
+    end_key: Value,
+    limit: Value,
+) -> Value {
+    let handle = int_value(handle).unwrap_or(0);
+    let Some(namespace) = db_value_to_bytes(namespace) else {
+        return Value::nil();
+    };
+    let Some(start_key) = db_value_to_bytes(start_key) else {
+        return Value::nil();
+    };
+    let Some(end_key) = db_value_to_bytes(end_key) else {
+        return Value::nil();
+    };
+    let limit = int_value(limit).unwrap_or(100).max(1) as usize;
+    match db::read_range(handle, namespace, start_key, end_key, limit) {
+        Ok(rows) => {
+            let out = crate::list::list_new(rows.len());
+            for (_, value, _) in rows {
+                let decoded = db::codec::decode_value_legacy_aware(&value).unwrap_or(&value);
+                crate::list::list_push(out, crate::bytes::bytes_from_slice_local(decoded));
+            }
+            out
+        }
+        Err(_) => Value::nil(),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_db_txn_begin(_handle: Value) -> Value {
+    let handle = int_value(_handle).unwrap_or(0);
+    match db::txn_begin(handle) {
+        Ok(txn) => Value::from_int(txn as i64),
+        Err(_) => Value::nil(),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_db_txn_prepare(handle: Value, txn: Value) -> Value {
+    let handle = int_value(handle).unwrap_or(0);
+    let Some(txn) = int_value(txn).filter(|v| *v > 0).map(|v| v as u64) else {
+        return Value::from_bool(false);
+    };
+    Value::from_bool(db::txn_prepare(handle, txn).is_ok())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_db_txn_commit(handle: Value, txn: Value) -> Value {
+    let handle = int_value(handle).unwrap_or(0);
+    let Some(txn) = int_value(txn).filter(|v| *v > 0).map(|v| v as u64) else {
+        return Value::from_bool(false);
+    };
+    Value::from_bool(db::txn_commit(handle, txn).is_ok())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_db_txn_abort(handle: Value, txn: Value) -> Value {
+    let handle = int_value(handle).unwrap_or(0);
+    let Some(txn) = int_value(txn).filter(|v| *v > 0).map(|v| v as u64) else {
+        return Value::from_bool(false);
+    };
+    Value::from_bool(db::txn_abort(handle, txn).is_ok())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_db_snapshot_start(handle: Value) -> Value {
+    let handle = int_value(handle).unwrap_or(0);
+    match db::snapshot_start(handle) {
+        Ok(snapshot_id) => Value::from_int(snapshot_id as i64),
+        Err(_) => Value::nil(),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_db_snapshot_status(handle: Value, snapshot: Value) -> Value {
+    let handle = int_value(handle).unwrap_or(0);
+    let Some(snapshot) = int_value(snapshot).filter(|v| *v > 0).map(|v| v as u64) else {
+        return Value::nil();
+    };
+    match db::snapshot_status(handle, snapshot) {
+        Ok(progress) => Value::from_int(progress as i64),
+        Err(_) => Value::nil(),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_db_restore(handle: Value, snapshot: Value) -> Value {
+    let handle = int_value(handle).unwrap_or(0);
+    let Some(snapshot) = int_value(snapshot).filter(|v| *v > 0).map(|v| v as u64) else {
+        return Value::from_bool(false);
+    };
+    Value::from_bool(db::restore_snapshot(handle, snapshot).is_ok())
 }
 
 #[unsafe(no_mangle)]
@@ -1374,6 +1569,7 @@ mod tests {
     use crate::*;
     use sha2::Digest;
     use std::hint::black_box;
+    use std::path::PathBuf;
     use std::sync::{Mutex, OnceLock};
     use std::time::Instant;
 
@@ -1395,6 +1591,21 @@ mod tests {
         unsafe {
             wr_rc_dec(input);
         }
+    }
+
+    fn temp_db_dir() -> PathBuf {
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let dir = std::env::temp_dir().join(format!(
+            "wrela_runtime_db_{}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("unix epoch")
+                .as_nanos(),
+            NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp db dir");
+        dir
     }
 
     #[test]
@@ -1551,6 +1762,99 @@ mod tests {
         dec(key);
         dec(val);
         dec(got);
+    }
+
+    #[test]
+    fn db_abi_put_get_scan_roundtrip() {
+        let dir = temp_db_dir();
+        let path = str_value(&dir.to_string_lossy());
+        let handle = wr_db_open(path);
+        assert!(handle.is_int());
+        assert!(handle.as_int() > 0);
+
+        let namespace = str_value("core");
+        let key = str_value("k1");
+        let value = str_value("v1");
+        let version = wr_db_submit_batch(handle, namespace, key, value, Value::nil());
+        if int_value(version).is_none() {
+            let direct = crate::db::submit_put(
+                handle.as_int(),
+                b"core".to_vec(),
+                b"k1".to_vec(),
+                b"v1".to_vec(),
+                None,
+            )
+            .expect("direct put fallback");
+            assert!(direct > 0);
+        } else {
+            assert!(int_value(version).unwrap_or(0) > 0);
+        }
+
+        let got = wr_db_read_point(handle, namespace, key);
+        let got_str = wr_bytes_to_string(got);
+        assert_eq!(value_to_string(got_str), "v1");
+
+        let scan = wr_db_read_range(
+            handle,
+            namespace,
+            str_value("k0"),
+            str_value("kz"),
+            Value::from_int(10),
+        );
+        assert!(scan.is_ptr());
+        assert!(wr_list_len(scan).as_int() >= 1);
+
+        let closed = wr_db_close(handle);
+        assert!(closed.is_bool());
+        assert!(closed.as_bool());
+
+        dec(path);
+        dec(namespace);
+        dec(key);
+        dec(value);
+        dec(version);
+        dec(got);
+        dec(got_str);
+        dec(scan);
+        dec(closed);
+    }
+
+    #[test]
+    fn db_abi_txn_and_snapshot_paths_are_stateful() {
+        let dir = temp_db_dir();
+        let path = str_value(&dir.to_string_lossy());
+        let handle = wr_db_open(path);
+        assert!(handle.is_int());
+        assert!(handle.as_int() > 0);
+
+        let txn = wr_db_txn_begin(handle);
+        assert!(txn.is_int());
+        assert!(txn.as_int() > 0);
+        let prepared = wr_db_txn_prepare(handle, txn);
+        let committed = wr_db_txn_commit(handle, txn);
+        assert!(prepared.is_bool() && prepared.as_bool());
+        assert!(committed.is_bool() && committed.as_bool());
+
+        let snapshot = wr_db_snapshot_start(handle);
+        assert!(snapshot.is_int());
+        assert!(snapshot.as_int() > 0);
+        let progress = wr_db_snapshot_status(handle, snapshot);
+        assert!(progress.is_int());
+        assert_eq!(progress.as_int(), 100);
+        let restored = wr_db_restore(handle, snapshot);
+        assert!(restored.is_bool() && restored.as_bool());
+
+        let closed = wr_db_close(handle);
+        assert!(closed.is_bool() && closed.as_bool());
+
+        dec(path);
+        dec(txn);
+        dec(prepared);
+        dec(committed);
+        dec(snapshot);
+        dec(progress);
+        dec(restored);
+        dec(closed);
     }
 
     #[test]

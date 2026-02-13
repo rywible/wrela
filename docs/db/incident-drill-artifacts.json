@@ -1,0 +1,52 @@
+{
+  "version": "1.0.0",
+  "generated_at": "2026-02-13T05:10:00Z",
+  "drills": [
+    {
+      "incident_class": "Regional Outage",
+      "exercise_date": "2026-02-11",
+      "scenario_seed": 4101,
+      "outcome": "passed",
+      "follow_up_actions": [
+        "Tune failover timeout budget for us-west partial isolation",
+        "Add explicit comms escalation shortcut in IC template"
+      ]
+    },
+    {
+      "incident_class": "Split-Brain Suspicion",
+      "exercise_date": "2026-02-11",
+      "scenario_seed": 4102,
+      "outcome": "passed",
+      "follow_up_actions": [
+        "Emit leader-term divergence snapshot in first responder bundle"
+      ]
+    },
+    {
+      "incident_class": "Policy Unsatisfiable Storm",
+      "exercise_date": "2026-02-12",
+      "scenario_seed": 4103,
+      "outcome": "passed",
+      "follow_up_actions": [
+        "Expose preflight solver explanation payload in alert context"
+      ]
+    },
+    {
+      "incident_class": "CDC Backlog Runaway",
+      "exercise_date": "2026-02-12",
+      "scenario_seed": 4104,
+      "outcome": "passed",
+      "follow_up_actions": [
+        "Add sink-throughput delta panel to drill report"
+      ]
+    },
+    {
+      "incident_class": "Snapshot/Restore Degradation",
+      "exercise_date": "2026-02-12",
+      "scenario_seed": 4105,
+      "outcome": "passed",
+      "follow_up_actions": [
+        "Tighten restore step timing histogram cardinality"
+      ]
+    }
+  ]
+}

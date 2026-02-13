@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "0.1.0",
+  "gates": {
+    "replay.regression.rate": {
+      "target": 0.0,
+      "units": "ratio",
+      "description": "Replay mismatch ratio; 0 means deterministic replay must match baseline."
+    },
+    "cdc.order.violations": {
+      "target": 0,
+      "units": "count",
+      "description": "CDC out-of-order deliveries across partition/restart replay."
+    },
+    "advisor.risk.score.max": {
+      "target": 0.8,
+      "units": "score",
+      "description": "Reject advisor recommendations with risk above this threshold."
+    },
+    "analytics.latency.p99.ms": {
+      "target": 250,
+      "units": "milliseconds",
+      "description": "Analytics query p99 latency ceiling for canonical GA workload."
+    },
+    "analytics.residency.violations": {
+      "target": 0,
+      "units": "count",
+      "description": "Hard policy violations for residency cross-domain operations."
+    }
+  },
+  "required_artifacts": [
+    "replay-corpus.json",
+    "cdc-order-snapshot.json",
+    "advisor-quality-csv",
+    "analytics-ga-metrics.json",
+    "slo-burn-rate-alerts.json",
+    "incident-command-runbook.md",
+    "incident-drill-artifacts.json"
+  ]
+}

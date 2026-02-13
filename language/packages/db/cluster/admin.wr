@@ -1,0 +1,12 @@
+so:
+    Wrela-first cluster admin orchestration surface.
+
+class ClusterPlan:
+    let operation: String
+    let target: String
+
+to add_node(node_id: String) -> ClusterPlan:
+    return ClusterPlan("add_node", node_id)
+
+to decommission(node_id: String) -> ClusterPlan:
+    return ClusterPlan("decommission", node_id)

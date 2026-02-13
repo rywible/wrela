@@ -3348,5 +3348,17 @@ fn builtin_function_names() -> Vec<SmolStr> {
         SmolStr::new("__wr_env_get"),
         SmolStr::new("__wr_env_set"),
         SmolStr::new("__wr_runtime_configure"),
+        SmolStr::new("__wr_db_open"),
+        SmolStr::new("__wr_db_close"),
+        SmolStr::new("__wr_db_submit_batch"),
+        SmolStr::new("__wr_db_read_point"),
+        SmolStr::new("__wr_db_read_range"),
+        SmolStr::new("__wr_db_txn_begin"),
+        SmolStr::new("__wr_db_txn_prepare"),
+        SmolStr::new("__wr_db_txn_commit"),
+        SmolStr::new("__wr_db_txn_abort"),
+        SmolStr::new("__wr_db_snapshot_start"),
+        SmolStr::new("__wr_db_snapshot_status"),
+        SmolStr::new("__wr_db_restore"),
     ]
 }

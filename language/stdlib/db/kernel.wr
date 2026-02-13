@@ -1,0 +1,111 @@
+so:
+    DB kernel wrappers around runtime intrinsics.
+    This module owns raw intrinsic calls so package-level APIs can stay typed.
+
+to open_db(path: String) -> Integer:
+    opened = __wr_db_open(path)
+    match opened:
+        Integer(value):
+            return value
+        otherwise:
+            return 0
+
+to close_db(handle: Integer) -> Result[Nothing]:
+    if __wr_db_close(handle):
+        return nothing
+    return error "close_db failed"
+
+to put_db(
+    handle: Integer,
+    namespace: String,
+    key: String,
+    value: String,
+    expected_version: Integer
+) -> Integer:
+    if expected_version < 0:
+        committed = __wr_db_submit_batch(handle, namespace, key, value, nothing)
+        match committed:
+            Integer(version):
+                return version
+            otherwise:
+                return -1
+    otherwise:
+        committed = __wr_db_submit_batch(handle, namespace, key, value, expected_version)
+        match committed:
+            Integer(version):
+                return version
+            otherwise:
+                return -1
+
+to get_db(handle: Integer, namespace: String, key: String) -> Result[String]:
+    raw = __wr_db_read_point(handle, namespace, key)
+    if raw == nothing:
+        return error "not found"
+    decoded = __wr_bytes_to_string(raw)
+    match decoded:
+        String(value):
+            return value
+        otherwise:
+            return error "invalid utf8"
+
+to scan_db(
+    handle: Integer,
+    namespace: String,
+    start_key: String,
+    end_key: String,
+    limit: Integer
+) -> List[String]:
+    raw_rows = __wr_db_read_range(handle, namespace, start_key, end_key, limit)
+    mutable out = []
+    for raw in raw_rows:
+        decoded = __wr_bytes_to_string(raw)
+        match decoded:
+            String(value):
+                __wr_list_push(out, value)
+            otherwise:
+                continue
+    return out
+
+to begin_txn_db(handle: Integer) -> Integer:
+    txn = __wr_db_txn_begin(handle)
+    match txn:
+        Integer(value):
+            return value
+        otherwise:
+            return 0
+
+to prepare_txn_db(handle: Integer, txn: Integer) -> Result[Nothing]:
+    if __wr_db_txn_prepare(handle, txn):
+        return nothing
+    return error "prepare_txn_db failed"
+
+to commit_txn_db(handle: Integer, txn: Integer) -> Result[Nothing]:
+    if __wr_db_txn_commit(handle, txn):
+        return nothing
+    return error "commit_txn_db failed"
+
+to abort_txn_db(handle: Integer, txn: Integer) -> Result[Nothing]:
+    if __wr_db_txn_abort(handle, txn):
+        return nothing
+    return error "abort_txn_db failed"
+
+to start_snapshot_db(handle: Integer) -> Integer:
+    snapshot = __wr_db_snapshot_start(handle)
+    match snapshot:
+        Integer(value):
+            return value
+        otherwise:
+            return 0
+
+to snapshot_status_db(handle: Integer, snapshot: Integer) -> Integer:
+    progress = __wr_db_snapshot_status(handle, snapshot)
+    match progress:
+        Integer(value):
+            return value
+        otherwise:
+            return -1
+
+to restore_snapshot_db(handle: Integer, snapshot: Integer) -> Result[Nothing]:
+    if __wr_db_restore(handle, snapshot):
+        return nothing
+    return error "restore_snapshot_db failed"
