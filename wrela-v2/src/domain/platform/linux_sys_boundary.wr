@@ -1,0 +1,51 @@
+so:
+    Linux syscall boundary model for runtime contracts.
+    Contract-level metadata only; no direct syscall wiring in this phase.
+
+
+to get_linux_sys_boundary_map() -> Map:
+    boundary_maps = __wr_map_new()
+    __wr_map_set(
+        boundary_maps,
+        "fd_path",
+        [
+            "openat",
+            "read",
+            "write",
+            "close",
+            "metadata",
+            "mkdir",
+            "rename",
+            "remove"
+        ]
+    )
+    __wr_map_set(boundary_maps, "memory", ["mmap", "munmap", "mprotect"])
+    __wr_map_set(boundary_maps, "time", ["clock_gettime", "nanosleep"])
+    __wr_map_set(boundary_maps, "process", ["spawn", "exec", "wait", "exit"])
+    __wr_map_set(boundary_maps, "sync", ["wait", "wake"])
+    __wr_map_set(boundary_maps, "reactor", ["io_uring", "epoll"])
+    return boundary_maps
+
+
+to get_linux_sys_boundary_group_is_present(group_name_text: String) -> Boolean:
+    boundary_maps = get_linux_sys_boundary_map()
+    group_value = __wr_map_get(boundary_maps, group_name_text)
+    if group_value == nothing:
+        return false
+    return true
+
+
+to try_to_validate_linux_sys_boundary_map() -> Result[Nothing]:
+    if get_linux_sys_boundary_group_is_present("fd_path") == false:
+        return error "missing linux syscall boundary group: fd_path"
+    if get_linux_sys_boundary_group_is_present("memory") == false:
+        return error "missing linux syscall boundary group: memory"
+    if get_linux_sys_boundary_group_is_present("time") == false:
+        return error "missing linux syscall boundary group: time"
+    if get_linux_sys_boundary_group_is_present("process") == false:
+        return error "missing linux syscall boundary group: process"
+    if get_linux_sys_boundary_group_is_present("sync") == false:
+        return error "missing linux syscall boundary group: sync"
+    if get_linux_sys_boundary_group_is_present("reactor") == false:
+        return error "missing linux syscall boundary group: reactor"
+    return nothing

@@ -1,0 +1,232 @@
+so:
+    Linux fallback adapter when io_uring is unavailable.
+    Keeps Linux support functional without leaking platform choices into core code.
+
+use ReactorPort from domain/platform/contracts
+use ClockPort from domain/platform/contracts
+use FsPort from domain/platform/contracts
+use ProcessPort from domain/platform/contracts
+use ThreadPort from domain/platform/contracts
+use SyncPort from domain/platform/contracts
+
+
+A LinuxEpollReactor:
+    can get_linux_epoll_reactor_ops() -> Map:
+        ops_maps = __wr_map_new()
+        __wr_map_set(ops_maps, "create_reactor_handle", "create_reactor_handle")
+        __wr_map_set(ops_maps, "drop_reactor_handle", "drop_reactor_handle")
+        __wr_map_set(ops_maps, "register_token", "register_token")
+        __wr_map_set(ops_maps, "deregister_token", "deregister_token")
+        __wr_map_set(ops_maps, "arm_timer", "arm_timer")
+        return ops_maps
+
+    can create_reactor_handle() -> Integer:
+        return __wr_reactor_new()
+
+    can drop_reactor_handle(reactor_handle: Integer) -> Nothing:
+        __wr_reactor_drop(reactor_handle)
+        return nothing
+
+    can register_reactor_token(reactor_handle: Integer, token: Integer) -> Nothing:
+        __wr_reactor_register(reactor_handle, token)
+        return nothing
+
+    can deregister_reactor_token(reactor_handle: Integer, token: Integer) -> Nothing:
+        __wr_reactor_deregister(reactor_handle, token)
+        return nothing
+
+    can arm_reactor_timer(
+        reactor_handle: Integer,
+        token: Integer,
+        timeout_milliseconds: Integer
+    ) -> Nothing:
+        __wr_reactor_arm_timer(reactor_handle, token, timeout_milliseconds)
+        return nothing
+
+    can get_linux_epoll_reactor_port() -> ReactorPort:
+        ops_maps = __wr_map_new()
+        __wr_map_set(ops_maps, "create_reactor_handle", "create_reactor_handle")
+        __wr_map_set(ops_maps, "drop_reactor_handle", "drop_reactor_handle")
+        __wr_map_set(ops_maps, "register_token", "register_token")
+        __wr_map_set(ops_maps, "deregister_token", "deregister_token")
+        __wr_map_set(ops_maps, "arm_timer", "arm_timer")
+        return ReactorPort(
+            backend_name="epoll",
+            adapter_identity_name="linux-epoll-reactor",
+            host_family_name="linux",
+            ops=ops_maps
+        )
+
+
+A LinuxEpollClock:
+    can get_linux_epoll_clock_ops() -> Map:
+        ops_maps = __wr_map_new()
+        __wr_map_set(ops_maps, "now_ns", "now_ns")
+        __wr_map_set(ops_maps, "sleep_ms", "sleep_ms")
+        return ops_maps
+
+    can get_now_ns() -> Integer:
+        return __wr_clock_ns()
+
+    can run_sleep_ms(milliseconds: Integer) -> Boolean:
+        if milliseconds < 0:
+            return false
+        return true
+
+    can get_linux_epoll_clock_port() -> ClockPort:
+        ops_maps = __wr_map_new()
+        __wr_map_set(ops_maps, "now_ns", "now_ns")
+        __wr_map_set(ops_maps, "sleep_ms", "sleep_ms")
+        return ClockPort(
+            clock_name="monotonic",
+            adapter_identity_name="linux-epoll-clock",
+            host_family_name="linux",
+            ops=ops_maps
+        )
+
+
+A LinuxEpollFs:
+    can get_linux_epoll_fs_ops() -> Map:
+        ops_maps = __wr_map_new()
+        __wr_map_set(ops_maps, "read_text", "read_text")
+        __wr_map_set(ops_maps, "write_text", "write_text")
+        __wr_map_set(ops_maps, "read_directory", "read_directory")
+        __wr_map_set(ops_maps, "read_metadata", "read_metadata")
+        __wr_map_set(ops_maps, "create_directory", "create_directory")
+        __wr_map_set(ops_maps, "remove_file", "remove_file")
+        __wr_map_set(ops_maps, "remove_directory", "remove_directory")
+        __wr_map_set(ops_maps, "rename_path", "rename_path")
+        __wr_map_set(ops_maps, "set_executable", "set_executable")
+        return ops_maps
+
+    can try_fs_read_text(path: String) -> Result[String]:
+        match __wr_fs_read_bytes(path):
+            Ok(bytes_values):
+                text_value = __wr_bytes_to_string(bytes_values)
+                match text_value:
+                    String:
+                        return text_value
+                    otherwise:
+                        return error "try_fs_read_text: invalid utf8"
+            Err(error_text):
+                return error error_text
+            otherwise:
+                return error "try_fs_read_text: read failed"
+        return error "try_fs_read_text: read failed"
+
+    can try_fs_write_text(path: String, contents: String) -> Result[Nothing]:
+        payload_bytes = __wr_bytes_from_string(contents)
+        return __wr_fs_write_bytes(path, payload_bytes)
+
+    can try_fs_read_directory(path: String) -> Result[List[String]]:
+        return __wr_fs_read_dir(path)
+
+    can try_fs_read_metadata(path: String) -> Result[Map]:
+        return __wr_fs_metadata(path)
+
+    can try_fs_create_directory(path: String) -> Result[Nothing]:
+        return __wr_fs_mkdir_all(path)
+
+    can try_fs_remove_file(path: String) -> Result[Nothing]:
+        return __wr_fs_remove_file(path)
+
+    can try_fs_remove_directory(path: String) -> Result[Nothing]:
+        return __wr_fs_remove_dir_all(path)
+
+    can try_fs_rename_path(from_path: String, to_path: String) -> Result[Nothing]:
+        return __wr_fs_rename(from_path, to_path)
+
+    can try_fs_set_executable(path: String) -> Result[Nothing]:
+        return __wr_fs_set_executable(path)
+
+    can get_linux_epoll_fs_port() -> FsPort:
+        ops_maps = __wr_map_new()
+        __wr_map_set(ops_maps, "read_text", "read_text")
+        __wr_map_set(ops_maps, "write_text", "write_text")
+        __wr_map_set(ops_maps, "read_directory", "read_directory")
+        __wr_map_set(ops_maps, "read_metadata", "read_metadata")
+        __wr_map_set(ops_maps, "create_directory", "create_directory")
+        __wr_map_set(ops_maps, "remove_file", "remove_file")
+        __wr_map_set(ops_maps, "remove_directory", "remove_directory")
+        __wr_map_set(ops_maps, "rename_path", "rename_path")
+        __wr_map_set(ops_maps, "set_executable", "set_executable")
+        return FsPort(
+            fs_name="posix",
+            adapter_identity_name="linux-epoll-fs",
+            host_family_name="linux",
+            ops=ops_maps
+        )
+
+
+A LinuxEpollProcess:
+    can get_linux_epoll_process_ops() -> Map:
+        ops_maps = __wr_map_new()
+        __wr_map_set(ops_maps, "run_process", "run_process")
+        __wr_map_set(ops_maps, "get_cwd", "get_cwd")
+        return ops_maps
+
+    can try_process_run(
+        command: String,
+        args: List[String],
+        cwd: String,
+        timeout_ms: Integer
+    ) -> Result[Map]:
+        process_specs = __wr_map_new()
+        __wr_map_set(process_specs, "command", command)
+        __wr_map_set(process_specs, "args", args)
+        __wr_map_set(process_specs, "cwd", cwd)
+        __wr_map_set(process_specs, "env", {})
+        __wr_map_set(process_specs, "timeout_ms", timeout_ms)
+        return __wr_process_run(process_specs)
+
+    can try_process_get_cwd() -> Result[String]:
+        return __wr_process_cwd()
+
+    can get_linux_epoll_process_port() -> ProcessPort:
+        ops_maps = __wr_map_new()
+        __wr_map_set(ops_maps, "run_process", "run_process")
+        __wr_map_set(ops_maps, "get_cwd", "get_cwd")
+        return ProcessPort(
+            process_name="posix",
+            adapter_identity_name="linux-epoll-process",
+            host_family_name="linux",
+            ops=ops_maps
+        )
+
+
+A LinuxEpollThread:
+    can get_linux_epoll_thread_ops() -> Map:
+        ops_maps = __wr_map_new()
+        __wr_map_set(ops_maps, "spawn_thread", "spawn_thread")
+        __wr_map_set(ops_maps, "join_thread", "join_thread")
+        __wr_map_set(ops_maps, "yield_thread", "yield_thread")
+        return ops_maps
+
+    can get_linux_epoll_thread_port() -> ThreadPort:
+        ops_maps = LinuxEpollThread().get_linux_epoll_thread_ops()
+        return ThreadPort(
+            thread_name="pthread-compatible",
+            adapter_identity_name="linux-epoll-thread",
+            host_family_name="linux",
+            ops=ops_maps
+        )
+
+
+A LinuxEpollSync:
+    can get_linux_epoll_sync_ops() -> Map:
+        ops_maps = __wr_map_new()
+        __wr_map_set(ops_maps, "create_wait_handle", "create_wait_handle")
+        __wr_map_set(ops_maps, "drop_wait_handle", "drop_wait_handle")
+        __wr_map_set(ops_maps, "wait", "wait")
+        __wr_map_set(ops_maps, "wake_one", "wake_one")
+        __wr_map_set(ops_maps, "wake_all", "wake_all")
+        return ops_maps
+
+    can get_linux_epoll_sync_port() -> SyncPort:
+        ops_maps = LinuxEpollSync().get_linux_epoll_sync_ops()
+        return SyncPort(
+            sync_name="futex-compatible",
+            adapter_identity_name="linux-epoll-sync",
+            host_family_name="linux",
+            ops=ops_maps
+        )

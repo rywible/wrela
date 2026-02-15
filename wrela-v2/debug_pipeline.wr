@@ -1,0 +1,18 @@
+so:
+    debug pipeline
+
+use run_check_pipeline from application/check_pipeline
+
+
+to run() -> Integer:
+    match run_check_pipeline("target/wrela_v2_check_contract/ok.wr"):
+        Ok(report_maps):
+            __wr_print("report={report_maps}")
+            return __wr_map_get(report_maps, "exit_code")
+        Err(error_text):
+            __wr_print("error={error_text}")
+            return 99
+        otherwise:
+            __wr_print("other")
+            return 98
+    return 97

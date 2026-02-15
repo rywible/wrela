@@ -1,0 +1,91 @@
+so:
+    Frontend diagnostic constructors for deterministic check-pipeline failures.
+
+
+to create_frontend_single_diagnostic_list(frontend_diagnostic_maps: Map) -> List:
+    frontend_diagnostic_lists = []
+    __wr_list_push(frontend_diagnostic_lists, frontend_diagnostic_maps)
+    return frontend_diagnostic_lists
+
+
+to create_frontend_empty_diagnostic_list() -> List:
+    frontend_diagnostic_lists = []
+    for frontend_diagnostic_map_item in [__wr_map_new()]:
+        if false:
+            __wr_list_push(frontend_diagnostic_lists, frontend_diagnostic_map_item)
+    return frontend_diagnostic_lists
+
+
+to normalize_frontend_diagnostic_list(value_lists: List) -> List:
+    normalized_diagnostic_lists = create_frontend_empty_diagnostic_list()
+    if value_lists == nothing:
+        return normalized_diagnostic_lists
+    for diagnostic_item in value_lists:
+        match diagnostic_item:
+            Map:
+                __wr_list_push(normalized_diagnostic_lists, diagnostic_item)
+            otherwise:
+                nothing
+    return normalized_diagnostic_lists
+
+
+to create_frontend_lex_tab_diagnostic(
+    lex_tab_line_number: Integer,
+    lex_tab_column_number: Integer
+) -> Map:
+    lex_tab_maps = __wr_map_new()
+    __wr_map_set(lex_tab_maps, "code", "E-LEX-TAB")
+    __wr_map_set(lex_tab_maps, "message", "tab indentation is not allowed")
+    __wr_map_set(lex_tab_maps, "stage", "lex")
+    __wr_map_set(lex_tab_maps, "line", lex_tab_line_number)
+    __wr_map_set(lex_tab_maps, "column", lex_tab_column_number)
+    return lex_tab_maps
+
+
+to create_frontend_lex_empty_diagnostic() -> Map:
+    lex_empty_maps = __wr_map_new()
+    __wr_map_set(lex_empty_maps, "code", "E-LEX-EMPTY")
+    __wr_map_set(lex_empty_maps, "message", "source is empty or whitespace-only")
+    __wr_map_set(lex_empty_maps, "stage", "lex")
+    __wr_map_set(lex_empty_maps, "line", 1)
+    __wr_map_set(lex_empty_maps, "column", 1)
+    return lex_empty_maps
+
+
+to create_frontend_parse_unexpected_token_diagnostic(
+    parse_unexpected_line_number: Integer,
+    parse_unexpected_column_number: Integer
+) -> Map:
+    parse_unexpected_maps = __wr_map_new()
+    __wr_map_set(parse_unexpected_maps, "code", "E-PARSE-UNEXPECTED_TOKEN")
+    __wr_map_set(parse_unexpected_maps, "message", "unexpected token")
+    __wr_map_set(parse_unexpected_maps, "stage", "parse")
+    __wr_map_set(parse_unexpected_maps, "line", parse_unexpected_line_number)
+    __wr_map_set(parse_unexpected_maps, "column", parse_unexpected_column_number)
+    return parse_unexpected_maps
+
+
+to create_frontend_parse_trailing_operator_diagnostic(
+    parse_trailing_line_number: Integer,
+    parse_trailing_column_number: Integer
+) -> Map:
+    parse_trailing_maps = __wr_map_new()
+    __wr_map_set(parse_trailing_maps, "code", "E-PARSE-TRAILING_OPERATOR")
+    __wr_map_set(parse_trailing_maps, "message", "expression ends with trailing operator")
+    __wr_map_set(parse_trailing_maps, "stage", "parse")
+    __wr_map_set(parse_trailing_maps, "line", parse_trailing_line_number)
+    __wr_map_set(parse_trailing_maps, "column", parse_trailing_column_number)
+    return parse_trailing_maps
+
+
+to create_frontend_type_arith_non_integer_diagnostic(
+    type_error_line_number: Integer,
+    type_error_column_number: Integer
+) -> Map:
+    type_error_maps = __wr_map_new()
+    __wr_map_set(type_error_maps, "code", "E-TYPE-ARITH_NON_INTEGER")
+    __wr_map_set(type_error_maps, "message", "arithmetic expression requires integer operands")
+    __wr_map_set(type_error_maps, "stage", "type")
+    __wr_map_set(type_error_maps, "line", type_error_line_number)
+    __wr_map_set(type_error_maps, "column", type_error_column_number)
+    return type_error_maps

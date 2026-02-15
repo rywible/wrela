@@ -1,0 +1,103 @@
+so:
+    Contract tests for runtime concurrency surface (thread/sync ports).
+
+use PlatformTarget from domain/platform/model
+use try_to_create_and_validate_platform_ports from application/runtime/platform_conformance
+use try_to_create_platform_ports from application/composition/platform_ports
+use try_to_run_thread_lifecycle from application/runtime/concurrency_runtime
+use try_to_run_wait_lifecycle from application/runtime/concurrency_runtime
+use try_to_spawn_thread from application/runtime/platform_runtime
+
+
+to create_concurrency_target(os_name: String, architecture: String) -> PlatformTarget:
+    target = PlatformTarget()
+    target.host_os_name = os_name
+    target.host_architecture = architecture
+    return target
+
+
+to test_runtime_concurrency_contract_linux_io_uring_thread_and_wait_lifecycle() -> Nothing:
+    target = create_concurrency_target("linux", "arm64")
+    match try_to_create_and_validate_platform_ports(target, true):
+        Ok(ports):
+            match try_to_run_thread_lifecycle(ports, "worker-a", 1000):
+                Ok(thread_maps):
+                    assert value __wr_map_get(thread_maps, "joined") == true
+                otherwise:
+                    assert value false == true
+            match try_to_run_wait_lifecycle(ports, "wait-a", 1000):
+                Ok(wait_maps):
+                    assert value __wr_map_get(wait_maps, "wake_all_count") == 1
+                otherwise:
+                    assert value false == true
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_runtime_concurrency_contract_linux_epoll_thread_and_wait_lifecycle() -> Nothing:
+    target = create_concurrency_target("linux", "arm64")
+    match try_to_create_and_validate_platform_ports(target, false):
+        Ok(ports):
+            match try_to_run_thread_lifecycle(ports, "worker-b", 1000):
+                Ok(thread_maps):
+                    assert value __wr_map_get(thread_maps, "joined") == true
+                otherwise:
+                    assert value false == true
+            match try_to_run_wait_lifecycle(ports, "wait-b", 1000):
+                Ok(wait_maps):
+                    assert value __wr_map_get(wait_maps, "wake_all_count") == 1
+                otherwise:
+                    assert value false == true
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_runtime_concurrency_contract_darwin_thread_and_wait_lifecycle() -> Nothing:
+    target = create_concurrency_target("darwin", "arm64")
+    match try_to_create_and_validate_platform_ports(target, true):
+        Ok(ports):
+            match try_to_run_thread_lifecycle(ports, "worker-c", 1000):
+                Ok(thread_maps):
+                    assert value __wr_map_get(thread_maps, "joined") == true
+                otherwise:
+                    assert value false == true
+            match try_to_run_wait_lifecycle(ports, "wait-c", 1000):
+                Ok(wait_maps):
+                    assert value __wr_map_get(wait_maps, "wake_all_count") == 1
+                otherwise:
+                    assert value false == true
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_runtime_concurrency_contract_missing_thread_op_fails_closed() -> Nothing:
+    target = create_concurrency_target("linux", "arm64")
+    match try_to_create_platform_ports(target, true):
+        Ok(ports):
+            __wr_map_set(ports.thread_port.ops, "spawn_thread", nothing)
+            match try_to_run_thread_lifecycle(ports, "worker-d", 1000):
+                Err(message_text):
+                    assert value message_text == "missing platform op: thread.spawn_thread"
+                otherwise:
+                    assert value false == true
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_runtime_concurrency_contract_unsupported_thread_adapter_fails_closed() -> Nothing:
+    target = create_concurrency_target("linux", "arm64")
+    match try_to_create_platform_ports(target, true):
+        Ok(ports):
+            ports.thread_port.adapter_identity_name = "unsupported-thread-adapter"
+            match try_to_spawn_thread(ports, "worker-e", {}):
+                Err(message_text):
+                    assert value message_text == "unsupported platform adapter: unsupported-thread-adapter"
+                otherwise:
+                    assert value false == true
+        otherwise:
+            assert value false == true
+    return nothing

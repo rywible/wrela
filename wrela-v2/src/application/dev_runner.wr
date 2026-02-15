@@ -1,0 +1,135 @@
+so:
+    Real dev runner for M7-C bounded polling behavior.
+
+use resolve_check_input_path from application/check_pipeline
+use load_source_stage from application/check_pipeline
+use run_run_command from application/run_command
+use get_env_int_or_default from application/env_vars
+
+
+to get_dev_runner_integer_env_or_default(key_text: String, fallback_number: Integer) -> Integer:
+    return get_env_int_or_default(key_text, fallback_number)
+
+
+to get_dev_runner_source_text(path_text: String) -> Result[String]:
+    match load_source_stage(path_text):
+        Ok(load_maps):
+            source_value = __wr_map_get(load_maps, "source_text")
+            if source_value == nothing:
+                return error "dev failed to load source"
+            return "{source_value}"
+        Err(_):
+            return error "dev failed to load source"
+        otherwise:
+            return error "dev failed to load source"
+    return error "dev failed to load source"
+
+
+to try_to_write_dev_report(
+    max_cycles_number: Integer,
+    restart_count_number: Integer,
+    failure_count_number: Integer
+) -> Result[Nothing]:
+    output_root_path_text = "target/wrela_v2_dev"
+    report_path_text = "{output_root_path_text}/dev_report.json"
+
+    match __wr_fs_mkdir_all(output_root_path_text):
+        Ok(_):
+            nothing
+        Err(_):
+            return error "dev failed to create report directory"
+        otherwise:
+            return error "dev failed to create report directory"
+
+    report_text = "cycles={max_cycles_number}\nrestarts={restart_count_number}\nfailures={failure_count_number}\n"
+    match __wr_fs_write_bytes(report_path_text, __wr_bytes_from_string(report_text)):
+        Ok(_):
+            return nothing
+        Err(_):
+            return error "dev failed to write report"
+        otherwise:
+            return error "dev failed to write report"
+    return error "dev failed to write report"
+
+
+to try_to_run_dev_cycle(
+    input_path_text: String,
+    resolved_path_text: String,
+    cycle_number: Integer,
+    max_cycles_number: Integer,
+    previous_source_text: String,
+    has_previous_source_flag: Boolean,
+    restart_count_number: Integer,
+    failure_count_number: Integer
+) -> Result[Map]:
+    if cycle_number > max_cycles_number:
+        try_to_write_dev_report(max_cycles_number, restart_count_number, failure_count_number) otherwise nothing
+        result_maps = __wr_map_new()
+        __wr_map_set(result_maps, "cycles", max_cycles_number)
+        __wr_map_set(result_maps, "restarts", restart_count_number)
+        __wr_map_set(result_maps, "failures", failure_count_number)
+        return result_maps
+
+    match get_dev_runner_source_text(resolved_path_text):
+        Ok(source_text):
+            mutable has_run_cycle_flag = false
+            if cycle_number == 1:
+                has_run_cycle_flag = true
+            otherwise:
+                if not has_previous_source_flag:
+                    has_run_cycle_flag = true
+                otherwise:
+                    if source_text != previous_source_text:
+                        has_run_cycle_flag = true
+
+            mutable next_restart_count_number = restart_count_number
+            if has_run_cycle_flag:
+                __wr_print("dev: restart cycle={cycle_number}")
+                next_restart_count_number = next_restart_count_number + 1
+                run_exit_code = run_run_command(input_path_text)
+                if run_exit_code != 0:
+                    next_failure_count_number = failure_count_number + 1
+                    try_to_write_dev_report(cycle_number, next_restart_count_number, next_failure_count_number) otherwise nothing
+                    return error "dev cycle failed"
+            otherwise:
+                __wr_print("dev: idle cycle={cycle_number}")
+
+            return try_to_run_dev_cycle(
+                input_path_text,
+                resolved_path_text,
+                cycle_number + 1,
+                max_cycles_number,
+                source_text,
+                true,
+                next_restart_count_number,
+                failure_count_number
+            )
+        Err(_):
+            next_failure_count_number = failure_count_number + 1
+            try_to_write_dev_report(cycle_number, restart_count_number, next_failure_count_number) otherwise nothing
+            return error "dev failed to load source"
+        otherwise:
+            next_failure_count_number = failure_count_number + 1
+            try_to_write_dev_report(cycle_number, restart_count_number, next_failure_count_number) otherwise nothing
+            return error "dev failed to load source"
+    return error "dev cycle failed"
+
+
+to try_to_run_dev_runner(path: String) -> Result[Map]:
+    resolved_path_text = resolve_check_input_path(path)
+    raw_max_cycles_number = get_dev_runner_integer_env_or_default("WRELA_DEV_MAX_CYCLES", 25)
+    mutable normalized_max_cycles_number = raw_max_cycles_number
+
+    if normalized_max_cycles_number < 1:
+        normalized_max_cycles_number = 1
+
+    return try_to_run_dev_cycle(
+        path,
+        resolved_path_text,
+        1,
+        normalized_max_cycles_number,
+        "",
+        false,
+        0,
+        0
+    )

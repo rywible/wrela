@@ -1,0 +1,152 @@
+so:
+    V2 check pipeline.
+    Stages: load -> lex -> parse -> type.
+
+use get_source_tokens from domain/frontend/lexer
+use get_frontend_lex_token_lists from domain/frontend/lexer
+use parse_tokens from domain/frontend/parser
+use check_program from domain/frontend/typecheck
+use create_frontend_empty_diagnostic_list from domain/frontend/diagnostics
+use try_to_lower_program_to_mir from domain/mir/lower
+use validate_mir_program from domain/mir/validate
+use create_rewritten_mir_program from domain/mir/rewrite
+
+
+to get_string_value_or_default(value_item: String, fallback_text: String) -> String:
+    if value_item == nothing:
+        return fallback_text
+    return "{value_item}"
+
+
+to get_integer_value_or_default(value_item: Integer, fallback_number: Integer) -> Integer:
+    if value_item == nothing:
+        return fallback_number
+    return value_item
+
+
+to get_map_value_or_empty_map(value_maps: Map) -> Map:
+    if value_maps == nothing:
+        return __wr_map_new()
+    return value_maps
+
+
+to get_list_value_or_empty_list(value_lists: List) -> List:
+    if value_lists == nothing:
+        return create_frontend_empty_diagnostic_list()
+    return value_lists
+
+
+to resolve_check_input_path(path: String) -> String:
+    match __wr_fs_metadata(path):
+        Ok(metadata_maps):
+            is_directory = __wr_map_get(metadata_maps, "is_dir")
+            if is_directory == true:
+                return "{path}/src/main.wr"
+            return path
+        Err(metadata_error_text):
+            if metadata_error_text == "":
+                return path
+            return path
+        otherwise:
+            return path
+    return path
+
+
+to load_source_stage(path: String) -> Result[Map]:
+    match __wr_fs_read_bytes(path):
+        Ok(source_bytes_values):
+            text_value = __wr_bytes_to_string(source_bytes_values)
+            match text_value:
+                String:
+                    load_maps = __wr_map_new()
+                    __wr_map_set(load_maps, "source_text", text_value)
+                    __wr_map_set(load_maps, "source_bytes", __wr_str_len(text_value))
+                    return load_maps
+                otherwise:
+                    return error "invalid utf8 source"
+        Err(read_error_text):
+            return error read_error_text
+        otherwise:
+            return error "read failed"
+    return error "load stage failed"
+
+
+to make_error_report(
+    stage_text: String,
+    resolved_path: String,
+    source_bytes: Integer,
+    diagnostic_lists: List
+) -> Map:
+    report_maps = __wr_map_new()
+    __wr_map_set(report_maps, "status", "error")
+    __wr_map_set(report_maps, "stage", stage_text)
+    __wr_map_set(report_maps, "exit_code", 2)
+    __wr_map_set(report_maps, "diagnostics", diagnostic_lists)
+    __wr_map_set(report_maps, "resolved_path", resolved_path)
+    __wr_map_set(report_maps, "source_bytes", source_bytes)
+    return report_maps
+
+
+to make_ok_report(resolved_path: String, source_bytes: Integer) -> Map:
+    report_maps = __wr_map_new()
+    __wr_map_set(report_maps, "status", "ok")
+    __wr_map_set(report_maps, "stage", "type")
+    __wr_map_set(report_maps, "exit_code", 0)
+    __wr_map_set(report_maps, "diagnostics", create_frontend_empty_diagnostic_list())
+    __wr_map_set(report_maps, "resolved_path", resolved_path)
+    __wr_map_set(report_maps, "source_bytes", source_bytes)
+    return report_maps
+
+
+to run_check_pipeline(path: String) -> Result[Map]:
+    if path == "":
+        return error "missing input path"
+
+    resolved_path = resolve_check_input_path(path)
+    match load_source_stage(resolved_path):
+        Ok(load_maps):
+            source_text = get_string_value_or_default(__wr_map_get(load_maps, "source_text"), "")
+            source_bytes = get_integer_value_or_default(__wr_map_get(load_maps, "source_bytes"), 0)
+
+            lex_result_maps = get_source_tokens(source_text)
+            if __wr_map_get(lex_result_maps, "ok") != true:
+                lex_diagnostic_lists = get_list_value_or_empty_list(__wr_map_get(lex_result_maps, "diagnostics"))
+                return make_error_report("lex", resolved_path, source_bytes, lex_diagnostic_lists)
+
+            token_lists = get_frontend_lex_token_lists(lex_result_maps)
+            parse_result_maps = parse_tokens(token_lists)
+            if __wr_map_get(parse_result_maps, "ok") != true:
+                parse_diagnostic_lists = get_list_value_or_empty_list(__wr_map_get(parse_result_maps, "diagnostics"))
+                parse_error_report_maps = __wr_map_new()
+                __wr_map_set(parse_error_report_maps, "status", "error")
+                __wr_map_set(parse_error_report_maps, "stage", "parse")
+                __wr_map_set(parse_error_report_maps, "exit_code", 2)
+                __wr_map_set(parse_error_report_maps, "diagnostics", parse_diagnostic_lists)
+                __wr_map_set(parse_error_report_maps, "resolved_path", resolved_path)
+                __wr_map_set(parse_error_report_maps, "source_bytes", source_bytes)
+                return parse_error_report_maps
+
+            ast_maps = get_map_value_or_empty_map(__wr_map_get(parse_result_maps, "ast"))
+            typecheck_result_maps = check_program(ast_maps)
+            if __wr_map_get(typecheck_result_maps, "ok") != true:
+                type_diagnostic_lists = get_list_value_or_empty_list(__wr_map_get(typecheck_result_maps, "diagnostics"))
+                return make_error_report("type", resolved_path, source_bytes, type_diagnostic_lists)
+
+            mir_lower_result_maps = try_to_lower_program_to_mir(ast_maps)
+            mir_program_maps = get_map_value_or_empty_map(__wr_map_get(mir_lower_result_maps, "mir"))
+            mir_validate_result_maps = validate_mir_program(mir_program_maps)
+            if __wr_map_get(mir_validate_result_maps, "ok") != true:
+                return make_error_report("type", resolved_path, source_bytes, create_frontend_empty_diagnostic_list())
+
+            mir_rewrite_result_maps = create_rewritten_mir_program(mir_program_maps)
+            rewritten_program_maps = get_map_value_or_empty_map(__wr_map_get(mir_rewrite_result_maps, "mir"))
+            rewritten_validate_result_maps = validate_mir_program(rewritten_program_maps)
+            if __wr_map_get(rewritten_validate_result_maps, "ok") != true:
+                return make_error_report("type", resolved_path, source_bytes, create_frontend_empty_diagnostic_list())
+
+            return make_ok_report(resolved_path, source_bytes)
+        Err(load_error_text):
+            return error "load stage failed: {load_error_text}"
+        otherwise:
+            return error "load stage failed"
+    return error "load stage failed"

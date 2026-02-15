@@ -1,0 +1,60 @@
+so:
+    Token payload constructors and readers for frontend lexer/parser stages.
+
+
+to create_frontend_token(
+    kind_text: String,
+    token_text: String,
+    line_number: Integer,
+    column_number: Integer
+) -> Map:
+    token_maps = __wr_map_new()
+    __wr_map_set(token_maps, "kind", kind_text)
+    __wr_map_set(token_maps, "text", token_text)
+    __wr_map_set(token_maps, "line", line_number)
+    __wr_map_set(token_maps, "column", column_number)
+    return token_maps
+
+
+to get_frontend_token_kind_text(token_maps: Map) -> String:
+    kind_value_item = __wr_map_get(token_maps, "kind")
+    if kind_value_item == nothing:
+        return ""
+    return "{kind_value_item}"
+
+
+to get_frontend_token_text(token_maps: Map) -> String:
+    text_value_item = __wr_map_get(token_maps, "text")
+    if text_value_item == nothing:
+        return ""
+    return "{text_value_item}"
+
+
+to get_frontend_token_line_number(token_maps: Map) -> Integer:
+    line_value_item = __wr_map_get(token_maps, "line")
+    if line_value_item == nothing:
+        return 1
+    return line_value_item
+
+
+to get_frontend_token_column_number(token_maps: Map) -> Integer:
+    column_value_item = __wr_map_get(token_maps, "column")
+    if column_value_item == nothing:
+        return 1
+    return column_value_item
+
+
+to get_frontend_token_list_count(token_lists: List) -> Integer:
+    mutable count_number = 0
+    for token_item in token_lists:
+        count_number = count_number + 1
+    return count_number
+
+
+to get_frontend_token_at_index(token_lists: List, target_index_number: Integer) -> Map:
+    mutable current_index_number = 0
+    for token_item in token_lists:
+        if current_index_number == target_index_number:
+            return token_item
+        current_index_number = current_index_number + 1
+    return create_frontend_token("EOF", "", 1, 1)

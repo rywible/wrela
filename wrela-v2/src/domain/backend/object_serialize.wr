@@ -1,0 +1,36 @@
+so:
+    Deterministic object serializer for M5-A backend core vertical slice.
+
+use get_object_signature_text from domain/backend/object_ir
+
+
+to create_serialized_object_result_maps(
+    is_ok: Boolean,
+    serialized_byte_lists: List[Integer],
+    serialized_text: String
+) -> Map:
+    result_maps = __wr_map_new()
+    __wr_map_set(result_maps, "ok", is_ok)
+    __wr_map_set(result_maps, "bytes", serialized_byte_lists)
+    __wr_map_set(result_maps, "text", serialized_text)
+    return result_maps
+
+
+to create_serialized_object_program_maps(object_program_maps: Map) -> Map:
+    serialized_text = "OBJBIN|{get_object_signature_text(object_program_maps)}"
+    serialized_byte_lists = __wr_bytes_to_list(__wr_bytes_from_string(serialized_text))
+    return create_serialized_object_result_maps(true, serialized_byte_lists, serialized_text)
+
+
+to get_serialized_object_byte_lists(serialized_result_maps: Map) -> List[Integer]:
+    byte_value_lists = __wr_map_get(serialized_result_maps, "bytes")
+    if byte_value_lists == nothing:
+        return []
+    return byte_value_lists
+
+
+to get_serialized_object_text(serialized_result_maps: Map) -> String:
+    serialized_text_value = __wr_map_get(serialized_result_maps, "text")
+    if serialized_text_value == nothing:
+        return ""
+    return "{serialized_text_value}"

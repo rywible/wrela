@@ -1,0 +1,188 @@
+so:
+    Event-loop-first runtime behavior helpers.
+    Single-thread deterministic lane for M11-B.
+
+use PlatformPorts from domain/platform/contracts
+use try_to_validate_platform_ports_conformance from application/runtime/platform_conformance
+use run_reactor_port_lifecycle from application/runtime/platform_runtime
+use run_clock_port_now_ns from application/runtime/platform_runtime
+use run_clock_port_sleep_ms from application/runtime/platform_runtime
+use try_to_run_fs_write_text from application/runtime/platform_runtime
+use try_to_run_fs_read_text from application/runtime/platform_runtime
+use try_to_run_fs_read_metadata from application/runtime/platform_runtime
+use try_to_run_process_port from application/runtime/platform_runtime
+use try_to_get_process_port_cwd from application/runtime/platform_runtime
+
+
+to try_to_run_event_loop_cycles(
+    ports: PlatformPorts,
+    max_cycles: Integer,
+    timer_ms: Integer,
+    cycle_index: Integer,
+    cycles_succeeded: Integer,
+    cycles_failed: Integer
+) -> Result[Map]:
+    if cycle_index > max_cycles:
+        summary_maps = __wr_map_new()
+        __wr_map_set(summary_maps, "cycles_total", max_cycles)
+        __wr_map_set(summary_maps, "cycles_succeeded", cycles_succeeded)
+        __wr_map_set(summary_maps, "cycles_failed", cycles_failed)
+        __wr_map_set(summary_maps, "backend_name", ports.reactor_backend_name)
+        __wr_map_set(summary_maps, "host_family", ports.host_family_name)
+        return summary_maps
+
+    token_value = 1000 + cycle_index
+    match run_reactor_port_lifecycle(ports, token_value, timer_ms):
+        Ok(reactor_result_maps):
+            reactor_result_maps = reactor_result_maps
+            return try_to_run_event_loop_cycles(
+                ports,
+                max_cycles,
+                timer_ms,
+                cycle_index + 1,
+                cycles_succeeded + 1,
+                cycles_failed
+            )
+        Err(error_text):
+            error_text = error_text
+            return try_to_run_event_loop_cycles(
+                ports,
+                max_cycles,
+                timer_ms,
+                cycle_index + 1,
+                cycles_succeeded,
+                cycles_failed + 1
+            )
+        otherwise:
+            return error "event loop cycle failed"
+    return error "event loop cycle failed"
+
+
+to try_to_run_bounded_event_loop(
+    ports: PlatformPorts,
+    max_cycles: Integer,
+    timer_ms: Integer
+) -> Result[Map]:
+    if max_cycles < 1:
+        return error "invalid event loop max_cycles: {max_cycles}"
+    if timer_ms < 0:
+        return error "invalid event loop timer_ms: {timer_ms}"
+
+    match try_to_validate_platform_ports_conformance(ports):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+
+    return try_to_run_event_loop_cycles(
+        ports,
+        max_cycles,
+        timer_ms,
+        1,
+        0,
+        0
+    )
+
+
+to try_to_run_runtime_probe_sequence(
+    ports: PlatformPorts,
+    workspace_root: String
+) -> Result[Map]:
+    match try_to_validate_platform_ports_conformance(ports):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+
+    probe_file_path = "{workspace_root}/wrela_v2_runtime_probe.txt"
+
+    now_value = 0
+    match run_clock_port_now_ns(ports):
+        Ok(clock_now_value):
+            now_value = clock_now_value
+        Err(error_text):
+            return error error_text
+        otherwise:
+            return error "runtime probe failed at clock.now_ns"
+
+    match run_clock_port_sleep_ms(ports, 0):
+        Ok(sleep_ok):
+            sleep_ok = sleep_ok
+        Err(error_text):
+            return error error_text
+        otherwise:
+            return error "runtime probe failed at clock.sleep_ms"
+
+    match try_to_run_fs_write_text(ports, probe_file_path, "runtime-probe\n"):
+        Ok(write_ok):
+            write_ok = write_ok
+        Err(error_text):
+            return error error_text
+        otherwise:
+            return error "runtime probe failed at fs.write_text"
+
+    read_text_value = ""
+    match try_to_run_fs_read_text(ports, probe_file_path):
+        Ok(fs_read_text):
+            read_text_value = fs_read_text
+        Err(error_text):
+            return error error_text
+        otherwise:
+            return error "runtime probe failed at fs.read_text"
+
+    metadata_maps = __wr_map_new()
+    match try_to_run_fs_read_metadata(ports, probe_file_path):
+        Ok(fs_metadata_maps):
+            metadata_maps = fs_metadata_maps
+        Err(error_text):
+            return error error_text
+        otherwise:
+            return error "runtime probe failed at fs.read_metadata"
+
+    process_result_maps = __wr_map_new()
+    match try_to_run_process_port(ports, "/bin/echo", ["runtime-probe"], workspace_root, 1000):
+        Ok(result_maps):
+            process_result_maps = result_maps
+        Err(error_text):
+            return error error_text
+        otherwise:
+            return error "runtime probe failed at process.run_process"
+
+    cwd_value = ""
+    match try_to_get_process_port_cwd(ports):
+        Ok(cwd_text):
+            cwd_value = cwd_text
+        Err(error_text):
+            return error error_text
+        otherwise:
+            return error "runtime probe failed at process.get_cwd"
+
+    summary_maps = __wr_map_new()
+    __wr_map_set(summary_maps, "backend_name", ports.reactor_backend_name)
+    __wr_map_set(summary_maps, "host_family", ports.host_family_name)
+    __wr_map_set(summary_maps, "probe_file_path", probe_file_path)
+    __wr_map_set(summary_maps, "clock_now_ns", now_value)
+    __wr_map_set(summary_maps, "sleep_ok", true)
+    __wr_map_set(summary_maps, "fs_roundtrip_ok", read_text_value == "runtime-probe\n")
+    __wr_map_set(summary_maps, "metadata_present", metadata_maps != nothing)
+    __wr_map_set(summary_maps, "process_result_present", process_result_maps != nothing)
+    __wr_map_set(summary_maps, "cwd_ok", cwd_value != "")
+    return summary_maps
+
+
+to try_to_run_cancellable_bounded_event_loop(
+    ports: PlatformPorts,
+    max_cycles: Integer,
+    timer_ms: Integer,
+    cancellation_token_maps: Map
+) -> Result[Map]:
+    if __wr_map_get(cancellation_token_maps, "cancelled") == true:
+        summary_maps = __wr_map_new()
+        __wr_map_set(summary_maps, "cycles_total", max_cycles)
+        __wr_map_set(summary_maps, "cycles_succeeded", 0)
+        __wr_map_set(summary_maps, "cycles_failed", 0)
+        __wr_map_set(summary_maps, "backend_name", ports.reactor_backend_name)
+        __wr_map_set(summary_maps, "host_family", ports.host_family_name)
+        __wr_map_set(summary_maps, "cancelled", true)
+        return summary_maps
+    return try_to_run_bounded_event_loop(ports, max_cycles, timer_ms)

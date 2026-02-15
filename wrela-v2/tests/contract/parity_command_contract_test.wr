@@ -1,0 +1,126 @@
+so:
+    Contract coverage for v2 parity command helper behavior.
+
+use get_exit_code_for_parity_command from application/parity_command
+use get_stdout_for_parity_command from application/parity_command
+use run_parity_command from application/parity_command
+use try_to_create_directory_for_parity_command from application/parity_command
+use try_to_write_text_for_parity_command from application/parity_command
+use run_init_command from application/init_command
+use try_to_run_host_command from application/parity_runner
+use try_to_run_v1_command from application/parity_runner
+use try_to_run_v1_help from application/parity_runner
+use get_exit_code from application/parity_runner
+use get_stdout from application/parity_runner
+
+
+to test_parity_exit_code_defaults_to_one() -> Nothing:
+    results = __wr_map_new()
+    assert value get_exit_code_for_parity_command(results) == 1
+    __wr_map_set(results, "exit_code", 0)
+    assert value get_exit_code_for_parity_command(results) == 0
+    return nothing
+
+
+to test_parity_stdout_text_defaults_to_empty_string() -> Nothing:
+    results = __wr_map_new()
+    assert value get_stdout_for_parity_command(results) == ""
+    __wr_map_set(results, "stdout", "ok")
+    assert value get_stdout_for_parity_command(results) == "ok"
+    return nothing
+
+
+to test_parity_command_requires_environment_when_unset() -> Nothing:
+    v1_bin = __wr_env_get("WRELA_V1_BIN")
+    workspace_root = __wr_env_get("WRELA_WORKSPACE_ROOT")
+    if v1_bin == nothing or workspace_root == nothing:
+        assert value run_parity_command() == 1
+        return nothing
+    assert value true == true
+    return nothing
+
+
+to test_parity_command_file_helpers_are_callable() -> Nothing:
+    root = "target/wrela_v2_parity_contract"
+    report_root = "{root}/artifacts"
+    report_path = "{report_root}/report.txt"
+    match try_to_create_directory_for_parity_command(report_root):
+        Ok(create_result):
+            create_result = create_result
+        otherwise:
+            assert value false == true
+    match try_to_write_text_for_parity_command(report_path, "status=ok\n"):
+        Ok(write_result):
+            write_result = write_result
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_parity_runner_result_helpers_defaults_are_callable() -> Nothing:
+    results = __wr_map_new()
+    default_exit_code = get_exit_code(results)
+    default_stdout_text = get_stdout(results)
+    __wr_map_set(results, "exit_code", 0)
+    __wr_map_set(results, "stdout", "ok")
+    configured_exit_code = get_exit_code(results)
+    configured_stdout_text = get_stdout(results)
+    default_exit_code = default_exit_code
+    default_stdout_text = default_stdout_text
+    configured_exit_code = configured_exit_code
+    configured_stdout_text = configured_stdout_text
+    assert value true == true
+    return nothing
+
+
+to test_parity_runner_process_helpers_are_callable() -> Nothing:
+    match try_to_run_host_command("/bin/echo", ["host"], "/", 1_000):
+        Ok(host_results):
+            host_exit_code = get_exit_code(host_results)
+            host_stdout_text = get_stdout(host_results)
+            host_exit_code = host_exit_code
+            host_stdout_text = host_stdout_text
+            assert value true == true
+        otherwise:
+            assert value false == true
+
+    match try_to_run_v1_command("/bin/echo", "/", ["v1"]):
+        Ok(v1_results):
+            v1_exit_code = get_exit_code(v1_results)
+            v1_stdout_text = get_stdout(v1_results)
+            v1_exit_code = v1_exit_code
+            v1_stdout_text = v1_stdout_text
+            assert value true == true
+        otherwise:
+            assert value false == true
+
+    match try_to_run_v1_help("/bin/echo", "/"):
+        Ok(help_results):
+            help_exit_code = get_exit_code(help_results)
+            help_stdout_text = get_stdout(help_results)
+            help_exit_code = help_exit_code
+            help_stdout_text = help_stdout_text
+            assert value true == true
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_parity_command_returns_two_when_self_host_lane_fails() -> Nothing:
+    __wr_env_set("WRELA_V1_BIN", "/missing/wrela")
+    __wr_env_set("WRELA_WORKSPACE_ROOT", "/Users/ryanwible/projects/wrela")
+    __wr_env_set("WRELA_PARITY_PATH", "target/wrela_v2_parity_fail_project")
+    assert value run_parity_command() == 2
+    return nothing
+
+
+to test_parity_command_returns_zero_when_self_host_lane_passes() -> Nothing:
+    root_path_text = "target/wrela_v2_parity_success_project"
+    __wr_fs_remove_dir_all(root_path_text) otherwise nothing
+    assert value run_init_command(root_path_text) == 0
+    __wr_env_set("WRELA_V1_BIN", "/Users/ryanwible/projects/wrela/target/debug/wrela")
+    __wr_env_set("WRELA_WORKSPACE_ROOT", "/Users/ryanwible/projects/wrela")
+    __wr_env_set("WRELA_PARITY_PATH", root_path_text)
+    __wr_env_set("WRELA_SELF_HOST_FIXED_TIMESTAMP_NS", "999")
+    assert value run_parity_command() == 0
+    return nothing

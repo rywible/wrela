@@ -1,0 +1,83 @@
+so:
+    Host platform target inference and normalization for composition wiring.
+    OS-specific normalization belongs in composition, not core app/domain logic.
+    Coverage-critical helper module for deterministic host target selection.
+
+use PlatformTarget from domain/platform/model
+
+
+to convert_to_byte_list(text_value: String) -> List[Integer]:
+    byte_values = __wr_bytes_to_list(__wr_bytes_from_string(text_value))
+    return byte_values
+
+
+to get_byte_count(byte_values: List[Integer]) -> Integer:
+    mutable count = 0
+    for byte_value in byte_values:
+        byte_value = byte_value
+        count = count + 1
+    return count
+
+
+to get_byte_at_index(byte_values: List[Integer], index: Integer) -> Integer:
+    mutable current_index = 0
+    for byte_value in byte_values:
+        if current_index == index:
+            return byte_value
+        current_index = current_index + 1
+    return -1
+
+
+to get_text_prefix_match_flag(text_value: String, prefix_value: String) -> Integer:
+    text_bytes = convert_to_byte_list(text_value)
+    prefix_bytes = convert_to_byte_list(prefix_value)
+    if get_byte_count(prefix_bytes) == 0:
+        return 1
+    if get_byte_count(text_bytes) < get_byte_count(prefix_bytes):
+        return 0
+
+    mutable index = 0
+    for prefix_byte in prefix_bytes:
+        if get_byte_at_index(text_bytes, index) != prefix_byte:
+            return 0
+        index = index + 1
+    return 1
+
+
+to normalize_os_name(raw: String) -> String:
+    if raw == "linux":
+        return "linux"
+    if raw == "darwin":
+        return "darwin"
+    if get_text_prefix_match_flag(raw, "linux") == 1:
+        return "linux"
+    if get_text_prefix_match_flag(raw, "darwin") == 1:
+        return "darwin"
+    return raw
+
+
+to create_current_platform_target() -> PlatformTarget:
+    targets = PlatformTarget()
+    raw_os = __wr_env_get("WRELA_V2_HOST_OS")
+    match raw_os:
+        String(value):
+            targets.host_os_name = normalize_os_name(value)
+        otherwise:
+            host_ostype = __wr_env_get("OSTYPE")
+            match host_ostype:
+                String(value):
+                    targets.host_os_name = normalize_os_name(value)
+                otherwise:
+                    targets.host_os_name = "darwin"
+    raw_arch = __wr_env_get("WRELA_V2_HOST_ARCH")
+    match raw_arch:
+        String(value):
+            targets.host_architecture = value
+        otherwise:
+            host_arch = __wr_env_get("HOSTTYPE")
+            match host_arch:
+                String(value):
+                    targets.host_architecture = value
+                otherwise:
+                    targets.host_architecture = "arm64"
+    return targets

@@ -1,0 +1,21 @@
+so:
+    V2 dev command with real M7-C behavior.
+
+use try_to_run_dev_runner from application/dev_runner
+
+
+to run_dev_command(path: String) -> Integer:
+    if path == "":
+        __wr_print("error: missing input path")
+        return 1
+
+    match try_to_run_dev_runner(path):
+        Ok(_):
+            return 0
+        Err(error_text):
+            __wr_print("error: {error_text}")
+            return 2
+        otherwise:
+            __wr_print("error: dev failed")
+            return 2
+    return 2

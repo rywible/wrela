@@ -1,0 +1,59 @@
+so:
+    Contract tests for cancellation and deterministic runtime shutdown.
+
+use PlatformTarget from domain/platform/model
+use try_to_create_and_validate_platform_ports from application/runtime/platform_conformance
+use create_cancellation_token from application/runtime/cancellation_runtime
+use mark_cancellation_token_cancelled from application/runtime/cancellation_runtime
+use get_cancellation_token_is_cancelled from application/runtime/cancellation_runtime
+use try_to_shutdown_runtime from application/runtime/cancellation_runtime
+use try_to_run_cancellable_bounded_event_loop from application/runtime/event_loop_runtime
+
+
+to create_cancellation_target(os_name: String, architecture: String) -> PlatformTarget:
+    target = PlatformTarget()
+    target.host_os_name = os_name
+    target.host_architecture = architecture
+    return target
+
+
+to test_runtime_cancellation_contract_token_state_transitions() -> Nothing:
+    token_maps = create_cancellation_token()
+    assert value get_cancellation_token_is_cancelled(token_maps) == false
+    token_maps = mark_cancellation_token_cancelled(token_maps)
+    assert value get_cancellation_token_is_cancelled(token_maps) == true
+    return nothing
+
+
+to test_runtime_cancellation_contract_shutdown_order_is_deterministic() -> Nothing:
+    target = create_cancellation_target("linux", "arm64")
+    token_maps = mark_cancellation_token_cancelled(create_cancellation_token())
+    match try_to_create_and_validate_platform_ports(target, true):
+        Ok(ports):
+            match try_to_shutdown_runtime(ports, token_maps, "shutdown-wait"):
+                Ok(summary_maps):
+                    assert value __wr_map_get(summary_maps, "stop_scheduling") == true
+                    assert value __wr_map_get(summary_maps, "cancel_pending") == true
+                    assert value __wr_map_get(summary_maps, "wake_waiters") == true
+                    assert value __wr_map_get(summary_maps, "drop_handles") == true
+                otherwise:
+                    assert value false == true
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_runtime_cancellation_contract_cancellable_event_loop_honors_cancel_token() -> Nothing:
+    target = create_cancellation_target("linux", "arm64")
+    token_maps = mark_cancellation_token_cancelled(create_cancellation_token())
+    match try_to_create_and_validate_platform_ports(target, true):
+        Ok(ports):
+            match try_to_run_cancellable_bounded_event_loop(ports, 3, 0, token_maps):
+                Ok(summary_maps):
+                    assert value __wr_map_get(summary_maps, "cancelled") == true
+                    assert value __wr_map_get(summary_maps, "cycles_succeeded") == 0
+                otherwise:
+                    assert value false == true
+        otherwise:
+            assert value false == true
+    return nothing

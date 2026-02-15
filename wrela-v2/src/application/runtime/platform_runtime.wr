@@ -1,0 +1,398 @@
+so:
+    Runtime facade that dispatches platform operations through adapter contracts.
+    This keeps core/application callsites adapter-agnostic while staying fail-closed.
+
+use PlatformPorts from domain/platform/contracts
+use get_platform_operation_value_or_empty_text from domain/platform/contracts
+
+
+to get_required_platform_operation_text(
+    operation_maps: Map,
+    port_name_text: String,
+    operation_name_text: String
+) -> Result[String]:
+    operation_value_text = get_platform_operation_value_or_empty_text(
+        operation_maps,
+        operation_name_text
+    )
+    if operation_value_text == "":
+        return error "missing platform op: {port_name_text}.{operation_name_text}"
+    return operation_value_text
+
+
+to run_reactor_port_lifecycle(
+    ports: PlatformPorts,
+    token: Integer,
+    timeout_milliseconds: Integer
+) -> Result[Map]:
+    reactor_ops_maps = ports.reactor_port.ops
+    match get_required_platform_operation_text(reactor_ops_maps, "reactor", "create_reactor_handle"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+    match get_required_platform_operation_text(reactor_ops_maps, "reactor", "drop_reactor_handle"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+    match get_required_platform_operation_text(reactor_ops_maps, "reactor", "register_token"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+    match get_required_platform_operation_text(reactor_ops_maps, "reactor", "deregister_token"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+    match get_required_platform_operation_text(reactor_ops_maps, "reactor", "arm_timer"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+
+    adapter_identity_name = ports.reactor_port.adapter_identity_name
+    if adapter_identity_name != "darwin-kqueue-reactor":
+        if adapter_identity_name != "linux-io_uring-reactor":
+            if adapter_identity_name != "linux-epoll-reactor":
+                return error "unsupported platform adapter: {adapter_identity_name}"
+
+    reactor_handle = __wr_reactor_new()
+    __wr_reactor_register(reactor_handle, token)
+    __wr_reactor_arm_timer(reactor_handle, token, timeout_milliseconds)
+    __wr_reactor_deregister(reactor_handle, token)
+    __wr_reactor_drop(reactor_handle)
+
+    result_maps = __wr_map_new()
+    __wr_map_set(result_maps, "reactor_handle", reactor_handle)
+    __wr_map_set(result_maps, "token", token)
+    __wr_map_set(result_maps, "timeout_milliseconds", timeout_milliseconds)
+    return result_maps
+
+
+to run_clock_port_now_ns(ports: PlatformPorts) -> Result[Integer]:
+    clock_ops_maps = ports.clock_port.ops
+    match get_required_platform_operation_text(clock_ops_maps, "clock", "now_ns"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+
+    adapter_identity_name = ports.clock_port.adapter_identity_name
+    if adapter_identity_name != "darwin-kqueue-clock":
+        if adapter_identity_name != "linux-io_uring-clock":
+            if adapter_identity_name != "linux-epoll-clock":
+                return error "unsupported platform adapter: {adapter_identity_name}"
+    return __wr_clock_ns()
+
+
+to run_clock_port_sleep_ms(
+    ports: PlatformPorts,
+    milliseconds: Integer
+) -> Result[Boolean]:
+    clock_ops_maps = ports.clock_port.ops
+    match get_required_platform_operation_text(clock_ops_maps, "clock", "sleep_ms"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+
+    adapter_identity_name = ports.clock_port.adapter_identity_name
+    if adapter_identity_name != "darwin-kqueue-clock":
+        if adapter_identity_name != "linux-io_uring-clock":
+            if adapter_identity_name != "linux-epoll-clock":
+                return error "unsupported platform adapter: {adapter_identity_name}"
+    if milliseconds < 0:
+        return false
+    return true
+
+
+to try_to_run_fs_write_text(
+    ports: PlatformPorts,
+    path: String,
+    contents: String
+) -> Result[Nothing]:
+    fs_ops_maps = ports.fs_port.ops
+    match get_required_platform_operation_text(fs_ops_maps, "fs", "write_text"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+
+    adapter_identity_name = ports.fs_port.adapter_identity_name
+    if adapter_identity_name != "darwin-kqueue-fs":
+        if adapter_identity_name != "linux-io_uring-fs":
+            if adapter_identity_name != "linux-epoll-fs":
+                return error "unsupported platform adapter: {adapter_identity_name}"
+    payload_bytes = __wr_bytes_from_string(contents)
+    return __wr_fs_write_bytes(path, payload_bytes)
+
+
+to try_to_run_fs_read_text(
+    ports: PlatformPorts,
+    path: String
+) -> Result[String]:
+    fs_ops_maps = ports.fs_port.ops
+    match get_required_platform_operation_text(fs_ops_maps, "fs", "read_text"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+
+    adapter_identity_name = ports.fs_port.adapter_identity_name
+    if adapter_identity_name != "darwin-kqueue-fs":
+        if adapter_identity_name != "linux-io_uring-fs":
+            if adapter_identity_name != "linux-epoll-fs":
+                return error "unsupported platform adapter: {adapter_identity_name}"
+    match __wr_fs_read_bytes(path):
+        Ok(bytes_values):
+            text_value = __wr_bytes_to_string(bytes_values)
+            match text_value:
+                String:
+                    return text_value
+                otherwise:
+                    return error "try_to_run_fs_read_text: invalid utf8"
+        Err(error_text):
+            return error error_text
+        otherwise:
+            return error "try_to_run_fs_read_text: read failed"
+    return error "try_to_run_fs_read_text: read failed"
+
+
+to try_to_run_fs_read_metadata(
+    ports: PlatformPorts,
+    path: String
+) -> Result[Map]:
+    fs_ops_maps = ports.fs_port.ops
+    match get_required_platform_operation_text(fs_ops_maps, "fs", "read_metadata"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+
+    adapter_identity_name = ports.fs_port.adapter_identity_name
+    if adapter_identity_name != "darwin-kqueue-fs":
+        if adapter_identity_name != "linux-io_uring-fs":
+            if adapter_identity_name != "linux-epoll-fs":
+                return error "unsupported platform adapter: {adapter_identity_name}"
+    return __wr_fs_metadata(path)
+
+
+to try_to_run_process_port(
+    ports: PlatformPorts,
+    command: String,
+    args: List[String],
+    cwd: String,
+    timeout_ms: Integer
+) -> Result[Map]:
+    process_ops_maps = ports.process_port.ops
+    match get_required_platform_operation_text(process_ops_maps, "process", "run_process"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+
+    adapter_identity_name = ports.process_port.adapter_identity_name
+    if adapter_identity_name != "darwin-kqueue-process":
+        if adapter_identity_name != "linux-io_uring-process":
+            if adapter_identity_name != "linux-epoll-process":
+                return error "unsupported platform adapter: {adapter_identity_name}"
+    process_specs = __wr_map_new()
+    __wr_map_set(process_specs, "command", command)
+    __wr_map_set(process_specs, "args", args)
+    __wr_map_set(process_specs, "cwd", cwd)
+    __wr_map_set(process_specs, "env", {})
+    __wr_map_set(process_specs, "timeout_ms", timeout_ms)
+    return __wr_process_run(process_specs)
+
+
+to try_to_get_process_port_cwd(ports: PlatformPorts) -> Result[String]:
+    process_ops_maps = ports.process_port.ops
+    match get_required_platform_operation_text(process_ops_maps, "process", "get_cwd"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+
+    adapter_identity_name = ports.process_port.adapter_identity_name
+    if adapter_identity_name != "darwin-kqueue-process":
+        if adapter_identity_name != "linux-io_uring-process":
+            if adapter_identity_name != "linux-epoll-process":
+                return error "unsupported platform adapter: {adapter_identity_name}"
+    return __wr_process_cwd()
+
+
+to try_to_spawn_thread(
+    ports: PlatformPorts,
+    thread_name: String,
+    payload_maps: Map
+) -> Result[Map]:
+    thread_ops_maps = ports.thread_port.ops
+    match get_required_platform_operation_text(thread_ops_maps, "thread", "spawn_thread"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+
+    adapter_identity_name = ports.thread_port.adapter_identity_name
+    if adapter_identity_name != "darwin-kqueue-thread":
+        if adapter_identity_name != "linux-io_uring-thread":
+            if adapter_identity_name != "linux-epoll-thread":
+                return error "unsupported platform adapter: {adapter_identity_name}"
+
+    result_maps = __wr_map_new()
+    __wr_map_set(result_maps, "thread_handle", "{adapter_identity_name}:{thread_name}")
+    __wr_map_set(result_maps, "payload", payload_maps)
+    __wr_map_set(result_maps, "spawned", true)
+    return result_maps
+
+
+to try_to_join_thread(
+    ports: PlatformPorts,
+    thread_handle: String,
+    timeout_ms: Integer
+) -> Result[Map]:
+    thread_ops_maps = ports.thread_port.ops
+    match get_required_platform_operation_text(thread_ops_maps, "thread", "join_thread"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+
+    adapter_identity_name = ports.thread_port.adapter_identity_name
+    if adapter_identity_name != "darwin-kqueue-thread":
+        if adapter_identity_name != "linux-io_uring-thread":
+            if adapter_identity_name != "linux-epoll-thread":
+                return error "unsupported platform adapter: {adapter_identity_name}"
+
+    if timeout_ms < 0:
+        return error "invalid thread join timeout_ms: {timeout_ms}"
+
+    result_maps = __wr_map_new()
+    __wr_map_set(result_maps, "thread_handle", thread_handle)
+    __wr_map_set(result_maps, "joined", true)
+    __wr_map_set(result_maps, "timeout_ms", timeout_ms)
+    return result_maps
+
+
+to try_to_yield_thread(ports: PlatformPorts) -> Result[Nothing]:
+    thread_ops_maps = ports.thread_port.ops
+    match get_required_platform_operation_text(thread_ops_maps, "thread", "yield_thread"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+
+    adapter_identity_name = ports.thread_port.adapter_identity_name
+    if adapter_identity_name != "darwin-kqueue-thread":
+        if adapter_identity_name != "linux-io_uring-thread":
+            if adapter_identity_name != "linux-epoll-thread":
+                return error "unsupported platform adapter: {adapter_identity_name}"
+    return nothing
+
+
+to try_to_create_wait_handle(
+    ports: PlatformPorts,
+    wait_name: String
+) -> Result[String]:
+    sync_ops_maps = ports.sync_port.ops
+    match get_required_platform_operation_text(sync_ops_maps, "sync", "create_wait_handle"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+
+    adapter_identity_name = ports.sync_port.adapter_identity_name
+    if adapter_identity_name != "darwin-kqueue-sync":
+        if adapter_identity_name != "linux-io_uring-sync":
+            if adapter_identity_name != "linux-epoll-sync":
+                return error "unsupported platform adapter: {adapter_identity_name}"
+    return "{adapter_identity_name}:{wait_name}"
+
+
+to try_to_drop_wait_handle(
+    ports: PlatformPorts,
+    wait_handle: String
+) -> Result[Nothing]:
+    sync_ops_maps = ports.sync_port.ops
+    match get_required_platform_operation_text(sync_ops_maps, "sync", "drop_wait_handle"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+
+    adapter_identity_name = ports.sync_port.adapter_identity_name
+    if adapter_identity_name != "darwin-kqueue-sync":
+        if adapter_identity_name != "linux-io_uring-sync":
+            if adapter_identity_name != "linux-epoll-sync":
+                return error "unsupported platform adapter: {adapter_identity_name}"
+    wait_handle = wait_handle
+    return nothing
+
+
+to try_to_wait_on_handle(
+    ports: PlatformPorts,
+    wait_handle: String,
+    timeout_ms: Integer
+) -> Result[Map]:
+    sync_ops_maps = ports.sync_port.ops
+    match get_required_platform_operation_text(sync_ops_maps, "sync", "wait"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+
+    adapter_identity_name = ports.sync_port.adapter_identity_name
+    if adapter_identity_name != "darwin-kqueue-sync":
+        if adapter_identity_name != "linux-io_uring-sync":
+            if adapter_identity_name != "linux-epoll-sync":
+                return error "unsupported platform adapter: {adapter_identity_name}"
+    if timeout_ms < 0:
+        return error "invalid wait timeout_ms: {timeout_ms}"
+
+    result_maps = __wr_map_new()
+    __wr_map_set(result_maps, "wait_handle", wait_handle)
+    __wr_map_set(result_maps, "signaled", true)
+    __wr_map_set(result_maps, "timeout_ms", timeout_ms)
+    return result_maps
+
+
+to try_to_wake_one_waiter(
+    ports: PlatformPorts,
+    wait_handle: String
+) -> Result[Integer]:
+    sync_ops_maps = ports.sync_port.ops
+    match get_required_platform_operation_text(sync_ops_maps, "sync", "wake_one"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+
+    adapter_identity_name = ports.sync_port.adapter_identity_name
+    if adapter_identity_name != "darwin-kqueue-sync":
+        if adapter_identity_name != "linux-io_uring-sync":
+            if adapter_identity_name != "linux-epoll-sync":
+                return error "unsupported platform adapter: {adapter_identity_name}"
+    wait_handle = wait_handle
+    return 1
+
+
+to try_to_wake_all_waiters(
+    ports: PlatformPorts,
+    wait_handle: String
+) -> Result[Integer]:
+    sync_ops_maps = ports.sync_port.ops
+    match get_required_platform_operation_text(sync_ops_maps, "sync", "wake_all"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+
+    adapter_identity_name = ports.sync_port.adapter_identity_name
+    if adapter_identity_name != "darwin-kqueue-sync":
+        if adapter_identity_name != "linux-io_uring-sync":
+            if adapter_identity_name != "linux-epoll-sync":
+                return error "unsupported platform adapter: {adapter_identity_name}"
+    wait_handle = wait_handle
+    return 1

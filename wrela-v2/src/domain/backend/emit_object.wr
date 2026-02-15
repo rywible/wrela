@@ -1,0 +1,195 @@
+so:
+    Deterministic MIR -> Object emitter for M5-A backend core vertical slice.
+
+use get_mir_instruction_text_lists from domain/mir/ir
+use get_mir_text_prefix_match_flag from domain/mir/validate
+
+use create_object_program_maps from domain/backend/object_ir
+use create_object_section_maps from domain/backend/object_ir
+use create_object_symbol_maps from domain/backend/object_ir
+use create_object_relocation_maps from domain/backend/object_ir
+
+
+to create_backend_emit_result_maps(is_ok: Boolean, object_program_maps: Map) -> Map:
+    result_maps = __wr_map_new()
+    __wr_map_set(result_maps, "ok", is_ok)
+    __wr_map_set(result_maps, "object", object_program_maps)
+    return result_maps
+
+
+to get_pipe_split_text_lists(text_value: String) -> List:
+    byte_value_lists = __wr_bytes_to_list(__wr_bytes_from_string(text_value))
+    split_text_lists = []
+    mutable current_token_byte_lists = []
+    for byte_value in byte_value_lists:
+        if byte_value == 124:
+            __wr_list_push(
+                split_text_lists,
+                __wr_bytes_to_string(__wr_bytes_from_list(current_token_byte_lists))
+            )
+            current_token_byte_lists = []
+        otherwise:
+            __wr_list_push(current_token_byte_lists, byte_value)
+    __wr_list_push(
+        split_text_lists,
+        __wr_bytes_to_string(__wr_bytes_from_list(current_token_byte_lists))
+    )
+    return split_text_lists
+
+
+to get_text_list_item_at_index(value_text_lists: List, index_number: Integer) -> String:
+    mutable current_index_number = 0
+    for value_text in value_text_lists:
+        if current_index_number == index_number:
+            return "{value_text}"
+        current_index_number = current_index_number + 1
+    return ""
+
+
+to get_temp_symbol_name_or_empty(symbol_name_text: String) -> String:
+    byte_value_lists = __wr_bytes_to_list(__wr_bytes_from_string(symbol_name_text))
+    mutable byte_count_number = 0
+    mutable first_byte_number = -1
+    mutable current_index_number = 0
+    for byte_value in byte_value_lists:
+        if current_index_number == 0:
+            first_byte_number = byte_value
+        if current_index_number > 0:
+            if byte_value < 48 or byte_value > 57:
+                return ""
+        current_index_number = current_index_number + 1
+        byte_count_number = byte_count_number + 1
+    if byte_count_number < 2:
+        return ""
+    if first_byte_number != 116:
+        return ""
+    return symbol_name_text
+
+
+to get_temp_number_from_name_text(symbol_name_text: String) -> Integer:
+    temp_name_text = get_temp_symbol_name_or_empty(symbol_name_text)
+    if temp_name_text == "":
+        return 0
+
+    byte_value_lists = __wr_bytes_to_list(__wr_bytes_from_string(temp_name_text))
+    mutable total_number = 0
+    mutable current_index_number = 0
+    for byte_value in byte_value_lists:
+        if current_index_number > 0:
+            total_number = (total_number * 10) + (byte_value - 48)
+        current_index_number = current_index_number + 1
+    return total_number
+
+
+to add_text_bytes(destination_byte_lists: List, text_value: String) -> Nothing:
+    text_byte_lists = __wr_bytes_to_list(__wr_bytes_from_string(text_value))
+    for backend_emit_text_byte_value in text_byte_lists:
+        __wr_list_push(destination_byte_lists, backend_emit_text_byte_value)
+    return nothing
+
+
+to add_symbol_name_if_missing(symbol_name_lists: List, candidate_name_text: String) -> Nothing:
+    if candidate_name_text == "":
+        return nothing
+    for backend_emit_existing_symbol_name_text in symbol_name_lists:
+        if backend_emit_existing_symbol_name_text == candidate_name_text:
+            return nothing
+    __wr_list_push(symbol_name_lists, candidate_name_text)
+    return nothing
+
+
+to emit_object_from_mir_program(mir_program_maps: Map) -> Map:
+    mir_instruction_text_lists = get_mir_instruction_text_lists(mir_program_maps)
+
+    object_text_byte_lists = []
+    symbol_name_lists = []
+    __wr_list_push(symbol_name_lists, "run")
+
+    for backend_emit_mir_instruction_text in mir_instruction_text_lists:
+        split_text_lists = get_pipe_split_text_lists(backend_emit_mir_instruction_text)
+        opcode_text = get_text_list_item_at_index(split_text_lists, 0)
+
+        if get_mir_text_prefix_match_flag(backend_emit_mir_instruction_text, "const_i|") == 1:
+            destination_name_text = get_temp_symbol_name_or_empty(
+                get_text_list_item_at_index(split_text_lists, 1)
+            )
+            add_symbol_name_if_missing(symbol_name_lists, destination_name_text)
+            __wr_list_push(object_text_byte_lists, 1)
+            __wr_list_push(object_text_byte_lists, get_temp_number_from_name_text(destination_name_text))
+            add_text_bytes(object_text_byte_lists, get_text_list_item_at_index(split_text_lists, 2))
+            __wr_list_push(object_text_byte_lists, 0)
+        otherwise:
+            if get_mir_text_prefix_match_flag(backend_emit_mir_instruction_text, "const_b|") == 1:
+                destination_name_text = get_temp_symbol_name_or_empty(
+                    get_text_list_item_at_index(split_text_lists, 1)
+                )
+                add_symbol_name_if_missing(symbol_name_lists, destination_name_text)
+                __wr_list_push(object_text_byte_lists, 2)
+                __wr_list_push(object_text_byte_lists, get_temp_number_from_name_text(destination_name_text))
+                if get_text_list_item_at_index(split_text_lists, 2) == "true":
+                    __wr_list_push(object_text_byte_lists, 1)
+                otherwise:
+                    __wr_list_push(object_text_byte_lists, 0)
+            otherwise:
+                if get_mir_text_prefix_match_flag(backend_emit_mir_instruction_text, "bin|") == 1:
+                    destination_name_text = get_temp_symbol_name_or_empty(
+                        get_text_list_item_at_index(split_text_lists, 1)
+                    )
+                    left_name_text = get_temp_symbol_name_or_empty(
+                        get_text_list_item_at_index(split_text_lists, 3)
+                    )
+                    right_name_text = get_temp_symbol_name_or_empty(
+                        get_text_list_item_at_index(split_text_lists, 4)
+                    )
+                    add_symbol_name_if_missing(symbol_name_lists, destination_name_text)
+                    add_symbol_name_if_missing(symbol_name_lists, left_name_text)
+                    add_symbol_name_if_missing(symbol_name_lists, right_name_text)
+                    __wr_list_push(object_text_byte_lists, 3)
+                    __wr_list_push(object_text_byte_lists, get_temp_number_from_name_text(destination_name_text))
+                    __wr_list_push(object_text_byte_lists, get_temp_number_from_name_text(left_name_text))
+                    __wr_list_push(object_text_byte_lists, get_temp_number_from_name_text(right_name_text))
+                    add_text_bytes(object_text_byte_lists, get_text_list_item_at_index(split_text_lists, 2))
+                    __wr_list_push(object_text_byte_lists, 0)
+                otherwise:
+                    if get_mir_text_prefix_match_flag(backend_emit_mir_instruction_text, "ret|") == 1:
+                        value_name_text = get_temp_symbol_name_or_empty(
+                            get_text_list_item_at_index(split_text_lists, 1)
+                        )
+                        add_symbol_name_if_missing(symbol_name_lists, value_name_text)
+                        __wr_list_push(object_text_byte_lists, 4)
+                        __wr_list_push(object_text_byte_lists, get_temp_number_from_name_text(value_name_text))
+                    otherwise:
+                        __wr_list_push(object_text_byte_lists, 255)
+                        add_text_bytes(object_text_byte_lists, opcode_text)
+                        __wr_list_push(object_text_byte_lists, 0)
+
+        __wr_list_push(object_text_byte_lists, 59)
+
+    object_symbol_lists = []
+    mutable symbol_offset_number = 0
+    for backend_emit_symbol_name_text in symbol_name_lists:
+        __wr_list_push(
+            object_symbol_lists,
+            create_object_symbol_maps(backend_emit_symbol_name_text, ".text", symbol_offset_number)
+        )
+        symbol_offset_number = symbol_offset_number + 1
+
+    object_section_lists = []
+    __wr_list_push(
+        object_section_lists,
+        create_object_section_maps(".text", "code", object_text_byte_lists)
+    )
+
+    object_relocation_lists = []
+    __wr_list_push(
+        object_relocation_lists,
+        create_object_relocation_maps(".text", 0, "run", "placeholder")
+    )
+
+    object_program_maps = create_object_program_maps(
+        object_section_lists,
+        object_symbol_lists,
+        object_relocation_lists,
+        object_text_byte_lists
+    )
+    return create_backend_emit_result_maps(true, object_program_maps)

@@ -1,0 +1,88 @@
+so:
+    Compose platform ports through explicit adapter selection.
+    Core services consume PlatformPorts only.
+    Coverage-critical helper module for platform adapter selection.
+
+use PlatformPorts from domain/platform/contracts
+use ReactorPort from domain/platform/contracts
+use ClockPort from domain/platform/contracts
+use FsPort from domain/platform/contracts
+use ProcessPort from domain/platform/contracts
+use ThreadPort from domain/platform/contracts
+use SyncPort from domain/platform/contracts
+use PlatformTarget from domain/platform/model
+use DarwinKqueueReactor, DarwinClock, DarwinFs, DarwinProcess, DarwinThread, DarwinSync from infrastructure/platform/adapters/darwin_kqueue_adapter
+use LinuxIoUringReactor, LinuxClock, LinuxFs, LinuxProcess, LinuxThread, LinuxSync from infrastructure/platform/adapters/linux_io_uring_adapter
+use LinuxEpollReactor, LinuxEpollClock, LinuxEpollFs, LinuxEpollProcess, LinuxEpollThread, LinuxEpollSync from infrastructure/platform/adapters/linux_epoll_adapter
+
+to try_to_create_platform_ports(
+    target: PlatformTarget,
+    is_io_uring_preferred: Boolean
+) -> Result[PlatformPorts]:
+    if target.host_os_name == "darwin":
+        darwin_reactor = DarwinKqueueReactor()
+        darwin_clock = DarwinClock()
+        darwin_fs = DarwinFs()
+        darwin_process = DarwinProcess()
+        darwin_thread = DarwinThread()
+        darwin_sync = DarwinSync()
+        ports = PlatformPorts(
+            host_family_name="darwin",
+            reactor_backend_name="kqueue",
+            reactor_port=darwin_reactor.get_darwin_kqueue_reactor_port(),
+            clock_port=darwin_clock.get_darwin_clock_port(),
+            fs_port=darwin_fs.get_darwin_fs_port(),
+            process_port=darwin_process.get_darwin_process_port(),
+            thread_port=darwin_thread.get_darwin_thread_port(),
+            sync_port=darwin_sync.get_darwin_sync_port()
+        )
+        return ports
+
+    if target.host_os_name == "linux":
+        linux_reactor_port = ReactorPort()
+        linux_clock_port = ClockPort()
+        linux_fs_port = FsPort()
+        linux_process_port = ProcessPort()
+        linux_thread_port = ThreadPort()
+        linux_sync_port = SyncPort()
+        linux_backend_name = "epoll"
+        if is_io_uring_preferred:
+            io_uring_reactor = LinuxIoUringReactor()
+            io_uring_clock = LinuxClock()
+            io_uring_fs = LinuxFs()
+            io_uring_process = LinuxProcess()
+            io_uring_thread = LinuxThread()
+            io_uring_sync = LinuxSync()
+            linux_reactor_port = io_uring_reactor.get_linux_io_uring_reactor_port()
+            linux_clock_port = io_uring_clock.get_linux_clock_port()
+            linux_fs_port = io_uring_fs.get_linux_fs_port()
+            linux_process_port = io_uring_process.get_linux_process_port()
+            linux_thread_port = io_uring_thread.get_linux_thread_port()
+            linux_sync_port = io_uring_sync.get_linux_sync_port()
+            linux_backend_name = "io_uring"
+        otherwise:
+            epoll_reactor = LinuxEpollReactor()
+            epoll_clock = LinuxEpollClock()
+            epoll_fs = LinuxEpollFs()
+            epoll_process = LinuxEpollProcess()
+            epoll_thread = LinuxEpollThread()
+            epoll_sync = LinuxEpollSync()
+            linux_reactor_port = epoll_reactor.get_linux_epoll_reactor_port()
+            linux_clock_port = epoll_clock.get_linux_epoll_clock_port()
+            linux_fs_port = epoll_fs.get_linux_epoll_fs_port()
+            linux_process_port = epoll_process.get_linux_epoll_process_port()
+            linux_thread_port = epoll_thread.get_linux_epoll_thread_port()
+            linux_sync_port = epoll_sync.get_linux_epoll_sync_port()
+        ports = PlatformPorts(
+            host_family_name="linux",
+            reactor_backend_name=linux_backend_name,
+            reactor_port=linux_reactor_port,
+            clock_port=linux_clock_port,
+            fs_port=linux_fs_port,
+            process_port=linux_process_port,
+            thread_port=linux_thread_port,
+            sync_port=linux_sync_port
+        )
+        return ports
+
+    return error "unsupported platform target: {target.host_os_name}"

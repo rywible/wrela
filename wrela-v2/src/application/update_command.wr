@@ -1,0 +1,30 @@
+so:
+    V2 update command with real M7-C behavior.
+
+use try_to_run_update_runner from application/update_runner
+
+
+to run_update_command(path: String) -> Integer:
+    if path != "":
+        __wr_print("error: update does not take a path")
+        return 1
+
+    match try_to_run_update_runner():
+        Ok(update_maps):
+            current_version_value = __wr_map_get(update_maps, "current_version")
+            available_version_value = __wr_map_get(update_maps, "available_version")
+            if current_version_value == nothing or available_version_value == nothing:
+                __wr_print("update: ok")
+                return 0
+            if "{current_version_value}" == "{available_version_value}":
+                __wr_print("update: up to date {current_version_value}")
+            otherwise:
+                __wr_print("update: updated {current_version_value} -> {available_version_value}")
+            return 0
+        Err(error_text):
+            __wr_print("error: {error_text}")
+            return 2
+        otherwise:
+            __wr_print("error: update failed")
+            return 2
+    return 2

@@ -235,7 +235,11 @@ pub fn load_project_with_roots(
     let mut interface_origins: HashMap<SmolStr, (SmolStr, Option<TextRange>, PathBuf, String)> =
         HashMap::new();
 
-    for module in loader.modules.values() {
+    let mut loaded_modules = loader.modules.values().collect::<Vec<_>>();
+    loaded_modules.sort_by(|left, right| left.path.cmp(&right.path));
+
+    let mut module_span_base: u32 = 0;
+    for module in &loaded_modules {
         let mut method_ids = HashSet::new();
         for (_, class) in module.module.classes.iter() {
             for method in &class.methods {
@@ -405,18 +409,19 @@ pub fn load_project_with_roots(
     }
 
     let mut provenance = ProjectProvenance::default();
-    for module in loader.modules.values() {
+    for module in &loaded_modules {
         let mut func_map = HashMap::new();
         for (idx, func) in module.module.functions.iter() {
-            let new_idx = merged.functions.alloc(func.clone());
+            let shifted_func = func.clone();
+            let new_idx = merged.functions.alloc(shifted_func.clone());
             func_map.insert(idx, new_idx);
             provenance
                 .function_owner_path_by_id
                 .insert(new_idx.into_raw(), module.path.clone());
-            let owner_span = func
+            let owner_span = shifted_func
                 .name_span
                 .map(|span| {
-                    if let Some(body) = &func.body {
+                    if let Some(body) = &shifted_func.body {
                         let mut covering = span;
                         for stmt_span in &body.stmt_spans {
                             covering = covering.cover(*stmt_span);
@@ -430,12 +435,15 @@ pub fn load_project_with_roots(
                     }
                 })
                 .unwrap_or_else(|| TextRange::empty(0.into()));
+            let owner_start = u32::from(owner_span.start()).saturating_add(module_span_base);
+            let owner_end = u32::from(owner_span.end()).saturating_add(module_span_base);
+            let owner_span = TextRange::new(owner_start.into(), owner_end.into());
             provenance
                 .function_owner_span_by_id
                 .insert(new_idx.into_raw(), owner_span);
             provenance
                 .function_owner_path_by_name
-                .entry(func.name.clone())
+                .entry(shifted_func.name.clone())
                 .or_insert_with(|| module.path.clone());
         }
         for (_, class) in module.module.classes.iter() {
@@ -462,6 +470,9 @@ pub fn load_project_with_roots(
                 .interface_owner_path_by_name
                 .insert(interface.name.clone(), module.path.clone());
         }
+
+        let next_base = (module.source.len() as u32).saturating_add(1);
+        module_span_base = module_span_base.saturating_add(next_base);
     }
 
     let entry_source = loader
@@ -2716,6 +2727,13 @@ fn is_builtin_value_name(name: &SmolStr) -> bool {
             | "__wr_bytes_len"
             | "__wr_fs_read_bytes"
             | "__wr_fs_write_bytes"
+            | "__wr_fs_read_dir"
+            | "__wr_fs_metadata"
+            | "__wr_fs_mkdir_all"
+            | "__wr_fs_remove_file"
+            | "__wr_fs_remove_dir_all"
+            | "__wr_fs_rename"
+            | "__wr_fs_set_executable"
             | "__wr_map_get"
             | "__wr_map_len"
             | "__wr_map_set"
@@ -2724,6 +2742,10 @@ fn is_builtin_value_name(name: &SmolStr) -> bool {
             | "__wr_log_configure"
             | "__wr_env_get"
             | "__wr_env_set"
+            | "__wr_process_argv"
+            | "__wr_process_cwd"
+            | "__wr_process_run"
+            | "__wr_process_exit"
             | "__wr_runtime_configure"
             | "__wr_external_call"
             | "__wr_http_call"

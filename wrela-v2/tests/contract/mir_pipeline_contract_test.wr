@@ -1,0 +1,322 @@
+so:
+    Contract coverage for M4-B MIR lowering/validation/rewrite parity corpus.
+
+use get_source_tokens from domain/frontend/lexer
+use get_frontend_lex_token_lists from domain/frontend/lexer
+use parse_tokens from domain/frontend/parser
+use check_program from domain/frontend/typecheck
+
+use try_to_lower_program_to_mir from domain/mir/lower
+use get_ast_boolean_literal_flag from domain/mir/lower
+use validate_mir_program from domain/mir/validate
+use create_rewritten_mir_program from domain/mir/rewrite
+use get_mir_signature_text from domain/mir/ir
+use create_mir_const_integer_instruction from domain/mir/ir
+use create_mir_const_boolean_instruction from domain/mir/ir
+use create_mir_binary_instruction from domain/mir/ir
+use create_mir_return_instruction from domain/mir/ir
+use create_mir_block from domain/mir/ir
+use create_mir_function from domain/mir/ir
+
+use print_usage from application/cli
+use try_to_create_platform_ports from application/composition/platform_ports
+use convert_to_byte_list from application/composition/platform_target_env
+use get_byte_count from application/composition/platform_target_env
+use get_byte_at_index from application/composition/platform_target_env
+use get_text_prefix_match_flag from application/composition/platform_target_env
+use normalize_os_name from application/composition/platform_target_env
+use create_current_platform_target from application/composition/platform_target_env
+use normalize_root from application/init_command
+use get_path_exists_flag from application/init_command
+use ensure_directory from application/init_command
+use ensure_file from application/init_command
+use run_init_command from application/init_command
+use try_to_create_directory_for_parity_command from application/parity_command
+use try_to_write_text_for_parity_command from application/parity_command
+use get_exit_code_for_parity_command from application/parity_command
+use get_stdout_for_parity_command from application/parity_command
+use run_parity_command from application/parity_command
+use try_to_run_host_command from application/parity_runner
+use try_to_run_v1_command from application/parity_runner
+use try_to_run_v1_help from application/parity_runner
+use get_exit_code from application/parity_runner
+use get_stdout from application/parity_runner
+
+use try_to_create_directory from host/fs
+use try_to_write_text from host/fs
+use PlatformTarget from domain/platform/model
+
+to get_lowered_mir_or_empty_map(source_text: String) -> Map:
+    token_result_maps = get_source_tokens(source_text)
+    if __wr_map_get(token_result_maps, "ok") != true:
+        return __wr_map_new()
+
+    token_lists = get_frontend_lex_token_lists(token_result_maps)
+    parse_result_maps = parse_tokens(token_lists)
+    if __wr_map_get(parse_result_maps, "ok") != true:
+        return __wr_map_new()
+
+    ast_maps = __wr_map_get(parse_result_maps, "ast")
+    typecheck_result_maps = check_program(ast_maps)
+    if __wr_map_get(typecheck_result_maps, "ok") != true:
+        return __wr_map_new()
+
+    lower_result_maps = try_to_lower_program_to_mir(ast_maps)
+    if __wr_map_get(lower_result_maps, "ok") != true:
+        return __wr_map_new()
+    return __wr_map_get(lower_result_maps, "mir")
+
+
+to check_mir_ok_case(source_text: String, expected_signature_text: String) -> Nothing:
+    lowered_mir_maps = get_lowered_mir_or_empty_map(source_text)
+    assert value __wr_map_get(validate_mir_program(lowered_mir_maps), "ok") == true
+    assert value get_mir_signature_text(lowered_mir_maps) == expected_signature_text
+    rewrite_once_result_maps = create_rewritten_mir_program(lowered_mir_maps)
+    rewrite_once_maps = __wr_map_get(rewrite_once_result_maps, "mir")
+    rewrite_twice_result_maps = create_rewritten_mir_program(rewrite_once_maps)
+    rewrite_twice_maps = __wr_map_get(rewrite_twice_result_maps, "mir")
+    assert value get_mir_signature_text(rewrite_once_maps) == get_mir_signature_text(rewrite_twice_maps)
+    assert value __wr_map_get(validate_mir_program(rewrite_once_maps), "ok") == true
+    assert value __wr_map_get(validate_mir_program(rewrite_twice_maps), "ok") == true
+    return nothing
+
+
+to check_frontend_fail_case(source_text: String) -> Nothing:
+    lowered_mir_maps = get_lowered_mir_or_empty_map(source_text)
+    assert value get_mir_signature_text(lowered_mir_maps) == ""
+    return nothing
+
+
+to test_mir_lowering_accepts_precedence_program() -> Nothing:
+    source_text = "to run() -> Integer:\n    return 1 + 2 * 3\n"
+    check_mir_ok_case(source_text, "const_i|t1|1;const_i|t2|2;const_i|t3|3;bin|t4|*|t2|t3;bin|t5|+|t1|t4;ret|t5;")
+    assert value true == true
+    return nothing
+
+
+to test_mir_lowering_accepts_parenthesized_program() -> Nothing:
+    source_text = "to run() -> Integer:\n    return (1 + 2) * 3\n"
+    check_mir_ok_case(source_text, "const_i|t1|1;const_i|t2|2;bin|t3|+|t1|t2;const_i|t4|3;bin|t5|*|t3|t4;ret|t5;")
+    assert value true == true
+    return nothing
+
+
+to test_mir_validator_accepts_lowered_subset_program() -> Nothing:
+    source_text = "to run() -> Integer:\n    return 1 + 2 * 3\n"
+    program_maps = get_lowered_mir_or_empty_map(source_text)
+    validate_result_maps = validate_mir_program(program_maps)
+    assert value __wr_map_get(validate_result_maps, "ok") == true
+    return nothing
+
+
+to test_mir_rewrite_is_deterministic_and_idempotent() -> Nothing:
+    source_text = "to run() -> Integer:\n    return (1 + 2) * 3\n"
+    program_maps = get_lowered_mir_or_empty_map(source_text)
+    rewrite_once_result_maps = create_rewritten_mir_program(program_maps)
+    rewrite_once_program_maps = __wr_map_get(rewrite_once_result_maps, "mir")
+    rewrite_twice_result_maps = create_rewritten_mir_program(rewrite_once_program_maps)
+    rewrite_twice_program_maps = __wr_map_get(rewrite_twice_result_maps, "mir")
+    assert value get_mir_signature_text(rewrite_once_program_maps) == get_mir_signature_text(rewrite_twice_program_maps)
+    assert value __wr_map_get(validate_mir_program(rewrite_once_program_maps), "ok") == true
+    assert value __wr_map_get(validate_mir_program(rewrite_twice_program_maps), "ok") == true
+    return nothing
+
+
+to test_mir_corpus_50_case_parity_locked() -> Nothing:
+    check_mir_ok_case("to run() -> Integer:\n    return 1 + 2 * 3\n", "const_i|t1|1;const_i|t2|2;const_i|t3|3;bin|t4|*|t2|t3;bin|t5|+|t1|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return 8 / 2 + 1\n", "const_i|t1|8;const_i|t2|2;bin|t3|/|t1|t2;const_i|t4|1;bin|t5|+|t3|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return 9 - 2 * 3\n", "const_i|t1|9;const_i|t2|2;const_i|t3|3;bin|t4|*|t2|t3;bin|t5|-|t1|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return 1 + 2 + 3\n", "const_i|t1|1;const_i|t2|2;bin|t3|+|t1|t2;const_i|t4|3;bin|t5|+|t3|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return 2 * 3 * 4\n", "const_i|t1|2;const_i|t2|3;bin|t3|*|t1|t2;const_i|t4|4;bin|t5|*|t3|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return 9 - 4 - 1\n", "const_i|t1|9;const_i|t2|4;bin|t3|-|t1|t2;const_i|t4|1;bin|t5|-|t3|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return 8 / 2 / 2\n", "const_i|t1|8;const_i|t2|2;bin|t3|/|t1|t2;const_i|t4|2;bin|t5|/|t3|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return 10 - 3 + 1\n", "const_i|t1|10;const_i|t2|3;bin|t3|-|t1|t2;const_i|t4|1;bin|t5|+|t3|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return 8 / 2 * 3\n", "const_i|t1|8;const_i|t2|2;bin|t3|/|t1|t2;const_i|t4|3;bin|t5|*|t3|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return 1 + 2 * 3 - 4\n", "const_i|t1|1;const_i|t2|2;const_i|t3|3;bin|t4|*|t2|t3;bin|t5|+|t1|t4;const_i|t6|4;bin|t7|-|t5|t6;ret|t7;")
+    check_mir_ok_case("to run() -> Integer:\n    return 1 + 2 * 3 * 4\n", "const_i|t1|1;const_i|t2|2;const_i|t3|3;bin|t4|*|t2|t3;const_i|t5|4;bin|t6|*|t4|t5;bin|t7|+|t1|t6;ret|t7;")
+    check_mir_ok_case("to run() -> Integer:\n    return 1 + 2 + 3 + 4\n", "const_i|t1|1;const_i|t2|2;bin|t3|+|t1|t2;const_i|t4|3;bin|t5|+|t3|t4;const_i|t6|4;bin|t7|+|t5|t6;ret|t7;")
+    check_mir_ok_case("to run() -> Integer:\n    return (1 + 2) * 3\n", "const_i|t1|1;const_i|t2|2;bin|t3|+|t1|t2;const_i|t4|3;bin|t5|*|t3|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return 8 / (2 + 1)\n", "const_i|t1|8;const_i|t2|2;const_i|t3|1;bin|t4|+|t2|t3;bin|t5|/|t1|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return 9 - (4 - 1)\n", "const_i|t1|9;const_i|t2|4;const_i|t3|1;bin|t4|-|t2|t3;bin|t5|-|t1|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return (1 + 2) * (3 + 4)\n", "const_i|t1|1;const_i|t2|2;bin|t3|+|t1|t2;const_i|t4|3;const_i|t5|4;bin|t6|+|t4|t5;bin|t7|*|t3|t6;ret|t7;")
+    check_mir_ok_case("to run() -> Integer:\n    return ((1 + 2) * 3) + 4\n", "const_i|t1|1;const_i|t2|2;bin|t3|+|t1|t2;const_i|t4|3;bin|t5|*|t3|t4;const_i|t6|4;bin|t7|+|t5|t6;ret|t7;")
+    check_mir_ok_case("to run() -> Integer:\n    return 1 + (2 * (3 + 4))\n", "const_i|t1|1;const_i|t2|2;const_i|t3|3;const_i|t4|4;bin|t5|+|t3|t4;bin|t6|*|t2|t5;bin|t7|+|t1|t6;ret|t7;")
+    check_mir_ok_case("to run() -> Integer:\n    return (7)\n", "const_i|t1|7;ret|t1;")
+    check_mir_ok_case("to run() -> Integer:\n    return ((7))\n", "const_i|t1|7;ret|t1;")
+    check_mir_ok_case("to run() -> Integer:\n    return (1 + 2 + 3) * 4\n", "const_i|t1|1;const_i|t2|2;bin|t3|+|t1|t2;const_i|t4|3;bin|t5|+|t3|t4;const_i|t6|4;bin|t7|*|t5|t6;ret|t7;")
+    check_mir_ok_case("to run() -> Integer:\n    return (2 * 3 * 4) + 5\n", "const_i|t1|2;const_i|t2|3;bin|t3|*|t1|t2;const_i|t4|4;bin|t5|*|t3|t4;const_i|t6|5;bin|t7|+|t5|t6;ret|t7;")
+    check_mir_ok_case("to run() -> Integer:\n    return 2 + 5\n", "const_i|t1|2;const_i|t2|5;bin|t3|+|t1|t2;ret|t3;")
+    check_mir_ok_case("to run() -> Integer:\n    return 6 - 4\n", "const_i|t1|6;const_i|t2|4;bin|t3|-|t1|t2;ret|t3;")
+    check_mir_ok_case("to run() -> Integer:\n    return 3 * 7\n", "const_i|t1|3;const_i|t2|7;bin|t3|*|t1|t2;ret|t3;")
+    check_mir_ok_case("to run() -> Integer:\n    return 8 / 2\n", "const_i|t1|8;const_i|t2|2;bin|t3|/|t1|t2;ret|t3;")
+    check_mir_ok_case("to run() -> Integer:\n    return 11 + 12 * 2\n", "const_i|t1|11;const_i|t2|12;const_i|t3|2;bin|t4|*|t2|t3;bin|t5|+|t1|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return 20 / 5 + 6\n", "const_i|t1|20;const_i|t2|5;bin|t3|/|t1|t2;const_i|t4|6;bin|t5|+|t3|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return 18 - 4 * 2\n", "const_i|t1|18;const_i|t2|4;const_i|t3|2;bin|t4|*|t2|t3;bin|t5|-|t1|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return 14 / 2 - 1\n", "const_i|t1|14;const_i|t2|2;bin|t3|/|t1|t2;const_i|t4|1;bin|t5|-|t3|t4;ret|t5;")
+    check_frontend_fail_case("to run() -> Integer:\n    return 1 +\n")
+    check_frontend_fail_case("to nope() -> Integer:\n    return 1\n")
+    check_frontend_fail_case("to run() -> Integer:\n    return (1 + 2\n")
+    check_frontend_fail_case("to run() -> Integer:\n    return )1(\n")
+    check_frontend_fail_case("to run() -> Integer:\n    return 1 + true\n")
+    check_frontend_fail_case("to run() -> Integer:\n    return false * 3\n")
+    check_frontend_fail_case("to run() -> Integer:\n    return true / false\n")
+    check_frontend_fail_case("to run() -> Integer:\n	return 1\n")
+    check_mir_ok_case("to run() -> Integer:\n    return 1 + 2 * 3\n", "const_i|t1|1;const_i|t2|2;const_i|t3|3;bin|t4|*|t2|t3;bin|t5|+|t1|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return (1 + 2) * 3\n", "const_i|t1|1;const_i|t2|2;bin|t3|+|t1|t2;const_i|t4|3;bin|t5|*|t3|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return 1 + 2 + 3 + 4\n", "const_i|t1|1;const_i|t2|2;bin|t3|+|t1|t2;const_i|t4|3;bin|t5|+|t3|t4;const_i|t6|4;bin|t7|+|t5|t6;ret|t7;")
+    check_mir_ok_case("to run() -> Integer:\n    return 20 / 5 + 6\n", "const_i|t1|20;const_i|t2|5;bin|t3|/|t1|t2;const_i|t4|6;bin|t5|+|t3|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return 1 + (2 * (3 + 4))\n", "const_i|t1|1;const_i|t2|2;const_i|t3|3;const_i|t4|4;bin|t5|+|t3|t4;bin|t6|*|t2|t5;bin|t7|+|t1|t6;ret|t7;")
+    check_mir_ok_case("to run() -> Integer:\n    return ((1 + 2) * 3) + 4\n", "const_i|t1|1;const_i|t2|2;bin|t3|+|t1|t2;const_i|t4|3;bin|t5|*|t3|t4;const_i|t6|4;bin|t7|+|t5|t6;ret|t7;")
+    check_mir_ok_case("to run() -> Integer:\n    return 7\n", "const_i|t1|7;ret|t1;")
+    check_mir_ok_case("to run() -> Integer:\n    return 1 + 2\n", "const_i|t1|1;const_i|t2|2;bin|t3|+|t1|t2;ret|t3;")
+    check_mir_ok_case("to run() -> Integer:\n    return 1 + 2 + 3 + 4 + 5\n", "const_i|t1|1;const_i|t2|2;bin|t3|+|t1|t2;const_i|t4|3;bin|t5|+|t3|t4;const_i|t6|4;bin|t7|+|t5|t6;const_i|t8|5;bin|t9|+|t7|t8;ret|t9;")
+    check_mir_ok_case("to run() -> Integer:\n    return 2 * 3 * 4 * 5\n", "const_i|t1|2;const_i|t2|3;bin|t3|*|t1|t2;const_i|t4|4;bin|t5|*|t3|t4;const_i|t6|5;bin|t7|*|t5|t6;ret|t7;")
+    check_mir_ok_case("to run() -> Integer:\n    return (1 + 2) * (3 + 4) - 5\n", "const_i|t1|1;const_i|t2|2;bin|t3|+|t1|t2;const_i|t4|3;const_i|t5|4;bin|t6|+|t4|t5;bin|t7|*|t3|t6;const_i|t8|5;bin|t9|-|t7|t8;ret|t9;")
+    check_mir_ok_case("to run() -> Integer:\n    return ((1 + 2) * (3 + 4))\n", "const_i|t1|1;const_i|t2|2;bin|t3|+|t1|t2;const_i|t4|3;const_i|t5|4;bin|t6|+|t4|t5;bin|t7|*|t3|t6;ret|t7;")
+    assert value true == true
+    return nothing
+
+
+to test_mir_corpus_50_case_rewrite_idempotent() -> Nothing:
+    check_mir_ok_case("to run() -> Integer:\n    return 1 + 2 * 3\n", "const_i|t1|1;const_i|t2|2;const_i|t3|3;bin|t4|*|t2|t3;bin|t5|+|t1|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return 8 / 2 + 1\n", "const_i|t1|8;const_i|t2|2;bin|t3|/|t1|t2;const_i|t4|1;bin|t5|+|t3|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return 9 - 2 * 3\n", "const_i|t1|9;const_i|t2|2;const_i|t3|3;bin|t4|*|t2|t3;bin|t5|-|t1|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return 1 + 2 + 3\n", "const_i|t1|1;const_i|t2|2;bin|t3|+|t1|t2;const_i|t4|3;bin|t5|+|t3|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return 2 * 3 * 4\n", "const_i|t1|2;const_i|t2|3;bin|t3|*|t1|t2;const_i|t4|4;bin|t5|*|t3|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return 9 - 4 - 1\n", "const_i|t1|9;const_i|t2|4;bin|t3|-|t1|t2;const_i|t4|1;bin|t5|-|t3|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return 8 / 2 / 2\n", "const_i|t1|8;const_i|t2|2;bin|t3|/|t1|t2;const_i|t4|2;bin|t5|/|t3|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return 10 - 3 + 1\n", "const_i|t1|10;const_i|t2|3;bin|t3|-|t1|t2;const_i|t4|1;bin|t5|+|t3|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return 8 / 2 * 3\n", "const_i|t1|8;const_i|t2|2;bin|t3|/|t1|t2;const_i|t4|3;bin|t5|*|t3|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return 1 + 2 * 3 - 4\n", "const_i|t1|1;const_i|t2|2;const_i|t3|3;bin|t4|*|t2|t3;bin|t5|+|t1|t4;const_i|t6|4;bin|t7|-|t5|t6;ret|t7;")
+    check_mir_ok_case("to run() -> Integer:\n    return 1 + 2 * 3 * 4\n", "const_i|t1|1;const_i|t2|2;const_i|t3|3;bin|t4|*|t2|t3;const_i|t5|4;bin|t6|*|t4|t5;bin|t7|+|t1|t6;ret|t7;")
+    check_mir_ok_case("to run() -> Integer:\n    return 1 + 2 + 3 + 4\n", "const_i|t1|1;const_i|t2|2;bin|t3|+|t1|t2;const_i|t4|3;bin|t5|+|t3|t4;const_i|t6|4;bin|t7|+|t5|t6;ret|t7;")
+    check_mir_ok_case("to run() -> Integer:\n    return (1 + 2) * 3\n", "const_i|t1|1;const_i|t2|2;bin|t3|+|t1|t2;const_i|t4|3;bin|t5|*|t3|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return 8 / (2 + 1)\n", "const_i|t1|8;const_i|t2|2;const_i|t3|1;bin|t4|+|t2|t3;bin|t5|/|t1|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return 9 - (4 - 1)\n", "const_i|t1|9;const_i|t2|4;const_i|t3|1;bin|t4|-|t2|t3;bin|t5|-|t1|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return (1 + 2) * (3 + 4)\n", "const_i|t1|1;const_i|t2|2;bin|t3|+|t1|t2;const_i|t4|3;const_i|t5|4;bin|t6|+|t4|t5;bin|t7|*|t3|t6;ret|t7;")
+    check_mir_ok_case("to run() -> Integer:\n    return ((1 + 2) * 3) + 4\n", "const_i|t1|1;const_i|t2|2;bin|t3|+|t1|t2;const_i|t4|3;bin|t5|*|t3|t4;const_i|t6|4;bin|t7|+|t5|t6;ret|t7;")
+    check_mir_ok_case("to run() -> Integer:\n    return 1 + (2 * (3 + 4))\n", "const_i|t1|1;const_i|t2|2;const_i|t3|3;const_i|t4|4;bin|t5|+|t3|t4;bin|t6|*|t2|t5;bin|t7|+|t1|t6;ret|t7;")
+    check_mir_ok_case("to run() -> Integer:\n    return (7)\n", "const_i|t1|7;ret|t1;")
+    check_mir_ok_case("to run() -> Integer:\n    return ((7))\n", "const_i|t1|7;ret|t1;")
+    check_mir_ok_case("to run() -> Integer:\n    return (1 + 2 + 3) * 4\n", "const_i|t1|1;const_i|t2|2;bin|t3|+|t1|t2;const_i|t4|3;bin|t5|+|t3|t4;const_i|t6|4;bin|t7|*|t5|t6;ret|t7;")
+    check_mir_ok_case("to run() -> Integer:\n    return (2 * 3 * 4) + 5\n", "const_i|t1|2;const_i|t2|3;bin|t3|*|t1|t2;const_i|t4|4;bin|t5|*|t3|t4;const_i|t6|5;bin|t7|+|t5|t6;ret|t7;")
+    check_mir_ok_case("to run() -> Integer:\n    return 2 + 5\n", "const_i|t1|2;const_i|t2|5;bin|t3|+|t1|t2;ret|t3;")
+    check_mir_ok_case("to run() -> Integer:\n    return 6 - 4\n", "const_i|t1|6;const_i|t2|4;bin|t3|-|t1|t2;ret|t3;")
+    check_mir_ok_case("to run() -> Integer:\n    return 3 * 7\n", "const_i|t1|3;const_i|t2|7;bin|t3|*|t1|t2;ret|t3;")
+    check_mir_ok_case("to run() -> Integer:\n    return 8 / 2\n", "const_i|t1|8;const_i|t2|2;bin|t3|/|t1|t2;ret|t3;")
+    check_mir_ok_case("to run() -> Integer:\n    return 11 + 12 * 2\n", "const_i|t1|11;const_i|t2|12;const_i|t3|2;bin|t4|*|t2|t3;bin|t5|+|t1|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return 20 / 5 + 6\n", "const_i|t1|20;const_i|t2|5;bin|t3|/|t1|t2;const_i|t4|6;bin|t5|+|t3|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return 18 - 4 * 2\n", "const_i|t1|18;const_i|t2|4;const_i|t3|2;bin|t4|*|t2|t3;bin|t5|-|t1|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return 14 / 2 - 1\n", "const_i|t1|14;const_i|t2|2;bin|t3|/|t1|t2;const_i|t4|1;bin|t5|-|t3|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return 1 + 2 * 3\n", "const_i|t1|1;const_i|t2|2;const_i|t3|3;bin|t4|*|t2|t3;bin|t5|+|t1|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return (1 + 2) * 3\n", "const_i|t1|1;const_i|t2|2;bin|t3|+|t1|t2;const_i|t4|3;bin|t5|*|t3|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return 1 + 2 + 3 + 4\n", "const_i|t1|1;const_i|t2|2;bin|t3|+|t1|t2;const_i|t4|3;bin|t5|+|t3|t4;const_i|t6|4;bin|t7|+|t5|t6;ret|t7;")
+    check_mir_ok_case("to run() -> Integer:\n    return 20 / 5 + 6\n", "const_i|t1|20;const_i|t2|5;bin|t3|/|t1|t2;const_i|t4|6;bin|t5|+|t3|t4;ret|t5;")
+    check_mir_ok_case("to run() -> Integer:\n    return 1 + (2 * (3 + 4))\n", "const_i|t1|1;const_i|t2|2;const_i|t3|3;const_i|t4|4;bin|t5|+|t3|t4;bin|t6|*|t2|t5;bin|t7|+|t1|t6;ret|t7;")
+    check_mir_ok_case("to run() -> Integer:\n    return ((1 + 2) * 3) + 4\n", "const_i|t1|1;const_i|t2|2;bin|t3|+|t1|t2;const_i|t4|3;bin|t5|*|t3|t4;const_i|t6|4;bin|t7|+|t5|t6;ret|t7;")
+    check_mir_ok_case("to run() -> Integer:\n    return 7\n", "const_i|t1|7;ret|t1;")
+    check_mir_ok_case("to run() -> Integer:\n    return 1 + 2\n", "const_i|t1|1;const_i|t2|2;bin|t3|+|t1|t2;ret|t3;")
+    check_mir_ok_case("to run() -> Integer:\n    return 1 + 2 + 3 + 4 + 5\n", "const_i|t1|1;const_i|t2|2;bin|t3|+|t1|t2;const_i|t4|3;bin|t5|+|t3|t4;const_i|t6|4;bin|t7|+|t5|t6;const_i|t8|5;bin|t9|+|t7|t8;ret|t9;")
+    check_mir_ok_case("to run() -> Integer:\n    return 2 * 3 * 4 * 5\n", "const_i|t1|2;const_i|t2|3;bin|t3|*|t1|t2;const_i|t4|4;bin|t5|*|t3|t4;const_i|t6|5;bin|t7|*|t5|t6;ret|t7;")
+    check_mir_ok_case("to run() -> Integer:\n    return (1 + 2) * (3 + 4) - 5\n", "const_i|t1|1;const_i|t2|2;bin|t3|+|t1|t2;const_i|t4|3;const_i|t5|4;bin|t6|+|t4|t5;bin|t7|*|t3|t6;const_i|t8|5;bin|t9|-|t7|t8;ret|t9;")
+    check_mir_ok_case("to run() -> Integer:\n    return ((1 + 2) * (3 + 4))\n", "const_i|t1|1;const_i|t2|2;bin|t3|+|t1|t2;const_i|t4|3;const_i|t5|4;bin|t6|+|t4|t5;bin|t7|*|t3|t6;ret|t7;")
+    assert value true == true
+    return nothing
+
+
+to test_m4_mir_and_application_coverage_touchpoints_are_callable() -> Nothing:
+    print_usage()
+
+    linux_bytes = convert_to_byte_list("linux")
+    get_byte_count(linux_bytes)
+    get_byte_at_index(linux_bytes, 0)
+    get_text_prefix_match_flag("linux-gnu", "linux")
+    normalize_os_name("darwin23")
+    current_target = create_current_platform_target()
+    current_target = current_target
+
+    linux_target = PlatformTarget()
+    linux_target.host_os_name = "linux"
+    linux_target.host_architecture = "x86_64"
+    match try_to_create_platform_ports(linux_target, true):
+        Ok(platform_ports):
+            platform_ports = platform_ports
+        Err(error_text):
+            error_text = error_text
+        otherwise:
+            return nothing
+
+    touch_root = "target/wrela_v2_mir_coverage_touchpoints"
+    touch_init_root = "{touch_root}/init_project"
+    touch_file_path = "{touch_root}/scratch.txt"
+    normalize_root("")
+    match try_to_create_directory(touch_root):
+        Ok(create_result):
+            create_result = create_result
+        Err(error_text):
+            error_text = error_text
+        otherwise:
+            return nothing
+    match try_to_write_text(touch_file_path, "ok\n"):
+        Ok(write_result):
+            write_result = write_result
+        Err(error_text):
+            error_text = error_text
+        otherwise:
+            return nothing
+
+    ensure_directory(touch_root) otherwise nothing
+    ensure_file(touch_file_path, "ok\n") otherwise nothing
+    get_path_exists_flag(touch_file_path)
+    run_init_command(touch_init_root)
+    get_path_exists_flag("{touch_init_root}/src/main.wr")
+
+    parity_root = "{touch_root}/parity"
+    parity_report = "{parity_root}/report.txt"
+    try_to_create_directory_for_parity_command(parity_root) otherwise nothing
+    try_to_write_text_for_parity_command(parity_report, "status=ok\n") otherwise nothing
+    get_exit_code_for_parity_command({})
+    get_stdout_for_parity_command({})
+
+    __wr_env_set("WRELA_V1_BIN", "/bin/echo")
+    __wr_env_set("WRELA_WORKSPACE_ROOT", touch_root)
+    run_parity_command()
+
+    match try_to_run_host_command("/bin/echo", ["hello"], "/", 1000):
+        Ok(host_results):
+            get_exit_code(host_results)
+        Err(error_text):
+            error_text = error_text
+        otherwise:
+            return nothing
+
+    match try_to_run_v1_command("/bin/echo", "/", ["hello"]):
+        Ok(v1_results):
+            get_exit_code(v1_results)
+        Err(error_text):
+            error_text = error_text
+        otherwise:
+            return nothing
+
+    match try_to_run_v1_help("/bin/echo", "/"):
+        Ok(help_results):
+            get_exit_code(help_results)
+            get_stdout(help_results)
+        Err(error_text):
+            error_text = error_text
+        otherwise:
+            return nothing
+    get_stdout({})
+
+    create_mir_const_integer_instruction("t1", 1)
+    create_mir_const_boolean_instruction("t2", true)
+    create_mir_binary_instruction("t3", "+", "t1", "t1")
+    create_mir_return_instruction("t3")
+    create_mir_block("entry", [])
+    create_mir_function("run", "entry", [])
+
+    node_maps = __wr_map_new()
+    __wr_map_set(node_maps, "value", true)
+    assert value get_ast_boolean_literal_flag(node_maps) == 1
+    assert value true == true
+    return nothing

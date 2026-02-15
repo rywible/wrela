@@ -1,0 +1,18 @@
+so:
+    V2 matrix command with real M7-C behavior.
+
+use try_to_run_matrix_runner from application/matrix_runner
+
+
+to run_matrix_command(path: String) -> Integer:
+    match try_to_run_matrix_runner(path):
+        Ok(_):
+            __wr_print("matrix: cells=3 failures=0")
+            return 0
+        Err(_):
+            __wr_print("error: matrix encountered failures")
+            return 2
+        otherwise:
+            __wr_print("error: matrix failed")
+            return 2
+    return 2

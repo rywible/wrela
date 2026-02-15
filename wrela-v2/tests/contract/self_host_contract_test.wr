@@ -1,0 +1,71 @@
+so:
+    M9-C self-host contract tests.
+
+use run_init_command from application/init_command
+use try_to_run_self_host_runner from application/self_host_runner
+use get_deterministic_stage_root from application/stage_toolchain_runner
+
+
+to test_self_host_runner_stage0_stage1_stage2_success() -> Nothing:
+    root_path_text = "target/wrela_v2_self_host_contract_valid"
+    __wr_fs_remove_dir_all(root_path_text) otherwise nothing
+    assert value run_init_command(root_path_text) == 0
+    workspace_root_text = "/Users/ryanwible/projects/wrela"
+    __wr_env_set("WRELA_V1_BIN", "{workspace_root_text}/target/debug/wrela")
+    __wr_env_set("WRELA_WORKSPACE_ROOT", workspace_root_text)
+    __wr_env_set("WRELA_SELF_HOST_FIXED_TIMESTAMP_NS", "999")
+
+    match try_to_run_self_host_runner(root_path_text):
+        Ok(result_maps):
+            assert value __wr_map_get(result_maps, "stage0_status") == "ok"
+            assert value __wr_map_get(result_maps, "stage1_status") == "ok"
+            assert value __wr_map_get(result_maps, "stage2_status") == "ok"
+            assert value __wr_map_get(result_maps, "repro_match") == true
+        Err(_):
+            assert value false == true
+        otherwise:
+            assert value false == true
+
+    stage_root_path_text = get_deterministic_stage_root(root_path_text, workspace_root_text)
+    match __wr_fs_metadata("{stage_root_path_text}/stage0_toolchain.bin"):
+        Ok(_):
+            nothing
+        Err(_):
+            assert value false == true
+        otherwise:
+            assert value false == true
+    match __wr_fs_metadata("{stage_root_path_text}/stage1_toolchain.bin"):
+        Ok(_):
+            nothing
+        Err(_):
+            assert value false == true
+        otherwise:
+            assert value false == true
+    match __wr_fs_metadata("{stage_root_path_text}/stage2_toolchain.bin"):
+        Ok(_):
+            nothing
+        Err(_):
+            assert value false == true
+        otherwise:
+            assert value false == true
+    match __wr_fs_metadata("{stage_root_path_text}/self_host_report.json"):
+        Ok(_):
+            nothing
+        Err(_):
+            assert value false == true
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_self_host_runner_fails_when_stage0_is_missing() -> Nothing:
+    __wr_env_set("WRELA_V1_BIN", "")
+    __wr_env_set("WRELA_WORKSPACE_ROOT", ".")
+    match try_to_run_self_host_runner("target/wrela_v2_self_host_contract_missing"):
+        Ok(_):
+            assert value false == true
+        Err(error_text):
+            assert value error_text == "self-host stage0 failed"
+        otherwise:
+            assert value false == true
+    return nothing

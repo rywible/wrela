@@ -1,0 +1,117 @@
+so:
+    Contract coverage for v2 matrix command real behavior.
+
+use run_matrix_command from application/matrix_command
+use run_init_command from application/init_command
+use create_matrix_failed_cell_maps from application/matrix_runner
+
+
+to get_matrix_contract_lines(text: String) -> List[String]:
+    line_lists = []
+    current_byte_lists = []
+    text_byte_lists = __wr_bytes_to_list(__wr_bytes_from_string(text))
+
+    for byte_value in text_byte_lists:
+        if byte_value == 13:
+            nothing
+        otherwise:
+            if byte_value == 10:
+                __wr_list_push(line_lists, __wr_bytes_to_string(__wr_bytes_from_list(current_byte_lists)))
+                current_byte_lists = []
+            otherwise:
+                __wr_list_push(current_byte_lists, byte_value)
+    __wr_list_push(line_lists, __wr_bytes_to_string(__wr_bytes_from_list(current_byte_lists)))
+    return line_lists
+
+
+to get_matrix_contract_value_for_key(text: String, key_text: String) -> String:
+    prefix_text = "{key_text}="
+    for line_text in get_matrix_contract_lines(text):
+        line_byte_lists = __wr_bytes_to_list(__wr_bytes_from_string(line_text))
+        prefix_byte_lists = __wr_bytes_to_list(__wr_bytes_from_string(prefix_text))
+        mutable line_count_number = 0
+        for _ in line_byte_lists:
+            line_count_number = line_count_number + 1
+        mutable prefix_count_number = 0
+        for _ in prefix_byte_lists:
+            prefix_count_number = prefix_count_number + 1
+        if line_count_number < prefix_count_number:
+            nothing
+        otherwise:
+            mutable prefix_match_flag_number = 1
+            mutable index_number = 0
+            for prefix_byte_value in prefix_byte_lists:
+                mutable line_byte_at_index = -1
+                mutable cursor_number = 0
+                for line_byte_value in line_byte_lists:
+                    if cursor_number == index_number:
+                        line_byte_at_index = line_byte_value
+                        break
+                    cursor_number = cursor_number + 1
+                if line_byte_at_index != prefix_byte_value:
+                    prefix_match_flag_number = 0
+                    break
+                index_number = index_number + 1
+            if prefix_match_flag_number == 1:
+                value_byte_lists = []
+                mutable cursor_number = 0
+                for line_byte_value in line_byte_lists:
+                    if cursor_number >= prefix_count_number:
+                        __wr_list_push(value_byte_lists, line_byte_value)
+                    cursor_number = cursor_number + 1
+                return __wr_bytes_to_string(__wr_bytes_from_list(value_byte_lists))
+    return ""
+
+
+to try_to_read_matrix_report_text() -> Result[String]:
+    match __wr_fs_read_bytes("target/wrela_v2_perf/matrix_report.json"):
+        Ok(bytes):
+            text = __wr_bytes_to_string(bytes)
+            match text:
+                String:
+                    return text
+                otherwise:
+                    return error "matrix report invalid utf8"
+        Err(_):
+            return error "matrix report missing"
+        otherwise:
+            return error "matrix report missing"
+    return error "matrix report missing"
+
+
+to test_matrix_command_executes_fixed_cells_for_valid_path() -> Nothing:
+    root_path_text = "target/wrela_v2_matrix_contract_valid"
+    __wr_fs_remove_dir_all(root_path_text) otherwise nothing
+    assert value run_init_command(root_path_text) == 0
+    assert value run_matrix_command(root_path_text) == 0
+    report_text = ""
+    match try_to_read_matrix_report_text():
+        Ok(text):
+            report_text = text
+        Err(_):
+            assert value false == true
+        otherwise:
+            assert value false == true
+    assert value get_matrix_contract_value_for_key(report_text, "cells") == "1,3,5"
+    assert value get_matrix_contract_value_for_key(report_text, "cell_1_runs") == "1"
+    assert value get_matrix_contract_value_for_key(report_text, "cell_3_runs") == "3"
+    assert value get_matrix_contract_value_for_key(report_text, "cell_5_runs") == "5"
+    assert value get_matrix_contract_value_for_key(report_text, "failures_total") == "0"
+    failed_cell_maps = create_matrix_failed_cell_maps(3)
+    assert value __wr_map_get(failed_cell_maps, "status") == "failed"
+    return nothing
+
+
+to test_matrix_command_returns_two_when_any_cell_fails() -> Nothing:
+    assert value run_matrix_command("target/wrela_v2_matrix_contract_missing") == 2
+    report_text = ""
+    match try_to_read_matrix_report_text():
+        Ok(text):
+            report_text = text
+        Err(_):
+            assert value false == true
+        otherwise:
+            assert value false == true
+    assert value get_matrix_contract_value_for_key(report_text, "cells") == "1,3,5"
+    assert value get_matrix_contract_value_for_key(report_text, "failures_total") != "0"
+    return nothing

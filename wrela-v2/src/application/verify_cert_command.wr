@@ -1,0 +1,25 @@
+so:
+    V2 verify-cert command with real M7-C behavior.
+
+use try_to_run_verify_cert_runner from application/verify_cert_runner
+
+
+to run_verify_cert_command(path: String) -> Integer:
+    if path == "":
+        __wr_print("error: missing input path")
+        return 1
+
+    match try_to_run_verify_cert_runner(path):
+        Ok(_):
+            __wr_print("verify-cert: ok")
+            return 0
+        Err(error_text):
+            if error_text == "verify-cert file not found":
+                __wr_print("error: verify-cert file not found")
+                return 1
+            __wr_print("error: {error_text}")
+            return 2
+        otherwise:
+            __wr_print("error: verify-cert failed")
+            return 2
+    return 2

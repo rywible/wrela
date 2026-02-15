@@ -1,0 +1,44 @@
+so:
+    V2 run command with real M7-B behavior.
+
+use try_to_build_executable from application/build_runner
+
+
+to run_run_command(path: String) -> Integer:
+    if path == "":
+        __wr_print("error: missing input path")
+        return 1
+
+    match try_to_build_executable(path):
+        Ok(build_result_maps):
+            output_path_text = __wr_map_get(build_result_maps, "output_path")
+            if output_path_text == nothing:
+                __wr_print("error: run failed to resolve output")
+                return 2
+
+            specs = {
+                "command": "{output_path_text}",
+                "args": [],
+                "cwd": ".",
+                "env": {},
+                "timeout_ms": 10_000
+            }
+            match __wr_process_run(specs):
+                Ok(process_maps):
+                    exit_code_value = __wr_map_get(process_maps, "exit_code")
+                    if exit_code_value == nothing:
+                        return 2
+                    return exit_code_value
+                Err(process_error_text):
+                    __wr_print("error: run launch failed")
+                    return 2
+                otherwise:
+                    __wr_print("error: run launch failed")
+                    return 2
+        Err(error_text):
+            __wr_print("error: {error_text}")
+            return 2
+        otherwise:
+            __wr_print("error: run failed")
+            return 2
+    return 2

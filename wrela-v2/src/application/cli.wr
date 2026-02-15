@@ -1,0 +1,88 @@
+so:
+    V2 CLI bootstrap and command dispatch.
+    Coverage-critical helper module for command routing.
+
+use run_check_command from application/check_command
+use run_init_command from application/init_command
+use run_parity_command from application/parity_command
+use run_update_command from application/update_command
+use run_build_command from application/build_command
+use run_compile_command from application/compile_command
+use run_verify_cert_command from application/verify_cert_command
+use run_run_command from application/run_command
+use run_dev_command from application/dev_command
+use run_test_command from application/test_command
+use run_perf_command from application/perf_command
+use run_perfcmp_command from application/perfcmp_command
+use run_matrix_command from application/matrix_command
+
+
+to get_item_at_index(argument_values: List[String], index: Integer) -> String:
+    mutable current_index = 0
+    for argument_value in argument_values:
+        if current_index == index:
+            return argument_value
+        current_index = current_index + 1
+    return ""
+
+
+to print_usage() -> Nothing:
+    __wr_print("usage: wrela-v2 <command> [path]")
+    __wr_print("commands:")
+    __wr_print("  init [path]")
+    __wr_print("  update")
+    __wr_print("  check <path>")
+    __wr_print("  build <path>")
+    __wr_print("  compile <path>")
+    __wr_print("  verify-cert <path>")
+    __wr_print("  run <path>")
+    __wr_print("  dev <path>")
+    __wr_print("  test [path]")
+    __wr_print("  perf [path]")
+    __wr_print("  perfcmp [path]")
+    __wr_print("  matrix [path]")
+    __wr_print("  parity")
+    return nothing
+
+
+to run_cli(argument_values: List[String]) -> Integer:
+    command_value = get_item_at_index(argument_values, 1)
+    path_value = get_item_at_index(argument_values, 2)
+    if command_value == "":
+        print_usage()
+        return 1
+
+    if command_value == "help" or command_value == "--help" or command_value == "-h":
+        print_usage()
+        return 0
+
+    if command_value == "init":
+        return run_init_command(path_value)
+    if command_value == "update":
+        return run_update_command(path_value)
+    if command_value == "check":
+        return run_check_command(path_value)
+    if command_value == "build":
+        return run_build_command(path_value)
+    if command_value == "compile":
+        return run_compile_command(path_value)
+    if command_value == "verify-cert":
+        return run_verify_cert_command(path_value)
+    if command_value == "run":
+        return run_run_command(path_value)
+    if command_value == "dev":
+        return run_dev_command(path_value)
+    if command_value == "test":
+        return run_test_command(path_value)
+    if command_value == "perf":
+        return run_perf_command(path_value)
+    if command_value == "perfcmp":
+        return run_perfcmp_command(path_value)
+    if command_value == "matrix":
+        return run_matrix_command(path_value)
+    if command_value == "parity":
+        return run_parity_command()
+
+    __wr_print("error: unknown command `{command_value}`")
+    print_usage()
+    return 1

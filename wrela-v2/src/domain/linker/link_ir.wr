@@ -1,0 +1,64 @@
+so:
+    Linker image model for M5-B in-house executable slice.
+
+
+to create_linker_image_maps(
+    linker_ir_marker_text: String,
+    linker_ir_output_format_text: String,
+    linker_ir_architecture_text: String,
+    linker_ir_entry_offset_number: Integer,
+    linker_ir_segment_maps: List,
+    linker_ir_symbol_maps: List,
+    linker_ir_relocation_maps: List,
+    linker_ir_image_bytes: List
+) -> Map:
+    mutable linker_ir_segment_count_number = 0
+    for linker_ir_count_segment_item in linker_ir_segment_maps:
+        linker_ir_segment_count_number = linker_ir_segment_count_number + 1
+    mutable linker_ir_symbol_count_number = 0
+    for linker_ir_count_symbol_item in linker_ir_symbol_maps:
+        linker_ir_symbol_count_number = linker_ir_symbol_count_number + 1
+    mutable linker_ir_relocation_count_number = 0
+    for linker_ir_count_relocation_item in linker_ir_relocation_maps:
+        linker_ir_relocation_count_number = linker_ir_relocation_count_number + 1
+    mutable linker_ir_image_byte_count_number = 0
+    for linker_ir_count_byte_item in linker_ir_image_bytes:
+        linker_ir_image_byte_count_number = linker_ir_image_byte_count_number + 1
+
+    linker_ir_image_maps = __wr_map_new()
+    __wr_map_set(linker_ir_image_maps, "kind", "LinkerImage")
+    __wr_map_set(linker_ir_image_maps, "marker", linker_ir_marker_text)
+    __wr_map_set(linker_ir_image_maps, "output_format", linker_ir_output_format_text)
+    __wr_map_set(linker_ir_image_maps, "architecture", linker_ir_architecture_text)
+    __wr_map_set(linker_ir_image_maps, "entry_offset", linker_ir_entry_offset_number)
+    __wr_map_set(linker_ir_image_maps, "segments", linker_ir_segment_maps)
+    __wr_map_set(linker_ir_image_maps, "symbols", linker_ir_symbol_maps)
+    __wr_map_set(linker_ir_image_maps, "relocations", linker_ir_relocation_maps)
+    __wr_map_set(linker_ir_image_maps, "bytes", linker_ir_image_bytes)
+    __wr_map_set(
+        linker_ir_image_maps,
+        "signature",
+        "LNK|{linker_ir_marker_text}|{linker_ir_output_format_text}|{linker_ir_architecture_text}|E{linker_ir_entry_offset_number}|S{linker_ir_segment_count_number}|Y{linker_ir_symbol_count_number}|R{linker_ir_relocation_count_number}|B{linker_ir_image_byte_count_number}"
+    )
+    return linker_ir_image_maps
+
+
+to get_linker_image_signature_text(linker_ir_image_maps: Map) -> String:
+    linker_ir_signature_value = __wr_map_get(linker_ir_image_maps, "signature")
+    if linker_ir_signature_value == nothing:
+        return ""
+    return "{linker_ir_signature_value}"
+
+
+to get_linker_image_byte_lists(linker_ir_image_maps: Map) -> List:
+    linker_ir_bytes_value = __wr_map_get(linker_ir_image_maps, "bytes")
+    if linker_ir_bytes_value == nothing:
+        return []
+    return linker_ir_bytes_value
+
+
+to get_linker_image_entry_offset_number(linker_ir_image_maps: Map) -> Integer:
+    linker_ir_entry_offset_value = __wr_map_get(linker_ir_image_maps, "entry_offset")
+    if linker_ir_entry_offset_value == nothing:
+        return -1
+    return linker_ir_entry_offset_value

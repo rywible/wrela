@@ -1,0 +1,22 @@
+so:
+    V2 test command with real M7-B behavior.
+
+use try_to_run_tests from application/test_runner
+
+
+to run_test_command(path: String) -> Integer:
+    match try_to_run_tests(path):
+        Ok(test_result_maps):
+            passed_count_number = __wr_map_get(test_result_maps, "passed")
+            failed_count_number = __wr_map_get(test_result_maps, "failed")
+            __wr_print("tests: {passed_count_number} passed, {failed_count_number} failed")
+            if failed_count_number > 0:
+                return 2
+            return 0
+        Err(error_text):
+            __wr_print("error: {error_text}")
+            return 1
+        otherwise:
+            __wr_print("error: test failed")
+            return 1
+    return 1

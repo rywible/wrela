@@ -1,0 +1,48 @@
+so:
+    Process helpers.
+
+use create_map from map
+use set from map
+
+
+so: Return current process argv as List[String].
+to get_argv() -> List[String]:
+    return __wr_process_argv()
+
+
+so: Read an environment variable value (String or nothing).
+to get_env(key: String) -> Any:
+    return __wr_env_get(key)
+
+
+so: Return current working directory.
+to try_to_get_current_working_directory() -> Result[String]:
+    return __wr_process_cwd()
+
+
+so: Build a process run specification map.
+to create_process_spec(
+    command: String,
+    args: List[String],
+    cwd: String,
+    env: Map,
+    timeout_ms: Integer
+) -> Map:
+    spec = create_map()
+    set(spec, "command", command)
+    set(spec, "args", args)
+    set(spec, "cwd", cwd)
+    set(spec, "env", env)
+    set(spec, "timeout_ms", timeout_ms)
+    return spec
+
+
+so: Run a subprocess and return result payload map.
+to try_to_run_process(spec: Map) -> Result[Map]:
+    return __wr_process_run(spec)
+
+
+so: Exit current process.
+to exit(code: Integer) -> Nothing:
+    __wr_process_exit(code)
+    return nothing

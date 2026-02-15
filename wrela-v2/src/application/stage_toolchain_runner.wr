@@ -1,0 +1,68 @@
+so:
+    Stage toolchain process execution helpers for M9-C.
+
+use try_to_parse_integer from parse
+use get_env_or_default from application/env_vars
+
+
+to get_deterministic_stage_root(path: String, workspace_root: String) -> String:
+    seed_text = "{workspace_root}|{path}"
+    seed_bytes = __wr_bytes_to_list(__wr_bytes_from_string(seed_text))
+    mutable rolling_hash = 17
+    for byte_value in seed_bytes:
+        rolling_hash = (rolling_hash * 131) + byte_value
+        if rolling_hash < 0:
+            rolling_hash = rolling_hash * -1
+        rolling_hash = rolling_hash % 1_000_000_007
+    return "target/wrela_v2_self_host/{rolling_hash}"
+
+
+to try_to_run_stage_toolchain(
+    stage_bin_path: String,
+    workspace_root: String,
+    command_name: String,
+    command_path: String
+) -> Result[Map]:
+    if stage_bin_path == "":
+        return error "self-host artifact missing"
+    if workspace_root == "":
+        return error "self-host stage1 failed"
+    if command_name == "":
+        return error "self-host stage1 failed"
+
+    args = [command_name]
+    if command_path != "":
+        __wr_list_push(args, command_path)
+
+    stage_root = get_deterministic_stage_root(command_path, workspace_root)
+    build_output_root = "{stage_root}/build_output"
+    cert_output_root = "{stage_root}/cert_output"
+    stage_env = __wr_map_new()
+    __wr_map_set(stage_env, "WRELA_V2_BUILD_OUTPUT_ROOT", build_output_root)
+    __wr_map_set(stage_env, "WRELA_V2_CERT_OUTPUT_ROOT", cert_output_root)
+    __wr_map_set(stage_env, "WRELA_WORKSPACE_ROOT", workspace_root)
+    stage_path_text = get_env_or_default("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+    __wr_map_set(stage_env, "PATH", stage_path_text)
+
+    specs = {
+        "command": stage_bin_path,
+        "args": args,
+        "cwd": ".",
+        "env": stage_env,
+        "timeout_ms": 120_000
+    }
+    return __wr_process_run(specs)
+
+
+to get_stage_exit_code_or_default(process_result: Map, fallback_code: Integer) -> Integer:
+    stage_exit_code = __wr_map_get(process_result, "exit_code")
+    if stage_exit_code == nothing:
+        return 0
+    match try_to_parse_integer("{stage_exit_code}"):
+        Ok(parsed_code):
+            return parsed_code
+        Err(_):
+            return fallback_code
+        otherwise:
+            return fallback_code
+    return fallback_code

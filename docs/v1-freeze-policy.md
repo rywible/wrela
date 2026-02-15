@@ -22,6 +22,16 @@ Every V1 change must satisfy:
 3. `cargo run -p wrela -- test apps/ledger-lite`
 4. `scripts/governance/check_unsafe_allowlist.sh`
 5. `scripts/governance/check_public_api_quarantine.sh`
+6. `scripts/governance/check_v2_purity.sh`
+7. `scripts/governance/check_v2_no_cheating.sh`
+8. `scripts/governance/check_v2_platform_boundaries.sh`
+9. `scripts/governance/check_v2_platform_contracts.sh`
+10. `scripts/governance/check_v2_parity_bootstrap.sh`
+11. `scripts/governance/check_v2_cli_bootstrap.sh`
+12. `scripts/governance/check_v2_check_pipeline_bootstrap.sh`
+13. `scripts/governance/check_phase0_abi_snapshot.sh`
+14. `scripts/governance/check_phase0_surface_wiring.sh`
+15. `scripts/governance/check_v2_guardrails.sh`
 
 ## Exception Process
 

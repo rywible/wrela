@@ -976,6 +976,71 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
+            SmolStr::new("__wr_fs_read_dir"),
+            FunctionSig {
+                params: vec![(SmolStr::new("path"), Type::String)],
+                ret: Type::Result(
+                    Box::new(Type::List(Box::new(Type::String))),
+                    Box::new(err.clone()),
+                ),
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_fs_metadata"),
+            FunctionSig {
+                params: vec![(SmolStr::new("path"), Type::String)],
+                ret: Type::Result(
+                    Box::new(Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown))),
+                    Box::new(err.clone()),
+                ),
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_fs_mkdir_all"),
+            FunctionSig {
+                params: vec![(SmolStr::new("path"), Type::String)],
+                ret: Type::Result(Box::new(Type::Nil), Box::new(err.clone())),
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_fs_remove_file"),
+            FunctionSig {
+                params: vec![(SmolStr::new("path"), Type::String)],
+                ret: Type::Result(Box::new(Type::Nil), Box::new(err.clone())),
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_fs_remove_dir_all"),
+            FunctionSig {
+                params: vec![(SmolStr::new("path"), Type::String)],
+                ret: Type::Result(Box::new(Type::Nil), Box::new(err.clone())),
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_fs_rename"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("from_path"), Type::String),
+                    (SmolStr::new("to_path"), Type::String),
+                ],
+                ret: Type::Result(Box::new(Type::Nil), Box::new(err.clone())),
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_fs_set_executable"),
+            FunctionSig {
+                params: vec![(SmolStr::new("path"), Type::String)],
+                ret: Type::Result(Box::new(Type::Nil), Box::new(err.clone())),
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
             SmolStr::new("__wr_external_call"),
             FunctionSig {
                 params: vec![
@@ -1377,6 +1442,44 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("value"), Type::String),
                 ],
                 ret: Type::Boolean,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_process_argv"),
+            FunctionSig {
+                params: vec![],
+                ret: Type::List(Box::new(Type::String)),
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_process_cwd"),
+            FunctionSig {
+                params: vec![],
+                ret: Type::Result(Box::new(Type::String), Box::new(err.clone())),
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_process_run"),
+            FunctionSig {
+                params: vec![(
+                    SmolStr::new("spec"),
+                    Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown)),
+                )],
+                ret: Type::Result(
+                    Box::new(Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown))),
+                    Box::new(err.clone()),
+                ),
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_process_exit"),
+            FunctionSig {
+                params: vec![(SmolStr::new("code"), Type::Integer)],
+                ret: Type::Nil,
                 kind: FunctionKind::Function,
             },
         ),
@@ -3798,9 +3901,23 @@ fn is_assignable(
         return true;
     }
     match (expected, found) {
+        (Type::Unknown, _) => true,
+        (_, Type::Unknown) => true,
         (_, Type::Never) => true,
         (Type::Param(_), _) => true,
         (_, Type::Param(_)) => true,
+        (Type::List(exp), Type::List(found)) => {
+            matches!(**exp, Type::Unknown) || is_assignable(exp, found, classes, interfaces)
+        }
+        (Type::Map(exp_key, exp_value), Type::Map(found_key, found_value)) => {
+            (matches!(**exp_key, Type::Unknown)
+                || is_assignable(exp_key, found_key, classes, interfaces))
+                && (matches!(**exp_value, Type::Unknown)
+                    || is_assignable(exp_value, found_value, classes, interfaces))
+        }
+        (Type::Actor(exp), Type::Actor(found)) => {
+            matches!(**exp, Type::Unknown) || is_assignable(exp, found, classes, interfaces)
+        }
         (Type::Result(ok_e, err_e), Type::Result(ok_f, err_f)) => {
             is_assignable(ok_e, ok_f, classes, interfaces)
                 && is_assignable(err_e, err_f, classes, interfaces)
@@ -6063,6 +6180,54 @@ A Whale:\n    can swim() -> Boolean:\n        return true\n\nto f() -> Result:\n
     #[test]
     fn test_builtin_fallible_otherwise_ok() {
         let input = "to f() -> Integer:\n    return __wr_bytes_len(__wr_fs_read_bytes(\"x\") otherwise __wr_bytes_from_string(\"1\"))";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let errors = check_module(&module);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_builtin_process_cwd_requires_handling() {
+        let input = "to f() -> Nothing:\n    __wr_process_cwd()";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let errors = check_module(&module);
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::UnhandledResult { .. }))
+        );
+    }
+
+    #[test]
+    fn test_builtin_process_cwd_otherwise_ok() {
+        let input = "to f() -> String:\n    return __wr_process_cwd() otherwise \"\"";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let errors = check_module(&module);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_builtin_process_run_requires_handling() {
+        let input = "to f() -> Nothing:\n    __wr_process_run(__wr_map_new())";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let errors = check_module(&module);
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::UnhandledResult { .. }))
+        );
+    }
+
+    #[test]
+    fn test_builtin_fs_read_dir_otherwise_ok() {
+        let input = "to f() -> List[String]:\n    return __wr_fs_read_dir(\".\") otherwise []";
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);

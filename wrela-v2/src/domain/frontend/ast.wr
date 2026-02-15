@@ -1,0 +1,93 @@
+so:
+    AST node constructors and accessors for the v2 check frontend subset.
+
+
+to create_program_node(return_expression_maps: Map) -> Map:
+    program_maps = __wr_map_new()
+    __wr_map_set(program_maps, "kind", "Program")
+    __wr_map_set(program_maps, "return_expression", return_expression_maps)
+    return program_maps
+
+
+to create_integer_literal_node(value_number: Integer, line_number: Integer, column_number: Integer) -> Map:
+    node_maps = __wr_map_new()
+    __wr_map_set(node_maps, "kind", "IntegerLiteral")
+    __wr_map_set(node_maps, "value", value_number)
+    __wr_map_set(node_maps, "line", line_number)
+    __wr_map_set(node_maps, "column", column_number)
+    return node_maps
+
+
+to create_boolean_literal_node(is_value: Boolean, line_number: Integer, column_number: Integer) -> Map:
+    node_maps = __wr_map_new()
+    __wr_map_set(node_maps, "kind", "BooleanLiteral")
+    __wr_map_set(node_maps, "value", is_value)
+    __wr_map_set(node_maps, "line", line_number)
+    __wr_map_set(node_maps, "column", column_number)
+    return node_maps
+
+
+to create_binary_expression_node(
+    operator_text: String,
+    left_node_maps: Map,
+    right_node_maps: Map,
+    line_number: Integer,
+    column_number: Integer
+) -> Map:
+    node_maps = __wr_map_new()
+    __wr_map_set(node_maps, "kind", "BinaryExpression")
+    __wr_map_set(node_maps, "operator", operator_text)
+    __wr_map_set(node_maps, "left", left_node_maps)
+    __wr_map_set(node_maps, "right", right_node_maps)
+    __wr_map_set(node_maps, "line", line_number)
+    __wr_map_set(node_maps, "column", column_number)
+    return node_maps
+
+
+to get_ast_kind_text(node_maps: Map) -> String:
+    kind_value_item = __wr_map_get(node_maps, "kind")
+    if kind_value_item == nothing:
+        return ""
+    return "{kind_value_item}"
+
+
+to get_ast_line_number(node_maps: Map) -> Integer:
+    x1 = __wr_map_get(node_maps, "line")
+    if x1 == nothing:
+        return 0
+    return x1
+
+
+to get_ast_column_number(node_maps: Map) -> Integer:
+    x2 = __wr_map_get(node_maps, "column")
+    if x2 == nothing:
+        return 0
+    return x2
+
+
+to get_program_return_expression_node(program_maps: Map) -> Map:
+    return_expression_item = __wr_map_get(program_maps, "return_expression")
+    if return_expression_item == nothing:
+        return __wr_map_new()
+    return return_expression_item
+
+
+to get_binary_left_node(node_maps: Map) -> Map:
+    left_node_item = __wr_map_get(node_maps, "left")
+    if left_node_item == nothing:
+        return __wr_map_new()
+    return left_node_item
+
+
+to get_binary_right_node(node_maps: Map) -> Map:
+    right_node_item = __wr_map_get(node_maps, "right")
+    if right_node_item == nothing:
+        return __wr_map_new()
+    return right_node_item
+
+
+to get_ast_binary_operator_text(node_maps: Map) -> String:
+    operator_value_item = __wr_map_get(node_maps, "operator")
+    if operator_value_item == nothing:
+        return ""
+    return "{operator_value_item}"

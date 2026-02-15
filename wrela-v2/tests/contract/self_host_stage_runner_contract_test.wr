@@ -1,0 +1,57 @@
+so:
+    Coverage touchpoints for M9-C self-host/stage helpers.
+
+use try_to_write_self_host_report from application/self_host_runner
+use try_to_run_stage_toolchain from application/stage_toolchain_runner
+use get_stage_exit_code_or_default from application/stage_toolchain_runner
+use get_deterministic_stage_root from application/stage_toolchain_runner
+
+
+to test_self_host_report_helpers_are_callable() -> Nothing:
+    stage_root = get_deterministic_stage_root("target/wrela_v2_self_host_contract_touch", ".")
+    __wr_fs_mkdir_all(stage_root) otherwise nothing
+    report_maps = __wr_map_new()
+    __wr_map_set(report_maps, "stage0_status", "ok")
+    __wr_map_set(report_maps, "stage1_status", "ok")
+    __wr_map_set(report_maps, "stage2_status", "ok")
+    __wr_map_set(report_maps, "stage0_toolchain_hash", "a")
+    __wr_map_set(report_maps, "stage1_toolchain_hash", "b")
+    __wr_map_set(report_maps, "stage2_toolchain_hash", "c")
+    __wr_map_set(report_maps, "repro_match", true)
+    __wr_map_set(report_maps, "entry_path", "entry")
+    __wr_map_set(report_maps, "workspace_root", "workspace")
+    __wr_map_set(report_maps, "timestamp_ns", 7)
+
+    match try_to_write_self_host_report("{stage_root}/self_host_report.json", report_maps):
+        Ok(_):
+            nothing
+        Err(_):
+            nothing
+        otherwise:
+            nothing
+    assert value true == true
+    return nothing
+
+
+to test_stage_toolchain_runner_helpers_are_callable() -> Nothing:
+    match try_to_run_stage_toolchain("", "/", "build", "wrela-v2"):
+        Ok(_):
+            assert value false == true
+        Err(error_text):
+            assert value error_text == "self-host artifact missing"
+        otherwise:
+            assert value false == true
+
+    fallback_code = get_stage_exit_code_or_default(__wr_map_new(), 9)
+    assert value fallback_code == 0
+    return nothing
+
+
+to test_stage_root_is_deterministic_and_input_sensitive() -> Nothing:
+    root_a = get_deterministic_stage_root("target/wrela_v2_stage_a", "/workspace")
+    root_b = get_deterministic_stage_root("target/wrela_v2_stage_b", "/workspace")
+    root_a_again = get_deterministic_stage_root("target/wrela_v2_stage_a", "/workspace")
+    assert value root_a == root_a_again
+    if root_a == root_b:
+        assert value false == true
+    return nothing

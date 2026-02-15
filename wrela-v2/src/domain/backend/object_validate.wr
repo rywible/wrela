@@ -1,0 +1,59 @@
+so:
+    Object IR structural validation for M5-A backend core vertical slice.
+
+to create_object_validate_result_maps(is_ok: Boolean, reason_text: String) -> Map:
+    result_maps = __wr_map_new()
+    __wr_map_set(result_maps, "ok", is_ok)
+    __wr_map_set(result_maps, "reason", reason_text)
+    return result_maps
+
+
+to validate_object_program(object_program_maps: Map) -> Map:
+    if __wr_map_get(object_program_maps, "kind") != "ObjectProgram":
+        return create_object_validate_result_maps(false, "invalid kind")
+
+    object_section_lists = __wr_map_get(object_program_maps, "sections")
+    object_symbol_lists = __wr_map_get(object_program_maps, "symbols")
+    object_relocation_lists = __wr_map_get(object_program_maps, "relocations")
+    object_text_byte_lists = __wr_map_get(object_program_maps, "text_bytes")
+
+    mutable section_count_number = 0
+    for object_validate_section_entry_map in object_section_lists:
+        section_count_number = section_count_number + 1
+    if section_count_number < 1:
+        return create_object_validate_result_maps(false, "missing section")
+    mutable symbol_count_number = 0
+    for object_validate_symbol_entry_map in object_symbol_lists:
+        symbol_count_number = symbol_count_number + 1
+    if symbol_count_number < 1:
+        return create_object_validate_result_maps(false, "missing symbol")
+    mutable text_byte_count_number = 0
+    for object_validate_text_byte_value in object_text_byte_lists:
+        text_byte_count_number = text_byte_count_number + 1
+    if text_byte_count_number < 1:
+        return create_object_validate_result_maps(false, "missing text bytes")
+
+    mutable saw_text_section_flag = 0
+    for object_validate_section_entry_map in object_section_lists:
+        if __wr_map_get(object_validate_section_entry_map, "name") == ".text":
+            saw_text_section_flag = 1
+    if saw_text_section_flag != 1:
+        return create_object_validate_result_maps(false, "missing .text section")
+
+    mutable saw_run_symbol_flag = 0
+    for object_validate_symbol_entry_map in object_symbol_lists:
+        if __wr_map_get(object_validate_symbol_entry_map, "name") == "run":
+            saw_run_symbol_flag = 1
+    if saw_run_symbol_flag != 1:
+        return create_object_validate_result_maps(false, "missing run symbol")
+
+    for object_validate_text_byte_value in object_text_byte_lists:
+        if object_validate_text_byte_value < 0:
+            return create_object_validate_result_maps(false, "negative byte")
+        if object_validate_text_byte_value > 255:
+            return create_object_validate_result_maps(false, "byte overflow")
+
+    for object_validate_relocation_entry_map in object_relocation_lists:
+        nothing
+
+    return create_object_validate_result_maps(true, "")

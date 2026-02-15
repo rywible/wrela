@@ -1,0 +1,74 @@
+so:
+    V2 `check` command.
+
+use run_check_pipeline from application/check_pipeline
+use get_env_or_default from application/env_vars
+
+
+to get_integer_value_or_default_for_check(value: Integer, fallback: Integer) -> Integer:
+    if value == nothing:
+        return fallback
+    return value
+
+
+to get_string_value_or_default_for_check(value: String, fallback: String) -> String:
+    if value == nothing:
+        return fallback
+    return "{value}"
+
+
+to try_to_run_shadow_v1_check(path: String) -> Result[Integer]:
+    v1_bin = get_env_or_default("WRELA_V1_BIN", "")
+    workspace_root = get_env_or_default("WRELA_WORKSPACE_ROOT", "")
+    if v1_bin == "":
+        return error "shadow check disabled"
+    if workspace_root == "":
+        return error "shadow check disabled"
+
+    argument_values = ["check", path]
+    specs = {
+        "command": v1_bin,
+        "args": argument_values,
+        "cwd": workspace_root,
+        "env": {},
+        "timeout_ms": 10_000
+    }
+
+    match __wr_process_run(specs):
+        Ok(process_maps):
+            return __wr_map_get(process_maps, "exit_code")
+        Err(process_error_text):
+            return error "shadow check failed"
+        otherwise:
+            assert value false == true
+            return error "shadow check failed"
+    return error "shadow check failed"
+
+
+to run_check_command(path: String) -> Integer:
+    if path == "":
+        return 1
+
+    match run_check_pipeline(path):
+        Ok(report_maps):
+            local_exit_code = get_integer_value_or_default_for_check(__wr_map_get(report_maps, "exit_code"), 1)
+            if local_exit_code != 0:
+                return local_exit_code
+
+            resolved_path = get_string_value_or_default_for_check(__wr_map_get(report_maps, "resolved_path"), path)
+            match try_to_run_shadow_v1_check(resolved_path):
+                Ok(shadow_exit_code):
+                    if shadow_exit_code != 0:
+                        return 1
+                Err(shadow_error_text):
+                    return 0
+                otherwise:
+                    return 1
+
+            __wr_print("check: ok")
+            return 0
+        Err(error_text):
+            return 2
+        otherwise:
+            return 1
+    return 2

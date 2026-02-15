@@ -1,0 +1,155 @@
+so:
+    Real matrix runner for M7-C fixed perf cell matrix.
+
+use try_to_run_perf_runner_with_runs from application/perf_runner
+
+
+to create_matrix_failed_cell_maps(runs_number: Integer) -> Map:
+    cell_maps = __wr_map_new()
+    __wr_map_set(cell_maps, "runs", runs_number)
+    __wr_map_set(cell_maps, "successes", 0)
+    __wr_map_set(cell_maps, "failures", 1)
+    __wr_map_set(cell_maps, "min_ns", 0)
+    __wr_map_set(cell_maps, "max_ns", 0)
+    __wr_map_set(cell_maps, "avg_ns", 0)
+    __wr_map_set(cell_maps, "p50_ns", 0)
+    __wr_map_set(cell_maps, "p95_ns", 0)
+    __wr_map_set(cell_maps, "p99_ns", 0)
+    __wr_map_set(cell_maps, "status", "failed")
+    return cell_maps
+
+
+to get_matrix_integer_map_value_or_default(cell_maps: Map, key_text: String, fallback_number: Integer) -> Integer:
+    value = __wr_map_get(cell_maps, key_text)
+    if value == nothing:
+        return fallback_number
+    return value
+
+
+to try_to_write_matrix_report(
+    cell_one_maps: Map,
+    cell_three_maps: Map,
+    cell_five_maps: Map,
+    failure_count_number: Integer
+) -> Result[Nothing]:
+    output_root_path_text = "target/wrela_v2_perf"
+    report_path_text = "{output_root_path_text}/matrix_report.json"
+
+    match __wr_fs_mkdir_all(output_root_path_text):
+        Ok(_):
+            nothing
+        Err(_):
+            return error "matrix failed to create report directory"
+        otherwise:
+            return error "matrix failed to create report directory"
+
+    cell_1_runs_value = __wr_map_get(cell_one_maps, "runs")
+    cell_1_successes_value = __wr_map_get(cell_one_maps, "successes")
+    cell_1_failures_value = __wr_map_get(cell_one_maps, "failures")
+    cell_1_min_value = __wr_map_get(cell_one_maps, "min_ns")
+    cell_1_max_value = __wr_map_get(cell_one_maps, "max_ns")
+    cell_1_avg_value = __wr_map_get(cell_one_maps, "avg_ns")
+    cell_1_p50_value = __wr_map_get(cell_one_maps, "p50_ns")
+    cell_1_p95_value = __wr_map_get(cell_one_maps, "p95_ns")
+    cell_1_p99_value = __wr_map_get(cell_one_maps, "p99_ns")
+    cell_1_status_value = __wr_map_get(cell_one_maps, "status")
+    cell_3_runs_value = __wr_map_get(cell_three_maps, "runs")
+    cell_3_successes_value = __wr_map_get(cell_three_maps, "successes")
+    cell_3_failures_value = __wr_map_get(cell_three_maps, "failures")
+    cell_3_min_value = __wr_map_get(cell_three_maps, "min_ns")
+    cell_3_max_value = __wr_map_get(cell_three_maps, "max_ns")
+    cell_3_avg_value = __wr_map_get(cell_three_maps, "avg_ns")
+    cell_3_p50_value = __wr_map_get(cell_three_maps, "p50_ns")
+    cell_3_p95_value = __wr_map_get(cell_three_maps, "p95_ns")
+    cell_3_p99_value = __wr_map_get(cell_three_maps, "p99_ns")
+    cell_3_status_value = __wr_map_get(cell_three_maps, "status")
+    cell_5_runs_value = __wr_map_get(cell_five_maps, "runs")
+    cell_5_successes_value = __wr_map_get(cell_five_maps, "successes")
+    cell_5_failures_value = __wr_map_get(cell_five_maps, "failures")
+    cell_5_min_value = __wr_map_get(cell_five_maps, "min_ns")
+    cell_5_max_value = __wr_map_get(cell_five_maps, "max_ns")
+    cell_5_avg_value = __wr_map_get(cell_five_maps, "avg_ns")
+    cell_5_p50_value = __wr_map_get(cell_five_maps, "p50_ns")
+    cell_5_p95_value = __wr_map_get(cell_five_maps, "p95_ns")
+    cell_5_p99_value = __wr_map_get(cell_five_maps, "p99_ns")
+    cell_5_status_value = __wr_map_get(cell_five_maps, "status")
+
+    report_text = "cells=1,3,5\ncell_1_runs={cell_1_runs_value}\ncell_1_successes={cell_1_successes_value}\ncell_1_failures={cell_1_failures_value}\ncell_1_min_ns={cell_1_min_value}\ncell_1_max_ns={cell_1_max_value}\ncell_1_avg_ns={cell_1_avg_value}\ncell_1_p50_ns={cell_1_p50_value}\ncell_1_p95_ns={cell_1_p95_value}\ncell_1_p99_ns={cell_1_p99_value}\ncell_1_status={cell_1_status_value}\ncell_3_runs={cell_3_runs_value}\ncell_3_successes={cell_3_successes_value}\ncell_3_failures={cell_3_failures_value}\ncell_3_min_ns={cell_3_min_value}\ncell_3_max_ns={cell_3_max_value}\ncell_3_avg_ns={cell_3_avg_value}\ncell_3_p50_ns={cell_3_p50_value}\ncell_3_p95_ns={cell_3_p95_value}\ncell_3_p99_ns={cell_3_p99_value}\ncell_3_status={cell_3_status_value}\ncell_5_runs={cell_5_runs_value}\ncell_5_successes={cell_5_successes_value}\ncell_5_failures={cell_5_failures_value}\ncell_5_min_ns={cell_5_min_value}\ncell_5_max_ns={cell_5_max_value}\ncell_5_avg_ns={cell_5_avg_value}\ncell_5_p50_ns={cell_5_p50_value}\ncell_5_p95_ns={cell_5_p95_value}\ncell_5_p99_ns={cell_5_p99_value}\ncell_5_status={cell_5_status_value}\nfailures_total={failure_count_number}\n"
+
+    match __wr_fs_write_bytes(report_path_text, __wr_bytes_from_string(report_text)):
+        Ok(_):
+            return nothing
+        Err(_):
+            return error "matrix failed to write report"
+        otherwise:
+            return error "matrix failed to write report"
+    return error "matrix failed to write report"
+
+
+to try_to_run_matrix_runner(path: String) -> Result[Map]:
+    mutable target_path_text = path
+    if target_path_text == "":
+        target_path_text = "."
+
+    mutable cell_one_maps = __wr_map_new()
+    mutable cell_three_maps = __wr_map_new()
+    mutable cell_five_maps = __wr_map_new()
+    mutable failure_count_number = 0
+
+    match try_to_run_perf_runner_with_runs(target_path_text, 1):
+        Ok(result_maps):
+            cell_one_maps = result_maps
+            failures_number = get_matrix_integer_map_value_or_default(result_maps, "failures", 0)
+            if failures_number > 0:
+                failure_count_number = failure_count_number + failures_number
+                __wr_map_set(cell_one_maps, "status", "failed")
+            otherwise:
+                __wr_map_set(cell_one_maps, "status", "ok")
+        Err(_):
+            cell_one_maps = create_matrix_failed_cell_maps(1)
+            failure_count_number = failure_count_number + 1
+        otherwise:
+            cell_one_maps = create_matrix_failed_cell_maps(1)
+            failure_count_number = failure_count_number + 1
+
+    match try_to_run_perf_runner_with_runs(target_path_text, 3):
+        Ok(result_maps):
+            cell_three_maps = result_maps
+            failures_number = get_matrix_integer_map_value_or_default(result_maps, "failures", 0)
+            if failures_number > 0:
+                failure_count_number = failure_count_number + failures_number
+                __wr_map_set(cell_three_maps, "status", "failed")
+            otherwise:
+                __wr_map_set(cell_three_maps, "status", "ok")
+        Err(_):
+            cell_three_maps = create_matrix_failed_cell_maps(3)
+            failure_count_number = failure_count_number + 1
+        otherwise:
+            cell_three_maps = create_matrix_failed_cell_maps(3)
+            failure_count_number = failure_count_number + 1
+
+    match try_to_run_perf_runner_with_runs(target_path_text, 5):
+        Ok(result_maps):
+            cell_five_maps = result_maps
+            failures_number = get_matrix_integer_map_value_or_default(result_maps, "failures", 0)
+            if failures_number > 0:
+                failure_count_number = failure_count_number + failures_number
+                __wr_map_set(cell_five_maps, "status", "failed")
+            otherwise:
+                __wr_map_set(cell_five_maps, "status", "ok")
+        Err(_):
+            cell_five_maps = create_matrix_failed_cell_maps(5)
+            failure_count_number = failure_count_number + 1
+        otherwise:
+            cell_five_maps = create_matrix_failed_cell_maps(5)
+            failure_count_number = failure_count_number + 1
+
+    try_to_write_matrix_report(cell_one_maps, cell_three_maps, cell_five_maps, failure_count_number) otherwise nothing
+
+    result_maps = __wr_map_new()
+    __wr_map_set(result_maps, "cells", "1,3,5")
+    __wr_map_set(result_maps, "failures_total", failure_count_number)
+    __wr_map_set(result_maps, "failures", failure_count_number)
+    if failure_count_number > 0:
+        return error "matrix encountered failures"
+    return result_maps

@@ -359,7 +359,7 @@ pub fn compile_to_object(mir: &MirModule) -> Result<Vec<u8>, CodegenError> {
         )?;
         module
             .define_function(*func_id, &mut ctx)
-            .map_err(|err| CodegenError(format!("define_function failed: {err}")))?;
+            .map_err(|err| CodegenError(format!("define_function failed for {}: {err}", func.name)))?;
     }
 
     if std::env::var("WRELA_CODEGEN_DEBUG").is_ok() {
@@ -1615,6 +1615,18 @@ fn lower_rvalue(
                                     "__wr_sleep_ms" => Some(runtime_fn_sleep_ms(module, runtime)?),
                                     "__wr_env_get" => Some(runtime_fn_env_get(module, runtime)?),
                                     "__wr_env_set" => Some(runtime_fn_env_set(module, runtime)?),
+                                    "__wr_process_argv" => {
+                                        Some(runtime_fn_process_argv(module, runtime)?)
+                                    }
+                                    "__wr_process_cwd" => {
+                                        Some(runtime_fn_process_cwd(module, runtime)?)
+                                    }
+                                    "__wr_process_run" => {
+                                        Some(runtime_fn_process_run(module, runtime)?)
+                                    }
+                                    "__wr_process_exit" => {
+                                        Some(runtime_fn_process_exit(module, runtime)?)
+                                    }
                                     "__wr_runtime_configure" => {
                                         Some(runtime_fn_runtime_configure(module, runtime)?)
                                     }
@@ -1638,6 +1650,27 @@ fn lower_rvalue(
                                     }
                                     "__wr_fs_write_bytes" => {
                                         Some(runtime_fn_fs_write_bytes(module, runtime)?)
+                                    }
+                                    "__wr_fs_read_dir" => {
+                                        Some(runtime_fn_fs_read_dir(module, runtime)?)
+                                    }
+                                    "__wr_fs_metadata" => {
+                                        Some(runtime_fn_fs_metadata(module, runtime)?)
+                                    }
+                                    "__wr_fs_mkdir_all" => {
+                                        Some(runtime_fn_fs_mkdir_all(module, runtime)?)
+                                    }
+                                    "__wr_fs_remove_file" => {
+                                        Some(runtime_fn_fs_remove_file(module, runtime)?)
+                                    }
+                                    "__wr_fs_remove_dir_all" => {
+                                        Some(runtime_fn_fs_remove_dir_all(module, runtime)?)
+                                    }
+                                    "__wr_fs_rename" => {
+                                        Some(runtime_fn_fs_rename(module, runtime)?)
+                                    }
+                                    "__wr_fs_set_executable" => {
+                                        Some(runtime_fn_fs_set_executable(module, runtime)?)
                                     }
                                     "__wr_external_call" => {
                                         Some(runtime_fn_external_call(module, runtime)?)
@@ -2436,6 +2469,62 @@ fn runtime_fn_fs_write_bytes(
     runtime.get_func(module, "wr_fs_write_bytes", sig)
 }
 
+fn runtime_fn_fs_read_dir(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_fs_read_dir", sig)
+}
+
+fn runtime_fn_fs_metadata(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_fs_metadata", sig)
+}
+
+fn runtime_fn_fs_mkdir_all(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_fs_mkdir_all", sig)
+}
+
+fn runtime_fn_fs_remove_file(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_fs_remove_file", sig)
+}
+
+fn runtime_fn_fs_remove_dir_all(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_fs_remove_dir_all", sig)
+}
+
+fn runtime_fn_fs_rename(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_fs_rename", sig)
+}
+
+fn runtime_fn_fs_set_executable(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_fs_set_executable", sig)
+}
+
 fn runtime_fn_external_call(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
@@ -2825,6 +2914,38 @@ fn runtime_fn_env_set(
 ) -> Result<cranelift_module::FuncId, CodegenError> {
     let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
     runtime.get_func(module, "wr_env_set", sig)
+}
+
+fn runtime_fn_process_argv(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(module, "wr_process_argv", sig)
+}
+
+fn runtime_fn_process_cwd(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(module, "wr_process_cwd", sig)
+}
+
+fn runtime_fn_process_run(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_process_run", sig)
+}
+
+fn runtime_fn_process_exit(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_process_exit", sig)
 }
 
 fn runtime_fn_runtime_configure(

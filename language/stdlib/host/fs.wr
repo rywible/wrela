@@ -11,8 +11,46 @@ to try_to_read_text(path: String) -> Result[String]:
                 otherwise: return error "try_to_read_text: invalid utf8"
         Err(err):
             return error err
+        otherwise:
+            return error "try_to_read_text: read failed"
+    return error "try_to_read_text: read failed"
 
 so: Write a String to a UTF-8 text file.
 to try_to_write_text(path: String, contents: String) -> Result[Nothing]:
     payload = __wr_bytes_from_string(contents)
     return __wr_fs_write_bytes(path, payload)
+
+
+so: Read directory entries and return normalized path strings.
+to try_to_read_directory(path: String) -> Result[List[String]]:
+    return __wr_fs_read_dir(path)
+
+
+so: Read file or directory metadata as a map payload.
+to try_to_read_metadata(path: String) -> Result[Map]:
+    return __wr_fs_metadata(path)
+
+
+so: Create a directory path recursively.
+to try_to_create_directory(path: String) -> Result[Nothing]:
+    return __wr_fs_mkdir_all(path)
+
+
+so: Remove a file path.
+to try_to_remove_file(path: String) -> Result[Nothing]:
+    return __wr_fs_remove_file(path)
+
+
+so: Remove a directory recursively.
+to try_to_remove_directory(path: String) -> Result[Nothing]:
+    return __wr_fs_remove_dir_all(path)
+
+
+so: Rename or move a path.
+to try_to_rename_path(from_path: String, to_path: String) -> Result[Nothing]:
+    return __wr_fs_rename(from_path, to_path)
+
+
+so: Set executable mode on a path when supported by host.
+to try_to_set_executable(path: String) -> Result[Nothing]:
+    return __wr_fs_set_executable(path)

@@ -1,0 +1,158 @@
+so:
+    Contract tests for event-loop-first runtime behavior in M11-B.
+
+use PlatformTarget from domain/platform/model
+use try_to_create_and_validate_platform_ports from application/runtime/platform_conformance
+use try_to_create_platform_ports from application/composition/platform_ports
+use run_clock_port_now_ns from application/runtime/platform_runtime
+use try_to_run_bounded_event_loop from application/runtime/event_loop_runtime
+use try_to_run_runtime_probe_sequence from application/runtime/event_loop_runtime
+
+
+to create_event_loop_target(os_name: String, architecture: String) -> PlatformTarget:
+    target = PlatformTarget()
+    target.host_os_name = os_name
+    target.host_architecture = architecture
+    return target
+
+
+to test_runtime_event_loop_contract_linux_io_uring_probe_succeeds() -> Nothing:
+    target = create_event_loop_target("linux", "arm64")
+    match try_to_create_and_validate_platform_ports(target, true):
+        Ok(ports):
+            match try_to_run_runtime_probe_sequence(ports, "."):
+                Ok(summary_maps):
+                    assert value __wr_map_get(summary_maps, "backend_name") == "io_uring"
+                    assert value __wr_map_get(summary_maps, "host_family") == "linux"
+                    assert value __wr_map_get(summary_maps, "fs_roundtrip_ok") == true
+                    assert value __wr_map_get(summary_maps, "cwd_ok") == true
+                otherwise:
+                    assert value false == true
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_runtime_event_loop_contract_linux_epoll_probe_succeeds() -> Nothing:
+    target = create_event_loop_target("linux", "arm64")
+    match try_to_create_and_validate_platform_ports(target, false):
+        Ok(ports):
+            match try_to_run_runtime_probe_sequence(ports, "."):
+                Ok(summary_maps):
+                    assert value __wr_map_get(summary_maps, "backend_name") == "epoll"
+                    assert value __wr_map_get(summary_maps, "host_family") == "linux"
+                    assert value __wr_map_get(summary_maps, "fs_roundtrip_ok") == true
+                    assert value __wr_map_get(summary_maps, "cwd_ok") == true
+                otherwise:
+                    assert value false == true
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_runtime_event_loop_contract_darwin_probe_succeeds() -> Nothing:
+    target = create_event_loop_target("darwin", "arm64")
+    match try_to_create_and_validate_platform_ports(target, true):
+        Ok(ports):
+            match try_to_run_runtime_probe_sequence(ports, "."):
+                Ok(summary_maps):
+                    assert value __wr_map_get(summary_maps, "backend_name") == "kqueue"
+                    assert value __wr_map_get(summary_maps, "host_family") == "darwin"
+                    assert value __wr_map_get(summary_maps, "fs_roundtrip_ok") == true
+                    assert value __wr_map_get(summary_maps, "cwd_ok") == true
+                otherwise:
+                    assert value false == true
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_runtime_event_loop_contract_bounded_loop_succeeds() -> Nothing:
+    target = create_event_loop_target("linux", "arm64")
+    match try_to_create_and_validate_platform_ports(target, true):
+        Ok(ports):
+            match try_to_run_bounded_event_loop(ports, 3, 0):
+                Ok(summary_maps):
+                    assert value __wr_map_get(summary_maps, "cycles_total") == 3
+                    assert value __wr_map_get(summary_maps, "cycles_succeeded") == 3
+                    assert value __wr_map_get(summary_maps, "cycles_failed") == 0
+                otherwise:
+                    assert value false == true
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_runtime_event_loop_contract_rejects_invalid_loop_inputs() -> Nothing:
+    target = create_event_loop_target("linux", "arm64")
+    match try_to_create_and_validate_platform_ports(target, true):
+        Ok(ports):
+            match try_to_run_bounded_event_loop(ports, 0, 0):
+                Err(message_text):
+                    assert value message_text == "invalid event loop max_cycles: 0"
+                otherwise:
+                    assert value false == true
+
+            match try_to_run_bounded_event_loop(ports, 1, -1):
+                Err(message_text):
+                    assert value message_text == "invalid event loop timer_ms: -1"
+                otherwise:
+                    assert value false == true
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_runtime_event_loop_contract_missing_operation_fails_closed() -> Nothing:
+    target = create_event_loop_target("linux", "arm64")
+    match try_to_create_platform_ports(target, true):
+        Ok(ports):
+            __wr_map_set(ports.reactor_port.ops, "create_reactor_handle", nothing)
+            match try_to_run_bounded_event_loop(ports, 1, 0):
+                Err(message_text):
+                    assert value message_text == "missing platform op: reactor.create_reactor_handle"
+                otherwise:
+                    assert value false == true
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_runtime_event_loop_contract_unsupported_adapter_identity_fails_closed() -> Nothing:
+    target = create_event_loop_target("linux", "arm64")
+    match try_to_create_platform_ports(target, true):
+        Ok(ports):
+            ports.clock_port.adapter_identity_name = "unsupported-clock-adapter"
+            match run_clock_port_now_ns(ports):
+                Err(message_text):
+                    assert value message_text == "unsupported platform adapter: unsupported-clock-adapter"
+                otherwise:
+                    assert value false == true
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_runtime_event_loop_contract_repeated_probe_structure_is_stable() -> Nothing:
+    target = create_event_loop_target("linux", "arm64")
+    match try_to_create_and_validate_platform_ports(target, true):
+        Ok(ports):
+            first_maps = __wr_map_new()
+            second_maps = __wr_map_new()
+            match try_to_run_runtime_probe_sequence(ports, "."):
+                Ok(summary_maps):
+                    first_maps = summary_maps
+                otherwise:
+                    assert value false == true
+            match try_to_run_runtime_probe_sequence(ports, "."):
+                Ok(summary_maps):
+                    second_maps = summary_maps
+                otherwise:
+                    assert value false == true
+            assert value __wr_map_get(first_maps, "backend_name") == __wr_map_get(second_maps, "backend_name")
+            assert value __wr_map_get(first_maps, "host_family") == __wr_map_get(second_maps, "host_family")
+            assert value __wr_map_get(first_maps, "fs_roundtrip_ok") == __wr_map_get(second_maps, "fs_roundtrip_ok")
+            assert value __wr_map_get(first_maps, "cwd_ok") == __wr_map_get(second_maps, "cwd_ok")
+        otherwise:
+            assert value false == true
+    return nothing

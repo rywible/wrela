@@ -1,0 +1,106 @@
+so:
+    Deterministic executable emission for M5-B single-object Darwin linker.
+
+use create_linker_image_maps from domain/linker/link_ir
+use try_to_resolve_linker_symbols_from_input from domain/linker/resolve_symbols
+use try_to_apply_linker_relocations from domain/linker/apply_relocations
+
+
+to create_linker_executable_emit_result_maps(
+    is_linker_emit_ok: Boolean,
+    linker_emit_reason_text: String,
+    linker_emit_image_maps: Map
+) -> Map:
+    linker_emit_result_maps = __wr_map_new()
+    __wr_map_set(linker_emit_result_maps, "ok", is_linker_emit_ok)
+    __wr_map_set(linker_emit_result_maps, "reason", linker_emit_reason_text)
+    __wr_map_set(linker_emit_result_maps, "image", linker_emit_image_maps)
+    return linker_emit_result_maps
+
+
+to add_linker_emit_text_bytes(
+    linker_emit_destination_bytes: List,
+    linker_emit_text_value: String
+) -> Nothing:
+    linker_emit_text_bytes = __wr_bytes_to_list(__wr_bytes_from_string(linker_emit_text_value))
+    for linker_emit_text_byte_value in linker_emit_text_bytes:
+        __wr_list_push(linker_emit_destination_bytes, linker_emit_text_byte_value)
+    return nothing
+
+
+to try_to_emit_linker_executable_from_input(linker_emit_input_maps: Map) -> Map:
+    linker_emit_symbol_resolution_result_maps = try_to_resolve_linker_symbols_from_input(linker_emit_input_maps)
+    if __wr_map_get(linker_emit_symbol_resolution_result_maps, "ok") != true:
+        linker_emit_symbol_resolution_reason_text = __wr_map_get(
+            linker_emit_symbol_resolution_result_maps,
+            "reason"
+        )
+        return create_linker_executable_emit_result_maps(
+            false,
+            "{linker_emit_symbol_resolution_reason_text}",
+            __wr_map_new()
+        )
+
+    mutable linker_emit_object_lists = __wr_map_get(linker_emit_symbol_resolution_result_maps, "objects")
+    mutable linker_emit_symbol_lists = __wr_map_get(linker_emit_symbol_resolution_result_maps, "symbols")
+    mutable linker_emit_entry_offset_number = __wr_map_get(
+        linker_emit_symbol_resolution_result_maps,
+        "entry_offset"
+    )
+    if linker_emit_object_lists == nothing:
+        linker_emit_object_lists = []
+    if linker_emit_symbol_lists == nothing:
+        linker_emit_symbol_lists = []
+    if linker_emit_entry_offset_number == nothing:
+        linker_emit_entry_offset_number = 0
+
+    linker_emit_relocation_apply_result_maps = try_to_apply_linker_relocations(
+        linker_emit_object_lists,
+        linker_emit_symbol_lists
+    )
+    if __wr_map_get(linker_emit_relocation_apply_result_maps, "ok") != true:
+        linker_emit_relocation_reason_text = __wr_map_get(linker_emit_relocation_apply_result_maps, "reason")
+        return create_linker_executable_emit_result_maps(
+            false,
+            "{linker_emit_relocation_reason_text}",
+            __wr_map_new()
+        )
+
+    mutable linker_emit_text_bytes_value = __wr_map_get(linker_emit_relocation_apply_result_maps, "bytes")
+    mutable linker_emit_relocation_lists = __wr_map_get(linker_emit_relocation_apply_result_maps, "relocations")
+    if linker_emit_text_bytes_value == nothing:
+        linker_emit_text_bytes_value = []
+    if linker_emit_relocation_lists == nothing:
+        linker_emit_relocation_lists = []
+
+    linker_emit_segment_lists = []
+    linker_emit_text_segment_maps = __wr_map_new()
+    __wr_map_set(linker_emit_text_segment_maps, "name", ".text")
+    __wr_map_set(linker_emit_text_segment_maps, "base_offset", 0)
+    __wr_map_set(linker_emit_text_segment_maps, "bytes", linker_emit_text_bytes_value)
+    __wr_list_push(linker_emit_segment_lists, linker_emit_text_segment_maps)
+
+    linker_emit_image_bytes = []
+    add_linker_emit_text_bytes(linker_emit_image_bytes, "WRLX")
+    __wr_list_push(linker_emit_image_bytes, 1)
+    __wr_list_push(linker_emit_image_bytes, linker_emit_entry_offset_number)
+
+    mutable linker_emit_text_byte_count_number = 0
+    for linker_emit_text_byte_value in linker_emit_text_bytes_value:
+        __wr_list_push(linker_emit_image_bytes, linker_emit_text_byte_value)
+        linker_emit_text_byte_count_number = linker_emit_text_byte_count_number + 1
+    __wr_list_push(linker_emit_image_bytes, 59)
+    __wr_list_push(linker_emit_image_bytes, linker_emit_text_byte_count_number)
+
+    linker_emit_image_maps = create_linker_image_maps(
+        "WRLX",
+        "mach-o-thin",
+        "darwin-arm64",
+        linker_emit_entry_offset_number,
+        linker_emit_segment_lists,
+        linker_emit_symbol_lists,
+        linker_emit_relocation_lists,
+        linker_emit_image_bytes
+    )
+
+    return create_linker_executable_emit_result_maps(true, "", linker_emit_image_maps)

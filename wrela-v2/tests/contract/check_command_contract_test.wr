@@ -1,0 +1,821 @@
+so:
+    Direct contract coverage for check command application functions.
+
+use run_check_command from application/check_command
+use try_to_run_shadow_v1_check from application/check_command
+use get_integer_value_or_default_for_check from application/check_command
+use get_string_value_or_default_for_check from application/check_command
+
+use run_check_pipeline from application/check_pipeline
+use get_integer_value_or_default from application/check_pipeline
+use get_list_value_or_empty_list from application/check_pipeline
+use get_map_value_or_empty_map from application/check_pipeline
+use get_string_value_or_default from application/check_pipeline
+use make_error_report from application/check_pipeline
+use make_ok_report from application/check_pipeline
+
+use print_usage from application/cli
+use get_item_at_index from application/cli
+use run_cli from application/cli
+
+use try_to_create_platform_ports from application/composition/platform_ports
+use convert_to_byte_list from application/composition/platform_target_env
+use get_byte_count from application/composition/platform_target_env
+use get_byte_at_index from application/composition/platform_target_env
+use get_text_prefix_match_flag from application/composition/platform_target_env
+use normalize_os_name from application/composition/platform_target_env
+use create_current_platform_target from application/composition/platform_target_env
+
+use normalize_root from application/init_command
+use get_path_exists_flag from application/init_command
+use ensure_directory from application/init_command
+use ensure_file from application/init_command
+use run_init_command from application/init_command
+use run_build_command from application/build_command
+use try_to_build_executable from application/build_runner
+use get_build_runner_string_map_value_or_default from application/build_runner
+use get_build_runner_output_root_path_or_default from application/build_runner
+use get_build_runner_cert_root_path_or_default from application/build_runner
+use run_update_command from application/update_command
+use run_compile_command from application/compile_command
+use run_verify_cert_command from application/verify_cert_command
+use run_run_command from application/run_command
+use run_dev_command from application/dev_command
+use run_test_command from application/test_command
+use run_perf_command from application/perf_command
+use run_perfcmp_command from application/perfcmp_command
+use run_matrix_command from application/matrix_command
+use create_matrix_failed_cell_maps from application/matrix_runner
+use try_to_run_self_host_runner from application/self_host_runner
+use get_self_host_integer_env_or_default from application/self_host_runner
+use try_to_write_self_host_report from application/self_host_runner
+use try_to_run_repro_runner from application/repro_runner
+use get_repro_integer_env_or_default from application/repro_runner
+use try_to_run_stage_toolchain from application/stage_toolchain_runner
+use get_stage_exit_code_or_default from application/stage_toolchain_runner
+use get_deterministic_stage_root from application/stage_toolchain_runner
+use get_perfcmp_integer_env_or_default from application/perfcmp_runner
+use get_perfcmp_lines from application/perfcmp_runner
+use get_perfcmp_prefix_match_flag from application/perfcmp_runner
+use get_perfcmp_value_for_key from application/perfcmp_runner
+use try_to_write_perfcmp_report from application/perfcmp_runner
+use get_update_runner_lines from application/update_runner
+use get_update_runner_manifest_value from application/update_runner
+use get_update_runner_prefix_match_flag from application/update_runner
+use get_verify_runner_has_field_flag from application/verify_cert_runner
+use get_verify_runner_lines from application/verify_cert_runner
+use get_verify_runner_prefix_match_flag from application/verify_cert_runner
+use try_to_write_text_for_verify from application/verify_cert_runner
+use try_to_write_verify_cert_report from application/verify_cert_runner
+use convert_to_test_runner_byte_lists from application/test_runner
+use get_test_runner_byte_count from application/test_runner
+use get_test_runner_byte_at_index from application/test_runner
+use get_path_has_test_suffix_flag from application/test_runner
+
+use try_to_create_directory_for_parity_command from application/parity_command
+use try_to_write_text_for_parity_command from application/parity_command
+use get_exit_code_for_parity_command from application/parity_command
+use get_stdout_for_parity_command from application/parity_command
+use run_parity_command from application/parity_command
+
+use try_to_run_host_command from application/parity_runner
+use try_to_run_v1_command from application/parity_runner
+use try_to_run_v1_help from application/parity_runner
+use get_exit_code from application/parity_runner
+use get_stdout from application/parity_runner
+
+use try_to_create_directory from host/fs
+use try_to_write_text from host/fs
+use try_to_remove_file from host/fs
+use try_to_remove_directory from host/fs
+use PlatformTarget from domain/platform/model
+use run_reactor_port_lifecycle from application/runtime/platform_runtime
+use run_clock_port_now_ns from application/runtime/platform_runtime
+use run_clock_port_sleep_ms from application/runtime/platform_runtime
+use try_to_run_fs_write_text from application/runtime/platform_runtime
+use try_to_run_fs_read_text from application/runtime/platform_runtime
+use try_to_run_fs_read_metadata from application/runtime/platform_runtime
+use try_to_run_process_port from application/runtime/platform_runtime
+use try_to_get_process_port_cwd from application/runtime/platform_runtime
+use get_platform_operation_presence_flag from domain/platform/contracts
+use get_platform_operation_value_or_empty_text from domain/platform/contracts
+use normalize_frontend_diagnostic_list from domain/frontend/diagnostics
+use create_frontend_lex_empty_diagnostic from domain/frontend/diagnostics
+use create_frontend_parser_expect_result_map from domain/frontend/parser
+use get_frontend_parser_operator_kind_flag from domain/frontend/parser
+use create_mir_block from domain/mir/ir
+use create_mir_function from domain/mir/ir
+use create_mir_const_integer_instruction from domain/mir/ir
+use create_mir_const_boolean_instruction from domain/mir/ir
+use create_mir_binary_instruction from domain/mir/ir
+use create_mir_return_instruction from domain/mir/ir
+use create_mir_program from domain/mir/ir
+use get_mir_instruction_count from domain/mir/ir
+use get_mir_signature_text from domain/mir/ir
+use add_mir_instruction_texts from domain/mir/lower
+use get_ast_boolean_literal_flag from domain/mir/lower
+use get_mir_lower_expression_result_next_temp_number from domain/mir/lower
+use get_object_signature_text from domain/backend/object_ir
+use create_serialized_object_program_maps from domain/backend/object_serialize
+use create_serialized_object_result_maps from domain/backend/object_serialize
+use get_serialized_object_byte_lists from domain/backend/object_serialize
+use get_serialized_object_text from domain/backend/object_serialize
+use create_linker_input_from_object_program_lists from domain/linker/input_contract
+use get_linker_input_output_format_text from domain/linker/input_contract
+use get_cert_hash_text from domain/cert/hash
+use get_cert_hash_text_from_byte_lists from domain/cert/hash
+use create_cert_maps from domain/cert/model
+use get_cert_text from domain/cert/model
+use get_cert_validate_lines from domain/cert/validate
+use get_cert_validate_prefix_match_flag from domain/cert/validate
+use get_cert_validate_value_for_key from domain/cert/validate
+use try_to_validate_cert_text from domain/cert/validate
+
+
+to write_check_command_fixture(path: String, source: String) -> Nothing:
+    match try_to_write_text(path, source):
+        Ok(write_result):
+            return nothing
+        Err(error_text):
+            assert value error_text == ""
+            assert value false == true
+            return nothing
+        otherwise:
+            assert value false == true
+            return nothing
+    return nothing
+
+
+to ensure_check_command_contract_directory(path: String) -> Nothing:
+    match try_to_create_directory(path):
+        Ok(create_result):
+            return nothing
+        Err(error_text):
+            assert value error_text == ""
+            assert value false == true
+            return nothing
+        otherwise:
+            assert value false == true
+            return nothing
+    return nothing
+
+
+to test_try_to_run_shadow_v1_check_is_callable() -> Nothing:
+    __wr_env_set("WRELA_V1_BIN", "")
+    __wr_env_set("WRELA_WORKSPACE_ROOT", "")
+    match try_to_run_shadow_v1_check("missing.wr"):
+        Err(message_text):
+            assert value message_text == "shadow check disabled"
+            return nothing
+        Ok(status_code):
+            assert value status_code == 0
+            assert value false == true
+            return nothing
+        otherwise:
+            assert value false == true
+            return nothing
+    return nothing
+
+
+to test_get_string_value_or_default_for_check_uses_fallback_only_for_nothing() -> Nothing:
+    assert value get_string_value_or_default_for_check("ok", "fallback") == "ok"
+    missing_value = __wr_map_get(__wr_map_new(), "missing")
+    assert value get_string_value_or_default_for_check(missing_value, "fallback") == "fallback"
+    return nothing
+
+
+to test_try_to_run_shadow_v1_check_can_return_process_exit_code() -> Nothing:
+    __wr_env_set("WRELA_V1_BIN", "/bin/sh")
+    __wr_env_set("WRELA_WORKSPACE_ROOT", "/")
+    match try_to_run_shadow_v1_check("missing_file.wr"):
+        Ok(status_code):
+            assert value status_code != 0
+        Err(message_text):
+            assert value message_text == ""
+            assert value false == true
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_try_to_run_shadow_v1_check_can_return_zero_exit_code() -> Nothing:
+    __wr_env_set("WRELA_V1_BIN", "/bin/echo")
+    __wr_env_set("WRELA_WORKSPACE_ROOT", "/")
+    match try_to_run_shadow_v1_check("missing_file.wr"):
+        Ok(status_code):
+            assert value status_code == 0
+        Err(message_text):
+            assert value message_text == ""
+            assert value false == true
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_try_to_run_shadow_v1_check_reports_shadow_failure_for_missing_binary() -> Nothing:
+    __wr_env_set("WRELA_V1_BIN", "/definitely/missing/wrela-v1")
+    __wr_env_set("WRELA_WORKSPACE_ROOT", "/")
+    match try_to_run_shadow_v1_check("missing_file.wr"):
+        Err(message_text):
+            assert value message_text == "shadow check failed"
+        Ok(status_code):
+            assert value status_code == 0
+            assert value false == true
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_try_to_run_shadow_v1_check_disables_when_workspace_root_is_empty() -> Nothing:
+    __wr_env_set("WRELA_V1_BIN", "/bin/sh")
+    __wr_env_set("WRELA_WORKSPACE_ROOT", "")
+    match try_to_run_shadow_v1_check("missing_file.wr"):
+        Err(message_text):
+            assert value message_text == "shadow check disabled"
+        Ok(status_code):
+            assert value status_code == 0
+            assert value false == true
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_try_to_run_shadow_v1_check_disables_when_binary_is_empty() -> Nothing:
+    __wr_env_set("WRELA_V1_BIN", "")
+    __wr_env_set("WRELA_WORKSPACE_ROOT", "/")
+    match try_to_run_shadow_v1_check("missing_file.wr"):
+        Err(message_text):
+            assert value message_text == "shadow check disabled"
+        Ok(status_code):
+            assert value status_code == 0
+            assert value false == true
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_run_check_command_returns_two_for_invalid_program() -> Nothing:
+    root = "target/wrela_v2_check_command_contract"
+    path = "{root}/parse_error.wr"
+    ensure_check_command_contract_directory(root)
+    write_check_command_fixture(path, "to run() -> Integer:\n    return 1 +\n")
+    assert value run_check_command(path) == 2
+    return nothing
+
+
+to test_run_check_command_returns_zero_for_valid_program() -> Nothing:
+    root = "target/wrela_v2_check_command_contract"
+    path = "{root}/ok.wr"
+    ensure_check_command_contract_directory(root)
+    write_check_command_fixture(path, "to run() -> Integer:\n    return 2 + 3\n")
+    __wr_env_set("WRELA_V1_BIN", "")
+    __wr_env_set("WRELA_WORKSPACE_ROOT", "")
+    assert value run_check_command(path) == 0
+    assert value run_check_command("") == 1
+    assert value run_check_command("target/wrela_v2_check_command_contract/definitely_missing_source.wr") == 2
+    return nothing
+
+
+to test_run_check_command_returns_zero_for_parenthesized_valid_program() -> Nothing:
+    root = "target/wrela_v2_check_command_contract"
+    path = "{root}/ok_parenthesized.wr"
+    ensure_check_command_contract_directory(root)
+    write_check_command_fixture(path, "to run() -> Integer:\n    return (2 + 3) * 4\n")
+    __wr_env_set("WRELA_V1_BIN", "")
+    __wr_env_set("WRELA_WORKSPACE_ROOT", "")
+    assert value run_check_command(path) == 0
+    return nothing
+
+
+to test_run_check_command_returns_one_when_shadow_process_is_nonzero() -> Nothing:
+    root = "target/wrela_v2_check_command_contract"
+    path = "{root}/ok_shadow_nonzero.wr"
+    ensure_check_command_contract_directory(root)
+    write_check_command_fixture(path, "to run() -> Integer:\n    return 9\n")
+    __wr_env_set("WRELA_V1_BIN", "/bin/sh")
+    __wr_env_set("WRELA_WORKSPACE_ROOT", "/")
+    assert value run_check_command(path) == 1
+    return nothing
+
+
+to test_run_check_command_returns_zero_when_shadow_process_is_zero() -> Nothing:
+    root = "target/wrela_v2_check_command_contract"
+    path = "{root}/ok_shadow_zero.wr"
+    ensure_check_command_contract_directory(root)
+    write_check_command_fixture(path, "to run() -> Integer:\n    return 4 + 5\n")
+    __wr_env_set("WRELA_V1_BIN", "/bin/echo")
+    __wr_env_set("WRELA_WORKSPACE_ROOT", "/")
+    assert value run_check_command(path) == 0
+    return nothing
+
+
+to test_run_check_command_returns_zero_when_shadow_binary_is_missing() -> Nothing:
+    root = "target/wrela_v2_check_command_contract"
+    path = "{root}/ok_shadow_missing_binary.wr"
+    ensure_check_command_contract_directory(root)
+    write_check_command_fixture(path, "to run() -> Integer:\n    return 11 + 2\n")
+    __wr_env_set("WRELA_V1_BIN", "/definitely/missing/wrela-v1")
+    __wr_env_set("WRELA_WORKSPACE_ROOT", "/")
+    assert value run_check_command(path) == 0
+    return nothing
+
+
+to test_run_check_command_returns_zero_when_shadow_workspace_root_is_empty() -> Nothing:
+    root = "target/wrela_v2_check_command_contract"
+    path = "{root}/ok_shadow_workspace_missing.wr"
+    ensure_check_command_contract_directory(root)
+    write_check_command_fixture(path, "to run() -> Integer:\n    return 12 + 1\n")
+    __wr_env_set("WRELA_V1_BIN", "/bin/sh")
+    __wr_env_set("WRELA_WORKSPACE_ROOT", "")
+    assert value run_check_command(path) == 0
+    return nothing
+
+
+to test_run_check_command_returns_zero_when_shadow_binary_is_empty_with_workspace() -> Nothing:
+    root = "target/wrela_v2_check_command_contract"
+    path = "{root}/ok_shadow_binary_missing_with_workspace.wr"
+    ensure_check_command_contract_directory(root)
+    write_check_command_fixture(path, "to run() -> Integer:\n    return 6 + 6\n")
+    __wr_env_set("WRELA_V1_BIN", "")
+    __wr_env_set("WRELA_WORKSPACE_ROOT", "/")
+    assert value run_check_command(path) == 0
+    return nothing
+
+
+to test_run_check_command_returns_two_for_missing_source_file() -> Nothing:
+    __wr_env_set("WRELA_V1_BIN", "")
+    __wr_env_set("WRELA_WORKSPACE_ROOT", "")
+    assert value run_check_command("target/wrela_v2_check_command_contract/definitely_missing_source.wr") == 2
+    return nothing
+
+
+to test_run_check_command_returns_one_for_missing_path() -> Nothing:
+    __wr_env_set("WRELA_V1_BIN", "")
+    __wr_env_set("WRELA_WORKSPACE_ROOT", "")
+    assert value run_check_command("") == 1
+    return nothing
+
+
+to test_application_coverage_touchpoints_are_callable() -> Nothing:
+    match try_to_remove_file("target/wrela_v2_build"):
+        Ok(remove_file_ok_value):
+            remove_file_ok_value = remove_file_ok_value
+        Err(remove_file_error_text):
+            remove_file_error_text = remove_file_error_text
+        otherwise:
+            nothing
+    match try_to_remove_directory("target/wrela_v2_build"):
+        Ok(remove_directory_ok_value):
+            remove_directory_ok_value = remove_directory_ok_value
+        Err(remove_directory_error_text):
+            remove_directory_error_text = remove_directory_error_text
+        otherwise:
+            nothing
+
+    assert value run_build_command("") == 1
+    assert value run_build_command("src/main.wr") == 2
+    match try_to_build_executable(""):
+        Err(build_runner_error_text):
+            assert value build_runner_error_text == "missing input path"
+        Ok(build_runner_result_maps):
+            assert value false == true
+        otherwise:
+            assert value false == true
+    match try_to_build_executable("target/wrela_v2_build_runner_touchpoint_missing"):
+        Err(build_runner_error_text):
+            assert value build_runner_error_text == "build failed at load"
+        Ok(build_runner_result_maps):
+            assert value false == true
+        otherwise:
+            assert value false == true
+    build_runner_helper_maps = __wr_map_new()
+    assert value get_build_runner_string_map_value_or_default(
+        build_runner_helper_maps,
+        "missing",
+        "fallback"
+    ) == "fallback"
+    __wr_map_set(build_runner_helper_maps, "value", 42)
+    assert value get_build_runner_string_map_value_or_default(
+        build_runner_helper_maps,
+        "value",
+        "fallback"
+    ) == "42"
+    __wr_env_set("WRELA_V2_BUILD_OUTPUT_ROOT", "")
+    __wr_env_set("WRELA_V2_CERT_OUTPUT_ROOT", "")
+    assert value get_build_runner_output_root_path_or_default() == "target/wrela_v2_build"
+    assert value get_build_runner_cert_root_path_or_default() == "target/wrela_v2_cert"
+    __wr_env_set("WRELA_V2_BUILD_OUTPUT_ROOT", "target/touch_build_root")
+    __wr_env_set("WRELA_V2_CERT_OUTPUT_ROOT", "target/touch_cert_root")
+    assert value get_build_runner_output_root_path_or_default() == "target/touch_build_root"
+    assert value get_build_runner_cert_root_path_or_default() == "target/touch_cert_root"
+    __wr_env_set("WRELA_V2_BUILD_OUTPUT_ROOT", "")
+    __wr_env_set("WRELA_V2_CERT_OUTPUT_ROOT", "")
+    self_host_stage_root = get_deterministic_stage_root("target/wrela_v2_touch", ".")
+    __wr_fs_mkdir_all(self_host_stage_root) otherwise nothing
+    self_host_report_maps = __wr_map_new()
+    __wr_map_set(self_host_report_maps, "stage0_status", "ok")
+    __wr_map_set(self_host_report_maps, "stage1_status", "ok")
+    __wr_map_set(self_host_report_maps, "stage2_status", "ok")
+    __wr_map_set(self_host_report_maps, "stage0_toolchain_hash", "a")
+    __wr_map_set(self_host_report_maps, "stage1_toolchain_hash", "b")
+    __wr_map_set(self_host_report_maps, "stage2_toolchain_hash", "c")
+    __wr_map_set(self_host_report_maps, "repro_match", true)
+    __wr_map_set(self_host_report_maps, "entry_path", "entry")
+    __wr_map_set(self_host_report_maps, "workspace_root", "workspace")
+    __wr_map_set(self_host_report_maps, "timestamp_ns", 7)
+    try_to_write_self_host_report(
+        "{self_host_stage_root}/self_host_report.json",
+        self_host_report_maps
+    ) otherwise nothing
+
+    build_runner_root = "target/wrela_v2_build_runner_touchpoint_project"
+    assert value run_init_command(build_runner_root) == 0
+    assert value run_build_command(build_runner_root) == 0
+    match try_to_build_executable(build_runner_root):
+        Ok(build_runner_result_maps):
+            assert value __wr_map_get(build_runner_result_maps, "resolved_path") == "{build_runner_root}/src/main.wr"
+            assert value __wr_map_get(build_runner_result_maps, "output_path") == "target/wrela_v2_build/main.wrela.bin"
+            assert value __wr_map_get(build_runner_result_maps, "image_path") == "target/wrela_v2_build/main.wrela.image"
+        Err(build_runner_error_text):
+            assert value false == true
+        otherwise:
+            assert value false == true
+
+    match try_to_remove_file("target/wrela_v2_build"):
+        Ok(remove_file_ok_value):
+            remove_file_ok_value = remove_file_ok_value
+        Err(remove_file_error_text):
+            remove_file_error_text = remove_file_error_text
+        otherwise:
+            nothing
+    match try_to_remove_directory("target/wrela_v2_build"):
+        Ok(remove_directory_ok_value):
+            remove_directory_ok_value = remove_directory_ok_value
+        Err(remove_directory_error_text):
+            remove_directory_error_text = remove_directory_error_text
+        otherwise:
+            nothing
+    write_check_command_fixture("target/wrela_v2_build", "blocked")
+    match try_to_build_executable(build_runner_root):
+        Err(build_runner_error_text):
+            assert value build_runner_error_text == "build failed to create output directory"
+        Ok(build_runner_result_maps):
+            assert value false == true
+        otherwise:
+            assert value false == true
+    assert value run_build_command(build_runner_root) == 2
+    match try_to_remove_file("target/wrela_v2_build"):
+        Ok(remove_file_ok_value):
+            remove_file_ok_value = remove_file_ok_value
+        Err(remove_file_error_text):
+            remove_file_error_text = remove_file_error_text
+        otherwise:
+            nothing
+    match try_to_remove_directory("target/wrela_v2_build"):
+        Ok(remove_directory_ok_value):
+            remove_directory_ok_value = remove_directory_ok_value
+        Err(remove_directory_error_text):
+            remove_directory_error_text = remove_directory_error_text
+        otherwise:
+            nothing
+
+    ensure_check_command_contract_directory("target/wrela_v2_build/main.wrela.image")
+    match try_to_build_executable(build_runner_root):
+        Err(build_runner_error_text):
+            assert value build_runner_error_text == "build failed to write image"
+        Ok(build_runner_result_maps):
+            assert value false == true
+        otherwise:
+            assert value false == true
+    assert value run_build_command(build_runner_root) == 2
+    match try_to_remove_file("target/wrela_v2_build"):
+        Ok(remove_file_ok_value):
+            remove_file_ok_value = remove_file_ok_value
+        Err(remove_file_error_text):
+            remove_file_error_text = remove_file_error_text
+        otherwise:
+            nothing
+    match try_to_remove_directory("target/wrela_v2_build"):
+        Ok(remove_directory_ok_value):
+            remove_directory_ok_value = remove_directory_ok_value
+        Err(remove_directory_error_text):
+            remove_directory_error_text = remove_directory_error_text
+        otherwise:
+            nothing
+
+    ensure_check_command_contract_directory("target/wrela_v2_build/main.wrela.bin")
+    match try_to_build_executable(build_runner_root):
+        Err(build_runner_error_text):
+            assert value build_runner_error_text == "build failed to write launcher"
+        Ok(build_runner_result_maps):
+            assert value false == true
+        otherwise:
+            assert value false == true
+    assert value run_build_command(build_runner_root) == 2
+    match try_to_remove_file("target/wrela_v2_build"):
+        Ok(remove_file_ok_value):
+            remove_file_ok_value = remove_file_ok_value
+        Err(remove_file_error_text):
+            remove_file_error_text = remove_file_error_text
+        otherwise:
+            nothing
+    match try_to_remove_directory("target/wrela_v2_build"):
+        Ok(remove_directory_ok_value):
+            remove_directory_ok_value = remove_directory_ok_value
+        Err(remove_directory_error_text):
+            remove_directory_error_text = remove_directory_error_text
+        otherwise:
+            nothing
+
+    build_runner_cases_root = "target/wrela_v2_build_runner_touchpoint_cases"
+    ensure_check_command_contract_directory(build_runner_cases_root)
+    ensure_check_command_contract_directory("{build_runner_cases_root}/src")
+    write_check_command_fixture(
+        "{build_runner_cases_root}/src/lex_tab.wr",
+        "to run() -> Integer:\n\treturn 1\n"
+    )
+    write_check_command_fixture(
+        "{build_runner_cases_root}/src/parse_fail.wr",
+        "to run() -> Integer:\n    return 1 +\n"
+    )
+    write_check_command_fixture(
+        "{build_runner_cases_root}/src/type_fail.wr",
+        "to run() -> Integer:\n    return 1 + true\n"
+    )
+
+    match try_to_build_executable("{build_runner_cases_root}/src/lex_tab.wr"):
+        Err(build_runner_error_text):
+            assert value build_runner_error_text == "build failed at lex"
+        Ok(build_runner_result_maps):
+            assert value false == true
+        otherwise:
+            assert value false == true
+    match try_to_build_executable("{build_runner_cases_root}/src/parse_fail.wr"):
+        Err(build_runner_error_text):
+            assert value build_runner_error_text == "build failed at parse"
+        Ok(build_runner_result_maps):
+            assert value false == true
+        otherwise:
+            assert value false == true
+    match try_to_build_executable("{build_runner_cases_root}/src/type_fail.wr"):
+        Err(build_runner_error_text):
+            assert value build_runner_error_text == "build failed at type"
+        Ok(build_runner_result_maps):
+            assert value false == true
+        otherwise:
+            assert value false == true
+    run_update_command("")
+    run_update_command("x")
+    run_compile_command("src/main.wr")
+    run_verify_cert_command("target/wrela_cert/cert.json")
+    run_run_command("src/main.wr")
+    run_dev_command("src/main.wr")
+    run_test_command("")
+    run_perf_command("")
+    run_perfcmp_command("")
+    run_matrix_command("")
+    print_usage()
+    test_runner_bytes = convert_to_test_runner_byte_lists("abc_test.wr")
+    assert value get_test_runner_byte_count(test_runner_bytes) == 11
+    assert value get_test_runner_byte_at_index(test_runner_bytes, 0) == 97
+    assert value get_test_runner_byte_at_index(test_runner_bytes, 999) == -1
+    assert value get_path_has_test_suffix_flag("tests/basic_test.wr") == 1
+    assert value get_path_has_test_suffix_flag("tests/basic.wr") == 0
+
+    parser_expect_result_maps = create_frontend_parser_expect_result_map(true, 7, __wr_map_new())
+    assert value __wr_map_get(parser_expect_result_maps, "ok") == true
+    assert value __wr_map_get(parser_expect_result_maps, "next_index") == 7
+    assert value get_frontend_parser_operator_kind_flag("PLUS") == 1
+    assert value get_frontend_parser_operator_kind_flag("NOPE") == 0
+
+    normalized_diagnostics = normalize_frontend_diagnostic_list([__wr_map_new(), 9, "x"])
+    mutable normalized_count = 0
+    for normalized_item in normalized_diagnostics:
+        normalized_item = normalized_item
+        normalized_count = normalized_count + 1
+    assert value normalized_count == 1
+
+    linux_bytes = convert_to_byte_list("linux")
+    get_byte_count(linux_bytes)
+    get_byte_at_index(linux_bytes, 0)
+    get_text_prefix_match_flag("linux-gnu", "linux")
+    normalize_os_name("darwin23")
+    current_target = create_current_platform_target()
+    current_target = current_target
+
+    runtime_target = PlatformTarget()
+    runtime_target.host_os_name = "linux"
+    runtime_target.host_architecture = "x86_64"
+    match try_to_create_platform_ports(runtime_target, true):
+        Ok(runtime_ports):
+            get_platform_operation_presence_flag(runtime_ports.reactor_port.ops, "create_reactor_handle")
+            get_platform_operation_value_or_empty_text(runtime_ports.reactor_port.ops, "create_reactor_handle")
+            ignore result run_reactor_port_lifecycle(runtime_ports, 9, 1)
+            ignore result run_clock_port_now_ns(runtime_ports)
+            ignore result run_clock_port_sleep_ms(runtime_ports, 1)
+            runtime_fs_path = "target/wrela_v2_runtime_touchpoint.txt"
+            ignore result try_to_run_fs_write_text(runtime_ports, runtime_fs_path, "ok\n")
+            ignore result try_to_run_fs_read_text(runtime_ports, runtime_fs_path)
+            ignore result try_to_run_fs_read_metadata(runtime_ports, runtime_fs_path)
+            ignore result try_to_run_process_port(runtime_ports, "/bin/echo", ["ok"], ".", 1000)
+            ignore result try_to_get_process_port_cwd(runtime_ports)
+        Err(runtime_error_text):
+            runtime_error_text = runtime_error_text
+        otherwise:
+            nothing
+
+    linux_target = PlatformTarget()
+    linux_target.host_os_name = "linux"
+    linux_target.host_architecture = "x86_64"
+    match try_to_create_platform_ports(linux_target, true):
+        Ok(platform_ports):
+            platform_ports = platform_ports
+        Err(error_text):
+            error_text = error_text
+        otherwise:
+            return nothing
+
+    touch_root = "target/wrela_v2_coverage_touchpoints"
+    touch_init_root = "{touch_root}/init_project"
+    touch_file_path = "{touch_root}/scratch.txt"
+    normalize_root("")
+    ensure_directory(touch_root) otherwise nothing
+    ensure_file(touch_file_path, "ok\n") otherwise nothing
+    get_path_exists_flag(touch_file_path)
+    run_init_command(touch_init_root)
+    get_path_exists_flag("{touch_init_root}/src/main.wr")
+
+    parity_root = "{touch_root}/parity"
+    parity_report = "{parity_root}/report.txt"
+    try_to_create_directory_for_parity_command(parity_root) otherwise nothing
+    try_to_write_text_for_parity_command(parity_report, "status=ok\n") otherwise nothing
+    get_exit_code_for_parity_command({})
+    get_stdout_for_parity_command({})
+
+    __wr_env_set("WRELA_V1_BIN", "/bin/echo")
+    __wr_env_set("WRELA_WORKSPACE_ROOT", touch_root)
+    run_parity_command()
+
+    match try_to_run_host_command("/bin/echo", ["hello"], "/", 1000):
+        Ok(host_results):
+            get_exit_code(host_results)
+        Err(error_text):
+            error_text = error_text
+        otherwise:
+            return nothing
+
+    match try_to_run_v1_command("/bin/echo", "/", ["hello"]):
+        Ok(v1_results):
+            get_exit_code(v1_results)
+        Err(error_text):
+            error_text = error_text
+        otherwise:
+            return nothing
+
+    match try_to_run_v1_help("/bin/echo", "/"):
+        Ok(help_results):
+            get_exit_code(help_results)
+            get_stdout(help_results)
+        Err(error_text):
+            error_text = error_text
+        otherwise:
+            return nothing
+
+    __wr_env_set("WRELA_V1_BIN", "")
+    __wr_env_set("WRELA_WORKSPACE_ROOT", "")
+    match try_to_run_shadow_v1_check("target/wrela_v2_check_command_contract/missing_source.wr"):
+        Err(shadow_touchpoint_error_text):
+            shadow_touchpoint_error_text = shadow_touchpoint_error_text
+        Ok(shadow_touchpoint_status_code):
+            shadow_touchpoint_status_code = shadow_touchpoint_status_code
+        otherwise:
+            nothing
+    run_check_command("target/wrela_v2_check_command_contract/missing_source.wr")
+
+    check_default_maps = __wr_map_new()
+    assert value get_integer_value_or_default_for_check(__wr_map_get(check_default_maps, "n"), 7) == 7
+    assert value get_string_value_or_default_for_check(__wr_map_get(check_default_maps, "s"), "fallback") == "fallback"
+    assert value get_integer_value_or_default(__wr_map_get(check_default_maps, "n"), 8) == 8
+    assert value get_string_value_or_default(__wr_map_get(check_default_maps, "s"), "fallback-two") == "fallback-two"
+    normalized_maps = get_map_value_or_empty_map(__wr_map_get(check_default_maps, "map"))
+    normalized_maps = normalized_maps
+    normalized_lists = get_list_value_or_empty_list(__wr_map_get(check_default_maps, "list"))
+    normalized_lists = normalized_lists
+    make_error_report("load", "path.wr", 0, [])
+    make_ok_report("path.wr", 0)
+    match run_check_pipeline(""):
+        Err(pipeline_error_text):
+            pipeline_error_text = pipeline_error_text
+        Ok(pipeline_result_maps):
+            pipeline_result_maps = pipeline_result_maps
+        otherwise:
+            nothing
+
+    assert value get_item_at_index(["wrela-v2", "help"], 1) == "help"
+    assert value run_cli(["wrela-v2", "help"]) == 0
+
+    perfcmp_lines = get_perfcmp_lines("a=1\nb=2\n")
+    perfcmp_lines = perfcmp_lines
+    assert value get_perfcmp_prefix_match_flag("status=ok", "status=") == 1
+    assert value get_perfcmp_value_for_key("p50_ns=12\nx=9\n", "p50_ns") == "12"
+    assert value get_perfcmp_integer_env_or_default("WRELA_V2_PERFCMP_MISSING", 10) == 10
+    try_to_write_perfcmp_report(1, 1, 0, 10, "ok") otherwise nothing
+
+    update_lines = get_update_runner_lines("k=v\nx=y\n")
+    update_lines = update_lines
+    assert value get_update_runner_prefix_match_flag("current_version=1", "current_version=") == 1
+    assert value get_update_runner_manifest_value("current_version=1\n", "current_version") == "1"
+
+    verify_lines = get_verify_runner_lines("a=1\n")
+    verify_lines = verify_lines
+    assert value get_verify_runner_prefix_match_flag("binary_hash=abc", "binary_hash=") == 1
+    assert value get_verify_runner_has_field_flag("binary_hash=abc\n", "binary_hash") == 1
+    try_to_write_text_for_verify("target/wrela_v2_verify/coverage_touchpoint.txt", "ok\n") otherwise nothing
+    try_to_write_verify_cert_report("ok", "touchpoint") otherwise nothing
+
+    object_maps = __wr_map_new()
+    __wr_map_set(object_maps, "signature", "OBJ|touch")
+    assert value get_object_signature_text(object_maps) == "OBJ|touch"
+    serialized_program_maps = create_serialized_object_program_maps(object_maps)
+    serialized_program_maps = serialized_program_maps
+    serialized_result_maps = create_serialized_object_result_maps(true, [79, 66], "OB")
+    serialized_result_maps = serialized_result_maps
+    get_serialized_object_byte_lists(serialized_result_maps)
+    get_serialized_object_text(serialized_result_maps)
+
+    linker_input_maps = create_linker_input_from_object_program_lists([object_maps])
+    assert value get_linker_input_output_format_text(linker_input_maps) == "mach-o-thin"
+
+    create_frontend_lex_empty_diagnostic()
+
+    cert_source_hash_text = get_cert_hash_text("to run() -> Integer:\n    return 1\n")
+    cert_binary_hash_text = get_cert_hash_text_from_byte_lists(__wr_bytes_to_list(__wr_bytes_from_string("#!/bin/sh\nexit 0\n")))
+    cert_maps = create_cert_maps(
+        "1",
+        "target/wrela_v2_cert_touchpoint/src/main.wr",
+        ".",
+        "target/wrela_v2_cert_touchpoint/target/main.wrela.bin",
+        "true",
+        "wrela-v2",
+        "wrela-v2",
+        cert_source_hash_text,
+        cert_binary_hash_text,
+        "wrela-v2",
+        "m8-a"
+    )
+    cert_text = get_cert_text(cert_maps)
+    get_cert_validate_lines(cert_text)
+    get_cert_validate_prefix_match_flag("cert_schema_version=1", "cert_schema_version=")
+    get_cert_validate_value_for_key(cert_text, "cert_schema_version")
+    match try_to_validate_cert_text(cert_text):
+        Ok(cert_validate_ok_maps):
+            cert_validate_ok_maps = cert_validate_ok_maps
+        Err(cert_validate_error_text):
+            cert_validate_error_text = cert_validate_error_text
+        otherwise:
+            nothing
+
+    mir_instruction_text_lists = []
+    add_mir_instruction_texts(mir_instruction_text_lists, ["const_i|t1|1"])
+    create_mir_const_integer_instruction("t1", 1)
+    create_mir_const_boolean_instruction("t2", true)
+    create_mir_binary_instruction("t3", "+", "t1", "t2")
+    create_mir_return_instruction("t3")
+    create_mir_block("entry", ["ret|t3"])
+    create_mir_function("run", "entry", [])
+    mir_program_maps = create_mir_program(mir_instruction_text_lists)
+    get_mir_instruction_count(mir_program_maps)
+    get_mir_signature_text(mir_program_maps)
+    matrix_failed_cell_maps = create_matrix_failed_cell_maps(1)
+    matrix_failed_cell_maps = matrix_failed_cell_maps
+    match try_to_run_self_host_runner(""):
+        Ok(self_host_ok_maps):
+            self_host_ok_maps = self_host_ok_maps
+        Err(self_host_error_text):
+            self_host_error_text = self_host_error_text
+        otherwise:
+            nothing
+    match try_to_run_repro_runner("", "", ""):
+        Ok(repro_ok_maps):
+            repro_ok_maps = repro_ok_maps
+        Err(repro_error_text):
+            repro_error_text = repro_error_text
+        otherwise:
+            nothing
+    get_self_host_integer_env_or_default("WRELA_SELF_HOST_MISSING", 9)
+    get_repro_integer_env_or_default("WRELA_REPRO_MISSING", 9)
+    match try_to_run_stage_toolchain("", "/", "build", "wrela-v2"):
+        Ok(stage_ok_maps):
+            stage_ok_maps = stage_ok_maps
+        Err(stage_error_text):
+            stage_error_text = stage_error_text
+        otherwise:
+            nothing
+    get_stage_exit_code_or_default(__wr_map_new(), 9)
+    get_deterministic_stage_root("wrela-v2", ".")
+    assert value get_ast_boolean_literal_flag({"value": true}) == 1
+    assert value get_mir_lower_expression_result_next_temp_number({"next_temp": 6}) == 6
+
+    get_stdout({})
+    assert value true == true
+    return nothing

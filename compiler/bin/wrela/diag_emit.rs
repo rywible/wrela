@@ -147,7 +147,7 @@ pub(super) fn emit_diag_record(format: OutputFormat, record: &DiagRecord, source
         },
         is_primary: true,
     });
-    let span = SourceSpan::from((primary.span.offset, primary.span.len));
+    let span = clamp_source_span(source, primary.span.offset, primary.span.len);
     match format {
         OutputFormat::Pretty => {
             let report = Report::new(ProjectDiag {
@@ -218,6 +218,13 @@ pub(super) fn emit_diag_record(format: OutputFormat, record: &DiagRecord, source
             emit_json_diag_for_record(record);
         }
     }
+}
+
+fn clamp_source_span(source: &str, offset: usize, len: usize) -> SourceSpan {
+    let clamped_offset = offset.min(source.len());
+    let max_len = source.len().saturating_sub(clamped_offset);
+    let clamped_len = len.min(max_len);
+    SourceSpan::from((clamped_offset, clamped_len))
 }
 
 fn line_col_at_offset(source: &str, offset: usize) -> (usize, usize) {

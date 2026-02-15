@@ -1,0 +1,32 @@
+so:
+    Explicit environment boundary helpers for v2 application/runtime wiring.
+
+use try_to_parse_integer from parse
+
+
+to get_env_or_empty(key: String) -> String:
+    value = __wr_env_get(key)
+    if value == nothing:
+        return ""
+    return "{value}"
+
+
+to get_env_or_default(key: String, fallback: String) -> String:
+    value_text = get_env_or_empty(key)
+    if value_text == "":
+        return fallback
+    return value_text
+
+
+to get_env_int_or_default(key: String, fallback: Integer) -> Integer:
+    value_text = get_env_or_empty(key)
+    if value_text == "":
+        return fallback
+    match try_to_parse_integer(value_text):
+        Ok(parsed_value):
+            return parsed_value
+        Err(_):
+            return fallback
+        otherwise:
+            return fallback
+    return fallback

@@ -1,0 +1,233 @@
+so:
+    Contract tests for platform adapter composition invariants.
+    The same composition contract must hold across Darwin and Linux.
+
+use PlatformTarget from domain/platform/model
+use try_to_create_platform_ports from application/composition/platform_ports
+use create_current_platform_target from application/composition/platform_target_env
+use get_platform_operation_presence_flag from domain/platform/contracts
+use PlatformPorts from domain/platform/contracts
+use try_to_validate_platform_ports_conformance from application/runtime/platform_conformance
+use try_to_validate_linux_sys_boundary_map from domain/platform/linux_sys_boundary
+use run_reactor_port_lifecycle from application/runtime/platform_runtime
+use run_clock_port_now_ns from application/runtime/platform_runtime
+use run_clock_port_sleep_ms from application/runtime/platform_runtime
+use try_to_run_fs_write_text from application/runtime/platform_runtime
+use try_to_run_fs_read_text from application/runtime/platform_runtime
+use try_to_run_fs_read_metadata from application/runtime/platform_runtime
+use try_to_run_process_port from application/runtime/platform_runtime
+use try_to_get_process_port_cwd from application/runtime/platform_runtime
+
+
+to create_contract_target(os_name: String, architecture: String) -> PlatformTarget:
+    target = PlatformTarget()
+    target.host_os_name = os_name
+    target.host_architecture = architecture
+    return target
+
+
+to ensure_platform_port_operations_present(ports: PlatformPorts) -> Nothing:
+    assert value get_platform_operation_presence_flag(ports.reactor_port.ops, "create_reactor_handle") == true
+    assert value get_platform_operation_presence_flag(ports.reactor_port.ops, "drop_reactor_handle") == true
+    assert value get_platform_operation_presence_flag(ports.reactor_port.ops, "register_token") == true
+    assert value get_platform_operation_presence_flag(ports.reactor_port.ops, "deregister_token") == true
+    assert value get_platform_operation_presence_flag(ports.reactor_port.ops, "arm_timer") == true
+
+    assert value get_platform_operation_presence_flag(ports.clock_port.ops, "now_ns") == true
+    assert value get_platform_operation_presence_flag(ports.clock_port.ops, "sleep_ms") == true
+
+    assert value get_platform_operation_presence_flag(ports.fs_port.ops, "read_text") == true
+    assert value get_platform_operation_presence_flag(ports.fs_port.ops, "write_text") == true
+    assert value get_platform_operation_presence_flag(ports.fs_port.ops, "read_directory") == true
+    assert value get_platform_operation_presence_flag(ports.fs_port.ops, "read_metadata") == true
+    assert value get_platform_operation_presence_flag(ports.fs_port.ops, "create_directory") == true
+    assert value get_platform_operation_presence_flag(ports.fs_port.ops, "remove_file") == true
+    assert value get_platform_operation_presence_flag(ports.fs_port.ops, "remove_directory") == true
+    assert value get_platform_operation_presence_flag(ports.fs_port.ops, "rename_path") == true
+    assert value get_platform_operation_presence_flag(ports.fs_port.ops, "set_executable") == true
+
+    assert value get_platform_operation_presence_flag(ports.process_port.ops, "run_process") == true
+    assert value get_platform_operation_presence_flag(ports.process_port.ops, "get_cwd") == true
+
+    assert value get_platform_operation_presence_flag(ports.thread_port.ops, "spawn_thread") == true
+    assert value get_platform_operation_presence_flag(ports.thread_port.ops, "join_thread") == true
+    assert value get_platform_operation_presence_flag(ports.thread_port.ops, "yield_thread") == true
+
+    assert value get_platform_operation_presence_flag(ports.sync_port.ops, "create_wait_handle") == true
+    assert value get_platform_operation_presence_flag(ports.sync_port.ops, "drop_wait_handle") == true
+    assert value get_platform_operation_presence_flag(ports.sync_port.ops, "wait") == true
+    assert value get_platform_operation_presence_flag(ports.sync_port.ops, "wake_one") == true
+    assert value get_platform_operation_presence_flag(ports.sync_port.ops, "wake_all") == true
+    return nothing
+
+
+to ensure_platform_ports_are_conformant(ports: PlatformPorts) -> Nothing:
+    match try_to_validate_platform_ports_conformance(ports):
+        Ok(validated):
+            validated = validated
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_platform_adapter_contract_linux_io_uring_path() -> Nothing:
+    target = create_contract_target("linux", "arm64")
+    match try_to_create_platform_ports(target, true):
+        Ok(ports):
+            assert value ports.host_family_name == "linux"
+            assert value ports.reactor_backend_name == "io_uring"
+            assert value ports.reactor_port.backend_name == "io_uring"
+            assert value ports.reactor_port.adapter_identity_name != ""
+            assert value ports.reactor_port.host_family_name == "linux"
+            assert value ports.clock_port.adapter_identity_name != ""
+            assert value ports.fs_port.adapter_identity_name != ""
+            assert value ports.process_port.adapter_identity_name != ""
+            assert value ports.thread_port.adapter_identity_name != ""
+            assert value ports.sync_port.adapter_identity_name != ""
+            ensure_platform_port_operations_present(ports)
+            ensure_platform_ports_are_conformant(ports)
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_platform_adapter_contract_linux_epoll_fallback_path() -> Nothing:
+    target = create_contract_target("linux", "arm64")
+    match try_to_create_platform_ports(target, false):
+        Ok(ports):
+            assert value ports.host_family_name == "linux"
+            assert value ports.reactor_backend_name == "epoll"
+            assert value ports.reactor_port.backend_name == "epoll"
+            assert value ports.reactor_port.adapter_identity_name != ""
+            assert value ports.reactor_port.host_family_name == "linux"
+            assert value ports.clock_port.adapter_identity_name != ""
+            assert value ports.fs_port.adapter_identity_name != ""
+            assert value ports.process_port.adapter_identity_name != ""
+            assert value ports.thread_port.adapter_identity_name != ""
+            assert value ports.sync_port.adapter_identity_name != ""
+            ensure_platform_port_operations_present(ports)
+            ensure_platform_ports_are_conformant(ports)
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_platform_adapter_contract_darwin_path() -> Nothing:
+    target = create_contract_target("darwin", "arm64")
+    match try_to_create_platform_ports(target, true):
+        Ok(ports):
+            assert value ports.host_family_name == "darwin"
+            assert value ports.reactor_backend_name == "kqueue"
+            assert value ports.reactor_port.backend_name == "kqueue"
+            assert value ports.reactor_port.adapter_identity_name != ""
+            assert value ports.reactor_port.host_family_name == "darwin"
+            assert value ports.clock_port.adapter_identity_name != ""
+            assert value ports.fs_port.adapter_identity_name != ""
+            assert value ports.process_port.adapter_identity_name != ""
+            assert value ports.thread_port.adapter_identity_name != ""
+            assert value ports.sync_port.adapter_identity_name != ""
+            ensure_platform_port_operations_present(ports)
+            ensure_platform_ports_are_conformant(ports)
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_platform_adapter_contract_rejects_unknown_platform() -> Nothing:
+    target = create_contract_target("plan9", "x64")
+    match try_to_create_platform_ports(target, true):
+        Err(message):
+            assert value message == "unsupported platform target: plan9"
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_platform_adapter_contract_current_target_uses_explicit_env() -> Nothing:
+    __wr_env_set("WRELA_V2_HOST_OS", "linux-gnu")
+    __wr_env_set("WRELA_V2_HOST_ARCH", "x86_64")
+    target = create_current_platform_target()
+    assert value target.host_os_name != ""
+    assert value target.host_architecture != ""
+    return nothing
+
+
+to test_platform_adapter_contract_runtime_facade_executes_representative_ops() -> Nothing:
+    target = create_contract_target("linux", "arm64")
+    file_path = "wrela_v2_platform_runtime_ops.txt"
+    match try_to_create_platform_ports(target, true):
+        Ok(ports):
+            match run_reactor_port_lifecycle(ports, 101, 0):
+                Ok(reactor_result_maps):
+                    reactor_result_maps = reactor_result_maps
+                otherwise:
+                    assert value false == true
+
+            match run_clock_port_now_ns(ports):
+                Ok(now_value):
+                    now_value = now_value
+                otherwise:
+                    assert value false == true
+
+            match run_clock_port_sleep_ms(ports, 0):
+                Ok(is_sleep_ok_flag):
+                    is_sleep_ok_flag = is_sleep_ok_flag
+                otherwise:
+                    assert value false == true
+
+            match try_to_run_fs_write_text(ports, file_path, "ok\n"):
+                Ok(write_result):
+                    write_result = write_result
+                otherwise:
+                    assert value false == true
+
+            match try_to_run_fs_read_text(ports, file_path):
+                Ok(read_text):
+                    read_text = read_text
+                otherwise:
+                    assert value false == true
+
+            match try_to_run_fs_read_metadata(ports, file_path):
+                Ok(metadata_maps):
+                    metadata_maps = metadata_maps
+                otherwise:
+                    assert value false == true
+
+            match try_to_run_process_port(ports, "/bin/echo", ["hello"], "/", 1000):
+                Ok(process_result_maps):
+                    process_result_maps = process_result_maps
+                otherwise:
+                    assert value false == true
+
+            match try_to_get_process_port_cwd(ports):
+                Ok(cwd_text):
+                    cwd_text = cwd_text
+                otherwise:
+                    assert value false == true
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_platform_adapter_contract_linux_sys_boundary_model_is_present() -> Nothing:
+    match try_to_validate_linux_sys_boundary_map():
+        Ok(validated):
+            validated = validated
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_platform_adapter_contract_runtime_facade_fails_closed_on_missing_operation() -> Nothing:
+    target = create_contract_target("linux", "arm64")
+    match try_to_create_platform_ports(target, true):
+        Ok(ports):
+            __wr_map_set(ports.reactor_port.ops, "create_reactor_handle", nothing)
+            match run_reactor_port_lifecycle(ports, 101, 0):
+                Err(message_text):
+                    assert value message_text == "missing platform op: reactor.create_reactor_handle"
+                otherwise:
+                    assert value false == true
+        otherwise:
+            assert value false == true
+    return nothing

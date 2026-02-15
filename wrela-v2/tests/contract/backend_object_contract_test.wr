@@ -1,0 +1,231 @@
+so:
+    Contract coverage for M5-A backend MIR -> Object slice.
+
+use get_source_tokens from domain/frontend/lexer
+use get_frontend_lex_token_lists from domain/frontend/lexer
+use parse_tokens from domain/frontend/parser
+use check_program from domain/frontend/typecheck
+use try_to_lower_program_to_mir from domain/mir/lower
+use get_mir_text_prefix_match_flag from domain/mir/validate
+
+use create_object_section_maps from domain/backend/object_ir
+use create_object_symbol_maps from domain/backend/object_ir
+use create_object_relocation_maps from domain/backend/object_ir
+use create_object_program_maps from domain/backend/object_ir
+use get_object_signature_text_from_parts from domain/backend/object_ir
+use get_object_signature_text from domain/backend/object_ir
+
+use emit_object_from_mir_program from domain/backend/emit_object
+use validate_object_program from domain/backend/object_validate
+use create_object_validate_result_maps from domain/backend/object_validate
+use create_serialized_object_program_maps from domain/backend/object_serialize
+use get_serialized_object_byte_lists from domain/backend/object_serialize
+use get_serialized_object_text from domain/backend/object_serialize
+use create_serialized_object_result_maps from domain/backend/object_serialize
+
+use create_linker_input_maps from domain/linker/input_contract
+use create_linker_input_from_object_program from domain/linker/input_contract
+use get_linker_input_object_program_lists from domain/linker/input_contract
+use get_linker_input_entry_symbol_text from domain/linker/input_contract
+use get_linker_input_output_format_text from domain/linker/input_contract
+
+
+to get_backend_lowered_mir_or_empty_map(source_text: String) -> Map:
+    token_result_maps = get_source_tokens(source_text)
+    if __wr_map_get(token_result_maps, "ok") != true:
+        return __wr_map_new()
+
+    token_lists = get_frontend_lex_token_lists(token_result_maps)
+    parse_result_maps = parse_tokens(token_lists)
+    if __wr_map_get(parse_result_maps, "ok") != true:
+        return __wr_map_new()
+
+    ast_maps = __wr_map_get(parse_result_maps, "ast")
+    typecheck_result_maps = check_program(ast_maps)
+    if __wr_map_get(typecheck_result_maps, "ok") != true:
+        return __wr_map_new()
+
+    lower_result_maps = try_to_lower_program_to_mir(ast_maps)
+    if __wr_map_get(lower_result_maps, "ok") != true:
+        return __wr_map_new()
+    return __wr_map_get(lower_result_maps, "mir")
+
+
+to get_backend_list_item_at_index(value_lists: List[Integer], index_number: Integer) -> String:
+    mutable current_index_number = 0
+    for value_item in value_lists:
+        if current_index_number == index_number:
+            return "{value_item}"
+        current_index_number = current_index_number + 1
+    return ""
+
+
+to test_backend_object_emission_accepts_precedence_program() -> Nothing:
+    mir_program_maps = get_backend_lowered_mir_or_empty_map("to run() -> Integer:\n    return 1 + 2 * 3\n")
+    emit_result_maps = emit_object_from_mir_program(mir_program_maps)
+    assert value __wr_map_get(emit_result_maps, "ok") == true
+    object_program_maps = __wr_map_get(emit_result_maps, "object")
+    validate_result_maps = validate_object_program(object_program_maps)
+    assert value __wr_map_get(validate_result_maps, "ok") == true
+    assert value get_mir_text_prefix_match_flag(
+        get_object_signature_text(object_program_maps),
+        "OBJ|S1|Y6|R1|B"
+    ) == 1
+    assert value get_backend_list_item_at_index(__wr_map_get(object_program_maps, "text_bytes"), 0) == "1"
+    return nothing
+
+
+to test_backend_object_emission_accepts_parenthesized_program() -> Nothing:
+    mir_program_maps = get_backend_lowered_mir_or_empty_map("to run() -> Integer:\n    return (1 + 2) * 3\n")
+    emit_result_maps = emit_object_from_mir_program(mir_program_maps)
+    assert value __wr_map_get(emit_result_maps, "ok") == true
+    object_program_maps = __wr_map_get(emit_result_maps, "object")
+    validate_result_maps = validate_object_program(object_program_maps)
+    assert value __wr_map_get(validate_result_maps, "ok") == true
+    assert value get_mir_text_prefix_match_flag(
+        get_object_signature_text(object_program_maps),
+        "OBJ|S1|Y6|R1|B"
+    ) == 1
+    return nothing
+
+
+to test_backend_object_serializer_is_byte_identical_across_repeated_runs() -> Nothing:
+    mir_program_maps = get_backend_lowered_mir_or_empty_map("to run() -> Integer:\n    return 1 + 2 * 3\n")
+    first_object_maps = __wr_map_get(emit_object_from_mir_program(mir_program_maps), "object")
+    second_object_maps = __wr_map_get(emit_object_from_mir_program(mir_program_maps), "object")
+    first_serialized_maps = create_serialized_object_program_maps(first_object_maps)
+    second_serialized_maps = create_serialized_object_program_maps(second_object_maps)
+
+    first_byte_lists = get_serialized_object_byte_lists(first_serialized_maps)
+    second_byte_lists = get_serialized_object_byte_lists(second_serialized_maps)
+    mutable first_byte_count_number = 0
+    for first_byte_value in first_byte_lists:
+        first_byte_count_number = first_byte_count_number + 1
+    mutable second_byte_count_number = 0
+    for second_byte_value in second_byte_lists:
+        second_byte_count_number = second_byte_count_number + 1
+    assert value first_byte_count_number == second_byte_count_number
+
+    mutable first_index_number = 0
+    for first_byte in first_byte_lists:
+        assert value "{first_byte}" == get_backend_list_item_at_index(second_byte_lists, first_index_number)
+        first_index_number = first_index_number + 1
+
+    assert value get_serialized_object_text(first_serialized_maps) == get_serialized_object_text(second_serialized_maps)
+    return nothing
+
+
+to test_backend_object_validator_rejects_corrupt_fixture() -> Nothing:
+    corrupt_section_lists = []
+    corrupt_content_byte_lists = []
+    __wr_list_push(corrupt_content_byte_lists, 1)
+    __wr_list_push(corrupt_content_byte_lists, 2)
+    __wr_list_push(corrupt_content_byte_lists, 3)
+    __wr_list_push(corrupt_section_lists, create_object_section_maps(".bad", "code", corrupt_content_byte_lists))
+    corrupt_symbol_lists = []
+    __wr_list_push(corrupt_symbol_lists, create_object_symbol_maps("not_run", ".bad", 0))
+    empty_relocation_lists = []
+    __wr_list_push(empty_relocation_lists, create_object_relocation_maps(".bad", 1, "not_run", "abs32"))
+    corrupt_text_byte_lists = []
+    __wr_list_push(corrupt_text_byte_lists, 1)
+    __wr_list_push(corrupt_text_byte_lists, 2)
+    __wr_list_push(corrupt_text_byte_lists, 3)
+    corrupt_program_maps = create_object_program_maps(
+        corrupt_section_lists,
+        corrupt_symbol_lists,
+        empty_relocation_lists,
+        corrupt_text_byte_lists
+    )
+    validate_result_maps = validate_object_program(corrupt_program_maps)
+    assert value __wr_map_get(validate_result_maps, "ok") == false
+    assert value __wr_map_get(validate_result_maps, "reason") == "missing .text section"
+    return nothing
+
+
+to test_backend_linker_input_contract_handshake_is_stable() -> Nothing:
+    mir_program_maps = get_backend_lowered_mir_or_empty_map("to run() -> Integer:\n    return 1 + 2\n")
+    object_program_maps = __wr_map_get(emit_object_from_mir_program(mir_program_maps), "object")
+    linker_input_maps = create_linker_input_from_object_program(object_program_maps)
+    assert value __wr_map_get(linker_input_maps, "kind") == "LinkerInput"
+    assert value get_linker_input_entry_symbol_text(linker_input_maps) == "run"
+    assert value get_linker_input_output_format_text(linker_input_maps) == "mach-o-thin"
+    mutable object_program_count_number = 0
+    for object_program_item in get_linker_input_object_program_lists(linker_input_maps):
+        object_program_item = object_program_item
+        object_program_count_number = object_program_count_number + 1
+    assert value object_program_count_number == 1
+    return nothing
+
+
+to test_backend_object_and_linker_coverage_touchpoints_are_callable() -> Nothing:
+    empty_validate_maps = create_object_validate_result_maps(true, "")
+    assert value __wr_map_get(empty_validate_maps, "ok") == true
+
+    synthetic_byte_lists = []
+    __wr_list_push(synthetic_byte_lists, 79)
+    __wr_list_push(synthetic_byte_lists, 66)
+    __wr_list_push(synthetic_byte_lists, 74)
+    synthetic_serialized_maps = create_serialized_object_result_maps(true, synthetic_byte_lists, "OBJ")
+    assert value get_serialized_object_text(synthetic_serialized_maps) == "OBJ"
+    mutable synthetic_byte_count_number = 0
+    for synthetic_byte in get_serialized_object_byte_lists(synthetic_serialized_maps):
+        synthetic_byte = synthetic_byte
+        synthetic_byte_count_number = synthetic_byte_count_number + 1
+    assert value synthetic_byte_count_number == 3
+
+    section_lists = []
+    symbol_lists = []
+    relocation_lists = []
+    text_byte_lists = []
+    __wr_list_push(text_byte_lists, 1)
+    __wr_list_push(text_byte_lists, 2)
+    __wr_list_push(text_byte_lists, 3)
+    __wr_list_push(section_lists, create_object_section_maps(".text", "code", text_byte_lists))
+    __wr_list_push(symbol_lists, create_object_symbol_maps("run", ".text", 0))
+    __wr_list_push(relocation_lists, create_object_relocation_maps(".text", 2, "run", "abs32"))
+    signature_text = get_object_signature_text_from_parts(
+        section_lists,
+        symbol_lists,
+        relocation_lists,
+        text_byte_lists
+    )
+    object_program_maps = create_object_program_maps(
+        section_lists,
+        symbol_lists,
+        relocation_lists,
+        text_byte_lists
+    )
+
+    assert value signature_text == "OBJ|S1|Y1|R1|B3|.text,|run,"
+    computed_signature_text = get_object_signature_text(object_program_maps)
+    validate_result_maps = validate_object_program(object_program_maps)
+    validate_result_maps = validate_result_maps
+    serialized_program_maps = create_serialized_object_program_maps(object_program_maps)
+    serialized_program_maps = serialized_program_maps
+    computed_signature_text = computed_signature_text
+    mutable section_count_number = 0
+    for section_item in __wr_map_get(object_program_maps, "sections"):
+        section_item = section_item
+        section_count_number = section_count_number + 1
+    mutable symbol_count_number = 0
+    for symbol_item in __wr_map_get(object_program_maps, "symbols"):
+        symbol_item = symbol_item
+        symbol_count_number = symbol_count_number + 1
+    mutable relocation_count_number = 0
+    for relocation_item in __wr_map_get(object_program_maps, "relocations"):
+        relocation_item = relocation_item
+        relocation_count_number = relocation_count_number + 1
+    mutable text_byte_count_number = 0
+    for text_byte_item in __wr_map_get(object_program_maps, "text_bytes"):
+        text_byte_item = text_byte_item
+        text_byte_count_number = text_byte_count_number + 1
+    assert value section_count_number == 1
+    assert value symbol_count_number == 1
+    assert value relocation_count_number == 1
+    assert value text_byte_count_number == 3
+
+    direct_object_program_lists = []
+    __wr_list_push(direct_object_program_lists, object_program_maps)
+    direct_linker_input_maps = create_linker_input_maps(direct_object_program_lists, "run", "mach-o-thin")
+    assert value get_linker_input_entry_symbol_text(direct_linker_input_maps) == "run"
+    return nothing

@@ -1,0 +1,47 @@
+so:
+    Phase 0 parity command runner bootstrap.
+    Uses host process APIs to execute v1 commands for shadow-parity comparison.
+
+use create_process_spec from host/process
+use try_to_run_process from host/process
+use create_map from data/map
+
+
+to try_to_run_host_command(
+    command: String,
+    args: List[String],
+    workspace_root: String,
+    timeout_ms: Integer
+) -> Result[Map]:
+    env = create_map()
+    spec = create_process_spec(command, args, workspace_root, env, timeout_ms)
+    return try_to_run_process(spec)
+
+
+to try_to_run_v1_command(
+    v1_bin_path: String,
+    workspace_root: String,
+    args: List[String]
+) -> Result[Map]:
+    return try_to_run_host_command(v1_bin_path, args, workspace_root, 10_000)
+
+
+to try_to_run_v1_help(v1_bin_path: String, workspace_root: String) -> Result[Map]:
+    args = ["--help"]
+    return try_to_run_v1_command(v1_bin_path, workspace_root, args)
+
+
+to get_exit_code(result: Map) -> Integer:
+    code = __wr_map_get(result, "exit_code")
+    if code == nothing:
+        return 1
+    return code
+
+
+to get_stdout(result: Map) -> String:
+    stdout = __wr_map_get(result, "stdout")
+    match stdout:
+        String(value):
+            return value
+        otherwise:
+            return ""

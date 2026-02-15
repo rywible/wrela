@@ -1,16 +1,16 @@
 {
   "cert_schema_version": 3,
-  "generated_at_unix_ms": 1770854101775,
-  "entry_path": "apps/ledger-lite/src/main.wr",
-  "workspace_root": "apps/ledger-lite",
+  "generated_at_unix_ms": 1771130279619,
+  "entry_path": "wrela-v2/src/main.wr",
+  "workspace_root": "wrela-v2",
   "artifact_path": "wrela.out",
   "tests_passed": true,
   "toolchain_version": "0.1.0",
   "compiler_version": "0.1.0",
-  "compiler_git_sha": "d66af58f0fb93361552ce61e4b5b227e73b53963",
+  "compiler_git_sha": "a54953c4fa76e8e3974743c7efffeacfbf6191c6",
   "runtime_version": "0.1.0",
   "gate_versions_marker": "wrela-cert-gates-v1",
-  "source_hash": "60d29b097490962e",
+  "source_hash": "0c888f14e67e8e86",
   "seeds_used": {
     "sim": 23063,
     "autogen": 42608,
@@ -130,54 +130,906 @@
     }
   },
   "coverage_summary_hash": null,
-  "mutation_summary_hash": null,
-  "differential_results_hash": null,
+  "mutation_summary_hash": "cffaf7ec44857d0a",
+  "differential_results_hash": "6274b3c4aaa24003",
   "impact_manifest": {
     "source_files": [
       {
-        "rel_path": "src/application/service.wr",
-        "hash": "8e2d288869bcb70e"
+        "rel_path": "src/application/build_command.wr",
+        "hash": "8995bdded1e21ea7"
       },
       {
-        "rel_path": "src/domain/ledger.wr",
-        "hash": "59f8ee93a05a9f11"
+        "rel_path": "src/application/build_runner.wr",
+        "hash": "0cc86152f3ffbcd0"
+      },
+      {
+        "rel_path": "src/application/check_command.wr",
+        "hash": "105d7615077114a6"
+      },
+      {
+        "rel_path": "src/application/check_pipeline.wr",
+        "hash": "354da90140838ba5"
+      },
+      {
+        "rel_path": "src/application/cli.wr",
+        "hash": "8dc3d5f9a94b1853"
+      },
+      {
+        "rel_path": "src/application/compile_command.wr",
+        "hash": "b586f2162663bb1b"
+      },
+      {
+        "rel_path": "src/application/composition/platform_ports.wr",
+        "hash": "b6ffd0505178127a"
+      },
+      {
+        "rel_path": "src/application/composition/platform_target_env.wr",
+        "hash": "a3e7b38ed12aa54c"
+      },
+      {
+        "rel_path": "src/application/dev_command.wr",
+        "hash": "a96c450f1cf44102"
+      },
+      {
+        "rel_path": "src/application/dev_runner.wr",
+        "hash": "b77df18f739838c1"
+      },
+      {
+        "rel_path": "src/application/init_command.wr",
+        "hash": "1ee42b525c34758b"
+      },
+      {
+        "rel_path": "src/application/matrix_command.wr",
+        "hash": "a3933a71ef3bf5c1"
+      },
+      {
+        "rel_path": "src/application/matrix_runner.wr",
+        "hash": "6a2ac03132e555d8"
+      },
+      {
+        "rel_path": "src/application/parity_command.wr",
+        "hash": "e6f77fbd21f7ff55"
+      },
+      {
+        "rel_path": "src/application/parity_runner.wr",
+        "hash": "ca63f6afcc2056e1"
+      },
+      {
+        "rel_path": "src/application/perf_command.wr",
+        "hash": "dd95979186b4f385"
+      },
+      {
+        "rel_path": "src/application/perf_runner.wr",
+        "hash": "45614a53590a4ea8"
+      },
+      {
+        "rel_path": "src/application/perfcmp_command.wr",
+        "hash": "09ad0eb56263e5dd"
+      },
+      {
+        "rel_path": "src/application/perfcmp_runner.wr",
+        "hash": "301fa95180fc30a5"
+      },
+      {
+        "rel_path": "src/application/repro_runner.wr",
+        "hash": "a1bbebfadc0712e2"
+      },
+      {
+        "rel_path": "src/application/run_command.wr",
+        "hash": "9ae30975c73842f1"
+      },
+      {
+        "rel_path": "src/application/runtime/platform_runtime.wr",
+        "hash": "0b3323dcd943e9b2"
+      },
+      {
+        "rel_path": "src/application/self_host_runner.wr",
+        "hash": "44e52790087032f8"
+      },
+      {
+        "rel_path": "src/application/stage_toolchain_runner.wr",
+        "hash": "a0c4caaa51865fef"
+      },
+      {
+        "rel_path": "src/application/test_command.wr",
+        "hash": "4355823b449120d4"
+      },
+      {
+        "rel_path": "src/application/test_runner.wr",
+        "hash": "40d9a853851eeb84"
+      },
+      {
+        "rel_path": "src/application/update_command.wr",
+        "hash": "0e788b7352e8c9da"
+      },
+      {
+        "rel_path": "src/application/update_runner.wr",
+        "hash": "9d014a6d22f5eda2"
+      },
+      {
+        "rel_path": "src/application/verify_cert_command.wr",
+        "hash": "9a5a59d694ca6542"
+      },
+      {
+        "rel_path": "src/application/verify_cert_runner.wr",
+        "hash": "354eb02fe2f23543"
+      },
+      {
+        "rel_path": "src/domain/backend/emit_object.wr",
+        "hash": "052ac125cdb786f8"
+      },
+      {
+        "rel_path": "src/domain/backend/object_ir.wr",
+        "hash": "94b6d08c0e5fae33"
+      },
+      {
+        "rel_path": "src/domain/backend/object_serialize.wr",
+        "hash": "ea06693b0f9b5635"
+      },
+      {
+        "rel_path": "src/domain/backend/object_validate.wr",
+        "hash": "9e2848e4458f9231"
+      },
+      {
+        "rel_path": "src/domain/cert/hash.wr",
+        "hash": "1fd1202b4ecd61f5"
+      },
+      {
+        "rel_path": "src/domain/cert/model.wr",
+        "hash": "b7b9ab93df5e8102"
+      },
+      {
+        "rel_path": "src/domain/cert/validate.wr",
+        "hash": "11d014a5b966def8"
+      },
+      {
+        "rel_path": "src/domain/frontend/ast.wr",
+        "hash": "da2b8f36a69ea583"
+      },
+      {
+        "rel_path": "src/domain/frontend/diagnostics.wr",
+        "hash": "1c9bb88d5f72ef69"
+      },
+      {
+        "rel_path": "src/domain/frontend/lexer.wr",
+        "hash": "12ed18aad3814fe4"
+      },
+      {
+        "rel_path": "src/domain/frontend/parser.wr",
+        "hash": "f989eec7315b868a"
+      },
+      {
+        "rel_path": "src/domain/frontend/token.wr",
+        "hash": "230fd78e45097ce5"
+      },
+      {
+        "rel_path": "src/domain/frontend/typecheck.wr",
+        "hash": "31e58e1b81f0bbce"
+      },
+      {
+        "rel_path": "src/domain/frontend/types.wr",
+        "hash": "8094b2cddefb3198"
+      },
+      {
+        "rel_path": "src/domain/linker/apply_relocations.wr",
+        "hash": "97bb7c5905d5caf1"
+      },
+      {
+        "rel_path": "src/domain/linker/emit_executable.wr",
+        "hash": "72b05514d25e2015"
+      },
+      {
+        "rel_path": "src/domain/linker/input_contract.wr",
+        "hash": "75072f53fc31b985"
+      },
+      {
+        "rel_path": "src/domain/linker/link_ir.wr",
+        "hash": "958f9f3b7eead87f"
+      },
+      {
+        "rel_path": "src/domain/linker/resolve_symbols.wr",
+        "hash": "65daebee1bf973ca"
+      },
+      {
+        "rel_path": "src/domain/linker/validate_executable.wr",
+        "hash": "e0bb7806904e1ada"
+      },
+      {
+        "rel_path": "src/domain/mir/ir.wr",
+        "hash": "1ba747a0184b012b"
+      },
+      {
+        "rel_path": "src/domain/mir/lower.wr",
+        "hash": "080e44c9d09b59e5"
+      },
+      {
+        "rel_path": "src/domain/mir/rewrite.wr",
+        "hash": "fbd444e1274cdb64"
+      },
+      {
+        "rel_path": "src/domain/mir/validate.wr",
+        "hash": "c4eb2e41ad995748"
+      },
+      {
+        "rel_path": "src/domain/platform/contracts.wr",
+        "hash": "29e4668f2a6b51d7"
+      },
+      {
+        "rel_path": "src/domain/platform/model.wr",
+        "hash": "8288c5da7c47177a"
+      },
+      {
+        "rel_path": "src/infrastructure/platform/adapters/darwin_kqueue_adapter.wr",
+        "hash": "8e5a74789e42a18d"
+      },
+      {
+        "rel_path": "src/infrastructure/platform/adapters/linux_epoll_adapter.wr",
+        "hash": "ce8705632933b9d7"
+      },
+      {
+        "rel_path": "src/infrastructure/platform/adapters/linux_io_uring_adapter.wr",
+        "hash": "90f2e353bb4c4d2a"
       },
       {
         "rel_path": "src/main.wr",
-        "hash": "31622e7d29e707e7"
+        "hash": "64dee70cc3b13c77"
       },
       {
-        "rel_path": "tests/spec/ledger_test.wr",
-        "hash": "b625e152c9c9ba3e"
+        "rel_path": "tests/contract/backend_object_contract_test.wr",
+        "hash": "8c66cb5b9330890c"
+      },
+      {
+        "rel_path": "tests/contract/build_command_contract_test.wr",
+        "hash": "674120765118615e"
+      },
+      {
+        "rel_path": "tests/contract/check_command_contract_test.wr",
+        "hash": "7a6a8866841ade2a"
+      },
+      {
+        "rel_path": "tests/contract/check_pipeline_contract_test.wr",
+        "hash": "e900f995f47e631f"
+      },
+      {
+        "rel_path": "tests/contract/cli_bootstrap_contract_test.wr",
+        "hash": "09c031500ee6bdbd"
+      },
+      {
+        "rel_path": "tests/contract/compile_command_contract_test.wr",
+        "hash": "5e56f9da66c182e4"
+      },
+      {
+        "rel_path": "tests/contract/dev_command_contract_test.wr",
+        "hash": "d4b3ac155a32ad58"
+      },
+      {
+        "rel_path": "tests/contract/linker_executable_contract_test.wr",
+        "hash": "5d5c81d17307b0b6"
+      },
+      {
+        "rel_path": "tests/contract/m7_command_runtime_coverage_contract_test.wr",
+        "hash": "61fa7ba491346887"
+      },
+      {
+        "rel_path": "tests/contract/matrix_command_contract_test.wr",
+        "hash": "895db95b9bef0eaa"
+      },
+      {
+        "rel_path": "tests/contract/mir_pipeline_contract_test.wr",
+        "hash": "fa064e43f697efa0"
+      },
+      {
+        "rel_path": "tests/contract/parity_command_contract_test.wr",
+        "hash": "dbe016a327a8a9a1"
+      },
+      {
+        "rel_path": "tests/contract/perf_command_contract_test.wr",
+        "hash": "79a0a6bd0c466194"
+      },
+      {
+        "rel_path": "tests/contract/perfcmp_command_contract_test.wr",
+        "hash": "32a0bc01cced0672"
+      },
+      {
+        "rel_path": "tests/contract/platform_adapter_contract_test.wr",
+        "hash": "ed25787f6a9b9691"
+      },
+      {
+        "rel_path": "tests/contract/repro_contract_test.wr",
+        "hash": "fe8f6e745bc87549"
+      },
+      {
+        "rel_path": "tests/contract/run_command_contract_test.wr",
+        "hash": "544667b579775100"
+      },
+      {
+        "rel_path": "tests/contract/self_host_contract_test.wr",
+        "hash": "d7eb7e267e3b7562"
+      },
+      {
+        "rel_path": "tests/contract/self_host_stage_runner_contract_test.wr",
+        "hash": "4122471daa44c070"
+      },
+      {
+        "rel_path": "tests/contract/test_command_contract_test.wr",
+        "hash": "2477f76ac685b2cc"
+      },
+      {
+        "rel_path": "tests/contract/update_command_contract_test.wr",
+        "hash": "2acb7ec6d70d4615"
+      },
+      {
+        "rel_path": "tests/contract/verify_cert_command_contract_test.wr",
+        "hash": "d7275ddc345cd378"
+      },
+      {
+        "rel_path": "tests/parity/linux_readiness_architecture_test.wr",
+        "hash": "fa0b890034d82b64"
       }
     ],
     "src_modules": [
       {
-        "module_path": "application/service",
-        "rel_path": "src/application/service.wr",
-        "hash": "8e2d288869bcb70e",
+        "module_path": "application/build_command",
+        "rel_path": "src/application/build_command.wr",
+        "hash": "8995bdded1e21ea7",
         "uses": [
-          "domain/ledger"
+          "application/build_runner"
         ],
         "runtime_sensitive": false
       },
       {
-        "module_path": "domain/ledger",
-        "rel_path": "src/domain/ledger.wr",
-        "hash": "59f8ee93a05a9f11",
+        "module_path": "application/build_runner",
+        "rel_path": "src/application/build_runner.wr",
+        "hash": "0cc86152f3ffbcd0",
+        "uses": [
+          "application/check_pipeline",
+          "domain/backend/emit_object",
+          "domain/backend/object_validate",
+          "domain/cert/hash",
+          "domain/cert/model",
+          "domain/frontend/lexer",
+          "domain/frontend/parser",
+          "domain/frontend/typecheck",
+          "domain/linker/emit_executable",
+          "domain/linker/input_contract",
+          "domain/linker/link_ir",
+          "domain/linker/validate_executable",
+          "domain/mir/lower",
+          "domain/mir/rewrite",
+          "domain/mir/validate"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "application/check_command",
+        "rel_path": "src/application/check_command.wr",
+        "hash": "105d7615077114a6",
+        "uses": [
+          "application/check_pipeline"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "application/check_pipeline",
+        "rel_path": "src/application/check_pipeline.wr",
+        "hash": "354da90140838ba5",
+        "uses": [
+          "domain/frontend/diagnostics",
+          "domain/frontend/lexer",
+          "domain/frontend/parser",
+          "domain/frontend/typecheck",
+          "domain/mir/lower",
+          "domain/mir/rewrite",
+          "domain/mir/validate"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "application/cli",
+        "rel_path": "src/application/cli.wr",
+        "hash": "8dc3d5f9a94b1853",
+        "uses": [
+          "application/build_command",
+          "application/check_command",
+          "application/compile_command",
+          "application/dev_command",
+          "application/init_command",
+          "application/matrix_command",
+          "application/parity_command",
+          "application/perf_command",
+          "application/perfcmp_command",
+          "application/run_command",
+          "application/test_command",
+          "application/update_command",
+          "application/verify_cert_command"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "application/compile_command",
+        "rel_path": "src/application/compile_command.wr",
+        "hash": "b586f2162663bb1b",
+        "uses": [
+          "application/build_command"
+        ],
+        "runtime_sensitive": false
+      },
+      {
+        "module_path": "application/composition/platform_ports",
+        "rel_path": "src/application/composition/platform_ports.wr",
+        "hash": "b6ffd0505178127a",
+        "uses": [
+          "domain/platform/contracts",
+          "domain/platform/model",
+          "infrastructure/platform/adapters/darwin_kqueue_adapter",
+          "infrastructure/platform/adapters/linux_epoll_adapter",
+          "infrastructure/platform/adapters/linux_io_uring_adapter"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "application/composition/platform_target_env",
+        "rel_path": "src/application/composition/platform_target_env.wr",
+        "hash": "a3e7b38ed12aa54c",
+        "uses": [
+          "domain/platform/model"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "application/dev_command",
+        "rel_path": "src/application/dev_command.wr",
+        "hash": "a96c450f1cf44102",
+        "uses": [
+          "application/dev_runner"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "application/dev_runner",
+        "rel_path": "src/application/dev_runner.wr",
+        "hash": "b77df18f739838c1",
+        "uses": [
+          "application/check_pipeline",
+          "application/run_command",
+          "parse"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "application/init_command",
+        "rel_path": "src/application/init_command.wr",
+        "hash": "1ee42b525c34758b",
+        "uses": [],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "application/matrix_command",
+        "rel_path": "src/application/matrix_command.wr",
+        "hash": "a3933a71ef3bf5c1",
+        "uses": [
+          "application/matrix_runner"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "application/matrix_runner",
+        "rel_path": "src/application/matrix_runner.wr",
+        "hash": "6a2ac03132e555d8",
+        "uses": [
+          "application/perf_runner"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "application/parity_command",
+        "rel_path": "src/application/parity_command.wr",
+        "hash": "e6f77fbd21f7ff55",
+        "uses": [
+          "application/self_host_runner"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "application/parity_runner",
+        "rel_path": "src/application/parity_runner.wr",
+        "hash": "ca63f6afcc2056e1",
+        "uses": [],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "application/perf_command",
+        "rel_path": "src/application/perf_command.wr",
+        "hash": "dd95979186b4f385",
+        "uses": [
+          "application/perf_runner"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "application/perf_runner",
+        "rel_path": "src/application/perf_runner.wr",
+        "hash": "45614a53590a4ea8",
+        "uses": [
+          "application/build_runner",
+          "parse"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "application/perfcmp_command",
+        "rel_path": "src/application/perfcmp_command.wr",
+        "hash": "09ad0eb56263e5dd",
+        "uses": [
+          "application/perfcmp_runner"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "application/perfcmp_runner",
+        "rel_path": "src/application/perfcmp_runner.wr",
+        "hash": "301fa95180fc30a5",
+        "uses": [
+          "application/perf_runner",
+          "parse"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "application/repro_runner",
+        "rel_path": "src/application/repro_runner.wr",
+        "hash": "a1bbebfadc0712e2",
+        "uses": [
+          "application/stage_toolchain_runner",
+          "domain/cert/hash",
+          "parse"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "application/run_command",
+        "rel_path": "src/application/run_command.wr",
+        "hash": "9ae30975c73842f1",
+        "uses": [
+          "application/build_runner"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "application/runtime/platform_runtime",
+        "rel_path": "src/application/runtime/platform_runtime.wr",
+        "hash": "0b3323dcd943e9b2",
+        "uses": [
+          "domain/platform/contracts"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "application/self_host_runner",
+        "rel_path": "src/application/self_host_runner.wr",
+        "hash": "44e52790087032f8",
+        "uses": [
+          "application/build_runner",
+          "application/repro_runner",
+          "application/stage_toolchain_runner",
+          "domain/cert/hash",
+          "parse"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "application/stage_toolchain_runner",
+        "rel_path": "src/application/stage_toolchain_runner.wr",
+        "hash": "a0c4caaa51865fef",
+        "uses": [
+          "parse"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "application/test_command",
+        "rel_path": "src/application/test_command.wr",
+        "hash": "4355823b449120d4",
+        "uses": [
+          "application/test_runner"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "application/test_runner",
+        "rel_path": "src/application/test_runner.wr",
+        "hash": "40d9a853851eeb84",
+        "uses": [
+          "application/build_runner"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "application/update_command",
+        "rel_path": "src/application/update_command.wr",
+        "hash": "0e788b7352e8c9da",
+        "uses": [
+          "application/update_runner"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "application/update_runner",
+        "rel_path": "src/application/update_runner.wr",
+        "hash": "9d014a6d22f5eda2",
+        "uses": [],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "application/verify_cert_command",
+        "rel_path": "src/application/verify_cert_command.wr",
+        "hash": "9a5a59d694ca6542",
+        "uses": [
+          "application/verify_cert_runner"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "application/verify_cert_runner",
+        "rel_path": "src/application/verify_cert_runner.wr",
+        "hash": "354eb02fe2f23543",
+        "uses": [
+          "domain/cert/hash",
+          "domain/cert/validate"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "domain/backend/emit_object",
+        "rel_path": "src/domain/backend/emit_object.wr",
+        "hash": "052ac125cdb786f8",
+        "uses": [
+          "domain/backend/object_ir",
+          "domain/mir/ir",
+          "domain/mir/validate"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "domain/backend/object_ir",
+        "rel_path": "src/domain/backend/object_ir.wr",
+        "hash": "94b6d08c0e5fae33",
+        "uses": [],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "domain/backend/object_serialize",
+        "rel_path": "src/domain/backend/object_serialize.wr",
+        "hash": "ea06693b0f9b5635",
+        "uses": [
+          "domain/backend/object_ir"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "domain/backend/object_validate",
+        "rel_path": "src/domain/backend/object_validate.wr",
+        "hash": "9e2848e4458f9231",
+        "uses": [],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "domain/cert/hash",
+        "rel_path": "src/domain/cert/hash.wr",
+        "hash": "1fd1202b4ecd61f5",
+        "uses": [],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "domain/cert/model",
+        "rel_path": "src/domain/cert/model.wr",
+        "hash": "b7b9ab93df5e8102",
+        "uses": [],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "domain/cert/validate",
+        "rel_path": "src/domain/cert/validate.wr",
+        "hash": "11d014a5b966def8",
+        "uses": [],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "domain/frontend/ast",
+        "rel_path": "src/domain/frontend/ast.wr",
+        "hash": "da2b8f36a69ea583",
+        "uses": [],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "domain/frontend/diagnostics",
+        "rel_path": "src/domain/frontend/diagnostics.wr",
+        "hash": "1c9bb88d5f72ef69",
+        "uses": [],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "domain/frontend/lexer",
+        "rel_path": "src/domain/frontend/lexer.wr",
+        "hash": "12ed18aad3814fe4",
+        "uses": [
+          "domain/frontend/diagnostics",
+          "domain/frontend/token"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "domain/frontend/parser",
+        "rel_path": "src/domain/frontend/parser.wr",
+        "hash": "f989eec7315b868a",
+        "uses": [
+          "domain/frontend/ast",
+          "domain/frontend/diagnostics",
+          "domain/frontend/token"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "domain/frontend/token",
+        "rel_path": "src/domain/frontend/token.wr",
+        "hash": "230fd78e45097ce5",
+        "uses": [],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "domain/frontend/typecheck",
+        "rel_path": "src/domain/frontend/typecheck.wr",
+        "hash": "31e58e1b81f0bbce",
+        "uses": [
+          "domain/frontend/ast",
+          "domain/frontend/diagnostics",
+          "domain/frontend/types"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "domain/frontend/types",
+        "rel_path": "src/domain/frontend/types.wr",
+        "hash": "8094b2cddefb3198",
         "uses": [],
         "runtime_sensitive": false
       },
       {
+        "module_path": "domain/linker/apply_relocations",
+        "rel_path": "src/domain/linker/apply_relocations.wr",
+        "hash": "97bb7c5905d5caf1",
+        "uses": [],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "domain/linker/emit_executable",
+        "rel_path": "src/domain/linker/emit_executable.wr",
+        "hash": "72b05514d25e2015",
+        "uses": [
+          "domain/linker/apply_relocations",
+          "domain/linker/link_ir",
+          "domain/linker/resolve_symbols"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "domain/linker/input_contract",
+        "rel_path": "src/domain/linker/input_contract.wr",
+        "hash": "75072f53fc31b985",
+        "uses": [],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "domain/linker/link_ir",
+        "rel_path": "src/domain/linker/link_ir.wr",
+        "hash": "958f9f3b7eead87f",
+        "uses": [],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "domain/linker/resolve_symbols",
+        "rel_path": "src/domain/linker/resolve_symbols.wr",
+        "hash": "65daebee1bf973ca",
+        "uses": [
+          "domain/linker/input_contract"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "domain/linker/validate_executable",
+        "rel_path": "src/domain/linker/validate_executable.wr",
+        "hash": "e0bb7806904e1ada",
+        "uses": [
+          "domain/linker/link_ir"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "domain/mir/ir",
+        "rel_path": "src/domain/mir/ir.wr",
+        "hash": "1ba747a0184b012b",
+        "uses": [],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "domain/mir/lower",
+        "rel_path": "src/domain/mir/lower.wr",
+        "hash": "080e44c9d09b59e5",
+        "uses": [
+          "domain/frontend/ast",
+          "domain/mir/ir"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "domain/mir/rewrite",
+        "rel_path": "src/domain/mir/rewrite.wr",
+        "hash": "fbd444e1274cdb64",
+        "uses": [
+          "domain/mir/ir"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "domain/mir/validate",
+        "rel_path": "src/domain/mir/validate.wr",
+        "hash": "c4eb2e41ad995748",
+        "uses": [
+          "domain/mir/ir"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "domain/platform/contracts",
+        "rel_path": "src/domain/platform/contracts.wr",
+        "hash": "29e4668f2a6b51d7",
+        "uses": [],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "domain/platform/model",
+        "rel_path": "src/domain/platform/model.wr",
+        "hash": "8288c5da7c47177a",
+        "uses": [],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "infrastructure/platform/adapters/darwin_kqueue_adapter",
+        "rel_path": "src/infrastructure/platform/adapters/darwin_kqueue_adapter.wr",
+        "hash": "8e5a74789e42a18d",
+        "uses": [
+          "domain/platform/contracts"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "infrastructure/platform/adapters/linux_epoll_adapter",
+        "rel_path": "src/infrastructure/platform/adapters/linux_epoll_adapter.wr",
+        "hash": "ce8705632933b9d7",
+        "uses": [
+          "domain/platform/contracts"
+        ],
+        "runtime_sensitive": true
+      },
+      {
+        "module_path": "infrastructure/platform/adapters/linux_io_uring_adapter",
+        "rel_path": "src/infrastructure/platform/adapters/linux_io_uring_adapter.wr",
+        "hash": "90f2e353bb4c4d2a",
+        "uses": [
+          "domain/platform/contracts"
+        ],
+        "runtime_sensitive": true
+      },
+      {
         "module_path": "main",
         "rel_path": "src/main.wr",
-        "hash": "31622e7d29e707e7",
+        "hash": "64dee70cc3b13c77",
         "uses": [
-          "application/service"
+          "application/cli"
         ],
-        "runtime_sensitive": false
+        "runtime_sensitive": true
       }
     ]
   },
-  "binary_hash": "3635a6864450f54c"
+  "binary_hash": "163c352556e50ccc"
 }

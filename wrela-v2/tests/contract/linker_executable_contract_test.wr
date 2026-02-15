@@ -1,0 +1,651 @@
+so:
+    Contract coverage for M5-C multi-object linker hardening slice.
+
+use get_source_tokens from domain/frontend/lexer
+use get_frontend_lex_token_lists from domain/frontend/lexer
+use parse_tokens from domain/frontend/parser
+use check_program from domain/frontend/typecheck
+use try_to_lower_program_to_mir from domain/mir/lower
+use get_mir_text_prefix_match_flag from domain/mir/validate
+
+use emit_object_from_mir_program from domain/backend/emit_object
+use create_object_section_maps from domain/backend/object_ir
+use create_object_symbol_maps from domain/backend/object_ir
+use create_object_relocation_maps from domain/backend/object_ir
+use create_object_program_maps from domain/backend/object_ir
+
+use create_linker_input_from_object_program from domain/linker/input_contract
+use create_linker_input_from_object_program_lists from domain/linker/input_contract
+use get_linker_input_object_program_lists from domain/linker/input_contract
+use get_linker_input_output_format_text from domain/linker/input_contract
+
+use try_to_emit_linker_executable_from_input from domain/linker/emit_executable
+use create_linker_executable_emit_result_maps from domain/linker/emit_executable
+
+use validate_linker_executable_image from domain/linker/validate_executable
+use create_linker_executable_validate_result_maps from domain/linker/validate_executable
+
+use create_linker_image_maps from domain/linker/link_ir
+use get_linker_image_signature_text from domain/linker/link_ir
+use get_linker_image_byte_lists from domain/linker/link_ir
+use get_linker_image_entry_offset_number from domain/linker/link_ir
+
+use try_to_resolve_linker_symbols_from_input from domain/linker/resolve_symbols
+use create_linker_symbol_resolution_result_maps from domain/linker/resolve_symbols
+
+use try_to_apply_linker_relocations from domain/linker/apply_relocations
+use create_linker_relocation_apply_result_maps from domain/linker/apply_relocations
+use get_integer_value_or_default_for_check from application/check_command
+use get_string_value_or_default_for_check from application/check_command
+use run_check_command from application/check_command
+use try_to_run_shadow_v1_check from application/check_command
+use get_integer_value_or_default from application/check_pipeline
+use get_list_value_or_empty_list from application/check_pipeline
+use make_error_report from application/check_pipeline
+use print_usage from application/cli
+use get_item_at_index from application/cli
+use run_cli from application/cli
+use try_to_create_platform_ports from application/composition/platform_ports
+use convert_to_byte_list from application/composition/platform_target_env
+use get_byte_count from application/composition/platform_target_env
+use get_byte_at_index from application/composition/platform_target_env
+use get_text_prefix_match_flag from application/composition/platform_target_env
+use normalize_os_name from application/composition/platform_target_env
+use create_current_platform_target from application/composition/platform_target_env
+use normalize_root from application/init_command
+use get_path_exists_flag from application/init_command
+use ensure_directory from application/init_command
+use ensure_file from application/init_command
+use run_init_command from application/init_command
+use try_to_create_directory_for_parity_command from application/parity_command
+use try_to_write_text_for_parity_command from application/parity_command
+use get_exit_code_for_parity_command from application/parity_command
+use get_stdout_for_parity_command from application/parity_command
+use run_parity_command from application/parity_command
+use try_to_run_host_command from application/parity_runner
+use try_to_run_v1_command from application/parity_runner
+use try_to_run_v1_help from application/parity_runner
+use get_exit_code from application/parity_runner
+use get_stdout from application/parity_runner
+use try_to_create_directory from host/fs
+use try_to_write_text from host/fs
+use create_serialized_object_program_maps from domain/backend/object_serialize
+use get_serialized_object_byte_lists from domain/backend/object_serialize
+use get_serialized_object_text from domain/backend/object_serialize
+use validate_object_program from domain/backend/object_validate
+use create_object_validate_result_maps from domain/backend/object_validate
+use create_boolean_literal_node from domain/frontend/ast
+use get_ast_line_number from domain/frontend/ast
+use get_ast_column_number from domain/frontend/ast
+use create_frontend_lex_empty_diagnostic from domain/frontend/diagnostics
+use create_frontend_lex_tab_diagnostic from domain/frontend/diagnostics
+use create_frontend_parse_unexpected_token_diagnostic from domain/frontend/diagnostics
+use create_frontend_parse_trailing_operator_diagnostic from domain/frontend/diagnostics
+use create_frontend_type_arith_non_integer_diagnostic from domain/frontend/diagnostics
+use create_frontend_single_diagnostic_list from domain/frontend/diagnostics
+use create_frontend_parser_unexpected_token_diagnostic_maps from domain/frontend/parser
+use get_frontend_parser_result_diagnostic_maps from domain/frontend/parser
+use get_boolean_type_name from domain/frontend/types
+use create_mir_const_integer_instruction from domain/mir/ir
+use create_mir_const_boolean_instruction from domain/mir/ir
+use create_mir_binary_instruction from domain/mir/ir
+use create_mir_return_instruction from domain/mir/ir
+use create_mir_block from domain/mir/ir
+use create_mir_function from domain/mir/ir
+use get_mir_instruction_count from domain/mir/ir
+use get_mir_signature_text from domain/mir/ir
+use get_ast_boolean_literal_flag from domain/mir/lower
+use PlatformTarget from domain/platform/model
+
+
+to get_linker_contract_lowered_mir_or_empty_map(source_text: String) -> Map:
+    token_result_maps = get_source_tokens(source_text)
+    if __wr_map_get(token_result_maps, "ok") != true:
+        return __wr_map_new()
+    token_lists = get_frontend_lex_token_lists(token_result_maps)
+    parse_result_maps = parse_tokens(token_lists)
+    if __wr_map_get(parse_result_maps, "ok") != true:
+        return __wr_map_new()
+    ast_maps = __wr_map_get(parse_result_maps, "ast")
+    type_result_maps = check_program(ast_maps)
+    if __wr_map_get(type_result_maps, "ok") != true:
+        return __wr_map_new()
+    lower_result_maps = try_to_lower_program_to_mir(ast_maps)
+    if __wr_map_get(lower_result_maps, "ok") != true:
+        return __wr_map_new()
+    return __wr_map_get(lower_result_maps, "mir")
+
+
+to get_linker_contract_integer_list_count(value_lists: List) -> Integer:
+    mutable count_number = 0
+    for value_item in value_lists:
+        value_item = value_item
+        count_number = count_number + 1
+    return count_number
+
+
+to get_linker_contract_byte_at_index(value_lists: List, index_number: Integer) -> Integer:
+    mutable current_index_number = 0
+    for value_item in value_lists:
+        if current_index_number == index_number:
+            return value_item
+        current_index_number = current_index_number + 1
+    return -1
+
+
+to check_linker_contract_links_source_text(source_text: String) -> Map:
+    mir_program_maps = get_linker_contract_lowered_mir_or_empty_map(source_text)
+    object_program_maps = __wr_map_get(emit_object_from_mir_program(mir_program_maps), "object")
+    linker_input_maps = create_linker_input_from_object_program(object_program_maps)
+    link_emit_result_maps = try_to_emit_linker_executable_from_input(linker_input_maps)
+    assert value __wr_map_get(link_emit_result_maps, "ok") == true
+    image_maps = __wr_map_get(link_emit_result_maps, "image")
+    validate_result_maps = validate_linker_executable_image(image_maps)
+    assert value __wr_map_get(validate_result_maps, "ok") == true
+    return image_maps
+
+
+to create_linker_contract_object_program_maps(
+    symbol_name_text: String,
+    symbol_offset_number: Integer,
+    byte_a_number: Integer,
+    byte_b_number: Integer
+) -> Map:
+    text_byte_lists = []
+    __wr_list_push(text_byte_lists, byte_a_number)
+    __wr_list_push(text_byte_lists, byte_b_number)
+    section_lists = []
+    __wr_list_push(section_lists, create_object_section_maps(".text", "code", text_byte_lists))
+    symbol_lists = []
+    __wr_list_push(symbol_lists, create_object_symbol_maps(symbol_name_text, ".text", symbol_offset_number))
+    relocation_lists = []
+    return create_object_program_maps(section_lists, symbol_lists, relocation_lists, text_byte_lists)
+
+
+to ensure_linker_contract_directory(path: String) -> Nothing:
+    match try_to_create_directory(path):
+        Ok(create_result):
+            return nothing
+        Err(error_text):
+            assert value error_text == ""
+            assert value false == true
+            return nothing
+        otherwise:
+            assert value false == true
+            return nothing
+    return nothing
+
+
+to write_linker_contract_fixture(path: String, source: String) -> Nothing:
+    match try_to_write_text(path, source):
+        Ok(write_result):
+            return nothing
+        Err(error_text):
+            assert value error_text == ""
+            assert value false == true
+            return nothing
+        otherwise:
+            assert value false == true
+            return nothing
+    return nothing
+
+
+to test_linker_executable_links_precedence_program() -> Nothing:
+    image_maps = check_linker_contract_links_source_text(
+        "to run() -> Integer:\n    return 1 + 2 * 3\n"
+    )
+    assert value get_mir_text_prefix_match_flag(
+        get_linker_image_signature_text(image_maps),
+        "LNK|WRLX|mach-o-thin|darwin-arm64|"
+    ) == 1
+    return nothing
+
+
+to test_linker_executable_links_parenthesized_program() -> Nothing:
+    image_maps = check_linker_contract_links_source_text(
+        "to run() -> Integer:\n    return (1 + 2) * 3\n"
+    )
+    assert value get_linker_image_entry_offset_number(image_maps) >= 0
+    return nothing
+
+
+to test_linker_executable_links_multi_object_programs() -> Nothing:
+    object_a_maps = create_linker_contract_object_program_maps("run", 0, 10, 11)
+    object_b_maps = create_linker_contract_object_program_maps("helper", 1, 20, 21)
+    relocation_lists = []
+    __wr_list_push(
+        relocation_lists,
+        create_object_relocation_maps(".text", 1, "run", "placeholder")
+    )
+    __wr_map_set(object_b_maps, "relocations", relocation_lists)
+
+    object_program_lists = []
+    __wr_list_push(object_program_lists, object_a_maps)
+    __wr_list_push(object_program_lists, object_b_maps)
+    linker_input_maps = create_linker_input_from_object_program_lists(object_program_lists)
+    link_emit_result_maps = try_to_emit_linker_executable_from_input(linker_input_maps)
+    assert value __wr_map_get(link_emit_result_maps, "ok") == true
+    image_maps = __wr_map_get(link_emit_result_maps, "image")
+    assert value __wr_map_get(validate_linker_executable_image(image_maps), "ok") == true
+    assert value get_mir_text_prefix_match_flag(
+        get_linker_image_signature_text(image_maps),
+        "LNK|WRLX|mach-o-thin|darwin-arm64|"
+    ) == 1
+    return nothing
+
+
+to test_linker_executable_is_deterministic_for_repeated_link() -> Nothing:
+    image_a_maps = check_linker_contract_links_source_text(
+        "to run() -> Integer:\n    return 1 + 2 * 3\n"
+    )
+    image_b_maps = check_linker_contract_links_source_text(
+        "to run() -> Integer:\n    return 1 + 2 * 3\n"
+    )
+    assert value get_linker_image_signature_text(image_a_maps) == get_linker_image_signature_text(image_b_maps)
+    bytes_a_lists = get_linker_image_byte_lists(image_a_maps)
+    bytes_b_lists = get_linker_image_byte_lists(image_b_maps)
+    assert value get_linker_contract_integer_list_count(bytes_a_lists) == get_linker_contract_integer_list_count(bytes_b_lists)
+    mutable index_number = 0
+    for byte_a in bytes_a_lists:
+        byte_b = get_linker_contract_byte_at_index(bytes_b_lists, index_number)
+        assert value byte_a == byte_b
+        index_number = index_number + 1
+    return nothing
+
+
+to test_linker_executable_is_deterministic_for_repeated_multi_object_link() -> Nothing:
+    object_a_maps = create_linker_contract_object_program_maps("run", 0, 10, 11)
+    object_b_maps = create_linker_contract_object_program_maps("helper", 1, 20, 21)
+    object_program_lists = []
+    __wr_list_push(object_program_lists, object_a_maps)
+    __wr_list_push(object_program_lists, object_b_maps)
+
+    input_a_maps = create_linker_input_from_object_program_lists(object_program_lists)
+    input_b_maps = create_linker_input_from_object_program_lists(object_program_lists)
+    image_a_maps = __wr_map_get(try_to_emit_linker_executable_from_input(input_a_maps), "image")
+    image_b_maps = __wr_map_get(try_to_emit_linker_executable_from_input(input_b_maps), "image")
+    assert value get_linker_image_signature_text(image_a_maps) == get_linker_image_signature_text(image_b_maps)
+    return nothing
+
+
+to test_linker_executable_fails_when_entry_symbol_missing() -> Nothing:
+    mir_program_maps = get_linker_contract_lowered_mir_or_empty_map("to run() -> Integer:\n    return 1 + 2\n")
+    object_program_maps = __wr_map_get(emit_object_from_mir_program(mir_program_maps), "object")
+    symbol_lists = __wr_map_get(object_program_maps, "symbols")
+    filtered_symbol_lists = []
+    for symbol_map in symbol_lists:
+        if __wr_map_get(symbol_map, "name") != "run":
+            __wr_list_push(filtered_symbol_lists, symbol_map)
+    __wr_map_set(object_program_maps, "symbols", filtered_symbol_lists)
+
+    linker_input_maps = create_linker_input_from_object_program(object_program_maps)
+    link_emit_result_maps = try_to_emit_linker_executable_from_input(linker_input_maps)
+    assert value __wr_map_get(link_emit_result_maps, "ok") == false
+    assert value __wr_map_get(link_emit_result_maps, "reason") == "entry symbol was not found"
+    return nothing
+
+
+to test_linker_executable_fails_for_duplicate_symbol_name_multi_object() -> Nothing:
+    object_a_maps = create_linker_contract_object_program_maps("run", 0, 10, 11)
+    object_b_maps = create_linker_contract_object_program_maps("run", 1, 20, 21)
+    object_program_lists = []
+    __wr_list_push(object_program_lists, object_a_maps)
+    __wr_list_push(object_program_lists, object_b_maps)
+    linker_input_maps = create_linker_input_from_object_program_lists(object_program_lists)
+    link_emit_result_maps = try_to_emit_linker_executable_from_input(linker_input_maps)
+    assert value __wr_map_get(link_emit_result_maps, "ok") == false
+    assert value __wr_map_get(link_emit_result_maps, "reason") == "duplicate symbol name"
+    return nothing
+
+
+to test_linker_executable_fails_closed_for_unknown_relocation_kind() -> Nothing:
+    mir_program_maps = get_linker_contract_lowered_mir_or_empty_map("to run() -> Integer:\n    return 1 + 2\n")
+    object_program_maps = __wr_map_get(emit_object_from_mir_program(mir_program_maps), "object")
+    bad_relocation_lists = []
+    bad_relocation_maps = __wr_map_new()
+    __wr_map_set(bad_relocation_maps, "section_name", ".text")
+    __wr_map_set(bad_relocation_maps, "offset", 0)
+    __wr_map_set(bad_relocation_maps, "symbol_name", "run")
+    __wr_map_set(bad_relocation_maps, "kind", "weird_kind")
+    __wr_list_push(bad_relocation_lists, bad_relocation_maps)
+    __wr_map_set(object_program_maps, "relocations", bad_relocation_lists)
+
+    linker_input_maps = create_linker_input_from_object_program(object_program_maps)
+    link_emit_result_maps = try_to_emit_linker_executable_from_input(linker_input_maps)
+    assert value __wr_map_get(link_emit_result_maps, "ok") == false
+    assert value __wr_map_get(link_emit_result_maps, "reason") == "unknown relocation kind"
+    return nothing
+
+
+to test_linker_executable_fails_for_unresolved_symbol_multi_object() -> Nothing:
+    object_a_maps = create_linker_contract_object_program_maps("run", 0, 10, 11)
+    object_b_maps = create_linker_contract_object_program_maps("helper", 1, 20, 21)
+    bad_relocation_lists = []
+    __wr_list_push(
+        bad_relocation_lists,
+        create_object_relocation_maps(".text", 1, "missing_symbol", "placeholder")
+    )
+    __wr_map_set(object_b_maps, "relocations", bad_relocation_lists)
+    object_program_lists = []
+    __wr_list_push(object_program_lists, object_a_maps)
+    __wr_list_push(object_program_lists, object_b_maps)
+    linker_input_maps = create_linker_input_from_object_program_lists(object_program_lists)
+    link_emit_result_maps = try_to_emit_linker_executable_from_input(linker_input_maps)
+    assert value __wr_map_get(link_emit_result_maps, "ok") == false
+    assert value __wr_map_get(link_emit_result_maps, "reason") == "relocation symbol was not resolved"
+    return nothing
+
+
+to test_linker_executable_validator_rejects_corrupt_fixture() -> Nothing:
+    corrupt_image_maps = create_linker_image_maps(
+        "BAD!",
+        "mach-o-thin",
+        "darwin-arm64",
+        0,
+        [],
+        [],
+        [],
+        []
+    )
+    validate_result_maps = validate_linker_executable_image(corrupt_image_maps)
+    assert value __wr_map_get(validate_result_maps, "ok") == false
+    assert value __wr_map_get(validate_result_maps, "reason") == "invalid marker"
+    return nothing
+
+
+to test_linker_executable_coverage_touchpoints_are_callable() -> Nothing:
+    placeholder_maps = __wr_map_new()
+    placeholder_lists = []
+    __wr_list_push(placeholder_lists, placeholder_maps)
+
+    emit_result_maps = create_linker_executable_emit_result_maps(true, "", __wr_map_new())
+    assert value __wr_map_get(emit_result_maps, "ok") == true
+
+    validate_result_maps = create_linker_executable_validate_result_maps(true, "")
+    assert value __wr_map_get(validate_result_maps, "ok") == true
+
+    symbol_resolution_result_maps = create_linker_symbol_resolution_result_maps(
+        true,
+        "",
+        placeholder_lists,
+        placeholder_lists,
+        0
+    )
+    assert value __wr_map_get(symbol_resolution_result_maps, "ok") == true
+
+    relocation_apply_result_maps = create_linker_relocation_apply_result_maps(
+        true,
+        "",
+        [1, 2, 3],
+        []
+    )
+    assert value __wr_map_get(relocation_apply_result_maps, "ok") == true
+
+    placeholder_object_lists = []
+    __wr_list_push(placeholder_object_lists, __wr_map_new())
+    linker_input_maps = create_linker_input_from_object_program_lists(placeholder_object_lists)
+    try_to_resolve_linker_symbols_from_input(linker_input_maps)
+    try_to_apply_linker_relocations(placeholder_object_lists, [])
+    input_object_lists = get_linker_input_object_program_lists(linker_input_maps)
+    mutable input_object_count_number = 0
+    for object_item in input_object_lists:
+        object_item = object_item
+        input_object_count_number = input_object_count_number + 1
+    assert value input_object_count_number == 1
+
+    assert value get_integer_value_or_default_for_check(7, 0) == 7
+    assert value get_string_value_or_default_for_check("ok", "fallback") == "ok"
+    missing_value = __wr_map_get(__wr_map_new(), "missing")
+    assert value get_integer_value_or_default(missing_value, 4) == 4
+    list_default_values = get_list_value_or_empty_list(missing_value)
+    mutable list_default_count_number = 0
+    for list_default_item in list_default_values:
+        list_default_item = list_default_item
+        list_default_count_number = list_default_count_number + 1
+    assert value list_default_count_number == 0
+    nonempty_container_maps = __wr_map_new()
+    __wr_map_set(nonempty_container_maps, "items", [9])
+    nonempty_list_values = __wr_map_get(nonempty_container_maps, "items")
+    list_passthrough_values = get_list_value_or_empty_list(nonempty_list_values)
+    mutable list_passthrough_count_number = 0
+    mutable list_passthrough_sum_number = 0
+    for passthrough_item in list_passthrough_values:
+        list_passthrough_count_number = list_passthrough_count_number + 1
+        list_passthrough_sum_number = list_passthrough_sum_number + passthrough_item
+    assert value list_passthrough_count_number == 1
+    assert value list_passthrough_sum_number == 9
+
+    __wr_env_set("WRELA_V1_BIN", "")
+    __wr_env_set("WRELA_WORKSPACE_ROOT", "")
+    match try_to_run_shadow_v1_check("missing_file.wr"):
+        Err(message_text):
+            assert value message_text == "shadow check disabled"
+        Ok(status_code):
+            assert value status_code == 0
+            assert value false == true
+        otherwise:
+            assert value false == true
+
+    __wr_env_set("WRELA_V1_BIN", "/bin/echo")
+    __wr_env_set("WRELA_WORKSPACE_ROOT", "/")
+    match try_to_run_shadow_v1_check("missing_file.wr"):
+        Ok(status_code):
+            assert value status_code == 0
+        Err(message_text):
+            assert value message_text == ""
+            assert value false == true
+        otherwise:
+            assert value false == true
+
+    __wr_env_set("WRELA_V1_BIN", "/bin/sh")
+    __wr_env_set("WRELA_WORKSPACE_ROOT", "/")
+    match try_to_run_shadow_v1_check("missing_file.wr"):
+        Ok(status_code):
+            assert value status_code != 0
+        Err(message_text):
+            assert value message_text == ""
+            assert value false == true
+        otherwise:
+            assert value false == true
+
+    __wr_env_set("WRELA_V1_BIN", "/bin/sh")
+    __wr_env_set("WRELA_WORKSPACE_ROOT", "")
+    match try_to_run_shadow_v1_check("missing_file.wr"):
+        Err(message_text):
+            assert value message_text == "shadow check disabled"
+        Ok(status_code):
+            assert value status_code == 0
+            assert value false == true
+        otherwise:
+            assert value false == true
+
+    __wr_env_set("WRELA_V1_BIN", "")
+    __wr_env_set("WRELA_WORKSPACE_ROOT", "/")
+    match try_to_run_shadow_v1_check("missing_file.wr"):
+        Err(message_text):
+            assert value message_text == "shadow check disabled"
+        Ok(status_code):
+            assert value status_code == 0
+            assert value false == true
+        otherwise:
+            assert value false == true
+
+    __wr_env_set("WRELA_V1_BIN", "/definitely/missing/wrela-v1")
+    __wr_env_set("WRELA_WORKSPACE_ROOT", "/")
+    match try_to_run_shadow_v1_check("missing_file.wr"):
+        Err(message_text):
+            assert value message_text == "shadow check failed"
+        Ok(status_code):
+            assert value status_code == 0
+            assert value false == true
+        otherwise:
+            assert value false == true
+
+    run_check_root = "target/wrela_v2_linker_contract_touchpoints"
+    run_check_path = "{run_check_root}/ok.wr"
+    ensure_linker_contract_directory(run_check_root)
+    write_linker_contract_fixture(run_check_path, "to run() -> Integer:\n    return 2 + 3\n")
+
+    __wr_env_set("WRELA_V1_BIN", "")
+    __wr_env_set("WRELA_WORKSPACE_ROOT", "")
+    assert value run_check_command(run_check_path) == 0
+    assert value run_check_command("") == 1
+    assert value run_check_command("{run_check_root}/definitely_missing_source.wr") == 2
+
+    __wr_env_set("WRELA_V1_BIN", "/bin/sh")
+    __wr_env_set("WRELA_WORKSPACE_ROOT", "/")
+    assert value run_check_command(run_check_path) == 1
+
+    __wr_env_set("WRELA_V1_BIN", "/bin/echo")
+    __wr_env_set("WRELA_WORKSPACE_ROOT", "/")
+    assert value run_check_command(run_check_path) == 0
+
+    linked_image_maps = check_linker_contract_links_source_text(
+        "to run() -> Integer:\n    return 1 + 2 * 3\n"
+    )
+    assert value get_linker_image_entry_offset_number(linked_image_maps) >= 0
+    assert value get_mir_text_prefix_match_flag(
+        get_linker_image_signature_text(linked_image_maps),
+        "LNK|WRLX|"
+    ) == 1
+
+    sample_object_maps = create_linker_contract_object_program_maps("run", 0, 10, 11)
+    validate_object_result_maps = validate_object_program(sample_object_maps)
+    assert value __wr_map_get(validate_object_result_maps, "ok") == true
+    fallback_validate_result_maps = create_object_validate_result_maps(true, "")
+    assert value __wr_map_get(fallback_validate_result_maps, "ok") == true
+
+    serialized_object_result_maps = create_serialized_object_program_maps(sample_object_maps)
+    serialized_object_text = get_serialized_object_text(serialized_object_result_maps)
+    serialized_object_byte_lists = get_serialized_object_byte_lists(serialized_object_result_maps)
+    assert value get_mir_text_prefix_match_flag(serialized_object_text, "OBJBIN|OBJ|") == 1
+    mutable serialized_object_byte_count_number = 0
+    for serialized_object_byte_item in serialized_object_byte_lists:
+        serialized_object_byte_count_number = serialized_object_byte_count_number + 1
+    assert value serialized_object_byte_count_number > 0
+
+    linker_input_from_single_maps = create_linker_input_from_object_program(sample_object_maps)
+    assert value get_linker_input_output_format_text(linker_input_from_single_maps) == "mach-o-thin"
+
+    print_usage()
+    cli_argument_values = ["wrela-v2", "help"]
+    assert value get_item_at_index(cli_argument_values, 1) == "help"
+    assert value run_cli(cli_argument_values) == 0
+
+    linux_bytes = convert_to_byte_list("linux")
+    get_byte_count(linux_bytes)
+    get_byte_at_index(linux_bytes, 0)
+    get_text_prefix_match_flag("linux-gnu", "linux")
+    normalize_os_name("darwin23")
+    current_target = create_current_platform_target()
+    current_target = current_target
+
+    linux_target = PlatformTarget()
+    linux_target.host_os_name = "linux"
+    linux_target.host_architecture = "x86_64"
+    match try_to_create_platform_ports(linux_target, true):
+        Ok(platform_ports):
+            platform_ports = platform_ports
+        Err(error_text):
+            error_text = error_text
+        otherwise:
+            return nothing
+
+    touch_root = "target/wrela_v2_linker_touchpoints"
+    touch_init_root = "{touch_root}/init_project"
+    touch_file_path = "{touch_root}/scratch.txt"
+    normalize_root("")
+    ensure_directory(touch_root) otherwise nothing
+    ensure_file(touch_file_path, "ok\n") otherwise nothing
+    get_path_exists_flag(touch_file_path)
+    run_init_command(touch_init_root)
+    get_path_exists_flag("{touch_init_root}/src/main.wr")
+
+    parity_root = "{touch_root}/parity"
+    parity_report = "{parity_root}/report.txt"
+    try_to_create_directory_for_parity_command(parity_root) otherwise nothing
+    try_to_write_text_for_parity_command(parity_report, "status=ok\n") otherwise nothing
+    get_exit_code_for_parity_command({})
+    get_stdout_for_parity_command({})
+
+    __wr_env_set("WRELA_V1_BIN", "/bin/echo")
+    __wr_env_set("WRELA_WORKSPACE_ROOT", touch_root)
+    run_parity_command()
+
+    match try_to_run_host_command("/bin/echo", ["hello"], "/", 1000):
+        Ok(host_results):
+            get_exit_code(host_results)
+        Err(error_text):
+            error_text = error_text
+        otherwise:
+            return nothing
+
+    match try_to_run_v1_command("/bin/echo", "/", ["hello"]):
+        Ok(v1_results):
+            get_exit_code(v1_results)
+        Err(error_text):
+            error_text = error_text
+        otherwise:
+            return nothing
+
+    match try_to_run_v1_help("/bin/echo", "/"):
+        Ok(help_results):
+            get_exit_code(help_results)
+            get_stdout(help_results)
+        Err(error_text):
+            error_text = error_text
+        otherwise:
+            return nothing
+    get_stdout({})
+
+    bool_node_maps = create_boolean_literal_node(true, 4, 5)
+    assert value get_ast_line_number(bool_node_maps) == 4
+    assert value get_ast_column_number(bool_node_maps) == 5
+    assert value get_ast_boolean_literal_flag(bool_node_maps) == 1
+
+    lex_empty_diagnostic_maps = create_frontend_lex_empty_diagnostic()
+    lex_tab_diagnostic_maps = create_frontend_lex_tab_diagnostic(2, 1)
+    parse_unexpected_diagnostic_maps = create_frontend_parse_unexpected_token_diagnostic(3, 2)
+    parse_trailing_diagnostic_maps = create_frontend_parse_trailing_operator_diagnostic(4, 9)
+    type_non_integer_diagnostic_maps = create_frontend_type_arith_non_integer_diagnostic(5, 11)
+    single_diagnostic_lists = create_frontend_single_diagnostic_list(lex_empty_diagnostic_maps)
+    assert value __wr_map_get(lex_tab_diagnostic_maps, "code") == "E-LEX-TAB"
+    assert value __wr_map_get(parse_unexpected_diagnostic_maps, "code") == "E-PARSE-UNEXPECTED_TOKEN"
+    assert value __wr_map_get(parse_trailing_diagnostic_maps, "code") == "E-PARSE-TRAILING_OPERATOR"
+    assert value __wr_map_get(type_non_integer_diagnostic_maps, "code") == "E-TYPE-ARITH_NON_INTEGER"
+
+    parser_default_diagnostic_maps = get_frontend_parser_result_diagnostic_maps(__wr_map_new())
+    assert value __wr_map_get(parser_default_diagnostic_maps, "code") == "E-PARSE-UNEXPECTED_TOKEN"
+    lex_result_maps = get_source_tokens("to run() -> Integer:\n    return 1\n")
+    parser_token_lists = get_frontend_lex_token_lists(lex_result_maps)
+    parser_unexpected_diagnostic_maps = create_frontend_parser_unexpected_token_diagnostic_maps(
+        parser_token_lists,
+        0
+    )
+    assert value __wr_map_get(parser_unexpected_diagnostic_maps, "code") == "E-PARSE-UNEXPECTED_TOKEN"
+    error_report_maps = make_error_report("parse", "x.wr", 12, single_diagnostic_lists)
+    assert value __wr_map_get(error_report_maps, "status") == "error"
+
+    mir_const_i_maps = create_mir_const_integer_instruction("t1", 1)
+    mir_const_b_maps = create_mir_const_boolean_instruction("t2", true)
+    mir_bin_maps = create_mir_binary_instruction("t3", "+", "t1", "t1")
+    mir_ret_maps = create_mir_return_instruction("t3")
+    mir_instruction_text_lists = []
+    __wr_list_push(mir_instruction_text_lists, __wr_map_get(mir_const_i_maps, "text"))
+    __wr_list_push(mir_instruction_text_lists, __wr_map_get(mir_const_b_maps, "text"))
+    __wr_list_push(mir_instruction_text_lists, __wr_map_get(mir_bin_maps, "text"))
+    __wr_list_push(mir_instruction_text_lists, __wr_map_get(mir_ret_maps, "text"))
+    mir_block_maps = create_mir_block("entry", mir_instruction_text_lists)
+    mir_block_lists = []
+    __wr_list_push(mir_block_lists, mir_block_maps)
+    create_mir_function("run", "entry", mir_block_lists)
+    mir_program_maps = __wr_map_new()
+    __wr_map_set(mir_program_maps, "instructions", mir_instruction_text_lists)
+    __wr_map_set(mir_program_maps, "instruction_count", 4)
+    __wr_map_set(mir_program_maps, "signature", "sig")
+    get_mir_instruction_count(mir_program_maps)
+    get_mir_signature_text(mir_program_maps)
+
+    assert value get_boolean_type_name() == "Boolean"
+
+    return nothing

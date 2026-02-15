@@ -1,0 +1,87 @@
+so:
+    Runtime conformance contract tests for platform contract completeness and fail-closed behavior.
+
+use PlatformTarget from domain/platform/model
+use try_to_create_and_validate_platform_ports from application/runtime/platform_conformance
+use try_to_create_platform_ports from application/composition/platform_ports
+use try_to_validate_platform_ports from domain/platform/contracts
+
+
+to create_runtime_target(os_name: String, architecture: String) -> PlatformTarget:
+    target = PlatformTarget()
+    target.host_os_name = os_name
+    target.host_architecture = architecture
+    return target
+
+
+to test_platform_runtime_contract_linux_io_uring_conformance() -> Nothing:
+    target = create_runtime_target("linux", "arm64")
+    match try_to_create_and_validate_platform_ports(target, true):
+        Ok(ports):
+            assert value ports.host_family_name == "linux"
+            assert value ports.reactor_backend_name == "io_uring"
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_platform_runtime_contract_linux_epoll_conformance() -> Nothing:
+    target = create_runtime_target("linux", "arm64")
+    match try_to_create_and_validate_platform_ports(target, false):
+        Ok(ports):
+            assert value ports.host_family_name == "linux"
+            assert value ports.reactor_backend_name == "epoll"
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_platform_runtime_contract_darwin_conformance() -> Nothing:
+    target = create_runtime_target("darwin", "arm64")
+    match try_to_create_and_validate_platform_ports(target, true):
+        Ok(ports):
+            assert value ports.host_family_name == "darwin"
+            assert value ports.reactor_backend_name == "kqueue"
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_platform_runtime_contract_rejects_unknown_target() -> Nothing:
+    target = create_runtime_target("solaris", "x64")
+    match try_to_create_and_validate_platform_ports(target, true):
+        Err(message):
+            assert value message == "unsupported platform target: solaris"
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_platform_runtime_contract_missing_operation_fails_closed() -> Nothing:
+    target = create_runtime_target("linux", "arm64")
+    match try_to_create_platform_ports(target, true):
+        Ok(ports):
+            __wr_map_set(ports.clock_port.ops, "now_ns", nothing)
+            match try_to_validate_platform_ports(ports):
+                Err(message):
+                    assert value message == "missing platform op: clock.now_ns"
+                otherwise:
+                    assert value false == true
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_platform_runtime_contract_missing_thread_operation_fails_closed() -> Nothing:
+    target = create_runtime_target("linux", "arm64")
+    match try_to_create_platform_ports(target, true):
+        Ok(ports):
+            __wr_map_set(ports.thread_port.ops, "spawn_thread", nothing)
+            match try_to_validate_platform_ports(ports):
+                Err(message):
+                    assert value message == "missing platform op: thread.spawn_thread"
+                otherwise:
+                    assert value false == true
+        otherwise:
+            assert value false == true
+    return nothing

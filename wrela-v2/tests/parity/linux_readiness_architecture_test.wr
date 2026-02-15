@@ -1,0 +1,114 @@
+so:
+    Architecture guards for Linux-first runtime composition behavior.
+
+use PlatformTarget from domain/platform/model
+use try_to_create_platform_ports from application/composition/platform_ports
+use normalize_os_name from application/composition/platform_target_env
+use get_platform_operation_presence_flag from domain/platform/contracts
+use get_linux_sys_boundary_group_is_present from domain/platform/linux_sys_boundary
+
+
+to create_parity_target(os_name: String, architecture: String) -> PlatformTarget:
+    target = PlatformTarget()
+    target.host_os_name = os_name
+    target.host_architecture = architecture
+    return target
+
+
+to test_linux_uses_io_uring_when_preferred() -> Nothing:
+    target = create_parity_target("linux", "arm64")
+    match try_to_create_platform_ports(target, true):
+        Ok(ports):
+            assert value ports.host_family_name == "linux"
+            assert value ports.reactor_backend_name == "io_uring"
+            assert value ports.reactor_port.backend_name == "io_uring"
+            assert value ports.reactor_port.adapter_identity_name != ""
+            assert value ports.clock_port.adapter_identity_name != ""
+            assert value ports.fs_port.adapter_identity_name != ""
+            assert value ports.process_port.adapter_identity_name != ""
+            assert value ports.thread_port.adapter_identity_name != ""
+            assert value ports.sync_port.adapter_identity_name != ""
+            assert value get_platform_operation_presence_flag(ports.reactor_port.ops, "create_reactor_handle") == true
+            assert value get_platform_operation_presence_flag(ports.clock_port.ops, "now_ns") == true
+            assert value get_platform_operation_presence_flag(ports.fs_port.ops, "read_text") == true
+            assert value get_platform_operation_presence_flag(ports.process_port.ops, "run_process") == true
+            assert value get_platform_operation_presence_flag(ports.thread_port.ops, "spawn_thread") == true
+            assert value get_platform_operation_presence_flag(ports.sync_port.ops, "create_wait_handle") == true
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_linux_uses_epoll_when_io_uring_not_preferred() -> Nothing:
+    target = create_parity_target("linux", "arm64")
+    match try_to_create_platform_ports(target, false):
+        Ok(ports):
+            assert value ports.host_family_name == "linux"
+            assert value ports.reactor_backend_name == "epoll"
+            assert value ports.reactor_port.backend_name == "epoll"
+            assert value ports.reactor_port.adapter_identity_name != ""
+            assert value ports.clock_port.adapter_identity_name != ""
+            assert value ports.fs_port.adapter_identity_name != ""
+            assert value ports.process_port.adapter_identity_name != ""
+            assert value ports.thread_port.adapter_identity_name != ""
+            assert value ports.sync_port.adapter_identity_name != ""
+            assert value get_platform_operation_presence_flag(ports.reactor_port.ops, "create_reactor_handle") == true
+            assert value get_platform_operation_presence_flag(ports.clock_port.ops, "now_ns") == true
+            assert value get_platform_operation_presence_flag(ports.fs_port.ops, "read_text") == true
+            assert value get_platform_operation_presence_flag(ports.process_port.ops, "run_process") == true
+            assert value get_platform_operation_presence_flag(ports.thread_port.ops, "spawn_thread") == true
+            assert value get_platform_operation_presence_flag(ports.sync_port.ops, "create_wait_handle") == true
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_darwin_uses_kqueue_for_host_development() -> Nothing:
+    target = create_parity_target("darwin", "arm64")
+    match try_to_create_platform_ports(target, true):
+        Ok(ports):
+            assert value ports.host_family_name == "darwin"
+            assert value ports.reactor_backend_name == "kqueue"
+            assert value ports.reactor_port.backend_name == "kqueue"
+            assert value ports.reactor_port.adapter_identity_name != ""
+            assert value ports.clock_port.adapter_identity_name != ""
+            assert value ports.fs_port.adapter_identity_name != ""
+            assert value ports.process_port.adapter_identity_name != ""
+            assert value ports.thread_port.adapter_identity_name != ""
+            assert value ports.sync_port.adapter_identity_name != ""
+            assert value get_platform_operation_presence_flag(ports.reactor_port.ops, "create_reactor_handle") == true
+            assert value get_platform_operation_presence_flag(ports.clock_port.ops, "now_ns") == true
+            assert value get_platform_operation_presence_flag(ports.fs_port.ops, "read_text") == true
+            assert value get_platform_operation_presence_flag(ports.process_port.ops, "run_process") == true
+            assert value get_platform_operation_presence_flag(ports.thread_port.ops, "spawn_thread") == true
+            assert value get_platform_operation_presence_flag(ports.sync_port.ops, "create_wait_handle") == true
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_unsupported_platform_is_rejected() -> Nothing:
+    target = create_parity_target("windows", "x64")
+    match try_to_create_platform_ports(target, true):
+        Err(message):
+            assert value message == "unsupported platform target: windows"
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_normalize_os_name_supports_ostype_prefixes() -> Nothing:
+    assert value normalize_os_name("darwin23.0") == "darwin"
+    assert value normalize_os_name("linux-gnu") == "linux"
+    assert value normalize_os_name("linux") == "linux"
+    return nothing
+
+
+to test_linux_syscall_boundary_groups_exist() -> Nothing:
+    assert value get_linux_sys_boundary_group_is_present("fd_path") == true
+    assert value get_linux_sys_boundary_group_is_present("memory") == true
+    assert value get_linux_sys_boundary_group_is_present("time") == true
+    assert value get_linux_sys_boundary_group_is_present("process") == true
+    assert value get_linux_sys_boundary_group_is_present("sync") == true
+    assert value get_linux_sys_boundary_group_is_present("reactor") == true
+    return nothing

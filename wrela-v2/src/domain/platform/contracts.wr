@@ -1,0 +1,287 @@
+so:
+    OS-neutral platform contracts for the v2 runtime/toolchain.
+    Core code depends on these contracts, never on platform primitives.
+
+A FsMetadata:
+    has:
+        path_value: String = ""
+        file_flag: Boolean = false
+        directory_flag: Boolean = false
+        byte_size: Integer = 0
+        mode_value: Integer = 0
+
+
+A ProcessSpec:
+    has:
+        command: String = ""
+        args: List[String] = []
+        cwd: String = ""
+        envs: Map = {}
+        timeout_ms: Integer = 0
+
+
+A ProcessResult:
+    has:
+        status_code: Integer = 1
+        stdout_text: String = ""
+        stderr_text: String = ""
+        timeout_flag: Boolean = false
+
+
+A ReactorPort:
+    has:
+        backend_name: String = "unknown"
+        adapter_identity_name: String = "unknown"
+        host_family_name: String = "unknown"
+        ops: Map = {}
+
+
+A ClockPort:
+    has:
+        clock_name: String = "unknown"
+        adapter_identity_name: String = "unknown"
+        host_family_name: String = "unknown"
+        ops: Map = {}
+
+
+A FsPort:
+    has:
+        fs_name: String = "unknown"
+        adapter_identity_name: String = "unknown"
+        host_family_name: String = "unknown"
+        ops: Map = {}
+
+
+A ProcessPort:
+    has:
+        process_name: String = "unknown"
+        adapter_identity_name: String = "unknown"
+        host_family_name: String = "unknown"
+        ops: Map = {}
+
+
+A ThreadPort:
+    has:
+        thread_name: String = "unknown"
+        adapter_identity_name: String = "unknown"
+        host_family_name: String = "unknown"
+        ops: Map = {}
+
+
+A SyncPort:
+    has:
+        sync_name: String = "unknown"
+        adapter_identity_name: String = "unknown"
+        host_family_name: String = "unknown"
+        ops: Map = {}
+
+
+A PlatformPorts:
+    has:
+        mutable host_family_name: String
+        mutable reactor_backend_name: String
+        mutable reactor_port: ReactorPort
+        mutable clock_port: ClockPort
+        mutable fs_port: FsPort
+        mutable process_port: ProcessPort
+        mutable thread_port: ThreadPort
+        mutable sync_port: SyncPort
+
+
+to get_platform_operation_value_or_empty_text(
+    operation_maps: Map,
+    operation_name_text: String
+) -> String:
+    operation_value = __wr_map_get(operation_maps, operation_name_text)
+    if operation_value == nothing:
+        return ""
+    return "{operation_value}"
+
+
+to get_platform_operation_presence_flag(
+    operation_maps: Map,
+    operation_name_text: String
+) -> Boolean:
+    return get_platform_operation_value_or_empty_text(operation_maps, operation_name_text) != ""
+
+
+to try_to_require_platform_operation(
+    operation_maps: Map,
+    port_name_text: String,
+    operation_name_text: String
+) -> Result[Nothing]:
+    if get_platform_operation_presence_flag(operation_maps, operation_name_text):
+        return nothing
+    return error "missing platform op: {port_name_text}.{operation_name_text}"
+
+
+to try_to_validate_platform_ports_required_fields(
+    ports: PlatformPorts
+) -> Result[Nothing]:
+    if ports.host_family_name == "":
+        return error "missing platform field: platform.host_family_name"
+    if ports.reactor_backend_name == "":
+        return error "missing platform field: platform.reactor_backend_name"
+    if ports.reactor_port.adapter_identity_name == "":
+        return error "missing platform field: reactor.adapter_identity_name"
+    if ports.clock_port.adapter_identity_name == "":
+        return error "missing platform field: clock.adapter_identity_name"
+    if ports.fs_port.adapter_identity_name == "":
+        return error "missing platform field: fs.adapter_identity_name"
+    if ports.process_port.adapter_identity_name == "":
+        return error "missing platform field: process.adapter_identity_name"
+    if ports.thread_port.adapter_identity_name == "":
+        return error "missing platform field: thread.adapter_identity_name"
+    if ports.sync_port.adapter_identity_name == "":
+        return error "missing platform field: sync.adapter_identity_name"
+    return nothing
+
+
+to try_to_validate_platform_ports_required_ops(
+    ports: PlatformPorts
+) -> Result[Nothing]:
+    match try_to_require_platform_operation(ports.reactor_port.ops, "reactor", "create_reactor_handle"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+    match try_to_require_platform_operation(ports.reactor_port.ops, "reactor", "drop_reactor_handle"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+    match try_to_require_platform_operation(ports.reactor_port.ops, "reactor", "register_token"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+    match try_to_require_platform_operation(ports.reactor_port.ops, "reactor", "deregister_token"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+    match try_to_require_platform_operation(ports.reactor_port.ops, "reactor", "arm_timer"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+
+    match try_to_require_platform_operation(ports.clock_port.ops, "clock", "now_ns"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+    match try_to_require_platform_operation(ports.clock_port.ops, "clock", "sleep_ms"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+
+    match try_to_require_platform_operation(ports.fs_port.ops, "fs", "read_text"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+    match try_to_require_platform_operation(ports.fs_port.ops, "fs", "write_text"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+    match try_to_require_platform_operation(ports.fs_port.ops, "fs", "read_directory"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+    match try_to_require_platform_operation(ports.fs_port.ops, "fs", "read_metadata"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+    match try_to_require_platform_operation(ports.fs_port.ops, "fs", "create_directory"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+    match try_to_require_platform_operation(ports.fs_port.ops, "fs", "remove_file"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+    match try_to_require_platform_operation(ports.fs_port.ops, "fs", "remove_directory"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+    match try_to_require_platform_operation(ports.fs_port.ops, "fs", "rename_path"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+    match try_to_require_platform_operation(ports.fs_port.ops, "fs", "set_executable"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+
+    match try_to_require_platform_operation(ports.process_port.ops, "process", "run_process"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+    match try_to_require_platform_operation(ports.process_port.ops, "process", "get_cwd"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+
+    match try_to_require_platform_operation(ports.thread_port.ops, "thread", "spawn_thread"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+    match try_to_require_platform_operation(ports.thread_port.ops, "thread", "join_thread"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+    match try_to_require_platform_operation(ports.thread_port.ops, "thread", "yield_thread"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+
+    match try_to_require_platform_operation(ports.sync_port.ops, "sync", "create_wait_handle"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+    match try_to_require_platform_operation(ports.sync_port.ops, "sync", "drop_wait_handle"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+    match try_to_require_platform_operation(ports.sync_port.ops, "sync", "wait"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+    match try_to_require_platform_operation(ports.sync_port.ops, "sync", "wake_one"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+    match try_to_require_platform_operation(ports.sync_port.ops, "sync", "wake_all"):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+    return nothing
+
+
+to try_to_validate_platform_ports(ports: PlatformPorts) -> Result[Nothing]:
+    match try_to_validate_platform_ports_required_fields(ports):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+    return try_to_validate_platform_ports_required_ops(ports)

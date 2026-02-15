@@ -1,0 +1,171 @@
+so:
+    AST to MIR lowering for the M4 vertical slice subset.
+
+use get_ast_kind_text from domain/frontend/ast
+use get_program_return_expression_node from domain/frontend/ast
+use get_binary_left_node from domain/frontend/ast
+use get_binary_right_node from domain/frontend/ast
+use get_ast_binary_operator_text from domain/frontend/ast
+
+use create_mir_program from domain/mir/ir
+
+
+to get_mir_temp_name_text(temp_index_number: Integer) -> String:
+    return "t{temp_index_number}"
+
+
+to get_ast_integer_literal_value_or_zero(expression_node_maps: Map) -> Integer:
+    integer_value_item = __wr_map_get(expression_node_maps, "value")
+    if integer_value_item == nothing:
+        return 0
+    return integer_value_item
+
+
+to get_ast_boolean_literal_flag(expression_node_maps: Map) -> Integer:
+    boolean_value_item = __wr_map_get(expression_node_maps, "value")
+    if boolean_value_item == true:
+        return 1
+    return 0
+
+
+to create_mir_lower_expression_result_maps(
+    value_name_text: String,
+    next_temp_number: Integer,
+    instruction_text_lists: List
+) -> Map:
+    result_maps = __wr_map_new()
+    __wr_map_set(result_maps, "value_name", value_name_text)
+    __wr_map_set(result_maps, "next_temp", next_temp_number)
+    __wr_map_set(result_maps, "instructions", instruction_text_lists)
+    return result_maps
+
+
+to get_mir_lower_expression_result_value_name_text(result_maps: Map) -> String:
+    value_name_value = __wr_map_get(result_maps, "value_name")
+    if value_name_value == nothing:
+        return ""
+    return "{value_name_value}"
+
+
+to get_mir_lower_expression_result_next_temp_number(result_maps: Map) -> Integer:
+    next_temp_value = __wr_map_get(result_maps, "next_temp")
+    if next_temp_value == nothing:
+        return 1
+    return next_temp_value
+
+
+to get_mir_lower_expression_result_instruction_text_lists(result_maps: Map) -> List:
+    instruction_lists = __wr_map_get(result_maps, "instructions")
+    if instruction_lists == nothing:
+        return []
+    return instruction_lists
+
+
+to add_mir_instruction_texts(
+    destination_text_lists: List,
+    source_text_lists: List
+) -> Nothing:
+    for source_text in source_text_lists:
+        __wr_list_push(destination_text_lists, source_text)
+    return nothing
+
+
+to try_to_lower_expression_node_to_mir(
+    expression_node_maps: Map,
+    next_temp_number: Integer
+) -> Map:
+    expression_kind_text = get_ast_kind_text(expression_node_maps)
+
+    if expression_kind_text == "IntegerLiteral":
+        destination_name_text = get_mir_temp_name_text(next_temp_number)
+        instruction_text_lists = []
+        __wr_list_push(
+            instruction_text_lists,
+            "const_i|{destination_name_text}|{get_ast_integer_literal_value_or_zero(expression_node_maps)}"
+        )
+        return create_mir_lower_expression_result_maps(
+            destination_name_text,
+            next_temp_number + 1,
+            instruction_text_lists
+        )
+
+    if expression_kind_text == "BooleanLiteral":
+        destination_name_text = get_mir_temp_name_text(next_temp_number)
+        instruction_text_lists = []
+        if get_ast_boolean_literal_flag(expression_node_maps) == 1:
+            __wr_list_push(
+                instruction_text_lists,
+                "const_b|{destination_name_text}|true"
+            )
+        otherwise:
+            __wr_list_push(
+                instruction_text_lists,
+                "const_b|{destination_name_text}|false"
+            )
+        return create_mir_lower_expression_result_maps(
+            destination_name_text,
+            next_temp_number + 1,
+            instruction_text_lists
+        )
+
+    if expression_kind_text == "BinaryExpression":
+        left_result_maps = try_to_lower_expression_node_to_mir(
+            get_binary_left_node(expression_node_maps),
+            next_temp_number
+        )
+        right_result_maps = try_to_lower_expression_node_to_mir(
+            get_binary_right_node(expression_node_maps),
+            get_mir_lower_expression_result_next_temp_number(left_result_maps)
+        )
+
+        destination_name_text = get_mir_temp_name_text(
+            get_mir_lower_expression_result_next_temp_number(right_result_maps)
+        )
+
+        instruction_text_lists = []
+        add_mir_instruction_texts(
+            instruction_text_lists,
+            get_mir_lower_expression_result_instruction_text_lists(left_result_maps)
+        )
+        add_mir_instruction_texts(
+            instruction_text_lists,
+            get_mir_lower_expression_result_instruction_text_lists(right_result_maps)
+        )
+        __wr_list_push(
+            instruction_text_lists,
+            "bin|{destination_name_text}|{get_ast_binary_operator_text(expression_node_maps)}|{get_mir_lower_expression_result_value_name_text(left_result_maps)}|{get_mir_lower_expression_result_value_name_text(right_result_maps)}"
+        )
+        return create_mir_lower_expression_result_maps(
+            destination_name_text,
+            get_mir_lower_expression_result_next_temp_number(right_result_maps) + 1,
+            instruction_text_lists
+        )
+
+    destination_name_text = get_mir_temp_name_text(next_temp_number)
+    instruction_text_lists = []
+    __wr_list_push(instruction_text_lists, "const_i|{destination_name_text}|0")
+    return create_mir_lower_expression_result_maps(
+        destination_name_text,
+        next_temp_number + 1,
+        instruction_text_lists
+    )
+
+
+to create_mir_lower_result_maps(is_ok: Boolean, mir_program_maps: Map) -> Map:
+    result_maps = __wr_map_new()
+    __wr_map_set(result_maps, "ok", is_ok)
+    __wr_map_set(result_maps, "mir", mir_program_maps)
+    return result_maps
+
+
+to try_to_lower_program_to_mir(program_maps: Map) -> Map:
+    return_expression_maps = get_program_return_expression_node(program_maps)
+    expression_result_maps = try_to_lower_expression_node_to_mir(return_expression_maps, 1)
+    instruction_text_lists = get_mir_lower_expression_result_instruction_text_lists(expression_result_maps)
+    __wr_list_push(
+        instruction_text_lists,
+        "ret|{get_mir_lower_expression_result_value_name_text(expression_result_maps)}"
+    )
+
+    program_mir_maps = create_mir_program(instruction_text_lists)
+    return create_mir_lower_result_maps(true, program_mir_maps)

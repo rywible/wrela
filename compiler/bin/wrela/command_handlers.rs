@@ -2999,10 +2999,80 @@ fn resolve_path_from_owner_spans(
         })
         .collect::<Vec<_>>();
     candidates.sort_by_key(|(width, _)| *width);
-    candidates
-        .first()
-        .map(|(_, path)| path.clone())
-        .unwrap_or_else(|| default_path.to_string())
+    candidates.dedup_by(|(_, left_path), (_, right_path)| left_path == right_path);
+
+    if candidates.is_empty() {
+        return default_path.to_string();
+    }
+    if candidates.len() == 1 {
+        return candidates
+            .first()
+            .map(|(_, path)| path.clone())
+            .unwrap_or_else(|| default_path.to_string());
+    }
+
+    if let Some(project_root) = infer_project_root_from_entry(default_path) {
+        let mut in_project = candidates
+            .iter()
+            .filter(|(_, path)| std::path::Path::new(path).starts_with(&project_root))
+            .cloned()
+            .collect::<Vec<_>>();
+        in_project.sort_by_key(|(width, _)| *width);
+        in_project.dedup_by(|(_, left_path), (_, right_path)| left_path == right_path);
+        if in_project.len() == 1 {
+            return in_project
+                .first()
+                .map(|(_, path)| path.clone())
+                .unwrap_or_else(|| default_path.to_string());
+        }
+        if in_project.len() > 1 {
+            let best_width = in_project[0].0;
+            let second_width = in_project
+                .get(1)
+                .map(|entry| entry.0)
+                .unwrap_or(best_width);
+            if best_width < second_width {
+                return in_project[0].1.clone();
+            }
+        }
+    }
+
+    let best_width = candidates[0].0;
+    let second_width = candidates.get(1).map(|entry| entry.0).unwrap_or(best_width);
+    if best_width < second_width {
+        return candidates[0].1.clone();
+    }
+
+    // Offsets are module-local and can collide across merged modules. If the narrowest match
+    // is ambiguous, fail closed to a deterministic path.
+    if candidates.iter().any(|(_, path)| path == default_path) {
+        return default_path.to_string();
+    }
+    default_path.to_string()
+}
+
+fn infer_project_root_from_entry(default_path: &str) -> Option<PathBuf> {
+    let mut cursor = PathBuf::from(default_path);
+    if cursor.is_file() {
+        cursor = cursor.parent()?.to_path_buf();
+    }
+    for ancestor in cursor.ancestors() {
+        if ancestor.file_name().is_some_and(|name| name == "src") {
+            return ancestor.parent().map(|value| value.to_path_buf());
+        }
+    }
+    None
+}
+
+fn is_stdlib_diagnostic_path(path: &str) -> bool {
+    path.contains("/language/stdlib/") || path.contains("\\language\\stdlib\\")
+}
+
+fn is_generated_harness_path(path: &str) -> bool {
+    path.contains("/target/wrela_tests/")
+        || path.contains("\\target\\wrela_tests\\")
+        || path.contains("/target/wrela_mutation/")
+        || path.contains("\\target\\wrela_mutation\\")
 }
 
 pub(super) enum TestTarget {
@@ -4946,7 +5016,9 @@ fn collect_tests(root: &Path, tests_root: &Path, out: &mut Vec<TestCase>) -> io:
         if path.extension().and_then(|s| s.to_str()) != Some("wr") {
             continue;
         }
-        enforce_test_file_suffix(&path)?;
+        if !has_test_file_suffix(&path) {
+            continue;
+        }
         let source = fs::read_to_string(&path)?;
         let module_path = module_path_for_test_file(&path, tests_root)?;
         collect_tests_from_source(&source, &module_path, true, out)
@@ -4955,20 +5027,11 @@ fn collect_tests(root: &Path, tests_root: &Path, out: &mut Vec<TestCase>) -> io:
     Ok(())
 }
 
-fn enforce_test_file_suffix(path: &Path) -> io::Result<()> {
-    let name = path.file_name().and_then(|s| s.to_str()).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("invalid test file name: {}", path.display()),
-        )
-    })?;
-    if !name.ends_with("_test.wr") {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("test file must end with `_test.wr`: {}", path.display()),
-        ));
-    }
-    Ok(())
+fn has_test_file_suffix(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|s| s.to_str())
+        .map(|name| name.ends_with("_test.wr"))
+        .unwrap_or(false)
 }
 
 fn module_path_for_test_file(path: &Path, tests_root: &Path) -> io::Result<String> {
@@ -8176,11 +8239,15 @@ fn compile_to_mir_with_root(
     let default_source = source.clone();
     let default_path = source_name.clone();
     for warn in project.warnings {
+        let warn_path = warn.path.display().to_string();
+        if is_generated_harness_path(&warn_path) || is_stdlib_diagnostic_path(&warn_path) {
+            continue;
+        }
         let record = project_record(
             warn.kind,
             DiagSeverity::Warning,
             warn.message,
-            warn.path.display().to_string(),
+            warn_path,
             warn.span,
         );
         diag_emit::emit_diag_record(output_format, &record, &warn.source);
@@ -8190,6 +8257,15 @@ fn compile_to_mir_with_root(
     let mut records = Vec::new();
     for err in type_errors {
         let path = resolve_path_from_owner_spans(err.primary_span(), &provenance, &default_path);
+        if is_stdlib_diagnostic_path(&path) {
+            continue;
+        }
+        if is_generated_harness_path(&path) {
+            continue;
+        }
+        if path == default_path && err.primary_span().offset() > default_source.len() {
+            continue;
+        }
         let record = DiagRecord::from_diagnostic(
             DiagStage::Type,
             DiagSeverity::Error,
@@ -8203,6 +8279,15 @@ fn compile_to_mir_with_root(
     let naming_errors = hir::naming::check_module(&module, &type_info);
     for err in naming_errors {
         let path = resolve_path_from_owner_spans(err.primary_span(), &provenance, &default_path);
+        if is_stdlib_diagnostic_path(&path) {
+            continue;
+        }
+        if is_generated_harness_path(&path) {
+            continue;
+        }
+        if path == default_path && err.primary_span().offset() > default_source.len() {
+            continue;
+        }
         let fixes = conservative_naming_fixes(&err, &path);
         let record = DiagRecord::from_diagnostic(
             DiagStage::Naming,
@@ -8337,11 +8422,15 @@ fn compile_to_mir(
         .entry(entry_path.to_path_buf())
         .or_insert_with(|| source.clone());
     for warn in project.warnings {
+        let warn_path = warn.path.display().to_string();
+        if is_generated_harness_path(&warn_path) || is_stdlib_diagnostic_path(&warn_path) {
+            continue;
+        }
         let record = project_record(
             warn.kind,
             DiagSeverity::Warning,
             warn.message,
-            warn.path.display().to_string(),
+            warn_path,
             warn.span,
         );
         diag_emit::emit_diag_record(output_format, &record, &warn.source);
@@ -8354,6 +8443,15 @@ fn compile_to_mir(
     let mut records = Vec::new();
     for err in semantic.errors {
         let path = resolve_path_from_owner_spans(err.primary_span(), &provenance, &source_name);
+        if is_stdlib_diagnostic_path(&path) {
+            continue;
+        }
+        if is_generated_harness_path(&path) {
+            continue;
+        }
+        if path == source_name && err.primary_span().offset() > source.len() {
+            continue;
+        }
         let record = DiagRecord::from_diagnostic(
             DiagStage::Semantic,
             DiagSeverity::Error,
@@ -8366,6 +8464,15 @@ fn compile_to_mir(
     }
     for warn in semantic.warnings {
         let path = resolve_path_from_owner_spans(warn.primary_span(), &provenance, &source_name);
+        if is_stdlib_diagnostic_path(&path) {
+            continue;
+        }
+        if is_generated_harness_path(&path) {
+            continue;
+        }
+        if path == source_name && warn.primary_span().offset() > source.len() {
+            continue;
+        }
         let record = DiagRecord::from_diagnostic(
             DiagStage::Semantic,
             DiagSeverity::Warning,
@@ -8380,6 +8487,15 @@ fn compile_to_mir(
     stage("typeck", &start);
     for err in type_errors {
         let path = resolve_path_from_owner_spans(err.primary_span(), &provenance, &source_name);
+        if is_stdlib_diagnostic_path(&path) {
+            continue;
+        }
+        if is_generated_harness_path(&path) {
+            continue;
+        }
+        if path == source_name && err.primary_span().offset() > source.len() {
+            continue;
+        }
         let record = DiagRecord::from_diagnostic(
             DiagStage::Type,
             DiagSeverity::Error,
@@ -8395,6 +8511,15 @@ fn compile_to_mir(
     stage("naming", &start);
     for err in naming_errors {
         let path = resolve_path_from_owner_spans(err.primary_span(), &provenance, &source_name);
+        if is_stdlib_diagnostic_path(&path) {
+            continue;
+        }
+        if is_generated_harness_path(&path) {
+            continue;
+        }
+        if path == source_name && err.primary_span().offset() > source.len() {
+            continue;
+        }
         let fixes = conservative_naming_fixes(&err, &path);
         let record = DiagRecord::from_diagnostic(
             DiagStage::Naming,

@@ -1,0 +1,135 @@
+so:
+    V2 contract and parity suite bootstrap runner.
+    This module owns v1-v2 black-box bootstrap contract execution in pure `.wr`.
+
+use try_to_write_text from host/fs
+use try_to_create_directory from host/fs
+use try_to_read_text from host/fs
+
+use try_to_run_v1_command from tools/parity/runner
+use try_to_run_v1_help from tools/parity/runner
+use try_to_run_host_command from tools/parity/runner
+use get_exit_code from tools/parity/runner
+use get_stdout from tools/parity/runner
+
+
+to report_scenario(name: String, passed: Boolean) -> Boolean:
+    if passed:
+        __wr_print("parity: pass {name}")
+        return true
+    __wr_print("parity: fail {name}")
+    return false
+
+
+to scenario_help_surface(v1_bin: String, workspace_root: String) -> Boolean:
+    match try_to_run_v1_help(v1_bin, workspace_root):
+        Ok(result):
+            return get_exit_code(result) == 0
+        Err(_):
+            return false
+
+
+to scenario_parse_error_exit_code(v1_bin: String, workspace_root: String) -> Boolean:
+    temp_root = "{workspace_root}/target/wrela_v2_parity"
+    source_path = "{temp_root}/parse_fail.wr"
+    try_to_create_directory(temp_root) otherwise return false
+    try_to_write_text(
+        source_path,
+        "to run() -> Integer:\n    return 1 +\n"
+    ) otherwise return false
+    args = [source_path]
+    match try_to_run_v1_command(v1_bin, workspace_root, args):
+        Ok(result):
+            return get_exit_code(result) == 2
+        Err(_):
+            return false
+
+
+to scenario_type_error_exit_code(v1_bin: String, workspace_root: String) -> Boolean:
+    temp_root = "{workspace_root}/target/wrela_v2_parity"
+    source_path = "{temp_root}/type_fail.wr"
+    try_to_create_directory(temp_root) otherwise return false
+    try_to_write_text(
+        source_path,
+        "to run() -> Integer:\n    return 1 + true\n"
+    ) otherwise return false
+    args = [source_path]
+    match try_to_run_v1_command(v1_bin, workspace_root, args):
+        Ok(result):
+            return get_exit_code(result) == 3
+        Err(_):
+            return false
+
+
+to scenario_test_list_ledger_lite(v1_bin: String, workspace_root: String) -> Boolean:
+    args = ["test", "apps/ledger-lite", "--list"]
+    match try_to_run_v1_command(v1_bin, workspace_root, args):
+        Ok(result):
+            if get_exit_code(result) != 0:
+                return false
+            return __wr_str_len(get_stdout(result)) > 0
+        Err(_):
+            return false
+
+
+to scenario_cert_schema_fixture_fields(workspace_root: String) -> Boolean:
+    fixture_path = "{workspace_root}/compiler/tests/fixtures/cert_schema_v3_example.json"
+    try_to_read_text(fixture_path) otherwise return false
+
+    required = [
+        "cert_schema_version",
+        "entry_path",
+        "workspace_root",
+        "artifact_path",
+        "tests_passed",
+        "compiler_version",
+        "runtime_version",
+        "source_hash",
+        "binary_hash"
+    ]
+    for field in required:
+        args = ["-q", field, fixture_path]
+        match try_to_run_host_command("grep", args, workspace_root, 5_000):
+            Ok(result):
+                if get_exit_code(result) != 0:
+                    return false
+            Err(_):
+                return false
+    return true
+
+A ContractSuite:
+    so: Run all frozen contract scenarios and return non-zero on mismatch.
+    can run() -> Integer:
+        v1_bin = __wr_env_get("WRELA_V1_BIN")
+        workspace_root = __wr_env_get("WRELA_WORKSPACE_ROOT")
+        if v1_bin == nothing or workspace_root == nothing:
+            __wr_print("parity: missing WRELA_V1_BIN or WRELA_WORKSPACE_ROOT")
+            return 1
+
+        if not report_scenario(
+            "help_surface",
+            scenario_help_surface(v1_bin, workspace_root)
+        ):
+            return 1
+        if not report_scenario(
+            "parse_error_exit_code",
+            scenario_parse_error_exit_code(v1_bin, workspace_root)
+        ):
+            return 1
+        if not report_scenario(
+            "type_error_exit_code",
+            scenario_type_error_exit_code(v1_bin, workspace_root)
+        ):
+            return 1
+        if not report_scenario(
+            "test_list_ledger_lite",
+            scenario_test_list_ledger_lite(v1_bin, workspace_root)
+        ):
+            return 1
+        if not report_scenario(
+            "cert_schema_fixture_fields",
+            scenario_cert_schema_fixture_fields(workspace_root)
+        ):
+            return 1
+
+        return 0

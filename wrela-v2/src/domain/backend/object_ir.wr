@@ -1,0 +1,102 @@
+so:
+    Object IR model for M5-A backend core vertical slice.
+
+
+to create_object_section_maps(
+    section_name_text: String,
+    section_kind_text: String,
+    section_content_byte_lists: List[Integer]
+) -> Map:
+    section_maps = __wr_map_new()
+    __wr_map_set(section_maps, "name", section_name_text)
+    __wr_map_set(section_maps, "kind", section_kind_text)
+    __wr_map_set(section_maps, "content_bytes", section_content_byte_lists)
+    return section_maps
+
+
+to create_object_symbol_maps(
+    symbol_name_text: String,
+    section_name_text: String,
+    symbol_offset_number: Integer
+) -> Map:
+    symbol_maps = __wr_map_new()
+    __wr_map_set(symbol_maps, "name", symbol_name_text)
+    __wr_map_set(symbol_maps, "section_name", section_name_text)
+    __wr_map_set(symbol_maps, "offset", symbol_offset_number)
+    return symbol_maps
+
+
+to create_object_relocation_maps(
+    section_name_text: String,
+    relocation_offset_number: Integer,
+    symbol_name_text: String,
+    relocation_kind_text: String
+) -> Map:
+    relocation_maps = __wr_map_new()
+    __wr_map_set(relocation_maps, "section_name", section_name_text)
+    __wr_map_set(relocation_maps, "offset", relocation_offset_number)
+    __wr_map_set(relocation_maps, "symbol_name", symbol_name_text)
+    __wr_map_set(relocation_maps, "kind", relocation_kind_text)
+    return relocation_maps
+
+
+to get_object_signature_text_from_parts(
+    object_section_lists: List[Map],
+    object_symbol_lists: List[Map],
+    object_relocation_lists: List[Map],
+    object_text_byte_lists: List[Integer]
+) -> String:
+    mutable section_count_number = 0
+    for object_ir_section_entry_map in object_section_lists:
+        section_count_number = section_count_number + 1
+    mutable symbol_count_number = 0
+    for object_ir_symbol_entry_map in object_symbol_lists:
+        symbol_count_number = symbol_count_number + 1
+    mutable relocation_count_number = 0
+    for object_ir_relocation_entry_map in object_relocation_lists:
+        relocation_count_number = relocation_count_number + 1
+    mutable byte_count_number = 0
+    for object_ir_text_byte_value in object_text_byte_lists:
+        byte_count_number = byte_count_number + 1
+
+    mutable signature_text = "OBJ|S{section_count_number}|Y{symbol_count_number}|R{relocation_count_number}|B{byte_count_number}|"
+    for object_ir_section_entry_map in object_section_lists:
+        section_name_value = __wr_map_get(object_ir_section_entry_map, "name")
+        signature_text = "{signature_text}{section_name_value},"
+    signature_text = "{signature_text}|"
+    for object_ir_symbol_entry_map in object_symbol_lists:
+        symbol_name_value = __wr_map_get(object_ir_symbol_entry_map, "name")
+        signature_text = "{signature_text}{symbol_name_value},"
+    return signature_text
+
+
+to create_object_program_maps(
+    object_section_lists: List[Map],
+    object_symbol_lists: List[Map],
+    object_relocation_lists: List[Map],
+    object_text_byte_lists: List[Integer]
+) -> Map:
+    program_maps = __wr_map_new()
+    __wr_map_set(program_maps, "kind", "ObjectProgram")
+    __wr_map_set(program_maps, "sections", object_section_lists)
+    __wr_map_set(program_maps, "symbols", object_symbol_lists)
+    __wr_map_set(program_maps, "relocations", object_relocation_lists)
+    __wr_map_set(program_maps, "text_bytes", object_text_byte_lists)
+    __wr_map_set(
+        program_maps,
+        "signature",
+        get_object_signature_text_from_parts(
+            object_section_lists,
+            object_symbol_lists,
+            object_relocation_lists,
+            object_text_byte_lists
+        )
+    )
+    return program_maps
+
+
+to get_object_signature_text(object_program_maps: Map) -> String:
+    signature_value = __wr_map_get(object_program_maps, "signature")
+    if signature_value == nothing:
+        return ""
+    return "{signature_value}"

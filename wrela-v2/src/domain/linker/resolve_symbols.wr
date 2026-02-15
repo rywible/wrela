@@ -1,0 +1,131 @@
+so:
+    Single-object symbol resolution for M5-B in-house linker slice.
+
+use get_linker_input_object_program_lists from domain/linker/input_contract
+use get_linker_input_entry_symbol_text from domain/linker/input_contract
+
+
+to create_linker_symbol_resolution_result_maps(
+    is_ok: Boolean,
+    reason_text: String,
+    object_program_lists: List[Map],
+    resolved_symbol_map_lists: List,
+    entry_offset_number: Integer
+) -> Map:
+    result_maps = __wr_map_new()
+    __wr_map_set(result_maps, "ok", is_ok)
+    __wr_map_set(result_maps, "reason", reason_text)
+    __wr_map_set(result_maps, "objects", object_program_lists)
+    __wr_map_set(result_maps, "symbols", resolved_symbol_map_lists)
+    __wr_map_set(result_maps, "entry_offset", entry_offset_number)
+    return result_maps
+
+
+to try_to_resolve_linker_symbols_from_input(linker_input_maps: Map) -> Map:
+    object_program_lists = get_linker_input_object_program_lists(linker_input_maps)
+    entry_symbol_text = get_linker_input_entry_symbol_text(linker_input_maps)
+
+    mutable object_count_number = 0
+    for object_program_map in object_program_lists:
+        object_count_number = object_count_number + 1
+
+    if object_count_number < 1:
+        return create_linker_symbol_resolution_result_maps(
+            false,
+            "linker requires at least one object",
+            object_program_lists,
+            [],
+            -1
+        )
+    if object_count_number > 4:
+        return create_linker_symbol_resolution_result_maps(
+            false,
+            "multi-object linker supports at most four objects",
+            object_program_lists,
+            [],
+            -1
+        )
+
+    resolved_symbol_lists = []
+    mutable entry_offset_number = -1
+    mutable object_index_number = 0
+    mutable current_object_base_offset_number = 0
+
+    for object_program_map in object_program_lists:
+        object_text_byte_lists = __wr_map_get(object_program_map, "text_bytes")
+        if object_text_byte_lists == nothing:
+            return create_linker_symbol_resolution_result_maps(
+                false,
+                "object is missing text bytes",
+                object_program_lists,
+                resolved_symbol_lists,
+                -1
+            )
+
+        object_symbol_lists = __wr_map_get(object_program_map, "symbols")
+        if object_symbol_lists == nothing:
+            return create_linker_symbol_resolution_result_maps(
+                false,
+                "object is missing symbol table",
+                object_program_lists,
+                resolved_symbol_lists,
+                -1
+            )
+
+        for object_symbol_map in object_symbol_lists:
+            symbol_name_value = __wr_map_get(object_symbol_map, "name")
+            symbol_local_offset_number = __wr_map_get(object_symbol_map, "offset")
+            symbol_name_text = "{symbol_name_value}"
+            symbol_global_offset_number = current_object_base_offset_number + symbol_local_offset_number
+
+            for existing_resolved_symbol_map in resolved_symbol_lists:
+                if __wr_map_get(existing_resolved_symbol_map, "name") == symbol_name_text:
+                    return create_linker_symbol_resolution_result_maps(
+                        false,
+                        "duplicate symbol name",
+                        object_program_lists,
+                        resolved_symbol_lists,
+                        -1
+                    )
+
+            resolved_symbol_maps = __wr_map_new()
+            __wr_map_set(resolved_symbol_maps, "name", symbol_name_text)
+            __wr_map_set(resolved_symbol_maps, "object_index", object_index_number)
+            __wr_map_set(resolved_symbol_maps, "local_offset", symbol_local_offset_number)
+            __wr_map_set(resolved_symbol_maps, "global_offset", symbol_global_offset_number)
+            __wr_map_set(resolved_symbol_maps, "binding", "global")
+            __wr_list_push(resolved_symbol_lists, resolved_symbol_maps)
+
+            if symbol_name_text == entry_symbol_text:
+                if entry_offset_number >= 0:
+                    return create_linker_symbol_resolution_result_maps(
+                        false,
+                        "duplicate entry symbol",
+                        object_program_lists,
+                        resolved_symbol_lists,
+                        -1
+                    )
+                entry_offset_number = symbol_global_offset_number
+
+        mutable object_text_byte_count_number = 0
+        for object_text_byte in object_text_byte_lists:
+            object_text_byte_count_number = object_text_byte_count_number + 1
+        current_object_base_offset_number = current_object_base_offset_number + object_text_byte_count_number
+        object_index_number = object_index_number + 1
+
+    if entry_offset_number < 0:
+        return create_linker_symbol_resolution_result_maps(
+            false,
+            "entry symbol was not found",
+            object_program_lists,
+            resolved_symbol_lists,
+            -1
+        )
+
+    return create_linker_symbol_resolution_result_maps(
+        true,
+        "",
+        object_program_lists,
+        resolved_symbol_lists,
+        entry_offset_number
+    )

@@ -1,0 +1,8 @@
+so:
+    V2 compile command alias behavior for M7-B.
+
+use run_build_command from application/build_command
+
+
+to run_compile_command(path: String) -> Integer:
+    return run_build_command(path)

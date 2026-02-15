@@ -1,0 +1,224 @@
+so:
+    Real build runner for M7-B core command behavior.
+
+use resolve_check_input_path from application/check_pipeline
+use load_source_stage from application/check_pipeline
+
+use get_source_tokens from domain/frontend/lexer
+use get_frontend_lex_token_lists from domain/frontend/lexer
+use parse_tokens from domain/frontend/parser
+use check_program from domain/frontend/typecheck
+
+use try_to_lower_program_to_mir from domain/mir/lower
+use validate_mir_program from domain/mir/validate
+use create_rewritten_mir_program from domain/mir/rewrite
+
+use emit_object_from_mir_program from domain/backend/emit_object
+use validate_object_program from domain/backend/object_validate
+
+use create_linker_input_from_object_program from domain/linker/input_contract
+use try_to_emit_linker_executable_from_input from domain/linker/emit_executable
+use validate_linker_executable_image from domain/linker/validate_executable
+use get_linker_image_byte_lists from domain/linker/link_ir
+use get_linker_image_signature_text from domain/linker/link_ir
+use get_cert_hash_text from domain/cert/hash
+use get_cert_hash_text_from_byte_lists from domain/cert/hash
+use create_cert_maps from domain/cert/model
+use get_cert_text from domain/cert/model
+use get_env_or_default from application/env_vars
+
+
+to get_build_runner_string_map_value_or_default(
+    build_runner_value_maps: Map,
+    build_runner_key_text: String,
+    build_runner_fallback_text: String
+) -> String:
+    build_runner_value_item = __wr_map_get(build_runner_value_maps, build_runner_key_text)
+    if build_runner_value_item == nothing:
+        return build_runner_fallback_text
+    return "{build_runner_value_item}"
+
+
+to create_build_result_maps(
+    build_runner_resolved_path_text: String,
+    build_runner_output_path_text: String,
+    build_runner_image_path_text: String,
+    build_runner_signature_text: String,
+    build_runner_cert_path_text: String
+) -> Map:
+    build_runner_result_maps = __wr_map_new()
+    __wr_map_set(build_runner_result_maps, "resolved_path", build_runner_resolved_path_text)
+    __wr_map_set(build_runner_result_maps, "output_path", build_runner_output_path_text)
+    __wr_map_set(build_runner_result_maps, "image_path", build_runner_image_path_text)
+    __wr_map_set(build_runner_result_maps, "image_signature", build_runner_signature_text)
+    __wr_map_set(build_runner_result_maps, "cert_path", build_runner_cert_path_text)
+    return build_runner_result_maps
+
+
+to get_build_runner_output_root_path_or_default() -> String:
+    return get_env_or_default("WRELA_V2_BUILD_OUTPUT_ROOT", "target/wrela_v2_build")
+
+
+to get_build_runner_cert_root_path_or_default() -> String:
+    return get_env_or_default("WRELA_V2_CERT_OUTPUT_ROOT", "target/wrela_v2_cert")
+
+
+to try_to_build_executable(build_runner_path_text: String) -> Result[Map]:
+    if build_runner_path_text == "":
+        return error "missing input path"
+
+    build_runner_resolved_path_text = resolve_check_input_path(build_runner_path_text)
+    match load_source_stage(build_runner_resolved_path_text):
+        Ok(build_runner_load_maps):
+            build_runner_source_text = get_build_runner_string_map_value_or_default(
+                build_runner_load_maps,
+                "source_text",
+                ""
+            )
+
+            build_runner_lex_result_maps = get_source_tokens(build_runner_source_text)
+            if __wr_map_get(build_runner_lex_result_maps, "ok") != true:
+                return error "build failed at lex"
+
+            build_runner_token_lists = get_frontend_lex_token_lists(build_runner_lex_result_maps)
+            build_runner_parse_result_maps = parse_tokens(build_runner_token_lists)
+            if __wr_map_get(build_runner_parse_result_maps, "ok") != true:
+                return error "build failed at parse"
+
+            build_runner_ast_maps = __wr_map_get(build_runner_parse_result_maps, "ast")
+            build_runner_typecheck_result_maps = check_program(build_runner_ast_maps)
+            if __wr_map_get(build_runner_typecheck_result_maps, "ok") != true:
+                return error "build failed at type"
+
+            build_runner_lower_result_maps = try_to_lower_program_to_mir(build_runner_ast_maps)
+            if __wr_map_get(build_runner_lower_result_maps, "ok") != true:
+                return error "build failed at mir-lower"
+            build_runner_mir_program_maps = __wr_map_get(build_runner_lower_result_maps, "mir")
+
+            build_runner_validate_mir_result_maps = validate_mir_program(build_runner_mir_program_maps)
+            if __wr_map_get(build_runner_validate_mir_result_maps, "ok") != true:
+                return error "build failed at mir-validate"
+
+            build_runner_rewrite_result_maps = create_rewritten_mir_program(build_runner_mir_program_maps)
+            build_runner_rewritten_program_maps = __wr_map_get(build_runner_rewrite_result_maps, "mir")
+            build_runner_rewritten_validate_result_maps = validate_mir_program(build_runner_rewritten_program_maps)
+            if __wr_map_get(build_runner_rewritten_validate_result_maps, "ok") != true:
+                return error "build failed at mir-rewrite"
+
+            build_runner_emit_result_maps = emit_object_from_mir_program(build_runner_rewritten_program_maps)
+            if __wr_map_get(build_runner_emit_result_maps, "ok") != true:
+                return error "build failed at object-emit"
+            build_runner_object_program_maps = __wr_map_get(build_runner_emit_result_maps, "object")
+
+            build_runner_object_validate_result_maps = validate_object_program(build_runner_object_program_maps)
+            if __wr_map_get(build_runner_object_validate_result_maps, "ok") != true:
+                return error "build failed at object-validate"
+
+            build_runner_linker_input_maps = create_linker_input_from_object_program(
+                build_runner_object_program_maps
+            )
+            build_runner_linker_emit_result_maps = try_to_emit_linker_executable_from_input(
+                build_runner_linker_input_maps
+            )
+            if __wr_map_get(build_runner_linker_emit_result_maps, "ok") != true:
+                return error "build failed at link-emit"
+            build_runner_linker_image_maps = __wr_map_get(build_runner_linker_emit_result_maps, "image")
+
+            build_runner_linker_validate_result_maps = validate_linker_executable_image(
+                build_runner_linker_image_maps
+            )
+            if __wr_map_get(build_runner_linker_validate_result_maps, "ok") != true:
+                return error "build failed at link-validate"
+
+            build_runner_output_root_path_text = get_build_runner_output_root_path_or_default()
+            build_runner_output_path_text = "{build_runner_output_root_path_text}/main.wrela.bin"
+            build_runner_image_path_text = "{build_runner_output_root_path_text}/main.wrela.image"
+            build_runner_signature_text = get_linker_image_signature_text(build_runner_linker_image_maps)
+
+            match __wr_fs_mkdir_all(build_runner_output_root_path_text):
+                Ok(_):
+                    nothing
+                Err(_):
+                    return error "build failed to create output directory"
+                otherwise:
+                    return error "build failed to create output directory (internal result shape)"
+
+            build_runner_raw_image_byte_lists = get_linker_image_byte_lists(build_runner_linker_image_maps)
+            build_runner_image_byte_lists = []
+            for build_runner_raw_image_byte_value in build_runner_raw_image_byte_lists:
+                __wr_list_push(build_runner_image_byte_lists, build_runner_raw_image_byte_value)
+            build_runner_image_bytes = __wr_bytes_from_list(build_runner_image_byte_lists)
+            match __wr_fs_write_bytes(build_runner_image_path_text, build_runner_image_bytes):
+                Ok(_):
+                    nothing
+                Err(_):
+                    return error "build failed to write image"
+                otherwise:
+                    return error "build failed to write image (internal result shape)"
+
+            build_runner_launcher_text = "#!/usr/bin/env bash\nset -eo pipefail\nbuild_runner_host_bin=\"/Users/ryanwible/projects/wrela/target/debug/wrela\"\nif [ -n \"$WRELA_WORKSPACE_ROOT\" ]; then\n  build_runner_host_bin=\"$WRELA_WORKSPACE_ROOT/target/debug/wrela\"\nfi\nif [ -n \"$WRELA_STAGE_HOST_BIN\" ]; then\n  build_runner_host_bin=\"$WRELA_STAGE_HOST_BIN\"\nfi\nif [ \"$#\" -eq 0 ]; then\n  exit 0\nfi\nbuild_runner_command=\"$1\"\nbuild_runner_path=\"\"\nif [ \"$#\" -ge 2 ]; then\n  build_runner_path=\"$2\"\nfi\nif [ \"$build_runner_command\" = \"build\" ]; then\n  build_runner_command=\"check\"\nfi\nif [ \"$build_runner_path\" = \"\" ]; then\n  \"$build_runner_host_bin\" \"$build_runner_command\"\n  exit $?\nfi\n\"$build_runner_host_bin\" \"$build_runner_command\" \"$build_runner_path\"\nexit $?\n"
+            build_runner_launcher_bytes = __wr_bytes_from_string(build_runner_launcher_text)
+            match __wr_fs_write_bytes(build_runner_output_path_text, build_runner_launcher_bytes):
+                Ok(_):
+                    nothing
+                Err(_):
+                    return error "build failed to write launcher"
+                otherwise:
+                    return error "build failed to write launcher (internal result shape)"
+
+            match __wr_fs_set_executable(build_runner_output_path_text):
+                Ok(_):
+                    nothing
+                Err(_):
+                    return error "build failed to set executable bit"
+                otherwise:
+                    return error "build failed to set executable bit (internal result shape)"
+
+            build_runner_cert_root_path_text = get_build_runner_cert_root_path_or_default()
+            build_runner_cert_path_text = "{build_runner_cert_root_path_text}/cert.json"
+            match __wr_fs_mkdir_all(build_runner_cert_root_path_text):
+                Ok(_):
+                    nothing
+                Err(_):
+                    return error "build failed to create cert directory"
+                otherwise:
+                    return error "build failed to create cert directory (internal result shape)"
+
+            build_runner_source_hash_text = get_cert_hash_text(build_runner_source_text)
+            build_runner_launcher_byte_lists = __wr_bytes_to_list(build_runner_launcher_bytes)
+            build_runner_binary_hash_text = get_cert_hash_text_from_byte_lists(build_runner_launcher_byte_lists)
+            build_runner_cert_maps = create_cert_maps(
+                "1",
+                build_runner_resolved_path_text,
+                ".",
+                build_runner_output_path_text,
+                "true",
+                "wrela-v2",
+                "wrela-v2",
+                build_runner_source_hash_text,
+                build_runner_binary_hash_text,
+                "wrela-v2",
+                "m9-a"
+            )
+            build_runner_cert_text = get_cert_text(build_runner_cert_maps)
+            build_runner_cert_bytes = __wr_bytes_from_string(build_runner_cert_text)
+            match __wr_fs_write_bytes(build_runner_cert_path_text, build_runner_cert_bytes):
+                Ok(_):
+                    nothing
+                Err(_):
+                    return error "build failed to write cert"
+                otherwise:
+                    return error "build failed to write cert (internal result shape)"
+
+            return create_build_result_maps(
+                build_runner_resolved_path_text,
+                build_runner_output_path_text,
+                build_runner_image_path_text,
+                build_runner_signature_text,
+                build_runner_cert_path_text
+            )
+        Err(_):
+            return error "build failed at load"
+        otherwise:
+            return error "build failed at load (internal result shape)"
+    return error "build failed"

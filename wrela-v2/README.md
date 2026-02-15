@@ -1,6 +1,6 @@
-# Wrela V2 Scaffold
+# Wrela V2
 
-This directory is intentionally scaffold-only.
+Pure `.wr` self-hosted toolchain workspace.
 
 ## Top-level architecture boundaries
 
@@ -10,10 +10,21 @@ This directory is intentionally scaffold-only.
 - `src/application/composition/`
 - `tests/contract/`
 - `tests/parity/`
+- `tools/parity/`
 
 ## Current status
 
-- Architecture root is language-structure-only (no crate at root).
-- Compile-ready parity placeholder crate lives at `tools/parity-scaffold/`.
-- Contract and parity interfaces are intentionally minimal.
-- No compiler/runtime subsystem migration has started yet.
+- V2 roadmap is tracked in `wrela-v2/ROADMAP.md`.
+- No-cheating policy is tracked in `wrela-v2/NO_CHEATING.md`.
+- Phase 0 ABI envelope is tracked in `wrela-v2/PHASE0_ABI.md`.
+- Bootstrap usage is tracked in `wrela-v2/BOOTSTRAP.md`.
+- Rust parity scaffold has been removed from `wrela-v2`.
+- Platform abstraction contracts start in `src/domain/platform/contracts.wr`.
+- OS adapters start in `src/infrastructure/platform/adapters/`.
+- Check pipeline staging starts in `src/application/check_pipeline.wr`.
+- CLI bootstrap currently supports `check` and `parity` command paths.
+- Parity bootstrap scenarios currently cover:
+- `--help` surface
+- parse/type exit-code contracts
+- `test apps/ledger-lite --list`
+- cert schema fixture required fields

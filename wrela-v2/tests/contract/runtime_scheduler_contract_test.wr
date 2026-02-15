@@ -1,0 +1,60 @@
+so:
+    Contract tests for deterministic scheduler behavior.
+
+use PlatformTarget from domain/platform/model
+use try_to_create_and_validate_platform_ports from application/runtime/platform_conformance
+use try_to_run_scheduler_queue from application/runtime/scheduler_runtime
+
+
+to create_scheduler_target(os_name: String, architecture: String) -> PlatformTarget:
+    target = PlatformTarget()
+    target.host_os_name = os_name
+    target.host_architecture = architecture
+    return target
+
+
+to test_runtime_scheduler_contract_fifo_and_bounded_cycles() -> Nothing:
+    target = create_scheduler_target("linux", "arm64")
+    tasks = ["task-a", "task-b", "task-c"]
+    match try_to_create_and_validate_platform_ports(target, true):
+        Ok(ports):
+            match try_to_run_scheduler_queue(ports, tasks, 3):
+                Ok(summary_maps):
+                    assert value __wr_map_get(summary_maps, "tasks_total") == 3
+                    assert value __wr_map_get(summary_maps, "tasks_completed") == 3
+                    assert value __wr_map_get(summary_maps, "fifo_stable") == true
+                otherwise:
+                    assert value false == true
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_runtime_scheduler_contract_rejects_invalid_max_cycles() -> Nothing:
+    target = create_scheduler_target("linux", "arm64")
+    tasks = ["task-a"]
+    match try_to_create_and_validate_platform_ports(target, true):
+        Ok(ports):
+            match try_to_run_scheduler_queue(ports, tasks, 0):
+                Err(message_text):
+                    assert value message_text == "invalid scheduler max_cycles: 0"
+                otherwise:
+                    assert value false == true
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_runtime_scheduler_contract_fails_closed_on_starvation() -> Nothing:
+    target = create_scheduler_target("linux", "arm64")
+    tasks = ["task-a", "task-b", "task-c"]
+    match try_to_create_and_validate_platform_ports(target, true):
+        Ok(ports):
+            match try_to_run_scheduler_queue(ports, tasks, 2):
+                Err(message_text):
+                    assert value message_text == "scheduler starvation: max_cycles exceeded"
+                otherwise:
+                    assert value false == true
+        otherwise:
+            assert value false == true
+    return nothing

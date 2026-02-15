@@ -1,0 +1,24 @@
+so:
+    V2 perfcmp command with real M7-C behavior.
+
+use try_to_run_perfcmp_runner from application/perfcmp_runner
+
+
+to run_perfcmp_command(path: String) -> Integer:
+    match try_to_run_perfcmp_runner(path):
+        Ok(result_maps):
+            baseline_value = __wr_map_get(result_maps, "baseline_p50_ns")
+            current_value = __wr_map_get(result_maps, "current_p50_ns")
+            delta_value = __wr_map_get(result_maps, "delta_percent")
+            __wr_print("perfcmp: baseline_p50_ns={baseline_value} current_p50_ns={current_value} delta_percent={delta_value}")
+            return 0
+        Err(error_text):
+            if error_text == "perfcmp baseline missing" or error_text == "perfcmp baseline invalid":
+                __wr_print("error: perfcmp baseline invalid")
+                return 1
+            __wr_print("error: perfcmp failed")
+            return 2
+        otherwise:
+            __wr_print("error: perfcmp failed")
+            return 2
+    return 2

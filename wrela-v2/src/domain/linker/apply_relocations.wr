@@ -1,0 +1,142 @@
+so:
+    Relocation application for M5-B in-house linker slice.
+
+
+to create_linker_relocation_apply_result_maps(
+    is_ok: Boolean,
+    reason_text: String,
+    patched_text_byte_lists: List[Integer],
+    normalized_relocation_map_lists: List
+) -> Map:
+    result_maps = __wr_map_new()
+    __wr_map_set(result_maps, "ok", is_ok)
+    __wr_map_set(result_maps, "reason", reason_text)
+    __wr_map_set(result_maps, "bytes", patched_text_byte_lists)
+    __wr_map_set(result_maps, "relocations", normalized_relocation_map_lists)
+    return result_maps
+
+
+to create_linker_patched_byte_lists(
+    source_text_byte_lists: List[Integer],
+    patch_offset_number: Integer,
+    patch_value_number: Integer
+) -> List[Integer]:
+    patched_text_byte_lists = []
+    mutable current_index_number = 0
+    for source_text_byte in source_text_byte_lists:
+        if current_index_number == patch_offset_number:
+            __wr_list_push(patched_text_byte_lists, patch_value_number)
+        otherwise:
+            __wr_list_push(patched_text_byte_lists, source_text_byte)
+        current_index_number = current_index_number + 1
+    return patched_text_byte_lists
+
+
+to try_to_apply_linker_relocations(
+    object_program_lists: List,
+    resolved_symbol_map_lists: List
+) -> Map:
+    mutable linked_text_byte_lists = []
+    normalized_relocation_lists = []
+    mutable object_index_number = 0
+    mutable object_base_offset_number = 0
+    for object_program_map in object_program_lists:
+        source_text_byte_lists = __wr_map_get(object_program_map, "text_bytes")
+        if source_text_byte_lists == nothing:
+            return create_linker_relocation_apply_result_maps(
+                false,
+                "object has no text bytes",
+                linked_text_byte_lists,
+                normalized_relocation_lists
+            )
+
+        mutable source_relocation_lists = __wr_map_get(object_program_map, "relocations")
+        if source_relocation_lists == nothing:
+            source_relocation_lists = []
+
+        mutable source_text_byte_count_number = 0
+        for source_text_byte in source_text_byte_lists:
+            source_text_byte_count_number = source_text_byte_count_number + 1
+
+        mutable patched_text_byte_lists = source_text_byte_lists
+        for source_relocation_map in source_relocation_lists:
+            relocation_section_value = __wr_map_get(source_relocation_map, "section_name")
+            relocation_offset_value = __wr_map_get(source_relocation_map, "offset")
+            relocation_symbol_value = __wr_map_get(source_relocation_map, "symbol_name")
+            relocation_kind_value = __wr_map_get(source_relocation_map, "kind")
+
+            if "{relocation_section_value}" != ".text":
+                return create_linker_relocation_apply_result_maps(
+                    false,
+                    "relocation section is unsupported",
+                    linked_text_byte_lists,
+                    normalized_relocation_lists
+                )
+
+            if "{relocation_kind_value}" != "placeholder":
+                if "{relocation_kind_value}" != "abs32":
+                    return create_linker_relocation_apply_result_maps(
+                        false,
+                        "unknown relocation kind",
+                        linked_text_byte_lists,
+                        normalized_relocation_lists
+                    )
+
+            mutable symbol_global_offset_number = -1
+            for resolved_symbol_map in resolved_symbol_map_lists:
+                if __wr_map_get(resolved_symbol_map, "name") == "{relocation_symbol_value}":
+                    symbol_global_offset_number = __wr_map_get(resolved_symbol_map, "global_offset")
+
+            if symbol_global_offset_number < 0:
+                return create_linker_relocation_apply_result_maps(
+                    false,
+                    "relocation symbol was not resolved",
+                    linked_text_byte_lists,
+                    normalized_relocation_lists
+                )
+
+            if relocation_offset_value < 0:
+                return create_linker_relocation_apply_result_maps(
+                    false,
+                    "relocation offset is invalid",
+                    linked_text_byte_lists,
+                    normalized_relocation_lists
+                )
+            if relocation_offset_value >= source_text_byte_count_number:
+                return create_linker_relocation_apply_result_maps(
+                    false,
+                    "relocation offset is out of range",
+                    linked_text_byte_lists,
+                    normalized_relocation_lists
+                )
+
+            patched_text_byte_lists = create_linker_patched_byte_lists(
+                patched_text_byte_lists,
+                relocation_offset_value,
+                symbol_global_offset_number
+            )
+
+            normalized_relocation_maps = __wr_map_new()
+            __wr_map_set(normalized_relocation_maps, "object_index", object_index_number)
+            __wr_map_set(normalized_relocation_maps, "section_name", ".text")
+            __wr_map_set(
+                normalized_relocation_maps,
+                "offset",
+                object_base_offset_number + relocation_offset_value
+            )
+            __wr_map_set(normalized_relocation_maps, "symbol_name", "{relocation_symbol_value}")
+            __wr_map_set(normalized_relocation_maps, "kind", "{relocation_kind_value}")
+            __wr_list_push(normalized_relocation_lists, normalized_relocation_maps)
+
+        for patched_text_byte in patched_text_byte_lists:
+            __wr_list_push(linked_text_byte_lists, patched_text_byte)
+
+        object_base_offset_number = object_base_offset_number + source_text_byte_count_number
+        object_index_number = object_index_number + 1
+
+    return create_linker_relocation_apply_result_maps(
+        true,
+        "",
+        linked_text_byte_lists,
+        normalized_relocation_lists
+    )

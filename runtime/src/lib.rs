@@ -799,8 +799,43 @@ pub extern "C" fn wr_fs_read_bytes(path: Value) -> Value {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn wr_fs_read_dir(path: Value) -> Value {
+    host::fs_read_dir(path)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_fs_metadata(path: Value) -> Value {
+    host::fs_metadata(path)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_fs_mkdir_all(path: Value) -> Value {
+    host::fs_mkdir_all(path)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn wr_fs_write_bytes(path: Value, contents: Value) -> Value {
     host::fs_write_bytes(path, contents)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_fs_remove_file(path: Value) -> Value {
+    host::fs_remove_file(path)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_fs_remove_dir_all(path: Value) -> Value {
+    host::fs_remove_dir_all(path)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_fs_rename(from_path: Value, to_path: Value) -> Value {
+    host::fs_rename(from_path, to_path)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_fs_set_executable(path: Value) -> Value {
+    host::fs_set_executable(path)
 }
 
 #[unsafe(no_mangle)]
@@ -1132,6 +1167,26 @@ pub extern "C" fn wr_env_get(key: Value) -> Value {
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_env_set(key: Value, val: Value) -> Value {
     host::env_set(key, val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_process_argv() -> Value {
+    host::process_argv()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_process_cwd() -> Value {
+    host::process_cwd()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_process_run(spec: Value) -> Value {
+    host::process_run(spec)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_process_exit(code: Value) -> Value {
+    host::process_exit(code)
 }
 
 fn num_add(a: Value, b: Value) -> Value {
@@ -1969,5 +2024,248 @@ mod tests {
             caps & crate::unsafe_primitives::RUNTIME_CAP_ABI_NEGOTIATION_MARKER,
             crate::unsafe_primitives::RUNTIME_CAP_ABI_NEGOTIATION_MARKER
         );
+    }
+
+    #[test]
+    fn process_phase0_argv_and_cwd_are_available() {
+        let argv = wr_process_argv();
+        let argc = wr_list_len(argv);
+        assert!(argc.as_int() >= 1);
+        dec(argc);
+        dec(argv);
+
+        let cwd_result = wr_process_cwd();
+        let cwd_ok = wr_result_is_ok(cwd_result);
+        assert!(cwd_ok.as_bool());
+        dec(cwd_ok);
+
+        let cwd = wr_result_unwrap(cwd_result);
+        assert!(!value_to_string(cwd).is_empty());
+        dec(cwd);
+        dec(cwd_result);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_phase0_run_executes_command() {
+        let spec = wr_map_new();
+        let command_key = str_value("command");
+        let command_val = str_value("/bin/sh");
+        let _ = wr_map_set(spec, command_key, command_val);
+        dec(command_key);
+        dec(command_val);
+
+        let args_key = str_value("args");
+        let args_val = wr_list_new(0);
+        let arg_1 = str_value("-lc");
+        let arg_2 = str_value("printf phase0_process_ok");
+        let _ = wr_list_push_val(args_val, arg_1);
+        let _ = wr_list_push_val(args_val, arg_2);
+        dec(arg_1);
+        dec(arg_2);
+        let _ = wr_map_set(spec, args_key, args_val);
+        dec(args_key);
+        dec(args_val);
+
+        let cwd_key = str_value("cwd");
+        let cwd_val = str_value("");
+        let _ = wr_map_set(spec, cwd_key, cwd_val);
+        dec(cwd_key);
+        dec(cwd_val);
+
+        let env_key = str_value("env");
+        let env_val = wr_map_new();
+        let _ = wr_map_set(spec, env_key, env_val);
+        dec(env_key);
+        dec(env_val);
+
+        let timeout_key = str_value("timeout_ms");
+        let timeout_val = Value::from_int(2_000);
+        let _ = wr_map_set(spec, timeout_key, timeout_val);
+        dec(timeout_key);
+
+        let run_result = wr_process_run(spec);
+        let run_ok = wr_result_is_ok(run_result);
+        assert!(run_ok.as_bool());
+        dec(run_ok);
+
+        let payload = wr_result_unwrap(run_result);
+        let code_key = str_value("exit_code");
+        let stdout_key = str_value("stdout");
+        let timed_out_key = str_value("timed_out");
+        let code = wr_map_get(payload, code_key);
+        let stdout = wr_map_get(payload, stdout_key);
+        let timed_out = wr_map_get(payload, timed_out_key);
+        assert_eq!(code.as_int(), 0);
+        assert!(!timed_out.as_bool());
+        assert!(value_to_string(stdout).contains("phase0_process_ok"));
+        dec(code_key);
+        dec(stdout_key);
+        dec(timed_out_key);
+        dec(code);
+        dec(stdout);
+        dec(timed_out);
+        dec(payload);
+        dec(run_result);
+        dec(spec);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_phase0_run_timeout_marks_timed_out() {
+        let spec = wr_map_new();
+        let command_key = str_value("command");
+        let command_val = str_value("/bin/sh");
+        let _ = wr_map_set(spec, command_key, command_val);
+        dec(command_key);
+        dec(command_val);
+
+        let args_key = str_value("args");
+        let args_val = wr_list_new(0);
+        let arg_1 = str_value("-lc");
+        let arg_2 = str_value("sleep 1");
+        let _ = wr_list_push_val(args_val, arg_1);
+        let _ = wr_list_push_val(args_val, arg_2);
+        dec(arg_1);
+        dec(arg_2);
+        let _ = wr_map_set(spec, args_key, args_val);
+        dec(args_key);
+        dec(args_val);
+
+        let cwd_key = str_value("cwd");
+        let cwd_val = str_value("");
+        let _ = wr_map_set(spec, cwd_key, cwd_val);
+        dec(cwd_key);
+        dec(cwd_val);
+
+        let env_key = str_value("env");
+        let env_val = wr_map_new();
+        let _ = wr_map_set(spec, env_key, env_val);
+        dec(env_key);
+        dec(env_val);
+
+        let timeout_key = str_value("timeout_ms");
+        let timeout_val = Value::from_int(10);
+        let _ = wr_map_set(spec, timeout_key, timeout_val);
+        dec(timeout_key);
+
+        let run_result = wr_process_run(spec);
+        let run_ok = wr_result_is_ok(run_result);
+        assert!(run_ok.as_bool());
+        dec(run_ok);
+
+        let payload = wr_result_unwrap(run_result);
+        let code_key = str_value("exit_code");
+        let timed_out_key = str_value("timed_out");
+        let code = wr_map_get(payload, code_key);
+        let timed_out = wr_map_get(payload, timed_out_key);
+        assert_eq!(code.as_int(), 124);
+        assert!(timed_out.as_bool());
+        dec(code_key);
+        dec(timed_out_key);
+        dec(code);
+        dec(timed_out);
+        dec(payload);
+        dec(run_result);
+        dec(spec);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fs_phase0_extended_apis_round_trip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let nested_root = dir.path().join("phase0_fs");
+        let nested_dir = nested_root.join("bin");
+        let nested_root_text = nested_root.to_string_lossy().into_owned();
+        let nested_dir_text = nested_dir.to_string_lossy().into_owned();
+        let file_path = nested_dir.join("tool.sh");
+        let renamed_path = nested_dir.join("tool_renamed.sh");
+        let file_text = file_path.to_string_lossy().into_owned();
+        let renamed_text = renamed_path.to_string_lossy().into_owned();
+
+        let nested_dir_val = str_value(&nested_dir_text);
+        let mkdir_result = wr_fs_mkdir_all(nested_dir_val);
+        let mkdir_ok = wr_result_is_ok(mkdir_result);
+        assert!(mkdir_ok.as_bool());
+        dec(mkdir_ok);
+        let mkdir_unwrapped = wr_result_unwrap(mkdir_result);
+        dec(mkdir_unwrapped);
+        dec(mkdir_result);
+
+        let file_val = str_value(&file_text);
+        let payload_text = str_value("#!/bin/sh\necho ok\n");
+        let payload = wr_bytes_from_string(payload_text);
+        dec(payload_text);
+        let write_result = wr_fs_write_bytes(file_val, payload);
+        let write_ok = wr_result_is_ok(write_result);
+        assert!(write_ok.as_bool());
+        dec(write_ok);
+        let write_unwrapped = wr_result_unwrap(write_result);
+        dec(write_unwrapped);
+        dec(write_result);
+        dec(payload);
+
+        let metadata_result = wr_fs_metadata(file_val);
+        let metadata_ok = wr_result_is_ok(metadata_result);
+        assert!(metadata_ok.as_bool());
+        dec(metadata_ok);
+        let metadata = wr_result_unwrap(metadata_result);
+        let key_is_file = str_value("is_file");
+        let is_file = wr_map_get(metadata, key_is_file);
+        assert!(is_file.as_bool());
+        dec(key_is_file);
+        dec(is_file);
+        dec(metadata);
+        dec(metadata_result);
+
+        let to_val = str_value(&renamed_text);
+        let rename_result = wr_fs_rename(file_val, to_val);
+        let rename_ok = wr_result_is_ok(rename_result);
+        assert!(rename_ok.as_bool());
+        dec(rename_ok);
+        let rename_unwrapped = wr_result_unwrap(rename_result);
+        dec(rename_unwrapped);
+        dec(rename_result);
+
+        let set_exec_result = wr_fs_set_executable(to_val);
+        let set_exec_ok = wr_result_is_ok(set_exec_result);
+        assert!(set_exec_ok.as_bool());
+        dec(set_exec_ok);
+        let set_exec_unwrapped = wr_result_unwrap(set_exec_result);
+        dec(set_exec_unwrapped);
+        dec(set_exec_result);
+
+        let read_dir_result = wr_fs_read_dir(nested_dir_val);
+        let read_dir_ok = wr_result_is_ok(read_dir_result);
+        assert!(read_dir_ok.as_bool());
+        dec(read_dir_ok);
+        let entries = wr_result_unwrap(read_dir_result);
+        let entries_len = wr_list_len(entries);
+        assert!(entries_len.as_int() >= 1);
+        dec(entries_len);
+        dec(entries);
+        dec(read_dir_result);
+
+        let remove_file_result = wr_fs_remove_file(to_val);
+        let remove_file_ok = wr_result_is_ok(remove_file_result);
+        assert!(remove_file_ok.as_bool());
+        dec(remove_file_ok);
+        let remove_file_unwrapped = wr_result_unwrap(remove_file_result);
+        dec(remove_file_unwrapped);
+        dec(remove_file_result);
+
+        let nested_root_val = str_value(&nested_root_text);
+        let remove_dir_result = wr_fs_remove_dir_all(nested_root_val);
+        let remove_dir_ok = wr_result_is_ok(remove_dir_result);
+        assert!(remove_dir_ok.as_bool());
+        dec(remove_dir_ok);
+        let remove_dir_unwrapped = wr_result_unwrap(remove_dir_result);
+        dec(remove_dir_unwrapped);
+        dec(remove_dir_result);
+
+        dec(nested_root_val);
+        dec(nested_dir_val);
+        dec(file_val);
+        dec(to_val);
     }
 }

@@ -1,0 +1,40 @@
+so:
+    Shared platform conformance helpers.
+    Linux is canonical; Darwin must still satisfy the same required contract surface.
+
+use PlatformTarget from domain/platform/model
+use PlatformPorts from domain/platform/contracts
+use try_to_validate_platform_ports from domain/platform/contracts
+use try_to_create_platform_ports from application/composition/platform_ports
+use try_to_validate_linux_sys_boundary_map from domain/platform/linux_sys_boundary
+
+
+to try_to_validate_platform_ports_conformance(ports: PlatformPorts) -> Result[Nothing]:
+    match try_to_validate_platform_ports(ports):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+
+    if ports.host_family_name == "linux":
+        return try_to_validate_linux_sys_boundary_map()
+    return nothing
+
+
+to try_to_create_and_validate_platform_ports(
+    target: PlatformTarget,
+    is_io_uring_preferred: Boolean
+) -> Result[PlatformPorts]:
+    match try_to_create_platform_ports(target, is_io_uring_preferred):
+        Ok(ports):
+            match try_to_validate_platform_ports_conformance(ports):
+                Err(error_text):
+                    return error error_text
+                otherwise:
+                    nothing
+            return ports
+        Err(error_text):
+            return error error_text
+        otherwise:
+            return error "platform conformance failed"
+    return error "platform conformance failed"

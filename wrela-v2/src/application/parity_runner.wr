@@ -1,0 +1,48 @@
+so:
+    Parity command runner helpers within application layer.
+    Coverage-critical helper module for v1 command process execution.
+
+
+to try_to_run_host_command(
+    command: String,
+    args: List[String],
+    workspace_root: String,
+    timeout_ms: Integer
+) -> Result[Map]:
+    specs = {
+        "command": command,
+        "args": args,
+        "cwd": workspace_root,
+        "env": {},
+        "timeout_ms": timeout_ms
+    }
+    return __wr_process_run(specs)
+
+
+to try_to_run_v1_command(
+    v1_bin_path: String,
+    workspace_root: String,
+    args: List[String]
+) -> Result[Map]:
+    return try_to_run_host_command(v1_bin_path, args, workspace_root, 10_000)
+
+
+to try_to_run_v1_help(v1_bin_path: String, workspace_root: String) -> Result[Map]:
+    args = ["--help"]
+    return try_to_run_v1_command(v1_bin_path, workspace_root, args)
+
+
+to get_exit_code(results: Map) -> Integer:
+    code = __wr_map_get(results, "exit_code")
+    if code == nothing:
+        return 1
+    return code
+
+
+to get_stdout(results: Map) -> String:
+    stdout = __wr_map_get(results, "stdout")
+    match stdout:
+        String(value):
+            return value
+        otherwise:
+            return ""

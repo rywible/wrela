@@ -1,0 +1,148 @@
+so:
+    Contract coverage for v2 CLI bootstrap dispatch behavior.
+
+use run_cli from application/cli
+use run_init_command from application/init_command
+use try_to_read_metadata from host/fs
+use try_to_remove_directory from host/fs
+use try_to_create_directory from host/fs
+use try_to_write_text from host/fs
+
+
+to try_to_remove_cli_contract_directory_if_present(path: String) -> Nothing:
+    match try_to_remove_directory(path):
+        Ok(remove_result):
+            return nothing
+        Err(error_text):
+            assert value error_text != ""
+            return nothing
+        otherwise:
+            return nothing
+    return nothing
+
+
+to ensure_cli_contract_directory(path: String) -> Nothing:
+    match try_to_create_directory(path):
+        Ok(create_result):
+            return nothing
+        Err(error_text):
+            return nothing
+        otherwise:
+            assert value false == true
+            return nothing
+    return nothing
+
+
+to ensure_cli_contract_file(path: String, source: String) -> Nothing:
+    match try_to_write_text(path, source):
+        Ok(write_result):
+            return nothing
+        Err(error_text):
+            assert value error_text == ""
+            assert value false == true
+            return nothing
+        otherwise:
+            assert value false == true
+            return nothing
+    return nothing
+
+
+to ensure_cli_contract_metadata_exists(path: String) -> Nothing:
+    match try_to_read_metadata(path):
+        Ok(metadata_maps):
+            assert value metadata_maps != nothing
+            return nothing
+        Err(metadata_error_text):
+            assert value metadata_error_text == ""
+            assert value false == true
+            return nothing
+        otherwise:
+            assert value false == true
+            return nothing
+    return nothing
+
+
+to create_cli_contract_valid_core_project(root_path_text: String) -> Nothing:
+    assert value run_init_command(root_path_text) == 0
+    ensure_cli_contract_file("{root_path_text}/tests/alpha_test.wr", "to run() -> Integer:\n    return 0\n")
+    return nothing
+
+
+to test_cli_requires_command() -> Nothing:
+    assert value run_cli([]) == 1
+    assert value run_cli(["wrela-v2"]) == 1
+    return nothing
+
+
+to test_cli_help_paths_exit_zero() -> Nothing:
+    assert value run_cli(["wrela-v2", "help"]) == 0
+    assert value run_cli(["wrela-v2", "--help"]) == 0
+    assert value run_cli(["wrela-v2", "-h"]) == 0
+    return nothing
+
+
+to test_cli_rejects_unknown_command() -> Nothing:
+    assert value run_cli(["wrela-v2", "nonsense"]) == 1
+    return nothing
+
+
+to test_cli_routes_check_and_enforces_path_requirement() -> Nothing:
+    assert value run_cli(["wrela-v2", "check"]) == 1
+    assert value run_cli(["wrela-v2", "check", ""]) == 1
+    return nothing
+
+
+to test_cli_routes_check_returns_two_for_pipeline_diagnostics() -> Nothing:
+    root_path_text = "target/wrela_v2_cli_contract_check"
+    path_text = "{root_path_text}/parse_error.wr"
+    try_to_remove_cli_contract_directory_if_present(root_path_text)
+    ensure_cli_contract_directory(root_path_text)
+    ensure_cli_contract_file(path_text, "to run() -> Integer:\n    return 1 +\n")
+    assert value run_cli(["wrela-v2", "check", path_text]) == 2
+    return nothing
+
+
+to test_cli_routes_init_and_creates_layout() -> Nothing:
+    root_path_text = "target/wrela_v2_cli_contract_init"
+    try_to_remove_cli_contract_directory_if_present(root_path_text)
+
+    assert value run_cli(["wrela-v2", "init", root_path_text]) == 0
+    ensure_cli_contract_metadata_exists("{root_path_text}/src/main.wr")
+    ensure_cli_contract_metadata_exists("{root_path_text}/tests/basic_test.wr")
+    return nothing
+
+
+to test_cli_routes_full_m7_surface_and_core_path_validation() -> Nothing:
+    core_root_path_text = "target/wrela_v2_cli_contract_core"
+    try_to_remove_cli_contract_directory_if_present(core_root_path_text)
+    create_cli_contract_valid_core_project(core_root_path_text)
+
+    assert value run_cli(["wrela-v2", "update"]) == 2
+    assert value run_cli(["wrela-v2", "update", "extra"]) == 1
+
+    assert value run_cli(["wrela-v2", "build"]) == 1
+    assert value run_cli(["wrela-v2", "build", core_root_path_text]) == 0
+
+    assert value run_cli(["wrela-v2", "compile"]) == 1
+    assert value run_cli(["wrela-v2", "compile", core_root_path_text]) == 0
+
+    assert value run_cli(["wrela-v2", "verify-cert"]) == 1
+    assert value run_cli(["wrela-v2", "verify-cert", "target/wrela_cert/cert.json"]) == 1
+
+    assert value run_cli(["wrela-v2", "run"]) == 1
+    assert value run_cli(["wrela-v2", "run", core_root_path_text]) == 0
+
+    assert value run_cli(["wrela-v2", "dev"]) == 1
+    assert value run_cli(["wrela-v2", "dev", "src/main.wr"]) == 2
+
+    assert value run_cli(["wrela-v2", "test", core_root_path_text]) == 0
+
+    assert value run_cli(["wrela-v2", "perf"]) == 2
+    assert value run_cli(["wrela-v2", "perf", "tests/basic_test.wr"]) == 2
+
+    assert value run_cli(["wrela-v2", "perfcmp"]) == 1
+    assert value run_cli(["wrela-v2", "perfcmp", "tests/basic_test.wr"]) == 1
+
+    assert value run_cli(["wrela-v2", "matrix"]) == 2
+    assert value run_cli(["wrela-v2", "matrix", "tests/basic_test.wr"]) == 2
+    return nothing

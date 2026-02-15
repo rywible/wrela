@@ -1,0 +1,206 @@
+so:
+    Real update runner for M7-C local-manifest self-update behavior.
+
+use get_env_or_default from application/env_vars
+
+
+to try_to_read_text_for_update(path: String) -> Result[String]:
+    match __wr_fs_read_bytes(path):
+        Ok(bytes):
+            text = __wr_bytes_to_string(bytes)
+            match text:
+                String: return text
+                otherwise: return error "update invalid utf8"
+        Err(_):
+            return error "update read failed"
+        otherwise:
+            return error "update read failed"
+    return error "update read failed"
+
+
+to try_to_write_text_for_update(path: String, contents: String) -> Result[Nothing]:
+    return __wr_fs_write_bytes(path, __wr_bytes_from_string(contents))
+
+
+to get_update_runner_lines(text: String) -> List[String]:
+    line_lists = []
+    current_byte_lists = []
+    text_byte_lists = __wr_bytes_to_list(__wr_bytes_from_string(text))
+
+    for byte_value in text_byte_lists:
+        if byte_value == 13:
+            nothing
+        otherwise:
+            if byte_value == 10:
+                __wr_list_push(line_lists, __wr_bytes_to_string(__wr_bytes_from_list(current_byte_lists)))
+                current_byte_lists = []
+            otherwise:
+                __wr_list_push(current_byte_lists, byte_value)
+    __wr_list_push(line_lists, __wr_bytes_to_string(__wr_bytes_from_list(current_byte_lists)))
+    return line_lists
+
+
+to get_update_runner_prefix_match_flag(text: String, prefix: String) -> Integer:
+    text_byte_lists = __wr_bytes_to_list(__wr_bytes_from_string(text))
+    prefix_byte_lists = __wr_bytes_to_list(__wr_bytes_from_string(prefix))
+
+    mutable text_count_number = 0
+    for _ in text_byte_lists:
+        text_count_number = text_count_number + 1
+
+    mutable prefix_count_number = 0
+    for _ in prefix_byte_lists:
+        prefix_count_number = prefix_count_number + 1
+
+    if text_count_number < prefix_count_number:
+        return 0
+
+    mutable index_number = 0
+    for prefix_byte_value in prefix_byte_lists:
+        mutable text_byte_value_at_index = -1
+        mutable cursor_number = 0
+        for text_byte_value in text_byte_lists:
+            if cursor_number == index_number:
+                text_byte_value_at_index = text_byte_value
+                break
+            cursor_number = cursor_number + 1
+        if text_byte_value_at_index != prefix_byte_value:
+            return 0
+        index_number = index_number + 1
+    return 1
+
+
+to get_update_runner_manifest_value(manifest_text: String, key_text: String) -> String:
+    prefix_text = "{key_text}="
+    line_lists = get_update_runner_lines(manifest_text)
+    for line_text in line_lists:
+        if get_update_runner_prefix_match_flag(line_text, prefix_text) == 1:
+            line_byte_lists = __wr_bytes_to_list(__wr_bytes_from_string(line_text))
+            prefix_byte_lists = __wr_bytes_to_list(__wr_bytes_from_string(prefix_text))
+            mutable prefix_count_number = 0
+            for _ in prefix_byte_lists:
+                prefix_count_number = prefix_count_number + 1
+
+            value_byte_lists = []
+            mutable cursor_number = 0
+            for line_byte_value in line_byte_lists:
+                if cursor_number >= prefix_count_number:
+                    __wr_list_push(value_byte_lists, line_byte_value)
+                cursor_number = cursor_number + 1
+            return __wr_bytes_to_string(__wr_bytes_from_list(value_byte_lists))
+    return ""
+
+
+to try_to_write_update_report(
+    status_text: String,
+    current_version_text: String,
+    available_version_text: String,
+    artifact_path_text: String,
+    message_text: String
+) -> Result[Nothing]:
+    output_root_path_text = "target/wrela_v2_update"
+    report_path_text = "{output_root_path_text}/update_report.json"
+    match __wr_fs_mkdir_all(output_root_path_text):
+        Ok(_):
+            nothing
+        Err(_):
+            return error "update failed to create report directory"
+        otherwise:
+            return error "update failed to create report directory"
+
+    report_text = "status={status_text}\ncurrent_version={current_version_text}\navailable_version={available_version_text}\nartifact_path={artifact_path_text}\nmessage={message_text}\n"
+    match try_to_write_text_for_update(report_path_text, report_text):
+        Ok(_):
+            return nothing
+        Err(_):
+            return error "update failed to write report"
+        otherwise:
+            return error "update failed to write report"
+    return error "update failed to write report"
+
+
+to get_env_or_default_for_update(key: String, fallback: String) -> String:
+    return get_env_or_default(key, fallback)
+
+
+to try_to_run_update_runner() -> Result[Map]:
+    manifest_path_text = get_env_or_default_for_update(
+        "WRELA_V2_CHANNEL_MANIFEST",
+        "wrela-v2/toolchain/channel.manifest"
+    )
+
+    mutable manifest_text = ""
+    match try_to_read_text_for_update(manifest_path_text):
+        Ok(text):
+            manifest_text = text
+        Err(_):
+            try_to_write_update_report("error", "", "", "", "manifest missing") otherwise nothing
+            return error "update manifest missing"
+        otherwise:
+            try_to_write_update_report("error", "", "", "", "manifest missing") otherwise nothing
+            return error "update manifest missing"
+
+    current_version_text = get_update_runner_manifest_value(manifest_text, "current_version")
+    available_version_text = get_update_runner_manifest_value(manifest_text, "available_version")
+    artifact_path_text = get_update_runner_manifest_value(manifest_text, "artifact_path")
+
+    if current_version_text == "" or available_version_text == "" or artifact_path_text == "":
+        try_to_write_update_report("error", current_version_text, available_version_text, artifact_path_text, "manifest invalid") otherwise nothing
+        return error "update manifest invalid"
+
+    if available_version_text == current_version_text:
+        try_to_write_update_report(
+            "ok",
+            current_version_text,
+            available_version_text,
+            artifact_path_text,
+            "up to date"
+        ) otherwise nothing
+
+        result_maps = __wr_map_new()
+        __wr_map_set(result_maps, "status", "ok")
+        __wr_map_set(result_maps, "current_version", current_version_text)
+        __wr_map_set(result_maps, "available_version", available_version_text)
+        return result_maps
+
+    match __wr_fs_metadata(artifact_path_text):
+        Ok(_):
+            nothing
+        Err(_):
+            try_to_write_update_report("error", current_version_text, available_version_text, artifact_path_text, "artifact missing") otherwise nothing
+            return error "update artifact missing"
+        otherwise:
+            try_to_write_update_report("error", current_version_text, available_version_text, artifact_path_text, "artifact missing") otherwise nothing
+            return error "update artifact missing"
+
+    output_root_path_text = "target/wrela_v2_update"
+    active_version_path_text = "{output_root_path_text}/active_version.txt"
+    match __wr_fs_mkdir_all(output_root_path_text):
+        Ok(_):
+            nothing
+        Err(_):
+            return error "update failed to create output directory"
+        otherwise:
+            return error "update failed to create output directory"
+
+    match try_to_write_text_for_update(active_version_path_text, "{available_version_text}\n"):
+        Ok(_):
+            nothing
+        Err(_):
+            return error "update failed to write active version"
+        otherwise:
+            return error "update failed to write active version"
+
+    try_to_write_update_report(
+        "ok",
+        current_version_text,
+        available_version_text,
+        artifact_path_text,
+        "updated"
+    ) otherwise nothing
+
+    result_maps = __wr_map_new()
+    __wr_map_set(result_maps, "status", "ok")
+    __wr_map_set(result_maps, "current_version", current_version_text)
+    __wr_map_set(result_maps, "available_version", available_version_text)
+    return result_maps

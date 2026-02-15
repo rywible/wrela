@@ -1,0 +1,93 @@
+so:
+    M9-C reproducibility runner for Stage2 self-host checks.
+
+use try_to_run_stage_toolchain from application/stage_toolchain_runner
+use get_stage_exit_code_or_default from application/stage_toolchain_runner
+use get_deterministic_stage_root from application/stage_toolchain_runner
+use get_cert_hash_text_from_byte_lists from domain/cert/hash
+use get_env_int_or_default from application/env_vars
+
+
+to get_repro_integer_env_or_default(key_text: String, fallback_number: Integer) -> Integer:
+    return get_env_int_or_default(key_text, fallback_number)
+
+
+to try_to_run_repro_runner(path: String, stage1_toolchain_path: String, workspace_root: String) -> Result[Map]:
+    if path == "":
+        return error "self-host stage2 failed"
+    if stage1_toolchain_path == "":
+        return error "self-host artifact missing"
+    if workspace_root == "":
+        return error "self-host stage2 failed"
+
+    match __wr_fs_metadata(stage1_toolchain_path):
+        Ok(_):
+            nothing
+        Err(_):
+            return error "self-host artifact missing"
+        otherwise:
+            return error "self-host artifact missing"
+
+    stage_root_path_text = get_deterministic_stage_root(path, workspace_root)
+    match __wr_fs_mkdir_all(stage_root_path_text):
+        Ok(_):
+            nothing
+        Err(_):
+            return error "self-host stage2 failed"
+        otherwise:
+            return error "self-host stage2 failed"
+
+    mutable stage1_hash_text = ""
+    match __wr_fs_read_bytes(stage1_toolchain_path):
+        Ok(stage1_bytes):
+            stage1_hash_text = get_cert_hash_text_from_byte_lists(__wr_bytes_to_list(stage1_bytes))
+        Err(_):
+            return error "self-host artifact missing"
+        otherwise:
+            return error "self-host artifact missing"
+
+    match try_to_run_stage_toolchain(stage1_toolchain_path, workspace_root, "build", path):
+        Ok(stage2_process_maps):
+            if get_stage_exit_code_or_default(stage2_process_maps, 1) != 0:
+                return error "self-host stage2 failed"
+        Err(_):
+            return error "self-host stage2 failed"
+        otherwise:
+            return error "self-host stage2 failed"
+
+    stage2_output_path_text = "{stage_root_path_text}/build_output/main.wrela.bin"
+    mutable stage2_bytes = __wr_bytes_from_string("")
+    match __wr_fs_read_bytes(stage2_output_path_text):
+        Ok(value_bytes):
+            stage2_bytes = value_bytes
+        Err(_):
+            return error "self-host artifact missing"
+        otherwise:
+            return error "self-host artifact missing"
+
+    stage2_path_text = "{stage_root_path_text}/stage2_toolchain.bin"
+    match __wr_fs_write_bytes(stage2_path_text, stage2_bytes):
+        Ok(_):
+            nothing
+        Err(_):
+            return error "self-host stage2 failed"
+        otherwise:
+            return error "self-host stage2 failed"
+    __wr_fs_set_executable(stage2_path_text) otherwise nothing
+
+    stage2_hash_text = get_cert_hash_text_from_byte_lists(__wr_bytes_to_list(stage2_bytes))
+    if stage1_hash_text != stage2_hash_text:
+        return error "self-host reproducibility mismatch"
+
+    result_maps = __wr_map_new()
+    __wr_map_set(result_maps, "status", "ok")
+    __wr_map_set(result_maps, "stage2_toolchain_path", stage2_path_text)
+    __wr_map_set(result_maps, "stage1_toolchain_hash", stage1_hash_text)
+    __wr_map_set(result_maps, "stage2_toolchain_hash", stage2_hash_text)
+    __wr_map_set(result_maps, "workspace_root", workspace_root)
+    __wr_map_set(
+        result_maps,
+        "timestamp_ns",
+        get_repro_integer_env_or_default("WRELA_SELF_HOST_FIXED_TIMESTAMP_NS", __wr_clock_ns())
+    )
+    return result_maps

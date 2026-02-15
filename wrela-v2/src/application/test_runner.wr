@@ -1,0 +1,148 @@
+so:
+    Real test runner for M7-B core command behavior.
+
+use try_to_build_executable from application/build_runner
+
+
+to convert_to_test_runner_byte_lists(test_runner_text_value: String) -> List[Integer]:
+    return __wr_bytes_to_list(__wr_bytes_from_string(test_runner_text_value))
+
+
+to get_test_runner_byte_count(test_runner_byte_lists: List[Integer]) -> Integer:
+    mutable test_runner_count_number = 0
+    for test_runner_byte_value in test_runner_byte_lists:
+        test_runner_count_number = test_runner_count_number + 1
+    return test_runner_count_number
+
+
+to get_test_runner_byte_at_index(
+    test_runner_byte_lists: List[Integer],
+    test_runner_index_number: Integer
+) -> Integer:
+    mutable test_runner_current_index_number = 0
+    for test_runner_byte_value in test_runner_byte_lists:
+        if test_runner_current_index_number == test_runner_index_number:
+            return test_runner_byte_value
+        test_runner_current_index_number = test_runner_current_index_number + 1
+    return -1
+
+
+to get_path_has_test_suffix_flag(test_runner_path_text: String) -> Integer:
+    test_runner_path_byte_lists = convert_to_test_runner_byte_lists(test_runner_path_text)
+    test_runner_suffix_byte_lists = convert_to_test_runner_byte_lists("_test.wr")
+
+    test_runner_path_count_number = get_test_runner_byte_count(test_runner_path_byte_lists)
+    test_runner_suffix_count_number = get_test_runner_byte_count(test_runner_suffix_byte_lists)
+    if test_runner_path_count_number < test_runner_suffix_count_number:
+        return 0
+
+    test_runner_start_index_number = test_runner_path_count_number - test_runner_suffix_count_number
+    mutable test_runner_current_suffix_index_number = 0
+    for test_runner_suffix_byte_value in test_runner_suffix_byte_lists:
+        if get_test_runner_byte_at_index(
+            test_runner_path_byte_lists,
+            test_runner_start_index_number + test_runner_current_suffix_index_number
+        ) != test_runner_suffix_byte_value:
+            return 0
+        test_runner_current_suffix_index_number = test_runner_current_suffix_index_number + 1
+    return 1
+
+
+to get_discovered_test_path_lists(test_runner_root_path_text: String) -> List[String]:
+    test_runner_discovered_path_lists = []
+    match __wr_fs_read_dir(test_runner_root_path_text):
+        Ok(test_runner_entry_name_lists):
+            for test_runner_entry_name_value in test_runner_entry_name_lists:
+                test_runner_entry_path_text = "{test_runner_root_path_text}/{test_runner_entry_name_value}"
+                mutable test_runner_resolved_entry_path_text = test_runner_entry_path_text
+                match __wr_fs_metadata(test_runner_entry_name_value):
+                    Ok(test_runner_direct_entry_metadata_maps):
+                        test_runner_resolved_entry_path_text = test_runner_entry_name_value
+                    Err(test_runner_direct_entry_metadata_error_text):
+                        nothing
+                    otherwise:
+                        nothing
+                match __wr_fs_metadata(test_runner_resolved_entry_path_text):
+                    Ok(test_runner_metadata_maps):
+                        test_runner_is_directory_flag = __wr_map_get(test_runner_metadata_maps, "is_dir")
+                        if test_runner_is_directory_flag == true:
+                            test_runner_nested_path_lists = get_discovered_test_path_lists(
+                                test_runner_resolved_entry_path_text
+                            )
+                            for test_runner_nested_path_text in test_runner_nested_path_lists:
+                                __wr_list_push(test_runner_discovered_path_lists, test_runner_nested_path_text)
+                        otherwise:
+                            if get_path_has_test_suffix_flag(test_runner_resolved_entry_path_text) == 1:
+                                __wr_list_push(test_runner_discovered_path_lists, test_runner_resolved_entry_path_text)
+                    Err(test_runner_metadata_error_text):
+                        nothing
+                    otherwise:
+                        nothing
+            return test_runner_discovered_path_lists
+        Err(test_runner_read_dir_error_text):
+            return []
+        otherwise:
+            return []
+    return test_runner_discovered_path_lists
+
+
+to try_to_run_tests(test_runner_path_text: String) -> Result[Map]:
+    mutable test_runner_target_path_lists = []
+    if test_runner_path_text == "":
+        test_runner_target_path_lists = get_discovered_test_path_lists("tests")
+    otherwise:
+        match __wr_fs_metadata(test_runner_path_text):
+            Ok(test_runner_path_metadata_maps):
+                test_runner_is_directory_flag = __wr_map_get(test_runner_path_metadata_maps, "is_dir")
+                if test_runner_is_directory_flag == true:
+                    test_runner_target_path_lists = get_discovered_test_path_lists(test_runner_path_text)
+                otherwise:
+                    __wr_list_push(test_runner_target_path_lists, test_runner_path_text)
+            Err(test_runner_path_metadata_error_text):
+                return error "test path not found"
+            otherwise:
+                return error "test path not found"
+
+    mutable test_runner_discovered_count_number = 0
+    for test_runner_discovered_path_value in test_runner_target_path_lists:
+        test_runner_discovered_count_number = test_runner_discovered_count_number + 1
+    if test_runner_discovered_count_number == 0:
+        return error "no tests discovered"
+
+    mutable test_runner_passed_count_number = 0
+    mutable test_runner_failed_count_number = 0
+
+    for test_runner_target_path_value in test_runner_target_path_lists:
+        match try_to_build_executable(test_runner_target_path_value):
+            Ok(test_runner_build_result_maps):
+                test_runner_output_path_value = __wr_map_get(test_runner_build_result_maps, "output_path")
+                if test_runner_output_path_value == nothing:
+                    test_runner_failed_count_number = test_runner_failed_count_number + 1
+                otherwise:
+                    test_runner_process_specs = {
+                        "command": "{test_runner_output_path_value}",
+                        "args": [],
+                        "cwd": ".",
+                        "env": {},
+                        "timeout_ms": 10_000
+                    }
+                    match __wr_process_run(test_runner_process_specs):
+                        Ok(test_runner_process_maps):
+                            test_runner_exit_code_value = __wr_map_get(test_runner_process_maps, "exit_code")
+                            if test_runner_exit_code_value == 0:
+                                test_runner_passed_count_number = test_runner_passed_count_number + 1
+                            otherwise:
+                                test_runner_failed_count_number = test_runner_failed_count_number + 1
+                        Err(test_runner_process_error_text):
+                            test_runner_failed_count_number = test_runner_failed_count_number + 1
+                        otherwise:
+                            test_runner_failed_count_number = test_runner_failed_count_number + 1
+            Err(test_runner_build_error_text):
+                test_runner_failed_count_number = test_runner_failed_count_number + 1
+            otherwise:
+                test_runner_failed_count_number = test_runner_failed_count_number + 1
+
+    test_runner_result_maps = __wr_map_new()
+    __wr_map_set(test_runner_result_maps, "passed", test_runner_passed_count_number)
+    __wr_map_set(test_runner_result_maps, "failed", test_runner_failed_count_number)
+    return test_runner_result_maps

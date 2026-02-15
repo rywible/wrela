@@ -1,0 +1,50 @@
+so:
+    V2 parity command bootstrap.
+    Coverage-critical helper module for parity artifact bootstrap.
+
+use try_to_run_self_host_runner from application/self_host_runner
+use get_env_or_default from application/env_vars
+
+
+to try_to_write_text_for_parity_command(path: String, contents: String) -> Result[Nothing]:
+    return __wr_fs_write_bytes(path, __wr_bytes_from_string(contents))
+
+
+to try_to_create_directory_for_parity_command(path: String) -> Result[Nothing]:
+    return __wr_fs_mkdir_all(path)
+
+
+to get_exit_code_for_parity_command(results: Map) -> Integer:
+    code_value = __wr_map_get(results, "exit_code")
+    if code_value == nothing:
+        return 1
+    return code_value
+
+
+to get_stdout_for_parity_command(results: Map) -> String:
+    stdout_value = __wr_map_get(results, "stdout")
+    if stdout_value == nothing:
+        return ""
+    return "{stdout_value}"
+
+
+to run_parity_command() -> Integer:
+    v1_bin = get_env_or_default("WRELA_V1_BIN", "")
+    workspace_root = get_env_or_default("WRELA_WORKSPACE_ROOT", "")
+    if v1_bin == "" or workspace_root == "":
+        __wr_print("parity: missing WRELA_V1_BIN or WRELA_WORKSPACE_ROOT")
+        return 1
+
+    parity_path_text = get_env_or_default("WRELA_PARITY_PATH", "wrela-v2")
+
+    match try_to_run_self_host_runner(parity_path_text):
+        Ok(_):
+            __wr_print("parity: self-host reproducibility passed")
+            return 0
+        Err(error_text):
+            __wr_print("parity: {error_text}")
+            return 2
+        otherwise:
+            __wr_print("parity: self-host stage2 failed")
+            return 2
+    return 2

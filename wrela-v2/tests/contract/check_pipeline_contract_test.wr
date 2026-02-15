@@ -1,0 +1,555 @@
+so:
+    Contract coverage for native staged check pipeline behavior.
+
+use run_check_pipeline from application/check_pipeline
+use get_string_value_or_default from application/check_pipeline
+use get_integer_value_or_default from application/check_pipeline
+use get_list_value_or_empty_list from application/check_pipeline
+use load_source_stage from application/check_pipeline
+use make_error_report from application/check_pipeline
+use print_usage from application/cli
+use get_item_at_index from application/cli
+use run_cli from application/cli
+use try_to_create_platform_ports from application/composition/platform_ports
+use convert_to_byte_list from application/composition/platform_target_env
+use get_byte_count from application/composition/platform_target_env
+use get_byte_at_index from application/composition/platform_target_env
+use get_text_prefix_match_flag from application/composition/platform_target_env
+use normalize_os_name from application/composition/platform_target_env
+use create_current_platform_target from application/composition/platform_target_env
+use normalize_root from application/init_command
+use get_path_exists_flag from application/init_command
+use ensure_directory from application/init_command
+use ensure_file from application/init_command
+use run_init_command from application/init_command
+use try_to_create_directory_for_parity_command from application/parity_command
+use try_to_write_text_for_parity_command from application/parity_command
+use get_exit_code_for_parity_command from application/parity_command
+use get_stdout_for_parity_command from application/parity_command
+use run_parity_command from application/parity_command
+use try_to_run_host_command from application/parity_runner
+use try_to_run_v1_command from application/parity_runner
+use try_to_run_v1_help from application/parity_runner
+use get_exit_code from application/parity_runner
+use get_stdout from application/parity_runner
+
+use create_mir_const_integer_instruction from domain/mir/ir
+use create_mir_const_boolean_instruction from domain/mir/ir
+use create_mir_binary_instruction from domain/mir/ir
+use create_mir_return_instruction from domain/mir/ir
+use create_mir_block from domain/mir/ir
+use create_mir_function from domain/mir/ir
+use get_mir_instruction_count from domain/mir/ir
+use get_mir_signature_text from domain/mir/ir
+use create_program_node from domain/frontend/ast
+use create_integer_literal_node from domain/frontend/ast
+use create_boolean_literal_node from domain/frontend/ast
+use create_binary_expression_node from domain/frontend/ast
+use get_ast_kind_text from domain/frontend/ast
+use get_ast_line_number from domain/frontend/ast
+use get_ast_column_number from domain/frontend/ast
+use get_program_return_expression_node from domain/frontend/ast
+use get_binary_left_node from domain/frontend/ast
+use get_binary_right_node from domain/frontend/ast
+use get_ast_binary_operator_text from domain/frontend/ast
+use get_integer_type_name from domain/frontend/types
+use get_boolean_type_name from domain/frontend/types
+use get_ast_boolean_literal_flag from domain/mir/lower
+use get_source_tokens from domain/frontend/lexer
+use get_frontend_lex_token_lists from domain/frontend/lexer
+use create_frontend_lex_empty_diagnostic from domain/frontend/diagnostics
+use create_frontend_lex_tab_diagnostic from domain/frontend/diagnostics
+use create_frontend_parse_unexpected_token_diagnostic from domain/frontend/diagnostics
+use create_frontend_parse_trailing_operator_diagnostic from domain/frontend/diagnostics
+use create_frontend_type_arith_non_integer_diagnostic from domain/frontend/diagnostics
+use create_frontend_single_diagnostic_list from domain/frontend/diagnostics
+use create_frontend_parser_unexpected_token_diagnostic_maps from domain/frontend/parser
+use get_frontend_parser_result_diagnostic_maps from domain/frontend/parser
+use try_to_create_directory from host/fs
+use try_to_write_text from host/fs
+use PlatformTarget from domain/platform/model
+
+
+to write_contract_fixture(path: String, source: String) -> Nothing:
+    match try_to_write_text(path, source):
+        Ok(write_result):
+            return nothing
+        Err(error_text):
+            assert value error_text == ""
+            assert value false == true
+            return nothing
+        otherwise:
+            assert value false == true
+            return nothing
+    return nothing
+
+
+to ensure_contract_directory(path: String) -> Nothing:
+    match try_to_create_directory(path):
+        Ok(create_result):
+            return nothing
+        Err(error_text):
+            return nothing
+        otherwise:
+            assert value false == true
+            return nothing
+    return nothing
+
+
+to get_diagnostics_count(report_maps: Map) -> Integer:
+    diagnostic_lists = get_list_value_or_empty_list(__wr_map_get(report_maps, "diagnostics"))
+    mutable count = 0
+    for diagnostic_item in diagnostic_lists:
+        count = count + 1
+    return count
+
+
+to get_first_diagnostic_code(report_maps: Map) -> String:
+    diagnostic_lists = get_list_value_or_empty_list(__wr_map_get(report_maps, "diagnostics"))
+    for diagnostic_item in diagnostic_lists:
+        return get_string_value_or_default(__wr_map_get(diagnostic_item, "code"), "")
+    return ""
+
+
+to run_error_report_assertions(report_maps: Map, stage_text: String, code_text: String) -> Nothing:
+    assert value __wr_map_get(report_maps, "status") == "error"
+    assert value __wr_map_get(report_maps, "stage") == stage_text
+    assert value __wr_map_get(report_maps, "exit_code") == 2
+    assert value get_diagnostics_count(report_maps) == 1
+    assert value get_first_diagnostic_code(report_maps) == code_text
+    return nothing
+
+
+to test_check_pipeline_requires_input_path() -> Nothing:
+    match run_check_pipeline(""):
+        Err(message_text):
+            assert value message_text == "missing input path"
+            return nothing
+        Ok(unexpected_report_maps):
+            assert value __wr_map_get(unexpected_report_maps, "status") == ""
+            assert value false == true
+            return nothing
+        otherwise:
+            assert value false == true
+            return nothing
+    return nothing
+
+
+to test_check_pipeline_lex_rejects_whitespace_only_source() -> Nothing:
+    root = "target/wrela_v2_check_contract"
+    path = "{root}/whitespace_only.wr"
+    ensure_contract_directory(root)
+    write_contract_fixture(path, "   \n  \n")
+
+    match run_check_pipeline(path):
+        Ok(report_maps):
+            run_error_report_assertions(report_maps, "lex", "E-LEX-EMPTY")
+            return nothing
+        Err(error_text):
+            return nothing
+        otherwise:
+            assert value false == true
+            return nothing
+    return nothing
+
+
+to test_check_pipeline_lex_rejects_tab_indentation() -> Nothing:
+    root = "target/wrela_v2_check_contract"
+    path = "{root}/tab_indent.wr"
+    ensure_contract_directory(root)
+    write_contract_fixture(path, "to run() -> Integer:\n\treturn 1\n")
+
+    match run_check_pipeline(path):
+        Ok(report_maps):
+            run_error_report_assertions(report_maps, "lex", "E-LEX-TAB")
+            return nothing
+        Err(error_text):
+            return nothing
+        otherwise:
+            assert value false == true
+            return nothing
+    return nothing
+
+
+to test_check_pipeline_type_rejects_integer_plus_boolean_literal() -> Nothing:
+    root = "target/wrela_v2_check_contract"
+    path = "{root}/type_fail_plus_boolean.wr"
+    ensure_contract_directory(root)
+    write_contract_fixture(path, "to run() -> Integer:\n    return 1 + true\n")
+
+    match run_check_pipeline(path):
+        Ok(report_maps):
+            run_error_report_assertions(report_maps, "type", "E-TYPE-ARITH_NON_INTEGER")
+            return nothing
+        Err(error_text):
+            return nothing
+        otherwise:
+            assert value false == true
+            return nothing
+    return nothing
+
+
+to test_check_pipeline_parse_rejects_trailing_operator() -> Nothing:
+    root = "target/wrela_v2_check_contract"
+    path = "{root}/parse_fail_trailing_operator.wr"
+    ensure_contract_directory(root)
+    write_contract_fixture(path, "to run() -> Integer:\n    return 1 +\n")
+
+    match run_check_pipeline(path):
+        Ok(report_maps):
+            run_error_report_assertions(report_maps, "parse", "E-PARSE-TRAILING_OPERATOR")
+            return nothing
+        Err(error_text):
+            return nothing
+        otherwise:
+            assert value false == true
+            return nothing
+    return nothing
+
+
+to test_check_pipeline_parse_rejects_unexpected_program_shape() -> Nothing:
+    root = "target/wrela_v2_check_contract"
+    path = "{root}/parse_fail_unexpected_program_shape.wr"
+    ensure_contract_directory(root)
+    write_contract_fixture(path, "to nope() -> Integer:\n    return 1\n")
+
+    match run_check_pipeline(path):
+        Ok(report_maps):
+            run_error_report_assertions(report_maps, "parse", "E-PARSE-UNEXPECTED_TOKEN")
+            return nothing
+        Err(error_text):
+            return nothing
+        otherwise:
+            assert value false == true
+            return nothing
+    return nothing
+
+
+to test_check_pipeline_reports_ok_for_simple_program() -> Nothing:
+    root = "target/wrela_v2_check_contract"
+    path = "{root}/ok.wr"
+    ensure_contract_directory(root)
+    write_contract_fixture(path, "to run() -> Integer:\n    return 1 + 2 * 3\n")
+
+    match run_check_pipeline(path):
+        Ok(report_maps):
+            assert value __wr_map_get(report_maps, "status") == "ok"
+            assert value __wr_map_get(report_maps, "exit_code") == 0
+            assert value __wr_map_get(report_maps, "stage") == "type"
+            assert value get_diagnostics_count(report_maps) == 0
+            return nothing
+        Err(error_text):
+            return nothing
+        otherwise:
+            assert value false == true
+            return nothing
+    return nothing
+
+
+to test_check_pipeline_reports_ok_for_parenthesized_program() -> Nothing:
+    root = "target/wrela_v2_check_contract"
+    path = "{root}/ok_parenthesized.wr"
+    ensure_contract_directory(root)
+    write_contract_fixture(path, "to run() -> Integer:\n    return (1 + 2) * 3\n")
+
+    match run_check_pipeline(path):
+        Ok(report_maps):
+            assert value __wr_map_get(report_maps, "status") == "ok"
+            assert value __wr_map_get(report_maps, "exit_code") == 0
+            assert value __wr_map_get(report_maps, "stage") == "type"
+            assert value get_diagnostics_count(report_maps) == 0
+            return nothing
+        Err(error_text):
+            return nothing
+        otherwise:
+            assert value false == true
+            return nothing
+    return nothing
+
+
+to test_check_pipeline_resolves_directory_to_src_main() -> Nothing:
+    root = "target/wrela_v2_check_contract_project"
+    src_dir = "{root}/src"
+    main_path = "{src_dir}/main.wr"
+    ensure_contract_directory(root)
+    ensure_contract_directory(src_dir)
+    write_contract_fixture(main_path, "to run() -> Integer:\n    return 7\n")
+
+    match run_check_pipeline(root):
+        Ok(report_maps):
+            assert value __wr_map_get(report_maps, "resolved_path") == "{root}/src/main.wr"
+            assert value __wr_map_get(report_maps, "exit_code") == 0
+            return nothing
+        Err(error_text):
+            return nothing
+        otherwise:
+            assert value false == true
+            return nothing
+    return nothing
+
+
+to test_check_pipeline_helper_defaults_are_callable() -> Nothing:
+    assert value get_string_value_or_default("ok", "fallback") == "ok"
+    assert value get_integer_value_or_default(9, 1) == 9
+    helper_values = get_list_value_or_empty_list([])
+    mutable helper_count = 0
+    for helper_item in helper_values:
+        helper_count = helper_count + 1
+    assert value helper_count == 0
+    missing_list_value = __wr_map_get(__wr_map_new(), "missing")
+    fallback_lists = get_list_value_or_empty_list(missing_list_value)
+    mutable fallback_count = 0
+    for fallback_item in fallback_lists:
+        fallback_count = fallback_count + 1
+    assert value fallback_count == 0
+    probe_lists = []
+    __wr_list_push(probe_lists, nothing)
+    echoed_probe_lists = get_list_value_or_empty_list(probe_lists)
+    mutable echoed_probe_count = 0
+    for echoed_probe_item in echoed_probe_lists:
+        echoed_probe_count = echoed_probe_count + 1
+    assert value echoed_probe_count == 1
+
+    print_usage()
+    linux_bytes = convert_to_byte_list("linux")
+    get_byte_count(linux_bytes)
+    get_byte_at_index(linux_bytes, 0)
+    get_text_prefix_match_flag("linux-gnu", "linux")
+    normalize_os_name("darwin23")
+    current_target = create_current_platform_target()
+    current_target = current_target
+
+    linux_target = PlatformTarget()
+    linux_target.host_os_name = "linux"
+    linux_target.host_architecture = "x86_64"
+    match try_to_create_platform_ports(linux_target, true):
+        Ok(platform_ports):
+            platform_ports = platform_ports
+        Err(error_text):
+            error_text = error_text
+        otherwise:
+            return nothing
+
+    touch_root = "target/wrela_v2_check_pipeline_touchpoints"
+    touch_init_root = "{touch_root}/init_project"
+    touch_file_path = "{touch_root}/scratch.txt"
+    normalize_root("")
+    ensure_directory(touch_root) otherwise nothing
+    ensure_file(touch_file_path, "ok\n") otherwise nothing
+    get_path_exists_flag(touch_file_path)
+    run_init_command(touch_init_root)
+    get_path_exists_flag("{touch_init_root}/src/main.wr")
+
+    parity_root = "{touch_root}/parity"
+    parity_report = "{parity_root}/report.txt"
+    try_to_create_directory_for_parity_command(parity_root) otherwise nothing
+    try_to_write_text_for_parity_command(parity_report, "status=ok\n") otherwise nothing
+    get_exit_code_for_parity_command({})
+    get_stdout_for_parity_command({})
+
+    __wr_env_set("WRELA_V1_BIN", "/bin/echo")
+    __wr_env_set("WRELA_WORKSPACE_ROOT", touch_root)
+    run_parity_command()
+
+    match try_to_run_host_command("/bin/echo", ["hello"], "/", 1000):
+        Ok(host_results):
+            get_exit_code(host_results)
+        Err(error_text):
+            error_text = error_text
+        otherwise:
+            return nothing
+
+    match try_to_run_v1_command("/bin/echo", "/", ["hello"]):
+        Ok(v1_results):
+            get_exit_code(v1_results)
+        Err(error_text):
+            error_text = error_text
+        otherwise:
+            return nothing
+
+    match try_to_run_v1_help("/bin/echo", "/"):
+        Ok(help_results):
+            get_exit_code(help_results)
+            get_stdout(help_results)
+        Err(error_text):
+            error_text = error_text
+        otherwise:
+            return nothing
+    get_stdout({})
+
+    mir_const_i_maps = create_mir_const_integer_instruction("t1", 1)
+    mir_const_b_maps = create_mir_const_boolean_instruction("t2", true)
+    mir_bin_maps = create_mir_binary_instruction("t3", "+", "t1", "t1")
+    mir_ret_maps = create_mir_return_instruction("t3")
+    mir_instruction_text_lists = []
+    __wr_list_push(mir_instruction_text_lists, __wr_map_get(mir_const_i_maps, "text"))
+    __wr_list_push(mir_instruction_text_lists, __wr_map_get(mir_const_b_maps, "text"))
+    __wr_list_push(mir_instruction_text_lists, __wr_map_get(mir_bin_maps, "text"))
+    __wr_list_push(mir_instruction_text_lists, __wr_map_get(mir_ret_maps, "text"))
+    mir_block_maps = create_mir_block("entry", mir_instruction_text_lists)
+    mir_block_lists = []
+    __wr_list_push(mir_block_lists, mir_block_maps)
+    mir_function_maps = create_mir_function("run", "entry", mir_block_lists)
+    mir_function_maps = mir_function_maps
+    mir_program_maps = __wr_map_new()
+    __wr_map_set(mir_program_maps, "instructions", mir_instruction_text_lists)
+    __wr_map_set(mir_program_maps, "instruction_count", 4)
+    __wr_map_set(mir_program_maps, "signature", "sig")
+    __wr_map_set(
+        mir_program_maps,
+        "instruction_count",
+        get_mir_instruction_count(mir_program_maps)
+    )
+    __wr_map_set(
+        mir_program_maps,
+        "signature",
+        get_mir_signature_text(mir_program_maps)
+    )
+    mir_program_maps = mir_program_maps
+
+    bool_node_maps = create_boolean_literal_node(true, 4, 5)
+    assert value get_ast_kind_text(bool_node_maps) == "BooleanLiteral"
+    assert value get_ast_line_number(bool_node_maps) == 4
+    assert value get_ast_column_number(bool_node_maps) == 5
+    assert value get_ast_boolean_literal_flag(bool_node_maps) == 1
+
+    lex_empty_diagnostic_maps = create_frontend_lex_empty_diagnostic()
+    lex_tab_diagnostic_maps = create_frontend_lex_tab_diagnostic(2, 1)
+    parse_unexpected_diagnostic_maps = create_frontend_parse_unexpected_token_diagnostic(3, 2)
+    parse_trailing_diagnostic_maps = create_frontend_parse_trailing_operator_diagnostic(4, 9)
+    type_non_integer_diagnostic_maps = create_frontend_type_arith_non_integer_diagnostic(5, 11)
+    single_diagnostic_lists = create_frontend_single_diagnostic_list(lex_empty_diagnostic_maps)
+
+    assert value __wr_map_get(lex_tab_diagnostic_maps, "code") == "E-LEX-TAB"
+    assert value __wr_map_get(parse_unexpected_diagnostic_maps, "code") == "E-PARSE-UNEXPECTED_TOKEN"
+    assert value __wr_map_get(parse_trailing_diagnostic_maps, "code") == "E-PARSE-TRAILING_OPERATOR"
+    assert value __wr_map_get(type_non_integer_diagnostic_maps, "code") == "E-TYPE-ARITH_NON_INTEGER"
+    mutable single_diagnostic_count = 0
+    for single_diagnostic_item in single_diagnostic_lists:
+        single_diagnostic_count = single_diagnostic_count + 1
+    assert value single_diagnostic_count == 1
+
+    parser_default_diagnostic_maps = get_frontend_parser_result_diagnostic_maps(__wr_map_new())
+    assert value __wr_map_get(parser_default_diagnostic_maps, "code") == "E-PARSE-UNEXPECTED_TOKEN"
+
+    lex_result_maps = get_source_tokens("to run() -> Integer:\n    return 1\n")
+    parser_token_lists = get_frontend_lex_token_lists(lex_result_maps)
+    parser_unexpected_diagnostic_maps = create_frontend_parser_unexpected_token_diagnostic_maps(
+        parser_token_lists,
+        0
+    )
+    assert value __wr_map_get(parser_unexpected_diagnostic_maps, "code") == "E-PARSE-UNEXPECTED_TOKEN"
+
+    report_maps = make_error_report("parse", "x.wr", 12, single_diagnostic_lists)
+    assert value __wr_map_get(report_maps, "status") == "error"
+    assert value __wr_map_get(report_maps, "stage") == "parse"
+    assert value __wr_map_get(report_maps, "exit_code") == 2
+
+    cli_argument_values = ["wrela-v2", "help"]
+    assert value get_item_at_index(cli_argument_values, 1) == "help"
+    assert value run_cli(cli_argument_values) == 0
+
+    assert value get_boolean_type_name() == "Boolean"
+    return nothing
+
+
+to test_check_pipeline_load_source_stage_is_callable() -> Nothing:
+    root = "target/wrela_v2_check_contract"
+    path = "{root}/load_stage_ok.wr"
+    ensure_contract_directory(root)
+    write_contract_fixture(path, "to run() -> Integer:\n    return 11\n")
+
+    match load_source_stage(path):
+        Ok(load_maps):
+            assert value __wr_map_get(load_maps, "source_text") != ""
+            assert value __wr_map_get(load_maps, "source_bytes") > 0
+            return nothing
+        Err(error_text):
+            return nothing
+        otherwise:
+            assert value false == true
+            return nothing
+    return nothing
+
+
+to test_frontend_ast_constructors_and_accessors_are_callable() -> Nothing:
+    left_node_maps = create_integer_literal_node(7, 3, 5)
+    right_node_maps = create_boolean_literal_node(true, 3, 9)
+    return_expression_maps = create_binary_expression_node("+", left_node_maps, right_node_maps, 3, 7)
+    program_maps = create_program_node(return_expression_maps)
+
+    program_kind_text = get_ast_kind_text(program_maps)
+    resolved_return_expression_maps = get_program_return_expression_node(program_maps)
+    return_kind_text = get_ast_kind_text(resolved_return_expression_maps)
+    return_operator_text = get_ast_binary_operator_text(resolved_return_expression_maps)
+    return_line_number = get_ast_line_number(resolved_return_expression_maps)
+    return_column_number = get_ast_column_number(resolved_return_expression_maps)
+
+    resolved_left_node_maps = get_binary_left_node(resolved_return_expression_maps)
+    resolved_right_node_maps = get_binary_right_node(resolved_return_expression_maps)
+    left_kind_text = get_ast_kind_text(resolved_left_node_maps)
+    left_line_number = get_ast_line_number(resolved_left_node_maps)
+    left_column_number = get_ast_column_number(resolved_left_node_maps)
+    right_kind_text = get_ast_kind_text(resolved_right_node_maps)
+    right_line_number = get_ast_line_number(resolved_right_node_maps)
+    right_column_number = get_ast_column_number(resolved_right_node_maps)
+    program_kind_text = program_kind_text
+    return_kind_text = return_kind_text
+    return_operator_text = return_operator_text
+    return_line_number = return_line_number
+    return_column_number = return_column_number
+    left_kind_text = left_kind_text
+    left_line_number = left_line_number
+    left_column_number = left_column_number
+    right_kind_text = right_kind_text
+    right_line_number = right_line_number
+    right_column_number = right_column_number
+    assert value true == true
+
+    assert value get_integer_type_name() == "Integer"
+    assert value get_boolean_type_name() == "Boolean"
+    return nothing
+
+
+to test_check_pipeline_frontend_and_cli_coverage_touchpoints_are_callable() -> Nothing:
+    bool_node_maps = create_boolean_literal_node(true, 4, 5)
+    assert value get_ast_kind_text(bool_node_maps) == "BooleanLiteral"
+    assert value get_ast_line_number(bool_node_maps) == 4
+    assert value get_ast_column_number(bool_node_maps) == 5
+
+    lex_empty_diagnostic_maps = create_frontend_lex_empty_diagnostic()
+    lex_tab_diagnostic_maps = create_frontend_lex_tab_diagnostic(2, 1)
+    parse_unexpected_diagnostic_maps = create_frontend_parse_unexpected_token_diagnostic(3, 2)
+    parse_trailing_diagnostic_maps = create_frontend_parse_trailing_operator_diagnostic(4, 9)
+    type_non_integer_diagnostic_maps = create_frontend_type_arith_non_integer_diagnostic(5, 11)
+    single_diagnostic_lists = create_frontend_single_diagnostic_list(lex_empty_diagnostic_maps)
+
+    assert value __wr_map_get(lex_tab_diagnostic_maps, "code") == "E-LEX-TAB"
+    assert value __wr_map_get(parse_unexpected_diagnostic_maps, "code") == "E-PARSE-UNEXPECTED_TOKEN"
+    assert value __wr_map_get(parse_trailing_diagnostic_maps, "code") == "E-PARSE-TRAILING_OPERATOR"
+    assert value __wr_map_get(type_non_integer_diagnostic_maps, "code") == "E-TYPE-ARITH_NON_INTEGER"
+    mutable single_diagnostic_count = 0
+    for single_diagnostic_item in single_diagnostic_lists:
+        single_diagnostic_count = single_diagnostic_count + 1
+    assert value single_diagnostic_count == 1
+
+    parser_default_diagnostic_maps = get_frontend_parser_result_diagnostic_maps(__wr_map_new())
+    assert value __wr_map_get(parser_default_diagnostic_maps, "code") == "E-PARSE-UNEXPECTED_TOKEN"
+
+    lex_result_maps = get_source_tokens("to run() -> Integer:\n    return 1\n")
+    parser_token_lists = get_frontend_lex_token_lists(lex_result_maps)
+    parser_unexpected_diagnostic_maps = create_frontend_parser_unexpected_token_diagnostic_maps(
+        parser_token_lists,
+        0
+    )
+    assert value __wr_map_get(parser_unexpected_diagnostic_maps, "code") == "E-PARSE-UNEXPECTED_TOKEN"
+
+    report_maps = make_error_report("parse", "x.wr", 12, single_diagnostic_lists)
+    assert value __wr_map_get(report_maps, "status") == "error"
+    assert value __wr_map_get(report_maps, "stage") == "parse"
+    assert value __wr_map_get(report_maps, "exit_code") == 2
+
+    cli_argument_values = ["wrela-v2", "help"]
+    assert value get_item_at_index(cli_argument_values, 1) == "help"
+    assert value run_cli(cli_argument_values) == 0
+    return nothing

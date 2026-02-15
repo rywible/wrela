@@ -1,0 +1,89 @@
+so:
+    Native typechecker for the v2 check frontend subset.
+
+use create_frontend_type_arith_non_integer_diagnostic from domain/frontend/diagnostics
+
+use get_ast_kind_text from domain/frontend/ast
+use get_ast_line_number from domain/frontend/ast
+use get_ast_column_number from domain/frontend/ast
+use get_program_return_expression_node from domain/frontend/ast
+use get_binary_left_node from domain/frontend/ast
+use get_binary_right_node from domain/frontend/ast
+use get_ast_binary_operator_text from domain/frontend/ast
+
+use get_integer_type_name from domain/frontend/types
+use get_boolean_type_name from domain/frontend/types
+
+
+to create_frontend_typecheck_result_map(is_ok: Boolean, diagnostic_lists: List) -> Map:
+    result_maps = __wr_map_new()
+    __wr_map_set(result_maps, "ok", is_ok)
+    __wr_map_set(result_maps, "diagnostics", diagnostic_lists)
+    return result_maps
+
+
+to create_frontend_expression_type_result_maps(
+    is_ok_flag: Boolean,
+    type_name_text: String,
+    diagnostic_maps: Map
+) -> Map:
+    result_maps = __wr_map_new()
+    __wr_map_set(result_maps, "ok", is_ok_flag)
+    __wr_map_set(result_maps, "type", type_name_text)
+    __wr_map_set(result_maps, "diagnostic", diagnostic_maps)
+    return result_maps
+
+
+to get_frontend_typecheck_is_arithmetic_operator_flag(operator_text: String) -> Integer:
+    if operator_text == "+":
+        return 1
+    if operator_text == "-":
+        return 1
+    if operator_text == "*":
+        return 1
+    if operator_text == "/":
+        return 1
+    return 0
+
+
+to get_frontend_expression_type_result_maps(expression_node_maps: Map) -> Map:
+    kind_text = get_ast_kind_text(expression_node_maps)
+    if kind_text == "IntegerLiteral":
+        return create_frontend_expression_type_result_maps(true, get_integer_type_name(), __wr_map_new())
+    if kind_text == "BooleanLiteral":
+        return create_frontend_expression_type_result_maps(true, get_boolean_type_name(), __wr_map_new())
+
+    if kind_text == "BinaryExpression":
+        operator_text = get_ast_binary_operator_text(expression_node_maps)
+        if get_frontend_typecheck_is_arithmetic_operator_flag(operator_text) == 1:
+            left_node_maps = get_binary_left_node(expression_node_maps)
+            right_node_maps = get_binary_right_node(expression_node_maps)
+
+            left_result_maps = get_frontend_expression_type_result_maps(left_node_maps)
+            if __wr_map_get(left_result_maps, "ok") != true:
+                return left_result_maps
+
+            right_result_maps = get_frontend_expression_type_result_maps(right_node_maps)
+            if __wr_map_get(right_result_maps, "ok") != true:
+                return right_result_maps
+
+            if __wr_map_get(left_result_maps, "type") != get_integer_type_name() or __wr_map_get(right_result_maps, "type") != get_integer_type_name():
+                diagnostic_maps = create_frontend_type_arith_non_integer_diagnostic(
+                    get_ast_line_number(expression_node_maps),
+                    get_ast_column_number(expression_node_maps)
+                )
+                return create_frontend_expression_type_result_maps(false, "", diagnostic_maps)
+
+            return create_frontend_expression_type_result_maps(true, get_integer_type_name(), __wr_map_new())
+
+    return create_frontend_expression_type_result_maps(true, get_integer_type_name(), __wr_map_new())
+
+
+to check_program(program_maps: Map) -> Map:
+    return_expression_maps = get_program_return_expression_node(program_maps)
+    result_maps = get_frontend_expression_type_result_maps(return_expression_maps)
+    if __wr_map_get(result_maps, "ok") != true:
+        diagnostic_lists = [__wr_map_get(result_maps, "diagnostic")]
+        return create_frontend_typecheck_result_map(false, diagnostic_lists)
+
+    return create_frontend_typecheck_result_map(true, [])

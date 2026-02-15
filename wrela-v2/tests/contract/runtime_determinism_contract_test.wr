@@ -1,0 +1,88 @@
+so:
+    Determinism checks for runtime scheduler/event-loop outputs.
+
+use PlatformTarget from domain/platform/model
+use try_to_create_and_validate_platform_ports from application/runtime/platform_conformance
+use try_to_run_scheduler_queue from application/runtime/scheduler_runtime
+use try_to_run_bounded_event_loop from application/runtime/event_loop_runtime
+use try_to_run_runtime_probe_sequence from application/runtime/event_loop_runtime
+
+
+to create_determinism_target(os_name: String, architecture: String) -> PlatformTarget:
+    target = PlatformTarget()
+    target.host_os_name = os_name
+    target.host_architecture = architecture
+    return target
+
+
+to test_runtime_determinism_contract_scheduler_summary_is_stable() -> Nothing:
+    target = create_determinism_target("linux", "arm64")
+    tasks = ["task-a", "task-b", "task-c"]
+    match try_to_create_and_validate_platform_ports(target, true):
+        Ok(ports):
+            first_maps = __wr_map_new()
+            second_maps = __wr_map_new()
+            match try_to_run_scheduler_queue(ports, tasks, 3):
+                Ok(summary_maps):
+                    first_maps = summary_maps
+                otherwise:
+                    assert value false == true
+            match try_to_run_scheduler_queue(ports, tasks, 3):
+                Ok(summary_maps):
+                    second_maps = summary_maps
+                otherwise:
+                    assert value false == true
+            assert value __wr_map_get(first_maps, "tasks_total") == __wr_map_get(second_maps, "tasks_total")
+            assert value __wr_map_get(first_maps, "tasks_completed") == __wr_map_get(second_maps, "tasks_completed")
+            assert value __wr_map_get(first_maps, "fifo_stable") == __wr_map_get(second_maps, "fifo_stable")
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_runtime_determinism_contract_event_loop_summary_is_stable() -> Nothing:
+    target = create_determinism_target("linux", "arm64")
+    match try_to_create_and_validate_platform_ports(target, true):
+        Ok(ports):
+            first_maps = __wr_map_new()
+            second_maps = __wr_map_new()
+            match try_to_run_bounded_event_loop(ports, 2, 0):
+                Ok(summary_maps):
+                    first_maps = summary_maps
+                otherwise:
+                    assert value false == true
+            match try_to_run_bounded_event_loop(ports, 2, 0):
+                Ok(summary_maps):
+                    second_maps = summary_maps
+                otherwise:
+                    assert value false == true
+            assert value __wr_map_get(first_maps, "cycles_total") == __wr_map_get(second_maps, "cycles_total")
+            assert value __wr_map_get(first_maps, "cycles_succeeded") == __wr_map_get(second_maps, "cycles_succeeded")
+            assert value __wr_map_get(first_maps, "host_family") == __wr_map_get(second_maps, "host_family")
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_runtime_determinism_contract_probe_structure_is_stable() -> Nothing:
+    target = create_determinism_target("linux", "arm64")
+    match try_to_create_and_validate_platform_ports(target, true):
+        Ok(ports):
+            first_maps = __wr_map_new()
+            second_maps = __wr_map_new()
+            match try_to_run_runtime_probe_sequence(ports, "."):
+                Ok(summary_maps):
+                    first_maps = summary_maps
+                otherwise:
+                    assert value false == true
+            match try_to_run_runtime_probe_sequence(ports, "."):
+                Ok(summary_maps):
+                    second_maps = summary_maps
+                otherwise:
+                    assert value false == true
+            assert value __wr_map_get(first_maps, "backend_name") == __wr_map_get(second_maps, "backend_name")
+            assert value __wr_map_get(first_maps, "host_family") == __wr_map_get(second_maps, "host_family")
+            assert value __wr_map_get(first_maps, "fs_roundtrip_ok") == __wr_map_get(second_maps, "fs_roundtrip_ok")
+        otherwise:
+            assert value false == true
+    return nothing

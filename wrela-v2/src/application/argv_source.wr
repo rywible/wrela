@@ -1,0 +1,6 @@
+so:
+    Explicit argv boundary helper for v2 entrypoint wiring.
+
+
+to get_process_argv() -> List[String]:
+    return __wr_process_argv()

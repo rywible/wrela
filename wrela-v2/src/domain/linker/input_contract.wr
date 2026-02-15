@@ -1,0 +1,48 @@
+so:
+    Linker input contract handshake for M5-A backend core vertical slice.
+
+
+to create_linker_input_maps(
+    linker_input_program_lists: List[Map],
+    linker_input_entry_symbol_text: String,
+    linker_input_output_format_text: String
+) -> Map:
+    linker_input_maps = __wr_map_new()
+    __wr_map_set(linker_input_maps, "kind", "LinkerInput")
+    __wr_map_set(linker_input_maps, "objects", linker_input_program_lists)
+    __wr_map_set(linker_input_maps, "entry_symbol", linker_input_entry_symbol_text)
+    __wr_map_set(linker_input_maps, "output_format", linker_input_output_format_text)
+    return linker_input_maps
+
+
+to create_linker_input_from_object_program(linker_input_object_program_maps: Map) -> Map:
+    linker_input_single_object_lists = []
+    __wr_list_push(linker_input_single_object_lists, linker_input_object_program_maps)
+    return create_linker_input_maps(linker_input_single_object_lists, "run", "mach-o-thin")
+
+
+to create_linker_input_from_object_program_lists(
+    linker_input_program_lists: List[Map]
+) -> Map:
+    return create_linker_input_maps(linker_input_program_lists, "run", "mach-o-thin")
+
+
+to get_linker_input_object_program_lists(linker_input_maps: Map) -> List[Map]:
+    linker_input_object_value_lists = __wr_map_get(linker_input_maps, "objects")
+    if linker_input_object_value_lists == nothing:
+        return []
+    return linker_input_object_value_lists
+
+
+to get_linker_input_entry_symbol_text(linker_input_maps: Map) -> String:
+    linker_input_entry_symbol_value = __wr_map_get(linker_input_maps, "entry_symbol")
+    if linker_input_entry_symbol_value == nothing:
+        return ""
+    return "{linker_input_entry_symbol_value}"
+
+
+to get_linker_input_output_format_text(linker_input_maps: Map) -> String:
+    linker_input_output_format_value = __wr_map_get(linker_input_maps, "output_format")
+    if linker_input_output_format_value == nothing:
+        return ""
+    return "{linker_input_output_format_value}"

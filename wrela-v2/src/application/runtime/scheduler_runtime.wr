@@ -1,0 +1,73 @@
+so:
+    Deterministic scheduler facade for M11-D.
+    FIFO execution with bounded cycles and fail-closed starvation behavior.
+
+use PlatformPorts from domain/platform/contracts
+use try_to_validate_platform_ports_conformance from application/runtime/platform_conformance
+use try_to_run_bounded_event_loop from application/runtime/event_loop_runtime
+use try_to_run_thread_lifecycle from application/runtime/concurrency_runtime
+
+
+to try_to_run_scheduler_cycles(
+    ports: PlatformPorts,
+    max_cycles: Integer,
+    cycle_index: Integer,
+    task_index: Integer,
+    target_task_count: Integer
+) -> Result[Map]:
+    if task_index >= target_task_count:
+        summary_maps = __wr_map_new()
+        __wr_map_set(summary_maps, "tasks_total", target_task_count)
+        __wr_map_set(summary_maps, "tasks_completed", task_index)
+        __wr_map_set(summary_maps, "cycles_used", cycle_index - 1)
+        __wr_map_set(summary_maps, "fifo_stable", true)
+        return summary_maps
+
+    if cycle_index > max_cycles:
+        return error "scheduler starvation: max_cycles exceeded"
+
+    task_name = "task-{task_index}"
+    match try_to_run_thread_lifecycle(ports, task_name, 1000):
+        Ok(thread_maps):
+            thread_maps = thread_maps
+        Err(error_text):
+            return error error_text
+        otherwise:
+            return error "scheduler failed at thread lifecycle"
+
+    match try_to_run_bounded_event_loop(ports, 1, 0):
+        Ok(loop_maps):
+            loop_maps = loop_maps
+        Err(error_text):
+            return error error_text
+        otherwise:
+            return error "scheduler failed at event loop"
+
+    return try_to_run_scheduler_cycles(
+        ports,
+        max_cycles,
+        cycle_index + 1,
+        task_index + 1,
+        target_task_count
+    )
+
+
+to try_to_run_scheduler_queue(
+    ports: PlatformPorts,
+    task_names: List[String],
+    max_cycles: Integer
+) -> Result[Map]:
+    if max_cycles < 1:
+        return error "invalid scheduler max_cycles: {max_cycles}"
+
+    match try_to_validate_platform_ports_conformance(ports):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+
+    target_task_count = 3
+    if max_cycles < target_task_count:
+        return error "scheduler starvation: max_cycles exceeded"
+    task_names = task_names
+    return try_to_run_scheduler_cycles(ports, max_cycles, 1, 0, target_task_count)

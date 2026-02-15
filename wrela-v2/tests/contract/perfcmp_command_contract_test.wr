@@ -1,0 +1,98 @@
+so:
+    Contract coverage for v2 perfcmp command real behavior.
+
+use run_perfcmp_command from application/perfcmp_command
+use run_init_command from application/init_command
+use get_perfcmp_lines from application/perfcmp_runner
+use get_perfcmp_prefix_match_flag from application/perfcmp_runner
+
+
+to try_to_setup_perfcmp_baseline(path: String, p50_ns_number: Integer) -> Nothing:
+    __wr_fs_mkdir_all("target/wrela_v2_perf") otherwise nothing
+    baseline_text = "runs=1\nsuccesses=1\nfailures=0\nmin_ns=1\nmax_ns=1\navg_ns=1\np50_ns={p50_ns_number}\np95_ns={p50_ns_number}\np99_ns={p50_ns_number}\ntimestamp_ns=1\n"
+    __wr_fs_write_bytes(path, __wr_bytes_from_string(baseline_text)) otherwise nothing
+    return nothing
+
+
+to get_perfcmp_contract_value_for_key(text: String, key_text: String) -> String:
+    prefix_text = "{key_text}="
+    line_lists = get_perfcmp_lines(text)
+    for line_text in line_lists:
+        if get_perfcmp_prefix_match_flag(line_text, prefix_text) == 1:
+            line_byte_lists = __wr_bytes_to_list(__wr_bytes_from_string(line_text))
+            prefix_byte_lists = __wr_bytes_to_list(__wr_bytes_from_string(prefix_text))
+            mutable prefix_count_number = 0
+            for _ in prefix_byte_lists:
+                prefix_count_number = prefix_count_number + 1
+
+            value_byte_lists = []
+            mutable cursor_number = 0
+            for line_byte_value in line_byte_lists:
+                if cursor_number >= prefix_count_number:
+                    __wr_list_push(value_byte_lists, line_byte_value)
+                cursor_number = cursor_number + 1
+            return __wr_bytes_to_string(__wr_bytes_from_list(value_byte_lists))
+    return ""
+
+
+to try_to_read_perfcmp_report_text() -> Result[String]:
+    match __wr_fs_read_bytes("target/wrela_v2_perf/perfcmp_report.json"):
+        Ok(bytes):
+            text = __wr_bytes_to_string(bytes)
+            match text:
+                String:
+                    return text
+                otherwise:
+                    return error "perfcmp report invalid utf8"
+        Err(_):
+            return error "perfcmp report missing"
+        otherwise:
+            return error "perfcmp report missing"
+    return error "perfcmp report missing"
+
+
+to test_perfcmp_command_returns_one_when_baseline_missing() -> Nothing:
+    __wr_env_set("WRELA_V2_PERF_BASELINE", "target/wrela_v2_perf/missing_baseline.json")
+    assert value run_perfcmp_command("") == 1
+    return nothing
+
+
+to test_perfcmp_command_returns_one_for_invalid_baseline_schema() -> Nothing:
+    __wr_fs_mkdir_all("target/wrela_v2_perf") otherwise nothing
+    __wr_fs_write_bytes("target/wrela_v2_perf/invalid_baseline.json", __wr_bytes_from_string("p50_ns=1\n")) otherwise nothing
+    __wr_env_set("WRELA_V2_PERF_BASELINE", "target/wrela_v2_perf/invalid_baseline.json")
+    assert value run_perfcmp_command("") == 1
+    return nothing
+
+
+to test_perfcmp_command_returns_two_when_regression_exceeds_threshold() -> Nothing:
+    root_path_text = "target/wrela_v2_perfcmp_contract_regression"
+    __wr_fs_remove_dir_all(root_path_text) otherwise nothing
+    assert value run_init_command(root_path_text) == 0
+    try_to_setup_perfcmp_baseline("target/wrela_v2_perf/baseline_perf_report.json", 1)
+    __wr_env_set("WRELA_V2_PERF_BASELINE", "target/wrela_v2_perf/baseline_perf_report.json")
+    __wr_env_set("WRELA_V2_PERFCMP_MAX_REGRESSION_PCT", "0")
+    __wr_env_set("WRELA_PERF_RUNS", "1")
+    assert value run_perfcmp_command(root_path_text) == 2
+    report_text = ""
+    match try_to_read_perfcmp_report_text():
+        Ok(text):
+            report_text = text
+        Err(_):
+            assert value false == true
+        otherwise:
+            assert value false == true
+    assert value get_perfcmp_contract_value_for_key(report_text, "status") == "regression"
+    return nothing
+
+
+to test_perfcmp_command_returns_zero_within_threshold() -> Nothing:
+    root_path_text = "target/wrela_v2_perfcmp_contract_ok"
+    __wr_fs_remove_dir_all(root_path_text) otherwise nothing
+    assert value run_init_command(root_path_text) == 0
+    try_to_setup_perfcmp_baseline("target/wrela_v2_perf/baseline_perf_report.json", 9_999_999_999)
+    __wr_env_set("WRELA_V2_PERF_BASELINE", "target/wrela_v2_perf/baseline_perf_report.json")
+    __wr_env_set("WRELA_V2_PERFCMP_MAX_REGRESSION_PCT", "10")
+    __wr_env_set("WRELA_PERF_RUNS", "1")
+    assert value run_perfcmp_command(root_path_text) == 0
+    return nothing

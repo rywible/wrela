@@ -1,0 +1,238 @@
+so:
+    Real perf runner for M7-C deterministic aggregate reporting.
+
+use try_to_build_executable from application/build_runner
+use get_env_int_or_default from application/env_vars
+
+
+to get_perf_runner_integer_env_or_default(key_text: String, fallback_number: Integer) -> Integer:
+    return get_env_int_or_default(key_text, fallback_number)
+
+
+to get_perf_runner_list_count(value_lists: List[Integer]) -> Integer:
+    mutable value_count_number = 0
+    for _ in value_lists:
+        value_count_number = value_count_number + 1
+    return value_count_number
+
+
+to get_perf_runner_item_at_index(value_lists: List[Integer], index_number: Integer) -> Integer:
+    mutable cursor_number = 0
+    for value_number in value_lists:
+        if cursor_number == index_number:
+            return value_number
+        cursor_number = cursor_number + 1
+    return 0
+
+
+to get_perf_runner_sorted_lists(unsorted_lists: List[Integer]) -> List[Integer]:
+    mutable sorted_lists = []
+    for unsorted_number in unsorted_lists:
+        mutable inserted_flag_number = 0
+        next_sorted_lists = []
+        for sorted_number in sorted_lists:
+            if inserted_flag_number == 0 and unsorted_number < sorted_number:
+                __wr_list_push(next_sorted_lists, unsorted_number)
+                inserted_flag_number = 1
+            __wr_list_push(next_sorted_lists, sorted_number)
+        if inserted_flag_number == 0:
+            __wr_list_push(next_sorted_lists, unsorted_number)
+        sorted_lists = next_sorted_lists
+    return sorted_lists
+
+
+to get_perf_runner_percentile_ns(sorted_lists: List[Integer], percentile_number: Integer) -> Integer:
+    sample_count_number = get_perf_runner_list_count(sorted_lists)
+    if sample_count_number <= 0:
+        return 0
+    index_number = ((sample_count_number - 1) * percentile_number) / 100
+    return get_perf_runner_item_at_index(sorted_lists, index_number)
+
+
+to try_to_collect_perf_run(
+    path_text: String,
+    total_runs_number: Integer,
+    run_index_number: Integer,
+    durations_lists: List[Integer],
+    success_count_number: Integer,
+    failure_count_number: Integer
+) -> Result[Map]:
+    if run_index_number > total_runs_number:
+        result_maps = __wr_map_new()
+        __wr_map_set(result_maps, "durations", durations_lists)
+        __wr_map_set(result_maps, "successes", success_count_number)
+        __wr_map_set(result_maps, "failures", failure_count_number)
+        return result_maps
+
+    start_ns_number = __wr_clock_ns()
+    match try_to_build_executable(path_text):
+        Ok(_):
+            end_ns_number = __wr_clock_ns()
+            duration_ns_number = end_ns_number - start_ns_number
+            if duration_ns_number < 0:
+                duration_ns_number = 0
+            fixed_duration_number = get_perf_runner_integer_env_or_default(
+                "WRELA_PERF_FIXED_DURATION_NS",
+                -1
+            )
+            if fixed_duration_number >= 0:
+                duration_ns_number = fixed_duration_number
+            __wr_list_push(durations_lists, duration_ns_number)
+            return try_to_collect_perf_run(
+                path_text,
+                total_runs_number,
+                run_index_number + 1,
+                durations_lists,
+                success_count_number + 1,
+                failure_count_number
+            )
+        Err(_):
+            end_ns_number = __wr_clock_ns()
+            duration_ns_number = end_ns_number - start_ns_number
+            if duration_ns_number < 0:
+                duration_ns_number = 0
+            fixed_duration_number = get_perf_runner_integer_env_or_default(
+                "WRELA_PERF_FIXED_DURATION_NS",
+                -1
+            )
+            if fixed_duration_number >= 0:
+                duration_ns_number = fixed_duration_number
+            __wr_list_push(durations_lists, duration_ns_number)
+            return try_to_collect_perf_run(
+                path_text,
+                total_runs_number,
+                run_index_number + 1,
+                durations_lists,
+                success_count_number,
+                failure_count_number + 1
+            )
+        otherwise:
+            return try_to_collect_perf_run(
+                path_text,
+                total_runs_number,
+                run_index_number + 1,
+                durations_lists,
+                success_count_number,
+                failure_count_number + 1
+            )
+    return error "perf failed"
+
+
+to create_perf_result_from_samples(
+    runs_number: Integer,
+    durations_lists: List[Integer],
+    success_count_number: Integer,
+    failure_count_number: Integer,
+    timestamp_ns_number: Integer
+) -> Map:
+    mutable min_ns_number = 0
+    mutable max_ns_number = 0
+    mutable sum_ns_number = 0
+    mutable sample_count_number = 0
+
+    for duration_ns_number in durations_lists:
+        if sample_count_number == 0:
+            min_ns_number = duration_ns_number
+            max_ns_number = duration_ns_number
+        otherwise:
+            if duration_ns_number < min_ns_number:
+                min_ns_number = duration_ns_number
+            if duration_ns_number > max_ns_number:
+                max_ns_number = duration_ns_number
+        sum_ns_number = sum_ns_number + duration_ns_number
+        sample_count_number = sample_count_number + 1
+
+    mutable avg_ns_number = 0
+    if sample_count_number > 0:
+        avg_ns_number = sum_ns_number / sample_count_number
+    sorted_durations_lists = get_perf_runner_sorted_lists(durations_lists)
+    p50_ns_number = get_perf_runner_percentile_ns(sorted_durations_lists, 50)
+    p95_ns_number = get_perf_runner_percentile_ns(sorted_durations_lists, 95)
+    p99_ns_number = get_perf_runner_percentile_ns(sorted_durations_lists, 99)
+
+    result_maps = __wr_map_new()
+    __wr_map_set(result_maps, "runs", runs_number)
+    __wr_map_set(result_maps, "successes", success_count_number)
+    __wr_map_set(result_maps, "failures", failure_count_number)
+    __wr_map_set(result_maps, "min_ns", min_ns_number)
+    __wr_map_set(result_maps, "max_ns", max_ns_number)
+    __wr_map_set(result_maps, "avg_ns", avg_ns_number)
+    __wr_map_set(result_maps, "p50_ns", p50_ns_number)
+    __wr_map_set(result_maps, "p95_ns", p95_ns_number)
+    __wr_map_set(result_maps, "p99_ns", p99_ns_number)
+    __wr_map_set(result_maps, "timestamp_ns", timestamp_ns_number)
+    return result_maps
+
+
+to write_perf_report_text(result_maps: Map, output_path_text: String) -> Result[Nothing]:
+    output_root_path_text = "target/wrela_v2_perf"
+    match __wr_fs_mkdir_all(output_root_path_text):
+        Ok(_):
+            nothing
+        Err(_):
+            return error "perf failed to create report directory"
+        otherwise:
+            return error "perf failed to create report directory"
+
+    runs_value = __wr_map_get(result_maps, "runs")
+    successes_value = __wr_map_get(result_maps, "successes")
+    failures_value = __wr_map_get(result_maps, "failures")
+    min_value = __wr_map_get(result_maps, "min_ns")
+    max_value = __wr_map_get(result_maps, "max_ns")
+    avg_value = __wr_map_get(result_maps, "avg_ns")
+    p50_value = __wr_map_get(result_maps, "p50_ns")
+    p95_value = __wr_map_get(result_maps, "p95_ns")
+    p99_value = __wr_map_get(result_maps, "p99_ns")
+    timestamp_value = __wr_map_get(result_maps, "timestamp_ns")
+
+    report_text = "runs={runs_value}\nsuccesses={successes_value}\nfailures={failures_value}\nmin_ns={min_value}\nmax_ns={max_value}\navg_ns={avg_value}\np50_ns={p50_value}\np95_ns={p95_value}\np99_ns={p99_value}\ntimestamp_ns={timestamp_value}\n"
+    match __wr_fs_write_bytes(output_path_text, __wr_bytes_from_string(report_text)):
+        Ok(_):
+            return nothing
+        Err(_):
+            return error "perf failed to write report"
+        otherwise:
+            return error "perf failed to write report"
+    return error "perf failed to write report"
+
+
+to try_to_run_perf_runner_with_runs(path: String, runs_number: Integer) -> Result[Map]:
+    mutable target_path_text = path
+    if target_path_text == "":
+        target_path_text = "."
+
+    mutable normalized_runs_number = runs_number
+    if normalized_runs_number < 1:
+        normalized_runs_number = 1
+
+    match try_to_collect_perf_run(target_path_text, normalized_runs_number, 1, [], 0, 0):
+        Ok(sample_maps):
+            durations_lists = __wr_map_get(sample_maps, "durations")
+            successes_number = __wr_map_get(sample_maps, "successes")
+            failures_number = __wr_map_get(sample_maps, "failures")
+            timestamp_override_number = get_perf_runner_integer_env_or_default(
+                "WRELA_PERF_FIXED_TIMESTAMP_NS",
+                -1
+            )
+            mutable timestamp_ns_number = __wr_clock_ns()
+            if timestamp_override_number >= 0:
+                timestamp_ns_number = timestamp_override_number
+            result_maps = create_perf_result_from_samples(
+                normalized_runs_number,
+                durations_lists,
+                successes_number,
+                failures_number,
+                timestamp_ns_number
+            )
+            write_perf_report_text(result_maps, "target/wrela_v2_perf/perf_report.json") otherwise nothing
+            return result_maps
+        Err(_):
+            return error "perf failed"
+        otherwise:
+            return error "perf failed"
+    return error "perf failed"
+
+
+to try_to_run_perf_runner(path: String) -> Result[Map]:
+    runs_number = get_perf_runner_integer_env_or_default("WRELA_PERF_RUNS", 5)
+    return try_to_run_perf_runner_with_runs(path, runs_number)

@@ -1,0 +1,190 @@
+so:
+    Real verify-cert runner for M7-C.
+
+use try_to_validate_cert_text from domain/cert/validate
+use get_cert_hash_text from domain/cert/hash
+use get_cert_hash_text_from_byte_lists from domain/cert/hash
+use get_cert_validate_prefix_match_flag from domain/cert/validate
+
+
+to try_to_read_text_for_verify(path: String) -> Result[String]:
+    match __wr_fs_read_bytes(path):
+        Ok(bytes):
+            text = __wr_bytes_to_string(bytes)
+            match text:
+                String: return text
+                otherwise: return error "verify-cert invalid utf8"
+        Err(_):
+            return error "verify-cert read failed"
+        otherwise:
+            return error "verify-cert read failed"
+    return error "verify-cert read failed"
+
+
+to try_to_write_text_for_verify(path: String, contents: String) -> Result[Nothing]:
+    return __wr_fs_write_bytes(path, __wr_bytes_from_string(contents))
+
+
+to get_verify_runner_lines(text: String) -> List[String]:
+    line_lists = []
+    current_byte_lists = []
+    text_byte_lists = __wr_bytes_to_list(__wr_bytes_from_string(text))
+
+    for byte_value in text_byte_lists:
+        if byte_value == 13:
+            nothing
+        otherwise:
+            if byte_value == 10:
+                __wr_list_push(line_lists, __wr_bytes_to_string(__wr_bytes_from_list(current_byte_lists)))
+                current_byte_lists = []
+            otherwise:
+                __wr_list_push(current_byte_lists, byte_value)
+    __wr_list_push(line_lists, __wr_bytes_to_string(__wr_bytes_from_list(current_byte_lists)))
+    return line_lists
+
+
+to get_verify_runner_prefix_match_flag(text: String, prefix: String) -> Integer:
+    text_byte_lists = __wr_bytes_to_list(__wr_bytes_from_string(text))
+    prefix_byte_lists = __wr_bytes_to_list(__wr_bytes_from_string(prefix))
+
+    mutable text_count_number = 0
+    for _ in text_byte_lists:
+        text_count_number = text_count_number + 1
+
+    mutable prefix_count_number = 0
+    for _ in prefix_byte_lists:
+        prefix_count_number = prefix_count_number + 1
+
+    if text_count_number < prefix_count_number:
+        return 0
+
+    mutable index_number = 0
+    for prefix_byte_value in prefix_byte_lists:
+        mutable text_byte_value_at_index = -1
+        mutable cursor_number = 0
+        for text_byte_value in text_byte_lists:
+            if cursor_number == index_number:
+                text_byte_value_at_index = text_byte_value
+                break
+            cursor_number = cursor_number + 1
+        if text_byte_value_at_index != prefix_byte_value:
+            return 0
+        index_number = index_number + 1
+    return 1
+
+
+to get_verify_runner_has_field_flag(cert_text: String, field_text: String) -> Integer:
+    prefix_text = "{field_text}="
+    for line_text in get_verify_runner_lines(cert_text):
+        if get_verify_runner_prefix_match_flag(line_text, prefix_text) == 1:
+            return 1
+    return 0
+
+
+to try_to_write_verify_cert_report(status_text: String, message_text: String) -> Result[Nothing]:
+    output_root_path_text = "target/wrela_v2_verify"
+    report_path_text = "{output_root_path_text}/verify_report.json"
+    match __wr_fs_mkdir_all(output_root_path_text):
+        Ok(_):
+            nothing
+        Err(_):
+            return error "verify-cert failed to create report directory"
+        otherwise:
+            return error "verify-cert failed to create report directory"
+
+    report_text = "status={status_text}\nmessage={message_text}\n"
+    match try_to_write_text_for_verify(report_path_text, report_text):
+        Ok(_):
+            return nothing
+        Err(_):
+            return error "verify-cert failed to write report"
+        otherwise:
+            return error "verify-cert failed to write report"
+    return error "verify-cert failed to write report"
+
+
+to try_to_run_verify_cert_runner(path: String) -> Result[Map]:
+    mutable cert_text = ""
+    match try_to_read_text_for_verify(path):
+        Ok(text):
+            cert_text = text
+        Err(_):
+            return error "verify-cert file not found"
+        otherwise:
+            return error "verify-cert file not found"
+
+    match try_to_validate_cert_text(cert_text):
+        Ok(validate_result_maps):
+            workspace_root_value = __wr_map_get(validate_result_maps, "workspace_root")
+            entry_path_value = __wr_map_get(validate_result_maps, "entry_path")
+            artifact_path_value = __wr_map_get(validate_result_maps, "artifact_path")
+            expected_source_hash_value = __wr_map_get(validate_result_maps, "source_hash")
+            expected_binary_hash_value = __wr_map_get(validate_result_maps, "binary_hash")
+
+            workspace_root_text = "{workspace_root_value}"
+            entry_path_text = "{entry_path_value}"
+            artifact_path_text = "{artifact_path_value}"
+            expected_source_hash_text = "{expected_source_hash_value}"
+            expected_binary_hash_text = "{expected_binary_hash_value}"
+
+            resolved_entry_path_text = entry_path_text
+            if get_cert_validate_prefix_match_flag(entry_path_text, "/") != 1:
+                if workspace_root_text != "" and workspace_root_text != ".":
+                    resolved_entry_path_text = "{workspace_root_text}/{entry_path_text}"
+
+            resolved_artifact_path_text = artifact_path_text
+            if get_cert_validate_prefix_match_flag(artifact_path_text, "/") != 1:
+                if workspace_root_text != "" and workspace_root_text != ".":
+                    resolved_artifact_path_text = "{workspace_root_text}/{artifact_path_text}"
+
+            mutable source_text = ""
+            match __wr_fs_read_bytes(resolved_entry_path_text):
+                Ok(source_bytes):
+                    source_value = __wr_bytes_to_string(source_bytes)
+                    match source_value:
+                        String:
+                            source_text = source_value
+                        otherwise:
+                            try_to_write_verify_cert_report("error", "verify-cert invalid source utf8") otherwise nothing
+                            return error "verify-cert invalid source utf8"
+                Err(_):
+                    try_to_write_verify_cert_report("error", "verify-cert source file missing") otherwise nothing
+                    return error "verify-cert source file missing"
+                otherwise:
+                    try_to_write_verify_cert_report("error", "verify-cert source file missing") otherwise nothing
+                    return error "verify-cert source file missing"
+
+            actual_source_hash_text = get_cert_hash_text(source_text)
+            if actual_source_hash_text != expected_source_hash_text:
+                try_to_write_verify_cert_report("error", "verify-cert source hash mismatch") otherwise nothing
+                return error "verify-cert source hash mismatch"
+
+            mutable actual_binary_hash_text = ""
+            match __wr_fs_read_bytes(resolved_artifact_path_text):
+                Ok(binary_bytes):
+                    actual_binary_hash_text = get_cert_hash_text_from_byte_lists(__wr_bytes_to_list(binary_bytes))
+                Err(_):
+                    try_to_write_verify_cert_report("error", "verify-cert artifact file missing") otherwise nothing
+                    return error "verify-cert artifact file missing"
+                otherwise:
+                    try_to_write_verify_cert_report("error", "verify-cert artifact file missing") otherwise nothing
+                    return error "verify-cert artifact file missing"
+
+            if actual_binary_hash_text != expected_binary_hash_text:
+                try_to_write_verify_cert_report("error", "verify-cert binary hash mismatch") otherwise nothing
+                return error "verify-cert binary hash mismatch"
+
+            try_to_write_verify_cert_report("ok", "verify-cert: ok") otherwise nothing
+            result_maps = __wr_map_new()
+            __wr_map_set(result_maps, "status", "ok")
+            __wr_map_set(result_maps, "path", path)
+            __wr_map_set(result_maps, "entry_path", __wr_map_get(validate_result_maps, "entry_path"))
+            __wr_map_set(result_maps, "artifact_path", __wr_map_get(validate_result_maps, "artifact_path"))
+            return result_maps
+        Err(validate_error_text):
+            try_to_write_verify_cert_report("error", "verify-cert validation failed") otherwise nothing
+            return error validate_error_text
+        otherwise:
+            try_to_write_verify_cert_report("error", "verify-cert validation failed") otherwise nothing
+            return error "verify-cert validation failed"
+    return error "verify-cert validation failed"

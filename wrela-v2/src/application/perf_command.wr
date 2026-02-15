@@ -1,0 +1,24 @@
+so:
+    V2 perf command with real M7-C behavior.
+
+use try_to_run_perf_runner from application/perf_runner
+
+
+to run_perf_command(path: String) -> Integer:
+    match try_to_run_perf_runner(path):
+        Ok(result_maps):
+            runs_value = __wr_map_get(result_maps, "runs")
+            p50_value = __wr_map_get(result_maps, "p50_ns")
+            p95_value = __wr_map_get(result_maps, "p95_ns")
+            failures_value = __wr_map_get(result_maps, "failures")
+            __wr_print("perf: runs={runs_value} p50_ns={p50_value} p95_ns={p95_value} failures={failures_value}")
+            if failures_value != nothing and failures_value > 0:
+                return 2
+            return 0
+        Err(_):
+            __wr_print("error: perf failed")
+            return 2
+        otherwise:
+            __wr_print("error: perf failed")
+            return 2
+    return 2

@@ -1,0 +1,28 @@
+so:
+    Contract coverage for v2 dev command real behavior.
+
+use run_dev_command from application/dev_command
+use run_init_command from application/init_command
+
+
+to test_dev_command_requires_path() -> Nothing:
+    assert value run_dev_command("") == 1
+    return nothing
+
+
+to test_dev_command_completes_bounded_cycles_for_valid_project() -> Nothing:
+    root_path_text = "target/wrela_v2_dev_contract_valid"
+    __wr_fs_remove_dir_all(root_path_text) otherwise nothing
+    assert value run_init_command(root_path_text) == 0
+    __wr_env_set("WRELA_DEV_MAX_CYCLES", "2")
+    assert value run_dev_command(root_path_text) == 0
+    return nothing
+
+
+to test_dev_command_returns_two_when_build_or_run_fails() -> Nothing:
+    path_text = "target/wrela_v2_dev_contract_invalid/main.wr"
+    __wr_fs_mkdir_all("target/wrela_v2_dev_contract_invalid") otherwise nothing
+    __wr_fs_write_bytes(path_text, __wr_bytes_from_string("to run() -> Integer:\n    return 1 +\n")) otherwise nothing
+    __wr_env_set("WRELA_DEV_MAX_CYCLES", "2")
+    assert value run_dev_command(path_text) == 2
+    return nothing

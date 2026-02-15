@@ -303,6 +303,7 @@ pub(crate) mod logging {
 }
 
 use crate::bytes;
+use crate::list;
 use crate::map;
 use crate::result;
 use crate::string;
@@ -314,7 +315,10 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 #[cfg(test)]
 use std::sync::atomic::AtomicI8;
@@ -433,6 +437,325 @@ pub(crate) fn fs_write_bytes(path: Value, contents: Value) -> Value {
         Ok(()) => result::result_ok(Value::nil()),
         Err(err) => result::result_err(builtin_error(&format!("fs_write_bytes: {err}"))),
     }
+}
+
+fn map_put(map_val: Value, key: &str, value: Value) {
+    let key_val = string::str_from_bytes(key.as_bytes());
+    map::map_set(map_val, key_val, value);
+    unsafe { crate::wr_rc_dec(key_val) };
+    unsafe { crate::wr_rc_dec(value) };
+}
+
+fn map_get_field(map_val: Value, key: &str) -> Value {
+    let key_val = string::str_from_bytes(key.as_bytes());
+    let value = map::map_get(map_val, key_val);
+    unsafe { crate::wr_rc_dec(key_val) };
+    value
+}
+
+fn map_get_string_field(map_val: Value, key: &str) -> Option<String> {
+    let value = map_get_field(map_val, key);
+    if value.is_nil() {
+        unsafe { crate::wr_rc_dec(value) };
+        return None;
+    }
+    let out = value_to_string(value);
+    unsafe { crate::wr_rc_dec(value) };
+    out
+}
+
+fn map_get_integer_field(map_val: Value, key: &str) -> Option<i64> {
+    let value = map_get_field(map_val, key);
+    if value.is_nil() {
+        unsafe { crate::wr_rc_dec(value) };
+        return None;
+    }
+    let out = int_value(value);
+    unsafe { crate::wr_rc_dec(value) };
+    out
+}
+
+fn collect_string_list(list_val: Value) -> Result<Vec<String>, String> {
+    if list_val.is_nil() {
+        return Ok(Vec::new());
+    }
+    let Some(list_ref) = list::as_list_ref(list_val) else {
+        return Err("process_run spec.args must be List[String]".to_string());
+    };
+    let mut out = Vec::new();
+    unsafe {
+        for item in (&(*list_ref).data).iter().take((*list_ref).len) {
+            let Some(text) = value_to_string(*item) else {
+                return Err("process_run spec.args must contain only String values".to_string());
+            };
+            out.push(text);
+        }
+    }
+    Ok(out)
+}
+
+fn collect_env_pairs(env_val: Value) -> Result<Vec<(String, String)>, String> {
+    if env_val.is_nil() {
+        return Ok(Vec::new());
+    }
+    let Some(map_ref) = map::as_map_ref(env_val) else {
+        return Err("process_run spec.env must be Map[String, String]".to_string());
+    };
+    let mut pairs = Vec::new();
+    let mut iter = map::map_iter(map_ref);
+    while let Some((key, value)) = iter.next() {
+        let Some(key_text) = string::with_string_bytes(key.0, |bytes| {
+            String::from_utf8_lossy(bytes).into_owned()
+        }) else {
+            return Err("process_run spec.env keys must be String".to_string());
+        };
+        let Some(value_text) = value_to_string(value) else {
+            return Err("process_run spec.env values must be String".to_string());
+        };
+        pairs.push((key_text, value_text));
+    }
+    Ok(pairs)
+}
+
+fn process_run_result(exit_code: i32, stdout: String, stderr: String, timed_out: bool) -> Value {
+    let payload = map::map_new();
+    map_put(payload, "exit_code", Value::from_int(i64::from(exit_code)));
+    map_put(payload, "stdout", string::str_from_bytes(stdout.as_bytes()));
+    map_put(payload, "stderr", string::str_from_bytes(stderr.as_bytes()));
+    map_put(payload, "timed_out", Value::from_bool(timed_out));
+    payload
+}
+
+pub(crate) fn fs_read_dir(path: Value) -> Value {
+    let Some(bytes) = string_bytes(path) else {
+        return result::result_err(builtin_error("fs_read_dir expects a String"));
+    };
+    let path_str = String::from_utf8_lossy(&bytes);
+    let entries = match std::fs::read_dir(path_str.as_ref()) {
+        Ok(entries) => entries,
+        Err(err) => return result::result_err(builtin_error(&format!("fs_read_dir: {err}"))),
+    };
+    let out = crate::wr_list_new(0);
+    for entry in entries {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let text = entry.path().to_string_lossy().into_owned();
+        let text_val = string::str_from_bytes(text.as_bytes());
+        let _ = crate::wr_list_push_val(out, text_val);
+        unsafe { crate::wr_rc_dec(text_val) };
+    }
+    result::result_ok(out)
+}
+
+pub(crate) fn fs_metadata(path: Value) -> Value {
+    let Some(bytes) = string_bytes(path) else {
+        return result::result_err(builtin_error("fs_metadata expects a String"));
+    };
+    let path_str = String::from_utf8_lossy(&bytes);
+    let metadata = match std::fs::metadata(path_str.as_ref()) {
+        Ok(metadata) => metadata,
+        Err(err) => return result::result_err(builtin_error(&format!("fs_metadata: {err}"))),
+    };
+    let out = map::map_new();
+    map_put(out, "path", string::str_from_bytes(path_str.as_bytes()));
+    map_put(out, "is_file", Value::from_bool(metadata.is_file()));
+    map_put(out, "is_dir", Value::from_bool(metadata.is_dir()));
+    map_put(
+        out,
+        "size_bytes",
+        Value::from_int(i64::try_from(metadata.len()).unwrap_or(i64::MAX)),
+    );
+    map_put(
+        out,
+        "readonly",
+        Value::from_bool(metadata.permissions().readonly()),
+    );
+    result::result_ok(out)
+}
+
+pub(crate) fn fs_mkdir_all(path: Value) -> Value {
+    let Some(bytes) = string_bytes(path) else {
+        return result::result_err(builtin_error("fs_mkdir_all expects a String"));
+    };
+    let path_str = String::from_utf8_lossy(&bytes);
+    match std::fs::create_dir_all(path_str.as_ref()) {
+        Ok(()) => result::result_ok(Value::nil()),
+        Err(err) => result::result_err(builtin_error(&format!("fs_mkdir_all: {err}"))),
+    }
+}
+
+pub(crate) fn fs_remove_file(path: Value) -> Value {
+    let Some(bytes) = string_bytes(path) else {
+        return result::result_err(builtin_error("fs_remove_file expects a String"));
+    };
+    let path_str = String::from_utf8_lossy(&bytes);
+    match std::fs::remove_file(path_str.as_ref()) {
+        Ok(()) => result::result_ok(Value::nil()),
+        Err(err) => result::result_err(builtin_error(&format!("fs_remove_file: {err}"))),
+    }
+}
+
+pub(crate) fn fs_remove_dir_all(path: Value) -> Value {
+    let Some(bytes) = string_bytes(path) else {
+        return result::result_err(builtin_error("fs_remove_dir_all expects a String"));
+    };
+    let path_str = String::from_utf8_lossy(&bytes);
+    match std::fs::remove_dir_all(path_str.as_ref()) {
+        Ok(()) => result::result_ok(Value::nil()),
+        Err(err) => result::result_err(builtin_error(&format!("fs_remove_dir_all: {err}"))),
+    }
+}
+
+pub(crate) fn fs_rename(from_path: Value, to_path: Value) -> Value {
+    let Some(from_bytes) = string_bytes(from_path) else {
+        return result::result_err(builtin_error("fs_rename expects String from_path"));
+    };
+    let Some(to_bytes) = string_bytes(to_path) else {
+        return result::result_err(builtin_error("fs_rename expects String to_path"));
+    };
+    let from_text = String::from_utf8_lossy(&from_bytes);
+    let to_text = String::from_utf8_lossy(&to_bytes);
+    match std::fs::rename(from_text.as_ref(), to_text.as_ref()) {
+        Ok(()) => result::result_ok(Value::nil()),
+        Err(err) => result::result_err(builtin_error(&format!("fs_rename: {err}"))),
+    }
+}
+
+pub(crate) fn fs_set_executable(path: Value) -> Value {
+    let Some(bytes) = string_bytes(path) else {
+        return result::result_err(builtin_error("fs_set_executable expects a String"));
+    };
+    let path_str = String::from_utf8_lossy(&bytes);
+    #[cfg(unix)]
+    {
+        let metadata = match std::fs::metadata(path_str.as_ref()) {
+            Ok(metadata) => metadata,
+            Err(err) => {
+                return result::result_err(builtin_error(&format!("fs_set_executable: {err}")));
+            }
+        };
+        let mut permissions = metadata.permissions();
+        permissions.set_mode(permissions.mode() | 0o111);
+        match std::fs::set_permissions(path_str.as_ref(), permissions) {
+            Ok(()) => result::result_ok(Value::nil()),
+            Err(err) => result::result_err(builtin_error(&format!("fs_set_executable: {err}"))),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        result::result_err(builtin_error(
+            "fs_set_executable is only supported on unix hosts",
+        ))
+    }
+}
+
+pub(crate) fn process_argv() -> Value {
+    let out = crate::wr_list_new(0);
+    for arg in std::env::args() {
+        let value = string::str_from_bytes(arg.as_bytes());
+        let _ = crate::wr_list_push_val(out, value);
+        unsafe { crate::wr_rc_dec(value) };
+    }
+    out
+}
+
+pub(crate) fn process_cwd() -> Value {
+    match std::env::current_dir() {
+        Ok(path) => {
+            let text = path.to_string_lossy().into_owned();
+            result::result_ok(string::str_from_bytes(text.as_bytes()))
+        }
+        Err(err) => result::result_err(builtin_error(&format!("process_cwd: {err}"))),
+    }
+}
+
+pub(crate) fn process_exit(code: Value) -> Value {
+    let raw = int_value(code).unwrap_or(1);
+    let clamped = raw.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+    std::process::exit(clamped);
+}
+
+pub(crate) fn process_run(spec: Value) -> Value {
+    let Some(_) = map::as_map_ref(spec) else {
+        return result::result_err(builtin_error("process_run expects Map spec"));
+    };
+
+    let Some(command) = map_get_string_field(spec, "command") else {
+        return result::result_err(builtin_error("process_run spec.command is required"));
+    };
+
+    let args_val = map_get_field(spec, "args");
+    let args = match collect_string_list(args_val) {
+        Ok(args) => args,
+        Err(err) => {
+            unsafe { crate::wr_rc_dec(args_val) };
+            return result::result_err(builtin_error(&err));
+        }
+    };
+    unsafe { crate::wr_rc_dec(args_val) };
+
+    let env_val = map_get_field(spec, "env");
+    let env_pairs = match collect_env_pairs(env_val) {
+        Ok(pairs) => pairs,
+        Err(err) => {
+            unsafe { crate::wr_rc_dec(env_val) };
+            return result::result_err(builtin_error(&err));
+        }
+    };
+    unsafe { crate::wr_rc_dec(env_val) };
+
+    let timeout_ms = map_get_integer_field(spec, "timeout_ms").unwrap_or(0);
+    let cwd = map_get_string_field(spec, "cwd");
+
+    let mut cmd = Command::new(&command);
+    cmd.args(&args);
+    if let Some(cwd) = cwd {
+        if !cwd.trim().is_empty() {
+            cmd.current_dir(cwd);
+        }
+    }
+    for (key, value) in env_pairs {
+        cmd.env(key, value);
+    }
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(err) => return result::result_err(builtin_error(&format!("process_run: {err}"))),
+    };
+
+    let timeout = timeout_ms.max(0) as u64;
+    let mut timed_out = false;
+    if timeout > 0 {
+        let start = Instant::now();
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) => {
+                    if start.elapsed() >= Duration::from_millis(timeout) {
+                        timed_out = true;
+                        let _ = child.kill();
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(err) => {
+                    return result::result_err(builtin_error(&format!("process_run: {err}")));
+                }
+            }
+        }
+    }
+
+    let output = match child.wait_with_output() {
+        Ok(output) => output,
+        Err(err) => return result::result_err(builtin_error(&format!("process_run: {err}"))),
+    };
+    let code = output.status.code().unwrap_or(if timed_out { 124 } else { 1 });
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    result::result_ok(process_run_result(code, stdout, stderr, timed_out))
 }
 
 const HTTP_CASSETTE_SCHEMA_VERSION: u32 = 1;

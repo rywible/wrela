@@ -1,0 +1,62 @@
+so:
+    Deterministic cancellation and shutdown helpers for M11-E.
+
+use PlatformPorts from domain/platform/contracts
+use try_to_create_wait_handle from application/runtime/platform_runtime
+use try_to_wake_all_waiters from application/runtime/platform_runtime
+use try_to_drop_wait_handle from application/runtime/platform_runtime
+
+
+to create_cancellation_token() -> Map:
+    token_maps = __wr_map_new()
+    __wr_map_set(token_maps, "cancelled", false)
+    return token_maps
+
+
+to mark_cancellation_token_cancelled(token_maps: Map) -> Map:
+    __wr_map_set(token_maps, "cancelled", true)
+    return token_maps
+
+
+to get_cancellation_token_is_cancelled(token_maps: Map) -> Boolean:
+    return __wr_map_get(token_maps, "cancelled") == true
+
+
+to try_to_shutdown_runtime(
+    ports: PlatformPorts,
+    token_maps: Map,
+    wait_name: String
+) -> Result[Map]:
+    wait_handle = ""
+    match try_to_create_wait_handle(ports, wait_name):
+        Ok(handle_text):
+            wait_handle = handle_text
+        Err(error_text):
+            return error error_text
+        otherwise:
+            return error "shutdown failed at create_wait_handle"
+
+    wake_count = 0
+    match try_to_wake_all_waiters(ports, wait_handle):
+        Ok(count_value):
+            wake_count = count_value
+        Err(error_text):
+            return error error_text
+        otherwise:
+            return error "shutdown failed at wake_all"
+
+    match try_to_drop_wait_handle(ports, wait_handle):
+        Ok(drop_ok):
+            drop_ok = drop_ok
+        Err(error_text):
+            return error error_text
+        otherwise:
+            return error "shutdown failed at drop_wait_handle"
+
+    summary_maps = __wr_map_new()
+    __wr_map_set(summary_maps, "stop_scheduling", true)
+    __wr_map_set(summary_maps, "cancel_pending", get_cancellation_token_is_cancelled(token_maps))
+    __wr_map_set(summary_maps, "wake_waiters", wake_count >= 0)
+    __wr_map_set(summary_maps, "drop_handles", true)
+    __wr_map_set(summary_maps, "teardown_order", ["stop_scheduling", "cancel_pending", "wake_waiters", "drop_handles"])
+    return summary_maps

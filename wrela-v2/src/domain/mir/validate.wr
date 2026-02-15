@@ -1,0 +1,74 @@
+so:
+    MIR structural validation for M4 vertical slice.
+
+use get_mir_instruction_text_lists from domain/mir/ir
+
+
+to create_mir_validate_result_maps(is_ok: Boolean) -> Map:
+    result_maps = __wr_map_new()
+    __wr_map_set(result_maps, "ok", is_ok)
+    return result_maps
+
+
+to get_mir_text_prefix_match_flag(text_value: String, prefix_value: String) -> Integer:
+    text_bytes = __wr_bytes_to_list(__wr_bytes_from_string(text_value))
+    prefix_bytes = __wr_bytes_to_list(__wr_bytes_from_string(prefix_value))
+
+    mutable text_count = 0
+    for text_byte in text_bytes:
+        text_count = text_count + 1
+
+    mutable prefix_count = 0
+    for prefix_byte in prefix_bytes:
+        prefix_count = prefix_count + 1
+
+    if prefix_count == 0:
+        return 1
+    if text_count < prefix_count:
+        return 0
+
+    mutable index_number = 0
+    for prefix_byte in prefix_bytes:
+        mutable current_index_number = 0
+        mutable found_byte_value = -1
+        for text_byte in text_bytes:
+            if current_index_number == index_number:
+                found_byte_value = text_byte
+            current_index_number = current_index_number + 1
+        if found_byte_value != prefix_byte:
+            return 0
+        index_number = index_number + 1
+    return 1
+
+
+to validate_mir_program(mir_program_maps: Map) -> Map:
+    instruction_text_lists = get_mir_instruction_text_lists(mir_program_maps)
+
+    mutable instruction_count_number = 0
+    mutable has_return_flag = 0
+    mutable last_instruction_text = ""
+    for instruction_text in instruction_text_lists:
+        instruction_count_number = instruction_count_number + 1
+        last_instruction_text = instruction_text
+        if get_mir_text_prefix_match_flag(instruction_text, "const_i|") == 1:
+            has_return_flag = has_return_flag
+        otherwise:
+            if get_mir_text_prefix_match_flag(instruction_text, "const_b|") == 1:
+                has_return_flag = has_return_flag
+            otherwise:
+                if get_mir_text_prefix_match_flag(instruction_text, "bin|") == 1:
+                    has_return_flag = has_return_flag
+                otherwise:
+                    if get_mir_text_prefix_match_flag(instruction_text, "ret|") == 1:
+                        has_return_flag = 1
+                    otherwise:
+                        return create_mir_validate_result_maps(false)
+
+    if instruction_count_number < 1:
+        return create_mir_validate_result_maps(false)
+    if has_return_flag != 1:
+        return create_mir_validate_result_maps(false)
+    if get_mir_text_prefix_match_flag(last_instruction_text, "ret|") != 1:
+        return create_mir_validate_result_maps(false)
+
+    return create_mir_validate_result_maps(true)

@@ -1,0 +1,125 @@
+so:
+    Concurrency runtime facade over platform thread/sync ports.
+    Deterministic contract behavior for spawn/join/wait/wake.
+
+use PlatformPorts from domain/platform/contracts
+use try_to_validate_platform_ports_conformance from application/runtime/platform_conformance
+use try_to_spawn_thread from application/runtime/platform_runtime
+use try_to_join_thread from application/runtime/platform_runtime
+use try_to_yield_thread from application/runtime/platform_runtime
+use try_to_create_wait_handle from application/runtime/platform_runtime
+use try_to_drop_wait_handle from application/runtime/platform_runtime
+use try_to_wait_on_handle from application/runtime/platform_runtime
+use try_to_wake_one_waiter from application/runtime/platform_runtime
+use try_to_wake_all_waiters from application/runtime/platform_runtime
+
+
+to try_to_run_thread_lifecycle(
+    ports: PlatformPorts,
+    thread_name: String,
+    join_timeout_ms: Integer
+) -> Result[Map]:
+    match try_to_validate_platform_ports_conformance(ports):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+
+    payload_maps = __wr_map_new()
+    __wr_map_set(payload_maps, "thread_name", thread_name)
+
+    spawn_maps = __wr_map_new()
+    match try_to_spawn_thread(ports, thread_name, payload_maps):
+        Ok(result_maps):
+            spawn_maps = result_maps
+        Err(error_text):
+            return error error_text
+        otherwise:
+            return error "thread lifecycle failed at spawn"
+
+    match try_to_yield_thread(ports):
+        Ok(yielded):
+            yielded = yielded
+        Err(error_text):
+            return error error_text
+        otherwise:
+            return error "thread lifecycle failed at yield"
+
+    thread_handle_value = __wr_map_get(spawn_maps, "thread_handle")
+    thread_handle = "{thread_handle_value}"
+    join_maps = __wr_map_new()
+    match try_to_join_thread(ports, thread_handle, join_timeout_ms):
+        Ok(result_maps):
+            join_maps = result_maps
+        Err(error_text):
+            return error error_text
+        otherwise:
+            return error "thread lifecycle failed at join"
+
+    lifecycle_maps = __wr_map_new()
+    __wr_map_set(lifecycle_maps, "thread_handle", thread_handle)
+    __wr_map_set(lifecycle_maps, "joined", __wr_map_get(join_maps, "joined"))
+    __wr_map_set(lifecycle_maps, "host_family", ports.host_family_name)
+    __wr_map_set(lifecycle_maps, "backend_name", ports.reactor_backend_name)
+    return lifecycle_maps
+
+
+to try_to_run_wait_lifecycle(
+    ports: PlatformPorts,
+    wait_name: String,
+    wait_timeout_ms: Integer
+) -> Result[Map]:
+    match try_to_validate_platform_ports_conformance(ports):
+        Err(error_text):
+            return error error_text
+        otherwise:
+            nothing
+
+    wait_handle = ""
+    match try_to_create_wait_handle(ports, wait_name):
+        Ok(handle_text):
+            wait_handle = handle_text
+        Err(error_text):
+            return error error_text
+        otherwise:
+            return error "wait lifecycle failed at create_wait_handle"
+
+    match try_to_wait_on_handle(ports, wait_handle, wait_timeout_ms):
+        Ok(wait_result_maps):
+            wait_result_maps = wait_result_maps
+        Err(error_text):
+            return error error_text
+        otherwise:
+            return error "wait lifecycle failed at wait"
+
+    match try_to_wake_one_waiter(ports, wait_handle):
+        Ok(woken_one_count):
+            woken_one_count = woken_one_count
+        Err(error_text):
+            return error error_text
+        otherwise:
+            return error "wait lifecycle failed at wake_one"
+
+    wake_all_count = 0
+    match try_to_wake_all_waiters(ports, wait_handle):
+        Ok(woken_count):
+            wake_all_count = woken_count
+        Err(error_text):
+            return error error_text
+        otherwise:
+            return error "wait lifecycle failed at wake_all"
+
+    match try_to_drop_wait_handle(ports, wait_handle):
+        Ok(drop_ok):
+            drop_ok = drop_ok
+        Err(error_text):
+            return error error_text
+        otherwise:
+            return error "wait lifecycle failed at drop_wait_handle"
+
+    lifecycle_maps = __wr_map_new()
+    __wr_map_set(lifecycle_maps, "wait_handle", wait_handle)
+    __wr_map_set(lifecycle_maps, "wake_all_count", wake_all_count)
+    __wr_map_set(lifecycle_maps, "host_family", ports.host_family_name)
+    __wr_map_set(lifecycle_maps, "backend_name", ports.reactor_backend_name)
+    return lifecycle_maps

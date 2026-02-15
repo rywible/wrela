@@ -1,0 +1,10 @@
+so:
+    Wrela-v2 project entrypoint for v1-driven check/test/build certification lanes.
+
+use run_cli from application/cli
+use get_process_argv from application/argv_source
+
+
+to run() -> Integer:
+    argument_values = get_process_argv()
+    return run_cli(argument_values)

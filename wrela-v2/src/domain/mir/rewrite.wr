@@ -1,0 +1,44 @@
+so:
+    Deterministic MIR rewrite pass for M4 vertical slice.
+
+use create_mir_program from domain/mir/ir
+use get_mir_instruction_text_lists from domain/mir/ir
+
+
+to create_rewritten_instruction_text(instruction_text: String) -> String:
+    byte_values = __wr_bytes_to_list(__wr_bytes_from_string(instruction_text))
+    normalized_bytes = []
+    mutable previous_was_space_flag = 0
+    for byte_value in byte_values:
+        if byte_value == 32:
+            if previous_was_space_flag == 0:
+                __wr_list_push(normalized_bytes, byte_value)
+            previous_was_space_flag = 1
+        otherwise:
+            __wr_list_push(normalized_bytes, byte_value)
+            previous_was_space_flag = 0
+    return __wr_bytes_to_string(__wr_bytes_from_list(normalized_bytes))
+
+
+to create_rewritten_mir_instruction(instruction_text: String) -> String:
+    return create_rewritten_instruction_text(instruction_text)
+
+
+to create_mir_rewrite_result_maps(is_ok: Boolean, mir_program_maps: Map) -> Map:
+    result_maps = __wr_map_new()
+    __wr_map_set(result_maps, "ok", is_ok)
+    __wr_map_set(result_maps, "mir", mir_program_maps)
+    return result_maps
+
+
+to create_rewritten_mir_program(mir_program_maps: Map) -> Map:
+    old_instruction_text_lists = get_mir_instruction_text_lists(mir_program_maps)
+    rewritten_instruction_text_lists = []
+    for instruction_text in old_instruction_text_lists:
+        __wr_list_push(
+            rewritten_instruction_text_lists,
+            create_rewritten_mir_instruction(instruction_text)
+        )
+
+    rewritten_program_maps = create_mir_program(rewritten_instruction_text_lists)
+    return create_mir_rewrite_result_maps(true, rewritten_program_maps)

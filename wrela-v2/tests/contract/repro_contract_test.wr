@@ -1,0 +1,131 @@
+so:
+    M9-C reproducibility gate contract tests.
+
+use run_init_command from application/init_command
+use try_to_run_repro_runner from application/repro_runner
+use try_to_build_executable from application/build_runner
+use get_build_runner_string_map_value_or_default from application/build_runner
+use get_deterministic_stage_root from application/stage_toolchain_runner
+
+
+to test_repro_runner_passes_when_stage_hashes_match() -> Nothing:
+    root_path_text = "target/wrela_v2_repro_contract_ok"
+    __wr_fs_remove_dir_all(root_path_text) otherwise nothing
+    assert value run_init_command(root_path_text) == 0
+    __wr_env_set("WRELA_PERF_FIXED_DURATION_NS", "123")
+
+    stage_root = get_deterministic_stage_root(root_path_text, ".")
+    __wr_env_set("WRELA_V2_BUILD_OUTPUT_ROOT", "{stage_root}/build_output")
+    __wr_env_set("WRELA_V2_CERT_OUTPUT_ROOT", "{stage_root}/cert_output")
+
+    stage1_output_path_text = ""
+    match try_to_build_executable(root_path_text):
+        Ok(stage1_build_result_maps):
+            stage1_output_path_text = get_build_runner_string_map_value_or_default(
+                stage1_build_result_maps,
+                "output_path",
+                ""
+            )
+        Err(_):
+            __wr_env_set("WRELA_V2_BUILD_OUTPUT_ROOT", "")
+            __wr_env_set("WRELA_V2_CERT_OUTPUT_ROOT", "")
+            assert value false == true
+        otherwise:
+            __wr_env_set("WRELA_V2_BUILD_OUTPUT_ROOT", "")
+            __wr_env_set("WRELA_V2_CERT_OUTPUT_ROOT", "")
+            assert value false == true
+    __wr_env_set("WRELA_V2_BUILD_OUTPUT_ROOT", "")
+    __wr_env_set("WRELA_V2_CERT_OUTPUT_ROOT", "")
+
+    if stage1_output_path_text == "":
+        assert value false == true
+
+    match __wr_fs_mkdir_all(stage_root):
+        Ok(_):
+            nothing
+        Err(_):
+            assert value false == true
+        otherwise:
+            assert value false == true
+
+    stage1_path_text = "{stage_root}/stage1_toolchain.bin"
+    mutable stage1_bytes = __wr_bytes_from_string("")
+    match __wr_fs_read_bytes(stage1_output_path_text):
+        Ok(bytes):
+            stage1_bytes = bytes
+        Err(_):
+            assert value false == true
+        otherwise:
+            assert value false == true
+    __wr_fs_write_bytes(stage1_path_text, stage1_bytes) otherwise nothing
+    __wr_fs_set_executable(stage1_path_text) otherwise nothing
+
+    match try_to_run_repro_runner(root_path_text, stage1_path_text, "."):
+        Ok(result_maps):
+            assert value __wr_map_get(result_maps, "status") == "ok"
+        Err(_):
+            assert value false == true
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_repro_runner_fails_closed_on_mismatch() -> Nothing:
+    root_path_text = "target/wrela_v2_repro_contract_mismatch"
+    __wr_fs_remove_dir_all(root_path_text) otherwise nothing
+    assert value run_init_command(root_path_text) == 0
+
+    stage_root = get_deterministic_stage_root(root_path_text, ".")
+    __wr_env_set("WRELA_V2_BUILD_OUTPUT_ROOT", "{stage_root}/build_output")
+    __wr_env_set("WRELA_V2_CERT_OUTPUT_ROOT", "{stage_root}/cert_output")
+
+    match try_to_build_executable(root_path_text):
+        Ok(_):
+            nothing
+        Err(_):
+            __wr_env_set("WRELA_V2_BUILD_OUTPUT_ROOT", "")
+            __wr_env_set("WRELA_V2_CERT_OUTPUT_ROOT", "")
+            assert value false == true
+        otherwise:
+            __wr_env_set("WRELA_V2_BUILD_OUTPUT_ROOT", "")
+            __wr_env_set("WRELA_V2_CERT_OUTPUT_ROOT", "")
+            assert value false == true
+    __wr_env_set("WRELA_V2_BUILD_OUTPUT_ROOT", "")
+    __wr_env_set("WRELA_V2_CERT_OUTPUT_ROOT", "")
+
+    match __wr_fs_mkdir_all(stage_root):
+        Ok(_):
+            nothing
+        Err(_):
+            assert value false == true
+        otherwise:
+            assert value false == true
+
+    stage1_path_text = "{stage_root}/stage1_toolchain.bin"
+    mismatch_stage_text = "#!/usr/bin/env bash\nexit 0\n# mismatch marker\n"
+    __wr_fs_write_bytes(stage1_path_text, __wr_bytes_from_string(mismatch_stage_text)) otherwise nothing
+    __wr_fs_set_executable(stage1_path_text) otherwise nothing
+
+    match try_to_run_repro_runner(root_path_text, stage1_path_text, "."):
+        Ok(_):
+            assert value false == true
+        Err(error_text):
+            assert value error_text == "self-host reproducibility mismatch"
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_repro_runner_fails_when_stage1_artifact_missing() -> Nothing:
+    match try_to_run_repro_runner(
+        "target/wrela_v2_repro_contract_missing",
+        "target/wrela_v2_self_host/missing_stage1.bin",
+        "."
+    ):
+        Ok(_):
+            assert value false == true
+        Err(error_text):
+            assert value error_text == "self-host artifact missing"
+        otherwise:
+            assert value false == true
+    return nothing

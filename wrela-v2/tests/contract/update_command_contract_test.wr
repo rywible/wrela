@@ -1,0 +1,52 @@
+so:
+    Contract coverage for v2 update command real behavior.
+
+use run_update_command from application/update_command
+
+
+to try_to_write_text_for_update_contract(path: String, contents: String) -> Nothing:
+    __wr_fs_write_bytes(path, __wr_bytes_from_string(contents)) otherwise nothing
+    return nothing
+
+
+to try_to_setup_update_contract_fixture(root_path: String, manifest_text: String) -> Nothing:
+    __wr_fs_remove_dir_all(root_path) otherwise nothing
+    __wr_fs_mkdir_all(root_path) otherwise nothing
+    try_to_write_text_for_update_contract("{root_path}/artifact.bin", "artifact")
+    try_to_write_text_for_update_contract("{root_path}/channel.manifest", manifest_text)
+    __wr_env_set("WRELA_V2_CHANNEL_MANIFEST", "{root_path}/channel.manifest")
+    return nothing
+
+
+to test_update_command_rejects_path_argument() -> Nothing:
+    assert value run_update_command("src/main.wr") == 1
+    return nothing
+
+
+to test_update_command_returns_two_for_missing_manifest() -> Nothing:
+    __wr_env_set("WRELA_V2_CHANNEL_MANIFEST", "target/wrela_v2_update_contract/missing.manifest")
+    assert value run_update_command("") == 2
+    return nothing
+
+
+to test_update_command_returns_zero_for_up_to_date_manifest() -> Nothing:
+    root_path_text = "target/wrela_v2_update_contract/up_to_date"
+    manifest_text = "current_version=1.0.0\navailable_version=1.0.0\nartifact_path={root_path_text}/artifact.bin\n"
+    try_to_setup_update_contract_fixture(root_path_text, manifest_text)
+    assert value run_update_command("") == 0
+    return nothing
+
+
+to test_update_command_returns_zero_for_newer_artifact_and_writes_state() -> Nothing:
+    root_path_text = "target/wrela_v2_update_contract/update"
+    manifest_text = "current_version=1.0.0\navailable_version=1.1.0\nartifact_path={root_path_text}/artifact.bin\n"
+    try_to_setup_update_contract_fixture(root_path_text, manifest_text)
+    assert value run_update_command("") == 0
+    match __wr_fs_metadata("target/wrela_v2_update/active_version.txt"):
+        Ok(_):
+            assert value true == true
+        Err(_):
+            assert value false == true
+        otherwise:
+            assert value false == true
+    return nothing

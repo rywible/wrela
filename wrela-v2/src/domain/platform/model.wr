@@ -1,0 +1,12 @@
+so:
+    Platform-neutral model values used by composition and adapter selection.
+
+A PlatformTarget:
+    has:
+        mutable host_os_name: String = ""
+        mutable host_architecture: String = ""
+
+
+A ReactorBackend:
+    has:
+        backend_name: String = "unknown"

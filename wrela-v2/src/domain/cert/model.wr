@@ -1,0 +1,56 @@
+so:
+    Canonical cert model and deterministic serializer for M8-A.
+
+
+to create_cert_maps(
+    cert_schema_version_text: String,
+    entry_path_text: String,
+    workspace_root_text: String,
+    artifact_path_text: String,
+    tests_passed_text: String,
+    compiler_version_text: String,
+    runtime_version_text: String,
+    source_hash_text: String,
+    binary_hash_text: String,
+    provenance_toolchain_text: String,
+    provenance_stage_text: String
+) -> Map:
+    cert_maps = __wr_map_new()
+    __wr_map_set(cert_maps, "cert_schema_version", cert_schema_version_text)
+    __wr_map_set(cert_maps, "entry_path", entry_path_text)
+    __wr_map_set(cert_maps, "workspace_root", workspace_root_text)
+    __wr_map_set(cert_maps, "artifact_path", artifact_path_text)
+    __wr_map_set(cert_maps, "tests_passed", tests_passed_text)
+    __wr_map_set(cert_maps, "compiler_version", compiler_version_text)
+    __wr_map_set(cert_maps, "runtime_version", runtime_version_text)
+    __wr_map_set(cert_maps, "source_hash", source_hash_text)
+    __wr_map_set(cert_maps, "binary_hash", binary_hash_text)
+    __wr_map_set(cert_maps, "provenance.toolchain", provenance_toolchain_text)
+    __wr_map_set(cert_maps, "provenance.stage", provenance_stage_text)
+    return cert_maps
+
+
+to get_cert_text(cert_maps: Map) -> String:
+    cert_schema_version_value = __wr_map_get(cert_maps, "cert_schema_version")
+    entry_path_value = __wr_map_get(cert_maps, "entry_path")
+    workspace_root_value = __wr_map_get(cert_maps, "workspace_root")
+    artifact_path_value = __wr_map_get(cert_maps, "artifact_path")
+    tests_passed_value = __wr_map_get(cert_maps, "tests_passed")
+    compiler_version_value = __wr_map_get(cert_maps, "compiler_version")
+    runtime_version_value = __wr_map_get(cert_maps, "runtime_version")
+    source_hash_value = __wr_map_get(cert_maps, "source_hash")
+    binary_hash_value = __wr_map_get(cert_maps, "binary_hash")
+    provenance_toolchain_value = __wr_map_get(cert_maps, "provenance.toolchain")
+    provenance_stage_value = __wr_map_get(cert_maps, "provenance.stage")
+    cert_schema_version_text = "{cert_schema_version_value}"
+    entry_path_text = "{entry_path_value}"
+    workspace_root_text = "{workspace_root_value}"
+    artifact_path_text = "{artifact_path_value}"
+    tests_passed_text = "{tests_passed_value}"
+    compiler_version_text = "{compiler_version_value}"
+    runtime_version_text = "{runtime_version_value}"
+    source_hash_text = "{source_hash_value}"
+    binary_hash_text = "{binary_hash_value}"
+    provenance_toolchain_text = "{provenance_toolchain_value}"
+    provenance_stage_text = "{provenance_stage_value}"
+    return "cert_schema_version={cert_schema_version_text}\nentry_path={entry_path_text}\nworkspace_root={workspace_root_text}\nartifact_path={artifact_path_text}\ntests_passed={tests_passed_text}\ncompiler_version={compiler_version_text}\nruntime_version={runtime_version_text}\nsource_hash={source_hash_text}\nbinary_hash={binary_hash_text}\nprovenance.toolchain={provenance_toolchain_text}\nprovenance.stage={provenance_stage_text}\n"

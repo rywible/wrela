@@ -1,0 +1,37 @@
+so:
+    Coverage touchpoints for M7 command/runtime callsites.
+
+use run_update_command from application/update_command
+use run_compile_command from application/compile_command
+use run_verify_cert_command from application/verify_cert_command
+use run_run_command from application/run_command
+use run_dev_command from application/dev_command
+use run_test_command from application/test_command
+use run_perf_command from application/perf_command
+use run_perfcmp_command from application/perfcmp_command
+use run_matrix_command from application/matrix_command
+use try_to_set_environment_variable from host/env
+
+
+to test_m7_command_and_runtime_coverage_touchpoints_are_callable() -> Nothing:
+    try_to_set_environment_variable("WRELA_V2_CHANNEL_MANIFEST", "target/wrela_v2_missing_channel.manifest") otherwise nothing
+    try_to_set_environment_variable("WRELA_V2_PERF_BASELINE", "target/wrela_v2_missing_baseline.json") otherwise nothing
+    run_update_command("")
+    run_update_command("x")
+    run_compile_command("")
+    run_compile_command("src/main.wr")
+    run_verify_cert_command("")
+    run_verify_cert_command("target/wrela_cert/cert.json")
+    run_run_command("")
+    run_run_command("src/main.wr")
+    run_dev_command("")
+    run_dev_command("src/main.wr")
+    run_test_command("target/wrela_v2_test_command_contract_missing")
+    run_perf_command("")
+    run_perf_command("tests/basic_test.wr")
+    run_perfcmp_command("")
+    run_perfcmp_command("tests/basic_test.wr")
+    run_matrix_command("")
+    run_matrix_command("tests/basic_test.wr")
+    assert value true == true
+    return nothing

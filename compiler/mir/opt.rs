@@ -962,6 +962,8 @@ fn clone_small_hot_functions(module: &mut MirModule, graph: &CallGraph) {
     for func in &module.functions {
         func_map.insert(func.name.clone(), func.clone());
     }
+    let mut emitted_clone_names: HashSet<SmolStr> =
+        module.functions.iter().map(|func| func.name.clone()).collect();
     let mut cloned = Vec::new();
     let mut clone_names: HashMap<(SmolStr, SmolStr), SmolStr> = HashMap::new();
     let mut counter = 0usize;
@@ -991,7 +993,7 @@ fn clone_small_hot_functions(module: &mut MirModule, graph: &CallGraph) {
                     counter += 1;
                     SmolStr::new(format!("{}__clone{}", name, counter))
                 });
-                if !func_map.contains_key(clone_name) {
+                if emitted_clone_names.insert(clone_name.clone()) {
                     let mut clone = callee.clone();
                     clone.name = clone_name.clone();
                     cloned.push(clone);

@@ -1,0 +1,18 @@
+so:
+    V2 build command with real M7-B behavior.
+
+use try_to_build_executable from application/build_runner
+
+
+to run_build_command(path: String) -> Integer:
+    if path == "":
+        return 1
+
+    match try_to_build_executable(path):
+        Ok(_):
+            return 0
+        Err(_):
+            return 2
+        otherwise:
+            return 1
+    return 2

@@ -1,0 +1,149 @@
+so:
+    Contract coverage for v2 perf command real behavior.
+
+use run_perf_command from application/perf_command
+use run_init_command from application/init_command
+use create_perf_result_from_samples from application/perf_runner
+
+
+to try_to_read_text_for_perf_contract(path: String) -> Result[String]:
+    match __wr_fs_read_bytes(path):
+        Ok(bytes):
+            text = __wr_bytes_to_string(bytes)
+            match text:
+                String: return text
+                otherwise: return error "perf contract invalid utf8"
+        Err(_):
+            return error "perf contract read failed"
+        otherwise:
+            return error "perf contract read failed"
+    return error "perf contract read failed"
+
+
+to get_perf_contract_value_for_key(text: String, key_text: String) -> String:
+    prefix_text = "{key_text}="
+    line_lists = []
+    current_byte_lists = []
+    text_byte_lists = __wr_bytes_to_list(__wr_bytes_from_string(text))
+    for byte_value in text_byte_lists:
+        if byte_value == 13:
+            nothing
+        otherwise:
+            if byte_value == 10:
+                __wr_list_push(line_lists, __wr_bytes_to_string(__wr_bytes_from_list(current_byte_lists)))
+                current_byte_lists = []
+            otherwise:
+                __wr_list_push(current_byte_lists, byte_value)
+    __wr_list_push(line_lists, __wr_bytes_to_string(__wr_bytes_from_list(current_byte_lists)))
+
+    for line_text in line_lists:
+        line_byte_lists = __wr_bytes_to_list(__wr_bytes_from_string(line_text))
+        prefix_byte_lists = __wr_bytes_to_list(__wr_bytes_from_string(prefix_text))
+
+        mutable line_count_number = 0
+        for _ in line_byte_lists:
+            line_count_number = line_count_number + 1
+        mutable prefix_count_number = 0
+        for _ in prefix_byte_lists:
+            prefix_count_number = prefix_count_number + 1
+
+        if line_count_number < prefix_count_number:
+            nothing
+        otherwise:
+            mutable prefix_match_flag_number = 1
+            mutable index_number = 0
+            for prefix_byte_value in prefix_byte_lists:
+                mutable line_byte_at_index = -1
+                mutable cursor_number = 0
+                for line_byte_value in line_byte_lists:
+                    if cursor_number == index_number:
+                        line_byte_at_index = line_byte_value
+                        break
+                    cursor_number = cursor_number + 1
+                if line_byte_at_index != prefix_byte_value:
+                    prefix_match_flag_number = 0
+                    break
+                index_number = index_number + 1
+
+            if prefix_match_flag_number == 1:
+                value_byte_lists = []
+                mutable value_cursor_number = 0
+                for line_byte_value in line_byte_lists:
+                    if value_cursor_number >= prefix_count_number:
+                        __wr_list_push(value_byte_lists, line_byte_value)
+                    value_cursor_number = value_cursor_number + 1
+                return __wr_bytes_to_string(__wr_bytes_from_list(value_byte_lists))
+    return ""
+
+
+to test_perf_command_default_path_returns_two_for_invalid_workspace() -> Nothing:
+    __wr_env_set("WRELA_PERF_RUNS", "1")
+    assert value run_perf_command("") == 2
+    return nothing
+
+
+to test_perf_command_explicit_valid_path_writes_report() -> Nothing:
+    root_path_text = "target/wrela_v2_perf_contract_valid"
+    __wr_fs_remove_dir_all(root_path_text) otherwise nothing
+    assert value run_init_command(root_path_text) == 0
+    __wr_env_set("WRELA_PERF_RUNS", "1")
+    assert value run_perf_command(root_path_text) == 0
+    match __wr_fs_metadata("target/wrela_v2_perf/perf_report.json"):
+        Ok(_):
+            assert value true == true
+        Err(_):
+            assert value false == true
+        otherwise:
+            assert value false == true
+    return nothing
+
+
+to test_perf_command_report_is_deterministic_for_repeated_runs() -> Nothing:
+    root_path_text = "target/wrela_v2_perf_contract_deterministic"
+    __wr_fs_remove_dir_all(root_path_text) otherwise nothing
+    assert value run_init_command(root_path_text) == 0
+    __wr_env_set("WRELA_PERF_RUNS", "1")
+    __wr_env_set("WRELA_PERF_FIXED_TIMESTAMP_NS", "123456")
+    __wr_env_set("WRELA_PERF_FIXED_DURATION_NS", "777")
+    assert value run_perf_command(root_path_text) == 0
+
+    mutable first_report_text = ""
+    match try_to_read_text_for_perf_contract("target/wrela_v2_perf/perf_report.json"):
+        Ok(text):
+            first_report_text = text
+        Err(_):
+            assert value false == true
+        otherwise:
+            assert value false == true
+
+    assert value run_perf_command(root_path_text) == 0
+    mutable second_report_text = ""
+    match try_to_read_text_for_perf_contract("target/wrela_v2_perf/perf_report.json"):
+        Ok(text):
+            second_report_text = text
+        Err(_):
+            assert value false == true
+        otherwise:
+            assert value false == true
+
+    assert value first_report_text == second_report_text
+    return nothing
+
+
+to test_perf_command_percentiles_are_deterministic_for_odd_even_sample_counts() -> Nothing:
+    odd_result_maps = create_perf_result_from_samples(3, [9, 1, 5], 3, 0, 7)
+    assert value __wr_map_get(odd_result_maps, "p50_ns") == 5
+    assert value __wr_map_get(odd_result_maps, "p95_ns") == 5
+    assert value __wr_map_get(odd_result_maps, "p99_ns") == 5
+
+    even_result_maps = create_perf_result_from_samples(4, [40, 10, 30, 20], 4, 0, 8)
+    assert value __wr_map_get(even_result_maps, "p50_ns") == 20
+    assert value __wr_map_get(even_result_maps, "p95_ns") == 30
+    assert value __wr_map_get(even_result_maps, "p99_ns") == 30
+    return nothing
+
+
+to test_perf_command_returns_two_when_any_run_fails() -> Nothing:
+    __wr_env_set("WRELA_PERF_RUNS", "2")
+    assert value run_perf_command("target/wrela_v2_perf_contract_missing") == 2
+    return nothing

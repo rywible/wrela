@@ -1,0 +1,288 @@
+so:
+    Native lexer for the v2 check frontend subset.
+
+use create_frontend_token from domain/frontend/token
+
+use create_frontend_lex_tab_diagnostic from domain/frontend/diagnostics
+use create_frontend_lex_empty_diagnostic from domain/frontend/diagnostics
+use create_frontend_single_diagnostic_list from domain/frontend/diagnostics
+
+
+to create_frontend_empty_map_list() -> List:
+    empty_lists = []
+    for empty_map_item in [__wr_map_new()]:
+        if false:
+            __wr_list_push(empty_lists, empty_map_item)
+    return empty_lists
+
+
+to create_frontend_lex_result_map(is_ok: Boolean, token_lists: List, diagnostic_lists: List) -> Map:
+    result_maps = __wr_map_new()
+    __wr_map_set(result_maps, "ok", is_ok)
+    __wr_map_set(result_maps, "tokens", token_lists)
+    __wr_map_set(result_maps, "diagnostics", diagnostic_lists)
+    return result_maps
+
+
+to get_frontend_lex_token_lists(result_maps: Map) -> List:
+    token_lists = __wr_map_get(result_maps, "tokens")
+    if token_lists == nothing:
+        return create_frontend_empty_map_list()
+    return token_lists
+
+
+to get_frontend_lex_list_count(byte_values: List[Integer]) -> Integer:
+    mutable count_number = 0
+    for byte_value in byte_values:
+        count_number = count_number + 1
+    return count_number
+
+
+to get_frontend_lex_byte_at_index(byte_values: List[Integer], target_index_number: Integer) -> Integer:
+    mutable current_index_number = 0
+    for byte_value in byte_values:
+        if current_index_number == target_index_number:
+            return byte_value
+        current_index_number = current_index_number + 1
+    return -1
+
+
+to get_frontend_non_whitespace_byte_count(byte_values: List[Integer]) -> Integer:
+    mutable count_number = 0
+    for byte_value in byte_values:
+        if byte_value != 9:
+            if byte_value != 10:
+                if byte_value != 13:
+                    if byte_value != 32:
+                        count_number = count_number + 1
+    return count_number
+
+
+to get_frontend_lex_tab_diagnostic_or_empty_map(byte_values: List[Integer]) -> Map:
+    mutable line_number = 1
+    mutable column_number = 1
+
+    for byte_value in byte_values:
+        if byte_value == 9:
+            return create_frontend_lex_tab_diagnostic(line_number, column_number)
+
+        if byte_value == 10:
+            line_number = line_number + 1
+            column_number = 1
+        otherwise:
+            if byte_value != 13:
+                column_number = column_number + 1
+
+    return __wr_map_new()
+
+
+to get_frontend_lex_is_digit_flag(byte_value: Integer) -> Integer:
+    if byte_value >= 48 and byte_value <= 57:
+        return 1
+    return 0
+
+
+to get_frontend_lex_is_letter_flag(byte_value: Integer) -> Integer:
+    if byte_value >= 65 and byte_value <= 90:
+        return 1
+    if byte_value >= 97 and byte_value <= 122:
+        return 1
+    if byte_value == 95:
+        return 1
+    return 0
+
+
+to get_frontend_lex_is_identifier_continue_flag(byte_value: Integer) -> Integer:
+    if get_frontend_lex_is_letter_flag(byte_value) == 1:
+        return 1
+    if get_frontend_lex_is_digit_flag(byte_value) == 1:
+        return 1
+    return 0
+
+
+to get_frontend_lex_identifier_kind_text(identifier_text: String) -> String:
+    if identifier_text == "to":
+        return "TO"
+    if identifier_text == "run":
+        return "RUN"
+    if identifier_text == "return":
+        return "RETURN"
+    if identifier_text == "Integer":
+        return "INTEGER_TYPE"
+    if identifier_text == "true":
+        return "BOOLEAN_TRUE"
+    if identifier_text == "false":
+        return "BOOLEAN_FALSE"
+    return "IDENTIFIER"
+
+
+to get_source_tokens(source_text: String) -> Map:
+    byte_values = __wr_bytes_to_list(__wr_bytes_from_string(source_text))
+    total_count_number = get_frontend_lex_list_count(byte_values)
+
+    if get_frontend_non_whitespace_byte_count(byte_values) == 0:
+        return create_frontend_lex_result_map(
+            false,
+            create_frontend_empty_map_list(),
+            create_frontend_single_diagnostic_list(create_frontend_lex_empty_diagnostic())
+        )
+
+    tab_diagnostic_maps = get_frontend_lex_tab_diagnostic_or_empty_map(byte_values)
+    if __wr_map_get(tab_diagnostic_maps, "code") == "E-LEX-TAB":
+        return create_frontend_lex_result_map(
+            false,
+            create_frontend_empty_map_list(),
+            create_frontend_single_diagnostic_list(tab_diagnostic_maps)
+        )
+
+    token_lists = create_frontend_empty_map_list()
+    mutable index_number = 0
+    mutable line_number = 1
+    mutable column_number = 1
+
+    while index_number < total_count_number:
+        byte_value = get_frontend_lex_byte_at_index(byte_values, index_number)
+
+        if byte_value == 32:
+            index_number = index_number + 1
+            column_number = column_number + 1
+        otherwise:
+            if byte_value == 13:
+                index_number = index_number + 1
+            otherwise:
+                if byte_value == 10:
+                    __wr_list_push(
+                        token_lists,
+                        create_frontend_token("NEWLINE", "\n", line_number, column_number)
+                    )
+                    index_number = index_number + 1
+                    line_number = line_number + 1
+                    column_number = 1
+                otherwise:
+                    if byte_value == 40:
+                        __wr_list_push(
+                            token_lists,
+                            create_frontend_token("LPAREN", "(", line_number, column_number)
+                        )
+                        index_number = index_number + 1
+                        column_number = column_number + 1
+                    otherwise:
+                        if byte_value == 41:
+                            __wr_list_push(
+                                token_lists,
+                                create_frontend_token("RPAREN", ")", line_number, column_number)
+                            )
+                            index_number = index_number + 1
+                            column_number = column_number + 1
+                        otherwise:
+                            if byte_value == 58:
+                                __wr_list_push(
+                                    token_lists,
+                                    create_frontend_token("COLON", ":", line_number, column_number)
+                                )
+                                index_number = index_number + 1
+                                column_number = column_number + 1
+                            otherwise:
+                                if byte_value == 43:
+                                    __wr_list_push(
+                                        token_lists,
+                                        create_frontend_token("PLUS", "+", line_number, column_number)
+                                    )
+                                    index_number = index_number + 1
+                                    column_number = column_number + 1
+                                otherwise:
+                                    if byte_value == 45:
+                                        if get_frontend_lex_byte_at_index(byte_values, index_number + 1) == 62:
+                                            __wr_list_push(
+                                                token_lists,
+                                                create_frontend_token("ARROW", "->", line_number, column_number)
+                                            )
+                                            index_number = index_number + 2
+                                            column_number = column_number + 2
+                                        otherwise:
+                                            __wr_list_push(
+                                                token_lists,
+                                                create_frontend_token("MINUS", "-", line_number, column_number)
+                                            )
+                                            index_number = index_number + 1
+                                            column_number = column_number + 1
+                                    otherwise:
+                                        if byte_value == 42:
+                                            __wr_list_push(
+                                                token_lists,
+                                                create_frontend_token("STAR", "*", line_number, column_number)
+                                            )
+                                            index_number = index_number + 1
+                                            column_number = column_number + 1
+                                        otherwise:
+                                            if byte_value == 47:
+                                                __wr_list_push(
+                                                    token_lists,
+                                                    create_frontend_token("SLASH", "/", line_number, column_number)
+                                                )
+                                                index_number = index_number + 1
+                                                column_number = column_number + 1
+                                            otherwise:
+                                                if get_frontend_lex_is_digit_flag(byte_value) == 1:
+                                                    number_bytes = []
+                                                    number_start_column = column_number
+                                                    mutable is_number_looping = true
+                                                    while is_number_looping == true:
+                                                        current_byte_value = get_frontend_lex_byte_at_index(byte_values, index_number)
+                                                        if get_frontend_lex_is_digit_flag(current_byte_value) == 1:
+                                                            __wr_list_push(number_bytes, current_byte_value)
+                                                            index_number = index_number + 1
+                                                            column_number = column_number + 1
+                                                        otherwise:
+                                                            is_number_looping = false
+                                                    number_text = __wr_bytes_to_string(__wr_bytes_from_list(number_bytes))
+                                                    __wr_list_push(
+                                                        token_lists,
+                                                        create_frontend_token(
+                                                            "INTEGER_LITERAL",
+                                                            number_text,
+                                                            line_number,
+                                                            number_start_column
+                                                        )
+                                                    )
+                                                otherwise:
+                                                    if get_frontend_lex_is_letter_flag(byte_value) == 1:
+                                                        identifier_bytes = []
+                                                        identifier_start_column = column_number
+                                                        mutable is_identifier_looping = true
+                                                        while is_identifier_looping == true:
+                                                            current_byte_value = get_frontend_lex_byte_at_index(byte_values, index_number)
+                                                            if get_frontend_lex_is_identifier_continue_flag(current_byte_value) == 1:
+                                                                __wr_list_push(identifier_bytes, current_byte_value)
+                                                                index_number = index_number + 1
+                                                                column_number = column_number + 1
+                                                            otherwise:
+                                                                is_identifier_looping = false
+                                                        identifier_text = __wr_bytes_to_string(__wr_bytes_from_list(identifier_bytes))
+                                                        identifier_kind_text = get_frontend_lex_identifier_kind_text(identifier_text)
+                                                        __wr_list_push(
+                                                            token_lists,
+                                                            create_frontend_token(
+                                                                identifier_kind_text,
+                                                                identifier_text,
+                                                                line_number,
+                                                                identifier_start_column
+                                                            )
+                                                        )
+                                                    otherwise:
+                                                        __wr_list_push(
+                                                            token_lists,
+                                                            create_frontend_token(
+                                                                "UNKNOWN",
+                                                                __wr_bytes_to_string(__wr_bytes_from_list([byte_value])),
+                                                                line_number,
+                                                                column_number
+                                                            )
+                                                        )
+                                                        index_number = index_number + 1
+                                                        column_number = column_number + 1
+
+    __wr_list_push(token_lists, create_frontend_token("EOF", "", line_number, column_number))
+    for token_item in token_lists:
+        __wr_map_get(token_item, "kind")
+    return create_frontend_lex_result_map(true, token_lists, create_frontend_empty_map_list())

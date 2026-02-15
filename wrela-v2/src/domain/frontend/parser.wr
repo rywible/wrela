@@ -1,0 +1,493 @@
+so:
+    Native parser for the v2 check frontend subset.
+
+use create_program_node from domain/frontend/ast
+use create_integer_literal_node from domain/frontend/ast
+use create_boolean_literal_node from domain/frontend/ast
+use create_binary_expression_node from domain/frontend/ast
+
+use get_frontend_token_kind_text from domain/frontend/token
+use get_frontend_token_text from domain/frontend/token
+use get_frontend_token_line_number from domain/frontend/token
+use get_frontend_token_column_number from domain/frontend/token
+use get_frontend_token_list_count from domain/frontend/token
+use get_frontend_token_at_index from domain/frontend/token
+
+use create_frontend_parse_unexpected_token_diagnostic from domain/frontend/diagnostics
+use create_frontend_parse_trailing_operator_diagnostic from domain/frontend/diagnostics
+use create_frontend_single_diagnostic_list from domain/frontend/diagnostics
+use create_frontend_empty_diagnostic_list from domain/frontend/diagnostics
+
+
+to create_frontend_parse_result_map(
+    is_ok: Boolean,
+    parse_ast_maps: Map,
+    parse_diagnostic_lists: List
+) -> Map:
+    parse_result_maps = __wr_map_new()
+    __wr_map_set(parse_result_maps, "ok", is_ok)
+    __wr_map_set(parse_result_maps, "ast", parse_ast_maps)
+    __wr_map_set(parse_result_maps, "diagnostics", parse_diagnostic_lists)
+    return parse_result_maps
+
+
+to create_frontend_parser_expect_result_map(
+    is_ok: Boolean,
+    next_index_number: Integer,
+    diagnostic_maps: Map
+) -> Map:
+    expect_result_maps = __wr_map_new()
+    __wr_map_set(expect_result_maps, "ok", is_ok)
+    __wr_map_set(expect_result_maps, "next_index", next_index_number)
+    __wr_map_set(expect_result_maps, "diagnostic", diagnostic_maps)
+    return expect_result_maps
+
+
+to create_frontend_parser_expression_result_map(
+    is_ok: Boolean,
+    expression_node_maps: Map,
+    next_index_number: Integer,
+    diagnostic_maps: Map
+) -> Map:
+    expression_result_maps = __wr_map_new()
+    __wr_map_set(expression_result_maps, "ok", is_ok)
+    __wr_map_set(expression_result_maps, "node", expression_node_maps)
+    __wr_map_set(expression_result_maps, "next_index", next_index_number)
+    __wr_map_set(expression_result_maps, "diagnostic", diagnostic_maps)
+    return expression_result_maps
+
+
+to get_frontend_parser_result_ok_flag(result_maps: Map) -> Integer:
+    if __wr_map_get(result_maps, "ok") == true:
+        return 1
+    return 0
+
+
+to get_frontend_parser_result_next_index(result_maps: Map) -> Integer:
+    value_item = __wr_map_get(result_maps, "next_index")
+    if value_item == nothing:
+        return 0
+    return value_item
+
+
+to get_frontend_parser_result_node_maps(result_maps: Map) -> Map:
+    value_item = __wr_map_get(result_maps, "node")
+    if value_item == nothing:
+        return __wr_map_new()
+    return value_item
+
+
+to get_frontend_parser_result_diagnostic_maps(result_maps: Map) -> Map:
+    value_item = __wr_map_get(result_maps, "diagnostic")
+    if value_item == nothing:
+        return create_frontend_parse_unexpected_token_diagnostic(1, 1)
+    return value_item
+
+
+to get_frontend_parser_integer_value(integer_text: String) -> Integer:
+    byte_values = __wr_bytes_to_list(__wr_bytes_from_string(integer_text))
+    mutable total_number = 0
+    for byte_value in byte_values:
+        total_number = (total_number * 10) + (byte_value - 48)
+    return total_number
+
+
+to get_frontend_parser_operator_kind_flag(kind_text: String) -> Integer:
+    if kind_text == "PLUS":
+        return 1
+    if kind_text == "MINUS":
+        return 1
+    if kind_text == "STAR":
+        return 1
+    if kind_text == "SLASH":
+        return 1
+    return 0
+
+
+to create_frontend_parser_unexpected_token_diagnostic_maps(
+    parser_token_lists: List,
+    token_index_number: Integer
+) -> Map:
+    return create_frontend_parse_unexpected_token_diagnostic(1, 1)
+
+
+to try_to_parse_frontend_primary_expression(
+    parser_token_lists: List,
+    token_index_number: Integer
+) -> Map:
+    token_maps = get_frontend_token_at_index(parser_token_lists, token_index_number)
+    token_kind_text = get_frontend_token_kind_text(token_maps)
+
+    if token_kind_text == "INTEGER_LITERAL":
+        integer_value_number = get_frontend_parser_integer_value(get_frontend_token_text(token_maps))
+        node_maps = create_integer_literal_node(
+            integer_value_number,
+            get_frontend_token_line_number(token_maps),
+            get_frontend_token_column_number(token_maps)
+        )
+        return create_frontend_parser_expression_result_map(
+            true,
+            node_maps,
+            token_index_number + 1,
+            __wr_map_new()
+        )
+
+    if token_kind_text == "BOOLEAN_TRUE":
+        node_maps = create_boolean_literal_node(
+            true,
+            get_frontend_token_line_number(token_maps),
+            get_frontend_token_column_number(token_maps)
+        )
+        return create_frontend_parser_expression_result_map(
+            true,
+            node_maps,
+            token_index_number + 1,
+            __wr_map_new()
+        )
+
+    if token_kind_text == "BOOLEAN_FALSE":
+        node_maps = create_boolean_literal_node(
+            false,
+            get_frontend_token_line_number(token_maps),
+            get_frontend_token_column_number(token_maps)
+        )
+        return create_frontend_parser_expression_result_map(
+            true,
+            node_maps,
+            token_index_number + 1,
+            __wr_map_new()
+        )
+
+    if token_kind_text == "LPAREN":
+        inside_expression_result_maps = try_to_parse_frontend_additive_expression(
+            parser_token_lists,
+            token_index_number + 1
+        )
+        if get_frontend_parser_result_ok_flag(inside_expression_result_maps) != 1:
+            return inside_expression_result_maps
+
+        close_index_number = get_frontend_parser_result_next_index(inside_expression_result_maps)
+        close_token_maps = get_frontend_token_at_index(parser_token_lists, close_index_number)
+        if get_frontend_token_kind_text(close_token_maps) != "RPAREN":
+            return create_frontend_parser_expression_result_map(
+                false,
+                __wr_map_new(),
+                close_index_number,
+                create_frontend_parser_unexpected_token_diagnostic_maps(
+                    parser_token_lists,
+                    close_index_number
+                )
+            )
+
+        return create_frontend_parser_expression_result_map(
+            true,
+            get_frontend_parser_result_node_maps(inside_expression_result_maps),
+            close_index_number + 1,
+            __wr_map_new()
+        )
+
+    return create_frontend_parser_expression_result_map(
+        false,
+        __wr_map_new(),
+        token_index_number,
+        create_frontend_parser_unexpected_token_diagnostic_maps(parser_token_lists, token_index_number)
+    )
+
+
+to try_to_parse_frontend_multiplicative_expression(
+    parser_token_lists: List,
+    token_index_number: Integer
+) -> Map:
+    left_expression_result_maps = try_to_parse_frontend_primary_expression(
+        parser_token_lists,
+        token_index_number
+    )
+    if get_frontend_parser_result_ok_flag(left_expression_result_maps) != 1:
+        return left_expression_result_maps
+
+    mutable current_node_maps = get_frontend_parser_result_node_maps(left_expression_result_maps)
+    mutable current_index_number = get_frontend_parser_result_next_index(left_expression_result_maps)
+    mutable is_looping = true
+
+    while is_looping == true:
+        operator_token_maps = get_frontend_token_at_index(parser_token_lists, current_index_number)
+        operator_kind_text = get_frontend_token_kind_text(operator_token_maps)
+        if operator_kind_text == "STAR" or operator_kind_text == "SLASH":
+            right_expression_result_maps = try_to_parse_frontend_primary_expression(
+                parser_token_lists,
+                current_index_number + 1
+            )
+            if get_frontend_parser_result_ok_flag(right_expression_result_maps) != 1:
+                failure_index_number = get_frontend_parser_result_next_index(right_expression_result_maps)
+                failure_token_maps = get_frontend_token_at_index(parser_token_lists, failure_index_number)
+                failure_kind_text = get_frontend_token_kind_text(failure_token_maps)
+                if failure_kind_text == "EOF" or failure_kind_text == "NEWLINE" or failure_kind_text == "RPAREN":
+                    return create_frontend_parser_expression_result_map(
+                        false,
+                        __wr_map_new(),
+                        failure_index_number,
+                        create_frontend_parse_trailing_operator_diagnostic(
+                            get_frontend_token_line_number(operator_token_maps),
+                            get_frontend_token_column_number(operator_token_maps)
+                        )
+                    )
+                return right_expression_result_maps
+
+            current_node_maps = create_binary_expression_node(
+                get_frontend_token_text(operator_token_maps),
+                current_node_maps,
+                get_frontend_parser_result_node_maps(right_expression_result_maps),
+                get_frontend_token_line_number(operator_token_maps),
+                get_frontend_token_column_number(operator_token_maps)
+            )
+            current_index_number = get_frontend_parser_result_next_index(right_expression_result_maps)
+        otherwise:
+            is_looping = false
+
+    return create_frontend_parser_expression_result_map(
+        true,
+        current_node_maps,
+        current_index_number,
+        __wr_map_new()
+    )
+
+
+to try_to_parse_frontend_additive_expression(
+    parser_token_lists: List,
+    token_index_number: Integer
+) -> Map:
+    left_expression_result_maps = try_to_parse_frontend_multiplicative_expression(
+        parser_token_lists,
+        token_index_number
+    )
+    if get_frontend_parser_result_ok_flag(left_expression_result_maps) != 1:
+        return left_expression_result_maps
+
+    mutable current_node_maps = get_frontend_parser_result_node_maps(left_expression_result_maps)
+    mutable current_index_number = get_frontend_parser_result_next_index(left_expression_result_maps)
+    mutable is_looping = true
+
+    while is_looping == true:
+        operator_token_maps = get_frontend_token_at_index(parser_token_lists, current_index_number)
+        operator_kind_text = get_frontend_token_kind_text(operator_token_maps)
+        if operator_kind_text == "PLUS" or operator_kind_text == "MINUS":
+            right_expression_result_maps = try_to_parse_frontend_multiplicative_expression(
+                parser_token_lists,
+                current_index_number + 1
+            )
+            if get_frontend_parser_result_ok_flag(right_expression_result_maps) != 1:
+                failure_index_number = get_frontend_parser_result_next_index(right_expression_result_maps)
+                failure_token_maps = get_frontend_token_at_index(parser_token_lists, failure_index_number)
+                failure_kind_text = get_frontend_token_kind_text(failure_token_maps)
+                if failure_kind_text == "EOF" or failure_kind_text == "NEWLINE" or failure_kind_text == "RPAREN":
+                    return create_frontend_parser_expression_result_map(
+                        false,
+                        __wr_map_new(),
+                        failure_index_number,
+                        create_frontend_parse_trailing_operator_diagnostic(
+                            get_frontend_token_line_number(operator_token_maps),
+                            get_frontend_token_column_number(operator_token_maps)
+                        )
+                    )
+                return right_expression_result_maps
+
+            current_node_maps = create_binary_expression_node(
+                get_frontend_token_text(operator_token_maps),
+                current_node_maps,
+                get_frontend_parser_result_node_maps(right_expression_result_maps),
+                get_frontend_token_line_number(operator_token_maps),
+                get_frontend_token_column_number(operator_token_maps)
+            )
+            current_index_number = get_frontend_parser_result_next_index(right_expression_result_maps)
+        otherwise:
+            is_looping = false
+
+    return create_frontend_parser_expression_result_map(
+        true,
+        current_node_maps,
+        current_index_number,
+        __wr_map_new()
+    )
+
+
+to parse_tokens(parser_token_lists: List) -> Map:
+    mutable parser_header_index_number = 0
+
+    to_token_maps = get_frontend_token_at_index(parser_token_lists, parser_header_index_number)
+    if get_frontend_token_kind_text(to_token_maps) != "TO":
+        return create_frontend_parse_result_map(
+            false,
+            __wr_map_new(),
+            create_frontend_single_diagnostic_list(
+                create_frontend_parser_unexpected_token_diagnostic_maps(
+                    parser_token_lists,
+                    parser_header_index_number
+                )
+            )
+        )
+    parser_header_index_number = parser_header_index_number + 1
+
+    run_token_maps = get_frontend_token_at_index(parser_token_lists, parser_header_index_number)
+    if get_frontend_token_kind_text(run_token_maps) != "RUN":
+        return create_frontend_parse_result_map(
+            false,
+            __wr_map_new(),
+            create_frontend_single_diagnostic_list(
+                create_frontend_parser_unexpected_token_diagnostic_maps(
+                    parser_token_lists,
+                    parser_header_index_number
+                )
+            )
+        )
+    parser_header_index_number = parser_header_index_number + 1
+
+    lparen_token_maps = get_frontend_token_at_index(parser_token_lists, parser_header_index_number)
+    if get_frontend_token_kind_text(lparen_token_maps) != "LPAREN":
+        return create_frontend_parse_result_map(
+            false,
+            __wr_map_new(),
+            create_frontend_single_diagnostic_list(
+                create_frontend_parser_unexpected_token_diagnostic_maps(
+                    parser_token_lists,
+                    parser_header_index_number
+                )
+            )
+        )
+    parser_header_index_number = parser_header_index_number + 1
+
+    rparen_token_maps = get_frontend_token_at_index(parser_token_lists, parser_header_index_number)
+    if get_frontend_token_kind_text(rparen_token_maps) != "RPAREN":
+        return create_frontend_parse_result_map(
+            false,
+            __wr_map_new(),
+            create_frontend_single_diagnostic_list(
+                create_frontend_parser_unexpected_token_diagnostic_maps(
+                    parser_token_lists,
+                    parser_header_index_number
+                )
+            )
+        )
+    parser_header_index_number = parser_header_index_number + 1
+
+    arrow_token_maps = get_frontend_token_at_index(parser_token_lists, parser_header_index_number)
+    if get_frontend_token_kind_text(arrow_token_maps) != "ARROW":
+        return create_frontend_parse_result_map(
+            false,
+            __wr_map_new(),
+            create_frontend_single_diagnostic_list(
+                create_frontend_parser_unexpected_token_diagnostic_maps(
+                    parser_token_lists,
+                    parser_header_index_number
+                )
+            )
+        )
+    parser_header_index_number = parser_header_index_number + 1
+
+    type_token_maps = get_frontend_token_at_index(parser_token_lists, parser_header_index_number)
+    if get_frontend_token_kind_text(type_token_maps) != "INTEGER_TYPE":
+        return create_frontend_parse_result_map(
+            false,
+            __wr_map_new(),
+            create_frontend_single_diagnostic_list(
+                create_frontend_parser_unexpected_token_diagnostic_maps(
+                    parser_token_lists,
+                    parser_header_index_number
+                )
+            )
+        )
+    parser_header_index_number = parser_header_index_number + 1
+
+    colon_token_maps = get_frontend_token_at_index(parser_token_lists, parser_header_index_number)
+    if get_frontend_token_kind_text(colon_token_maps) != "COLON":
+        return create_frontend_parse_result_map(
+            false,
+            __wr_map_new(),
+            create_frontend_single_diagnostic_list(
+                create_frontend_parser_unexpected_token_diagnostic_maps(
+                    parser_token_lists,
+                    parser_header_index_number
+                )
+            )
+        )
+    parser_header_index_number = parser_header_index_number + 1
+
+    newline_token_maps = get_frontend_token_at_index(parser_token_lists, parser_header_index_number)
+    if get_frontend_token_kind_text(newline_token_maps) != "NEWLINE":
+        return create_frontend_parse_result_map(
+            false,
+            __wr_map_new(),
+            create_frontend_single_diagnostic_list(
+                create_frontend_parser_unexpected_token_diagnostic_maps(
+                    parser_token_lists,
+                    parser_header_index_number
+                )
+            )
+        )
+    parser_header_index_number = parser_header_index_number + 1
+    index_after_header_number = parser_header_index_number
+
+    return_token_maps = get_frontend_token_at_index(parser_token_lists, index_after_header_number)
+    if get_frontend_token_kind_text(return_token_maps) != "RETURN":
+        return create_frontend_parse_result_map(
+            false,
+            __wr_map_new(),
+            create_frontend_single_diagnostic_list(
+                create_frontend_parser_unexpected_token_diagnostic_maps(
+                    parser_token_lists,
+                    index_after_header_number
+                )
+            )
+        )
+    if get_frontend_token_column_number(return_token_maps) <= 1:
+        return create_frontend_parse_result_map(
+            false,
+            __wr_map_new(),
+            create_frontend_single_diagnostic_list(
+                create_frontend_parser_unexpected_token_diagnostic_maps(
+                    parser_token_lists,
+                    index_after_header_number
+                )
+            )
+        )
+
+    expression_result_maps = try_to_parse_frontend_additive_expression(
+        parser_token_lists,
+        index_after_header_number + 1
+    )
+    if get_frontend_parser_result_ok_flag(expression_result_maps) != 1:
+        return create_frontend_parse_result_map(
+            false,
+            __wr_map_new(),
+            create_frontend_single_diagnostic_list(
+                get_frontend_parser_result_diagnostic_maps(expression_result_maps)
+            )
+        )
+
+    mutable final_index_number = get_frontend_parser_result_next_index(expression_result_maps)
+    token_count_number = get_frontend_token_list_count(parser_token_lists)
+    mutable is_scanning_newlines = true
+    while is_scanning_newlines == true:
+        if final_index_number >= token_count_number:
+            is_scanning_newlines = false
+        otherwise:
+            token_maps = get_frontend_token_at_index(parser_token_lists, final_index_number)
+            if get_frontend_token_kind_text(token_maps) == "NEWLINE":
+                final_index_number = final_index_number + 1
+            otherwise:
+                is_scanning_newlines = false
+
+    eof_token_maps = get_frontend_token_at_index(parser_token_lists, final_index_number)
+    if get_frontend_token_kind_text(eof_token_maps) != "EOF":
+        return create_frontend_parse_result_map(
+            false,
+            __wr_map_new(),
+            create_frontend_single_diagnostic_list(
+                create_frontend_parser_unexpected_token_diagnostic_maps(
+                    parser_token_lists,
+                    final_index_number
+                )
+            )
+        )
+
+    program_maps = create_program_node(get_frontend_parser_result_node_maps(expression_result_maps))
+    return create_frontend_parse_result_map(true, program_maps, create_frontend_empty_diagnostic_list())

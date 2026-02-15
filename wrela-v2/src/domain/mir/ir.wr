@@ -1,0 +1,114 @@
+so:
+    MIR model helpers for M4 vertical slice.
+
+
+to create_mir_program(instruction_text_lists: List) -> Map:
+    program_maps = __wr_map_new()
+    __wr_map_set(program_maps, "kind", "MirProgram")
+    __wr_map_set(program_maps, "instructions", instruction_text_lists)
+    __wr_map_set(program_maps, "instruction_count", get_mir_text_list_count(instruction_text_lists))
+    __wr_map_set(
+        program_maps,
+        "signature",
+        get_mir_signature_text_from_instruction_lists(instruction_text_lists)
+    )
+    return program_maps
+
+
+to create_mir_function(
+    function_name_text: String,
+    entry_block_label_text: String,
+    block_text_lists: List
+) -> Map:
+    function_maps = __wr_map_new()
+    __wr_map_set(function_maps, "kind", "MirFunction")
+    __wr_map_set(function_maps, "name", function_name_text)
+    __wr_map_set(function_maps, "entry_block_label", entry_block_label_text)
+    __wr_map_set(function_maps, "blocks", block_text_lists)
+    return function_maps
+
+
+to create_mir_block(block_label_text: String, instruction_text_lists: List) -> Map:
+    block_maps = __wr_map_new()
+    __wr_map_set(block_maps, "kind", "MirBlock")
+    __wr_map_set(block_maps, "label", block_label_text)
+    __wr_map_set(block_maps, "instructions", instruction_text_lists)
+    return block_maps
+
+
+to create_mir_const_integer_instruction(destination_name_text: String, value_number: Integer) -> Map:
+    instruction_maps = __wr_map_new()
+    __wr_map_set(instruction_maps, "kind", "ConstInt")
+    __wr_map_set(instruction_maps, "text", "const_i|{destination_name_text}|{value_number}")
+    return instruction_maps
+
+
+to create_mir_const_boolean_instruction(destination_name_text: String, is_value: Boolean) -> Map:
+    instruction_maps = __wr_map_new()
+    __wr_map_set(instruction_maps, "kind", "ConstBool")
+    if is_value == true:
+        __wr_map_set(instruction_maps, "text", "const_b|{destination_name_text}|true")
+    otherwise:
+        __wr_map_set(instruction_maps, "text", "const_b|{destination_name_text}|false")
+    return instruction_maps
+
+
+to create_mir_binary_instruction(
+    destination_name_text: String,
+    operator_text: String,
+    left_name_text: String,
+    right_name_text: String
+) -> Map:
+    instruction_maps = __wr_map_new()
+    __wr_map_set(instruction_maps, "kind", "Binary")
+    __wr_map_set(
+        instruction_maps,
+        "text",
+        "bin|{destination_name_text}|{operator_text}|{left_name_text}|{right_name_text}"
+    )
+    return instruction_maps
+
+
+to create_mir_return_instruction(value_name_text: String) -> Map:
+    instruction_maps = __wr_map_new()
+    __wr_map_set(instruction_maps, "kind", "Return")
+    __wr_map_set(instruction_maps, "text", "ret|{value_name_text}")
+    return instruction_maps
+
+
+to get_mir_text_list_count(text_lists: List) -> Integer:
+    mutable count_number = 0
+    for text_item in text_lists:
+        count_number = count_number + 1
+    return count_number
+
+
+to get_mir_signature_text_from_instruction_lists(mir_instruction_text_lists: List) -> String:
+    mutable signature_text = ""
+    for mir_instruction_text in mir_instruction_text_lists:
+        signature_text = "{signature_text}{mir_instruction_text};"
+    return signature_text
+
+
+to get_mir_instruction_text_lists(program_maps: Map) -> List:
+    instruction_value_lists = __wr_map_get(program_maps, "instructions")
+    if instruction_value_lists == nothing:
+        return []
+    normalized_instruction_text_lists = []
+    for instruction_value in instruction_value_lists:
+        __wr_list_push(normalized_instruction_text_lists, "{instruction_value}")
+    return normalized_instruction_text_lists
+
+
+to get_mir_instruction_count(program_maps: Map) -> Integer:
+    instruction_count_item = __wr_map_get(program_maps, "instruction_count")
+    if instruction_count_item == nothing:
+        return 0
+    return instruction_count_item
+
+
+to get_mir_signature_text(program_maps: Map) -> String:
+    signature_item = __wr_map_get(program_maps, "signature")
+    if signature_item == nothing:
+        return ""
+    return "{signature_item}"

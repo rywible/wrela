@@ -1,0 +1,97 @@
+so:
+    Contract coverage for v2 verify-cert command real behavior.
+
+use run_verify_cert_command from application/verify_cert_command
+use get_cert_hash_text from domain/cert/hash
+use get_cert_hash_text_from_byte_lists from domain/cert/hash
+use create_cert_maps from domain/cert/model
+use get_cert_text from domain/cert/model
+
+
+to try_to_setup_verify_cert_contract_fixture(path: String, contents: String) -> Nothing:
+    __wr_fs_mkdir_all("target/wrela_v2_verify_contract") otherwise nothing
+    __wr_fs_write_bytes(path, __wr_bytes_from_string(contents)) otherwise nothing
+    return nothing
+
+
+to test_verify_cert_command_requires_path() -> Nothing:
+    assert value run_verify_cert_command("") == 1
+    return nothing
+
+
+to test_verify_cert_command_returns_one_for_missing_file() -> Nothing:
+    assert value run_verify_cert_command("target/wrela_v2_verify_contract/missing.cert") == 1
+    return nothing
+
+
+to test_verify_cert_command_returns_two_for_missing_required_field() -> Nothing:
+    cert_path_text = "target/wrela_v2_verify_contract/missing_field.cert"
+    cert_text = "cert_schema_version=1\nentry_path=src/main.wr\nworkspace_root=.\nartifact_path=target/main\ntests_passed=true\ncompiler_version=1\nruntime_version=1\nsource_hash=abc\nbinary_hash=def\nprovenance.toolchain=wrela-v2\n"
+    try_to_setup_verify_cert_contract_fixture(cert_path_text, cert_text)
+    assert value run_verify_cert_command(cert_path_text) == 2
+    return nothing
+
+
+to test_verify_cert_command_returns_zero_for_valid_cert() -> Nothing:
+    cert_path_text = "target/wrela_v2_verify_contract/valid.cert"
+    workspace_root_text = "target/wrela_v2_verify_contract/valid_workspace"
+    entry_path_text = "{workspace_root_text}/src/main.wr"
+    artifact_path_text = "{workspace_root_text}/target/main.wrela.bin"
+    __wr_fs_mkdir_all("{workspace_root_text}/src") otherwise nothing
+    __wr_fs_mkdir_all("{workspace_root_text}/target") otherwise nothing
+    source_text = "to run() -> Integer:\n    return 7\n"
+    artifact_text = "#!/bin/sh\nexit 0\n"
+    __wr_fs_write_bytes(entry_path_text, __wr_bytes_from_string(source_text)) otherwise nothing
+    __wr_fs_write_bytes(artifact_path_text, __wr_bytes_from_string(artifact_text)) otherwise nothing
+    source_hash_text = get_cert_hash_text(source_text)
+    artifact_hash_text = get_cert_hash_text_from_byte_lists(__wr_bytes_to_list(__wr_bytes_from_string(artifact_text)))
+    cert_text = get_cert_text(
+        create_cert_maps(
+            "1",
+            entry_path_text,
+            ".",
+            artifact_path_text,
+            "true",
+            "wrela-v2",
+            "wrela-v2",
+            source_hash_text,
+            artifact_hash_text,
+            "wrela-v2",
+            "m8-a"
+        )
+    )
+    try_to_setup_verify_cert_contract_fixture(cert_path_text, cert_text)
+    assert value run_verify_cert_command(cert_path_text) == 0
+    return nothing
+
+
+to test_verify_cert_command_returns_two_for_hash_mismatch() -> Nothing:
+    cert_path_text = "target/wrela_v2_verify_contract/hash_mismatch.cert"
+    workspace_root_text = "target/wrela_v2_verify_contract/hash_mismatch_workspace"
+    entry_path_text = "{workspace_root_text}/src/main.wr"
+    artifact_path_text = "{workspace_root_text}/target/main.wrela.bin"
+    __wr_fs_mkdir_all("{workspace_root_text}/src") otherwise nothing
+    __wr_fs_mkdir_all("{workspace_root_text}/target") otherwise nothing
+    source_text = "to run() -> Integer:\n    return 8\n"
+    artifact_text = "#!/bin/sh\nexit 0\n"
+    __wr_fs_write_bytes(entry_path_text, __wr_bytes_from_string(source_text)) otherwise nothing
+    __wr_fs_write_bytes(artifact_path_text, __wr_bytes_from_string(artifact_text)) otherwise nothing
+    source_hash_text = get_cert_hash_text(source_text)
+    cert_text = get_cert_text(
+        create_cert_maps(
+            "1",
+            entry_path_text,
+            ".",
+            artifact_path_text,
+            "true",
+            "wrela-v2",
+            "wrela-v2",
+            source_hash_text,
+            "h0",
+            "wrela-v2",
+            "m8-a"
+        )
+    )
+    try_to_setup_verify_cert_contract_fixture(cert_path_text, cert_text)
+    assert value run_verify_cert_command(cert_path_text) == 2
+    return nothing

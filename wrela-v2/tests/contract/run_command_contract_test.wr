@@ -1,0 +1,55 @@
+so:
+    Contract coverage for v2 run command behavior.
+
+use run_run_command from application/run_command
+use run_init_command from application/init_command
+use try_to_create_directory from host/fs
+use try_to_write_text from host/fs
+
+
+to ensure_run_contract_directory(path: String) -> Nothing:
+    match try_to_create_directory(path):
+        Ok(create_ok_value):
+            create_ok_value = create_ok_value
+            return nothing
+        Err(create_error_text):
+            create_error_text = create_error_text
+            return nothing
+        otherwise:
+            return nothing
+    return nothing
+
+
+to ensure_run_contract_file(path: String, source_text: String) -> Nothing:
+    match try_to_write_text(path, source_text):
+        Ok(write_ok_value):
+            write_ok_value = write_ok_value
+            return nothing
+        Err(write_error_text):
+            assert value false == true
+            return nothing
+        otherwise:
+            assert value false == true
+            return nothing
+    return nothing
+
+
+to test_run_command_requires_path() -> Nothing:
+    assert value run_run_command("") == 1
+    return nothing
+
+
+to test_run_command_returns_two_for_invalid_program() -> Nothing:
+    root_path_text = "target/wrela_v2_run_command_contract_invalid"
+    ensure_run_contract_directory(root_path_text)
+    ensure_run_contract_directory("{root_path_text}/src")
+    ensure_run_contract_file("{root_path_text}/src/main.wr", "to run() -> Integer:\n    return 1 +\n")
+    assert value run_run_command(root_path_text) == 2
+    return nothing
+
+
+to test_run_command_returns_child_exit_for_valid_program() -> Nothing:
+    root_path_text = "target/wrela_v2_run_command_contract_valid"
+    assert value run_init_command(root_path_text) == 0
+    assert value run_run_command(root_path_text) == 0
+    return nothing

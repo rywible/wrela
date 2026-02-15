@@ -1,0 +1,222 @@
+so:
+    M9-C self-host orchestration runner.
+
+use try_to_build_executable from application/build_runner
+use get_build_runner_string_map_value_or_default from application/build_runner
+use try_to_run_repro_runner from application/repro_runner
+use try_to_run_stage_toolchain from application/stage_toolchain_runner
+use get_stage_exit_code_or_default from application/stage_toolchain_runner
+use get_deterministic_stage_root from application/stage_toolchain_runner
+use get_cert_hash_text_from_byte_lists from domain/cert/hash
+use get_env_int_or_default from application/env_vars
+use get_env_or_empty from application/env_vars
+
+
+to get_self_host_integer_env_or_default(key_text: String, fallback_number: Integer) -> Integer:
+    return get_env_int_or_default(key_text, fallback_number)
+
+
+to try_to_write_self_host_report(report_path_text: String, report_maps: Map) -> Result[Nothing]:
+    stage0_status_value = __wr_map_get(report_maps, "stage0_status")
+    stage1_status_value = __wr_map_get(report_maps, "stage1_status")
+    stage2_status_value = __wr_map_get(report_maps, "stage2_status")
+    stage0_hash_value = __wr_map_get(report_maps, "stage0_toolchain_hash")
+    stage1_hash_value = __wr_map_get(report_maps, "stage1_toolchain_hash")
+    stage2_hash_value = __wr_map_get(report_maps, "stage2_toolchain_hash")
+    entry_path_value = __wr_map_get(report_maps, "entry_path")
+    workspace_root_value = __wr_map_get(report_maps, "workspace_root")
+    timestamp_ns_number = __wr_map_get(report_maps, "timestamp_ns")
+
+    stage0_status_text = "{stage0_status_value}"
+    stage1_status_text = "{stage1_status_value}"
+    stage2_status_text = "{stage2_status_value}"
+    stage0_hash_text = "{stage0_hash_value}"
+    stage1_hash_text = "{stage1_hash_value}"
+    stage2_hash_text = "{stage2_hash_value}"
+    entry_path_text = "{entry_path_value}"
+    workspace_root_text = "{workspace_root_value}"
+
+    repro_match_text = "false"
+    if __wr_map_get(report_maps, "repro_match") == true:
+        repro_match_text = "true"
+
+    mutable left_brace_text = ""
+    mutable right_brace_text = ""
+    match __wr_bytes_to_string(__wr_bytes_from_list([123])):
+        String(value):
+            left_brace_text = value
+        otherwise:
+            left_brace_text = ""
+    match __wr_bytes_to_string(__wr_bytes_from_list([125])):
+        String(value):
+            right_brace_text = value
+        otherwise:
+            right_brace_text = ""
+
+    report_text = "{left_brace_text}\n  \"stage0_status\": \"{stage0_status_text}\",\n  \"stage1_status\": \"{stage1_status_text}\",\n  \"stage2_status\": \"{stage2_status_text}\",\n  \"stage0_toolchain_hash\": \"{stage0_hash_text}\",\n  \"stage1_toolchain_hash\": \"{stage1_hash_text}\",\n  \"stage2_toolchain_hash\": \"{stage2_hash_text}\",\n  \"repro_match\": {repro_match_text},\n  \"entry_path\": \"{entry_path_text}\",\n  \"workspace_root\": \"{workspace_root_text}\",\n  \"timestamp_ns\": {timestamp_ns_number}\n{right_brace_text}\n"
+
+    return __wr_fs_write_bytes(report_path_text, __wr_bytes_from_string(report_text))
+
+
+to try_to_run_self_host_runner(path: String) -> Result[Map]:
+    if path == "":
+        return error "self-host stage0 failed"
+
+    v1_bin_text = get_env_or_empty("WRELA_V1_BIN")
+    workspace_root_text = get_env_or_empty("WRELA_WORKSPACE_ROOT")
+    if v1_bin_text == "":
+        return error "self-host stage0 failed"
+    if workspace_root_text == "":
+        workspace_root_text = "."
+
+    stage_root_path_text = get_deterministic_stage_root(path, workspace_root_text)
+    stage_build_output_root = "{stage_root_path_text}/build_output"
+    stage_cert_output_root = "{stage_root_path_text}/cert_output"
+    match __wr_fs_mkdir_all(stage_root_path_text):
+        Ok(_):
+            nothing
+        Err(_):
+            return error "self-host stage0 failed"
+        otherwise:
+            return error "self-host stage0 failed"
+
+    stage0_specs = {
+        "command": v1_bin_text,
+        "args": ["check", path],
+        "cwd": ".",
+        "env": {},
+        "timeout_ms": 120_000
+    }
+    match __wr_process_run(stage0_specs):
+        Ok(stage0_process_maps):
+            if get_stage_exit_code_or_default(stage0_process_maps, 1) != 0:
+                return error "self-host stage0 failed"
+        Err(_):
+            return error "self-host stage0 failed"
+        otherwise:
+            return error "self-host stage0 failed"
+
+    __wr_env_set("WRELA_V2_BUILD_OUTPUT_ROOT", stage_build_output_root)
+    __wr_env_set("WRELA_V2_CERT_OUTPUT_ROOT", stage_cert_output_root)
+    stage0_output_path_text = ""
+    match try_to_build_executable(path):
+        Ok(stage0_build_maps):
+            stage0_output_path_text = get_build_runner_string_map_value_or_default(
+                stage0_build_maps,
+                "output_path",
+                ""
+            )
+        Err(_):
+            __wr_env_set("WRELA_V2_BUILD_OUTPUT_ROOT", "")
+            __wr_env_set("WRELA_V2_CERT_OUTPUT_ROOT", "")
+            return error "self-host stage0 failed"
+        otherwise:
+            __wr_env_set("WRELA_V2_BUILD_OUTPUT_ROOT", "")
+            __wr_env_set("WRELA_V2_CERT_OUTPUT_ROOT", "")
+            return error "self-host stage0 failed"
+    __wr_env_set("WRELA_V2_BUILD_OUTPUT_ROOT", "")
+    __wr_env_set("WRELA_V2_CERT_OUTPUT_ROOT", "")
+
+    if stage0_output_path_text == "":
+        return error "self-host artifact missing"
+
+    mutable stage0_bytes = __wr_bytes_from_list([])
+    match __wr_fs_read_bytes(stage0_output_path_text):
+        Ok(value_bytes):
+            stage0_bytes = value_bytes
+        Err(_):
+            return error "self-host artifact missing"
+        otherwise:
+            return error "self-host artifact missing"
+
+    stage0_path_text = "{stage_root_path_text}/stage0_toolchain.bin"
+    match __wr_fs_write_bytes(stage0_path_text, stage0_bytes):
+        Ok(_):
+            nothing
+        Err(_):
+            return error "self-host stage0 failed"
+        otherwise:
+            return error "self-host stage0 failed"
+    __wr_fs_set_executable(stage0_path_text) otherwise nothing
+
+    stage0_hash_text = get_cert_hash_text_from_byte_lists(__wr_bytes_to_list(stage0_bytes))
+
+    match try_to_run_stage_toolchain(stage0_path_text, workspace_root_text, "build", path):
+        Ok(stage1_process_maps):
+            if get_stage_exit_code_or_default(stage1_process_maps, 1) != 0:
+                return error "self-host stage1 failed"
+        Err(_):
+            return error "self-host stage1 failed"
+        otherwise:
+            return error "self-host stage1 failed"
+
+    mutable stage1_bytes = __wr_bytes_from_list([])
+    match __wr_fs_read_bytes(stage0_output_path_text):
+        Ok(value_bytes):
+            stage1_bytes = value_bytes
+        Err(_):
+            return error "self-host artifact missing"
+        otherwise:
+            return error "self-host artifact missing"
+
+    stage1_path_text = "{stage_root_path_text}/stage1_toolchain.bin"
+    match __wr_fs_write_bytes(stage1_path_text, stage1_bytes):
+        Ok(_):
+            nothing
+        Err(_):
+            return error "self-host stage1 failed"
+        otherwise:
+            return error "self-host stage1 failed"
+    __wr_fs_set_executable(stage1_path_text) otherwise nothing
+
+    stage1_hash_text = get_cert_hash_text_from_byte_lists(__wr_bytes_to_list(stage1_bytes))
+    report_path_text = "{stage_root_path_text}/self_host_report.json"
+
+    match try_to_run_repro_runner(path, stage1_path_text, workspace_root_text):
+        Ok(repro_result_maps):
+            stage2_hash_value = __wr_map_get(repro_result_maps, "stage2_toolchain_hash")
+            stage2_hash_text = "{stage2_hash_value}"
+            timestamp_ns_number = get_self_host_integer_env_or_default(
+                "WRELA_SELF_HOST_FIXED_TIMESTAMP_NS",
+                __wr_clock_ns()
+            )
+
+            success_report_maps = __wr_map_new()
+            __wr_map_set(success_report_maps, "stage0_status", "ok")
+            __wr_map_set(success_report_maps, "stage1_status", "ok")
+            __wr_map_set(success_report_maps, "stage2_status", "ok")
+            __wr_map_set(success_report_maps, "stage0_toolchain_hash", stage0_hash_text)
+            __wr_map_set(success_report_maps, "stage1_toolchain_hash", stage1_hash_text)
+            __wr_map_set(success_report_maps, "stage2_toolchain_hash", stage2_hash_text)
+            __wr_map_set(success_report_maps, "repro_match", true)
+            __wr_map_set(success_report_maps, "entry_path", path)
+            __wr_map_set(success_report_maps, "workspace_root", workspace_root_text)
+            __wr_map_set(success_report_maps, "timestamp_ns", timestamp_ns_number)
+            try_to_write_self_host_report(report_path_text, success_report_maps) otherwise nothing
+
+            return success_report_maps
+        Err(repro_error_text):
+            timestamp_ns_number = get_self_host_integer_env_or_default(
+                "WRELA_SELF_HOST_FIXED_TIMESTAMP_NS",
+                __wr_clock_ns()
+            )
+
+            error_report_maps = __wr_map_new()
+            __wr_map_set(error_report_maps, "stage0_status", "ok")
+            __wr_map_set(error_report_maps, "stage1_status", "ok")
+            __wr_map_set(error_report_maps, "stage2_status", "error")
+            __wr_map_set(error_report_maps, "stage0_toolchain_hash", stage0_hash_text)
+            __wr_map_set(error_report_maps, "stage1_toolchain_hash", stage1_hash_text)
+            __wr_map_set(error_report_maps, "stage2_toolchain_hash", "")
+            __wr_map_set(error_report_maps, "repro_match", false)
+            __wr_map_set(error_report_maps, "entry_path", path)
+            __wr_map_set(error_report_maps, "workspace_root", workspace_root_text)
+            __wr_map_set(error_report_maps, "timestamp_ns", timestamp_ns_number)
+            try_to_write_self_host_report(report_path_text, error_report_maps) otherwise nothing
+
+            if repro_error_text == "self-host reproducibility mismatch":
+                return error "self-host reproducibility mismatch"
+            return error "self-host stage2 failed"
+        otherwise:
+            return error "self-host stage2 failed"
+    return error "self-host stage2 failed"

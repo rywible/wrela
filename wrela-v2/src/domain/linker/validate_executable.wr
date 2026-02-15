@@ -1,0 +1,80 @@
+so:
+    Executable validation for M5-B single-object Darwin linker slice.
+
+use get_linker_image_byte_lists from domain/linker/link_ir
+use get_linker_image_entry_offset_number from domain/linker/link_ir
+
+
+to create_linker_executable_validate_result_maps(
+    is_linker_validate_ok: Boolean,
+    linker_validate_reason_text: String
+) -> Map:
+    linker_validate_result_maps = __wr_map_new()
+    __wr_map_set(linker_validate_result_maps, "ok", is_linker_validate_ok)
+    __wr_map_set(linker_validate_result_maps, "reason", linker_validate_reason_text)
+    return linker_validate_result_maps
+
+
+to validate_linker_executable_image(linker_validate_image_maps: Map) -> Map:
+    if __wr_map_get(linker_validate_image_maps, "kind") != "LinkerImage":
+        return create_linker_executable_validate_result_maps(false, "invalid linker image kind")
+    if __wr_map_get(linker_validate_image_maps, "marker") != "WRLX":
+        return create_linker_executable_validate_result_maps(false, "invalid marker")
+    if __wr_map_get(linker_validate_image_maps, "output_format") != "mach-o-thin":
+        return create_linker_executable_validate_result_maps(false, "invalid output format")
+    if __wr_map_get(linker_validate_image_maps, "architecture") != "darwin-arm64":
+        return create_linker_executable_validate_result_maps(false, "invalid architecture")
+
+    linker_validate_segment_lists = __wr_map_get(linker_validate_image_maps, "segments")
+    if linker_validate_segment_lists == nothing:
+        return create_linker_executable_validate_result_maps(false, "missing segments")
+
+    mutable linker_validate_segment_count_number = 0
+    mutable linker_validate_first_segment_maps = __wr_map_new()
+    for linker_validate_segment_item in linker_validate_segment_lists:
+        if linker_validate_segment_count_number == 0:
+            linker_validate_first_segment_maps = linker_validate_segment_item
+        linker_validate_segment_count_number = linker_validate_segment_count_number + 1
+    if linker_validate_segment_count_number < 1:
+        return create_linker_executable_validate_result_maps(false, "missing .text segment")
+
+    linker_validate_first_segment_name_value = __wr_map_get(linker_validate_first_segment_maps, "name")
+    if "{linker_validate_first_segment_name_value}" != ".text":
+        return create_linker_executable_validate_result_maps(false, "first segment must be .text")
+
+    mutable linker_validate_symbol_lists = __wr_map_get(linker_validate_image_maps, "symbols")
+    if linker_validate_symbol_lists == nothing:
+        linker_validate_symbol_lists = []
+
+    mutable linker_validate_has_run_symbol_flag = 0
+    for linker_validate_symbol_maps in linker_validate_symbol_lists:
+        linker_validate_symbol_name_value = __wr_map_get(linker_validate_symbol_maps, "name")
+        if "{linker_validate_symbol_name_value}" == "run":
+            linker_validate_has_run_symbol_flag = 1
+    if linker_validate_has_run_symbol_flag != 1:
+        return create_linker_executable_validate_result_maps(false, "missing run symbol")
+
+    mutable linker_validate_relocation_lists = __wr_map_get(linker_validate_image_maps, "relocations")
+    if linker_validate_relocation_lists == nothing:
+        linker_validate_relocation_lists = []
+    for linker_validate_relocation_maps in linker_validate_relocation_lists:
+        linker_validate_relocation_kind_value = __wr_map_get(linker_validate_relocation_maps, "kind")
+        linker_validate_relocation_kind_text = "{linker_validate_relocation_kind_value}"
+        if linker_validate_relocation_kind_text != "placeholder":
+            if linker_validate_relocation_kind_text != "abs32":
+                return create_linker_executable_validate_result_maps(false, "unknown relocation kind")
+
+    linker_validate_image_byte_lists = get_linker_image_byte_lists(linker_validate_image_maps)
+    mutable linker_validate_image_byte_count_number = 0
+    for linker_validate_image_byte_item in linker_validate_image_byte_lists:
+        linker_validate_image_byte_count_number = linker_validate_image_byte_count_number + 1
+    if linker_validate_image_byte_count_number < 1:
+        return create_linker_executable_validate_result_maps(false, "missing image bytes")
+
+    linker_validate_entry_offset_number = get_linker_image_entry_offset_number(linker_validate_image_maps)
+    if linker_validate_entry_offset_number < 0:
+        return create_linker_executable_validate_result_maps(false, "invalid entry offset")
+    if linker_validate_entry_offset_number >= linker_validate_image_byte_count_number:
+        return create_linker_executable_validate_result_maps(false, "entry offset out of range")
+
+    return create_linker_executable_validate_result_maps(true, "")

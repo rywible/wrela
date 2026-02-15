@@ -1,0 +1,105 @@
+so:
+    Strict cert validation helpers for M8-A.
+
+
+to get_cert_validate_lines(cert_text: String) -> List[String]:
+    cert_line_lists = []
+    cert_current_byte_lists = []
+    cert_text_byte_lists = __wr_bytes_to_list(__wr_bytes_from_string(cert_text))
+    for cert_byte_value in cert_text_byte_lists:
+        if cert_byte_value == 13:
+            nothing
+        otherwise:
+            if cert_byte_value == 10:
+                __wr_list_push(cert_line_lists, __wr_bytes_to_string(__wr_bytes_from_list(cert_current_byte_lists)))
+                cert_current_byte_lists = []
+            otherwise:
+                __wr_list_push(cert_current_byte_lists, cert_byte_value)
+    __wr_list_push(cert_line_lists, __wr_bytes_to_string(__wr_bytes_from_list(cert_current_byte_lists)))
+    return cert_line_lists
+
+
+to get_cert_validate_prefix_match_flag(cert_text: String, cert_prefix_text: String) -> Integer:
+    cert_text_byte_lists = __wr_bytes_to_list(__wr_bytes_from_string(cert_text))
+    cert_prefix_byte_lists = __wr_bytes_to_list(__wr_bytes_from_string(cert_prefix_text))
+    mutable cert_text_count_number = 0
+    for cert_text_byte_value in cert_text_byte_lists:
+        cert_text_byte_value = cert_text_byte_value
+        cert_text_count_number = cert_text_count_number + 1
+    mutable cert_prefix_count_number = 0
+    for cert_prefix_byte_value in cert_prefix_byte_lists:
+        cert_prefix_byte_value = cert_prefix_byte_value
+        cert_prefix_count_number = cert_prefix_count_number + 1
+    if cert_text_count_number < cert_prefix_count_number:
+        return 0
+    mutable cert_prefix_index_number = 0
+    for cert_prefix_byte_value in cert_prefix_byte_lists:
+        mutable cert_text_byte_at_index_number = -1
+        mutable cert_text_cursor_number = 0
+        for cert_text_byte_value in cert_text_byte_lists:
+            if cert_text_cursor_number == cert_prefix_index_number:
+                cert_text_byte_at_index_number = cert_text_byte_value
+                break
+            cert_text_cursor_number = cert_text_cursor_number + 1
+        if cert_text_byte_at_index_number != cert_prefix_byte_value:
+            return 0
+        cert_prefix_index_number = cert_prefix_index_number + 1
+    return 1
+
+
+to get_cert_validate_value_for_key(cert_text: String, cert_key_text: String) -> String:
+    cert_prefix_text = "{cert_key_text}="
+    for cert_line_text in get_cert_validate_lines(cert_text):
+        if get_cert_validate_prefix_match_flag(cert_line_text, cert_prefix_text) == 1:
+            cert_line_byte_lists = __wr_bytes_to_list(__wr_bytes_from_string(cert_line_text))
+            cert_prefix_byte_lists = __wr_bytes_to_list(__wr_bytes_from_string(cert_prefix_text))
+            mutable cert_prefix_count_number = 0
+            for cert_prefix_byte_value in cert_prefix_byte_lists:
+                cert_prefix_byte_value = cert_prefix_byte_value
+                cert_prefix_count_number = cert_prefix_count_number + 1
+            cert_value_byte_lists = []
+            mutable cert_line_index_number = 0
+            for cert_line_byte_value in cert_line_byte_lists:
+                if cert_line_index_number >= cert_prefix_count_number:
+                    __wr_list_push(cert_value_byte_lists, cert_line_byte_value)
+                cert_line_index_number = cert_line_index_number + 1
+            return __wr_bytes_to_string(__wr_bytes_from_list(cert_value_byte_lists))
+    return ""
+
+
+to try_to_validate_cert_text(cert_text: String) -> Result[Map]:
+    cert_required_field_lists = [
+        "cert_schema_version",
+        "entry_path",
+        "workspace_root",
+        "artifact_path",
+        "tests_passed",
+        "compiler_version",
+        "runtime_version",
+        "source_hash",
+        "binary_hash",
+        "provenance.toolchain",
+        "provenance.stage"
+    ]
+    for cert_required_field_text in cert_required_field_lists:
+        cert_value_text = get_cert_validate_value_for_key(cert_text, cert_required_field_text)
+        if cert_value_text == "":
+            return error "verify-cert missing field '{cert_required_field_text}'"
+
+    cert_schema_version_text = get_cert_validate_value_for_key(cert_text, "cert_schema_version")
+    if cert_schema_version_text != "1":
+        return error "verify-cert invalid cert schema version"
+
+    cert_provenance_toolchain_text = get_cert_validate_value_for_key(cert_text, "provenance.toolchain")
+    cert_provenance_stage_text = get_cert_validate_value_for_key(cert_text, "provenance.stage")
+    if cert_provenance_toolchain_text != "wrela-v2" or cert_provenance_stage_text != "m8-a":
+        return error "verify-cert invalid provenance"
+
+    cert_result_maps = __wr_map_new()
+    __wr_map_set(cert_result_maps, "status", "ok")
+    __wr_map_set(cert_result_maps, "entry_path", get_cert_validate_value_for_key(cert_text, "entry_path"))
+    __wr_map_set(cert_result_maps, "workspace_root", get_cert_validate_value_for_key(cert_text, "workspace_root"))
+    __wr_map_set(cert_result_maps, "artifact_path", get_cert_validate_value_for_key(cert_text, "artifact_path"))
+    __wr_map_set(cert_result_maps, "source_hash", get_cert_validate_value_for_key(cert_text, "source_hash"))
+    __wr_map_set(cert_result_maps, "binary_hash", get_cert_validate_value_for_key(cert_text, "binary_hash"))
+    return cert_result_maps
