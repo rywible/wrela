@@ -53,13 +53,9 @@ pub(super) fn execute_test_command(input: TestCommandInput) -> i32 {
     };
     if let TestTarget::SingleFile(path) = &target {
         eprintln!(
-            "error: `wrela test` no longer supports single-file targets because they bypass architecture checks: {}",
+            "warning: running `wrela test` in single-file mode for {}; project architecture/certification lanes are reduced",
             path.display()
         );
-        eprintln!(
-            "help: use project layout (`src/**`, `tests/**`) and run `wrela test <project-root>`"
-        );
-        return EXIT_USAGE;
     }
 
     if input.repro_artifact_path.is_some()

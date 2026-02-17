@@ -959,8 +959,10 @@ fn value_ty_with_slices(value: &Value, locals: &[MirType], temps: &[MirType]) ->
 
 fn clone_small_hot_functions(module: &mut MirModule, graph: &CallGraph) {
     let mut func_map: HashMap<SmolStr, MirFunction> = HashMap::new();
+    let mut existing_names: HashSet<SmolStr> = HashSet::new();
     for func in &module.functions {
         func_map.insert(func.name.clone(), func.clone());
+        existing_names.insert(func.name.clone());
     }
     let mut cloned = Vec::new();
     let mut clone_names: HashMap<(SmolStr, SmolStr), SmolStr> = HashMap::new();
@@ -991,7 +993,7 @@ fn clone_small_hot_functions(module: &mut MirModule, graph: &CallGraph) {
                     counter += 1;
                     SmolStr::new(format!("{}__clone{}", name, counter))
                 });
-                if !func_map.contains_key(clone_name) {
+                if existing_names.insert(clone_name.clone()) {
                     let mut clone = callee.clone();
                     clone.name = clone_name.clone();
                     cloned.push(clone);
@@ -3714,5 +3716,91 @@ mod tests {
             .iter()
             .any(|f| f.name.as_str().contains("small__clone"));
         assert!(has_clone, "expected cloned function");
+    }
+
+    #[test]
+    fn clone_small_hot_function_does_not_duplicate_same_clone_in_one_caller() {
+        let span = TextRange::new(0.into(), 0.into());
+        let small = MirFunction {
+            name: "small".into(),
+            params: vec![],
+            locals: vec![],
+            temps: vec![],
+            blocks: vec![BasicBlock {
+                stmts: vec![],
+                terminator: Terminator::Return { value: None, span },
+            }],
+            entry: BlockId(0),
+            suspendable: false,
+        };
+        let mut module = MirModule {
+            functions: vec![
+                MirFunction {
+                    name: "main".into(),
+                    params: vec![],
+                    locals: vec![],
+                    temps: vec![Temp {
+                        ty: MirType::Unknown,
+                    }],
+                    blocks: vec![BasicBlock {
+                        stmts: vec![],
+                        terminator: Terminator::Return { value: Some(Value::Temp(TempId(0))), span },
+                    }],
+                    entry: BlockId(0),
+                    suspendable: false,
+                },
+                MirFunction {
+                    name: "helper".into(),
+                    params: vec![],
+                    locals: vec![],
+                    temps: vec![
+                        Temp { ty: MirType::Unknown },
+                        Temp { ty: MirType::Unknown },
+                    ],
+                    blocks: vec![BasicBlock {
+                        stmts: vec![
+                            Stmt::Assign {
+                                place: Place::Temp(TempId(0)),
+                                value: Rvalue::Call {
+                                    kind: CallKind::Sync,
+                                    target: CallTarget::Function("small".into()),
+                                    args: vec![],
+                                },
+                                span,
+                            },
+                            Stmt::Assign {
+                                place: Place::Temp(TempId(1)),
+                                value: Rvalue::Call {
+                                    kind: CallKind::Sync,
+                                    target: CallTarget::Function("small".into()),
+                                    args: vec![],
+                                },
+                                span,
+                            },
+                        ],
+                        terminator: Terminator::Return {
+                            value: Some(Value::Temp(TempId(1))),
+                            span,
+                        },
+                    }],
+                    entry: BlockId(0),
+                    suspendable: false,
+                },
+                small,
+            ],
+            type_tags: vec![],
+            classes: vec![],
+        };
+
+        run_module_passes(&mut module);
+
+        let mut seen = HashSet::new();
+        for func in &module.functions {
+            assert!(
+                seen.insert(func.name.clone()),
+                "duplicate function name after clone pass: {}",
+                func.name
+            );
+        }
     }
 }

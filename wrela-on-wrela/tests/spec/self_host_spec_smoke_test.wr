@@ -1,0 +1,15 @@
+use try_to_create_compile_artifact from compiler/api
+
+to test_try_to_create_compile_artifact_check_mode_smoke() -> Nothing:
+    result = try_to_create_compile_artifact(
+        entry_path="/Users/ryanwible/projects/wrela/wrela-on-wrela/src/main.wr",
+        mode="check"
+    )
+    match result:
+        Ok(artifact):
+            assert value artifact.mode == "check"
+            assert value artifact.entry_path == "/Users/ryanwible/projects/wrela/wrela-on-wrela/src/main.wr"
+        Err(err):
+            crash("expected check mode success, got error: {err}")
+        otherwise:
+            crash("unexpected compile result shape")

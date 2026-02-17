@@ -1,0 +1,81 @@
+use ModuleIr from compiler/ir/types
+use try_to_create_module_ir from compiler/semantic/mod
+use try_to_create_object_module from compiler/codegen/macho/mod
+use ObjectModule from compiler/codegen/macho/types
+use try_to_emit_text_from_ir from compiler/codegen/aarch64/mod
+use try_to_create_link_artifact from compiler/link/mod
+
+A CompileArtifact:
+    has:
+        mode: String
+        entry_path: String
+        object_paths: List = []
+        executable_path: String = ""
+        diagnostics: List = []
+
+to try_to_create_compile_artifact(entry_path: String, mode: String) -> Result[CompileArtifact]:
+    if not (mode == "check" or mode == "build" or mode == "run" or mode == "test"):
+        return error "unsupported mode '{mode}'"
+
+    module_result = try_to_create_module_ir(entry_path)
+    mutable module = ModuleIr(name="", functions=[])
+    match module_result:
+        Ok(value):
+            module = value
+        Err(err):
+            return error err
+        otherwise:
+            return error "semantic lowering failed"
+
+    if mode == "check":
+        return CompileArtifact(
+            mode=mode,
+            entry_path=entry_path,
+            object_paths=[],
+            executable_path="",
+            diagnostics=[]
+        )
+
+    asm_result = try_to_emit_text_from_ir(module)
+    mutable assembly_text = ""
+    match asm_result:
+        Ok(value):
+            assembly_text = value
+        Err(err):
+            return error err
+        otherwise:
+            return error "aarch64 emission failed"
+
+    object_result = try_to_create_object_module(module=module, assembly_text=assembly_text)
+    mutable object_module = ObjectModule()
+    match object_result:
+        Ok(value):
+            object_module = value
+        Err(err):
+            return error err
+        otherwise:
+            return error "macho object emission failed"
+
+    link_result = try_to_create_link_artifact(
+        entry_path=entry_path,
+        mode=mode,
+        object_module=object_module
+    )
+    mutable executable = ""
+    mutable object_paths = []
+    match link_result:
+        Ok(linked):
+            executable = linked.executable_path
+            object_paths = linked.object_paths
+        Err(err):
+            return error err
+        otherwise:
+            return error "link failed"
+
+    return CompileArtifact(
+        mode=mode,
+        entry_path=entry_path,
+        object_paths=object_paths,
+        executable_path=executable,
+        diagnostics=[]
+    )

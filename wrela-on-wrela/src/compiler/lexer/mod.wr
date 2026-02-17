@@ -1,0 +1,214 @@
+so:
+    Source lexer for wrrela-on-wrela.
+
+use get_bytes_from_string, get_list_from_bytes, get_bytes_from_list, get_string_from_bytes from bytes
+use add_to_list from list
+
+A Token:
+    has:
+        kind: String
+        text: String
+        line_no: Integer = 1
+        column_no: Integer = 1
+        position_lo: Integer = 0
+        position_hi: Integer = 0
+
+
+to create_token(
+    kind: String,
+    text: String,
+    line_no: Integer,
+    column_no: Integer,
+    position_lo: Integer,
+    position_hi: Integer
+) -> Token:
+    return Token(
+        kind=kind,
+        text=text,
+        line_no=line_no,
+        column_no=column_no,
+        position_lo=position_lo,
+        position_hi=position_hi
+    )
+
+
+to resolve_word_kind(word: String) -> String:
+    if word == "use":
+        return "keyword_use"
+    if word == "from":
+        return "keyword_from"
+    if word == "to":
+        return "keyword_to"
+    if word == "check":
+        return "keyword_check"
+    if word == "return":
+        return "keyword_return"
+    if word == "A":
+        return "keyword_class_a"
+    if word == "An":
+        return "keyword_class_an"
+    if word == "private":
+        return "keyword_private"
+    if word == "has":
+        return "keyword_has"
+    if word == "can":
+        return "keyword_can"
+    if word == "must":
+        return "keyword_must"
+    if word == "if":
+        return "keyword_if"
+    if word == "otherwise":
+        return "keyword_otherwise"
+    if word == "match":
+        return "keyword_match"
+    if word == "while":
+        return "keyword_while"
+    if word == "for":
+        return "keyword_for"
+    if word == "in":
+        return "keyword_in"
+    if word == "mutable":
+        return "keyword_mutable"
+    if word == "assert":
+        return "keyword_assert"
+    return "identifier"
+
+
+to try_to_push_word_token(
+    tokens: List,
+    word_text: String,
+    line_no: Integer,
+    column_no: Integer,
+    position_lo: Integer,
+    position_hi: Integer
+) -> Result[Nothing]:
+    if word_text == "":
+        return nothing
+
+    word_kind = resolve_word_kind(word_text)
+    add_to_list(
+        tokens,
+        create_token(
+            kind=word_kind,
+            text=word_text,
+            line_no=line_no,
+            column_no=column_no,
+            position_lo=position_lo,
+            position_hi=position_hi
+        )
+    )
+    return nothing
+
+
+to try_to_lex(source: String) -> Result[List]:
+    units = get_list_from_bytes(get_bytes_from_string(source))
+    tokens = []
+
+    mutable line_no = 1
+    mutable column_no = 1
+    mutable cursor = 0
+
+    mutable word_text = ""
+    mutable word_line = 1
+    mutable word_column = 1
+    mutable word_lo = 0
+    mutable is_word_open = false
+
+    for unit in units:
+        unit_text = get_string_from_bytes(get_bytes_from_list([unit]))
+        is_word_unit = (
+            (unit >= 65 and unit <= 90)
+            or (unit >= 97 and unit <= 122)
+            or (unit >= 48 and unit <= 57)
+            or unit == 95
+        )
+
+        if is_word_unit:
+            if not is_word_open:
+                is_word_open = true
+                word_text = ""
+                word_line = line_no
+                word_column = column_no
+                word_lo = cursor
+            word_text = word_text + unit_text
+            cursor = cursor + 1
+            column_no = column_no + 1
+            continue
+
+        if is_word_open:
+            try_to_push_word_token(
+                tokens=tokens,
+                word_text=word_text,
+                line_no=word_line,
+                column_no=word_column,
+                position_lo=word_lo,
+                position_hi=cursor
+            ) otherwise error "lexer: failed to emit word token"
+            word_text = ""
+            is_word_open = false
+
+        if unit == 10:
+            add_to_list(
+                tokens,
+                create_token(
+                    kind="newline",
+                    text="\\n",
+                    line_no=line_no,
+                    column_no=column_no,
+                    position_lo=cursor,
+                    position_hi=cursor + 1
+                )
+            )
+            cursor = cursor + 1
+            line_no = line_no + 1
+            column_no = 1
+            continue
+
+        if unit == 9 or unit == 13 or unit == 32:
+            cursor = cursor + 1
+            column_no = column_no + 1
+            continue
+
+        mutable symbol_kind = "symbol"
+        if unit == 40:
+            symbol_kind = "l_paren"
+        if unit == 41:
+            symbol_kind = "r_paren"
+        if unit == 58:
+            symbol_kind = "colon"
+        if unit == 44:
+            symbol_kind = "comma"
+        if unit == 47:
+            symbol_kind = "slash"
+        if unit == 46:
+            symbol_kind = "dot"
+        if unit == 45:
+            symbol_kind = "dash"
+        if unit == 62:
+            symbol_kind = "gt"
+
+        add_to_list(
+            tokens,
+            create_token(
+                kind=symbol_kind,
+                text=unit_text,
+                line_no=line_no,
+                column_no=column_no,
+                position_lo=cursor,
+                position_hi=cursor + 1
+            )
+        )
+        cursor = cursor + 1
+        column_no = column_no + 1
+
+    if is_word_open:
+        try_to_push_word_token(
+            tokens=tokens,
+            word_text=word_text,
+            line_no=word_line,
+            column_no=word_column,
+            position_lo=word_lo,
+            position_hi=cursor
+        ) otherwise error "lexer: failed to emit trailing word token"
+
+    return tokens

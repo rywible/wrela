@@ -1,0 +1,18 @@
+use ObjectModule from compiler/codegen/macho/types
+use ModuleIr from compiler/ir/types
+
+so:
+    Mach-O object emission boundary.
+
+
+to try_to_create_object_module(module: ModuleIr, assembly_text: String) -> Result[ObjectModule]:
+    if module.name == "":
+        return error "module name is required"
+    if assembly_text == "":
+        return error "assembly text is required"
+    return ObjectModule(
+        triple="aarch64-apple-darwin",
+        sections=[],
+        symbols=[],
+        relocations=[]
+    )

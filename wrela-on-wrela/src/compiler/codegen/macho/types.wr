@@ -1,0 +1,29 @@
+so:
+    Canonical in-memory object model before writing bytes to disk.
+
+A ObjectSymbol:
+    has:
+        name: String
+        section_index: Integer = 0
+        value: Integer = 0
+        external_flag: Boolean = false
+
+A ObjectRelocation:
+    has:
+        section_index: Integer = 0
+        offset: Integer = 0
+        symbol_name: String
+        relocation_kind: String
+
+A ObjectSection:
+    has:
+        name: String
+        bytes: List = []
+        alignment_power: Integer = 0
+
+A ObjectModule:
+    has:
+        triple: String = "aarch64-apple-darwin"
+        sections: List = []
+        symbols: List = []
+        relocations: List = []

@@ -3265,7 +3265,7 @@ fn cli_perf_gate_fails_with_synthetic_slowdown() {
 }
 
 #[test]
-fn cli_test_single_file_is_rejected() {
+fn cli_test_single_file_is_allowed() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("spec.wr");
     std::fs::write(
@@ -3279,16 +3279,13 @@ fn cli_test_single_file_is_rejected() {
         .arg(&path)
         .output()
         .expect("run wrela");
-    assert!(
-        !output.status.success(),
-        "single-file test target should fail"
-    );
+    assert!(output.status.success(), "single-file test target should pass");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("no longer supports single-file targets"));
+    assert!(stderr.contains("single-file mode"));
 }
 
 #[test]
-fn cli_test_single_file_without_tests_is_rejected() {
+fn cli_test_single_file_without_tests_is_allowed() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("spec.wr");
     std::fs::write(&path, "to compute_value() -> Integer:\n    return 1\n").unwrap();
@@ -3298,12 +3295,9 @@ fn cli_test_single_file_without_tests_is_rejected() {
         .arg(&path)
         .output()
         .expect("run wrela");
-    assert!(
-        !output.status.success(),
-        "single-file test target should fail"
-    );
+    assert!(output.status.success(), "single-file test target should pass");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("no longer supports single-file targets"));
+    assert!(stderr.contains("single-file mode"));
     assert!(stderr.contains(&path.display().to_string()));
 }
 

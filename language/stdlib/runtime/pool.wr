@@ -31,7 +31,7 @@ to clamp_integer(value: Integer, min_value: Integer, max_value: Integer) -> Inte
 
 
 so: Compute an automatic pool size for an objective and bounds.
-to auto_size(objective: Integer, min: Integer, max: Integer, weight: Integer) -> Integer:
+to compute_auto_size(objective: Integer, min: Integer, max: Integer, weight: Integer) -> Integer:
     cpu_count = __wr_runtime_cpu_count()
     mutable min_value = min
     if min_value <= 0:
@@ -53,7 +53,7 @@ to auto_size(objective: Integer, min: Integer, max: Integer, weight: Integer) ->
     return clamp_integer(weighted, min_value, max_value)
 
 
-to pool_at_least(value: Integer, minimum: Integer) -> Integer:
+to clamp_pool_at_least(value: Integer, minimum: Integer) -> Integer:
     if value < minimum:
         return minimum
     return value
@@ -68,21 +68,21 @@ to normalize_queue_capacity(
     objective: Integer
 ) -> Integer:
     if requested_queue_capacity > 0:
-        return pool_at_least(requested_queue_capacity, 1)
+        return clamp_pool_at_least(requested_queue_capacity, 1)
 
-    base_capacity = pool_at_least(default_queue_capacity, 1)
+    base_capacity = clamp_pool_at_least(default_queue_capacity, 1)
     normalized_objective = normalize_objective(objective)
     if normalized_objective == 0:
-        return pool_at_least(base_capacity, 32)
+        return clamp_pool_at_least(base_capacity, 32)
     if normalized_objective == 1:
-        return pool_at_least(base_capacity * 2, 64)
+        return clamp_pool_at_least(base_capacity * 2, 64)
     if normalized_objective == 2:
-        return pool_at_least(base_capacity / 2, 16)
-    return pool_at_least(base_capacity, 32)
+        return clamp_pool_at_least(base_capacity / 2, 16)
+    return clamp_pool_at_least(base_capacity, 32)
 
 
 so: Resolve drop-on-full policy from the backpressure request.
-check queue_should_drop_on_full(requested_queue_capacity: Integer) -> Boolean:
+check queue_is_drop_on_full(requested_queue_capacity: Integer) -> Boolean:
     return requested_queue_capacity == 0
 
 

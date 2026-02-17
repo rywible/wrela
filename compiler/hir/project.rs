@@ -218,6 +218,8 @@ pub fn load_project_with_roots(
         return Err(loader.errors);
     }
 
+    rewrite_duplicate_top_level_function_symbols(&mut loader.modules, &entry_name);
+
     let mut merged = Module {
         functions: Default::default(),
         classes: Default::default(),
@@ -1446,6 +1448,207 @@ fn imported_function_bindings(
         }
     }
     bindings
+}
+
+fn rewrite_duplicate_top_level_function_symbols(
+    modules: &mut HashMap<SmolStr, LoadedModule>,
+    entry_name: &SmolStr,
+) {
+    let mut top_level_name_counts: HashMap<SmolStr, usize> = HashMap::new();
+    let mut used_top_level_names: HashSet<SmolStr> = HashSet::new();
+
+    for module in modules.values() {
+        let method_ids = collect_method_ids(&module.module);
+        for (func_id, func) in module.module.functions.iter() {
+            if method_ids.contains(&func_id) {
+                continue;
+            }
+            if module.name == *entry_name && func.name.as_str() == "run" {
+                continue;
+            }
+            *top_level_name_counts.entry(func.name.clone()).or_insert(0) += 1;
+            used_top_level_names.insert(func.name.clone());
+        }
+    }
+
+    let duplicate_names: HashSet<SmolStr> = top_level_name_counts
+        .into_iter()
+        .filter_map(|(name, count)| if count > 1 { Some(name) } else { None })
+        .collect();
+    if duplicate_names.is_empty() {
+        return;
+    }
+
+    let mut rename_map_by_module: HashMap<SmolStr, HashMap<SmolStr, SmolStr>> = HashMap::new();
+    let mut module_names: Vec<SmolStr> = modules.keys().cloned().collect();
+    module_names.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+
+    for module_name in &module_names {
+        let Some(module) = modules.get(module_name) else {
+            continue;
+        };
+        let method_ids = collect_method_ids(&module.module);
+        let mut local_renames = HashMap::new();
+        for (func_id, func) in module.module.functions.iter() {
+            if method_ids.contains(&func_id) {
+                continue;
+            }
+            if !duplicate_names.contains(&func.name) {
+                continue;
+            }
+            if module.name == *entry_name && func.name.as_str() == "run" {
+                continue;
+            }
+
+            let mut candidate = SmolStr::new(format!(
+                "{}_mod_{}",
+                func.name,
+                module_name_suffix(module_name.as_str())
+            ));
+            let mut serial = 2usize;
+            while used_top_level_names.contains(&candidate) {
+                candidate = SmolStr::new(format!(
+                    "{}_mod_{}_v{}",
+                    func.name,
+                    module_name_suffix(module_name.as_str()),
+                    serial
+                ));
+                serial += 1;
+            }
+            used_top_level_names.insert(candidate.clone());
+            local_renames.insert(func.name.clone(), candidate);
+        }
+        if !local_renames.is_empty() {
+            rename_map_by_module.insert(module_name.clone(), local_renames);
+        }
+    }
+
+    if rename_map_by_module.is_empty() {
+        return;
+    }
+
+    let mut public_functions: HashMap<SmolStr, HashSet<SmolStr>> = HashMap::new();
+    for (module_name, module) in modules.iter() {
+        let mut exports = HashSet::new();
+        let method_ids = collect_method_ids(&module.module);
+        for (func_id, func) in module.module.functions.iter() {
+            if method_ids.contains(&func_id) {
+                continue;
+            }
+            if matches!(func.visibility, Visibility::Public) {
+                exports.insert(func.name.clone());
+            }
+        }
+        public_functions.insert(module_name.clone(), exports);
+    }
+
+    let mut imported_bindings_by_module: HashMap<SmolStr, HashMap<SmolStr, SmolStr>> =
+        HashMap::new();
+    for (module_name, module) in modules.iter() {
+        imported_bindings_by_module.insert(
+            module_name.clone(),
+            imported_function_bindings(module, &public_functions),
+        );
+    }
+
+    for module_name in module_names {
+        let local_renames = rename_map_by_module
+            .get(&module_name)
+            .cloned()
+            .unwrap_or_default();
+        let imported_bindings = imported_bindings_by_module
+            .get(&module_name)
+            .cloned()
+            .unwrap_or_default();
+        let Some(module) = modules.get_mut(&module_name) else {
+            continue;
+        };
+
+        let method_ids = collect_method_ids(&module.module);
+        let function_ids: Vec<Idx<Function>> =
+            module.module.functions.iter().map(|(idx, _)| idx).collect();
+        for function_id in function_ids {
+            if method_ids.contains(&function_id) {
+                continue;
+            }
+
+            let old_name = module.module.functions[function_id].name.clone();
+            if let Some(new_name) = local_renames.get(&old_name) {
+                module.module.functions[function_id].name = new_name.clone();
+            }
+
+            if let Some(body) = module.module.functions[function_id].body.as_mut() {
+                rewrite_body_call_callees(
+                    body,
+                    &local_renames,
+                    &imported_bindings,
+                    &rename_map_by_module,
+                );
+            }
+        }
+    }
+}
+
+fn rewrite_body_call_callees(
+    body: &mut Body,
+    local_renames: &HashMap<SmolStr, SmolStr>,
+    imported_bindings: &HashMap<SmolStr, SmolStr>,
+    rename_map_by_module: &HashMap<SmolStr, HashMap<SmolStr, SmolStr>>,
+) {
+    let mut updates: Vec<(Idx<Expr>, SmolStr)> = Vec::new();
+    for raw in 0..body.exprs.len() {
+        let expr_id = Idx::new(raw);
+        let callee = match &body.exprs[expr_id] {
+            Expr::Call { callee, .. } | Expr::GivenCall { callee, .. } => Some(*callee),
+            _ => None,
+        };
+        let Some(callee_id) = callee else {
+            continue;
+        };
+        let Expr::Variable(name) = &body.exprs[callee_id] else {
+            continue;
+        };
+
+        if let Some(new_name) = local_renames.get(name) {
+            updates.push((callee_id, new_name.clone()));
+            continue;
+        }
+        if let Some(target_module) = imported_bindings.get(name)
+            && let Some(target_renames) = rename_map_by_module.get(target_module)
+            && let Some(new_name) = target_renames.get(name)
+        {
+            updates.push((callee_id, new_name.clone()));
+        }
+    }
+
+    for (callee_id, new_name) in updates {
+        if let Expr::Variable(name) = &mut body.exprs[callee_id] {
+            *name = new_name;
+        }
+    }
+}
+
+fn collect_method_ids(module: &Module) -> HashSet<Idx<Function>> {
+    let mut method_ids = HashSet::new();
+    for (_, class) in module.classes.iter() {
+        for method in &class.methods {
+            method_ids.insert(*method);
+        }
+    }
+    method_ids
+}
+
+fn module_name_suffix(module_name: &str) -> String {
+    module_name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_lowercase() || ch.is_ascii_digit() {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 fn effect_for_builtin_symbol(name: &str) -> FunctionEffect {

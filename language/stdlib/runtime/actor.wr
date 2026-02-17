@@ -1,18 +1,19 @@
 so:
     Actor control helpers.
 
-to actor_at_least(value: Integer, minimum: Integer) -> Integer:
+
+to clamp_actor_at_least(value: Integer, minimum: Integer) -> Integer:
     if value < minimum:
         return minimum
     return value
 
 
-to objective_scale(value: Integer, objective: Integer) -> Integer:
+to compute_objective_scale(value: Integer, objective: Integer) -> Integer:
     if objective == 0:
-        return actor_at_least(value / 2, 1)
+        return clamp_actor_at_least(value / 2, 1)
     if objective == 1:
-        return actor_at_least(value * 2, 1)
-    return actor_at_least(value, 1)
+        return clamp_actor_at_least(value * 2, 1)
+    return clamp_actor_at_least(value, 1)
 
 
 so:
@@ -26,8 +27,8 @@ to normalize_mailbox_capacity(
     objective: Integer
 ) -> Integer:
     if requested_capacity > 0:
-        return actor_at_least(requested_capacity, 1)
-    return objective_scale(default_capacity, objective)
+        return clamp_actor_at_least(requested_capacity, 1)
+    return compute_objective_scale(default_capacity, objective)
 
 
 so: Resolve enqueue timeout policy in Wrela.
@@ -37,8 +38,8 @@ to normalize_enqueue_timeout_milliseconds(
     objective: Integer
 ) -> Integer:
     if requested_timeout_milliseconds >= 0:
-        return actor_at_least(requested_timeout_milliseconds, 1)
-    return objective_scale(default_timeout_milliseconds, objective)
+        return clamp_actor_at_least(requested_timeout_milliseconds, 1)
+    return compute_objective_scale(default_timeout_milliseconds, objective)
 
 
 so: Resolve actor batch limit policy in Wrela.
@@ -48,21 +49,21 @@ to normalize_batch_limit(
     objective: Integer
 ) -> Integer:
     if requested_batch_limit > 0:
-        return actor_at_least(requested_batch_limit, 1)
-    return objective_scale(default_batch_limit, objective)
+        return clamp_actor_at_least(requested_batch_limit, 1)
+    return compute_objective_scale(default_batch_limit, objective)
 
 
 so:
     Decide paused-mailbox drop behavior in Wrela.
     This stays deterministic because it only reads explicit inputs.
-check paused_mailbox_should_drop_message(
+check mailbox_has_paused_drop_condition(
     is_paused: Boolean,
     mailbox_length: Integer,
     pause_queue_capacity: Integer
 ) -> Boolean:
     if not is_paused:
         return false
-    return mailbox_length >= actor_at_least(pause_queue_capacity, 1)
+    return mailbox_length >= clamp_actor_at_least(pause_queue_capacity, 1)
 
 
 so: Get the mailbox length for an actor handle.
@@ -90,16 +91,16 @@ to pause_wait(handle: Any) -> Nothing:
     return pause_and_wait(handle)
 
 so: Begin a scoped producer burst for an actor or pool handle.
-to fire_burst_begin(handle: Any) -> Nothing:
+to start_fire_burst(handle: Any) -> Nothing:
     __wr_actor_fire_burst_begin(handle)
     return nothing
 
 so: Flush a scoped producer burst for an actor or pool handle.
-to fire_burst_end(handle: Any) -> Nothing:
+to stop_fire_burst(handle: Any) -> Nothing:
     __wr_actor_fire_burst_end(handle)
     return nothing
 
 so: Abort a scoped producer burst for an actor or pool handle.
-to fire_burst_abort(handle: Any) -> Nothing:
+to stop_fire_burst_abort(handle: Any) -> Nothing:
     __wr_actor_fire_burst_abort(handle)
     return nothing

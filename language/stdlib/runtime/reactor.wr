@@ -3,7 +3,7 @@ so:
     Keep this layer mechanism-oriented and explicit.
 
 
-to reactor_at_least(value: Integer, minimum: Integer) -> Integer:
+to clamp_reactor_at_least(value: Integer, minimum: Integer) -> Integer:
     if value < minimum:
         return minimum
     return value
@@ -44,7 +44,7 @@ to arm_timer(
 
 so: Resolve reactor timer timeout policy in Wrela.
 to normalize_timer_timeout_milliseconds(requested_timeout_milliseconds: Integer) -> Integer:
-    return reactor_at_least(requested_timeout_milliseconds, 0)
+    return clamp_reactor_at_least(requested_timeout_milliseconds, 0)
 
 
 so:
@@ -54,7 +54,7 @@ so:
     - arm timer
     - deregister token
     - drop reactor
-to example_reactor_flow() -> Boolean:
+check reactor_flow_is_valid() -> Boolean:
     reactor_handle = create_reactor()
     register_token(reactor_handle, 101)
     timeout_milliseconds = normalize_timer_timeout_milliseconds(5)

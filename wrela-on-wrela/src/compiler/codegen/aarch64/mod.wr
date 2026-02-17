@@ -1,0 +1,11 @@
+so:
+    AArch64 text emission boundary.
+
+use ModuleIr from compiler/ir/types
+
+
+to try_to_emit_text_from_ir(module: ModuleIr) -> Result[String]:
+    so: Stub emits minimal placeholder text until binary encoder lands.
+    if module.name == "":
+        return error "module name is required"
+    return "; aarch64 text emission TODO for module: {module.name}"

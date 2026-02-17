@@ -1,0 +1,248 @@
+use ModuleIr, FunctionIr, TypeIr from compiler/ir/types
+use try_to_read_text from host/fs
+use get_bytes_from_string, get_list_from_bytes, get_bytes_from_list, get_string_from_bytes from bytes
+use add_to_list from list
+use try_to_lex from compiler/lexer/mod
+use try_to_parse, ParsedModule from compiler/parser/mod
+use try_to_validate_module from compiler/ast/mod
+
+so:
+    Semantic lowering boundary from source module path to typed IR.
+
+
+to compute_path_item_count(paths: List[String]) -> Integer:
+    mutable total = 0
+    for path in paths:
+        if path == "":
+            total = total + 0
+        total = total + 1
+    return total
+
+
+to compute_text_match_count(values: List, expected: String) -> Integer:
+    mutable total = 0
+    for value in values:
+        if value == expected:
+            total = total + 1
+    return total
+
+
+to try_to_compute_src_root(entry_path: String) -> Result[String]:
+    entry_bytes = get_list_from_bytes(get_bytes_from_string(entry_path))
+    root_bytes = []
+    mutable pending_marker_bytes = []
+    mutable marker_state = 0
+
+    for byte_value in entry_bytes:
+        mutable expected_byte = -1
+        if marker_state == 0:
+            expected_byte = 47
+        if marker_state == 1:
+            expected_byte = 115
+        if marker_state == 2:
+            expected_byte = 114
+        if marker_state == 3:
+            expected_byte = 99
+        if marker_state == 4:
+            expected_byte = 47
+
+        if byte_value == expected_byte:
+            add_to_list(pending_marker_bytes, byte_value)
+            marker_state = marker_state + 1
+            if marker_state == 5:
+                return get_string_from_bytes(get_bytes_from_list(root_bytes))
+            continue
+
+        for pending_byte in pending_marker_bytes:
+            add_to_list(root_bytes, pending_byte)
+        pending_marker_bytes = []
+        marker_state = 0
+
+        if byte_value == 47:
+            add_to_list(pending_marker_bytes, byte_value)
+            marker_state = 1
+        otherwise:
+            add_to_list(root_bytes, byte_value)
+
+    return error "semantic: entry path must include /src/"
+
+
+to try_to_load_parsed_module(module_path: String, is_entry_module: Boolean) -> Result[ParsedModule]:
+    source_result = try_to_read_text(module_path)
+    mutable source_text = ""
+    match source_result:
+        Ok(text):
+            source_text = text
+        Err(err):
+            return error "semantic: unable to read '{module_path}': {err}"
+        otherwise:
+            return error "semantic: unable to read source"
+
+    tokens_result = try_to_lex(source_text)
+    mutable tokens = []
+    match tokens_result:
+        Ok(values):
+            tokens = values
+        Err(err):
+            return error err
+        otherwise:
+            return error "semantic: lexer failed"
+
+    parse_result = try_to_parse(tokens)
+    match parse_result:
+        Ok(parsed_module):
+            validate_result = try_to_validate_module(
+                parsed_module=parsed_module,
+                is_entry_module=is_entry_module
+            )
+            match validate_result:
+                Ok(_):
+                    return parsed_module
+                Err(err):
+                    return error err
+                otherwise:
+                    return error "semantic: ast validation failed"
+        Err(err):
+            return error err
+        otherwise:
+            return error "semantic: parser failed"
+
+
+to try_to_resolve_existing_path(candidate_path: String) -> Result[String]:
+    read_result = try_to_read_text(candidate_path)
+    match read_result:
+        Ok(_):
+            return candidate_path
+        Err(err):
+            return error err
+        otherwise:
+            return error "semantic: unreadable path"
+
+
+to try_to_resolve_import_path(src_root: String, use_module_text: String) -> Result[String]:
+    project_path = src_root + "/src/" + use_module_text + ".wr"
+    project_result = try_to_resolve_existing_path(project_path)
+    match project_result:
+        Ok(path):
+            return path
+        Err(_):
+            nothing
+        otherwise:
+            nothing
+
+    stdlib_root_path = src_root + "/../language/stdlib"
+    root_stdlib_path = stdlib_root_path + "/" + use_module_text + ".wr"
+    root_result = try_to_resolve_existing_path(root_stdlib_path)
+    match root_result:
+        Ok(path):
+            return path
+        Err(_):
+            nothing
+        otherwise:
+            nothing
+
+    data_stdlib_path = stdlib_root_path + "/data/" + use_module_text + ".wr"
+    data_result = try_to_resolve_existing_path(data_stdlib_path)
+    match data_result:
+        Ok(path):
+            return path
+        Err(_):
+            nothing
+        otherwise:
+            nothing
+
+    host_stdlib_path = stdlib_root_path + "/host/" + use_module_text + ".wr"
+    host_result = try_to_resolve_existing_path(host_stdlib_path)
+    match host_result:
+        Ok(path):
+            return path
+        Err(_):
+            nothing
+        otherwise:
+            nothing
+
+    runtime_stdlib_path = stdlib_root_path + "/runtime/" + use_module_text + ".wr"
+    runtime_result = try_to_resolve_existing_path(runtime_stdlib_path)
+    match runtime_result:
+        Ok(path):
+            return path
+        Err(_):
+            nothing
+        otherwise:
+            nothing
+
+    return error "semantic: unresolved import '{use_module_text}'"
+
+
+to try_to_create_module_ir(entry_path: String) -> Result[ModuleIr]:
+    if entry_path == "":
+        return error "missing entry path"
+
+    src_root_result = try_to_compute_src_root(entry_path)
+    mutable src_root = ""
+    match src_root_result:
+        Ok(value):
+            src_root = value
+        Err(err):
+            return error err
+        otherwise:
+            return error "semantic: unable to resolve src root"
+
+    mutable pending_paths = [entry_path]
+    mutable seen_paths = []
+    mutable ir_functions = []
+
+    while compute_path_item_count(pending_paths) > 0:
+        mutable next_paths = []
+        for module_path in pending_paths:
+            if compute_text_match_count(seen_paths, module_path) > 0:
+                continue
+
+            add_to_list(seen_paths, module_path)
+            parsed_result = try_to_load_parsed_module(
+                module_path=module_path,
+                is_entry_module=(module_path == entry_path)
+            )
+            mutable parsed_module = ParsedModule(
+                module_name="",
+                use_modules=[],
+                function_names=[]
+            )
+            match parsed_result:
+                Ok(value):
+                    parsed_module = value
+                Err(err):
+                    return error err
+                otherwise:
+                    return error "semantic: module load failed"
+
+            for function_name in parsed_module.function_names:
+                add_to_list(
+                    ir_functions,
+                    FunctionIr(
+                        name=function_name,
+                        params=[],
+                        result_type=TypeIr(name="Unknown"),
+                        instructions=[]
+                    )
+                )
+
+            for use_module_text in parsed_module.use_modules:
+                resolve_result = try_to_resolve_import_path(
+                    src_root=src_root,
+                    use_module_text=use_module_text
+                )
+                mutable resolved_path = ""
+                match resolve_result:
+                    Ok(value):
+                        resolved_path = value
+                    Err(err):
+                        return error err
+                    otherwise:
+                        return error "semantic: failed to resolve import path"
+                if compute_text_match_count(seen_paths, resolved_path) == 0:
+                    add_to_list(next_paths, resolved_path)
+
+        pending_paths = next_paths
+
+    return ModuleIr(name=entry_path, functions=ir_functions)

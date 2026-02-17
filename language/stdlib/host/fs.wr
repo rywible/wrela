@@ -3,7 +3,8 @@ so:
 
 so: Read a UTF-8 text file into a String.
 to try_to_read_text(path: String) -> Result[String]:
-    match __wr_fs_read_bytes(path):
+    read_result = __wr_fs_read_bytes(path)
+    match read_result:
         Ok(bytes):
             text = __wr_bytes_to_string(bytes)
             match text:
@@ -11,6 +12,8 @@ to try_to_read_text(path: String) -> Result[String]:
                 otherwise: return error "try_to_read_text: invalid utf8"
         Err(err):
             return error err
+        otherwise:
+            return error "try_to_read_text: read failed"
 
 so: Write a String to a UTF-8 text file.
 to try_to_write_text(path: String, contents: String) -> Result[Nothing]:

@@ -436,9 +436,9 @@ fn native_logger_smoke() {
 use Logger from log
 
 to run() -> Integer:
-    Logger.log_info("boot")
-    Logger.log_warning("warn")
-    Logger.log_error_with("err", { "code": 7 })
+    Logger.info_log("boot")
+    Logger.warn_log_alias("warn")
+    Logger.emit_error_log_with("err", { "code": 7 })
     return 1
 "#;
 
@@ -1497,7 +1497,7 @@ fn native_scheduler_policy_helpers_smoke() {
 use:
     choose_next_shard,
     compute_dispatch_budget,
-    scheduler_should_steal_work,
+    scheduler_is_ready_to_steal_work,
     refill_credits
 from scheduler
 
@@ -1505,8 +1505,8 @@ to run() -> Integer:
     shard_a = choose_next_shard(11, 4, false)
     shard_b = choose_next_shard(11, 4, true)
     budget = compute_dispatch_budget(12, 4, 9)
-    steal_a = scheduler_should_steal_work given 0, 3, false
-    steal_b = scheduler_should_steal_work given 0, 3, true
+    steal_a = scheduler_is_ready_to_steal_work given 0, 3, false
+    steal_b = scheduler_is_ready_to_steal_work given 0, 3, true
     credits = refill_credits(1, 5, 2, 2)
 
     if shard_a == 3 and shard_b == 0 and budget == 8 and steal_a and not steal_b and credits == 5:

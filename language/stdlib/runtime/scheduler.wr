@@ -3,13 +3,13 @@ so:
     Keep these pure so behavior is deterministic in tests and easy to reason about.
 
 
-to scheduler_at_least(value: Integer, minimum: Integer) -> Integer:
+to clamp_scheduler_at_least(value: Integer, minimum: Integer) -> Integer:
     if value < minimum:
         return minimum
     return value
 
 
-to scheduler_clamp_integer(
+to clamp_scheduler_integer(
     value: Integer,
     min_value: Integer,
     max_value: Integer
@@ -22,10 +22,10 @@ to scheduler_clamp_integer(
 
 
 so: Compute shard count for runtime configuration.
-to normalize_shard_count(requested_shard_count: Integer, deterministic_mode: Boolean) -> Integer:
-    if deterministic_mode:
+to normalize_shard_count(requested_shard_count: Integer, is_deterministic_mode: Boolean) -> Integer:
+    if is_deterministic_mode:
         return 1
-    return scheduler_at_least(requested_shard_count, 1)
+    return clamp_scheduler_at_least(requested_shard_count, 1)
 
 
 so:
@@ -34,10 +34,10 @@ so:
 to choose_next_shard(
     pool_identifier: Integer,
     shard_count: Integer,
-    deterministic_mode: Boolean
+    is_deterministic_mode: Boolean
 ) -> Integer:
-    safe_shard_count = normalize_shard_count(shard_count, deterministic_mode)
-    if deterministic_mode:
+    safe_shard_count = normalize_shard_count(shard_count, is_deterministic_mode)
+    if is_deterministic_mode:
         return 0
     return pool_identifier % safe_shard_count
 
@@ -50,24 +50,24 @@ to compute_dispatch_budget(
     configured_batch_limit: Integer,
     fairness_budget: Integer
 ) -> Integer:
-    base_limit = scheduler_at_least(configured_batch_limit, 1)
-    budget_cap = scheduler_at_least(fairness_budget, 1)
-    depth_lift = scheduler_at_least(queue_depth, 1)
+    base_limit = clamp_scheduler_at_least(configured_batch_limit, 1)
+    budget_cap = clamp_scheduler_at_least(fairness_budget, 1)
+    depth_lift = clamp_scheduler_at_least(queue_depth, 1)
     mutable proposed_budget = base_limit
     if depth_lift > base_limit:
         proposed_budget = base_limit * 2
-    return scheduler_clamp_integer(proposed_budget, 1, budget_cap)
+    return clamp_scheduler_integer(proposed_budget, 1, budget_cap)
 
 
 so:
     Decide whether local shard should steal from another shard.
     Deterministic mode keeps stealing disabled for reproducible ordering.
-check scheduler_should_steal_work(
+check scheduler_is_ready_to_steal_work(
     local_ready_count: Integer,
     remote_ready_count: Integer,
-    deterministic_mode: Boolean
+    is_deterministic_mode: Boolean
 ) -> Boolean:
-    if deterministic_mode:
+    if is_deterministic_mode:
         return false
     if local_ready_count > 0:
         return false
@@ -83,8 +83,8 @@ to refill_credits(
     weight: Integer,
     current_credits: Integer
 ) -> Integer:
-    min_share = scheduler_at_least(minimum_share, 1)
-    max_share = scheduler_at_least(maximum_share, min_share)
-    normalized_weight = scheduler_at_least(weight, 1)
+    min_share = clamp_scheduler_at_least(minimum_share, 1)
+    max_share = clamp_scheduler_at_least(maximum_share, min_share)
+    normalized_weight = clamp_scheduler_at_least(weight, 1)
     delta = min_share + normalized_weight
-    return scheduler_clamp_integer(current_credits + delta, 0, max_share)
+    return clamp_scheduler_integer(current_credits + delta, 0, max_share)

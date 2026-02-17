@@ -1,0 +1,19 @@
+use try_to_create_compile_artifact from compiler/api
+
+
+to run_from_environment() -> Integer:
+    compile_result = try_to_create_compile_artifact(
+        entry_path="wrela-on-wrela/src/main.wr",
+        mode="check"
+    )
+    match compile_result:
+        Ok(artifact):
+            if artifact.mode == "":
+                return 0
+            return 0
+        Err(compile_error):
+            if compile_error == "":
+                return 1
+            return 1
+        otherwise:
+            return 1

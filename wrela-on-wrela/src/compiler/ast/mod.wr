@@ -1,0 +1,29 @@
+so:
+    AST-level structural validation.
+
+use ParsedModule from compiler/parser/mod
+
+
+to compute_ast_item_count(items: List) -> Integer:
+    mutable total = 0
+    for item in items:
+        if item == nothing:
+            total = total + 0
+        total = total + 1
+    return total
+
+
+to try_to_validate_module(parsed_module: ParsedModule, is_entry_module: Boolean) -> Result[Nothing]:
+    if is_entry_module:
+        if compute_ast_item_count(parsed_module.function_names) == 0:
+            return error "ast: entry module must define at least one function"
+
+        mutable has_run_function = false
+        for function_name in parsed_module.function_names:
+            if function_name == "run":
+                has_run_function = true
+
+        if not has_run_function:
+            return error "ast: entry module must define run"
+
+    return nothing

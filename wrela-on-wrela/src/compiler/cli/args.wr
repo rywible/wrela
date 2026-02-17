@@ -1,0 +1,11 @@
+so:
+    Command parsing placeholder for bootstrap.
+
+A CommandRequest:
+    has:
+        mode: String
+        path: String
+
+
+to try_to_create_command_request_from_environment() -> Result[CommandRequest]:
+    return CommandRequest(mode="check", path="wrela-on-wrela/src/main.wr")

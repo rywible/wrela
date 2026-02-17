@@ -31,6 +31,83 @@ fn project_imports_from_subdir() {
 }
 
 #[test]
+fn project_allows_duplicate_function_names_across_modules() {
+    let base = tempfile::tempdir().expect("tempdir");
+    let entry_path = base.path().join("src").join("main.wr");
+    let mod_a_path = base.path().join("src").join("alpha.wr");
+    let mod_b_path = base.path().join("src").join("beta.wr");
+
+    write_temp(
+        &entry_path,
+        "use run_alpha from alpha\nuse run_beta from beta\n\nto run() -> Integer:\n    return run_alpha() + run_beta()\n",
+    );
+    write_temp(
+        &mod_a_path,
+        "to run_alpha() -> Integer:\n    return compute_value()\n\nto compute_value() -> Integer:\n    return 1\n",
+    );
+    write_temp(
+        &mod_b_path,
+        "to run_beta() -> Integer:\n    return compute_value()\n\nto compute_value() -> Integer:\n    return 2\n",
+    );
+
+    let project = load_project(&entry_path).expect("load project");
+    let duplicate_impls = project
+        .module
+        .functions
+        .iter()
+        .filter(|(_, func)| func.name.as_str().starts_with("compute_value_mod_"))
+        .count();
+    assert_eq!(duplicate_impls, 2);
+}
+
+#[test]
+fn project_accepts_renamed_stdlib_symbols_under_naming_rules() {
+    let base = tempfile::tempdir().expect("tempdir");
+    let entry_path = base.path().join("src").join("main.wr");
+
+    write_temp(
+        &entry_path,
+        "use:
+    choose_next_shard,
+    scheduler_is_ready_to_steal_work
+from scheduler
+use add_to_list from list
+use Logger from log
+
+to run() -> Integer:
+    values = []
+    add_to_list(values, 1)
+    Logger.info_log(\"boot\")
+    if scheduler_is_ready_to_steal_work given 0, 1, false:
+        return choose_next_shard(11, 4, false)
+    return 1
+",
+    );
+
+    let _project = load_project(&entry_path).expect("load project");
+}
+
+#[test]
+fn project_rejects_boolean_top_level_function_in_stdlib_style_code() {
+    let base = tempfile::tempdir().expect("tempdir");
+    let entry_path = base.path().join("src").join("main.wr");
+
+    write_temp(
+        &entry_path,
+        "to scheduler_runtime_policy() -> Boolean:\n    return true\n\n\
+to run() -> Integer:\n    if scheduler_runtime_policy():\n        return 1\n    return 0\n",
+    );
+
+    let project = load_project(&entry_path).expect("load project");
+    let semantic = wrela::hir::semantic::check_module(&project.module);
+    let found = semantic
+        .errors
+        .iter()
+        .any(|err| err.to_string().contains("forbidden boolean predicate type"));
+    assert!(found, "missing boolean-function prohibition diagnostic");
+}
+
+#[test]
 fn project_provenance_tracks_owner_paths_for_merged_symbols() {
     let base = tempfile::tempdir().expect("tempdir");
     let entry_path = base.path().join("src").join("main.wr");

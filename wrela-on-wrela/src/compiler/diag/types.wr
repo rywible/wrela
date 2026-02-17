@@ -1,0 +1,12 @@
+so:
+    Shared diagnostic model for wrwela-on-wrela.
+
+A Diagnostic:
+    has:
+        code: String
+        message: String
+        severity: String
+        path: String
+        span_start: Integer
+        span_end: Integer
+        help: String

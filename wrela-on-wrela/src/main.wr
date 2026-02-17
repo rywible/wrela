@@ -1,0 +1,4 @@
+use run_from_environment from compiler/cli/driver
+
+to run() -> Integer:
+    return run_from_environment()

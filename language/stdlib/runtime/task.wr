@@ -8,7 +8,7 @@ use:
 from map
 
 
-to task_at_least(value: Integer, minimum: Integer) -> Integer:
+to clamp_task_at_least(value: Integer, minimum: Integer) -> Integer:
     if value < minimum:
         return minimum
     return value
@@ -71,11 +71,11 @@ to fetch_add_atomic_counter(atomic_counter: Integer, delta: Integer) -> Integer:
 
 so: Create mutable task state used by policy wrappers.
 to create_task_state(task_identifier: Integer) -> Map:
-    state = create_map()
-    set(state, "task_identifier", task_identifier)
-    set(state, "epoch", 0)
-    set(state, "waiter_count", 0)
-    return state
+    task_states = create_map()
+    set(task_states, "task_identifier", task_identifier)
+    set(task_states, "epoch", 0)
+    set(task_states, "waiter_count", 0)
+    return task_states
 
 
 so: Get current signal epoch for a task state.
@@ -118,24 +118,24 @@ so:
     Build a wake action from an event source.
     This is intentionally explicit so policy changes stay in stdlib.
 to create_wake_action(task_identifier: Integer, wake_reason: String) -> Map:
-    action = create_map()
-    set(action, "task_identifier", task_identifier)
-    set(action, "wake_reason", wake_reason)
-    set(action, "delay_milliseconds", 0)
-    set(action, "should_wake", true)
-    return action
+    actions = create_map()
+    set(actions, "task_identifier", task_identifier)
+    set(actions, "wake_reason", wake_reason)
+    set(actions, "delay_milliseconds", 0)
+    set(actions, "should_wake", true)
+    return actions
 
 
 so: Mark a wake action as deferred for a fixed timeout.
 to mark_action_as_deferred(action: Map, delay_milliseconds: Integer) -> Map:
-    safe_delay = task_at_least(delay_milliseconds, 0)
+    safe_delay = clamp_task_at_least(delay_milliseconds, 0)
     set(action, "delay_milliseconds", safe_delay)
     set(action, "should_wake", safe_delay == 0)
     return action
 
 
 so: Decide whether a wake action should wake now.
-check task_should_wake(action: Map) -> Boolean:
+check task_is_ready_to_wake(action: Map) -> Boolean:
     value = get(action, "should_wake")
     match value:
         Boolean(flag):
@@ -151,13 +151,13 @@ so:
     - notify waiters
     - create wake action from event reason
 
-to example_task_wake_flow() -> Boolean:
-    state = create_task_state(7)
-    initial_epoch = snapshot_epoch(state)
-    register_waiter(state)
-    next_epoch = notify_waiters(state)
-    action = create_wake_action(7, "readable")
-    if initial_epoch == 0 and next_epoch == 1 and (task_should_wake given action):
+check task_wake_flow_is_valid() -> Boolean:
+    task_states = create_task_state(7)
+    initial_epoch = snapshot_epoch(task_states)
+    register_waiter(task_states)
+    next_epoch = notify_waiters(task_states)
+    actions = create_wake_action(7, "readable")
+    if initial_epoch == 0 and next_epoch == 1 and (task_is_ready_to_wake given actions):
         return true
     return false
 
@@ -168,7 +168,7 @@ so:
     - unpark and read epoch
     - update/read counter
     - drop handles
-to example_task_primitive_flow() -> Boolean:
+check task_primitive_flow_is_valid() -> Boolean:
     task_signal = create_task_signal()
     counter = create_atomic_counter(0)
     unpark_one(task_signal)

@@ -27,7 +27,7 @@ A Logger:
         return nothing
 
     so: Log an error message.
-    can err(message: String) -> Nothing:
+    can emit_error(message: String) -> Nothing:
         __wr_log("error", message, __wr_map_new())
         return nothing
 
@@ -47,56 +47,56 @@ A Logger:
         return nothing
 
     so: Log an error message with fields.
-    can error_with(message: String, fields: Map) -> Nothing:
+    can emit_error_with(message: String, fields: Map) -> Nothing:
         __wr_log("error", message, fields)
         return nothing
 
     so: Log a debug message.
-    can log_debug(message: String) -> Nothing:
+    can debug_log(message: String) -> Nothing:
         __wr_log("debug", message, __wr_map_new())
         return nothing
 
     so: Log an info message.
-    can log_info(message: String) -> Nothing:
+    can info_log(message: String) -> Nothing:
         __wr_log("info", message, __wr_map_new())
         return nothing
 
     so: Log a warning message.
-    can log_warn(message: String) -> Nothing:
+    can warn_log(message: String) -> Nothing:
         __wr_log("warn", message, __wr_map_new())
         return nothing
 
     so: Log a warning message (alias).
-    can log_warning(message: String) -> Nothing:
+    can warn_log_alias(message: String) -> Nothing:
         __wr_log("warn", message, __wr_map_new())
         return nothing
 
     so: Log an error message.
-    can log_error(message: String) -> Nothing:
+    can emit_error_log(message: String) -> Nothing:
         __wr_log("error", message, __wr_map_new())
         return nothing
 
     so: Log a debug message with fields.
-    can log_debug_with(message: String, fields: Map) -> Nothing:
+    can debug_log_with(message: String, fields: Map) -> Nothing:
         __wr_log("debug", message, fields)
         return nothing
 
     so: Log an info message with fields.
-    can log_info_with(message: String, fields: Map) -> Nothing:
+    can info_log_with(message: String, fields: Map) -> Nothing:
         __wr_log("info", message, fields)
         return nothing
 
     so: Log a warning message with fields.
-    can log_warn_with(message: String, fields: Map) -> Nothing:
+    can warn_log_with(message: String, fields: Map) -> Nothing:
         __wr_log("warn", message, fields)
         return nothing
 
     so: Log a warning message with fields (alias).
-    can log_warning_with(message: String, fields: Map) -> Nothing:
+    can warn_log_with_alias(message: String, fields: Map) -> Nothing:
         __wr_log("warn", message, fields)
         return nothing
 
     so: Log an error message with fields.
-    can log_error_with(message: String, fields: Map) -> Nothing:
+    can emit_error_log_with(message: String, fields: Map) -> Nothing:
         __wr_log("error", message, fields)
         return nothing

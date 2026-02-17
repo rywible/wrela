@@ -1,0 +1,78 @@
+use try_to_read_text from host/fs
+use try_to_lex from compiler/lexer/mod
+use try_to_parse from compiler/parser/mod
+use try_to_validate_module from compiler/ast/mod
+
+
+to compute_test_item_count(items: List) -> Integer:
+    mutable total = 0
+    for item in items:
+        if item == nothing:
+            total = total + 0
+        total = total + 1
+    return total
+
+
+to test_try_to_lex_emits_keywords_and_identifiers() -> Nothing:
+    source_result = try_to_read_text("/Users/ryanwible/projects/wrela/wrela-on-wrela/src/main.wr")
+    mutable source_text = ""
+    match source_result:
+        Ok(text):
+            source_text = text
+        Err(err):
+            crash("expected main source to load: {err}")
+        otherwise:
+            crash("unexpected source read result")
+
+    lex_result = try_to_lex(source_text)
+    mutable tokens = []
+    match lex_result:
+        Ok(values):
+            tokens = values
+        Err(err):
+            crash("lexer failed: {err}")
+        otherwise:
+            crash("unexpected lexer result")
+
+    assert value compute_test_item_count(tokens) > 0
+
+
+to test_try_to_parse_and_validate_entry_module() -> Nothing:
+    source_result = try_to_read_text("/Users/ryanwible/projects/wrela/wrela-on-wrela/src/main.wr")
+    mutable source_text = ""
+    match source_result:
+        Ok(text):
+            source_text = text
+        Err(err):
+            crash("expected main source to load: {err}")
+        otherwise:
+            crash("unexpected source read result")
+
+    lex_result = try_to_lex(source_text)
+    mutable tokens = []
+    match lex_result:
+        Ok(values):
+            tokens = values
+        Err(err):
+            crash("lexer failed: {err}")
+        otherwise:
+            crash("unexpected lexer result")
+
+    parse_result = try_to_parse(tokens)
+    match parse_result:
+        Ok(parsed_module):
+            validate_result = try_to_validate_module(
+                parsed_module=parsed_module,
+                is_entry_module=true
+            )
+            match validate_result:
+                Ok(_):
+                    assert value true == true
+                Err(err):
+                    crash("validator failed: {err}")
+                otherwise:
+                    crash("unexpected validator result")
+        Err(err):
+            crash("parser failed: {err}")
+        otherwise:
+            crash("unexpected parser result")

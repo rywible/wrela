@@ -1,0 +1,14 @@
+use try_to_create_compile_artifact from compiler/api
+
+to test_try_to_create_compile_artifact_build_mode_smoke() -> Nothing:
+    result = try_to_create_compile_artifact(
+        entry_path="/Users/ryanwible/projects/wrela/apps/ledger-lite/src/main.wr",
+        mode="build"
+    )
+    match result:
+        Ok(artifact):
+            assert value artifact.mode == "build"
+        Err(err):
+            crash("expected build mode success, got error: {err}")
+        otherwise:
+            crash("unexpected compile_project result shape")

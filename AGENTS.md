@@ -39,3 +39,56 @@ cargo clippy --workspace --all-targets   # lint with configured thresholds
 - For language-level coverage, add `.wr` tests and run them through `wrela test`.
 - When changing parsing/type/codegen behavior, include at least one regression test.
 - Run `cargo test --workspace` before opening a PR.
+
+## Wrela Authoring Notes (Hard-Earned)
+
+Use this section when writing new `.wr` code in this repo. These are practical constraints from current compiler behavior, not theory.
+
+### 1. Naming rules are strict and enforced at compile time
+
+- Function names must be ASCII `snake_case`.
+- Top-level function names are expected to be verb-led (`compile_*`, `try_to_*`, `create_*`, etc.).
+- Result-returning functions are expected to start with `try_to_`.
+- Functions that act as class factories are expected to use `create_` (or `try_to_create_` for fallible ones).
+- Boolean locals/params/check-like names should use `is_` or `has_` prefixes.
+- `check` names have shape requirements:
+  - top-level checks should contain `_is_` or `_has_`
+  - class/interface checks should start with `is_` or `has_`
+- Field names are expected to be noun-like (verb-led field names are rejected).
+- Collection names are expected to be plural.
+
+Source of truth: `compiler/hir/naming.rs`.
+
+### 2. Prefer explicit, conservative typing patterns
+
+- `Any` is reserved for stdlib and should not be used casually in user code.
+- Typed list literals in constructors can trigger type friction; if needed, start with plain `List` and tighten types later.
+- When matching `Result`, handle `Ok`/`Err`/`otherwise` explicitly in scaffolding code.
+
+### 3. `check` vs function call syntax matters
+
+- Checks should be called with `given` syntax where required by the typechecker.
+- Boolean-returning normal functions are forbidden; predicates must be declared as `check ... -> Boolean`.
+- Avoid adding top-level `check` functions that can be auto-generated/fuzzed into failing assertions during certification unless behavior is intentionally robust across broad generated inputs.
+
+### 4. Build mode vs check mode
+
+- `wrela check <path>` can work in single-file mode.
+- `wrela build <path>` expects project-mode layout (`src/**`) and runs additional checks/cert flows.
+- A scaffold can pass `check` but still fail `build` due to certification lane behavior.
+
+### 5. Keep imports minimal in early scaffolding
+
+- Import only what you use; unused imports can fail or pollute diagnostics.
+- Be careful with broad stdlib imports while scaffolding; keep dependency surface small to reduce unrelated naming/type diagnostics.
+
+### 6. Entry-point and top-level constraints still apply
+
+- Entrypoint module should define `to run() -> Type`.
+- Avoid top-level executable statements outside allowed declarations.
+- Only entry module may define `run`.
+
+## Self-Host Plan Source of Truth
+
+- Canonical project plan: `/Users/ryanwible/projects/wrela/wrela-on-wrela/docs/master-plan.md`
+- Keep this file current as implementation progresses; treat it as the master checklist and scope contract for wrela-on-wrela completion.

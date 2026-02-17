@@ -1,0 +1,36 @@
+so:
+    Deterministic ordering helpers. v1 keeps this small and explicit.
+
+use add_to_list from list
+
+
+
+to sort_strings_ascending(values: List[String]) -> List[String]:
+    mutable out = []
+    for value in values:
+        add_to_list(out, value)
+
+    mutable changed = true
+    while changed:
+        changed = false
+        mutable next = []
+        mutable index = 0
+        mutable previous = nothing
+        for value in out:
+            index = index + 1
+            if index == 1:
+                previous = value
+                continue
+
+            if previous > value:
+                add_to_list(next, value)
+                changed = true
+            otherwise:
+                add_to_list(next, previous)
+                previous = value
+
+        if previous != nothing:
+            add_to_list(next, previous)
+        out = next
+
+    return out

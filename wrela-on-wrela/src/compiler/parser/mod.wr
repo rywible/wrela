@@ -1,0 +1,110 @@
+so:
+    First-pass parser over token stream.
+
+use add_to_list from list
+
+
+A ParsedModule:
+    has:
+        module_name: String
+        use_modules: List = []
+        function_names: List = []
+
+
+to try_to_parse(tokens: List) -> Result[ParsedModule]:
+    modules = []
+    functions = []
+
+    mutable is_waiting_for_function_name = false
+    mutable is_waiting_for_use_from = false
+    mutable is_waiting_for_use_module = false
+    mutable is_collecting_use_module = false
+    mutable is_at_line_start = true
+    mutable use_module_text = ""
+
+    for token in tokens:
+        is_line_start_before = is_at_line_start
+
+        if token.kind == "keyword_to" and is_line_start_before:
+            is_waiting_for_function_name = true
+            is_at_line_start = false
+            continue
+
+        if is_waiting_for_function_name:
+            if token.kind == "identifier":
+                add_to_list(functions, token.text)
+                is_waiting_for_function_name = false
+                is_at_line_start = false
+                continue
+            if token.kind == "newline":
+                is_at_line_start = true
+                return error "parser: expected function name after 'to'"
+
+        if token.kind == "keyword_use" and is_line_start_before:
+            is_waiting_for_use_from = true
+            is_waiting_for_use_module = false
+            is_collecting_use_module = false
+            use_module_text = ""
+            is_at_line_start = false
+            continue
+
+        if token.kind == "keyword_from" and is_waiting_for_use_from:
+            is_waiting_for_use_from = false
+            is_waiting_for_use_module = true
+            is_collecting_use_module = true
+            use_module_text = ""
+            is_at_line_start = false
+            continue
+
+        if token.kind == "newline" and is_waiting_for_use_from:
+            is_waiting_for_use_from = false
+            is_at_line_start = true
+            continue
+
+        if is_waiting_for_use_module:
+            if token.kind == "identifier" or token.kind == "slash" or token.kind == "dot":
+                use_module_text = use_module_text + token.text
+                is_at_line_start = false
+                continue
+
+            if token.kind == "newline":
+                if use_module_text == "":
+                    is_at_line_start = true
+                    return error "parser: expected module path after 'from'"
+                add_to_list(modules, use_module_text)
+                is_waiting_for_use_from = false
+                is_waiting_for_use_module = false
+                is_collecting_use_module = false
+                use_module_text = ""
+                is_at_line_start = true
+                continue
+
+            if is_collecting_use_module:
+                if use_module_text == "":
+                    is_at_line_start = false
+                    return error "parser: expected module path after 'from'"
+                add_to_list(modules, use_module_text)
+                is_waiting_for_use_from = false
+                is_waiting_for_use_module = false
+                is_collecting_use_module = false
+                use_module_text = ""
+                is_at_line_start = false
+
+        if token.kind == "newline":
+            is_at_line_start = true
+        otherwise:
+            is_at_line_start = false
+
+    if is_waiting_for_function_name:
+        return error "parser: expected function name after 'to'"
+
+    if is_waiting_for_use_module:
+        if use_module_text == "":
+            return error "parser: expected module path after 'from'"
+        add_to_list(modules, use_module_text)
+
+    return ParsedModule(
+        module_name="main",
+        use_modules=modules,
+        function_names=functions
+    )

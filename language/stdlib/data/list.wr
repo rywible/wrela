@@ -2,6 +2,6 @@ so:
     List convenience helpers.
 
 so: Append a value to the end of a list.
-to push(list: List, value: Any) -> Nothing:
+to add_to_list(list: List, value: Any) -> Nothing:
     __wr_list_push(list, value)
     return nothing

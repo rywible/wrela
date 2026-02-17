@@ -1,0 +1,23 @@
+so:
+    Stable compiler mid-end contracts.
+
+A TypeIr:
+    has:
+        name: String
+
+A InstructionIr:
+    has:
+        op: String
+        args: List = []
+
+A FunctionIr:
+    has:
+        name: String
+        params: List = []
+        result_type: TypeIr
+        instructions: List = []
+
+A ModuleIr:
+    has:
+        name: String
+        functions: List = []

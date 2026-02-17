@@ -1,0 +1,25 @@
+so:
+    Link orchestration boundary (system linker in v1).
+
+use ObjectModule from compiler/codegen/macho/types
+
+A LinkArtifact:
+    has:
+        object_paths: List = []
+        executable_path: String = ""
+
+
+to try_to_create_link_artifact(
+    entry_path: String,
+    mode: String,
+    object_module: ObjectModule
+) -> Result[LinkArtifact]:
+    so: Placeholder contract; will invoke system linker once object writer lands.
+    if mode == "":
+        return error "mode is required"
+    if object_module.triple == "":
+        return error "target triple is required"
+    return LinkArtifact(
+        object_paths=[],
+        executable_path="{entry_path}.bin"
+    )
