@@ -4,7 +4,7 @@ use crate::mir::analysis::{CallGraph, FunctionTypes, analyze_module};
 use crate::mir::effect_ir;
 use crate::mir::ir::{
     AllocKind, BasicBlock, CallKind, CallTarget, Local, LocalId, MirFunction, MirModule, MirType,
-    Place, Rvalue, Stmt, SwitchCase, TempId, Terminator, TypeTagId, Value,
+    Place, Rvalue, Stmt, SwitchCase, Temp, TempId, Terminator, TypeTagId, Value,
 };
 use crate::mir::rewrite::{RewriteBudget, RewriteReport, mine_admit_and_apply};
 use rowan::TextRange;
@@ -536,6 +536,342 @@ fn bump_uses_rvalue(value: &Rvalue, use_counts: &mut [u32]) {
 
 pub fn run_function_passes_with_types(func: &mut MirFunction, types: Option<&FunctionTypes>) {
     run_function_passes_with(func, types);
+}
+
+pub fn inline_small_pure_functions(module: &mut MirModule, graph: &CallGraph) -> usize {
+    const INLINE_STMT_LIMIT: usize = 8;
+    const INLINE_PER_FUNCTION_LIMIT: usize = 32;
+
+    #[derive(Clone)]
+    struct InlineCandidate {
+        func: MirFunction,
+    }
+
+    fn candidate_from(func: &MirFunction) -> Option<InlineCandidate> {
+        if func.suspendable || func.name == "main" {
+            return None;
+        }
+        if func.blocks.len() != 1 {
+            return None;
+        }
+        let block = &func.blocks[func.entry.0];
+        if !matches!(block.terminator, Terminator::Return { .. }) {
+            return None;
+        }
+        let mut stmt_count = 0usize;
+        for stmt in &block.stmts {
+            let Stmt::Assign { value, .. } = stmt else {
+                return None;
+            };
+            if !is_pure_rvalue(value) {
+                return None;
+            }
+            stmt_count += 1;
+        }
+        if stmt_count > INLINE_STMT_LIMIT {
+            return None;
+        }
+        Some(InlineCandidate { func: func.clone() })
+    }
+
+    fn remap_value(
+        value: &Value,
+        local_map: &HashMap<LocalId, LocalId>,
+        temp_map: &HashMap<TempId, TempId>,
+    ) -> Value {
+        match value {
+            Value::Const(lit) => Value::Const(lit.clone()),
+            Value::Local(id) => Value::Local(*local_map.get(id).expect("missing local map")),
+            Value::Temp(id) => Value::Temp(*temp_map.get(id).expect("missing temp map")),
+        }
+    }
+
+    fn remap_place(
+        place: &Place,
+        local_map: &HashMap<LocalId, LocalId>,
+        temp_map: &HashMap<TempId, TempId>,
+    ) -> Place {
+        match place {
+            Place::Local(id) => Place::Local(*local_map.get(id).expect("missing local map")),
+            Place::Temp(id) => Place::Temp(*temp_map.get(id).expect("missing temp map")),
+        }
+    }
+
+    fn remap_call_target(
+        target: &CallTarget,
+        local_map: &HashMap<LocalId, LocalId>,
+        temp_map: &HashMap<TempId, TempId>,
+    ) -> CallTarget {
+        match target {
+            CallTarget::Function(name) => CallTarget::Function(name.clone()),
+            CallTarget::Method {
+                receiver,
+                method,
+                method_id,
+            } => CallTarget::Method {
+                receiver: remap_value(receiver, local_map, temp_map),
+                method: method.clone(),
+                method_id: *method_id,
+            },
+            CallTarget::GuardedInterface {
+                fast_paths,
+                fallback,
+            } => CallTarget::GuardedInterface {
+                fast_paths: fast_paths.clone(),
+                fallback: fallback.clone(),
+            },
+            CallTarget::Indirect(value) => {
+                CallTarget::Indirect(remap_value(value, local_map, temp_map))
+            }
+        }
+    }
+
+    fn remap_rvalue(
+        value: &Rvalue,
+        local_map: &HashMap<LocalId, LocalId>,
+        temp_map: &HashMap<TempId, TempId>,
+    ) -> Rvalue {
+        match value {
+            Rvalue::Use(value) => Rvalue::Use(remap_value(value, local_map, temp_map)),
+            Rvalue::Unary { op, operand } => Rvalue::Unary {
+                op: *op,
+                operand: remap_value(operand, local_map, temp_map),
+            },
+            Rvalue::Binary { op, lhs, rhs } => Rvalue::Binary {
+                op: *op,
+                lhs: remap_value(lhs, local_map, temp_map),
+                rhs: remap_value(rhs, local_map, temp_map),
+            },
+            Rvalue::StrConcat { parts, alloc } => Rvalue::StrConcat {
+                parts: parts
+                    .iter()
+                    .map(|part| remap_value(part, local_map, temp_map))
+                    .collect(),
+                alloc: *alloc,
+            },
+            Rvalue::ResultOk { value } => Rvalue::ResultOk {
+                value: remap_value(value, local_map, temp_map),
+            },
+            Rvalue::ResultErr { value } => Rvalue::ResultErr {
+                value: remap_value(value, local_map, temp_map),
+            },
+            Rvalue::ResultIsOk { value } => Rvalue::ResultIsOk {
+                value: remap_value(value, local_map, temp_map),
+            },
+            Rvalue::ResultUnwrap { value } => Rvalue::ResultUnwrap {
+                value: remap_value(value, local_map, temp_map),
+            },
+            Rvalue::ResultErrUnwrap { value } => Rvalue::ResultErrUnwrap {
+                value: remap_value(value, local_map, temp_map),
+            },
+            Rvalue::Crash { value } => Rvalue::Crash {
+                value: remap_value(value, local_map, temp_map),
+            },
+            Rvalue::GetField { base, field, slot } => Rvalue::GetField {
+                base: remap_value(base, local_map, temp_map),
+                field: field.clone(),
+                slot: *slot,
+            },
+            Rvalue::Call { kind, target, args } => Rvalue::Call {
+                kind: *kind,
+                target: remap_call_target(target, local_map, temp_map),
+                args: args
+                    .iter()
+                    .map(|arg| remap_value(arg, local_map, temp_map))
+                    .collect(),
+            },
+            Rvalue::ClassInit { class_id, fields } => Rvalue::ClassInit {
+                class_id: *class_id,
+                fields: fields.clone(),
+            },
+            Rvalue::Spawn {
+                target,
+                instance,
+                size,
+                objective,
+                config,
+            } => Rvalue::Spawn {
+                target: remap_value(target, local_map, temp_map),
+                instance: remap_value(instance, local_map, temp_map),
+                size: *size,
+                objective: *objective,
+                config: *config,
+            },
+            Rvalue::PoolNew {
+                handles,
+                objective,
+                min_size,
+                max_size,
+                weight,
+                queue_cap,
+            } => Rvalue::PoolNew {
+                handles: remap_value(handles, local_map, temp_map),
+                objective: *objective,
+                min_size: *min_size,
+                max_size: *max_size,
+                weight: *weight,
+                queue_cap: *queue_cap,
+            },
+            Rvalue::BuildList { items, alloc } => Rvalue::BuildList {
+                items: items
+                    .iter()
+                    .map(|item| remap_value(item, local_map, temp_map))
+                    .collect(),
+                alloc: *alloc,
+            },
+            Rvalue::BuildMap { items, alloc } => Rvalue::BuildMap {
+                items: items
+                    .iter()
+                    .map(|(k, v)| {
+                        (
+                            remap_value(k, local_map, temp_map),
+                            remap_value(v, local_map, temp_map),
+                        )
+                    })
+                    .collect(),
+                alloc: *alloc,
+            },
+            Rvalue::StringInterp { parts, alloc } => Rvalue::StringInterp {
+                parts: parts
+                    .iter()
+                    .map(|part| match part {
+                        crate::mir::ir::StringPartValue::Literal(lit) => {
+                            crate::mir::ir::StringPartValue::Literal(lit.clone())
+                        }
+                        crate::mir::ir::StringPartValue::Value(value) => {
+                            crate::mir::ir::StringPartValue::Value(remap_value(
+                                value, local_map, temp_map,
+                            ))
+                        }
+                    })
+                    .collect(),
+                alloc: *alloc,
+            },
+        }
+    }
+
+    let mut candidates: HashMap<SmolStr, InlineCandidate> = HashMap::new();
+    for func in &module.functions {
+        if let Some(candidate) = candidate_from(func) {
+            candidates.insert(func.name.clone(), candidate);
+        }
+    }
+
+    let mut total_inlined = 0usize;
+    let mut inline_counter = 0usize;
+    for func in &mut module.functions {
+        let mut inline_budget = INLINE_PER_FUNCTION_LIMIT;
+        for block in &mut func.blocks {
+            if inline_budget == 0 {
+                continue;
+            }
+            let old_stmts = std::mem::take(&mut block.stmts);
+            let mut new_stmts = Vec::with_capacity(old_stmts.len());
+            for stmt in old_stmts {
+                let Stmt::Assign { place, value, span } = &stmt else {
+                    new_stmts.push(stmt);
+                    continue;
+                };
+                let Rvalue::Call { kind, target, args } = value else {
+                    new_stmts.push(stmt);
+                    continue;
+                };
+                let CallTarget::Function(name) = target else {
+                    new_stmts.push(stmt);
+                    continue;
+                };
+                if *kind != CallKind::Sync {
+                    new_stmts.push(stmt);
+                    continue;
+                }
+                if graph.call_count(name) == 0 {
+                    new_stmts.push(stmt);
+                    continue;
+                }
+                let Some(candidate) = candidates.get(name) else {
+                    new_stmts.push(stmt);
+                    continue;
+                };
+                if inline_budget == 0 {
+                    new_stmts.push(stmt);
+                    continue;
+                }
+                if func.name == candidate.func.name {
+                    new_stmts.push(stmt);
+                    continue;
+                }
+                if candidate.func.params.len() != args.len() {
+                    new_stmts.push(stmt);
+                    continue;
+                }
+
+                inline_counter += 1;
+                inline_budget = inline_budget.saturating_sub(1);
+                total_inlined += 1;
+
+                let mut local_map = HashMap::new();
+                for (idx, local) in candidate.func.locals.iter().enumerate() {
+                    let name = SmolStr::new(format!(
+                        "{}__inl{}_{}",
+                        candidate.func.name, inline_counter, local.name
+                    ));
+                    let new_local = Local {
+                        name,
+                        mutable: local.mutable,
+                        ty: local.ty.clone(),
+                    };
+                    let new_id = LocalId(func.locals.len());
+                    func.locals.push(new_local);
+                    local_map.insert(LocalId(idx), new_id);
+                }
+                let mut temp_map = HashMap::new();
+                for (idx, temp) in candidate.func.temps.iter().enumerate() {
+                    let new_id = TempId(func.temps.len());
+                    func.temps.push(Temp {
+                        ty: temp.ty.clone(),
+                    });
+                    temp_map.insert(TempId(idx), new_id);
+                }
+
+                for (param, arg) in candidate.func.params.iter().zip(args.iter()) {
+                    let mapped_param = *local_map.get(param).expect("missing param local mapping");
+                    new_stmts.push(Stmt::Assign {
+                        place: Place::Local(mapped_param),
+                        value: Rvalue::Use(arg.clone()),
+                        span: *span,
+                    });
+                }
+
+                let callee_block = &candidate.func.blocks[candidate.func.entry.0];
+                for callee_stmt in &callee_block.stmts {
+                    let Stmt::Assign { place, value, span } = callee_stmt else {
+                        continue;
+                    };
+                    new_stmts.push(Stmt::Assign {
+                        place: remap_place(place, &local_map, &temp_map),
+                        value: remap_rvalue(value, &local_map, &temp_map),
+                        span: *span,
+                    });
+                }
+
+                let ret_value = match &callee_block.terminator {
+                    Terminator::Return { value, .. } => value
+                        .as_ref()
+                        .map(|value| remap_value(value, &local_map, &temp_map))
+                        .unwrap_or(Value::Const(Literal::Nil)),
+                    _ => Value::Const(Literal::Nil),
+                };
+                new_stmts.push(Stmt::Assign {
+                    place: place.clone(),
+                    value: Rvalue::Use(ret_value),
+                    span: *span,
+                });
+            }
+            block.stmts = new_stmts;
+        }
+    }
+
+    total_inlined
 }
 
 pub fn run_module_passes(module: &mut MirModule) {
@@ -3134,6 +3470,34 @@ mod tests {
             }
         }
         assert!(!has_binary, "expected dead code elim to remove binary");
+    }
+
+    #[test]
+    fn test_inline_small_pure_function() {
+        let input = "to add(a: Integer, b: Integer) -> Integer:
+    return a + b
+
+to run() -> Integer:
+    return add(1, 2)
+";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = hir_lower::lower(root);
+        let mut mir = lower_module(&module);
+        let analysis = analyze_module(&mir);
+        let inlined = inline_small_pure_functions(&mut mir, &analysis.call_graph);
+        assert!(inlined > 0, "expected inliner to run at least once");
+
+        let run = mir.functions.iter().find(|f| f.name == "run").unwrap();
+        let mut has_call = false;
+        for stmt in &run.blocks[run.entry.0].stmts {
+            if let Stmt::Assign { value, .. } = stmt
+                && matches!(value, Rvalue::Call { .. })
+            {
+                has_call = true;
+            }
+        }
+        assert!(!has_call, "expected run() to inline add() call");
     }
 
     #[test]

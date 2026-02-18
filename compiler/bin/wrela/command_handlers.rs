@@ -8442,6 +8442,8 @@ fn compile_to_mir(
         println!("{:#?}", mir_module);
     }
     let analysis = mir::analysis::analyze_module(&mir_module);
+    let _ = mir::opt::inline_small_pure_functions(&mut mir_module, &analysis.call_graph);
+    let analysis = mir::analysis::analyze_module(&mir_module);
     for func in &mut mir_module.functions {
         let types = analysis.type_map.function(&func.name);
         mir::opt::run_function_passes_with_types(func, types);
