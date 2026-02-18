@@ -104,7 +104,7 @@ pub(crate) mod logging {
         buf.push(b'[');
         let mut first = true;
         unsafe {
-            for item in (&(*list_ref).data).iter().take((*list_ref).len) {
+            for item in (*list_ref).data.iter().take((*list_ref).len) {
                 if !first {
                     buf.push(b',');
                 }
@@ -383,10 +383,10 @@ fn canonicalize_for_policy(path: &Path) -> PathBuf {
     if let Ok(real) = std::fs::canonicalize(path) {
         return normalize_path(&real);
     }
-    if let (Some(parent), Some(name)) = (path.parent(), path.file_name()) {
-        if let Ok(real_parent) = std::fs::canonicalize(parent) {
-            return normalize_path(&real_parent.join(name));
-        }
+    if let (Some(parent), Some(name)) = (path.parent(), path.file_name())
+        && let Ok(real_parent) = std::fs::canonicalize(parent)
+    {
+        return normalize_path(&real_parent.join(name));
     }
     normalize_path(path)
 }

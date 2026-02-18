@@ -83,7 +83,7 @@ to run() -> Integer:
         return v
 "#;
 
-    let module = load_module_from_source(&source);
+    let module = load_module_from_source(source);
     let semantic = hir::semantic::check_module(&module);
     assert!(
         semantic.errors.is_empty(),
@@ -125,7 +125,7 @@ to run() -> Integer:
     return total
 "#;
 
-    let module = load_module_from_source(&source);
+    let module = load_module_from_source(source);
     let semantic = hir::semantic::check_module(&module);
     assert!(
         semantic.errors.is_empty(),
@@ -358,7 +358,7 @@ to run() -> Integer:
     return 0
 "#;
 
-    let module = load_module_from_source(&source);
+    let module = load_module_from_source(source);
     let semantic = hir::semantic::check_module(&module);
     assert!(
         semantic.errors.is_empty(),
@@ -401,7 +401,7 @@ to run() -> Integer:
         Status.Done: return 2
 "#;
 
-    let module = load_module_from_source(&source);
+    let module = load_module_from_source(source);
     let semantic = hir::semantic::check_module(&module);
     assert!(
         semantic.errors.is_empty(),
@@ -442,7 +442,7 @@ to run() -> Integer:
     return 1
 "#;
 
-    let module = load_module_from_source(&source);
+    let module = load_module_from_source(source);
     let semantic = hir::semantic::check_module(&module);
     assert!(
         semantic.errors.is_empty(),
@@ -525,10 +525,12 @@ fn mir_alloc_annotations_preserved() {
 
     let mut allocs = Vec::new();
     for stmt in &func.blocks[0].stmts {
-        if let Stmt::Assign { value, .. } = stmt {
-            if let Rvalue::BuildList { alloc, .. } = value {
-                allocs.push(*alloc);
-            }
+        if let Stmt::Assign {
+            value: Rvalue::BuildList { alloc, .. },
+            ..
+        } = stmt
+        {
+            allocs.push(*alloc);
         }
     }
     assert!(allocs.contains(&AllocKind::Escaping));
@@ -587,7 +589,7 @@ to run() -> Integer:
     return f()
 "#;
 
-    let module = load_module_from_source(&source);
+    let module = load_module_from_source(source);
     let semantic = hir::semantic::check_module(&module);
     assert!(
         semantic.errors.is_empty(),
@@ -636,7 +638,7 @@ to run() -> Integer:
     return y
 "#;
 
-    let module = load_module_from_source(&source);
+    let module = load_module_from_source(source);
     let semantic = hir::semantic::check_module(&module);
     assert!(
         semantic.errors.is_empty(),
@@ -688,7 +690,7 @@ to run() -> Integer:
         return total
 "#;
 
-    let module = load_module_from_source(&source);
+    let module = load_module_from_source(source);
     let semantic = hir::semantic::check_module(&module);
     assert!(
         semantic.errors.is_empty(),
@@ -733,7 +735,7 @@ to run() -> Integer:
     return 0
 "#;
 
-    let module = load_module_from_source(&source);
+    let module = load_module_from_source(source);
     let semantic = hir::semantic::check_module(&module);
     assert!(
         semantic.errors.is_empty(),
@@ -949,7 +951,7 @@ to run() -> Integer:
         return total
 "#;
 
-    let module = load_module_from_source(&source);
+    let module = load_module_from_source(source);
     let semantic = hir::semantic::check_module(&module);
     assert!(
         semantic.errors.is_empty(),
@@ -1333,8 +1335,7 @@ fn native_pool_backpressure_config_smoke() {
     if std::env::var("WR_SKIP_NATIVE").is_ok() {
         return;
     }
-    let source = format!(
-        r#"
+    let source = r#"
 use size from pool
 
 A Counter:
@@ -1345,10 +1346,9 @@ to run() -> Integer:
     optimize balance:
         c = detach Pool.of(Counter, size=1, backpressure=queue(1)) * 1
         return size(c)
-"#
-    );
+"#;
 
-    let module = load_module_from_source(&source);
+    let module = load_module_from_source(source);
     let semantic = hir::semantic::check_module(&module);
     assert!(
         semantic.errors.is_empty(),

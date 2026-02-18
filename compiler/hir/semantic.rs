@@ -532,18 +532,10 @@ struct Binding {
     used: bool,
 }
 
+#[derive(Default)]
 struct Scope {
     bindings: HashMap<SmolStr, Binding>,
     optimize_seen: bool,
-}
-
-impl Default for Scope {
-    fn default() -> Self {
-        Self {
-            bindings: HashMap::new(),
-            optimize_seen: false,
-        }
-    }
 }
 
 struct Checker<'a> {
@@ -814,26 +806,25 @@ impl<'a> Checker<'a> {
                 self.errors
                     .push(SemanticError::CheckMustReturnBoolean { span: ret_span });
             }
-        } else if matches!(func.kind, FunctionKind::Function | FunctionKind::Method) {
-            if let Some(shape) = forbidden_boolean_return_shape(func.ret_type.as_ref()) {
-                let ret_span = func
-                    .ret_type
-                    .as_ref()
-                    .and_then(|t| t.name_span)
-                    .map(span_from_range)
-                    .unwrap_or_else(|| span_from_option(func.name_span));
-                if let Some(cause) = func
-                    .body
-                    .as_ref()
-                    .and_then(|body| first_boolean_impurity(body, &body.root_stmts))
-                {
-                    let (impure_span, reason) = match cause {
-                        BooleanImpurity::Keyword { keyword, span } => {
-                            (span, format!("`{keyword}`"))
-                        }
-                        BooleanImpurity::Mutation { span } => (span, "mutation".to_string()),
-                    };
-                    self.errors.push(SemanticError::BooleanFunctionImpure {
+        } else if matches!(func.kind, FunctionKind::Function | FunctionKind::Method)
+            && let Some(shape) = forbidden_boolean_return_shape(func.ret_type.as_ref())
+        {
+            let ret_span = func
+                .ret_type
+                .as_ref()
+                .and_then(|t| t.name_span)
+                .map(span_from_range)
+                .unwrap_or_else(|| span_from_option(func.name_span));
+            if let Some(cause) = func
+                .body
+                .as_ref()
+                .and_then(|body| first_boolean_impurity(body, &body.root_stmts))
+            {
+                let (impure_span, reason) = match cause {
+                    BooleanImpurity::Keyword { keyword, span } => (span, format!("`{keyword}`")),
+                    BooleanImpurity::Mutation { span } => (span, "mutation".to_string()),
+                };
+                self.errors.push(SemanticError::BooleanFunctionImpure {
                         name: func.name.clone(),
                         span: ret_span,
                         impure_span,
@@ -843,39 +834,38 @@ impl<'a> Checker<'a> {
                             shape.stored_boolean_replacement()
                         ),
                     });
-                } else {
-                    let suggestion = if matches!(shape, ForbiddenBooleanReturnShape::Boolean) {
-                        if func.kind == FunctionKind::Method {
-                            format!(
-                                "This looks like a predicate. Use `checks {}(...) -> Boolean:`. Call sites should use `object.{} given ...`.",
-                                func.name, func.name
-                            )
-                        } else {
-                            format!(
-                                "This looks like a predicate. Use `check {}(...) -> Boolean:`. Call sites should use `{} given ...`.",
-                                func.name, func.name
-                            )
-                        }
+            } else {
+                let suggestion = if matches!(shape, ForbiddenBooleanReturnShape::Boolean) {
+                    if func.kind == FunctionKind::Method {
+                        format!(
+                            "This looks like a predicate. Use `checks {}(...) -> Boolean:`. Call sites should use `object.{} given ...`.",
+                            func.name, func.name
+                        )
                     } else {
                         format!(
-                            "This looks like a predicate. Use `{} {}(...) -> Boolean:`. Call sites should use `{} given ...`. If this is retrieved truth data, return `{}` and convert with `resolve` where branch-ready `Boolean` is required.",
-                            if func.kind == FunctionKind::Method {
-                                "checks"
-                            } else {
-                                "check"
-                            },
-                            func.name,
-                            func.name,
-                            shape.stored_boolean_replacement()
+                            "This looks like a predicate. Use `check {}(...) -> Boolean:`. Call sites should use `{} given ...`.",
+                            func.name, func.name
                         )
-                    };
-                    self.errors
-                        .push(SemanticError::BooleanFunctionShouldBeCheck {
-                            name: func.name.clone(),
-                            span: ret_span,
-                            help: suggestion,
-                        });
-                }
+                    }
+                } else {
+                    format!(
+                        "This looks like a predicate. Use `{} {}(...) -> Boolean:`. Call sites should use `{} given ...`. If this is retrieved truth data, return `{}` and convert with `resolve` where branch-ready `Boolean` is required.",
+                        if func.kind == FunctionKind::Method {
+                            "checks"
+                        } else {
+                            "check"
+                        },
+                        func.name,
+                        func.name,
+                        shape.stored_boolean_replacement()
+                    )
+                };
+                self.errors
+                    .push(SemanticError::BooleanFunctionShouldBeCheck {
+                        name: func.name.clone(),
+                        span: ret_span,
+                        help: suggestion,
+                    });
             }
         }
         self.enter_scope();
@@ -1177,16 +1167,16 @@ impl<'a> Checker<'a> {
             }
             Stmt::Return(expr) => {
                 if let Some(expr) = expr {
-                    if let Expr::Variable(name) = &body.exprs[*expr] {
-                        if name == "it" {
-                            if self.in_method {
-                                return;
-                            }
-                            self.errors.push(SemanticError::InvalidItUsage {
-                                span: span_from_range(body.expr_span(*expr)),
-                            });
+                    if let Expr::Variable(name) = &body.exprs[*expr]
+                        && name == "it"
+                    {
+                        if self.in_method {
                             return;
                         }
+                        self.errors.push(SemanticError::InvalidItUsage {
+                            span: span_from_range(body.expr_span(*expr)),
+                        });
+                        return;
                     }
                     self.check_expr_with_ctx(body, *expr, false, false);
                 }
@@ -1337,37 +1327,35 @@ impl<'a> Checker<'a> {
                 self.check_expr_with_ctx(body, *callee, allow_it, allow_fire);
             }
             Expr::Binary { lhs, rhs, .. } => {
-                if self.in_derived {
-                    if let Expr::Binary { op, .. } = &body.exprs[expr_id] {
-                        if matches!(
-                            op,
-                            BinaryOp::Assign
-                                | BinaryOp::AddAssign
-                                | BinaryOp::SubAssign
-                                | BinaryOp::MulAssign
-                                | BinaryOp::DivAssign
-                        ) {
-                            self.errors.push(SemanticError::DerivedMutation {
-                                span: span_from_range(body.expr_span(expr_id)),
-                            });
-                        }
-                    }
+                if self.in_derived
+                    && let Expr::Binary { op, .. } = &body.exprs[expr_id]
+                    && matches!(
+                        op,
+                        BinaryOp::Assign
+                            | BinaryOp::AddAssign
+                            | BinaryOp::SubAssign
+                            | BinaryOp::MulAssign
+                            | BinaryOp::DivAssign
+                    )
+                {
+                    self.errors.push(SemanticError::DerivedMutation {
+                        span: span_from_range(body.expr_span(expr_id)),
+                    });
                 }
-                if self.in_check {
-                    if let Expr::Binary { op, .. } = &body.exprs[expr_id] {
-                        if matches!(
-                            op,
-                            BinaryOp::Assign
-                                | BinaryOp::AddAssign
-                                | BinaryOp::SubAssign
-                                | BinaryOp::MulAssign
-                                | BinaryOp::DivAssign
-                        ) {
-                            self.errors.push(SemanticError::CheckMutation {
-                                span: span_from_range(body.expr_span(expr_id)),
-                            });
-                        }
-                    }
+                if self.in_check
+                    && let Expr::Binary { op, .. } = &body.exprs[expr_id]
+                    && matches!(
+                        op,
+                        BinaryOp::Assign
+                            | BinaryOp::AddAssign
+                            | BinaryOp::SubAssign
+                            | BinaryOp::MulAssign
+                            | BinaryOp::DivAssign
+                    )
+                {
+                    self.errors.push(SemanticError::CheckMutation {
+                        span: span_from_range(body.expr_span(expr_id)),
+                    });
                 }
                 self.check_expr_with_ctx(body, *lhs, allow_it, false);
                 self.check_expr_with_ctx(body, *rhs, allow_it, false);
@@ -1449,34 +1437,34 @@ impl<'a> Checker<'a> {
                 self.check_expr_with_ctx(body, *expr, allow_it, false);
             }
             Expr::Call { callee, args, .. } => {
-                if self.in_derived {
-                    if let Expr::Variable(name) = &body.exprs[*callee] {
-                        let keyword = match name.as_str() {
-                            "detach" => Some("detach"),
-                            "spawn" => Some("spawn"),
-                            _ => None,
-                        };
-                        if let Some(keyword) = keyword {
-                            self.errors.push(SemanticError::DerivedInvalidKeyword {
-                                keyword,
-                                span: span_from_range(body.expr_span(expr_id)),
-                            });
-                        }
+                if self.in_derived
+                    && let Expr::Variable(name) = &body.exprs[*callee]
+                {
+                    let keyword = match name.as_str() {
+                        "detach" => Some("detach"),
+                        "spawn" => Some("spawn"),
+                        _ => None,
+                    };
+                    if let Some(keyword) = keyword {
+                        self.errors.push(SemanticError::DerivedInvalidKeyword {
+                            keyword,
+                            span: span_from_range(body.expr_span(expr_id)),
+                        });
                     }
                 }
-                if self.in_check {
-                    if let Expr::Variable(name) = &body.exprs[*callee] {
-                        let keyword = match name.as_str() {
-                            "detach" => Some("detach"),
-                            "spawn" => Some("spawn"),
-                            _ => None,
-                        };
-                        if let Some(keyword) = keyword {
-                            self.errors.push(SemanticError::CheckInvalidKeyword {
-                                keyword,
-                                span: span_from_range(body.expr_span(expr_id)),
-                            });
-                        }
+                if self.in_check
+                    && let Expr::Variable(name) = &body.exprs[*callee]
+                {
+                    let keyword = match name.as_str() {
+                        "detach" => Some("detach"),
+                        "spawn" => Some("spawn"),
+                        _ => None,
+                    };
+                    if let Some(keyword) = keyword {
+                        self.errors.push(SemanticError::CheckInvalidKeyword {
+                            keyword,
+                            span: span_from_range(body.expr_span(expr_id)),
+                        });
                     }
                 }
                 let is_pool_of = self.is_pool_of_call(body, *callee);
@@ -1598,14 +1586,14 @@ impl<'a> Checker<'a> {
     }
 
     fn declare(&mut self, name: SmolStr, binding: Binding) {
-        if should_check_shadowing(binding.kind) {
-            if let Some(previous) = self.resolve_in_outer(&name) {
-                self.errors.push(SemanticError::ShadowedName {
-                    name: name.clone(),
-                    span: span_from_option(binding.span),
-                    previous: previous.span.map(span_from_range),
-                });
-            }
+        if should_check_shadowing(binding.kind)
+            && let Some(previous) = self.resolve_in_outer(&name)
+        {
+            self.errors.push(SemanticError::ShadowedName {
+                name: name.clone(),
+                span: span_from_option(binding.span),
+                previous: previous.span.map(span_from_range),
+            });
         }
         let scope = match self.scopes.last_mut() {
             Some(scope) => scope,
@@ -1800,14 +1788,12 @@ impl<'a> Checker<'a> {
             return None;
         }
         for arg in args {
-            if let Arg::Named { name, value, .. } = arg {
-                if name.as_str() == "objective" {
-                    if let Expr::Variable(id) = &body.exprs[*value] {
-                        if let Some(obj) = Objective::from_str(id.as_str()) {
-                            return Some(obj);
-                        }
-                    }
-                }
+            if let Arg::Named { name, value, .. } = arg
+                && name.as_str() == "objective"
+                && let Expr::Variable(id) = &body.exprs[*value]
+                && let Some(obj) = Objective::from_str(id.as_str())
+            {
+                return Some(obj);
             }
         }
         None
@@ -2089,10 +2075,10 @@ fn impurity_in_expr(body: &Body, expr_id: Idx<Expr>) -> Option<BooleanImpurity> 
         }
         Expr::StringInterp(parts) => {
             for part in parts {
-                if let crate::hir::StringPart::Expr(expr) = part {
-                    if let Some(cause) = impurity_in_expr(body, *expr) {
-                        return Some(cause);
-                    }
+                if let crate::hir::StringPart::Expr(expr) = part
+                    && let Some(cause) = impurity_in_expr(body, *expr)
+                {
+                    return Some(cause);
                 }
             }
             None
@@ -2244,13 +2230,11 @@ fn await_in_transitive_call_graph(
     }
     visiting.insert(func_id);
     let mut has_await = *direct_await.get(&func_id).unwrap_or(&false);
-    if !has_await {
-        if let Some(callees) = graph.get(&func_id) {
-            for callee in callees {
-                if await_in_transitive_call_graph(*callee, graph, direct_await, visiting, memo) {
-                    has_await = true;
-                    break;
-                }
+    if !has_await && let Some(callees) = graph.get(&func_id) {
+        for callee in callees {
+            if await_in_transitive_call_graph(*callee, graph, direct_await, visiting, memo) {
+                has_await = true;
+                break;
             }
         }
     }
@@ -2581,11 +2565,10 @@ fn collect_expr_calls_and_awaits(
                     if !matches!(&body.exprs[*callee], Expr::Member { object, member, .. }
                         if member.as_str() == "of"
                             && matches!(&body.exprs[*object], Expr::Variable(name) if name.as_str() == "Pool"))
+                        && let Some(methods) = method_name_ids.get(member)
                     {
-                        if let Some(methods) = method_name_ids.get(member) {
-                            for method in methods {
-                                callees.insert(*method);
-                            }
+                        for method in methods {
+                            callees.insert(*method);
                         }
                     }
                 }
@@ -2625,11 +2608,10 @@ fn collect_expr_calls_and_awaits(
                     if !matches!(&body.exprs[*callee], Expr::Member { object, member, .. }
                         if member.as_str() == "of"
                             && matches!(&body.exprs[*object], Expr::Variable(name) if name.as_str() == "Pool"))
+                        && let Some(methods) = method_name_ids.get(member)
                     {
-                        if let Some(methods) = method_name_ids.get(member) {
-                            for method in methods {
-                                callees.insert(*method);
-                            }
+                        for method in methods {
+                            callees.insert(*method);
                         }
                     }
                 }

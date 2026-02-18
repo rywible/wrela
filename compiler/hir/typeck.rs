@@ -1412,10 +1412,10 @@ fn pool_of_class_name(
 ) -> Option<SmolStr> {
     for arg in args {
         if let crate::hir::Arg::Positional { value, .. } = arg {
-            if let Expr::Variable(name) = &body.exprs[*value] {
-                if classes.is_class(name) {
-                    return Some(name.clone());
-                }
+            if let Expr::Variable(name) = &body.exprs[*value]
+                && classes.is_class(name)
+            {
+                return Some(name.clone());
             }
             break;
         }
@@ -1696,17 +1696,16 @@ fn check_stmt(
                 returns_result,
             );
             let span = body.stmt_span(stmt_id);
-            if let Some(existing) = ctx.resolve(name) {
-                if types_known(&existing, &value_ty)
-                    && !is_assignable(&existing, &value_ty, classes, interfaces)
-                {
-                    errors.push(TypeError::InvalidAssignment {
-                        name: name.clone(),
-                        expected: type_label(&existing),
-                        found: type_label(&value_ty),
-                        span: span_from_range(span),
-                    });
-                }
+            if let Some(existing) = ctx.resolve(name)
+                && types_known(&existing, &value_ty)
+                && !is_assignable(&existing, &value_ty, classes, interfaces)
+            {
+                errors.push(TypeError::InvalidAssignment {
+                    name: name.clone(),
+                    expected: type_label(&existing),
+                    found: type_label(&value_ty),
+                    span: span_from_range(span),
+                });
             }
             ctx.assign(name, value_ty);
         }
@@ -1981,14 +1980,15 @@ change the return type to Result[...] or handle results with `otherwise`."
                             .to_string(),
                     });
                 }
-            } else if let Some(expected) = ret_type {
-                if *expected != Type::Nil && *expected != Type::Unknown {
-                    errors.push(TypeError::ReturnTypeMismatch {
-                        expected: type_label(expected),
-                        found: type_label(&Type::Nil),
-                        span: span_from_range(body.stmt_span(stmt_id)),
-                    });
-                }
+            } else if let Some(expected) = ret_type
+                && *expected != Type::Nil
+                && *expected != Type::Unknown
+            {
+                errors.push(TypeError::ReturnTypeMismatch {
+                    expected: type_label(expected),
+                    found: type_label(&Type::Nil),
+                    span: span_from_range(body.stmt_span(stmt_id)),
+                });
             }
         }
         Stmt::Break | Stmt::Continue => {}
@@ -2002,33 +2002,33 @@ fn bind_pattern(pattern: &Pattern, subject_ty: &Type, ctx: &mut TypeContext, enu
             ctx.declare(name.clone(), subject_ty.clone());
         }
         Pattern::Path { parts, args } => {
-            if parts.len() == 1 && parts[0].as_str() == "Ok" {
-                if let Type::Result(ok, _) = subject_ty {
-                    if let Some(arg) = args.get(0) {
-                        bind_pattern(arg, ok, ctx, enums);
-                        return;
-                    }
-                }
+            if parts.len() == 1
+                && parts[0].as_str() == "Ok"
+                && let Type::Result(ok, _) = subject_ty
+                && let Some(arg) = args.first()
+            {
+                bind_pattern(arg, ok, ctx, enums);
+                return;
             }
-            if parts.len() == 1 && parts[0].as_str() == "Err" {
-                if let Type::Result(_, err) = subject_ty {
-                    if let Some(arg) = args.get(0) {
-                        bind_pattern(arg, err, ctx, enums);
-                        return;
-                    }
-                }
+            if parts.len() == 1
+                && parts[0].as_str() == "Err"
+                && let Type::Result(_, err) = subject_ty
+                && let Some(arg) = args.first()
+            {
+                bind_pattern(arg, err, ctx, enums);
+                return;
             }
             if parts.len() == 2 {
                 let enum_name = &parts[0];
                 let variant_name = &parts[1];
-                if let Some(en) = enums.get(enum_name) {
-                    if let Some(params) = en.variants.get(variant_name) {
-                        for (idx, arg) in args.iter().enumerate() {
-                            let ty = params.get(idx).map(|(_, ty)| ty).unwrap_or(&Type::Unknown);
-                            bind_pattern(arg, ty, ctx, enums);
-                        }
-                        return;
+                if let Some(en) = enums.get(enum_name)
+                    && let Some(params) = en.variants.get(variant_name)
+                {
+                    for (idx, arg) in args.iter().enumerate() {
+                        let ty = params.get(idx).map(|(_, ty)| ty).unwrap_or(&Type::Unknown);
+                        bind_pattern(arg, ty, ctx, enums);
                     }
+                    return;
                 }
             }
             for arg in args {
@@ -2068,12 +2068,11 @@ fn match_is_exhaustive(
                         ok_covered = true;
                     } else if parts.len() == 1 && parts[0].as_str() == "Err" {
                         err_covered = true;
-                    } else if parts.len() == 2 {
-                        if let Some(en) = enum_name {
-                            if parts[0] == *en {
-                                enum_variants_covered.insert(parts[1].clone());
-                            }
-                        }
+                    } else if parts.len() == 2
+                        && let Some(en) = enum_name
+                        && parts[0] == *en
+                    {
+                        enum_variants_covered.insert(parts[1].clone());
                     }
                 }
                 Pattern::Literal(_) => {}
@@ -2173,10 +2172,11 @@ fn check_assert_expr(
                 returns_result,
                 returns_result,
             );
-            if matches!(mode, AssertEqualityMode::Identity) && types_known(&left_ty, &right_ty) {
-                if is_identity_primitive(&left_ty) || is_identity_primitive(&right_ty) {
-                    errors.push(TypeError::AssertIdentityPrimitive { span });
-                }
+            if matches!(mode, AssertEqualityMode::Identity)
+                && types_known(&left_ty, &right_ty)
+                && (is_identity_primitive(&left_ty) || is_identity_primitive(&right_ty))
+            {
+                errors.push(TypeError::AssertIdentityPrimitive { span });
             }
         }
         _ => {
@@ -2275,99 +2275,98 @@ fn infer_expr(
                     | BinaryOp::SubAssign
                     | BinaryOp::MulAssign
                     | BinaryOp::DivAssign
-            ) {
-                if let Expr::Member { object, member, .. } = &body.exprs[*lhs] {
-                    let object_ty = infer_expr(
-                        body,
-                        *object,
-                        ctx,
-                        classes,
-                        enums,
-                        interfaces,
-                        functions,
-                        errors,
-                        false,
-                        allow_result,
-                        in_result_fn,
-                    );
-                    let right_ty = infer_expr(
-                        body,
-                        *rhs,
-                        ctx,
-                        classes,
-                        enums,
-                        interfaces,
-                        functions,
-                        errors,
-                        false,
-                        allow_result,
-                        in_result_fn,
-                    );
-                    if let Type::Actor(_) = object_ty {
-                        errors.push(TypeError::ActorMemberAccess {
+            ) && let Expr::Member { object, member, .. } = &body.exprs[*lhs]
+            {
+                let object_ty = infer_expr(
+                    body,
+                    *object,
+                    ctx,
+                    classes,
+                    enums,
+                    interfaces,
+                    functions,
+                    errors,
+                    false,
+                    allow_result,
+                    in_result_fn,
+                );
+                let right_ty = infer_expr(
+                    body,
+                    *rhs,
+                    ctx,
+                    classes,
+                    enums,
+                    interfaces,
+                    functions,
+                    errors,
+                    false,
+                    allow_result,
+                    in_result_fn,
+                );
+                if let Type::Actor(_) = object_ty {
+                    errors.push(TypeError::ActorMemberAccess {
+                        member: member.clone(),
+                        span: span_from_range(*op_span),
+                    });
+                    return Type::Unknown;
+                }
+                if let Type::Named(class_name, class_args) = object_ty {
+                    if interfaces.is_interface(&class_name) {
+                        errors.push(TypeError::UnknownMember {
+                            object: class_name.to_string(),
                             member: member.clone(),
                             span: span_from_range(*op_span),
                         });
-                        return Type::Unknown;
-                    }
-                    if let Type::Named(class_name, class_args) = object_ty {
-                        if interfaces.is_interface(&class_name) {
+                    } else if let Some(class) = classes.get(&class_name) {
+                        let subst = class_subst(class, &class_args);
+                        if let Some(field_ty) = class.fields.get(member) {
+                            let field_mutable =
+                                class.field_mutable.get(member).copied().unwrap_or(false);
+                            if !field_mutable {
+                                errors.push(TypeError::ImmutableFieldAssign {
+                                    member: member.clone(),
+                                    span: span_from_range(*op_span),
+                                    help: "Mark the field as mutable in the `has` block."
+                                        .to_string(),
+                                });
+                            }
+                            let field_ty = substitute_type(field_ty, &subst);
+                            if matches!(op, BinaryOp::Assign) {
+                                if types_known(&field_ty, &right_ty)
+                                    && !is_assignable(&field_ty, &right_ty, classes, interfaces)
+                                {
+                                    errors.push(TypeError::InvalidAssignment {
+                                        name: member.clone(),
+                                        expected: type_label(&field_ty),
+                                        found: type_label(&right_ty),
+                                        span: span_from_range(*op_span),
+                                    });
+                                }
+                            } else if types_known(&field_ty, &right_ty)
+                                && !valid_binary(binary_from_assign(*op), &field_ty, &right_ty)
+                            {
+                                errors.push(TypeError::InvalidBinaryOperands {
+                                    op: binary_op_label(binary_from_assign(*op)),
+                                    span: span_from_range(*op_span),
+                                });
+                            }
+                        } else if class.methods.contains_key(member) {
+                            errors.push(TypeError::InvalidAssignment {
+                                name: member.clone(),
+                                expected: "field".to_string(),
+                                found: "method".to_string(),
+                                span: span_from_range(*op_span),
+                            });
+                        } else {
                             errors.push(TypeError::UnknownMember {
                                 object: class_name.to_string(),
                                 member: member.clone(),
                                 span: span_from_range(*op_span),
                             });
-                        } else if let Some(class) = classes.get(&class_name) {
-                            let subst = class_subst(class, &class_args);
-                            if let Some(field_ty) = class.fields.get(member) {
-                                let field_mutable =
-                                    class.field_mutable.get(member).copied().unwrap_or(false);
-                                if !field_mutable {
-                                    errors.push(TypeError::ImmutableFieldAssign {
-                                        member: member.clone(),
-                                        span: span_from_range(*op_span),
-                                        help: "Mark the field as mutable in the `has` block."
-                                            .to_string(),
-                                    });
-                                }
-                                let field_ty = substitute_type(field_ty, &subst);
-                                if matches!(op, BinaryOp::Assign) {
-                                    if types_known(&field_ty, &right_ty)
-                                        && !is_assignable(&field_ty, &right_ty, classes, interfaces)
-                                    {
-                                        errors.push(TypeError::InvalidAssignment {
-                                            name: member.clone(),
-                                            expected: type_label(&field_ty),
-                                            found: type_label(&right_ty),
-                                            span: span_from_range(*op_span),
-                                        });
-                                    }
-                                } else if types_known(&field_ty, &right_ty)
-                                    && !valid_binary(binary_from_assign(*op), &field_ty, &right_ty)
-                                {
-                                    errors.push(TypeError::InvalidBinaryOperands {
-                                        op: binary_op_label(binary_from_assign(*op)),
-                                        span: span_from_range(*op_span),
-                                    });
-                                }
-                            } else if class.methods.contains_key(member) {
-                                errors.push(TypeError::InvalidAssignment {
-                                    name: member.clone(),
-                                    expected: "field".to_string(),
-                                    found: "method".to_string(),
-                                    span: span_from_range(*op_span),
-                                });
-                            } else {
-                                errors.push(TypeError::UnknownMember {
-                                    object: class_name.to_string(),
-                                    member: member.clone(),
-                                    span: span_from_range(*op_span),
-                                });
-                            }
                         }
                     }
-                    return Type::Unknown;
                 }
+                return Type::Unknown;
             }
             if matches!(op, BinaryOp::Otherwise) {
                 let left = infer_expr(
@@ -2651,277 +2650,263 @@ fn infer_expr(
                 }
             }
             let mut handled_member = false;
-            if ret_ty.is_none() {
-                if let Expr::Member {
+            if ret_ty.is_none()
+                && let Expr::Member {
                     object,
                     member,
                     member_span,
                 } = &body.exprs[*callee]
+            {
+                handled_member = true;
+                if !type_args.is_empty() {
+                    errors.push(TypeError::UnexpectedTypeArgs {
+                        span: span_from_range(body.expr_span(expr_id)),
+                    });
+                }
+                let mut enum_ctor_handled = false;
+                let mut enum_name_opt: Option<SmolStr> = None;
+                let mut enum_type_args: Vec<TypeRef> = Vec::new();
+                if let Expr::Variable(enum_name) = &body.exprs[*object] {
+                    enum_name_opt = Some(enum_name.clone());
+                } else if let Expr::TypeApply { callee, type_args } = &body.exprs[*object]
+                    && let Expr::Variable(enum_name) = &body.exprs[*callee]
                 {
-                    handled_member = true;
-                    if !type_args.is_empty() {
-                        errors.push(TypeError::UnexpectedTypeArgs {
+                    enum_name_opt = Some(enum_name.clone());
+                    enum_type_args = type_args.clone();
+                }
+                if let Some(enum_name) = enum_name_opt
+                    && let Some(en) = enums.get(&enum_name)
+                    && let Some(params) = en.variants.get(member)
+                {
+                    if is_given {
+                        errors.push(TypeError::GivenRequiresCheck {
                             span: span_from_range(body.expr_span(expr_id)),
                         });
                     }
-                    let mut enum_ctor_handled = false;
-                    let mut enum_name_opt: Option<SmolStr> = None;
-                    let mut enum_type_args: Vec<TypeRef> = Vec::new();
-                    if let Expr::Variable(enum_name) = &body.exprs[*object] {
-                        enum_name_opt = Some(enum_name.clone());
-                    } else if let Expr::TypeApply { callee, type_args } = &body.exprs[*object] {
-                        if let Expr::Variable(enum_name) = &body.exprs[*callee] {
-                            enum_name_opt = Some(enum_name.clone());
-                            enum_type_args = type_args.clone();
-                        }
-                    }
-                    if let Some(enum_name) = enum_name_opt {
-                        if let Some(en) = enums.get(&enum_name) {
-                            if let Some(params) = en.variants.get(member) {
-                                if is_given {
-                                    errors.push(TypeError::GivenRequiresCheck {
-                                        span: span_from_range(body.expr_span(expr_id)),
-                                    });
-                                }
-                                let resolved_args = resolve_type_args(
-                                    &enum_name,
-                                    &en.type_params,
-                                    &enum_type_args,
-                                    ctx,
-                                    errors,
-                                    span_from_range(body.expr_span(*object)),
-                                );
-                                let subst = build_type_subst(&en.type_params, &resolved_args);
-                                let params: Vec<(SmolStr, Type)> = params
-                                    .iter()
-                                    .map(|(name, ty)| (name.clone(), substitute_type(ty, &subst)))
-                                    .collect();
-                                check_call_args(
-                                    body,
-                                    expr_id,
-                                    args,
-                                    &params,
-                                    ctx,
-                                    classes,
-                                    enums,
-                                    interfaces,
-                                    functions,
-                                    errors,
-                                    allow_result,
-                                    in_result_fn,
-                                );
-                                ret_ty = Some(Type::Named(enum_name.clone(), resolved_args));
-                                valid_callee = true;
-                                enum_ctor_handled = true;
-                            }
-                        }
-                    }
-                    if is_pool_of_member(body, *object, member) {
-                        ret_ty = Some(Type::Unknown);
-                        valid_callee = true;
-                    }
-                    if !enum_ctor_handled {
-                        let object_ty = infer_expr(
-                            body,
-                            *object,
-                            ctx,
-                            classes,
-                            enums,
-                            interfaces,
-                            functions,
-                            errors,
-                            false,
-                            allow_result,
-                            in_result_fn,
-                        );
-                        match object_ty {
-                            Type::Actor(inner) => {
-                                if let Type::Named(class_name, class_args) = *inner {
-                                    if let Some(class) = classes.get(&class_name) {
-                                        let method_params =
-                                            instantiate_method_params(class, &class_args, member);
-                                        let method_ret =
-                                            instantiate_method_ret(class, &class_args, member);
-                                        if let Some(method) = class.methods.get(member) {
-                                            if method.kind == FunctionKind::Derived {
-                                                errors.push(TypeError::CallDerivedProperty {
-                                                    member: member.clone(),
-                                                    span: span_from_range(*member_span),
-                                                });
-                                                ret_ty = Some(Type::Unknown);
-                                                valid_callee = true;
-                                            } else if method.kind == FunctionKind::CheckMethod
-                                                && !is_given
-                                            {
-                                                errors.push(TypeError::CheckRequiresGiven {
-                                                    span: span_from_range(body.expr_span(expr_id)),
-                                                });
-                                                ret_ty = Some(Type::Unknown);
-                                                valid_callee = true;
-                                            } else if method.kind != FunctionKind::CheckMethod
-                                                && is_given
-                                            {
-                                                errors.push(TypeError::GivenRequiresCheck {
-                                                    span: span_from_range(body.expr_span(expr_id)),
-                                                });
-                                                ret_ty = Some(Type::Unknown);
-                                                valid_callee = true;
-                                            } else {
-                                                let params =
-                                                    method_params.unwrap_or(method.params.clone());
-                                                check_call_args(
-                                                    body,
-                                                    expr_id,
-                                                    args,
-                                                    &params,
-                                                    ctx,
-                                                    classes,
-                                                    enums,
-                                                    interfaces,
-                                                    functions,
-                                                    errors,
-                                                    allow_result,
-                                                    in_result_fn,
-                                                );
-                                                let ret = method_ret.unwrap_or(method.ret.clone());
-                                                ret_ty =
-                                                    Some(Type::Pending(Box::new(Type::Result(
-                                                        Box::new(ret),
-                                                        Box::new(error_type()),
-                                                    ))));
-                                                valid_callee = true;
-                                            }
-                                        } else {
-                                            errors.push(TypeError::UnknownMember {
-                                                object: class_name.to_string(),
-                                                member: member.clone(),
-                                                span: span_from_range(*member_span),
-                                            });
-                                            ret_ty = Some(Type::Unknown);
-                                        }
-                                    }
-                                }
-                            }
-                            Type::Named(class_name, class_args)
-                                if interfaces.is_interface(&class_name) =>
+                    let resolved_args = resolve_type_args(
+                        &enum_name,
+                        &en.type_params,
+                        &enum_type_args,
+                        ctx,
+                        errors,
+                        span_from_range(body.expr_span(*object)),
+                    );
+                    let subst = build_type_subst(&en.type_params, &resolved_args);
+                    let params: Vec<(SmolStr, Type)> = params
+                        .iter()
+                        .map(|(name, ty)| (name.clone(), substitute_type(ty, &subst)))
+                        .collect();
+                    check_call_args(
+                        body,
+                        expr_id,
+                        args,
+                        &params,
+                        ctx,
+                        classes,
+                        enums,
+                        interfaces,
+                        functions,
+                        errors,
+                        allow_result,
+                        in_result_fn,
+                    );
+                    ret_ty = Some(Type::Named(enum_name.clone(), resolved_args));
+                    valid_callee = true;
+                    enum_ctor_handled = true;
+                }
+                if is_pool_of_member(body, *object, member) {
+                    ret_ty = Some(Type::Unknown);
+                    valid_callee = true;
+                }
+                if !enum_ctor_handled {
+                    let object_ty = infer_expr(
+                        body,
+                        *object,
+                        ctx,
+                        classes,
+                        enums,
+                        interfaces,
+                        functions,
+                        errors,
+                        false,
+                        allow_result,
+                        in_result_fn,
+                    );
+                    match object_ty {
+                        Type::Actor(inner) => {
+                            if let Type::Named(class_name, class_args) = *inner
+                                && let Some(class) = classes.get(&class_name)
                             {
-                                if let Some(interface) = interfaces.get(&class_name) {
-                                    if let Some(method) = interface.methods.get(member) {
-                                        if method.kind == InterfaceMethodKind::Check && !is_given {
-                                            errors.push(TypeError::CheckRequiresGiven {
-                                                span: span_from_range(body.expr_span(expr_id)),
-                                            });
-                                            ret_ty = Some(Type::Unknown);
-                                            valid_callee = true;
-                                        } else if method.kind != InterfaceMethodKind::Check
-                                            && is_given
-                                        {
-                                            errors.push(TypeError::GivenRequiresCheck {
-                                                span: span_from_range(body.expr_span(expr_id)),
-                                            });
-                                            ret_ty = Some(Type::Unknown);
-                                            valid_callee = true;
-                                        } else {
-                                            let params = method.params.clone();
-                                            check_call_args(
-                                                body,
-                                                expr_id,
-                                                args,
-                                                &params,
-                                                ctx,
-                                                classes,
-                                                enums,
-                                                interfaces,
-                                                functions,
-                                                errors,
-                                                allow_result,
-                                                in_result_fn,
-                                            );
-                                            ret_ty = Some(method.ret.clone());
-                                            valid_callee = true;
-                                        }
-                                    } else {
-                                        errors.push(TypeError::UnknownMember {
-                                            object: class_name.to_string(),
+                                let method_params =
+                                    instantiate_method_params(class, &class_args, member);
+                                let method_ret = instantiate_method_ret(class, &class_args, member);
+                                if let Some(method) = class.methods.get(member) {
+                                    if method.kind == FunctionKind::Derived {
+                                        errors.push(TypeError::CallDerivedProperty {
                                             member: member.clone(),
                                             span: span_from_range(*member_span),
                                         });
                                         ret_ty = Some(Type::Unknown);
+                                        valid_callee = true;
+                                    } else if method.kind == FunctionKind::CheckMethod && !is_given
+                                    {
+                                        errors.push(TypeError::CheckRequiresGiven {
+                                            span: span_from_range(body.expr_span(expr_id)),
+                                        });
+                                        ret_ty = Some(Type::Unknown);
+                                        valid_callee = true;
+                                    } else if method.kind != FunctionKind::CheckMethod && is_given {
+                                        errors.push(TypeError::GivenRequiresCheck {
+                                            span: span_from_range(body.expr_span(expr_id)),
+                                        });
+                                        ret_ty = Some(Type::Unknown);
+                                        valid_callee = true;
+                                    } else {
+                                        let params = method_params.unwrap_or(method.params.clone());
+                                        check_call_args(
+                                            body,
+                                            expr_id,
+                                            args,
+                                            &params,
+                                            ctx,
+                                            classes,
+                                            enums,
+                                            interfaces,
+                                            functions,
+                                            errors,
+                                            allow_result,
+                                            in_result_fn,
+                                        );
+                                        let ret = method_ret.unwrap_or(method.ret.clone());
+                                        ret_ty = Some(Type::Pending(Box::new(Type::Result(
+                                            Box::new(ret),
+                                            Box::new(error_type()),
+                                        ))));
+                                        valid_callee = true;
                                     }
+                                } else {
+                                    errors.push(TypeError::UnknownMember {
+                                        object: class_name.to_string(),
+                                        member: member.clone(),
+                                        span: span_from_range(*member_span),
+                                    });
+                                    ret_ty = Some(Type::Unknown);
                                 }
                             }
-                            Type::Named(class_name, class_args) => {
-                                if let Some(class) = classes.get(&class_name) {
-                                    let method_params =
-                                        instantiate_method_params(class, &class_args, member);
-                                    let method_ret =
-                                        instantiate_method_ret(class, &class_args, member);
-                                    if let Some(method) = class.methods.get(member) {
-                                        if method.kind == FunctionKind::Derived {
-                                            errors.push(TypeError::CallDerivedProperty {
-                                                member: member.clone(),
-                                                span: span_from_range(*member_span),
-                                            });
-                                            ret_ty = Some(Type::Unknown);
-                                            valid_callee = true;
-                                        } else if method.kind == FunctionKind::CheckMethod
-                                            && !is_given
-                                        {
-                                            errors.push(TypeError::CheckRequiresGiven {
-                                                span: span_from_range(body.expr_span(expr_id)),
-                                            });
-                                            ret_ty = Some(Type::Unknown);
-                                            valid_callee = true;
-                                        } else if method.kind != FunctionKind::CheckMethod
-                                            && is_given
-                                        {
-                                            errors.push(TypeError::GivenRequiresCheck {
-                                                span: span_from_range(body.expr_span(expr_id)),
-                                            });
-                                            ret_ty = Some(Type::Unknown);
-                                            valid_callee = true;
-                                        } else {
-                                            let params =
-                                                method_params.unwrap_or(method.params.clone());
-                                            check_call_args(
-                                                body,
-                                                expr_id,
-                                                args,
-                                                &params,
-                                                ctx,
-                                                classes,
-                                                enums,
-                                                interfaces,
-                                                functions,
-                                                errors,
-                                                allow_result,
-                                                in_result_fn,
-                                            );
-                                            ret_ty = Some(method_ret.unwrap_or(method.ret.clone()));
-                                            valid_callee = true;
-                                        }
-                                    } else if class.fields.contains_key(member) {
-                                        errors.push(TypeError::CallField {
-                                            member: member.clone(),
-                                            span: span_from_range(*member_span),
+                        }
+                        Type::Named(class_name, class_args)
+                            if interfaces.is_interface(&class_name) =>
+                        {
+                            if let Some(interface) = interfaces.get(&class_name) {
+                                if let Some(method) = interface.methods.get(member) {
+                                    if method.kind == InterfaceMethodKind::Check && !is_given {
+                                        errors.push(TypeError::CheckRequiresGiven {
+                                            span: span_from_range(body.expr_span(expr_id)),
                                         });
                                         ret_ty = Some(Type::Unknown);
+                                        valid_callee = true;
+                                    } else if method.kind != InterfaceMethodKind::Check && is_given
+                                    {
+                                        errors.push(TypeError::GivenRequiresCheck {
+                                            span: span_from_range(body.expr_span(expr_id)),
+                                        });
+                                        ret_ty = Some(Type::Unknown);
+                                        valid_callee = true;
                                     } else {
-                                        errors.push(TypeError::UnknownMember {
-                                            object: class_name.to_string(),
-                                            member: member.clone(),
-                                            span: span_from_range(*member_span),
-                                        });
-                                        ret_ty = Some(Type::Unknown);
+                                        let params = method.params.clone();
+                                        check_call_args(
+                                            body,
+                                            expr_id,
+                                            args,
+                                            &params,
+                                            ctx,
+                                            classes,
+                                            enums,
+                                            interfaces,
+                                            functions,
+                                            errors,
+                                            allow_result,
+                                            in_result_fn,
+                                        );
+                                        ret_ty = Some(method.ret.clone());
+                                        valid_callee = true;
                                     }
+                                } else {
+                                    errors.push(TypeError::UnknownMember {
+                                        object: class_name.to_string(),
+                                        member: member.clone(),
+                                        span: span_from_range(*member_span),
+                                    });
+                                    ret_ty = Some(Type::Unknown);
                                 }
                             }
-                            Type::Unknown => {}
-                            _ => {
-                                errors.push(TypeError::InvalidCallee {
-                                    span: span_from_range(*member_span),
-                                });
+                        }
+                        Type::Named(class_name, class_args) => {
+                            if let Some(class) = classes.get(&class_name) {
+                                let method_params =
+                                    instantiate_method_params(class, &class_args, member);
+                                let method_ret = instantiate_method_ret(class, &class_args, member);
+                                if let Some(method) = class.methods.get(member) {
+                                    if method.kind == FunctionKind::Derived {
+                                        errors.push(TypeError::CallDerivedProperty {
+                                            member: member.clone(),
+                                            span: span_from_range(*member_span),
+                                        });
+                                        ret_ty = Some(Type::Unknown);
+                                        valid_callee = true;
+                                    } else if method.kind == FunctionKind::CheckMethod && !is_given
+                                    {
+                                        errors.push(TypeError::CheckRequiresGiven {
+                                            span: span_from_range(body.expr_span(expr_id)),
+                                        });
+                                        ret_ty = Some(Type::Unknown);
+                                        valid_callee = true;
+                                    } else if method.kind != FunctionKind::CheckMethod && is_given {
+                                        errors.push(TypeError::GivenRequiresCheck {
+                                            span: span_from_range(body.expr_span(expr_id)),
+                                        });
+                                        ret_ty = Some(Type::Unknown);
+                                        valid_callee = true;
+                                    } else {
+                                        let params = method_params.unwrap_or(method.params.clone());
+                                        check_call_args(
+                                            body,
+                                            expr_id,
+                                            args,
+                                            &params,
+                                            ctx,
+                                            classes,
+                                            enums,
+                                            interfaces,
+                                            functions,
+                                            errors,
+                                            allow_result,
+                                            in_result_fn,
+                                        );
+                                        ret_ty = Some(method_ret.unwrap_or(method.ret.clone()));
+                                        valid_callee = true;
+                                    }
+                                } else if class.fields.contains_key(member) {
+                                    errors.push(TypeError::CallField {
+                                        member: member.clone(),
+                                        span: span_from_range(*member_span),
+                                    });
+                                    ret_ty = Some(Type::Unknown);
+                                } else {
+                                    errors.push(TypeError::UnknownMember {
+                                        object: class_name.to_string(),
+                                        member: member.clone(),
+                                        span: span_from_range(*member_span),
+                                    });
+                                    ret_ty = Some(Type::Unknown);
+                                }
                             }
+                        }
+                        Type::Unknown => {}
+                        _ => {
+                            errors.push(TypeError::InvalidCallee {
+                                span: span_from_range(*member_span),
+                            });
                         }
                     }
                 }
@@ -2957,28 +2942,26 @@ fn infer_expr(
             let mut enum_type_args: Vec<TypeRef> = Vec::new();
             if let Expr::Variable(enum_name) = &body.exprs[*object] {
                 enum_name_opt = Some(enum_name.clone());
-            } else if let Expr::TypeApply { callee, type_args } = &body.exprs[*object] {
-                if let Expr::Variable(enum_name) = &body.exprs[*callee] {
-                    enum_name_opt = Some(enum_name.clone());
-                    enum_type_args = type_args.clone();
-                }
+            } else if let Expr::TypeApply { callee, type_args } = &body.exprs[*object]
+                && let Expr::Variable(enum_name) = &body.exprs[*callee]
+            {
+                enum_name_opt = Some(enum_name.clone());
+                enum_type_args = type_args.clone();
             }
-            if let Some(enum_name) = enum_name_opt {
-                if let Some(en) = enums.get(&enum_name) {
-                    if let Some(params) = en.variants.get(member) {
-                        if params.is_empty() {
-                            let resolved_args = resolve_type_args(
-                                &enum_name,
-                                &en.type_params,
-                                &enum_type_args,
-                                ctx,
-                                errors,
-                                span_from_range(body.expr_span(*object)),
-                            );
-                            return Type::Named(enum_name.clone(), resolved_args);
-                        }
-                    }
-                }
+            if let Some(enum_name) = enum_name_opt
+                && let Some(en) = enums.get(&enum_name)
+                && let Some(params) = en.variants.get(member)
+                && params.is_empty()
+            {
+                let resolved_args = resolve_type_args(
+                    &enum_name,
+                    &en.type_params,
+                    &enum_type_args,
+                    ctx,
+                    errors,
+                    span_from_range(body.expr_span(*object)),
+                );
+                return Type::Named(enum_name.clone(), resolved_args);
             }
             let object_ty = infer_expr(
                 body,
@@ -3596,7 +3579,10 @@ fn resolve_type_args(
         .map(|arg| type_from_ref_in_ctx(arg, ctx))
         .collect();
     if resolved.len() < params.len() {
-        resolved.extend(std::iter::repeat(Type::Unknown).take(params.len() - resolved.len()));
+        resolved.extend(std::iter::repeat_n(
+            Type::Unknown,
+            params.len() - resolved.len(),
+        ));
     }
     if resolved.len() > params.len() {
         resolved.truncate(params.len());
@@ -3958,10 +3944,10 @@ fn actor_type_for_detach_target(body: &Body, target: Idx<Expr>, classes: &ClassI
             }
         }
         Expr::Call { callee, args, .. } => {
-            if is_pool_of_call(body, *callee) {
-                if let Some(class_name) = pool_of_class_name(body, args, classes) {
-                    return Type::Actor(Box::new(Type::Named(class_name, Vec::new())));
-                }
+            if is_pool_of_call(body, *callee)
+                && let Some(class_name) = pool_of_class_name(body, args, classes)
+            {
+                return Type::Actor(Box::new(Type::Named(class_name, Vec::new())));
             }
             if let Expr::Variable(name) = &body.exprs[*callee] {
                 if classes.is_class(name) {
@@ -3974,10 +3960,10 @@ fn actor_type_for_detach_target(body: &Body, target: Idx<Expr>, classes: &ClassI
             }
         }
         Expr::GivenCall { callee, args, .. } => {
-            if is_pool_of_call(body, *callee) {
-                if let Some(class_name) = pool_of_class_name(body, args, classes) {
-                    return Type::Actor(Box::new(Type::Named(class_name, Vec::new())));
-                }
+            if is_pool_of_call(body, *callee)
+                && let Some(class_name) = pool_of_class_name(body, args, classes)
+            {
+                return Type::Actor(Box::new(Type::Named(class_name, Vec::new())));
             }
             if let Expr::Variable(name) = &body.exprs[*callee] {
                 if classes.is_class(name) {
@@ -4072,20 +4058,19 @@ fn check_async_actor_usage(
             .iter()
             .any(|method_id| *requires_actor.get(&method_id.into_raw()).unwrap_or(&false));
         class_requires_actor.insert(class.name.clone(), needs_actor);
-        if needs_actor {
-            if let Some(method_id) = class
+        if needs_actor
+            && let Some(method_id) = class
                 .methods
                 .iter()
                 .find(|method_id| *requires_actor.get(&method_id.into_raw()).unwrap_or(&false))
-            {
-                let trace = build_call_chain(
-                    *method_id,
-                    &cause,
-                    &func_labels,
-                    "Use `detach` or `Pool.of(...)` to create an actor instance.",
-                );
-                class_trace.insert(class.name.clone(), trace);
-            }
+        {
+            let trace = build_call_chain(
+                *method_id,
+                &cause,
+                &func_labels,
+                "Use `detach` or `Pool.of(...)` to create an actor instance.",
+            );
+            class_trace.insert(class.name.clone(), trace);
         }
     }
 
@@ -4462,18 +4447,14 @@ fn visit_expr_for_async(
                 if let Some(target) = function_by_name.get(name) {
                     calls.push(*target);
                 }
-            } else if let Expr::Member { object, member, .. } = &body.exprs[*callee] {
-                if let Some(fn_info) = fn_info {
-                    if let Some(obj_ty) = fn_info.expr_types.get(&object.into_raw()) {
-                        if let Type::Named(class_name, _) = obj_ty {
-                            if let Some(methods) = class_method_ids.get(class_name) {
-                                if let Some(method_id) = methods.get(member) {
-                                    calls.push(*method_id);
-                                }
-                            }
-                        }
-                    }
-                }
+            } else if let Expr::Member { object, member, .. } = &body.exprs[*callee]
+                && let Some(fn_info) = fn_info
+                && let Some(obj_ty) = fn_info.expr_types.get(&object.into_raw())
+                && let Type::Named(class_name, _) = obj_ty
+                && let Some(methods) = class_method_ids.get(class_name)
+                && let Some(method_id) = methods.get(member)
+            {
+                calls.push(*method_id);
             }
             visit_expr_for_async(
                 body,
@@ -4512,18 +4493,14 @@ fn visit_expr_for_async(
                 if let Some(target) = function_by_name.get(name) {
                     calls.push(*target);
                 }
-            } else if let Expr::Member { object, member, .. } = &body.exprs[*callee] {
-                if let Some(fn_info) = fn_info {
-                    if let Some(obj_ty) = fn_info.expr_types.get(&object.into_raw()) {
-                        if let Type::Named(class_name, _) = obj_ty {
-                            if let Some(methods) = class_method_ids.get(class_name) {
-                                if let Some(method_id) = methods.get(member) {
-                                    calls.push(*method_id);
-                                }
-                            }
-                        }
-                    }
-                }
+            } else if let Expr::Member { object, member, .. } = &body.exprs[*callee]
+                && let Some(fn_info) = fn_info
+                && let Some(obj_ty) = fn_info.expr_types.get(&object.into_raw())
+                && let Type::Named(class_name, _) = obj_ty
+                && let Some(methods) = class_method_ids.get(class_name)
+                && let Some(method_id) = methods.get(member)
+            {
+                calls.push(*method_id);
             }
             visit_expr_for_async(
                 body,
@@ -5010,46 +4987,39 @@ fn check_expr_async_usage(
     match &body.exprs[expr_id] {
         Expr::Call { callee, args, .. } => {
             if let Expr::Variable(name) = &body.exprs[*callee] {
-                if !in_detach && classes.is_class(name) {
-                    if class_requires_actor.get(name).copied().unwrap_or(false) {
-                        errors.push(TypeError::AsyncClassRequiresActor {
-                            class: name.clone(),
-                            span: span_from_range(body.expr_span(*callee)),
-                            help: class_trace.get(name).cloned().unwrap_or_else(|| {
-                                "Use `detach` or `Pool.of(...)` to create an actor instance."
-                                    .to_string()
-                            }),
-                        });
-                    }
+                if !in_detach
+                    && classes.is_class(name)
+                    && class_requires_actor.get(name).copied().unwrap_or(false)
+                {
+                    errors.push(TypeError::AsyncClassRequiresActor {
+                        class: name.clone(),
+                        span: span_from_range(body.expr_span(*callee)),
+                        help: class_trace.get(name).cloned().unwrap_or_else(|| {
+                            "Use `detach` or `Pool.of(...)` to create an actor instance."
+                                .to_string()
+                        }),
+                    });
                 }
             } else if let Expr::Member {
                 object,
                 member,
                 member_span,
             } = &body.exprs[*callee]
+                && let Some(fn_info) = fn_info
+                && let Some(obj_ty) = fn_info.expr_types.get(&object.into_raw())
+                && let Type::Named(class_name, _) = obj_ty
+                && let Some(methods) = class_method_ids.get(class_name)
+                && let Some(method_id) = methods.get(member)
+                && *requires_actor.get(&method_id.into_raw()).unwrap_or(&false)
             {
-                if let Some(fn_info) = fn_info {
-                    if let Some(obj_ty) = fn_info.expr_types.get(&object.into_raw()) {
-                        if let Type::Named(class_name, _) = obj_ty {
-                            if let Some(methods) = class_method_ids.get(class_name) {
-                                if let Some(method_id) = methods.get(member) {
-                                    if *requires_actor.get(&method_id.into_raw()).unwrap_or(&false)
-                                    {
-                                        let hint = "Call this method on a detached or pooled actor instance.";
-                                        let trace =
-                                            build_call_chain(*method_id, cause, func_labels, hint);
-                                        errors.push(TypeError::AsyncMethodRequiresActor {
-                                            class: class_name.clone(),
-                                            member: member.clone(),
-                                            span: span_from_range(*member_span),
-                                            help: trace,
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                let hint = "Call this method on a detached or pooled actor instance.";
+                let trace = build_call_chain(*method_id, cause, func_labels, hint);
+                errors.push(TypeError::AsyncMethodRequiresActor {
+                    class: class_name.clone(),
+                    member: member.clone(),
+                    span: span_from_range(*member_span),
+                    help: trace,
+                });
             }
             check_expr_async_usage(
                 body,
@@ -5100,46 +5070,39 @@ fn check_expr_async_usage(
         }
         Expr::GivenCall { callee, args, .. } => {
             if let Expr::Variable(name) = &body.exprs[*callee] {
-                if !in_detach && classes.is_class(name) {
-                    if class_requires_actor.get(name).copied().unwrap_or(false) {
-                        errors.push(TypeError::AsyncClassRequiresActor {
-                            class: name.clone(),
-                            span: span_from_range(body.expr_span(*callee)),
-                            help: class_trace.get(name).cloned().unwrap_or_else(|| {
-                                "Use `detach` or `Pool.of(...)` to create an actor instance."
-                                    .to_string()
-                            }),
-                        });
-                    }
+                if !in_detach
+                    && classes.is_class(name)
+                    && class_requires_actor.get(name).copied().unwrap_or(false)
+                {
+                    errors.push(TypeError::AsyncClassRequiresActor {
+                        class: name.clone(),
+                        span: span_from_range(body.expr_span(*callee)),
+                        help: class_trace.get(name).cloned().unwrap_or_else(|| {
+                            "Use `detach` or `Pool.of(...)` to create an actor instance."
+                                .to_string()
+                        }),
+                    });
                 }
             } else if let Expr::Member {
                 object,
                 member,
                 member_span,
             } = &body.exprs[*callee]
+                && let Some(fn_info) = fn_info
+                && let Some(obj_ty) = fn_info.expr_types.get(&object.into_raw())
+                && let Type::Named(class_name, _) = obj_ty
+                && let Some(methods) = class_method_ids.get(class_name)
+                && let Some(method_id) = methods.get(member)
+                && *requires_actor.get(&method_id.into_raw()).unwrap_or(&false)
             {
-                if let Some(fn_info) = fn_info {
-                    if let Some(obj_ty) = fn_info.expr_types.get(&object.into_raw()) {
-                        if let Type::Named(class_name, _) = obj_ty {
-                            if let Some(methods) = class_method_ids.get(class_name) {
-                                if let Some(method_id) = methods.get(member) {
-                                    if *requires_actor.get(&method_id.into_raw()).unwrap_or(&false)
-                                    {
-                                        let hint = "Call this method on a detached or pooled actor instance.";
-                                        let trace =
-                                            build_call_chain(*method_id, cause, func_labels, hint);
-                                        errors.push(TypeError::AsyncMethodRequiresActor {
-                                            class: class_name.clone(),
-                                            member: member.clone(),
-                                            span: span_from_range(*member_span),
-                                            help: trace,
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                let hint = "Call this method on a detached or pooled actor instance.";
+                let trace = build_call_chain(*method_id, cause, func_labels, hint);
+                errors.push(TypeError::AsyncMethodRequiresActor {
+                    class: class_name.clone(),
+                    member: member.clone(),
+                    span: span_from_range(*member_span),
+                    help: trace,
+                });
             }
             check_expr_async_usage(
                 body,

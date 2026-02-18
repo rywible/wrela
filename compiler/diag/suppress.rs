@@ -20,11 +20,11 @@ pub fn suppress_cascades(mut records: Vec<DiagRecord>) -> Vec<DiagRecord> {
         let region = (primary.span.path.clone(), primary.span.offset / 64);
         let is_downstream = matches!(record.stage, DiagStage::Semantic | DiagStage::Type);
 
-        if let Some(blocker) = blocked_regions.get(&region) {
-            if is_downstream {
-                record.blocked_by = Some(blocker.clone());
-                continue;
-            }
+        if let Some(blocker) = blocked_regions.get(&region)
+            && is_downstream
+        {
+            record.blocked_by = Some(blocker.clone());
+            continue;
         }
 
         if matches!(record.stage, DiagStage::Parse | DiagStage::Validate) {

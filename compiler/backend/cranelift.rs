@@ -489,21 +489,21 @@ fn ensure_runtime_built() -> Result<PathBuf, CodegenError> {
     }
 
     // 2. Check relative to current executable (Distribution mode)
-    if let Ok(exe_path) = env::current_exe() {
-        if let Some(exe_dir) = exe_path.parent() {
-            // bin/wrela -> lib/libwrela_runtime.a
-            let lib_path = exe_dir.parent().map(|p| p.join("lib").join(lib_name));
-            if let Some(path) = lib_path {
-                if path.exists() {
-                    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-                    let workspace_root = manifest_dir.join("..");
-                    let runtime_root = workspace_root.join("runtime");
-                    if runtime_root.exists() && runtime_needs_rebuild(&path, &runtime_root) {
-                        // Fall through to rebuild in dev contexts.
-                    } else {
-                        return Ok(path);
-                    }
-                }
+    if let Ok(exe_path) = env::current_exe()
+        && let Some(exe_dir) = exe_path.parent()
+    {
+        // bin/wrela -> lib/libwrela_runtime.a
+        let lib_path = exe_dir.parent().map(|p| p.join("lib").join(lib_name));
+        if let Some(path) = lib_path
+            && path.exists()
+        {
+            let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            let workspace_root = manifest_dir.join("..");
+            let runtime_root = workspace_root.join("runtime");
+            if runtime_root.exists() && runtime_needs_rebuild(&path, &runtime_root) {
+                // Fall through to rebuild in dev contexts.
+            } else {
+                return Ok(path);
             }
         }
     }
@@ -559,13 +559,13 @@ struct LinkerCommand {
 }
 
 fn linker_command() -> Result<LinkerCommand, CodegenError> {
-    if cfg!(target_os = "macos") {
-        if let Some(path) = macos_clang_path()? {
-            return Ok(LinkerCommand {
-                cmd: Command::new(&path),
-                name: path,
-            });
-        }
+    if cfg!(target_os = "macos")
+        && let Some(path) = macos_clang_path()?
+    {
+        return Ok(LinkerCommand {
+            cmd: Command::new(&path),
+            name: path,
+        });
     }
     Ok(LinkerCommand {
         cmd: Command::new("cc"),
@@ -648,14 +648,14 @@ fn runtime_needs_rebuild(lib_path: &Path, runtime_root: &Path) -> bool {
         Err(_) => return true,
     };
     let src_dir = runtime_root.join("src");
-    if newest_mtime_in_tree(&src_dir).map_or(true, |time| time > lib_time) {
+    if newest_mtime_in_tree(&src_dir).is_none_or(|time| time > lib_time) {
         return true;
     }
     let manifest = runtime_root.join("Cargo.toml");
-    if let Some(time) = mtime(&manifest) {
-        if time > lib_time {
-            return true;
-        }
+    if let Some(time) = mtime(&manifest)
+        && time > lib_time
+    {
+        return true;
     }
     false
 }
@@ -2182,7 +2182,7 @@ fn lower_literal(
 ) -> Result<cranelift_codegen::ir::Value, CodegenError> {
     match lit {
         crate::hir::Literal::Integer(v) => {
-            let val = builder.ins().iconst(types::I64, *v as i64);
+            let val = builder.ins().iconst(types::I64, *v);
             tag_int(builder, module, runtime, val)
         }
         crate::hir::Literal::Boolean(v) => {

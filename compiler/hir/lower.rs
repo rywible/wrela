@@ -1132,12 +1132,11 @@ impl BodyLoweringContext {
                     }
                     _ => {}
                 }
-            } else if let Some(node) = element.into_node() {
-                if let Some(expr) = ast::Expr::cast(node) {
-                    if let Some(expr) = self.lower_expr(expr) {
-                        parts.push(StringPart::Expr(expr));
-                    }
-                }
+            } else if let Some(node) = element.into_node()
+                && let Some(expr) = ast::Expr::cast(node)
+                && let Some(expr) = self.lower_expr(expr)
+            {
+                parts.push(StringPart::Expr(expr));
             }
         }
         parts
@@ -1166,7 +1165,7 @@ impl BodyLoweringContext {
                     }
                     match t.kind() {
                         SyntaxKind::Star => {
-                            while let Some(next) = iter.next() {
+                            for next in iter.by_ref() {
                                 if let Some(tok) = next.into_token() {
                                     if tok.kind().is_trivia() {
                                         continue;
@@ -1188,7 +1187,7 @@ impl BodyLoweringContext {
                             }
                         }
                         SyntaxKind::OptimizeKw => {
-                            while let Some(next) = iter.next() {
+                            for next in iter.by_ref() {
                                 if let Some(tok) = next.into_token() {
                                     if tok.kind().is_trivia() {
                                         continue;
@@ -1383,6 +1382,12 @@ fn parse_string_fragment(text: &str) -> SmolStr {
         }
     }
     SmolStr::new(out)
+}
+
+fn first_non_trivia_token(node: &crate::parser::SyntaxNode) -> Option<crate::parser::SyntaxToken> {
+    node.children_with_tokens()
+        .filter_map(|it| it.into_token())
+        .find(|token| !token.kind().is_trivia())
 }
 
 #[cfg(test)]
@@ -1684,10 +1689,4 @@ A Counter:
         };
         assert_eq!(member, "value");
     }
-}
-
-fn first_non_trivia_token(node: &crate::parser::SyntaxNode) -> Option<crate::parser::SyntaxToken> {
-    node.children_with_tokens()
-        .filter_map(|it| it.into_token())
-        .find(|token| !token.kind().is_trivia())
 }

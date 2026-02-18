@@ -473,6 +473,115 @@ fn cli_check_reports_lexical_invalid_character() {
 }
 
 #[test]
+fn cli_check_lexical_error_json_matches_snapshot() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("src").join("main.wr");
+    std::fs::create_dir_all(path.parent().expect("src dir")).unwrap();
+    std::fs::write(&path, "to run() -> Integer:\n    return 1\n$\n").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("check")
+        .arg("--format=json")
+        .arg(&path)
+        .output()
+        .expect("run wrela");
+    assert!(!output.status.success(), "expected lexical check to fail");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let diagnostics: Vec<serde_json::Value> = stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("valid json"))
+        .collect();
+    let lexical = diagnostics
+        .iter()
+        .find(|diag| {
+            diag.get("code")
+                .and_then(|value| value.as_str())
+                .is_some_and(|code| code.starts_with("lang::lex::"))
+        })
+        .expect("expected lexical diagnostic");
+
+    let code = lexical
+        .get("code")
+        .and_then(|value| value.as_str())
+        .expect("lexical code");
+    assert_eq!(code, "lang::lex::error");
+    assert_eq!(
+        lexical
+            .get("rule")
+            .and_then(|value| value.as_str())
+            .expect("lexical rule"),
+        "error"
+    );
+    assert_eq!(
+        lexical
+            .get("stage")
+            .and_then(|value| value.as_str())
+            .expect("stage"),
+        "parse"
+    );
+    assert_eq!(
+        lexical
+            .get("severity")
+            .and_then(|value| value.as_str())
+            .expect("severity"),
+        "error"
+    );
+    assert!(
+        lexical
+            .get("help")
+            .and_then(|value| value.as_str())
+            .is_some_and(|help| !help.is_empty()),
+        "expected non-empty help field"
+    );
+    assert!(
+        lexical
+            .get("message")
+            .and_then(|value| value.as_str())
+            .is_some_and(|message| message.contains("unexpected character '$'")),
+        "expected lexical subtype-specific message"
+    );
+    assert!(
+        lexical
+            .get("diag_id")
+            .and_then(|value| value.as_str())
+            .is_some_and(|diag_id| diag_id.contains("unexpected_character")),
+        "expected lexical subtype marker in diag_id"
+    );
+
+    let normalized = normalize_lexical_diag_json_for_snapshot(lexical, dir.path());
+    let expected: serde_json::Value = serde_json::from_str(include_str!(
+        "fixtures/diagnostics/lexical_error_json_snapshot.json"
+    ))
+    .expect("valid expected snapshot json");
+    assert_eq!(normalized, expected);
+}
+
+#[test]
+fn cli_check_lexical_error_stderr_matches_snapshot() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("src").join("main.wr");
+    std::fs::create_dir_all(path.parent().expect("src dir")).unwrap();
+    std::fs::write(&path, "to run() -> Integer:\n    return 1\n$\n").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("check")
+        .arg(&path)
+        .output()
+        .expect("run wrela");
+    assert!(!output.status.success(), "expected lexical check to fail");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("lang::lex::error"), "{stderr}");
+    assert!(stderr.contains("unexpected character '$'"), "{stderr}");
+    let normalized = normalize_temp_paths_for_snapshot(&stderr, dir.path());
+    let expected =
+        include_str!("fixtures/diagnostics/lexical_error_stderr_snapshot.txt").trim_end();
+    assert_eq!(normalized.trim_end(), expected);
+}
+
+#[test]
 fn cli_check_without_run_is_ok() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("spec.wr");
@@ -1159,10 +1268,10 @@ fn stable_function_id(function_identity: &str) -> String {
 fn extract_function_test_mapping(
     value: &serde_json::Value,
 ) -> Option<std::collections::BTreeMap<String, std::collections::BTreeSet<String>>> {
-    if let Some(version) = value.get("schema_version").and_then(|v| v.as_u64()) {
-        if version != 2 {
-            return None;
-        }
+    if let Some(version) = value.get("schema_version").and_then(|v| v.as_u64())
+        && version != 2
+    {
+        return None;
     }
     let mapping_value = if let Some(inner) = value.get("function_to_tests") {
         inner
@@ -1206,6 +1315,33 @@ fn parse_single_json_stdout(stdout: &[u8]) -> serde_json::Value {
         .collect();
     assert_eq!(lines.len(), 1, "expected one JSON line, got: {lines:?}");
     serde_json::from_str(lines[0]).expect("valid json")
+}
+
+fn normalize_temp_paths_for_snapshot(text: &str, root: &std::path::Path) -> String {
+    let root_display = root.display().to_string();
+    let canonical = std::fs::canonicalize(root)
+        .ok()
+        .map(|path| path.display().to_string());
+    let mut normalized = text.replace(&root_display, "<TMP>");
+    if let Some(canonical_display) = canonical {
+        normalized = normalized.replace(&canonical_display, "<TMP>");
+    }
+    normalized
+}
+
+fn normalize_lexical_diag_json_for_snapshot(
+    diag: &serde_json::Value,
+    root: &std::path::Path,
+) -> serde_json::Value {
+    let mut normalized = diag.clone();
+    if let Some(path_value) = normalized.get("path").and_then(|value| value.as_str()) {
+        let replaced = normalize_temp_paths_for_snapshot(path_value, root);
+        normalized["path"] = serde_json::Value::String(replaced);
+    }
+    if normalized.get("diag_id").is_some() {
+        normalized["diag_id"] = serde_json::Value::String("<normalized>".to_string());
+    }
+    normalized
 }
 
 fn count_occurrences(haystack: &str, needle: &str) -> usize {

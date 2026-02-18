@@ -266,256 +266,6 @@ fn lower_function(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::hir::lower as hir_lower;
-    use crate::hir::typeck;
-    use crate::parser::ast;
-    use crate::parser::ast::AstNode;
-    use crate::parser::parse;
-
-    #[test]
-    fn test_lower_marks_suspendable() {
-        let input = "\
-A Whale:\n    can swim() -> Boolean:\n        return true\n\nto f() -> Result[Boolean]:\n    w = detach Whale() * 1\n    return await w.swim()\n";
-        let node = parse(input);
-        let root = ast::Root::cast(node).unwrap();
-        let module = hir_lower::lower(root);
-        let mir = lower_module(&module);
-        let func = mir.functions.iter().find(|f| f.name == "f").unwrap();
-        assert!(func.suspendable);
-    }
-
-    #[test]
-    fn test_lower_if_creates_blocks() {
-        let input =
-            "to f() -> Nothing:\n    if true:\n        x = 1\n    otherwise:\n        x = 2\n";
-        let node = parse(input);
-        let root = ast::Root::cast(node).unwrap();
-        let module = hir_lower::lower(root);
-        let mir = lower_module(&module);
-        let func = mir.functions.iter().find(|f| f.name == "f").unwrap();
-        assert!(func.blocks.len() >= 3);
-    }
-
-    #[test]
-    fn test_lower_member_assign_sets_field() {
-        let input = "\
-A Counter:
-    has:
-        value: Integer
-    can add(delta: Integer) -> Nothing:
-        its.value += delta
-";
-        let node = parse(input);
-        let root = ast::Root::cast(node).unwrap();
-        let module = hir_lower::lower(root);
-        let (_type_errors, type_info) = typeck::check_module_with_info(&module);
-        let mir_module = lower_module_with_types(&module, &type_info);
-        let func = mir_module
-            .functions
-            .iter()
-            .find(|func| func.name == "Counter.add")
-            .expect("missing Counter.add");
-        let has_set_field = func.blocks.iter().any(|block| {
-            block.stmts.iter().any(
-                |stmt| matches!(stmt, MirStmt::SetField { field, .. } if field.as_str() == "value"),
-            )
-        });
-        assert!(has_set_field, "expected SetField for member assign");
-    }
-
-    #[test]
-    fn test_lower_field_defaults_emits_set_fields() {
-        let input = "\
-A Foo:
-    has:
-        x: Integer = 1
-        y: List = [1, 2]
-        z: Map = {\"a\": 1}
-
-to run() -> Nothing:
-    a = Foo()
-    b = Foo(x=5)
-";
-        let node = parse(input);
-        let root = ast::Root::cast(node).unwrap();
-        let module = hir_lower::lower(root);
-        let mir_module = lower_module(&module);
-        let func = mir_module
-            .functions
-            .iter()
-            .find(|func| func.name == "run")
-            .expect("missing run");
-
-        let mut set_x = 0usize;
-        let mut set_y = 0usize;
-        let mut set_z = 0usize;
-        let mut build_list = 0usize;
-        let mut build_map = 0usize;
-
-        for block in &func.blocks {
-            for stmt in &block.stmts {
-                match stmt {
-                    MirStmt::SetField { field, .. } if field.as_str() == "x" => set_x += 1,
-                    MirStmt::SetField { field, .. } if field.as_str() == "y" => set_y += 1,
-                    MirStmt::SetField { field, .. } if field.as_str() == "z" => set_z += 1,
-                    _ => {}
-                }
-                if let MirStmt::Assign { value, .. } = stmt {
-                    match value {
-                        Rvalue::BuildList { .. } => build_list += 1,
-                        Rvalue::BuildMap { .. } => build_map += 1,
-                        _ => {}
-                    }
-                }
-            }
-        }
-
-        assert_eq!(set_x, 2, "expected default and override for x");
-        assert_eq!(set_y, 2, "expected defaults for y in both instances");
-        assert_eq!(set_z, 2, "expected defaults for z in both instances");
-        assert!(build_list >= 1, "expected BuildList for default list");
-        assert!(build_map >= 1, "expected BuildMap for default map");
-    }
-
-    #[test]
-    fn test_lower_integer_range_for_uses_typed_induction_fast_path() {
-        let input = "\
-to run() -> Integer:
-    start = 1
-    stop = 4
-    mutable total = 0
-    for i in start...stop:
-        total += i
-    return total
-";
-        let node = parse(input);
-        let root = ast::Root::cast(node).unwrap();
-        let module = hir_lower::lower(root);
-        let (_type_errors, type_info) = typeck::check_module_with_info(&module);
-        let mir_module = lower_module_with_types(&module, &type_info);
-        let func = mir_module
-            .functions
-            .iter()
-            .find(|func| func.name == "run")
-            .expect("missing run");
-
-        assert!(
-            func.locals
-                .iter()
-                .any(|local| local.name.as_str() == "i" && local.ty == MirType::Integer),
-            "expected typed loop variable for integer range",
-        );
-        assert!(
-            func.locals
-                .iter()
-                .any(|local| local.name.starts_with("$range_idx") && local.ty == MirType::Integer),
-            "expected typed integer induction local",
-        );
-        assert!(
-            func.locals
-                .iter()
-                .any(|local| local.name.starts_with("$range_step") && local.ty == MirType::Integer),
-            "expected typed integer step local",
-        );
-
-        for block in &func.blocks {
-            for stmt in &block.stmts {
-                assert!(
-                    !matches!(stmt, MirStmt::IterInit { .. } | MirStmt::IterNext { .. }),
-                    "typed integer range loop should not use iterator protocol",
-                );
-                if let MirStmt::Assign { value, .. } = stmt {
-                    assert!(
-                        !matches!(
-                            value,
-                            Rvalue::Binary {
-                                op: crate::hir::BinaryOp::Range,
-                                ..
-                            }
-                        ),
-                        "typed integer range loop should not materialize range object",
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn test_lower_member_field_ops_emit_slot_hints() {
-        let input = "\
-A Counter:
-    has:
-        mutable value: Integer
-        mutable other: Integer
-
-    can bump() -> Nothing:
-        its.value += 1
-        its.other = 4
-
-to run() -> Integer:
-    c = Counter(value=1, other=2)
-    c.value += 3
-    return c.other
-";
-        let node = parse(input);
-        let root = ast::Root::cast(node).unwrap();
-        let module = hir_lower::lower(root);
-        let (_type_errors, type_info) = typeck::check_module_with_info(&module);
-        let mir_module = lower_module_with_types(&module, &type_info);
-
-        let mut saw_get_value_slot = false;
-        let mut saw_get_other_slot = false;
-        let mut saw_set_value_slot = false;
-        let mut saw_set_other_slot = false;
-
-        for func in &mir_module.functions {
-            for block in &func.blocks {
-                for stmt in &block.stmts {
-                    match stmt {
-                        MirStmt::Assign {
-                            value:
-                                Rvalue::GetField {
-                                    field,
-                                    slot: Some(slot),
-                                    ..
-                                },
-                            ..
-                        } if field.as_str() == "value" && *slot == 0 => saw_get_value_slot = true,
-                        MirStmt::Assign {
-                            value:
-                                Rvalue::GetField {
-                                    field,
-                                    slot: Some(slot),
-                                    ..
-                                },
-                            ..
-                        } if field.as_str() == "other" && *slot == 1 => saw_get_other_slot = true,
-                        MirStmt::SetField {
-                            field,
-                            slot: Some(slot),
-                            ..
-                        } if field.as_str() == "value" && *slot == 0 => saw_set_value_slot = true,
-                        MirStmt::SetField {
-                            field,
-                            slot: Some(slot),
-                            ..
-                        } if field.as_str() == "other" && *slot == 1 => saw_set_other_slot = true,
-                        _ => {}
-                    }
-                }
-            }
-        }
-
-        assert!(saw_get_value_slot, "expected slot-hinted get for value");
-        assert!(saw_get_other_slot, "expected slot-hinted get for other");
-        assert!(saw_set_value_slot, "expected slot-hinted set for value");
-        assert!(saw_set_other_slot, "expected slot-hinted set for other");
-    }
-}
-
 struct LoopTarget {
     break_target: BlockId,
     continue_target: BlockId,
@@ -955,10 +705,9 @@ impl FunctionLowerer {
                     rhs,
                     ..
                 } = &body.exprs[*iterable]
+                    && self.lower_range_for(body, name, *lhs, *rhs, loop_body, span)
                 {
-                    if self.lower_range_for(body, name, *lhs, *rhs, loop_body, span) {
-                        return;
-                    }
+                    return;
                 }
 
                 let iterable_value = self.lower_expr(body, *iterable);
@@ -1454,39 +1203,39 @@ impl FunctionLowerer {
         kind: hir::AssertKind,
     ) -> Value {
         let span = body.expr_span(expr_id);
-        if let Expr::Binary { lhs, op, rhs, .. } = &body.exprs[expr_id] {
-            if matches!(op, BinaryOp::Eq | BinaryOp::Ne) {
-                let left = self.lower_expr(body, *lhs);
-                let right = self.lower_expr(body, *rhs);
-                let func = match kind {
-                    hir::AssertKind::Value => SmolStr::new("value_deep_eq"),
-                    hir::AssertKind::Identity => SmolStr::new("identity_eq"),
-                };
-                let temp = self.new_temp(MirType::Boolean);
+        if let Expr::Binary { lhs, op, rhs, .. } = &body.exprs[expr_id]
+            && matches!(op, BinaryOp::Eq | BinaryOp::Ne)
+        {
+            let left = self.lower_expr(body, *lhs);
+            let right = self.lower_expr(body, *rhs);
+            let func = match kind {
+                hir::AssertKind::Value => SmolStr::new("value_deep_eq"),
+                hir::AssertKind::Identity => SmolStr::new("identity_eq"),
+            };
+            let temp = self.new_temp(MirType::Boolean);
+            self.push_stmt(MirStmt::Assign {
+                place: Place::Temp(temp),
+                value: Rvalue::Call {
+                    kind: CallKind::Sync,
+                    target: CallTarget::Function(func),
+                    args: vec![left, right],
+                },
+                span,
+            });
+            let mut result = Value::Temp(temp);
+            if matches!(op, BinaryOp::Ne) {
+                let not_temp = self.new_temp(MirType::Boolean);
                 self.push_stmt(MirStmt::Assign {
-                    place: Place::Temp(temp),
-                    value: Rvalue::Call {
-                        kind: CallKind::Sync,
-                        target: CallTarget::Function(func),
-                        args: vec![left, right],
+                    place: Place::Temp(not_temp),
+                    value: Rvalue::Unary {
+                        op: UnaryOp::Not,
+                        operand: result,
                     },
                     span,
                 });
-                let mut result = Value::Temp(temp);
-                if matches!(op, BinaryOp::Ne) {
-                    let not_temp = self.new_temp(MirType::Boolean);
-                    self.push_stmt(MirStmt::Assign {
-                        place: Place::Temp(not_temp),
-                        value: Rvalue::Unary {
-                            op: UnaryOp::Not,
-                            operand: result,
-                        },
-                        span,
-                    });
-                    result = Value::Temp(not_temp);
-                }
-                return result;
+                result = Value::Temp(not_temp);
             }
+            return result;
         }
         self.lower_expr(body, expr_id)
     }
@@ -1526,7 +1275,7 @@ impl FunctionLowerer {
         cases.iter().any(|case| {
             case.labels
                 .iter()
-                .any(|label| matches!(self.result_pattern_kind(label), Some(_)))
+                .any(|label| self.result_pattern_kind(label).is_some())
         })
     }
 
@@ -1774,52 +1523,51 @@ impl FunctionLowerer {
                         | BinaryOp::SubAssign
                         | BinaryOp::MulAssign
                         | BinaryOp::DivAssign
-                ) {
-                    if let Expr::Member { object, member, .. } = &body.exprs[*lhs] {
-                        let slot = self.member_slot_hint(*object, member);
-                        let base = self.lower_expr(body, *object);
-                        let rhs_val = self.lower_expr(body, *rhs);
-                        let new_val = if *op == BinaryOp::Assign {
-                            rhs_val.clone()
-                        } else {
-                            let current = self.new_temp(MirType::Unknown);
-                            self.push_stmt(MirStmt::Assign {
-                                place: Place::Temp(current),
-                                value: Rvalue::GetField {
-                                    base: base.clone(),
-                                    field: member.clone(),
-                                    slot,
-                                },
-                                span,
-                            });
-                            let bin_op = match op {
-                                BinaryOp::AddAssign => BinaryOp::Add,
-                                BinaryOp::SubAssign => BinaryOp::Sub,
-                                BinaryOp::MulAssign => BinaryOp::Mul,
-                                BinaryOp::DivAssign => BinaryOp::Div,
-                                _ => BinaryOp::Assign,
-                            };
-                            let temp = self.new_temp(MirType::Unknown);
-                            self.push_stmt(MirStmt::Assign {
-                                place: Place::Temp(temp),
-                                value: Rvalue::Binary {
-                                    op: bin_op,
-                                    lhs: Value::Temp(current),
-                                    rhs: rhs_val,
-                                },
-                                span,
-                            });
-                            Value::Temp(temp)
-                        };
-                        self.push_stmt(MirStmt::SetField {
-                            base,
-                            field: member.clone(),
-                            slot,
-                            value: new_val.clone(),
+                ) && let Expr::Member { object, member, .. } = &body.exprs[*lhs]
+                {
+                    let slot = self.member_slot_hint(*object, member);
+                    let base = self.lower_expr(body, *object);
+                    let rhs_val = self.lower_expr(body, *rhs);
+                    let new_val = if *op == BinaryOp::Assign {
+                        rhs_val.clone()
+                    } else {
+                        let current = self.new_temp(MirType::Unknown);
+                        self.push_stmt(MirStmt::Assign {
+                            place: Place::Temp(current),
+                            value: Rvalue::GetField {
+                                base: base.clone(),
+                                field: member.clone(),
+                                slot,
+                            },
                             span,
                         });
-                        return new_val;
-                    }
+                        let bin_op = match op {
+                            BinaryOp::AddAssign => BinaryOp::Add,
+                            BinaryOp::SubAssign => BinaryOp::Sub,
+                            BinaryOp::MulAssign => BinaryOp::Mul,
+                            BinaryOp::DivAssign => BinaryOp::Div,
+                            _ => BinaryOp::Assign,
+                        };
+                        let temp = self.new_temp(MirType::Unknown);
+                        self.push_stmt(MirStmt::Assign {
+                            place: Place::Temp(temp),
+                            value: Rvalue::Binary {
+                                op: bin_op,
+                                lhs: Value::Temp(current),
+                                rhs: rhs_val,
+                            },
+                            span,
+                        });
+                        Value::Temp(temp)
+                    };
+                    self.push_stmt(MirStmt::SetField {
+                        base,
+                        field: member.clone(),
+                        slot,
+                        value: new_val.clone(),
+                        span,
+                    });
+                    return new_val;
                 }
                 if matches!(op, BinaryOp::Otherwise) {
                     let result_val = self.lower_expr(body, *lhs);
@@ -2000,29 +1748,28 @@ impl FunctionLowerer {
                     }
                 }
                 let obj_ty = self.expr_type(*object);
-                if let MirType::Named(class_name) = obj_ty {
-                    if let Some(derived) = self.class_derived.get(&class_name) {
-                        if derived.contains(member) {
-                            let receiver = self.lower_expr(body, *object);
-                            let method = SmolStr::new(format!("{}.{}", class_name, member));
-                            let method_id = self.method_id_for(&class_name, member);
-                            let temp = self.new_temp_for_expr(expr_id);
-                            self.push_stmt(MirStmt::Assign {
-                                place: Place::Temp(temp),
-                                value: Rvalue::Call {
-                                    kind: CallKind::Sync,
-                                    target: CallTarget::Method {
-                                        receiver,
-                                        method,
-                                        method_id,
-                                    },
-                                    args: Vec::new(),
-                                },
-                                span,
-                            });
-                            return Value::Temp(temp);
-                        }
-                    }
+                if let MirType::Named(class_name) = obj_ty
+                    && let Some(derived) = self.class_derived.get(&class_name)
+                    && derived.contains(member)
+                {
+                    let receiver = self.lower_expr(body, *object);
+                    let method = SmolStr::new(format!("{}.{}", class_name, member));
+                    let method_id = self.method_id_for(&class_name, member);
+                    let temp = self.new_temp_for_expr(expr_id);
+                    self.push_stmt(MirStmt::Assign {
+                        place: Place::Temp(temp),
+                        value: Rvalue::Call {
+                            kind: CallKind::Sync,
+                            target: CallTarget::Method {
+                                receiver,
+                                method,
+                                method_id,
+                            },
+                            args: Vec::new(),
+                        },
+                        span,
+                    });
+                    return Value::Temp(temp);
                 }
                 let base = self.lower_expr(body, *object);
                 let slot = self.member_slot_hint(*object, member);
@@ -2095,21 +1842,21 @@ impl FunctionLowerer {
                         }
                     }
                     for (idx, default) in field_defaults.iter().enumerate() {
-                        if field_values.get(idx).and_then(|val| val.as_ref()).is_none() {
-                            if let Some(default) = default {
-                                let value = self.lower_field_default(default, span);
-                                self.push_stmt(MirStmt::SetField {
-                                    base: Value::Temp(temp),
-                                    field: self
-                                        .class_fields
-                                        .get(&class_name)
-                                        .and_then(|fields| fields.get(idx).cloned())
-                                        .unwrap_or_default(),
-                                    slot: Some(idx as u32),
-                                    value,
-                                    span,
-                                });
-                            }
+                        if field_values.get(idx).and_then(|val| val.as_ref()).is_none()
+                            && let Some(default) = default
+                        {
+                            let value = self.lower_field_default(default, span);
+                            self.push_stmt(MirStmt::SetField {
+                                base: Value::Temp(temp),
+                                field: self
+                                    .class_fields
+                                    .get(&class_name)
+                                    .and_then(|fields| fields.get(idx).cloned())
+                                    .unwrap_or_default(),
+                                slot: Some(idx as u32),
+                                value,
+                                span,
+                            });
                         }
                     }
                     self.maybe_call_configure(&class_name, Value::Temp(temp), span);
@@ -2231,8 +1978,8 @@ impl FunctionLowerer {
         }
         match size {
             hir::PoolSize::Fixed(count) => {
-                if count > 1 {
-                    if let Some(value) = self.lower_detach_pool_fixed(
+                if count > 1
+                    && let Some(value) = self.lower_detach_pool_fixed(
                         body,
                         target_expr,
                         count as usize,
@@ -2244,9 +1991,9 @@ impl FunctionLowerer {
                         queue_cap,
                         result_expr,
                         span,
-                    ) {
-                        return value;
-                    }
+                    )
+                {
+                    return value;
                 }
             }
             hir::PoolSize::Auto => {
@@ -2310,19 +2057,19 @@ impl FunctionLowerer {
             }
             Expr::Call { callee, .. } | Expr::GivenCall { callee, .. } => {
                 let mut handled = false;
-                if let Expr::Variable(name) = &body.exprs[*callee] {
-                    if let Some(id) = self.type_tags.get(name).copied() {
-                        target = Some(Value::Const(Literal::Integer(id.0 as i64)));
-                        // `detach` on actor classes should always have a concrete instance.
-                        // Some actor-class "constructor" call shapes don't lower to a normal
-                        // `ClassInit` expression here, so build the instance explicitly from
-                        // class metadata (same strategy as Pool.of fast paths).
-                        if let Some(class) = self.class_target_info(body, *callee) {
-                            let value = self.build_class_instance(&class, span);
-                            instance = Some(value.clone());
-                            lowered = Some(value);
-                            handled = true;
-                        }
+                if let Expr::Variable(name) = &body.exprs[*callee]
+                    && let Some(id) = self.type_tags.get(name).copied()
+                {
+                    target = Some(Value::Const(Literal::Integer(id.0 as i64)));
+                    // `detach` on actor classes should always have a concrete instance.
+                    // Some actor-class "constructor" call shapes don't lower to a normal
+                    // `ClassInit` expression here, so build the instance explicitly from
+                    // class metadata (same strategy as Pool.of fast paths).
+                    if let Some(class) = self.class_target_info(body, *callee) {
+                        let value = self.build_class_instance(&class, span);
+                        instance = Some(value.clone());
+                        lowered = Some(value);
+                        handled = true;
                     }
                 }
                 if !handled {
@@ -2653,17 +2400,16 @@ impl FunctionLowerer {
                 .get(idx)
                 .and_then(|val| val.as_ref())
                 .is_none()
+                && let Some(default) = default
             {
-                if let Some(default) = default {
-                    let value = self.lower_field_default(default, span);
-                    self.push_stmt(MirStmt::SetField {
-                        base: Value::Temp(temp),
-                        field: class.fields.get(idx).cloned().unwrap_or_default(),
-                        slot: Some(idx as u32),
-                        value,
-                        span,
-                    });
-                }
+                let value = self.lower_field_default(default, span);
+                self.push_stmt(MirStmt::SetField {
+                    base: Value::Temp(temp),
+                    field: class.fields.get(idx).cloned().unwrap_or_default(),
+                    slot: Some(idx as u32),
+                    value,
+                    span,
+                });
             }
         }
         if has_explicit_fields {
@@ -2891,16 +2637,15 @@ impl FunctionLowerer {
                     Expr::Variable(name) if self.type_tags.contains_key(name) => Some(name.clone()),
                     _ => None,
                 };
-                if let MirType::Named(class_name) = self.expr_type(*object) {
-                    if let Some(methods) = self.interface_methods.get(&class_name) {
-                        if methods.contains(member) {
-                            let mut args_with_recv = Vec::with_capacity(values.len() + 1);
-                            args_with_recv.push(receiver.clone());
-                            args_with_recv.extend(values);
-                            let func_name = SmolStr::new(format!("{}.{}", class_name, member));
-                            return (CallTarget::Function(func_name), args_with_recv);
-                        }
-                    }
+                if let MirType::Named(class_name) = self.expr_type(*object)
+                    && let Some(methods) = self.interface_methods.get(&class_name)
+                    && methods.contains(member)
+                {
+                    let mut args_with_recv = Vec::with_capacity(values.len() + 1);
+                    args_with_recv.push(receiver.clone());
+                    args_with_recv.extend(values);
+                    let func_name = SmolStr::new(format!("{}.{}", class_name, member));
+                    return (CallTarget::Function(func_name), args_with_recv);
                 }
                 let (method_id, method_name) = match self.expr_type(*object) {
                     MirType::Actor(inner) => {
@@ -3352,4 +3097,254 @@ fn builtin_function_names() -> Vec<SmolStr> {
         SmolStr::new("__wr_env_set"),
         SmolStr::new("__wr_runtime_configure"),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hir::lower as hir_lower;
+    use crate::hir::typeck;
+    use crate::parser::ast;
+    use crate::parser::ast::AstNode;
+    use crate::parser::parse;
+
+    #[test]
+    fn test_lower_marks_suspendable() {
+        let input = "\
+A Whale:\n    can swim() -> Boolean:\n        return true\n\nto f() -> Result[Boolean]:\n    w = detach Whale() * 1\n    return await w.swim()\n";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = hir_lower::lower(root);
+        let mir = lower_module(&module);
+        let func = mir.functions.iter().find(|f| f.name == "f").unwrap();
+        assert!(func.suspendable);
+    }
+
+    #[test]
+    fn test_lower_if_creates_blocks() {
+        let input =
+            "to f() -> Nothing:\n    if true:\n        x = 1\n    otherwise:\n        x = 2\n";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = hir_lower::lower(root);
+        let mir = lower_module(&module);
+        let func = mir.functions.iter().find(|f| f.name == "f").unwrap();
+        assert!(func.blocks.len() >= 3);
+    }
+
+    #[test]
+    fn test_lower_member_assign_sets_field() {
+        let input = "\
+A Counter:
+    has:
+        value: Integer
+    can add(delta: Integer) -> Nothing:
+        its.value += delta
+";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = hir_lower::lower(root);
+        let (_type_errors, type_info) = typeck::check_module_with_info(&module);
+        let mir_module = lower_module_with_types(&module, &type_info);
+        let func = mir_module
+            .functions
+            .iter()
+            .find(|func| func.name == "Counter.add")
+            .expect("missing Counter.add");
+        let has_set_field = func.blocks.iter().any(|block| {
+            block.stmts.iter().any(
+                |stmt| matches!(stmt, MirStmt::SetField { field, .. } if field.as_str() == "value"),
+            )
+        });
+        assert!(has_set_field, "expected SetField for member assign");
+    }
+
+    #[test]
+    fn test_lower_field_defaults_emits_set_fields() {
+        let input = "\
+A Foo:
+    has:
+        x: Integer = 1
+        y: List = [1, 2]
+        z: Map = {\"a\": 1}
+
+to run() -> Nothing:
+    a = Foo()
+    b = Foo(x=5)
+";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = hir_lower::lower(root);
+        let mir_module = lower_module(&module);
+        let func = mir_module
+            .functions
+            .iter()
+            .find(|func| func.name == "run")
+            .expect("missing run");
+
+        let mut set_x = 0usize;
+        let mut set_y = 0usize;
+        let mut set_z = 0usize;
+        let mut build_list = 0usize;
+        let mut build_map = 0usize;
+
+        for block in &func.blocks {
+            for stmt in &block.stmts {
+                match stmt {
+                    MirStmt::SetField { field, .. } if field.as_str() == "x" => set_x += 1,
+                    MirStmt::SetField { field, .. } if field.as_str() == "y" => set_y += 1,
+                    MirStmt::SetField { field, .. } if field.as_str() == "z" => set_z += 1,
+                    _ => {}
+                }
+                if let MirStmt::Assign { value, .. } = stmt {
+                    match value {
+                        Rvalue::BuildList { .. } => build_list += 1,
+                        Rvalue::BuildMap { .. } => build_map += 1,
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        assert_eq!(set_x, 2, "expected default and override for x");
+        assert_eq!(set_y, 2, "expected defaults for y in both instances");
+        assert_eq!(set_z, 2, "expected defaults for z in both instances");
+        assert!(build_list >= 1, "expected BuildList for default list");
+        assert!(build_map >= 1, "expected BuildMap for default map");
+    }
+
+    #[test]
+    fn test_lower_integer_range_for_uses_typed_induction_fast_path() {
+        let input = "\
+to run() -> Integer:
+    start = 1
+    stop = 4
+    mutable total = 0
+    for i in start...stop:
+        total += i
+    return total
+";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = hir_lower::lower(root);
+        let (_type_errors, type_info) = typeck::check_module_with_info(&module);
+        let mir_module = lower_module_with_types(&module, &type_info);
+        let func = mir_module
+            .functions
+            .iter()
+            .find(|func| func.name == "run")
+            .expect("missing run");
+
+        assert!(
+            func.locals
+                .iter()
+                .any(|local| local.name.as_str() == "i" && local.ty == MirType::Integer),
+            "expected typed loop variable for integer range",
+        );
+        assert!(
+            func.locals
+                .iter()
+                .any(|local| local.name.starts_with("$range_idx") && local.ty == MirType::Integer),
+            "expected typed integer induction local",
+        );
+        assert!(
+            func.locals
+                .iter()
+                .any(|local| local.name.starts_with("$range_step") && local.ty == MirType::Integer),
+            "expected typed integer step local",
+        );
+
+        for block in &func.blocks {
+            for stmt in &block.stmts {
+                assert!(
+                    !matches!(stmt, MirStmt::IterInit { .. } | MirStmt::IterNext { .. }),
+                    "typed integer range loop should not use iterator protocol",
+                );
+                if let MirStmt::Assign { value, .. } = stmt {
+                    assert!(
+                        !matches!(
+                            value,
+                            Rvalue::Binary {
+                                op: crate::hir::BinaryOp::Range,
+                                ..
+                            }
+                        ),
+                        "typed integer range loop should not materialize range object",
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_lower_member_field_ops_emit_slot_hints() {
+        let input = "\
+A Counter:
+    has:
+        mutable value: Integer
+        mutable other: Integer
+
+    can bump() -> Nothing:
+        its.value += 1
+        its.other = 4
+
+to run() -> Integer:
+    c = Counter(value=1, other=2)
+    c.value += 3
+    return c.other
+";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = hir_lower::lower(root);
+        let (_type_errors, type_info) = typeck::check_module_with_info(&module);
+        let mir_module = lower_module_with_types(&module, &type_info);
+
+        let mut saw_get_value_slot = false;
+        let mut saw_get_other_slot = false;
+        let mut saw_set_value_slot = false;
+        let mut saw_set_other_slot = false;
+
+        for func in &mir_module.functions {
+            for block in &func.blocks {
+                for stmt in &block.stmts {
+                    match stmt {
+                        MirStmt::Assign {
+                            value:
+                                Rvalue::GetField {
+                                    field,
+                                    slot: Some(slot),
+                                    ..
+                                },
+                            ..
+                        } if field.as_str() == "value" && *slot == 0 => saw_get_value_slot = true,
+                        MirStmt::Assign {
+                            value:
+                                Rvalue::GetField {
+                                    field,
+                                    slot: Some(slot),
+                                    ..
+                                },
+                            ..
+                        } if field.as_str() == "other" && *slot == 1 => saw_get_other_slot = true,
+                        MirStmt::SetField {
+                            field,
+                            slot: Some(slot),
+                            ..
+                        } if field.as_str() == "value" && *slot == 0 => saw_set_value_slot = true,
+                        MirStmt::SetField {
+                            field,
+                            slot: Some(slot),
+                            ..
+                        } if field.as_str() == "other" && *slot == 1 => saw_set_other_slot = true,
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        assert!(saw_get_value_slot, "expected slot-hinted get for value");
+        assert!(saw_get_other_slot, "expected slot-hinted get for other");
+        assert!(saw_set_value_slot, "expected slot-hinted set for value");
+        assert!(saw_set_other_slot, "expected slot-hinted set for other");
+    }
 }

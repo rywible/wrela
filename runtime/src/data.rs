@@ -130,15 +130,15 @@ pub(crate) mod arena {
     fn alloc_from_chunks(chunks: &mut Vec<Chunk>, want: usize, align: usize) -> Option<usize> {
         debug_assert!(want > 0);
         debug_assert!(align.is_power_of_two());
-        if let Some(chunk) = chunks.last_mut() {
-            if chunk.align >= align {
-                let mask = align - 1;
-                let aligned = (chunk.used + mask) & !mask;
-                if aligned.saturating_add(want) <= chunk.cap {
-                    let out = chunk.ptr + aligned;
-                    chunk.used = aligned + want;
-                    return Some(out);
-                }
+        if let Some(chunk) = chunks.last_mut()
+            && chunk.align >= align
+        {
+            let mask = align - 1;
+            let aligned = (chunk.used + mask) & !mask;
+            if aligned.saturating_add(want) <= chunk.cap {
+                let out = chunk.ptr + aligned;
+                chunk.used = aligned + want;
+                return Some(out);
             }
         }
         const DEFAULT_CHUNK: usize = 64 * 1024;
@@ -179,15 +179,15 @@ pub(crate) mod arena {
             let arena = unsafe { &mut *arena_ptr };
 
             // Find an existing chunk with enough space.
-            if let Some(chunk) = arena.bytes_chunks.last_mut() {
-                if chunk.align >= align {
-                    let mask = align - 1;
-                    let aligned = (chunk.used + mask) & !mask;
-                    if aligned.saturating_add(want) <= chunk.cap {
-                        let out = unsafe { (chunk.ptr as *mut u8).add(aligned) };
-                        chunk.used = aligned + want;
-                        return Some(out);
-                    }
+            if let Some(chunk) = arena.bytes_chunks.last_mut()
+                && chunk.align >= align
+            {
+                let mask = align - 1;
+                let aligned = (chunk.used + mask) & !mask;
+                if aligned.saturating_add(want) <= chunk.cap {
+                    let out = unsafe { (chunk.ptr as *mut u8).add(aligned) };
+                    chunk.used = aligned + want;
+                    return Some(out);
                 }
             }
 
@@ -317,7 +317,7 @@ pub(crate) mod bytes {
     }
 
     pub fn bytes_from_string(val: Value) -> Value {
-        string::with_string_bytes(val, |bytes| bytes_from_slice(bytes)).unwrap_or(Value::nil())
+        string::with_string_bytes(val, bytes_from_slice).unwrap_or(Value::nil())
     }
 
     pub fn bytes_to_string(val: Value) -> Value {
@@ -474,20 +474,20 @@ pub(crate) mod class {
         // dependencies on whether a temp arena is currently active in the spawning thread.
         crate::metrics::inc_actor_spawn_instance_promoted();
         unsafe {
-            let slots_ref: &Box<[Value]> = &(*obj).slots;
+            let slots_ref = &(*obj).slots;
             let mut slots: Vec<Value> = Vec::with_capacity(slots_ref.len());
             for v in slots_ref.iter().copied() {
                 wr_rc_inc(v);
                 slots.push(v);
             }
             let mut overflow: HashMap<Vec<u8>, Value> = HashMap::new();
-            for (k, v) in (&(*obj).overflow).iter() {
+            for (k, v) in (*obj).overflow.iter() {
                 wr_rc_inc(*v);
                 overflow.insert(k.clone(), *v);
             }
             let new_obj = Box::new(ClassObj {
                 header: header_raw((*obj).header.type_id),
-                slot_names: (&(*obj).slot_names).clone(),
+                slot_names: (*obj).slot_names.clone(),
                 slots: slots.into_boxed_slice(),
                 overflow,
             });
@@ -698,15 +698,14 @@ pub(crate) mod iter {
             let iter = &mut *(iter_val.as_ptr() as *mut IterObj);
             match &mut iter.kind {
                 IterKind::List { list, index } => {
-                    if let Some(list_ptr) = as_list_ref(*list) {
-                        if *index < (*list_ptr).len {
-                            let val = (&(*list_ptr).data)[*index];
-                            wr_rc_inc(val);
-                            *index += 1;
-                            *dst_value = val;
-                            *dst_done = Value::from_bool(false);
-                            return;
-                        }
+                    if let Some(list_ptr) = as_list_ref(*list)
+                        && *index < (*list_ptr).len
+                    {
+                        let val = (&(*list_ptr).data)[*index];
+                        wr_rc_inc(val);
+                        *index += 1;
+                        *dst_value = val;
+                        *dst_done = Value::from_bool(false);
                     }
                 }
                 IterKind::Map {
@@ -724,22 +723,20 @@ pub(crate) mod iter {
                     }
                     if map_is_inline(map_ptr) {
                         let len = map_inline_len(map_ptr);
-                        if *index < len {
-                            if let Some((key, _)) = map_inline_entry(map_ptr, *index) {
-                                wr_rc_inc(key.0);
-                                *index += 1;
-                                *dst_value = key.0;
-                                *dst_done = Value::from_bool(false);
-                                return;
-                            }
-                        }
-                    } else if let Some(iter) = iter.as_mut() {
-                        if let Some((key, _)) = iter.next() {
+                        if *index < len
+                            && let Some((key, _)) = map_inline_entry(map_ptr, *index)
+                        {
                             wr_rc_inc(key.0);
+                            *index += 1;
                             *dst_value = key.0;
                             *dst_done = Value::from_bool(false);
-                            return;
                         }
+                    } else if let Some(iter) = iter.as_mut()
+                        && let Some((key, _)) = iter.next()
+                    {
+                        wr_rc_inc(key.0);
+                        *dst_value = key.0;
+                        *dst_done = Value::from_bool(false);
                     }
                 }
             }
@@ -1090,21 +1087,11 @@ pub(crate) mod map {
         HeapInt(IntMapIter<'a>),
     }
 
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, Default)]
     struct IntSlot {
         key: i64,
         val: Value,
         full: bool,
-    }
-
-    impl Default for IntSlot {
-        fn default() -> Self {
-            Self {
-                key: 0,
-                val: Value::nil(),
-                full: false,
-            }
-        }
     }
 
     // Minimal open-addressing table for immediate integer keys.
@@ -1404,35 +1391,30 @@ pub(crate) mod map {
                     }
                 }
             }
-            match &mut *entries_ptr {
-                MapEntries::HeapInt(entries) => {
-                    if let Some(i) = int_value(key_val) {
-                        if let Some(old) = entries.insert(i, val) {
-                            rc_inc_if_managed(val);
-                            rc_dec_if_managed(old);
-                        } else {
-                            rc_inc_if_managed(val);
-                        }
-                        (*map).version = (*map).version.wrapping_add(1);
-                        return;
-                    }
-                    // Upgrade int-only heap map -> generic for non-int keys.
-                    let old = std::mem::replace(&mut *entries_ptr, MapEntries::new_inline());
-                    if let MapEntries::HeapInt(old_int) = old {
-                        let mut g: FastHashMap<MapKey, Value> = HashMap::with_capacity_and_hasher(
-                            old_int.len() + 1,
-                            Default::default(),
-                        );
-                        for (ik, iv) in old_int.iter() {
-                            g.insert(MapKey(Value::from_int(ik)), iv);
-                        }
-                        *entries_ptr = MapEntries::HeapGeneric(g);
+            if let MapEntries::HeapInt(entries) = &mut *entries_ptr {
+                if let Some(i) = int_value(key_val) {
+                    if let Some(old) = entries.insert(i, val) {
+                        rc_inc_if_managed(val);
+                        rc_dec_if_managed(old);
                     } else {
-                        // Put it back. Should be impossible, but don't corrupt the map.
-                        *entries_ptr = old;
+                        rc_inc_if_managed(val);
                     }
+                    (*map).version = (*map).version.wrapping_add(1);
+                    return;
                 }
-                _ => {}
+                // Upgrade int-only heap map -> generic for non-int keys.
+                let old = std::mem::replace(&mut *entries_ptr, MapEntries::new_inline());
+                if let MapEntries::HeapInt(old_int) = old {
+                    let mut g: FastHashMap<MapKey, Value> =
+                        HashMap::with_capacity_and_hasher(old_int.len() + 1, Default::default());
+                    for (ik, iv) in old_int.iter() {
+                        g.insert(MapKey(Value::from_int(ik)), iv);
+                    }
+                    *entries_ptr = MapEntries::HeapGeneric(g);
+                } else {
+                    // Put it back. Should be impossible, but don't corrupt the map.
+                    *entries_ptr = old;
+                }
             }
             if let MapEntries::HeapGeneric(entries) = &mut *entries_ptr {
                 match entries.entry(MapKey(key_val)) {
@@ -2184,7 +2166,7 @@ pub(crate) mod value {
 
         #[inline]
         pub fn from_int(v: i64) -> Self {
-            if v < Self::MIN_INT || v > Self::MAX_INT {
+            if !(Self::MIN_INT..=Self::MAX_INT).contains(&v) {
                 return box_int(v);
             }
             let payload = (v as u64) & Self::PAYLOAD_MASK;

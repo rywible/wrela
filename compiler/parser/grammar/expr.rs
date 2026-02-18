@@ -210,10 +210,8 @@ fn parse_given(
         }
         parse_arg(p);
         first = false;
-        if !p.at(SyntaxKind::Comma) {
-            if p.at_stmt_boundary() {
-                break;
-            }
+        if !p.at(SyntaxKind::Comma) && p.at_stmt_boundary() {
+            break;
         }
     }
     m.complete(p, SyntaxKind::GivenExpr)

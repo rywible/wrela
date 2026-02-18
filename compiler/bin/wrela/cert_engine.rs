@@ -126,11 +126,12 @@ pub(super) fn execute_test_command(input: TestCommandInput) -> i32 {
                 .unwrap_or_else(|| std::path::Path::new("."))
                 .to_path_buf(),
         };
-        if input.test_update_public_surface && exit == EXIT_OK {
-            if let Err(err) = command_handlers::update_public_surface_baseline(&workspace_root) {
-                eprintln!("public surface update error: {err}");
-                return EXIT_CODEGEN;
-            }
+        if input.test_update_public_surface
+            && exit == EXIT_OK
+            && let Err(err) = command_handlers::update_public_surface_baseline(&workspace_root)
+        {
+            eprintln!("public surface update error: {err}");
+            return EXIT_CODEGEN;
         }
         if let Err(err) = command_handlers::write_test_maintenance_summary(
             &workspace_root,

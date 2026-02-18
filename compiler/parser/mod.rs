@@ -376,16 +376,12 @@ impl<'a> Parser<'a> {
     }
 
     fn consume_stmt_separators(&mut self) {
-        loop {
-            match self.source.peek() {
-                SyntaxKind::Newline
-                | SyntaxKind::Whitespace
-                | SyntaxKind::Comment
-                | SyntaxKind::DocComment => {
-                    self.source.bump();
-                }
-                _ => break,
-            }
+        while let SyntaxKind::Newline
+        | SyntaxKind::Whitespace
+        | SyntaxKind::Comment
+        | SyntaxKind::DocComment = self.source.peek()
+        {
+            self.source.bump();
         }
     }
 
@@ -514,7 +510,7 @@ fn format_found(kind: SyntaxKind, text: &str) -> String {
             let mut slice = text.replace('\n', "\\n").replace('\r', "\\r");
             if slice.len() > 20 {
                 slice.truncate(20);
-                slice.push_str("…");
+                slice.push('…');
             }
             if slice.is_empty() {
                 kind_label(kind).into()

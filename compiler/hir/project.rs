@@ -642,9 +642,10 @@ impl ProjectLoader {
         }
 
         for module in self.modules.values() {
-            if let Some(body) = &module.root_body {
-                if let Some(first) = body.root_stmts.first() {
-                    self.errors.push(ProjectError {
+            if let Some(body) = &module.root_body
+                && let Some(first) = body.root_stmts.first()
+            {
+                self.errors.push(ProjectError {
                     kind: ProjectDiagKind::LoadError,
                         path: module.path.clone(),
                         source: module.source.clone(),
@@ -652,7 +653,6 @@ impl ProjectLoader {
                             .to_string(),
                         span: span_from_range(body.stmt_span(*first)),
                     });
-                }
             }
         }
 
@@ -886,30 +886,27 @@ impl ProjectLoader {
                             });
                             continue;
                         }
-                        if let Some((prev, prev_span)) = imported_names.get(export) {
-                            if prev != &target {
-                                self.errors.push(ProjectError {
-                                    kind: ProjectDiagKind::LoadError,
-                                    path: module.path.clone(),
-                                    source: module.source.clone(),
-                                    message: format!(
-                                        "glob import from '{}' conflicts with module '{}' for '{}'",
-                                        target, prev, export
-                                    ),
-                                    span: span_from_range(use_site.span),
-                                });
-                                self.errors.push(ProjectError {
-                                    kind: ProjectDiagKind::LoadError,
-                                    path: module.path.clone(),
-                                    source: module.source.clone(),
-                                    message: format!(
-                                        "previous import of '{}' from '{}'",
-                                        export, prev
-                                    ),
-                                    span: span_from_range(*prev_span),
-                                });
-                                continue;
-                            }
+                        if let Some((prev, prev_span)) = imported_names.get(export)
+                            && prev != &target
+                        {
+                            self.errors.push(ProjectError {
+                                kind: ProjectDiagKind::LoadError,
+                                path: module.path.clone(),
+                                source: module.source.clone(),
+                                message: format!(
+                                    "glob import from '{}' conflicts with module '{}' for '{}'",
+                                    target, prev, export
+                                ),
+                                span: span_from_range(use_site.span),
+                            });
+                            self.errors.push(ProjectError {
+                                kind: ProjectDiagKind::LoadError,
+                                path: module.path.clone(),
+                                source: module.source.clone(),
+                                message: format!("previous import of '{}' from '{}'", export, prev),
+                                span: span_from_range(*prev_span),
+                            });
+                            continue;
                         }
                         imported_names.insert(export.clone(), (target.clone(), use_site.span));
                         imported_set.insert(export.clone());
@@ -964,28 +961,28 @@ impl ProjectLoader {
     }
 
     fn resolve_module_path(&self, name: &SmolStr) -> Option<PathBuf> {
-        if let Some(tests_root) = &self.tests_dir {
-            if let Some(test_rel) = name.as_str().strip_prefix("tests/") {
-                let mut rel = PathBuf::from(test_rel);
-                let candidate_wr = tests_root.join(rel.with_extension("wr"));
-                if candidate_wr.is_file() {
-                    return Some(candidate_wr);
-                }
-                rel = PathBuf::from(format!("{test_rel}_test"));
-                let candidate_wr = tests_root.join(rel.with_extension("wr"));
-                if candidate_wr.is_file() {
-                    return Some(candidate_wr);
-                }
-                rel = PathBuf::from(test_rel);
-                let candidate_sp = tests_root.join(rel.with_extension("sp"));
-                if candidate_sp.is_file() {
-                    return Some(candidate_sp);
-                }
-                rel = PathBuf::from(format!("{test_rel}_test"));
-                let candidate_sp = tests_root.join(rel.with_extension("sp"));
-                if candidate_sp.is_file() {
-                    return Some(candidate_sp);
-                }
+        if let Some(tests_root) = &self.tests_dir
+            && let Some(test_rel) = name.as_str().strip_prefix("tests/")
+        {
+            let mut rel = PathBuf::from(test_rel);
+            let candidate_wr = tests_root.join(rel.with_extension("wr"));
+            if candidate_wr.is_file() {
+                return Some(candidate_wr);
+            }
+            rel = PathBuf::from(format!("{test_rel}_test"));
+            let candidate_wr = tests_root.join(rel.with_extension("wr"));
+            if candidate_wr.is_file() {
+                return Some(candidate_wr);
+            }
+            rel = PathBuf::from(test_rel);
+            let candidate_sp = tests_root.join(rel.with_extension("sp"));
+            if candidate_sp.is_file() {
+                return Some(candidate_sp);
+            }
+            rel = PathBuf::from(format!("{test_rel}_test"));
+            let candidate_sp = tests_root.join(rel.with_extension("sp"));
+            if candidate_sp.is_file() {
+                return Some(candidate_sp);
             }
         }
         let stdlib_root = stdlib_root();
@@ -1046,9 +1043,7 @@ impl ProjectLoader {
                         path: module.path.clone(),
                         source: module.source.clone(),
                         message,
-                        span: span_from_range(
-                            use_site.module_span.unwrap_or_else(|| use_site.span),
-                        ),
+                        span: span_from_range(use_site.module_span.unwrap_or(use_site.span)),
                     });
                     continue;
                 };
@@ -1131,9 +1126,7 @@ impl ProjectLoader {
                             target_layer,
                             use_site.module.as_str(),
                         ),
-                        span: span_from_range(
-                            use_site.module_span.unwrap_or_else(|| use_site.span),
-                        ),
+                        span: span_from_range(use_site.module_span.unwrap_or(use_site.span)),
                     });
                 }
                 if is_host_module(use_site.module.as_str()) && !host_import_allowed(source_layer) {
@@ -1145,9 +1138,7 @@ impl ProjectLoader {
                             source_layer,
                             use_site.module.as_str(),
                         ),
-                        span: span_from_range(
-                            use_site.module_span.unwrap_or_else(|| use_site.span),
-                        ),
+                        span: span_from_range(use_site.module_span.unwrap_or(use_site.span)),
                     });
                 }
                 if is_host_http_module(use_site.module.as_str())
@@ -1158,9 +1149,7 @@ impl ProjectLoader {
                         path: module.path.clone(),
                         source: module.source.clone(),
                         message: host_http_import_violation_message(module.name.as_str()),
-                        span: span_from_range(
-                            use_site.module_span.unwrap_or_else(|| use_site.span),
-                        ),
+                        span: span_from_range(use_site.module_span.unwrap_or(use_site.span)),
                     });
                 }
             }
@@ -1861,11 +1850,12 @@ fn enforce_external_call_policy_in_expr(
             );
         }
         Expr::Call { callee, args, .. } | Expr::GivenCall { callee, args, .. } => {
-            if let Expr::Variable(name) = &body.exprs[*callee] {
-                if let Some(kind) = external_connector_call_kind(name, imported) {
-                    let call_span = body.expr_span(expr_id);
-                    if !is_infrastructure_integration_module(module_name) {
-                        errors.push(ProjectError {
+            if let Expr::Variable(name) = &body.exprs[*callee]
+                && let Some(kind) = external_connector_call_kind(name, imported)
+            {
+                let call_span = body.expr_span(expr_id);
+                if !is_infrastructure_integration_module(module_name) {
+                    errors.push(ProjectError {
                     kind: ProjectDiagKind::LoadError,
                             path: path.to_path_buf(),
                             source: source.to_string(),
@@ -1875,15 +1865,13 @@ fn enforce_external_call_policy_in_expr(
                             ),
                             span: span_from_range(call_span),
                         });
-                    }
-                    for (field, value_expr) in
-                        external_connector_literal_violations(body, args, kind)
-                    {
-                        let expected = match field {
-                            ExternalMetadataField::TimeoutMs => "an integer literal",
-                            _ => "a string literal",
-                        };
-                        errors.push(ProjectError {
+                }
+                for (field, value_expr) in external_connector_literal_violations(body, args, kind) {
+                    let expected = match field {
+                        ExternalMetadataField::TimeoutMs => "an integer literal",
+                        _ => "a string literal",
+                    };
+                    errors.push(ProjectError {
                     kind: ProjectDiagKind::LoadError,
                             path: path.to_path_buf(),
                             source: source.to_string(),
@@ -1896,7 +1884,6 @@ fn enforce_external_call_policy_in_expr(
                             ),
                             span: span_from_range(body.expr_span(value_expr)),
                         });
-                    }
                 }
             }
             enforce_external_call_policy_in_expr(
@@ -2089,10 +2076,9 @@ fn external_call_arg_expr(args: &[Arg], field: ExternalMetadataField) -> Option<
             value,
             ..
         } = arg
+            && arg_name.as_str() == name
         {
-            if arg_name.as_str() == name {
-                return Some(*value);
-            }
+            return Some(*value);
         }
     }
     let mut positional_index = 0usize;
@@ -2303,10 +2289,10 @@ fn find_disallowed_domain_async_keyword_in_expr(
         }
         Expr::StringInterp(parts) => {
             for part in parts {
-                if let crate::hir::StringPart::Expr(expr) = part {
-                    if let Some(found) = find_disallowed_domain_async_keyword_in_expr(body, *expr) {
-                        return Some(found);
-                    }
+                if let crate::hir::StringPart::Expr(expr) = part
+                    && let Some(found) = find_disallowed_domain_async_keyword_in_expr(body, *expr)
+                {
+                    return Some(found);
                 }
             }
             None

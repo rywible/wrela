@@ -1518,12 +1518,9 @@ fn resolve_certification_test_selection(
         changed_src_modules.len(),
         impacted_src_modules.len()
     ));
-    if matches!(output_format, OutputFormat::Pretty) {
-        if changed_src_modules.is_empty() {
-            reasons.push(
-                "no src module deltas; integration and sim lanes reduced by policy".to_string(),
-            );
-        }
+    if matches!(output_format, OutputFormat::Pretty) && changed_src_modules.is_empty() {
+        reasons
+            .push("no src module deltas; integration and sim lanes reduced by policy".to_string());
     }
     if let Some(report) = selection.cert_selection_report.as_ref() {
         reasons.extend(report.reasons.clone());
@@ -2131,7 +2128,7 @@ fn collect_hash_files(
         .into_iter()
         .map(|entry| entry.path())
         .collect();
-    children.sort_by(|a, b| path_sort_key(a).cmp(&path_sort_key(b)));
+    children.sort_by_key(|a| path_sort_key(a));
     for child in children {
         if child.is_dir() {
             let child_name = child
@@ -2236,7 +2233,7 @@ fn collect_wr_modules(
         .into_iter()
         .map(|entry| entry.path())
         .collect();
-    children.sort_by(|a, b| path_sort_key(a).cmp(&path_sort_key(b)));
+    children.sort_by_key(|a| path_sort_key(a));
     for child in children {
         if child.is_dir() {
             collect_wr_modules(&child, strip_root, root_label, out)?;
@@ -2795,7 +2792,7 @@ fn collect_json_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()
         .into_iter()
         .map(|entry| entry.path())
         .collect();
-    children.sort_by(|a, b| path_sort_key(a).cmp(&path_sort_key(b)));
+    children.sort_by_key(|a| path_sort_key(a));
     for child in children {
         if child.is_dir() {
             collect_json_files_recursive(&child, out)?;
@@ -4120,7 +4117,7 @@ pub(super) fn run_tests_once(
             return (EXIT_CODEGEN, None, None);
         }
     };
-    if let Some(timing) = run_timing_out.as_deref_mut() {
+    if let Some(timing) = run_timing_out {
         timing.compile_harness_ms = harness.compile_ns / 1_000_000;
     }
 
@@ -4788,80 +4785,74 @@ pub(super) fn evaluate_perf_gate(
     if let (Some(current_value), Some(limit)) = (
         current.check_fallback_rate,
         kpi_thresholds.check_fallback_max,
-    ) {
-        if current_value > limit {
-            failures.push(format!(
-                "check_fallback_rate {:.4} > {:.4}",
-                current_value, limit
-            ));
-        }
+    ) && current_value > limit
+    {
+        failures.push(format!(
+            "check_fallback_rate {:.4} > {:.4}",
+            current_value, limit
+        ));
     }
     if let (Some(current_value), Some(min)) =
         (current.avg_check_batch_size, kpi_thresholds.check_batch_min)
+        && current_value < min
     {
-        if current_value < min {
-            failures.push(format!(
-                "avg_check_batch_size {:.2} < {:.2}",
-                current_value, min
-            ));
-        }
+        failures.push(format!(
+            "avg_check_batch_size {:.2} < {:.2}",
+            current_value, min
+        ));
     }
     if let (Some(current_value), Some(baseline_value), Some(min_improve_pct)) = (
         current.scheduler_dispatch_p99_ns,
         baseline.scheduler_dispatch_p99_ns,
         kpi_thresholds.scheduler_p99_improve_min_pct,
-    ) {
-        if baseline_value > 0 {
-            let improvement_pct =
-                ((baseline_value as f64 - current_value as f64) / baseline_value as f64) * 100.0;
-            if improvement_pct < min_improve_pct {
-                failures.push(format!(
-                    "scheduler_dispatch_p99_ns improvement {:.2}% < {:.2}%",
-                    improvement_pct, min_improve_pct
-                ));
-            }
+    ) && baseline_value > 0
+    {
+        let improvement_pct =
+            ((baseline_value as f64 - current_value as f64) / baseline_value as f64) * 100.0;
+        if improvement_pct < min_improve_pct {
+            failures.push(format!(
+                "scheduler_dispatch_p99_ns improvement {:.2}% < {:.2}%",
+                improvement_pct, min_improve_pct
+            ));
         }
     }
     if let (Some(current_value), Some(limit)) = (
         current.rewrite_compile_overhead_pct,
         kpi_thresholds.rewrite_overhead_max_pct,
-    ) {
-        if current_value > limit {
-            failures.push(format!(
-                "rewrite_compile_overhead_pct {:.2} > {:.2}",
-                current_value, limit
-            ));
-        }
+    ) && current_value > limit
+    {
+        failures.push(format!(
+            "rewrite_compile_overhead_pct {:.2} > {:.2}",
+            current_value, limit
+        ));
     }
     if let (Some(current_value), Some(baseline_value), Some(min_improve_pct)) = (
         current.actor_msgs_per_sec_p50,
         baseline.actor_msgs_per_sec_p50,
         kpi_thresholds.actor_throughput_improve_min_pct,
-    ) {
-        if baseline_value > 0.0 {
-            let improvement_pct = ((current_value - baseline_value) / baseline_value) * 100.0;
-            if improvement_pct < min_improve_pct {
-                failures.push(format!(
-                    "actor_msgs_per_sec_p50 improvement {:.2}% < {:.2}%",
-                    improvement_pct, min_improve_pct
-                ));
-            }
+    ) && baseline_value > 0.0
+    {
+        let improvement_pct = ((current_value - baseline_value) / baseline_value) * 100.0;
+        if improvement_pct < min_improve_pct {
+            failures.push(format!(
+                "actor_msgs_per_sec_p50 improvement {:.2}% < {:.2}%",
+                improvement_pct, min_improve_pct
+            ));
         }
     }
     if let (Some(current_value), Some(baseline_value), Some(max_regress_pct)) = (
         current.queue_age_p99_ns,
         baseline.queue_age_p99_ns,
         kpi_thresholds.queue_age_p99_max_regress_pct,
-    ) {
-        if baseline_value > 0 {
-            let regress_pct =
-                ((current_value as f64 - baseline_value as f64) / baseline_value as f64) * 100.0;
-            if regress_pct > max_regress_pct {
-                failures.push(format!(
-                    "queue_age_p99_ns regression {:.2}% > {:.2}%",
-                    regress_pct, max_regress_pct
-                ));
-            }
+    ) && baseline_value > 0
+    {
+        let regress_pct =
+            ((current_value as f64 - baseline_value as f64) / baseline_value as f64) * 100.0;
+        if regress_pct > max_regress_pct {
+            failures.push(format!(
+                "queue_age_p99_ns regression {:.2}% > {:.2}%",
+                regress_pct, max_regress_pct
+            ));
         }
     }
     if let Some(max_violations) = kpi_thresholds.starvation_violations_max {
@@ -4888,21 +4879,20 @@ pub(super) fn evaluate_perf_gate(
             }
         }
     }
-    if let Some(max_regress_pct) = kpi_thresholds.scheduler_loop_p99_max_regress_pct {
-        if let (Some(current_p99), Some(baseline_p99)) = (
+    if let Some(max_regress_pct) = kpi_thresholds.scheduler_loop_p99_max_regress_pct
+        && let (Some(current_p99), Some(baseline_p99)) = (
             current.scheduler_dispatch_p99_ns,
             baseline.scheduler_dispatch_p99_ns,
-        ) {
-            if baseline_p99 > 0 {
-                let regress_pct =
-                    ((current_p99 as f64 - baseline_p99 as f64) / baseline_p99 as f64) * 100.0;
-                if regress_pct > max_regress_pct {
-                    failures.push(format!(
-                        "scheduler_dispatch_p99_ns regression {:.2}% > {:.2}%",
-                        regress_pct, max_regress_pct
-                    ));
-                }
-            }
+        )
+        && baseline_p99 > 0
+    {
+        let regress_pct =
+            ((current_p99 as f64 - baseline_p99 as f64) / baseline_p99 as f64) * 100.0;
+        if regress_pct > max_regress_pct {
+            failures.push(format!(
+                "scheduler_dispatch_p99_ns regression {:.2}% > {:.2}%",
+                regress_pct, max_regress_pct
+            ));
         }
     }
     if let Some(min_ratio) = kpi_thresholds.scheduler_local_hit_min {
@@ -4937,7 +4927,7 @@ fn collect_tests(root: &Path, tests_root: &Path, out: &mut Vec<TestCase>) -> io:
         .into_iter()
         .map(|entry| entry.path())
         .collect();
-    children.sort_by(|a, b| path_sort_key(a).cmp(&path_sort_key(b)));
+    children.sort_by_key(|a| path_sort_key(a));
     for path in children {
         if path.is_dir() {
             collect_tests(&path, tests_root, out)?;
@@ -4985,10 +4975,10 @@ fn module_path_for_test_file(path: &Path, tests_root: &Path) -> io::Result<Strin
         .map(|c| c.as_os_str().to_string_lossy().to_string())
         .filter(|s| !s.is_empty())
         .collect();
-    if let Some(last) = parts.last_mut() {
-        if let Some(stripped) = last.strip_suffix("_test") {
-            *last = stripped.to_string();
-        }
+    if let Some(last) = parts.last_mut()
+        && let Some(stripped) = last.strip_suffix("_test")
+    {
+        *last = stripped.to_string();
     }
     Ok(format!("tests/{}", parts.join("/")))
 }
@@ -5316,7 +5306,7 @@ fn autogen_scalar_literal(
     param_index: usize,
 ) -> String {
     let boundary_index = case_index / 2 + param_index;
-    if case_index % 2 == 0 {
+    if case_index.is_multiple_of(2) {
         return autogen_boundary_literal(ty, boundary_index);
     }
     let seed =
@@ -5331,7 +5321,7 @@ fn autogen_boundary_literal(ty: AutogenScalarType, boundary_index: usize) -> Str
             values[boundary_index % values.len()].to_string()
         }
         AutogenScalarType::Boolean => {
-            if boundary_index % 2 == 0 {
+            if boundary_index.is_multiple_of(2) {
                 "false".to_string()
             } else {
                 "true".to_string()
@@ -5354,7 +5344,7 @@ fn autogen_random_literal(ty: AutogenScalarType, seed: u64) -> String {
         }
         AutogenScalarType::Boolean => {
             state = autogen_mix64(state);
-            if state % 2 == 0 {
+            if state.is_multiple_of(2) {
                 "false".to_string()
             } else {
                 "true".to_string()
@@ -6046,7 +6036,7 @@ fn run_single_test(
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
     let _ = fs::create_dir_all(&temp_dir);
-    let file_stem = test.id.replace('/', "_").replace(':', "_");
+    let file_stem = test.id.replace(['/', ':'], "_");
     let metrics_path = temp_dir.join(format!("{}_metrics.json", file_stem));
     let _ = fs::remove_file(&metrics_path);
     let test_temp_dir = temp_dir
@@ -6162,45 +6152,45 @@ fn execute_test_case(
         Err(msg) => {
             let mut detail = String::new();
             let mut failure_msg = msg;
-            if test.lane == TestLane::Sim || test.lane == TestLane::Model {
-                if let Some(seed) = test.sim_seed {
-                    if certify_mode && test.lane == TestLane::Sim {
-                        let mut replay_ok = 0usize;
-                        for _ in 0..3 {
-                            if run_single_test(
-                                harness_exe_path,
-                                workspace_root,
-                                test,
-                                timeout,
-                                output_format,
-                                http_mode,
-                                pipeline,
-                            )
-                            .is_ok()
-                            {
-                                replay_ok += 1;
-                            }
+            if (test.lane == TestLane::Sim || test.lane == TestLane::Model)
+                && let Some(seed) = test.sim_seed
+            {
+                if certify_mode && test.lane == TestLane::Sim {
+                    let mut replay_ok = 0usize;
+                    for _ in 0..3 {
+                        if run_single_test(
+                            harness_exe_path,
+                            workspace_root,
+                            test,
+                            timeout,
+                            output_format,
+                            http_mode,
+                            pipeline,
+                        )
+                        .is_ok()
+                        {
+                            replay_ok += 1;
                         }
-                        if replay_ok > 0 {
-                            failure_msg.push_str(&format!(
+                    }
+                    if replay_ok > 0 {
+                        failure_msg.push_str(&format!(
                                 " | determinism confirmation failed: {replay_ok}/3 reruns passed unexpectedly"
                             ));
-                        }
                     }
-                    let replay_hint = format!(
-                        "wrela test --lane={} --seed={seed} --id={} .",
-                        test.lane.as_str(),
-                        test.canonical_id
-                    );
-                    detail.push_str(&format!(" replay=`{replay_hint}`"));
-                    let trace_path = if test.lane == TestLane::Sim {
-                        write_sim_trace_artifact(workspace_root, test, &failure_msg)
-                    } else {
-                        write_model_trace_artifact(workspace_root, test, &failure_msg)
-                    };
-                    if let Ok(path) = trace_path {
-                        detail.push_str(&format!(" trace={}", path.display()));
-                    }
+                }
+                let replay_hint = format!(
+                    "wrela test --lane={} --seed={seed} --id={} .",
+                    test.lane.as_str(),
+                    test.canonical_id
+                );
+                detail.push_str(&format!(" replay=`{replay_hint}`"));
+                let trace_path = if test.lane == TestLane::Sim {
+                    write_sim_trace_artifact(workspace_root, test, &failure_msg)
+                } else {
+                    write_model_trace_artifact(workspace_root, test, &failure_msg)
+                };
+                if let Ok(path) = trace_path {
+                    detail.push_str(&format!(" trace={}", path.display()));
                 }
             }
             if let Some(call) = test.generated_call_body.as_ref() {
@@ -8275,10 +8265,10 @@ fn resolve_entry_path(path_arg: Option<&str>) -> Result<PathBuf, String> {
 
 fn project_root_for_entry(entry_path: &Path) -> PathBuf {
     for ancestor in entry_path.ancestors() {
-        if ancestor.file_name().is_some_and(|name| name == "src") {
-            if let Some(parent) = ancestor.parent() {
-                return parent.to_path_buf();
-            }
+        if ancestor.file_name().is_some_and(|name| name == "src")
+            && let Some(parent) = ancestor.parent()
+        {
+            return parent.to_path_buf();
         }
     }
     entry_path.parent().unwrap_or(entry_path).to_path_buf()
@@ -8593,12 +8583,11 @@ fn collect_sources(root: &Path, out: &mut Vec<(PathBuf, SystemTime)>) {
         let path = entry.path();
         if path.is_dir() {
             collect_sources(&path, out);
-        } else if is_source_file(&path) {
-            if let Ok(meta) = entry.metadata() {
-                if let Ok(modified) = meta.modified() {
-                    out.push((path, modified));
-                }
-            }
+        } else if is_source_file(&path)
+            && let Ok(meta) = entry.metadata()
+            && let Ok(modified) = meta.modified()
+        {
+            out.push((path, modified));
         }
     }
 }

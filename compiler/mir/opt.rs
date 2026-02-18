@@ -55,10 +55,10 @@ fn flatten_string_concat_chains(func: &mut MirFunction) {
         for stmt in &block.stmts {
             match stmt {
                 Stmt::Assign { place, value, .. } => {
-                    if let Place::Temp(t) = place {
-                        if t.0 < defs.len() {
-                            defs[t.0] = Some(value.clone());
-                        }
+                    if let Place::Temp(t) = place
+                        && t.0 < defs.len()
+                    {
+                        defs[t.0] = Some(value.clone());
                     }
                     bump_uses_rvalue(value, &mut use_counts);
                 }
@@ -212,23 +212,19 @@ fn collect_string_concat_parts(
     use_counts: &[u32],
     out: &mut Vec<Value>,
 ) {
-    if let Value::Temp(t) = value {
-        if use_counts.get(t.0).copied().unwrap_or(0) == 1 {
-            if let Some(Rvalue::Binary {
-                op: BinaryOp::Add,
-                lhs,
-                rhs,
-            }) = defs.get(t.0).and_then(|v| v.clone())
-            {
-                if value_ty_with_slices(&lhs, locals, temps) == MirType::String
-                    && value_ty_with_slices(&rhs, locals, temps) == MirType::String
-                {
-                    collect_string_concat_parts(&lhs, locals, temps, defs, use_counts, out);
-                    out.push(rhs);
-                    return;
-                }
-            }
-        }
+    if let Value::Temp(t) = value
+        && use_counts.get(t.0).copied().unwrap_or(0) == 1
+        && let Some(Rvalue::Binary {
+            op: BinaryOp::Add,
+            lhs,
+            rhs,
+        }) = defs.get(t.0).and_then(|v| v.clone())
+        && value_ty_with_slices(&lhs, locals, temps) == MirType::String
+        && value_ty_with_slices(&rhs, locals, temps) == MirType::String
+    {
+        collect_string_concat_parts(&lhs, locals, temps, defs, use_counts, out);
+        out.push(rhs);
+        return;
     }
     out.push(value.clone());
 }
@@ -264,81 +260,81 @@ fn collect_stringish_concat_parts(
             }
         }
         Value::Temp(temp_id) => {
-            if use_counts.get(temp_id.0).copied().unwrap_or(0) == 1 {
-                if let Some(def) = defs.get(temp_id.0).and_then(|v| v.clone()) {
-                    match def {
-                        Rvalue::Binary {
-                            op: BinaryOp::Add,
-                            lhs,
-                            rhs,
-                        } => {
-                            if value_ty_with_slices(&lhs, locals, temps) == MirType::String
-                                && value_ty_with_slices(&rhs, locals, temps) == MirType::String
-                            {
-                                collect_stringish_concat_parts(
-                                    &lhs,
-                                    locals,
-                                    temps,
-                                    defs,
-                                    use_counts,
-                                    local_use_counts,
-                                    local_temp_alias,
-                                    out,
-                                );
-                                collect_stringish_concat_parts(
-                                    &rhs,
-                                    locals,
-                                    temps,
-                                    defs,
-                                    use_counts,
-                                    local_use_counts,
-                                    local_temp_alias,
-                                    out,
-                                );
-                                return;
-                            }
-                        }
-                        Rvalue::StrConcat { parts, .. } => {
-                            for part in &parts {
-                                collect_stringish_concat_parts(
-                                    part,
-                                    locals,
-                                    temps,
-                                    defs,
-                                    use_counts,
-                                    local_use_counts,
-                                    local_temp_alias,
-                                    out,
-                                );
-                            }
+            if use_counts.get(temp_id.0).copied().unwrap_or(0) == 1
+                && let Some(def) = defs.get(temp_id.0).and_then(|v| v.clone())
+            {
+                match def {
+                    Rvalue::Binary {
+                        op: BinaryOp::Add,
+                        lhs,
+                        rhs,
+                    } => {
+                        if value_ty_with_slices(&lhs, locals, temps) == MirType::String
+                            && value_ty_with_slices(&rhs, locals, temps) == MirType::String
+                        {
+                            collect_stringish_concat_parts(
+                                &lhs,
+                                locals,
+                                temps,
+                                defs,
+                                use_counts,
+                                local_use_counts,
+                                local_temp_alias,
+                                out,
+                            );
+                            collect_stringish_concat_parts(
+                                &rhs,
+                                locals,
+                                temps,
+                                defs,
+                                use_counts,
+                                local_use_counts,
+                                local_temp_alias,
+                                out,
+                            );
                             return;
                         }
-                        Rvalue::StringInterp { parts, .. } => {
-                            for part in &parts {
-                                match part {
-                                    crate::mir::ir::StringPartValue::Literal(s) => {
-                                        if !s.is_empty() {
-                                            out.push(Value::Const(Literal::String(s.clone())));
-                                        }
-                                    }
-                                    crate::mir::ir::StringPartValue::Value(v) => {
-                                        collect_stringish_concat_parts(
-                                            v,
-                                            locals,
-                                            temps,
-                                            defs,
-                                            use_counts,
-                                            local_use_counts,
-                                            local_temp_alias,
-                                            out,
-                                        );
+                    }
+                    Rvalue::StrConcat { parts, .. } => {
+                        for part in &parts {
+                            collect_stringish_concat_parts(
+                                part,
+                                locals,
+                                temps,
+                                defs,
+                                use_counts,
+                                local_use_counts,
+                                local_temp_alias,
+                                out,
+                            );
+                        }
+                        return;
+                    }
+                    Rvalue::StringInterp { parts, .. } => {
+                        for part in &parts {
+                            match part {
+                                crate::mir::ir::StringPartValue::Literal(s) => {
+                                    if !s.is_empty() {
+                                        out.push(Value::Const(Literal::String(s.clone())));
                                     }
                                 }
+                                crate::mir::ir::StringPartValue::Value(v) => {
+                                    collect_stringish_concat_parts(
+                                        v,
+                                        locals,
+                                        temps,
+                                        defs,
+                                        use_counts,
+                                        local_use_counts,
+                                        local_temp_alias,
+                                        out,
+                                    );
+                                }
                             }
-                            return;
                         }
-                        _ => {}
+                        return;
                     }
+                    _ => {}
                 }
             }
         }
@@ -352,10 +348,10 @@ fn is_empty_string_const(value: &Value) -> bool {
 }
 
 fn bump_local_reads_in_value(value: &Value, local_use_counts: &mut [u32]) {
-    if let Value::Local(local_id) = value {
-        if let Some(slot) = local_use_counts.get_mut(local_id.0) {
-            *slot = slot.saturating_add(1);
-        }
+    if let Value::Local(local_id) = value
+        && let Some(slot) = local_use_counts.get_mut(local_id.0)
+    {
+        *slot = slot.saturating_add(1);
     }
 }
 
@@ -458,10 +454,10 @@ fn bump_local_reads_in_terminator(term: &Terminator, local_use_counts: &mut [u32
 }
 
 fn bump_use(value: &Value, use_counts: &mut [u32]) {
-    if let Value::Temp(t) = value {
-        if let Some(slot) = use_counts.get_mut(t.0) {
-            *slot = slot.saturating_add(1);
-        }
+    if let Value::Temp(t) = value
+        && let Some(slot) = use_counts.get_mut(t.0)
+    {
+        *slot = slot.saturating_add(1);
     }
 }
 
@@ -1048,24 +1044,22 @@ fn annotate_allocs(func: &mut MirFunction) {
 
     for block in &func.blocks {
         for stmt in &block.stmts {
-            if let Stmt::Assign { place, value, .. } = stmt {
-                if let Place::Temp(dst) = place {
-                    let mut used = Vec::new();
-                    collect_temp_ids_rvalue(value, &mut used);
-                    deps[dst.0].extend(used);
-                }
+            if let Stmt::Assign { place, value, .. } = stmt
+                && let Place::Temp(dst) = place
+            {
+                let mut used = Vec::new();
+                collect_temp_ids_rvalue(value, &mut used);
+                deps[dst.0].extend(used);
             }
             if let Stmt::SetField { value, .. } = stmt {
                 collect_temp_ids_value(value, &mut escapes);
             }
         }
-        match &block.terminator {
-            Terminator::Return {
-                value: Some(value), ..
-            } => {
-                collect_temp_ids_value(value, &mut escapes);
-            }
-            _ => {}
+        if let Terminator::Return {
+            value: Some(value), ..
+        } = &block.terminator
+        {
+            collect_temp_ids_value(value, &mut escapes);
         }
     }
 
@@ -1113,22 +1107,22 @@ fn annotate_allocs(func: &mut MirFunction) {
 
     for block in &mut func.blocks {
         for stmt in &mut block.stmts {
-            if let Stmt::Assign { place, value, .. } = stmt {
-                if let Place::Temp(dst) = place {
-                    let alloc = if escapes[dst.0] {
-                        AllocKind::Escaping
-                    } else {
-                        AllocKind::LocalTemp
-                    };
-                    match value {
-                        Rvalue::BuildList { alloc: slot, .. }
-                        | Rvalue::BuildMap { alloc: slot, .. }
-                        | Rvalue::StringInterp { alloc: slot, .. }
-                        | Rvalue::StrConcat { alloc: slot, .. } => {
-                            *slot = alloc;
-                        }
-                        _ => {}
+            if let Stmt::Assign { place, value, .. } = stmt
+                && let Place::Temp(dst) = place
+            {
+                let alloc = if escapes[dst.0] {
+                    AllocKind::Escaping
+                } else {
+                    AllocKind::LocalTemp
+                };
+                match value {
+                    Rvalue::BuildList { alloc: slot, .. }
+                    | Rvalue::BuildMap { alloc: slot, .. }
+                    | Rvalue::StringInterp { alloc: slot, .. }
+                    | Rvalue::StrConcat { alloc: slot, .. } => {
+                        *slot = alloc;
                     }
+                    _ => {}
                 }
             }
         }
@@ -1207,7 +1201,7 @@ fn convert_to_ssa(func: &mut MirFunction) {
                 span: TextRange::empty(0.into()),
             });
         }
-        new_stmts.extend(block.stmts.drain(..));
+        new_stmts.append(&mut block.stmts);
         block.stmts = new_stmts;
     }
 
@@ -1319,10 +1313,10 @@ fn compute_idom(doms: &[Vec<bool>], entry: usize, reachable: &[bool]) -> Vec<Opt
 fn compute_dom_tree(idom: &[Option<usize>]) -> Vec<Vec<usize>> {
     let mut tree = vec![Vec::new(); idom.len()];
     for (block, parent) in idom.iter().enumerate() {
-        if let Some(p) = parent {
-            if *p != block {
-                tree[*p].push(block);
-            }
+        if let Some(p) = parent
+            && *p != block
+        {
+            tree[*p].push(block);
         }
     }
     tree
@@ -1544,10 +1538,10 @@ fn new_local_version(
 }
 
 fn rename_value(value: &mut Value, stacks: &[Vec<LocalId>]) {
-    if let Value::Local(local) = value {
-        if let Some(current) = stacks.get(local.0).and_then(|stack| stack.last()) {
-            *value = Value::Local(*current);
-        }
+    if let Value::Local(local) = value
+        && let Some(current) = stacks.get(local.0).and_then(|stack| stack.last())
+    {
+        *value = Value::Local(*current);
     }
 }
 
@@ -1791,29 +1785,29 @@ fn scalar_replace_literals(func: &mut MirFunction) {
 
     for block in &func.blocks {
         for stmt in &block.stmts {
-            if let Stmt::Assign { place, value, .. } = stmt {
-                if let Place::Temp(temp) = place {
-                    match value {
-                        Rvalue::BuildList { items, .. } => {
-                            list_literals.insert(temp.0, items.clone());
-                        }
-                        Rvalue::BuildMap { items, .. } => {
-                            let mut literal_items = Vec::new();
-                            let mut ok = true;
-                            for (key, value) in items {
-                                if let Value::Const(lit) = key {
-                                    literal_items.push((lit.clone(), value.clone()));
-                                } else {
-                                    ok = false;
-                                    break;
-                                }
-                            }
-                            if ok {
-                                map_literals.insert(temp.0, literal_items);
-                            }
-                        }
-                        _ => {}
+            if let Stmt::Assign { place, value, .. } = stmt
+                && let Place::Temp(temp) = place
+            {
+                match value {
+                    Rvalue::BuildList { items, .. } => {
+                        list_literals.insert(temp.0, items.clone());
                     }
+                    Rvalue::BuildMap { items, .. } => {
+                        let mut literal_items = Vec::new();
+                        let mut ok = true;
+                        for (key, value) in items {
+                            if let Value::Const(lit) = key {
+                                literal_items.push((lit.clone(), value.clone()));
+                            } else {
+                                ok = false;
+                                break;
+                            }
+                        }
+                        if ok {
+                            map_literals.insert(temp.0, literal_items);
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -1834,7 +1828,7 @@ fn scalar_replace_literals(func: &mut MirFunction) {
             match stmt {
                 Stmt::Assign { value, .. } => match value {
                     Rvalue::Call { target, args, .. } => {
-                        let temp_arg = args.get(0);
+                        let temp_arg = args.first();
                         let key_arg = args.get(1);
                         match (target, temp_arg, key_arg) {
                             (
@@ -1892,12 +1886,11 @@ fn scalar_replace_literals(func: &mut MirFunction) {
                     collect_disallowed_value_use(value, &mut replaceable);
                 }
                 Stmt::RcInc { value, .. } | Stmt::RcDec { value, .. } => {
-                    if let Value::Temp(temp) = value {
-                        if !list_literals.contains_key(&temp.0)
-                            && !map_literals.contains_key(&temp.0)
-                        {
-                            replaceable.remove(&temp.0);
-                        }
+                    if let Value::Temp(temp) = value
+                        && !list_literals.contains_key(&temp.0)
+                        && !map_literals.contains_key(&temp.0)
+                    {
+                        replaceable.remove(&temp.0);
                     }
                 }
                 Stmt::Await { pending, .. }
@@ -1945,67 +1938,59 @@ fn scalar_replace_literals(func: &mut MirFunction) {
             let mut skip = false;
             match &mut stmt {
                 Stmt::Assign { place, value, .. } => {
-                    if let Place::Temp(temp) = place {
-                        if replaceable.contains(&temp.0) {
-                            if matches!(value, Rvalue::BuildList { .. } | Rvalue::BuildMap { .. }) {
-                                skip = true;
-                            }
-                        }
+                    if let Place::Temp(temp) = place
+                        && replaceable.contains(&temp.0)
+                        && matches!(value, Rvalue::BuildList { .. } | Rvalue::BuildMap { .. })
+                    {
+                        skip = true;
                     }
-                    if let Rvalue::Call { target, args, .. } = value {
-                        if let CallTarget::Function(name) = target {
-                            let arg0 = args.get(0).cloned();
-                            let arg1 = args.get(1).cloned();
-                            let mut replacement = None;
-                            if name.as_str() == "__wr_list_get" {
-                                if let (
-                                    Some(Value::Temp(temp)),
-                                    Some(Value::Const(Literal::Integer(idx))),
-                                ) = (arg0, arg1)
-                                {
-                                    if replaceable.contains(&temp.0) {
-                                        if let Some(items) = list_literals.get(&temp.0) {
-                                            let idx = idx as isize;
-                                            let value = if idx >= 0 && (idx as usize) < items.len()
-                                            {
-                                                items[idx as usize].clone()
-                                            } else {
-                                                Value::Const(Literal::Nil)
-                                            };
-                                            replacement = Some(value);
-                                        }
-                                    }
-                                }
-                            } else if name.as_str() == "__wr_map_get" {
-                                if let (Some(Value::Temp(temp)), Some(Value::Const(key_lit))) =
-                                    (arg0, arg1)
-                                {
-                                    if replaceable.contains(&temp.0) {
-                                        if let Some(items) = map_literals.get(&temp.0) {
-                                            let mut found = None;
-                                            for (key, val) in items {
-                                                if key == &key_lit {
-                                                    found = Some(val.clone());
-                                                    break;
-                                                }
-                                            }
-                                            replacement =
-                                                Some(found.unwrap_or(Value::Const(Literal::Nil)));
-                                        }
-                                    }
+                    if let Rvalue::Call { target, args, .. } = value
+                        && let CallTarget::Function(name) = target
+                    {
+                        let arg0 = args.first().cloned();
+                        let arg1 = args.get(1).cloned();
+                        let mut replacement = None;
+                        if name.as_str() == "__wr_list_get" {
+                            if let (
+                                Some(Value::Temp(temp)),
+                                Some(Value::Const(Literal::Integer(idx))),
+                            ) = (arg0, arg1)
+                                && replaceable.contains(&temp.0)
+                                && let Some(items) = list_literals.get(&temp.0)
+                            {
+                                let idx = idx as isize;
+                                let value = if idx >= 0 && (idx as usize) < items.len() {
+                                    items[idx as usize].clone()
+                                } else {
+                                    Value::Const(Literal::Nil)
+                                };
+                                replacement = Some(value);
+                            }
+                        } else if name.as_str() == "__wr_map_get"
+                            && let (Some(Value::Temp(temp)), Some(Value::Const(key_lit))) =
+                                (arg0, arg1)
+                            && replaceable.contains(&temp.0)
+                            && let Some(items) = map_literals.get(&temp.0)
+                        {
+                            let mut found = None;
+                            for (key, val) in items {
+                                if key == &key_lit {
+                                    found = Some(val.clone());
+                                    break;
                                 }
                             }
-                            if let Some(replacement_value) = replacement {
-                                *value = Rvalue::Use(replacement_value);
-                            }
+                            replacement = Some(found.unwrap_or(Value::Const(Literal::Nil)));
+                        }
+                        if let Some(replacement_value) = replacement {
+                            *value = Rvalue::Use(replacement_value);
                         }
                     }
                 }
                 Stmt::RcInc { value, .. } | Stmt::RcDec { value, .. } => {
-                    if let Value::Temp(temp) = value {
-                        if replaceable.contains(&temp.0) {
-                            skip = true;
-                        }
+                    if let Value::Temp(temp) = value
+                        && replaceable.contains(&temp.0)
+                    {
+                        skip = true;
                     }
                 }
                 _ => {}
@@ -2036,20 +2021,19 @@ fn strength_reduce_mods(func: &mut MirFunction) {
     for block in &mut func.blocks {
         let mut seen: Vec<(Value, Value, Value)> = Vec::new();
         for stmt in &mut block.stmts {
-            if let Stmt::Assign { place, value, .. } = stmt {
-                if let Rvalue::Binary {
+            if let Stmt::Assign { place, value, .. } = stmt
+                && let Rvalue::Binary {
                     op: BinaryOp::Mod,
                     lhs,
                     rhs,
                 } = value
-                {
-                    if let Some((_, _, prev)) = seen.iter().find(|(l, r, _)| l == lhs && r == rhs) {
-                        *value = Rvalue::Use(prev.clone());
-                        continue;
-                    }
-                    if let Place::Temp(temp) = place {
-                        seen.push((lhs.clone(), rhs.clone(), Value::Temp(*temp)));
-                    }
+            {
+                if let Some((_, _, prev)) = seen.iter().find(|(l, r, _)| l == lhs && r == rhs) {
+                    *value = Rvalue::Use(prev.clone());
+                    continue;
+                }
+                if let Place::Temp(temp) = place {
+                    seen.push((lhs.clone(), rhs.clone(), Value::Temp(*temp)));
                 }
             }
         }
@@ -2057,10 +2041,10 @@ fn strength_reduce_mods(func: &mut MirFunction) {
 }
 
 fn collect_temp_ids_value(value: &Value, escapes: &mut Vec<bool>) {
-    if let Value::Temp(id) = value {
-        if let Some(slot) = escapes.get_mut(id.0) {
-            *slot = true;
-        }
+    if let Value::Temp(id) = value
+        && let Some(slot) = escapes.get_mut(id.0)
+    {
+        *slot = true;
     }
 }
 
@@ -2146,10 +2130,10 @@ fn collect_temp_ids_in_call_target(target: &CallTarget, out: &mut Vec<usize>) {
 pub fn constant_fold(func: &mut MirFunction) {
     for block in &mut func.blocks {
         for stmt in &mut block.stmts {
-            if let Stmt::Assign { value, .. } = stmt {
-                if let Some(lit) = fold_rvalue(value) {
-                    *value = Rvalue::Use(Value::Const(lit));
-                }
+            if let Stmt::Assign { value, .. } = stmt
+                && let Some(lit) = fold_rvalue(value)
+            {
+                *value = Rvalue::Use(Value::Const(lit));
             }
         }
         if let Terminator::Branch {
@@ -2158,20 +2142,19 @@ pub fn constant_fold(func: &mut MirFunction) {
             else_target,
             span,
         } = &block.terminator
+            && let Value::Const(Literal::Boolean(flag)) = cond
         {
-            if let Value::Const(Literal::Boolean(flag)) = cond {
-                block.terminator = if *flag {
-                    Terminator::Jump {
-                        target: *then_target,
-                        span: *span,
-                    }
-                } else {
-                    Terminator::Jump {
-                        target: *else_target,
-                        span: *span,
-                    }
-                };
-            }
+            block.terminator = if *flag {
+                Terminator::Jump {
+                    target: *then_target,
+                    span: *span,
+                }
+            } else {
+                Terminator::Jump {
+                    target: *else_target,
+                    span: *span,
+                }
+            };
         }
     }
 }
@@ -2184,20 +2167,19 @@ pub fn simplify_branches(func: &mut MirFunction) {
             else_target,
             span,
         } = &block.terminator
+            && let Value::Const(Literal::Boolean(flag)) = cond
         {
-            if let Value::Const(Literal::Boolean(flag)) = cond {
-                block.terminator = if *flag {
-                    Terminator::Jump {
-                        target: *then_target,
-                        span: *span,
-                    }
-                } else {
-                    Terminator::Jump {
-                        target: *else_target,
-                        span: *span,
-                    }
-                };
-            }
+            block.terminator = if *flag {
+                Terminator::Jump {
+                    target: *then_target,
+                    span: *span,
+                }
+            } else {
+                Terminator::Jump {
+                    target: *else_target,
+                    span: *span,
+                }
+            };
         }
     }
 }
@@ -2210,10 +2192,8 @@ pub fn dead_code_elim(func: &mut MirFunction) {
             match &stmt {
                 Stmt::Phi { .. } => {}
                 Stmt::Assign { place, value, .. } => {
-                    if is_pure_rvalue(value) {
-                        if !place_is_used(place, &used) {
-                            continue;
-                        }
+                    if is_pure_rvalue(value) && !place_is_used(place, &used) {
+                        continue;
                     }
                 }
                 Stmt::RcInc { .. } | Stmt::RcDec { .. } => {}
@@ -2571,11 +2551,10 @@ fn insert_rc(func: &mut MirFunction) {
         if let Terminator::Return {
             value: Some(value), ..
         } = &block.terminator
+            && let Some(idx) = value_idx(value, locals_len)
         {
-            if let Some(idx) = value_idx(value, locals_len) {
-                exclude[idx] = true;
-                init[idx] = false;
-            }
+            exclude[idx] = true;
+            init[idx] = false;
         }
         let term_span = terminator_span(&block.terminator);
         for idx in 0..total {
@@ -2593,7 +2572,7 @@ fn insert_rc(func: &mut MirFunction) {
         if !edge_rcdec_prepend[block_idx].is_empty() {
             let mut combined =
                 Vec::with_capacity(edge_rcdec_prepend[block_idx].len() + new_stmts.len());
-            combined.extend(edge_rcdec_prepend[block_idx].drain(..));
+            combined.append(&mut edge_rcdec_prepend[block_idx]);
             combined.extend(new_stmts);
             block.stmts = combined;
         } else {
@@ -2724,10 +2703,10 @@ fn collect_block_uses_defs(
         for stmt in &block.stmts {
             if let Stmt::Phi { sources, place, .. } = stmt {
                 for (_, value) in sources {
-                    if let Some(idx) = value_idx(value, locals_len) {
-                        if !block_defs[idx] {
-                            block_uses[idx] = true;
-                        }
+                    if let Some(idx) = value_idx(value, locals_len)
+                        && !block_defs[idx]
+                    {
+                        block_uses[idx] = true;
                     }
                 }
                 block_defs[place_idx(place, locals_len)] = true;
@@ -2998,10 +2977,10 @@ fn collect_rvalue_uses(value: &Rvalue, locals_len: usize, out: &mut Vec<usize>) 
         }
         Rvalue::StringInterp { parts, .. } => {
             for part in parts {
-                if let crate::mir::ir::StringPartValue::Value(value) = part {
-                    if let Some(idx) = value_idx(value, locals_len) {
-                        out.push(idx);
-                    }
+                if let crate::mir::ir::StringPartValue::Value(value) = part
+                    && let Some(idx) = value_idx(value, locals_len)
+                {
+                    out.push(idx);
                 }
             }
         }
@@ -3020,10 +2999,10 @@ fn terminator_uses(term: &Terminator, locals_len: usize) -> Vec<usize> {
     let mut out = Vec::new();
     match term {
         Terminator::Return { value, .. } => {
-            if let Some(value) = value {
-                if let Some(idx) = value_idx(value, locals_len) {
-                    out.push(idx);
-                }
+            if let Some(value) = value
+                && let Some(idx) = value_idx(value, locals_len)
+            {
+                out.push(idx);
             }
         }
         Terminator::Branch { cond, .. } => {
@@ -3147,10 +3126,10 @@ mod tests {
         let mut has_binary = false;
         for block in &func.blocks {
             for stmt in &block.stmts {
-                if let Stmt::Assign { value, .. } = stmt {
-                    if matches!(value, Rvalue::Binary { .. }) {
-                        has_binary = true;
-                    }
+                if let Stmt::Assign { value, .. } = stmt
+                    && matches!(value, Rvalue::Binary { .. })
+                {
+                    has_binary = true;
                 }
             }
         }

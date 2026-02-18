@@ -2,6 +2,7 @@ use super::lexer::Lexer;
 use super::tokens::SpannedToken;
 use super::tokens::Token;
 use smol_str::SmolStr;
+use std::fmt::Write;
 
 // Updated helper to discard errors and trivia for existing tests
 fn strip_spans(tokens: Vec<SpannedToken>) -> Vec<Token> {
@@ -54,7 +55,7 @@ fn test_lexer_round_trip() {
 
     let mut reconstructed = String::new();
     for (token, _) in tokens {
-        reconstructed.push_str(&token.to_string());
+        write!(&mut reconstructed, "{token}").expect("write token");
     }
 
     // We expect some subtle differences if we don't handle every single escape or space perfectly,

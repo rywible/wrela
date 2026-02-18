@@ -1,4 +1,12 @@
 #![allow(clippy::missing_safety_doc)]
+#![allow(clippy::borrowed_box)]
+#![allow(clippy::int_plus_one)]
+#![allow(clippy::match_like_matches_macro)]
+#![allow(clippy::needless_range_loop)]
+#![allow(clippy::needless_borrow)]
+#![allow(clippy::question_mark)]
+#![allow(clippy::while_let_loop)]
+#![allow(clippy::wrong_self_convention)]
 
 mod data;
 mod host;
@@ -1824,7 +1832,7 @@ mod tests {
         };
 
         let artifact_dir = std::path::Path::new(".artifacts/wre-407");
-        std::fs::create_dir_all(&artifact_dir).expect("create artifact dir");
+        std::fs::create_dir_all(artifact_dir).expect("create artifact dir");
         let artifact_path = artifact_dir.join("class_slot_vs_fallback.txt");
         let body = format!(
             "iters={iters}\nslot_ns_per_op={slot_ns_per_op:.2}\nfallback_ns_per_op={fallback_ns_per_op:.2}\nimprovement_pct={improvement_pct:.2}\n"

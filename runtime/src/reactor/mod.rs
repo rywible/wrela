@@ -321,11 +321,11 @@ impl ReactorCapabilities {
         }
         #[cfg(target_os = "macos")]
         {
-            return Self {
+            Self {
                 io_uring: false,
                 epoll: false,
                 kqueue: true,
-            };
+            }
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {

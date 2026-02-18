@@ -200,17 +200,15 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                         span: span_for_node(&node),
                     });
                 }
-                if let Some(field) = ast::FieldDef::cast(node.clone()) {
-                    if let Some(default_expr) = field.default_expr() {
-                        if !field_default_is_allowed(default_expr) {
-                            errors.push(ValidationError {
-                                kind: ValidationDiagKind::AstRule,
-                                message: "field defaults must be literals, lists, or maps"
-                                    .to_string(),
-                                span: span_for_node(&node),
-                            });
-                        }
-                    }
+                if let Some(field) = ast::FieldDef::cast(node.clone())
+                    && let Some(default_expr) = field.default_expr()
+                    && !field_default_is_allowed(default_expr)
+                {
+                    errors.push(ValidationError {
+                        kind: ValidationDiagKind::AstRule,
+                        message: "field defaults must be literals, lists, or maps".to_string(),
+                        span: span_for_node(&node),
+                    });
                 }
             }
             SyntaxKind::TypeRef => {
@@ -327,14 +325,14 @@ definitions"
                     .children_with_tokens()
                     .filter_map(|it| it.into_token())
                     .find(|it| it.kind() == SyntaxKind::Ident);
-                if let Some(token) = obj_token {
-                    if !objectives.contains(&token.text()) {
-                        errors.push(ValidationError {
-                            kind: ValidationDiagKind::AstRule,
-                            message: "invalid optimize objective".to_string(),
-                            span: span_for_token(&token),
-                        });
-                    }
+                if let Some(token) = obj_token
+                    && !objectives.contains(&token.text())
+                {
+                    errors.push(ValidationError {
+                        kind: ValidationDiagKind::AstRule,
+                        message: "invalid optimize objective".to_string(),
+                        span: span_for_token(&token),
+                    });
                 }
             }
             SyntaxKind::ReturnStmt => {
@@ -439,7 +437,7 @@ fn validate_detach_tail(node: &SyntaxNode, objectives: &[&str], errors: &mut Vec
             rowan::NodeOrToken::Token(t) => match t.kind() {
                 SyntaxKind::Star => {
                     let mut size_token = None;
-                    while let Some(next) = iter.next() {
+                    for next in iter.by_ref() {
                         if let Some(tok) = next.into_token() {
                             if tok.kind().is_trivia() {
                                 continue;
@@ -474,7 +472,7 @@ fn validate_detach_tail(node: &SyntaxNode, objectives: &[&str], errors: &mut Vec
                 }
                 SyntaxKind::OptimizeKw => {
                     let mut obj_token = None;
-                    while let Some(next) = iter.next() {
+                    for next in iter.by_ref() {
                         if let Some(tok) = next.into_token() {
                             if tok.kind().is_trivia() {
                                 continue;
@@ -483,14 +481,15 @@ fn validate_detach_tail(node: &SyntaxNode, objectives: &[&str], errors: &mut Vec
                             break;
                         }
                     }
-                    if let Some(tok) = obj_token {
-                        if tok.kind() == SyntaxKind::Ident && !objectives.contains(&tok.text()) {
-                            errors.push(ValidationError {
-                                kind: ValidationDiagKind::AstRule,
-                                message: "invalid optimize objective".to_string(),
-                                span: span_for_token(&tok),
-                            });
-                        }
+                    if let Some(tok) = obj_token
+                        && tok.kind() == SyntaxKind::Ident
+                        && !objectives.contains(&tok.text())
+                    {
+                        errors.push(ValidationError {
+                            kind: ValidationDiagKind::AstRule,
+                            message: "invalid optimize objective".to_string(),
+                            span: span_for_token(&tok),
+                        });
                     }
                 }
                 _ => {}

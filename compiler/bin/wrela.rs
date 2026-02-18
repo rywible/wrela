@@ -1,3 +1,6 @@
+#![allow(clippy::large_enum_variant)]
+#![allow(clippy::too_many_arguments)]
+
 #[path = "wrela/mod.rs"]
 mod wrela_cmd;
 

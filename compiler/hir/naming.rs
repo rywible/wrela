@@ -398,23 +398,24 @@ impl<'a> Checker<'a> {
             return;
         }
 
-        if let Some(factory_kind) = factory_return_kind(ret, &self.class_names) {
-            if func.kind == FunctionKind::Function && !is_class_scope {
-                let required = if factory_kind {
-                    "try_to_create_"
-                } else {
-                    "create_"
-                };
-                if !func.name.starts_with(required) {
-                    self.errors.push(NamingError::FactoryPrefixRequired {
-                        kind: "function",
-                        name: func.name.clone(),
-                        required,
-                        span: span_from_option(func.name_span),
-                    });
-                }
-                return;
+        if let Some(factory_kind) = factory_return_kind(ret, &self.class_names)
+            && func.kind == FunctionKind::Function
+            && !is_class_scope
+        {
+            let required = if factory_kind {
+                "try_to_create_"
+            } else {
+                "create_"
+            };
+            if !func.name.starts_with(required) {
+                self.errors.push(NamingError::FactoryPrefixRequired {
+                    kind: "function",
+                    name: func.name.clone(),
+                    required,
+                    span: span_from_option(func.name_span),
+                });
             }
+            return;
         }
 
         if matches!(func.kind, FunctionKind::Function | FunctionKind::Method)

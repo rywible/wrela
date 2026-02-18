@@ -900,10 +900,10 @@ pub(crate) mod actor {
     fn fast_send_context_exit(mailbox: *const Mailbox) {
         FAST_SEND_CONTEXT.with(|slot| unsafe {
             let slot = &mut *slot.get();
-            if let Some(ctx) = slot.as_ref() {
-                if std::ptr::eq(ctx.mailbox, mailbox) {
-                    *slot = None;
-                }
+            if let Some(ctx) = slot.as_ref()
+                && std::ptr::eq(ctx.mailbox, mailbox)
+            {
+                *slot = None;
             }
         });
     }
@@ -1279,9 +1279,7 @@ pub(crate) mod actor {
     }
     pub fn register_method(class_id: u32, method_id: u32, func: MethodFn) {
         let mut map = method_registry().lock().expect("method registry lock");
-        map.entry(class_id)
-            .or_insert_with(HashMap::new)
-            .insert(method_id, func);
+        map.entry(class_id).or_default().insert(method_id, func);
         METHOD_REGISTRY_GENERATION.fetch_add(1, Ordering::Release);
     }
 
@@ -1302,11 +1300,9 @@ pub(crate) mod actor {
         let mut config = config::actor_config();
         if mailbox_cap > 0 {
             config.mailbox_cap = mailbox_cap as usize;
-        } else if mailbox_cap < 0 {
-            if mailbox_cap != -1 {
-                runtime_error("actor_spawn: `mailbox_cap` must be > 0 or -1 (use runtime config)");
-                return Value::nil();
-            }
+        } else if mailbox_cap < 0 && mailbox_cap != -1 {
+            runtime_error("actor_spawn: `mailbox_cap` must be > 0 or -1 (use runtime config)");
+            return Value::nil();
         }
         if enqueue_timeout_ms >= 0 {
             config.enqueue_timeout = Duration::from_millis(enqueue_timeout_ms as u64);
@@ -1318,11 +1314,9 @@ pub(crate) mod actor {
         }
         if batch_limit > 0 {
             config.batch_limit = batch_limit as usize;
-        } else if batch_limit < 0 {
-            if batch_limit != -1 {
-                runtime_error("actor_spawn: `batch_limit` must be > 0 or -1 (use runtime config)");
-                return Value::nil();
-            }
+        } else if batch_limit < 0 && batch_limit != -1 {
+            runtime_error("actor_spawn: `batch_limit` must be > 0 or -1 (use runtime config)");
+            return Value::nil();
         }
         if config.mailbox_cap == 0 || config.batch_limit == 0 {
             runtime_error(
@@ -1510,7 +1504,7 @@ pub(crate) mod actor {
         if let Some(pool) = as_pool_ref(handle) {
             let mut total = 0usize;
             unsafe {
-                for handle in (&(*pool).handles).iter() {
+                for handle in (*pool).handles.iter() {
                     if let Some(actor) = as_actor(*handle) {
                         total += mailbox_len(actor);
                     }
@@ -1527,7 +1521,7 @@ pub(crate) mod actor {
     pub fn actor_pause(handle: Value) {
         if let Some(pool) = as_pool_ref(handle) {
             unsafe {
-                for handle in (&(*pool).handles).iter() {
+                for handle in (*pool).handles.iter() {
                     if let Some(actor) = as_actor(*handle) {
                         mailbox_set_paused(actor, true);
                         enqueue_pause_message(actor);
@@ -1545,7 +1539,7 @@ pub(crate) mod actor {
     pub fn actor_resume(handle: Value) {
         if let Some(pool) = as_pool_ref(handle) {
             unsafe {
-                for handle in (&(*pool).handles).iter() {
+                for handle in (*pool).handles.iter() {
                     if let Some(actor) = as_actor(*handle) {
                         mailbox_set_paused(actor, false);
                     }
@@ -1561,7 +1555,7 @@ pub(crate) mod actor {
     pub fn actor_pause_wait(handle: Value) {
         if let Some(pool) = as_pool_ref(handle) {
             unsafe {
-                for handle in (&(*pool).handles).iter() {
+                for handle in (*pool).handles.iter() {
                     if let Some(actor) = as_actor(*handle) {
                         mailbox_wait_paused(actor);
                     }
@@ -1623,7 +1617,7 @@ pub(crate) mod actor {
                 return;
             }
             flush_target = Some(ctx.target);
-            flush_staged = std::mem::replace(&mut ctx.staged, Vec::new());
+            flush_staged = std::mem::take(&mut ctx.staged);
             *slot = None;
             BURST_ACTIVE_COUNT.fetch_sub(1, Ordering::AcqRel);
         });
@@ -1648,7 +1642,7 @@ pub(crate) mod actor {
                 runtime_error("fire_burst_abort: handle does not match active burst");
                 return;
             }
-            dropped = std::mem::replace(&mut ctx.staged, Vec::new());
+            dropped = std::mem::take(&mut ctx.staged);
             *slot = None;
             BURST_ACTIVE_COUNT.fetch_sub(1, Ordering::AcqRel);
         });
@@ -1682,7 +1676,7 @@ pub(crate) mod actor {
             state,
         });
         unsafe {
-            enqueue_message_ref(&*(*actor).mailbox, msg);
+            enqueue_message_ref(&(*actor).mailbox, msg);
         }
         Value::from_ptr(Box::into_raw(pending) as *mut ObjHeader)
     }
@@ -1726,7 +1720,7 @@ pub(crate) mod actor {
             );
         } else {
             unsafe {
-                enqueue_message_ref(&*(*actor).mailbox, msg);
+                enqueue_message_ref(&(*actor).mailbox, msg);
             }
         }
     }
@@ -1961,7 +1955,7 @@ pub(crate) mod actor {
                 args: MessageArgs::None,
                 pending: None,
             };
-            enqueue_message_ref(&*(*actor).mailbox, msg);
+            enqueue_message_ref(&(*actor).mailbox, msg);
         }
     }
 
@@ -2007,7 +2001,7 @@ pub(crate) mod actor {
                     recycle_pending_state(state);
                     return Value::nil();
                 };
-                if !try_enqueue_message_drop_on_full(&*(*actor).mailbox, msg) {
+                if !try_enqueue_message_drop_on_full(&(*actor).mailbox, msg) {
                     recycle_pending_state(state);
                     return Value::nil();
                 }
@@ -2045,7 +2039,7 @@ pub(crate) mod actor {
                     header: header(TypeId::Pending),
                     state,
                 });
-                enqueue_message_ref(&*(*actor).mailbox, msg);
+                enqueue_message_ref(&(*actor).mailbox, msg);
                 return Value::from_ptr(Box::into_raw(pending) as *mut ObjHeader);
             }
 
@@ -2093,7 +2087,7 @@ pub(crate) mod actor {
                 let Some(msg) = build_message_local(actor, method_id, argc, argv_ptr, None) else {
                     return;
                 };
-                let _ = try_enqueue_message_drop_on_full(&*(*actor).mailbox, msg);
+                let _ = try_enqueue_message_drop_on_full(&(*actor).mailbox, msg);
                 return;
             }
             // Same direct-enqueue fast path as pool_send for throughput lanes.
@@ -2114,7 +2108,7 @@ pub(crate) mod actor {
                     );
                     return;
                 }
-                enqueue_message_ref(&*(*actor).mailbox, msg);
+                enqueue_message_ref(&(*actor).mailbox, msg);
                 return;
             }
 
@@ -2486,15 +2480,16 @@ pub(crate) mod actor {
     }
 
     fn mailbox_try_pop_now(mailbox: &Mailbox, fast_path: bool) -> Option<RecvMessage> {
-        if fast_path && mailbox.fast_send_pending.load(Ordering::Acquire) {
-            if let Some(node) = fast_send_try_dequeue_node(mailbox) {
-                let enqueued_at_ns = unsafe { (*node).enqueued_at_ns.load(Ordering::Acquire) };
-                return Some(RecvMessage {
-                    msg: message_node_into_message(node),
-                    counted: false,
-                    enqueued_at_ns,
-                });
-            }
+        if fast_path
+            && mailbox.fast_send_pending.load(Ordering::Acquire)
+            && let Some(node) = fast_send_try_dequeue_node(mailbox)
+        {
+            let enqueued_at_ns = unsafe { (*node).enqueued_at_ns.load(Ordering::Acquire) };
+            return Some(RecvMessage {
+                msg: message_node_into_message(node),
+                counted: false,
+                enqueued_at_ns,
+            });
         }
         if let Some((msg, enqueued_at_ns)) = mailbox.spsc.try_pop() {
             return Some(RecvMessage {
@@ -2794,10 +2789,7 @@ pub(crate) mod actor {
         } else {
             Value::nil()
         };
-        let result = match arena::reject_arena_escape(result, "actor return") {
-            Some(value) => value,
-            None => Value::nil(),
-        };
+        let result = arena::reject_arena_escape(result, "actor return").unwrap_or_default();
         if crate::config::debug_actor_enabled() {
             eprintln!("actor: method result raw={}", result.0);
         }
@@ -2905,7 +2897,7 @@ pub(crate) mod actor {
         }
 
         fn test_mailbox() -> Arc<Mailbox> {
-            let mailbox = Arc::new(Mailbox {
+            Arc::new(Mailbox {
                 spsc: MailboxSpscQueue::new(1),
                 queue: MailboxQueue::new(1),
                 work_notify: TaskSignal::new(),
@@ -2930,8 +2922,7 @@ pub(crate) mod actor {
                 rescue_wake_ns: DEFAULT_MAILBOX_RESCUE_WAKE_NS,
                 empty_spin: 0,
                 arena: MailboxArena::new(arena::Arena::new(1024)),
-            });
-            mailbox
+            })
         }
 
         fn ordering_log() -> &'static Mutex<Vec<i64>> {
@@ -3887,12 +3878,44 @@ pub(crate) mod actor {
         #[test]
         fn actor_concurrent_send_preserves_per_sender_order() {
             const CLASS_ID: u32 = 32_001;
+            run_actor_concurrent_send_preserves_per_sender_order_once(
+                CLASS_ID,
+                Duration::from_secs(10),
+            )
+            .expect("per-sender ordering should hold");
+        }
+
+        #[test]
+        #[ignore = "stress"]
+        fn actor_concurrent_send_preserves_per_sender_order_stress() {
+            const CLASS_ID: u32 = 32_003;
+            const DEFAULT_ITERS: usize = 50;
+            let iterations = std::env::var("WRELA_STRESS_ORDERING_ITERS")
+                .ok()
+                .and_then(|raw| raw.parse::<usize>().ok())
+                .filter(|iters| *iters > 0)
+                .unwrap_or(DEFAULT_ITERS);
+
+            for iteration in 0..iterations {
+                if let Err(err) = run_actor_concurrent_send_preserves_per_sender_order_once(
+                    CLASS_ID,
+                    Duration::from_secs(6),
+                ) {
+                    panic!("ordering stress failed at iteration {iteration}: {err}");
+                }
+            }
+        }
+
+        fn run_actor_concurrent_send_preserves_per_sender_order_once(
+            class_id: u32,
+            timeout: Duration,
+        ) -> Result<(), String> {
             const PRODUCERS: usize = 6;
             const PER_PRODUCER: usize = 300;
             let total = PRODUCERS * PER_PRODUCER;
             ordering_log().lock().expect("ordering log lock").clear();
-            register_method(CLASS_ID, 0, record_ordering);
-            let actor = actor_spawn(CLASS_ID as u64, Value::nil(), 1, 3, 256, 10, 64);
+            register_method(class_id, 0, record_ordering);
+            let actor = actor_spawn(class_id as u64, Value::nil(), 1, 3, 256, 10, 64);
 
             let mut producers = Vec::new();
             for producer in 0..PRODUCERS {
@@ -3908,31 +3931,47 @@ pub(crate) mod actor {
                 producer.join().expect("producer join");
             }
 
-            assert!(
-                wait_until(Duration::from_secs(10), || {
-                    ordering_log().lock().expect("ordering log lock").len() == total
-                }),
-                "timed out waiting for all ordered messages"
-            );
+            let completed = wait_until(timeout, || {
+                ordering_log().lock().expect("ordering log lock").len() == total
+            });
             let log = ordering_log().lock().expect("ordering log lock").clone();
-            assert_eq!(log.len(), total);
+            unsafe { wr_rc_dec(actor) };
+            if !completed {
+                return Err(format!(
+                    "timed out waiting for ordered messages (observed={}, expected={total})",
+                    log.len()
+                ));
+            }
+            if log.len() != total {
+                return Err(format!(
+                    "unexpected message count (observed={}, expected={total})",
+                    log.len()
+                ));
+            }
 
             let mut next = vec![0usize; PRODUCERS];
             for tag in log {
                 let producer = (tag >> 32) as usize;
                 let seq = (tag as u64 & 0xffff_ffff) as usize;
-                assert!(producer < PRODUCERS, "unexpected producer id in tag {tag}");
-                assert_eq!(
-                    seq, next[producer],
-                    "producer {producer} sequence out of order"
-                );
+                if producer >= PRODUCERS {
+                    return Err(format!("unexpected producer id in tag {tag}"));
+                }
+                let expected = next[producer];
+                if seq != expected {
+                    return Err(format!(
+                        "producer {producer} sequence out of order: observed={seq}, expected={expected}"
+                    ));
+                }
                 next[producer] += 1;
             }
             for observed in next {
-                assert_eq!(observed, PER_PRODUCER);
+                if observed != PER_PRODUCER {
+                    return Err(format!(
+                        "producer completed {observed} messages, expected {PER_PRODUCER}"
+                    ));
+                }
             }
-
-            unsafe { wr_rc_dec(actor) };
+            Ok(())
         }
 
         #[test]
@@ -5120,7 +5159,7 @@ pub(crate) mod metrics {
             return true;
         }
         let n = SCHED_SAMPLE_COUNTER.fetch_add(1, Ordering::Relaxed);
-        n % (sample_rate as u64) == 0
+        n.is_multiple_of(sample_rate as u64)
     }
     #[cfg(test)]
     pub fn inc_abi_typed_lane() {
@@ -5814,27 +5853,27 @@ pub(crate) mod scheduler {
             }
             inc_sched_steal_attempt();
             attempts += 1;
-            if other.has_ready_work() {
-                if let Some((objective, pool_ptr)) = other.pop_ready_any() {
-                    if rebalance_enabled {
-                        maybe_rebalance_pool_affinity(
-                            pool_ptr as *const PoolHandle,
-                            shard.id,
-                            other.id,
-                            last_rebalance_at,
-                            migrations_this_interval,
-                            migration_budget,
-                        );
-                    }
-                    if local_ready[objective].len() < local_cap {
-                        local_ready[objective].push_back(pool_ptr);
-                    } else {
-                        let _ = shard.ready_by_objective[objective].push(pool_ptr);
-                    }
-                    shard.has_work.store(true, Ordering::Release);
-                    inc_sched_steal_success();
-                    break;
+            if other.has_ready_work()
+                && let Some((objective, pool_ptr)) = other.pop_ready_any()
+            {
+                if rebalance_enabled {
+                    maybe_rebalance_pool_affinity(
+                        pool_ptr as *const PoolHandle,
+                        shard.id,
+                        other.id,
+                        last_rebalance_at,
+                        migrations_this_interval,
+                        migration_budget,
+                    );
                 }
+                if local_ready[objective].len() < local_cap {
+                    local_ready[objective].push_back(pool_ptr);
+                } else {
+                    let _ = shard.ready_by_objective[objective].push(pool_ptr);
+                }
+                shard.has_work.store(true, Ordering::Release);
+                inc_sched_steal_success();
+                break;
             }
         }
     }
@@ -6257,10 +6296,7 @@ pub(crate) mod scheduler {
                 state.tune_profiles([8, 8, 8, 8], true);
             }
             let after = metrics::metrics_get_raw(metrics::METRIC_SCHED_PROFILE_SWITCH);
-            assert!(
-                after >= before + 1,
-                "expected profile switch metric to increase"
-            );
+            assert!(after > before, "expected profile switch metric to increase");
         }
 
         #[cfg(feature = "metrics")]
@@ -6276,7 +6312,7 @@ pub(crate) mod scheduler {
             }
             let after = metrics::metrics_get_raw(metrics::METRIC_SCHED_STARVATION_VIOLATION);
             assert!(
-                after >= before + 1,
+                after > before,
                 "expected starvation violation metric to increase"
             );
         }

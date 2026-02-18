@@ -255,18 +255,16 @@ fn check_stmt_uses(
             | Rvalue::BuildMap { alloc, .. }
             | Rvalue::StringInterp { alloc, .. }
             | Rvalue::StrConcat { alloc, .. } = value
+                && matches!(alloc, crate::mir::ir::AllocKind::LocalTemp)
+                && !matches!(place, Place::Temp(_))
             {
-                if matches!(alloc, crate::mir::ir::AllocKind::LocalTemp)
-                    && !matches!(place, Place::Temp(_))
-                {
-                    errors.push(MirValidationError {
-                        kind: MirDiagKind::Internal,
-                        message: format!(
-                            "local-temp alloc assigned to non-temp place in block {block_idx}"
-                        ),
-                        span: None,
-                    });
-                }
+                errors.push(MirValidationError {
+                    kind: MirDiagKind::Internal,
+                    message: format!(
+                        "local-temp alloc assigned to non-temp place in block {block_idx}"
+                    ),
+                    span: None,
+                });
             }
             check_rvalue_uses(func, block_idx, value, defined, errors);
         }
@@ -284,17 +282,16 @@ fn check_stmt_uses(
                         message: format!("rc op on non-ref value in block {block_idx}"),
                     });
                 }
-            } else if matches!(value, Value::Const(_)) {
-                if matches!(value, Value::Const(crate::hir::Literal::Boolean(_)))
+            } else if matches!(value, Value::Const(_))
+                && (matches!(value, Value::Const(crate::hir::Literal::Boolean(_)))
                     || matches!(value, Value::Const(crate::hir::Literal::Nil))
-                    || matches!(value, Value::Const(crate::hir::Literal::Float(_)))
-                {
-                    errors.push(MirValidationError {
-                        kind: MirDiagKind::Internal,
-                        span: None,
-                        message: format!("rc op on non-ref literal in block {block_idx}"),
-                    });
-                }
+                    || matches!(value, Value::Const(crate::hir::Literal::Float(_))))
+            {
+                errors.push(MirValidationError {
+                    kind: MirDiagKind::Internal,
+                    span: None,
+                    message: format!("rc op on non-ref literal in block {block_idx}"),
+                });
             }
         }
         Stmt::Await { pending, .. } | Stmt::Fire { pending, .. } => {
@@ -419,16 +416,16 @@ fn check_rvalue_uses(
                                 ),
                             });
                         }
-                        if let Some(receiver_ty) = value_type(func, receiver) {
-                            if !matches!(receiver_ty, MirType::Actor(_)) {
-                                errors.push(MirValidationError {
-                                    kind: MirDiagKind::Internal,
-                                    span: None,
-                                    message: format!(
-                                        "actor call on non-actor value in block {block_idx}"
-                                    ),
-                                });
-                            }
+                        if let Some(receiver_ty) = value_type(func, receiver)
+                            && !matches!(receiver_ty, MirType::Actor(_))
+                        {
+                            errors.push(MirValidationError {
+                                kind: MirDiagKind::Internal,
+                                span: None,
+                                message: format!(
+                                    "actor call on non-actor value in block {block_idx}"
+                                ),
+                            });
                         }
                     }
                 }
@@ -558,6 +555,59 @@ fn check_value_use(
     }
 }
 
+fn value_label(func: &MirFunction, value: &Value) -> String {
+    match value {
+        Value::Const(_) => "const".to_string(),
+        Value::Local(id) => func
+            .locals
+            .get(id.0)
+            .map(|local| format!("local '{}'", local.name))
+            .unwrap_or_else(|| format!("local {}", id.0)),
+        Value::Temp(id) => format!("temp {}", id.0),
+    }
+}
+
+fn value_type(func: &MirFunction, value: &Value) -> Option<MirType> {
+    match value {
+        Value::Const(lit) => Some(match lit {
+            crate::hir::Literal::Integer(_) => MirType::Integer,
+            crate::hir::Literal::Float(_) => MirType::Float,
+            crate::hir::Literal::Boolean(_) => MirType::Boolean,
+            crate::hir::Literal::String(_) => MirType::String,
+            crate::hir::Literal::Nil => MirType::Nil,
+        }),
+        Value::Local(id) => func.locals.get(id.0).map(|local| local.ty.clone()),
+        Value::Temp(id) => func.temps.get(id.0).map(|temp| temp.ty.clone()),
+    }
+    .and_then(|ty| {
+        if matches!(ty, MirType::Unknown) {
+            None
+        } else {
+            Some(ty)
+        }
+    })
+}
+
+fn terminator_successors(term: &Terminator) -> Vec<crate::mir::ir::BlockId> {
+    match term {
+        Terminator::Return { .. } | Terminator::Unreachable { .. } => Vec::new(),
+        Terminator::Jump { target, .. } => vec![*target],
+        Terminator::Branch {
+            then_target,
+            else_target,
+            ..
+        } => vec![*then_target, *else_target],
+        Terminator::Switch { cases, default, .. } => {
+            let mut targets = Vec::with_capacity(cases.len() + 1);
+            for (_, target) in cases {
+                targets.push(*target);
+            }
+            targets.push(*default);
+            targets
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -649,58 +699,5 @@ mod tests {
                 .any(|err| err.message.contains("phi missing source")),
             "expected phi source validation error"
         );
-    }
-}
-
-fn value_label(func: &MirFunction, value: &Value) -> String {
-    match value {
-        Value::Const(_) => "const".to_string(),
-        Value::Local(id) => func
-            .locals
-            .get(id.0)
-            .map(|local| format!("local '{}'", local.name))
-            .unwrap_or_else(|| format!("local {}", id.0)),
-        Value::Temp(id) => format!("temp {}", id.0),
-    }
-}
-
-fn value_type(func: &MirFunction, value: &Value) -> Option<MirType> {
-    match value {
-        Value::Const(lit) => Some(match lit {
-            crate::hir::Literal::Integer(_) => MirType::Integer,
-            crate::hir::Literal::Float(_) => MirType::Float,
-            crate::hir::Literal::Boolean(_) => MirType::Boolean,
-            crate::hir::Literal::String(_) => MirType::String,
-            crate::hir::Literal::Nil => MirType::Nil,
-        }),
-        Value::Local(id) => func.locals.get(id.0).map(|local| local.ty.clone()),
-        Value::Temp(id) => func.temps.get(id.0).map(|temp| temp.ty.clone()),
-    }
-    .and_then(|ty| {
-        if matches!(ty, MirType::Unknown) {
-            None
-        } else {
-            Some(ty)
-        }
-    })
-}
-
-fn terminator_successors(term: &Terminator) -> Vec<crate::mir::ir::BlockId> {
-    match term {
-        Terminator::Return { .. } | Terminator::Unreachable { .. } => Vec::new(),
-        Terminator::Jump { target, .. } => vec![*target],
-        Terminator::Branch {
-            then_target,
-            else_target,
-            ..
-        } => vec![*then_target, *else_target],
-        Terminator::Switch { cases, default, .. } => {
-            let mut targets = Vec::with_capacity(cases.len() + 1);
-            for (_, target) in cases {
-                targets.push(*target);
-            }
-            targets.push(*default);
-            targets
-        }
     }
 }

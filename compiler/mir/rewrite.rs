@@ -135,10 +135,10 @@ pub fn mine_candidates(module: &MirModule, checkir: Option<&CheckIrModule>) -> V
                 }
             }
 
-            if let Terminator::Branch { cond, .. } = &block.terminator {
-                if matches!(cond, Value::Const(crate::hir::Literal::Boolean(_))) {
-                    rules.insert(RewriteRule::BranchOnConst);
-                }
+            if let Terminator::Branch { cond, .. } = &block.terminator
+                && matches!(cond, Value::Const(crate::hir::Literal::Boolean(_)))
+            {
+                rules.insert(RewriteRule::BranchOnConst);
             }
         }
     }
