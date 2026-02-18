@@ -1,0 +1,22 @@
+{
+  "scenarios": [
+    {
+      "scenario_id": "balanced",
+      "max_to_mean_ratio": 1.25,
+      "skew_threshold": 1.5,
+      "survivable_additional_failures": 1,
+      "required_additional_failures": 1,
+      "degraded_selected": 0,
+      "max_degraded_selected": 1
+    },
+    {
+      "scenario_id": "steady-mixed",
+      "max_to_mean_ratio": 1.35,
+      "skew_threshold": 1.5,
+      "survivable_additional_failures": 1,
+      "required_additional_failures": 1,
+      "degraded_selected": 1,
+      "max_degraded_selected": 1
+    }
+  ]
+}

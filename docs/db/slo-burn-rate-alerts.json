@@ -1,0 +1,86 @@
+{
+  "version": "1.0.0",
+  "generated_at": "2026-02-13T05:10:00Z",
+  "alerts": [
+    {
+      "id": "availability.error_budget_burn",
+      "windows": {
+        "fast": ["5m", "1h"],
+        "slow": ["30m", "6h"]
+      },
+      "thresholds": {
+        "fast_burn_rate": 14.4,
+        "slow_burn_rate": 6.0
+      },
+      "severity_map": {
+        "fast": "SEV-1",
+        "slow": "SEV-2"
+      },
+      "runbook_section": "Regional Outage"
+    },
+    {
+      "id": "durability.ack_loss_risk_burn",
+      "windows": {
+        "fast": ["5m", "1h"],
+        "slow": ["30m", "6h"]
+      },
+      "thresholds": {
+        "fast_burn_rate": 10.0,
+        "slow_burn_rate": 4.0
+      },
+      "severity_map": {
+        "fast": "SEV-1",
+        "slow": "SEV-2"
+      },
+      "runbook_section": "Split-Brain Suspicion"
+    },
+    {
+      "id": "latency.read_p99_burn",
+      "windows": {
+        "fast": ["5m", "1h"],
+        "slow": ["30m", "6h"]
+      },
+      "thresholds": {
+        "fast_burn_rate": 8.0,
+        "slow_burn_rate": 3.0
+      },
+      "severity_map": {
+        "fast": "SEV-2",
+        "slow": "SEV-3"
+      },
+      "runbook_section": "CDC Backlog Runaway"
+    },
+    {
+      "id": "replication.safe_time_lag_burn",
+      "windows": {
+        "fast": ["5m", "1h"],
+        "slow": ["30m", "6h"]
+      },
+      "thresholds": {
+        "fast_burn_rate": 8.0,
+        "slow_burn_rate": 3.0
+      },
+      "severity_map": {
+        "fast": "SEV-2",
+        "slow": "SEV-3"
+      },
+      "runbook_section": "Snapshot/Restore Degradation"
+    },
+    {
+      "id": "residency.egress_deny_spike_burn",
+      "windows": {
+        "fast": ["5m", "1h"],
+        "slow": ["30m", "6h"]
+      },
+      "thresholds": {
+        "fast_burn_rate": 5.0,
+        "slow_burn_rate": 2.0
+      },
+      "severity_map": {
+        "fast": "SEV-2",
+        "slow": "SEV-3"
+      },
+      "runbook_section": "Policy Unsatisfiable Storm"
+    }
+  ]
+}

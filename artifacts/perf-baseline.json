@@ -1,0 +1,20 @@
+{
+  "lane": "single-node-mixed-rw",
+  "ops_per_sec": 34.18537194943843,
+  "p95_ms": 89.278334,
+  "p99_ms": 89.278334,
+  "batch_size": 1,
+  "sample_runs": 3,
+  "wal_fsync_summary": {
+    "p50_ms": 88.13275,
+    "p95_ms": 89.278334,
+    "p99_ms": 89.278334,
+    "method": "measured via db_abi_put_get_scan_roundtrip runtime test"
+  },
+  "timing_summary": {
+    "min_ms": 85.859417,
+    "max_ms": 89.278334,
+    "avg_ms": 87.75683366666667
+  },
+  "generated_at_unix_ms": 1770934883873
+}

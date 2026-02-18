@@ -1068,28 +1068,40 @@ impl ProjectLoader {
     }
 
     fn resolve_module_path(&self, name: &SmolStr) -> Option<PathBuf> {
-        if let Some(tests_root) = &self.tests_dir
-            && let Some(test_rel) = name.as_str().strip_prefix("tests/")
-        {
-            let mut rel = PathBuf::from(test_rel);
-            let candidate_wr = tests_root.join(rel.with_extension("wr"));
+        if let Some(pkg_rel) = name.as_str().strip_prefix("pkg/") {
+            let mut rel = PathBuf::from(pkg_rel);
+            let candidate_wr = packages_root().join(rel.with_extension("wr"));
             if candidate_wr.is_file() {
                 return Some(candidate_wr);
             }
-            rel = PathBuf::from(format!("{test_rel}_test"));
-            let candidate_wr = tests_root.join(rel.with_extension("wr"));
-            if candidate_wr.is_file() {
-                return Some(candidate_wr);
-            }
-            rel = PathBuf::from(test_rel);
-            let candidate_sp = tests_root.join(rel.with_extension("sp"));
+            rel = PathBuf::from(pkg_rel);
+            let candidate_sp = packages_root().join(rel.with_extension("sp"));
             if candidate_sp.is_file() {
                 return Some(candidate_sp);
             }
-            rel = PathBuf::from(format!("{test_rel}_test"));
-            let candidate_sp = tests_root.join(rel.with_extension("sp"));
-            if candidate_sp.is_file() {
-                return Some(candidate_sp);
+        }
+        if let Some(tests_root) = &self.tests_dir {
+            if let Some(test_rel) = name.as_str().strip_prefix("tests/") {
+                let mut rel = PathBuf::from(test_rel);
+                let candidate_wr = tests_root.join(rel.with_extension("wr"));
+                if candidate_wr.is_file() {
+                    return Some(candidate_wr);
+                }
+                rel = PathBuf::from(format!("{test_rel}_test"));
+                let candidate_wr = tests_root.join(rel.with_extension("wr"));
+                if candidate_wr.is_file() {
+                    return Some(candidate_wr);
+                }
+                rel = PathBuf::from(test_rel);
+                let candidate_sp = tests_root.join(rel.with_extension("sp"));
+                if candidate_sp.is_file() {
+                    return Some(candidate_sp);
+                }
+                rel = PathBuf::from(format!("{test_rel}_test"));
+                let candidate_sp = tests_root.join(rel.with_extension("sp"));
+                if candidate_sp.is_file() {
+                    return Some(candidate_sp);
+                }
             }
         }
         let stdlib_root = stdlib_root();
@@ -2440,6 +2452,13 @@ fn stdlib_root() -> PathBuf {
         .join("stdlib")
 }
 
+fn packages_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("language")
+        .join("packages")
+}
+
 fn canonical_stdlib_module_name(module_name: &str) -> Option<&'static str> {
     match module_name {
         "actor" => Some("runtime/actor"),
@@ -2818,6 +2837,18 @@ fn is_builtin_value_name(name: &SmolStr) -> bool {
             | "__wr_env_get"
             | "__wr_env_set"
             | "__wr_runtime_configure"
+            | "__wr_db_open"
+            | "__wr_db_close"
+            | "__wr_db_submit_batch"
+            | "__wr_db_read_point"
+            | "__wr_db_read_range"
+            | "__wr_db_txn_begin"
+            | "__wr_db_txn_prepare"
+            | "__wr_db_txn_commit"
+            | "__wr_db_txn_abort"
+            | "__wr_db_snapshot_start"
+            | "__wr_db_snapshot_status"
+            | "__wr_db_restore"
             | "__wr_external_call"
             | "__wr_http_call"
             | "Pool"

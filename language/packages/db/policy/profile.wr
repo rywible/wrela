@@ -1,0 +1,14 @@
+so:
+    Placement profile contracts for multi-region survivability policy.
+
+class PlacementProfile:
+    variant three_region_survivability
+    variant single_region
+
+to default_profile() -> PlacementProfile:
+    return PlacementProfile.three_region_survivability
+
+to is_explicit_single_region(profile: PlacementProfile) -> Bool:
+    if profile is PlacementProfile.single_region:
+        return true
+    return false

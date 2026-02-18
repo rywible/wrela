@@ -1,0 +1,29 @@
+so:
+    Deterministic performance gate helpers for package-level CI policies.
+
+to create_throughput_gate_result(
+    baseline_tps: Integer,
+    current_tps: Integer,
+    max_drop_pct: Integer
+) -> Integer:
+    if baseline_tps <= 0:
+        return 0
+    drop_pct = ((baseline_tps - current_tps) * 100) / baseline_tps
+    if drop_pct <= max_drop_pct:
+        return 1
+    return 0
+
+to create_tail_latency_gate_result(
+    baseline_p99_ms: Integer,
+    current_p99_ms: Integer,
+    max_increase_pct: Integer
+) -> Integer:
+    if baseline_p99_ms <= 0:
+        return 0
+    increase_pct = ((current_p99_ms - baseline_p99_ms) * 100) / baseline_p99_ms
+    if increase_pct <= max_increase_pct:
+        return 1
+    return 0
+
+to create_phase_lineage(phase: String, benchmark_id: String) -> String:
+    return phase + ":" + benchmark_id

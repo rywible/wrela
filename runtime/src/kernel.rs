@@ -4639,7 +4639,7 @@ pub(crate) mod config {
 pub(crate) mod diagnostics {
     use std::sync::Once;
 
-    pub const RUNTIME_ABI_VERSION: u32 = 4;
+    pub const RUNTIME_ABI_VERSION: u32 = 5;
 
     static INIT: Once = Once::new();
 

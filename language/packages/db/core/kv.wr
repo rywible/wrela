@@ -1,0 +1,66 @@
+so:
+    Typed package-level DB API.
+    This adapter keeps product-facing signatures stable over stdlib kernel wrappers.
+
+use:
+    open_db,
+    close_db,
+    put_db,
+    get_db,
+    scan_db,
+    begin_txn_db,
+    prepare_txn_db,
+    commit_txn_db,
+    abort_txn_db,
+    start_snapshot_db,
+    snapshot_status_db,
+    restore_snapshot_db
+from db/kernel
+
+to open(path: String) -> Integer:
+    return open_db(path)
+
+to close(handle: Integer) -> Result[Nothing]:
+    return close_db(handle)
+
+to put(
+    handle: Integer,
+    namespace: String,
+    key: String,
+    value: String,
+    expected_version: Integer
+) -> Integer:
+    return put_db(handle, namespace, key, value, expected_version)
+
+to get(handle: Integer, namespace: String, key: String) -> Result[String]:
+    return get_db(handle, namespace, key)
+
+to scan(
+    handle: Integer,
+    namespace: String,
+    start_key: String,
+    end_key: String,
+    limit: Integer
+) -> List[String]:
+    return scan_db(handle, namespace, start_key, end_key, limit)
+
+to begin_txn(handle: Integer) -> Integer:
+    return begin_txn_db(handle)
+
+to prepare_txn(handle: Integer, txn: Integer) -> Result[Nothing]:
+    return prepare_txn_db(handle, txn)
+
+to commit_txn(handle: Integer, txn: Integer) -> Result[Nothing]:
+    return commit_txn_db(handle, txn)
+
+to abort_txn(handle: Integer, txn: Integer) -> Result[Nothing]:
+    return abort_txn_db(handle, txn)
+
+to start_snapshot(handle: Integer) -> Integer:
+    return start_snapshot_db(handle)
+
+to get_snapshot_status(handle: Integer, snapshot: Integer) -> Integer:
+    return snapshot_status_db(handle, snapshot)
+
+to restore_snapshot(handle: Integer, snapshot: Integer) -> Result[Nothing]:
+    return restore_snapshot_db(handle, snapshot)

@@ -34,7 +34,7 @@ const NANBOX_IMM_FALSE: u64 = 1;
 const NANBOX_IMM_TRUE: u64 = 2;
 const NANBOX_INT_MIN: i64 = -(1i64 << (NANBOX_TAG_SHIFT - 1));
 const NANBOX_INT_MAX: i64 = (1i64 << (NANBOX_TAG_SHIFT - 1)) - 1;
-const RUNTIME_ABI_VERSION: i64 = 4;
+const RUNTIME_ABI_VERSION: i64 = 5;
 const FNV1A_OFFSET_BASIS_64: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV1A_PRIME_64: u64 = 0x0000_0100_0000_01b3;
 
@@ -1618,6 +1618,38 @@ fn lower_rvalue(
                                     "__wr_runtime_configure" => {
                                         Some(runtime_fn_runtime_configure(module, runtime)?)
                                     }
+                                    "__wr_db_open" => Some(runtime_fn_db_open(module, runtime)?),
+                                    "__wr_db_close" => Some(runtime_fn_db_close(module, runtime)?),
+                                    "__wr_db_submit_batch" => {
+                                        Some(runtime_fn_db_submit_batch(module, runtime)?)
+                                    }
+                                    "__wr_db_read_point" => {
+                                        Some(runtime_fn_db_read_point(module, runtime)?)
+                                    }
+                                    "__wr_db_read_range" => {
+                                        Some(runtime_fn_db_read_range(module, runtime)?)
+                                    }
+                                    "__wr_db_txn_begin" => {
+                                        Some(runtime_fn_db_txn_begin(module, runtime)?)
+                                    }
+                                    "__wr_db_txn_prepare" => {
+                                        Some(runtime_fn_db_txn_prepare(module, runtime)?)
+                                    }
+                                    "__wr_db_txn_commit" => {
+                                        Some(runtime_fn_db_txn_commit(module, runtime)?)
+                                    }
+                                    "__wr_db_txn_abort" => {
+                                        Some(runtime_fn_db_txn_abort(module, runtime)?)
+                                    }
+                                    "__wr_db_snapshot_start" => {
+                                        Some(runtime_fn_db_snapshot_start(module, runtime)?)
+                                    }
+                                    "__wr_db_snapshot_status" => {
+                                        Some(runtime_fn_db_snapshot_status(module, runtime)?)
+                                    }
+                                    "__wr_db_restore" => {
+                                        Some(runtime_fn_db_restore(module, runtime)?)
+                                    }
                                     "__wr_bytes_from_string" => {
                                         Some(runtime_fn_bytes_from_string(module, runtime)?)
                                     }
@@ -2833,6 +2865,111 @@ fn runtime_fn_runtime_configure(
 ) -> Result<cranelift_module::FuncId, CodegenError> {
     let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
     runtime.get_func(module, "wr_runtime_configure", sig)
+}
+
+fn runtime_fn_db_open(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_db_open", sig)
+}
+
+fn runtime_fn_db_close(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_db_close", sig)
+}
+
+fn runtime_fn_db_submit_batch(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(
+        module,
+        &[types::I64, types::I64, types::I64, types::I64, types::I64],
+        &[types::I64],
+    );
+    runtime.get_func(module, "wr_db_submit_batch", sig)
+}
+
+fn runtime_fn_db_read_point(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig =
+        RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_db_read_point", sig)
+}
+
+fn runtime_fn_db_read_range(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(
+        module,
+        &[types::I64, types::I64, types::I64, types::I64, types::I64],
+        &[types::I64],
+    );
+    runtime.get_func(module, "wr_db_read_range", sig)
+}
+
+fn runtime_fn_db_txn_begin(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_db_txn_begin", sig)
+}
+
+fn runtime_fn_db_txn_prepare(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_db_txn_prepare", sig)
+}
+
+fn runtime_fn_db_txn_commit(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_db_txn_commit", sig)
+}
+
+fn runtime_fn_db_txn_abort(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_db_txn_abort", sig)
+}
+
+fn runtime_fn_db_snapshot_start(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_db_snapshot_start", sig)
+}
+
+fn runtime_fn_db_snapshot_status(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_db_snapshot_status", sig)
+}
+
+fn runtime_fn_db_restore(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_db_restore", sig)
 }
 
 fn runtime_fn_map_new(

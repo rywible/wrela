@@ -1,0 +1,27 @@
+{
+  "all_pass": false,
+  "profiles": [
+    {
+      "commit_p99_ms": 21,
+      "passes_slo": true,
+      "profile": "steady",
+      "retry_rate_pct": 0.6,
+      "timeout_rate_pct": 0.0
+    },
+    {
+      "commit_p99_ms": 59,
+      "passes_slo": true,
+      "profile": "lossy",
+      "retry_rate_pct": 16.8,
+      "timeout_rate_pct": 12.4
+    },
+    {
+      "commit_p99_ms": 112,
+      "passes_slo": false,
+      "profile": "partition-ish",
+      "retry_rate_pct": 28.5,
+      "timeout_rate_pct": 22.0
+    }
+  ],
+  "version": 1
+}

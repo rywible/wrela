@@ -1,0 +1,17 @@
+use create_safety_gate_result from pkg/db/policy/safety
+
+so:
+    Admin facade for policy safety simulation checks.
+
+to create_safety_review_result(
+    required_additional_failures: Integer,
+    survivable_additional_failures: Integer,
+    degraded_selected: Integer,
+    max_degraded_selected: Integer
+) -> Integer:
+    return create_safety_gate_result(
+        required_additional_failures,
+        survivable_additional_failures,
+        degraded_selected,
+        max_degraded_selected
+    )

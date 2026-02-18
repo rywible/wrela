@@ -1,0 +1,30 @@
+use default_root_path from pkg/db/core/types
+use:
+    open,
+    close,
+    put,
+    get,
+    scan,
+    begin_txn,
+    prepare_txn,
+    commit_txn,
+    start_snapshot,
+    get_snapshot_status,
+    restore_snapshot
+from pkg/db/core/kv
+
+to run() -> Integer:
+    db = open(default_root_path())
+    write_version = put(db, "core", "demo-key", "demo-value", -1)
+    read_result = get(db, "core", "demo-key")
+    scan_results = scan(db, "core", "a", "z", 10)
+    txn = begin_txn(db)
+    if txn > 0:
+        prep_result = prepare_txn(db, txn) otherwise nothing
+        commit_result = commit_txn(db, txn) otherwise nothing
+    snapshot = start_snapshot(db)
+    if snapshot > 0:
+        snapshot_progress = get_snapshot_status(db, snapshot)
+        restore_result = restore_snapshot(db, snapshot) otherwise nothing
+    close_result = close(db) otherwise nothing
+    return 0

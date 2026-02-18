@@ -1,0 +1,19 @@
+so:
+    Keyrange home and relocation contracts.
+
+class RelocationMode:
+    variant strict
+
+class RelocationRequest:
+    let keyrange: String
+    let target_home: String
+    let reason: String
+
+to set_home(keyrange: String, home: String) -> String:
+    return "home-set:" + keyrange + ":" + home
+
+to get_home(keyrange: String) -> String:
+    return "home-query:" + keyrange
+
+to relocate_home(keyrange: String, target_home: String, reason: String) -> RelocationRequest:
+    return RelocationRequest(keyrange, target_home, reason)

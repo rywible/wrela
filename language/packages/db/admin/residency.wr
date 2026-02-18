@@ -1,0 +1,11 @@
+so:
+    Admin helpers for fail-closed residency audit tokens.
+
+to is_residency_audit_allowed(token: String) -> Integer:
+    if token == "":
+        return 1
+    if token == "RESIDENCY_EGRESS_DENY":
+        return 0
+    if token == "RESIDENCY_EGRESS_POLICY_UNSAT":
+        return 0
+    return 0

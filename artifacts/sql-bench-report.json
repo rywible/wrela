@@ -1,0 +1,27 @@
+{
+  "statements": {
+    "delete": {
+      "avg_latency_ms": 4.0,
+      "ops": 7000
+    },
+    "insert": {
+      "avg_latency_ms": 4.2,
+      "ops": 12000
+    },
+    "point_select": {
+      "avg_latency_ms": 2.1,
+      "ops": 18000
+    },
+    "range_scan": {
+      "avg_latency_ms": 6.4,
+      "ops": 6000
+    },
+    "update": {
+      "avg_latency_ms": 4.9,
+      "ops": 9000
+    }
+  },
+  "total_ops": 52000,
+  "version": 1,
+  "weighted_avg_latency_ms": 3.821
+}

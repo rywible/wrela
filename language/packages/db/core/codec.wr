@@ -1,0 +1,23 @@
+so:
+    DB codec helpers exposed at package level.
+    These wrappers keep codec surface Wrela-first while runtime owns hot-path primitives.
+
+to encode_text(value: String) -> Bytes:
+    return __wr_bytes_from_string(value)
+
+to decode_text(payload: Bytes) -> Result[String]:
+    decoded = __wr_bytes_to_string(payload)
+    match decoded:
+        String(text):
+            return text
+        otherwise:
+            return error "invalid utf8"
+
+to count_bytes(payload: Bytes) -> Integer:
+    return __wr_bytes_len(payload)
+
+to convert_to_byte_list(payload: Bytes) -> List[Integer]:
+    return __wr_bytes_to_list(payload)
+
+to convert_from_byte_list(items: List[Integer]) -> Bytes:
+    return __wr_bytes_from_list(items)

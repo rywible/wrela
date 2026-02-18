@@ -1,0 +1,12 @@
+so:
+    Any-region write router contract for DB client package.
+
+class WriteRoute:
+    let shard_id: Integer
+    let leader_node: String
+    let forwarded: Bool
+
+to route_for_write(shard_id: Integer, leader_node: String, local_node: String) -> WriteRoute:
+    if leader_node == local_node:
+        return WriteRoute(shard_id, leader_node, false)
+    return WriteRoute(shard_id, leader_node, true)

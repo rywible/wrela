@@ -1388,6 +1388,133 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                 kind: FunctionKind::Function,
             },
         ),
+        (
+            SmolStr::new("__wr_db_open"),
+            FunctionSig {
+                params: vec![(SmolStr::new("path"), Type::String)],
+                ret: Type::Integer,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_db_close"),
+            FunctionSig {
+                params: vec![(SmolStr::new("handle"), Type::Integer)],
+                ret: Type::Boolean,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_db_submit_batch"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("handle"), Type::Integer),
+                    (SmolStr::new("namespace"), Type::String),
+                    (SmolStr::new("key"), Type::String),
+                    (SmolStr::new("value"), Type::String),
+                    (SmolStr::new("expected_version"), Type::Unknown),
+                ],
+                ret: Type::Integer,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_db_read_point"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("handle"), Type::Integer),
+                    (SmolStr::new("namespace"), Type::String),
+                    (SmolStr::new("key"), Type::String),
+                ],
+                ret: Type::Unknown,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_db_read_range"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("handle"), Type::Integer),
+                    (SmolStr::new("namespace"), Type::String),
+                    (SmolStr::new("start_key"), Type::String),
+                    (SmolStr::new("end_key"), Type::String),
+                    (SmolStr::new("limit"), Type::Integer),
+                ],
+                ret: Type::List(Box::new(Type::Unknown)),
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_db_txn_begin"),
+            FunctionSig {
+                params: vec![(SmolStr::new("handle"), Type::Integer)],
+                ret: Type::Integer,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_db_txn_prepare"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("handle"), Type::Integer),
+                    (SmolStr::new("txn"), Type::Integer),
+                ],
+                ret: Type::Boolean,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_db_txn_commit"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("handle"), Type::Integer),
+                    (SmolStr::new("txn"), Type::Integer),
+                ],
+                ret: Type::Boolean,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_db_txn_abort"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("handle"), Type::Integer),
+                    (SmolStr::new("txn"), Type::Integer),
+                ],
+                ret: Type::Boolean,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_db_snapshot_start"),
+            FunctionSig {
+                params: vec![(SmolStr::new("handle"), Type::Integer)],
+                ret: Type::Integer,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_db_snapshot_status"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("handle"), Type::Integer),
+                    (SmolStr::new("snapshot"), Type::Integer),
+                ],
+                ret: Type::Integer,
+                kind: FunctionKind::Function,
+            },
+        ),
+        (
+            SmolStr::new("__wr_db_restore"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("handle"), Type::Integer),
+                    (SmolStr::new("snapshot"), Type::Integer),
+                ],
+                ret: Type::Boolean,
+                kind: FunctionKind::Function,
+            },
+        ),
     ]
 }
 

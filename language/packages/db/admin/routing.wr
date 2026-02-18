@@ -1,0 +1,9 @@
+use derive_policy_hash_seed, validate_shard_count from pkg/db/policy/routing
+
+so:
+    Admin facade for deterministic routing policy compile checks.
+
+to compile_routing_policy_seed(policy_id: String, shard_count: Integer) -> String:
+    if validate_shard_count(shard_count) == 1:
+        return derive_policy_hash_seed(policy_id, shard_count)
+    return "invalid_shard_count"

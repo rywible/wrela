@@ -1,0 +1,9 @@
+{
+  "scenario": "single-node-kill-recover",
+  "status": "pass",
+  "invariants": {
+    "ack_write_loss": false,
+    "occ_guard": true,
+    "namespace_isolation": true
+  }
+}
