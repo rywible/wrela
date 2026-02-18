@@ -4,6 +4,7 @@ use super::command_handlers::{
     resolve_budget_policy_v1, resolve_test_target,
 };
 use super::contracts::{EXIT_CODEGEN, EXIT_OK, EXIT_USAGE, OutputFormat};
+use super::replay_trace;
 use super::repro_bridge::{ReproCommandInput, run_repro_command};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -21,6 +22,7 @@ pub(super) struct TestCommandInput {
     pub(super) test_update_public_surface: bool,
     pub(super) test_selection: TestSelection,
     pub(super) repro_artifact_path: Option<String>,
+    pub(super) replay_trace_path: Option<String>,
     pub(super) output_format: OutputFormat,
     pub(super) perf_debug: bool,
     pub(super) perf_gate_path: Option<String>,
@@ -39,6 +41,18 @@ pub(super) fn execute_test_command(input: TestCommandInput) -> i32 {
     }
     if input.out_path.is_some() || input.emit_obj.is_some() || input.emit_bin.is_some() {
         eprintln!("error: -o/--out, --emit-obj, and --emit-bin are not valid with `wrela test`");
+        return EXIT_USAGE;
+    }
+    if input.replay_trace_path.is_some()
+        && (input.test_record
+            || input.test_update_public_surface
+            || command_handlers::test_selection_has_filters(&input.test_selection)
+            || input.repro_artifact_path.is_some()
+            || input.test_seed.is_some())
+    {
+        eprintln!(
+            "error: --replay-trace cannot be combined with --record, --update-public-surface, --list, --id, --filter, --repro, or --seed"
+        );
         return EXIT_USAGE;
     }
 
@@ -82,6 +96,21 @@ pub(super) fn execute_test_command(input: TestCommandInput) -> i32 {
             test_timeout_ms: input.test_timeout_ms,
             output_format: input.output_format,
         });
+    }
+
+    if let Some(trace_path) = input.replay_trace_path {
+        let path = PathBuf::from(trace_path);
+        match replay_trace::replay_signature_from_artifact(&path) {
+            Ok(signature) => {
+                println!("replay trace verified");
+                println!("signature: {signature}");
+                return EXIT_OK;
+            }
+            Err(err) => {
+                eprintln!("replay trace error: {err}");
+                return EXIT_CODEGEN;
+            }
+        }
     }
 
     if input.test_record {

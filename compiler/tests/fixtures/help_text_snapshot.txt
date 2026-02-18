@@ -35,6 +35,7 @@ env: WRELA_BUDGET_*   Budget Policy v1 overrides (autogen/sim/fuzz/mutation + ti
 --benchmark-manifest=PATH  benchmark manifest path (bench.toml)
 --profile=NAME        benchmark profile (smoke|standard|deep)
 --repro PATH          replay a single typed repro artifact (autogen|fuzz)
+--replay-trace PATH   validate a sim/model replay trace artifact
 --perf-debug          dump perf counters after tests
 --runs=N              perf harness run count (default: 5)
 --baseline-out=PATH   perf baseline JSON output path

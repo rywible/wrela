@@ -34,6 +34,7 @@ pub struct ParsedArgs {
     pub test_lane: Option<String>,
     pub test_seed: Option<u64>,
     pub repro_artifact_path: Option<String>,
+    pub replay_trace_path: Option<String>,
     pub perf_debug: bool,
     pub perf_runs: Option<usize>,
     pub perf_baseline_out: Option<String>,
@@ -96,6 +97,7 @@ pub fn parse(raw_args: Vec<String>) -> CommandSpec {
     let mut test_lane: Option<String> = None;
     let mut test_seed: Option<u64> = None;
     let mut repro_artifact_path: Option<String> = None;
+    let mut replay_trace_path: Option<String> = None;
     let mut perf_debug = false;
     let mut perf_runs: Option<usize> = None;
     let mut perf_baseline_out: Option<String> = None;
@@ -245,6 +247,22 @@ pub fn parse(raw_args: Vec<String>) -> CommandSpec {
             return CommandSpec {
                 trace_enabled,
                 parsed: ParsedCommandSpec::Error("error: missing path for --repro".to_string()),
+            };
+        }
+        if let Some(path) = arg.strip_prefix("--replay-trace=") {
+            replay_trace_path = Some(path.to_string());
+            continue;
+        }
+        if arg == "--replay-trace" {
+            if let Some(path) = iter.next() {
+                replay_trace_path = Some(path);
+                continue;
+            }
+            return CommandSpec {
+                trace_enabled,
+                parsed: ParsedCommandSpec::Error(
+                    "error: missing path for --replay-trace".to_string(),
+                ),
             };
         }
         if arg == "--perf-debug" {
@@ -587,6 +605,7 @@ pub fn parse(raw_args: Vec<String>) -> CommandSpec {
             test_lane,
             test_seed,
             repro_artifact_path,
+            replay_trace_path,
             perf_debug,
             perf_runs,
             perf_baseline_out,

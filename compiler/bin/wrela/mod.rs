@@ -5,3 +5,4 @@ pub mod contracts;
 pub mod diag_emit;
 pub mod perf_engine;
 pub mod repro_bridge;
+pub mod replay_trace;

@@ -110,6 +110,7 @@ options:\n\
   --benchmark-manifest=PATH  benchmark manifest path (bench.toml)\n\
   --profile=NAME        benchmark profile (smoke|standard|deep)\n\
   --repro PATH          replay a single typed repro artifact (autogen|fuzz)\n\
+  --replay-trace PATH   validate a sim/model replay trace artifact\n\
   --perf-debug          dump perf counters after tests\n\
   --runs=N              perf harness run count (default: 5)\n\
   --baseline-out=PATH   perf baseline JSON output path\n\
