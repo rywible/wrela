@@ -74,7 +74,26 @@ impl NodeState {
         self.commit_index = self.commit_index.min(self.last_log_index());
     }
 
-    pub fn append_log_entry(&mut self, entry: LogEntry) {
+    pub fn append_log_entry_checked(&mut self, entry: LogEntry) -> Result<(), &'static str> {
+        let expected = self.last_log_index().saturating_add(1);
+        if entry.index != expected {
+            return Err("non-contiguous log index");
+        }
         self.log.push(entry);
+        Ok(())
+    }
+
+    pub fn append_log_entry(&mut self, entry: LogEntry) {
+        let _ = self.append_log_entry_checked(entry);
+    }
+
+    pub fn restore_log_contiguous(&mut self, restored: Vec<LogEntry>) {
+        self.log.clear();
+        for entry in restored {
+            if self.append_log_entry_checked(entry).is_err() {
+                break;
+            }
+        }
+        self.commit_index = self.commit_index.min(self.last_log_index());
     }
 }

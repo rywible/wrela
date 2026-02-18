@@ -1,4 +1,6 @@
-#[derive(Debug, Clone, PartialEq, Eq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VoteRequest {
     pub term: u64,
     pub candidate_id: u64,
@@ -6,20 +8,20 @@ pub struct VoteRequest {
     pub last_log_term: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VoteResponse {
     pub term: u64,
     pub vote_granted: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogEntry {
     pub index: u64,
     pub term: u64,
     pub payload: Vec<u8>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppendEntries {
     pub term: u64,
     pub leader_id: u64,
@@ -29,7 +31,7 @@ pub struct AppendEntries {
     pub entries: Vec<LogEntry>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppendEntriesResponse {
     pub term: u64,
     pub success: bool,

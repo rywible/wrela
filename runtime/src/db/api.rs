@@ -1,13 +1,19 @@
+use crate::db::ReadConsistency;
 use crate::db::net::interceptor::{intercept_rpc, intercept_rpc_with_pki};
+use crate::db::raft::membership::MembershipChange;
 use crate::db::security::authz::{CertIdentity, RpcClass};
 use crate::db::security::pki::PkiStore;
 use crate::db::security::residency::ResidencyPolicy;
+use crate::db::time::safe_time::{SafeTimeDiagnostics, SafeTimeLagBudget};
 use crate::db::time::watermarks::SafeReadWatermarks;
 use crate::db::types::BatchOp;
 use crate::db::{
-    DbError, cdc, cdc_ack, cdc_checkpoint, cdc_page, cdc_stream_backfill_page, cdc_stream_page,
-    close_db, open_db, read_point, read_range, restore_snapshot, snapshot_start, snapshot_status,
-    submit_put, txn_abort, txn_begin, txn_commit, txn_prepare,
+    DbError, DbHealthStatus, cdc, cdc_ack, cdc_checkpoint, cdc_page, cdc_stream_backfill_page,
+    cdc_stream_page, close_db, db_health_status as db_health_status_impl,
+    membership_abort_joint_change, membership_begin_joint_change, membership_commit_joint_change,
+    membership_set_voters, open_db, read_point, read_point_consistent, read_range,
+    read_range_consistent, restore_snapshot, safe_time_diagnostics as db_safe_time_diagnostics,
+    snapshot_start, snapshot_status, submit_put, txn_abort, txn_begin, txn_commit, txn_prepare,
 };
 use crate::db::{
     analytics::columnar::ColumnarStore,
@@ -69,6 +75,7 @@ pub fn get_authorized(
     .map_err(|err| DbError::invalid_argument(format!("unauthorized rpc: {}", err.reason)))?
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn put_authorized_with_cert(
     handle: i64,
     namespace: Vec<u8>,
@@ -80,13 +87,49 @@ pub fn put_authorized_with_cert(
     cert_serial: u64,
     now_epoch_s: u64,
 ) -> Result<u64, DbError> {
-    intercept_rpc_with_pki(
+    put_authorized_with_cert_request(AuthorizedPutWithCertRequest {
+        handle,
+        namespace,
+        key,
+        value,
+        expected_version,
+        identity,
         pki,
         cert_serial,
         now_epoch_s,
-        identity,
+    })
+}
+
+pub struct AuthorizedPutWithCertRequest<'a> {
+    pub handle: i64,
+    pub namespace: Vec<u8>,
+    pub key: Vec<u8>,
+    pub value: Vec<u8>,
+    pub expected_version: Option<u64>,
+    pub identity: &'a CertIdentity,
+    pub pki: &'a PkiStore,
+    pub cert_serial: u64,
+    pub now_epoch_s: u64,
+}
+
+pub fn put_authorized_with_cert_request(
+    req: AuthorizedPutWithCertRequest<'_>,
+) -> Result<u64, DbError> {
+    intercept_rpc_with_pki(
+        req.pki,
+        req.cert_serial,
+        req.now_epoch_s,
+        req.identity,
         RpcClass::ClientWrite,
-        || submit_put(handle, namespace, key, value, expected_version),
+        || {
+            submit_put(
+                req.handle,
+                req.namespace,
+                req.key,
+                req.value,
+                req.expected_version,
+            )
+        },
     )
     .map_err(|err| DbError::invalid_argument(format!("unauthorized rpc: {}", err.reason)))?
 }
@@ -100,13 +143,37 @@ pub fn get_authorized_with_cert(
     cert_serial: u64,
     now_epoch_s: u64,
 ) -> Result<Option<Vec<u8>>, DbError> {
-    intercept_rpc_with_pki(
+    get_authorized_with_cert_request(AuthorizedGetWithCertRequest {
+        handle,
+        namespace,
+        key,
+        identity,
         pki,
         cert_serial,
         now_epoch_s,
-        identity,
+    })
+}
+
+pub struct AuthorizedGetWithCertRequest<'a> {
+    pub handle: i64,
+    pub namespace: Vec<u8>,
+    pub key: Vec<u8>,
+    pub identity: &'a CertIdentity,
+    pub pki: &'a PkiStore,
+    pub cert_serial: u64,
+    pub now_epoch_s: u64,
+}
+
+pub fn get_authorized_with_cert_request(
+    req: AuthorizedGetWithCertRequest<'_>,
+) -> Result<Option<Vec<u8>>, DbError> {
+    intercept_rpc_with_pki(
+        req.pki,
+        req.cert_serial,
+        req.now_epoch_s,
+        req.identity,
         RpcClass::ClientRead,
-        || read_point(handle, namespace, key),
+        || read_point(req.handle, req.namespace, req.key),
     )
     .map_err(|err| DbError::invalid_argument(format!("unauthorized rpc: {}", err.reason)))?
 }
@@ -119,6 +186,197 @@ pub fn scan(
     limit: usize,
 ) -> Result<Vec<(Vec<u8>, Vec<u8>, u64)>, DbError> {
     read_range(handle, namespace, start_key, end_key, limit)
+}
+
+pub fn get_consistent(
+    handle: i64,
+    namespace: Vec<u8>,
+    key: Vec<u8>,
+    consistency: ReadConsistency,
+    requested_ts: Option<u64>,
+) -> Result<Option<Vec<u8>>, DbError> {
+    read_point_consistent(handle, namespace, key, consistency, requested_ts)
+}
+
+pub fn scan_consistent(
+    handle: i64,
+    namespace: Vec<u8>,
+    start_key: Vec<u8>,
+    end_key: Vec<u8>,
+    limit: usize,
+    consistency: ReadConsistency,
+    requested_ts: Option<u64>,
+) -> Result<Vec<(Vec<u8>, Vec<u8>, u64)>, DbError> {
+    read_range_consistent(
+        handle,
+        namespace,
+        start_key,
+        end_key,
+        limit,
+        consistency,
+        requested_ts,
+    )
+}
+
+pub fn safe_time_diagnostics(
+    handle: i64,
+    budgets: SafeTimeLagBudget,
+) -> Result<SafeTimeDiagnostics, DbError> {
+    db_safe_time_diagnostics(handle, budgets)
+}
+
+pub fn health_status(handle: i64) -> Result<DbHealthStatus, DbError> {
+    db_health_status_impl(handle)
+}
+
+pub fn configure_membership_voters(handle: i64, voters: Vec<u64>) -> Result<(), DbError> {
+    let _ = (handle, voters);
+    Err(DbError::invalid_argument(
+        "UNAUTHORIZED_MEMBERSHIP_MUTATION: use configure_membership_voters_authorized",
+    ))
+}
+
+pub fn begin_joint_membership_change(
+    handle: i64,
+    change: MembershipChange,
+    log_index: u64,
+) -> Result<(), DbError> {
+    let _ = (handle, change, log_index);
+    Err(DbError::invalid_argument(
+        "UNAUTHORIZED_MEMBERSHIP_MUTATION: use begin_joint_membership_change_authorized",
+    ))
+}
+
+pub fn commit_joint_membership_change(handle: i64) -> Result<(), DbError> {
+    let _ = handle;
+    Err(DbError::invalid_argument(
+        "UNAUTHORIZED_MEMBERSHIP_MUTATION: use commit_joint_membership_change_authorized",
+    ))
+}
+
+pub fn abort_joint_membership_change(handle: i64) -> Result<(), DbError> {
+    let _ = handle;
+    Err(DbError::invalid_argument(
+        "UNAUTHORIZED_MEMBERSHIP_MUTATION: use abort_joint_membership_change_authorized",
+    ))
+}
+
+pub fn configure_membership_voters_authorized(
+    handle: i64,
+    voters: Vec<u64>,
+    identity: &CertIdentity,
+) -> Result<(), DbError> {
+    intercept_rpc(identity, RpcClass::ClusterAdmin, || {
+        membership_set_voters(handle, voters)
+    })
+    .map_err(|err| DbError::invalid_argument(format!("unauthorized rpc: {}", err.reason)))?
+}
+
+pub fn begin_joint_membership_change_authorized(
+    handle: i64,
+    change: MembershipChange,
+    log_index: u64,
+    identity: &CertIdentity,
+) -> Result<(), DbError> {
+    intercept_rpc(identity, RpcClass::ClusterAdmin, || {
+        membership_begin_joint_change(handle, change, log_index)
+    })
+    .map_err(|err| DbError::invalid_argument(format!("unauthorized rpc: {}", err.reason)))?
+}
+
+pub fn commit_joint_membership_change_authorized(
+    handle: i64,
+    identity: &CertIdentity,
+) -> Result<(), DbError> {
+    intercept_rpc(identity, RpcClass::ClusterAdmin, || {
+        membership_commit_joint_change(handle)
+    })
+    .map_err(|err| DbError::invalid_argument(format!("unauthorized rpc: {}", err.reason)))?
+}
+
+pub fn abort_joint_membership_change_authorized(
+    handle: i64,
+    identity: &CertIdentity,
+) -> Result<(), DbError> {
+    intercept_rpc(identity, RpcClass::ClusterAdmin, || {
+        membership_abort_joint_change(handle)
+    })
+    .map_err(|err| DbError::invalid_argument(format!("unauthorized rpc: {}", err.reason)))?
+}
+
+pub fn configure_membership_voters_authorized_with_cert(
+    handle: i64,
+    voters: Vec<u64>,
+    identity: &CertIdentity,
+    pki: &PkiStore,
+    cert_serial: u64,
+    now_epoch_s: u64,
+) -> Result<(), DbError> {
+    intercept_rpc_with_pki(
+        pki,
+        cert_serial,
+        now_epoch_s,
+        identity,
+        RpcClass::ClusterAdmin,
+        || membership_set_voters(handle, voters),
+    )
+    .map_err(|err| DbError::invalid_argument(format!("unauthorized rpc: {}", err.reason)))?
+}
+
+pub fn begin_joint_membership_change_authorized_with_cert(
+    handle: i64,
+    change: MembershipChange,
+    log_index: u64,
+    identity: &CertIdentity,
+    pki: &PkiStore,
+    cert_serial: u64,
+    now_epoch_s: u64,
+) -> Result<(), DbError> {
+    intercept_rpc_with_pki(
+        pki,
+        cert_serial,
+        now_epoch_s,
+        identity,
+        RpcClass::ClusterAdmin,
+        || membership_begin_joint_change(handle, change, log_index),
+    )
+    .map_err(|err| DbError::invalid_argument(format!("unauthorized rpc: {}", err.reason)))?
+}
+
+pub fn commit_joint_membership_change_authorized_with_cert(
+    handle: i64,
+    identity: &CertIdentity,
+    pki: &PkiStore,
+    cert_serial: u64,
+    now_epoch_s: u64,
+) -> Result<(), DbError> {
+    intercept_rpc_with_pki(
+        pki,
+        cert_serial,
+        now_epoch_s,
+        identity,
+        RpcClass::ClusterAdmin,
+        || membership_commit_joint_change(handle),
+    )
+    .map_err(|err| DbError::invalid_argument(format!("unauthorized rpc: {}", err.reason)))?
+}
+
+pub fn abort_joint_membership_change_authorized_with_cert(
+    handle: i64,
+    identity: &CertIdentity,
+    pki: &PkiStore,
+    cert_serial: u64,
+    now_epoch_s: u64,
+) -> Result<(), DbError> {
+    intercept_rpc_with_pki(
+        pki,
+        cert_serial,
+        now_epoch_s,
+        identity,
+        RpcClass::ClusterAdmin,
+        || membership_abort_joint_change(handle),
+    )
+    .map_err(|err| DbError::invalid_argument(format!("unauthorized rpc: {}", err.reason)))?
 }
 
 pub fn poll_cdc(
@@ -389,6 +647,61 @@ mod tests {
         .expect("cert-authorized get")
         .expect("value");
         assert_eq!(value, b"v".to_vec());
+        assert!(close(handle));
+    }
+
+    #[test]
+    fn unauthenticated_membership_wrappers_fail_closed_before_db_lookup() {
+        let err = configure_membership_voters(-1, vec![1, 2, 3]).expect_err("must fail closed");
+        assert!(err.message.contains("UNAUTHORIZED_MEMBERSHIP_MUTATION"));
+
+        let err = begin_joint_membership_change(-1, MembershipChange::AddVoter { node_id: 4 }, 10)
+            .expect_err("must fail closed");
+        assert!(err.message.contains("UNAUTHORIZED_MEMBERSHIP_MUTATION"));
+    }
+
+    #[test]
+    fn membership_mutations_require_cluster_admin_role() {
+        let dir = temp_dir();
+        let handle = open(&dir).expect("open");
+        let gateway = id(MembershipRole::Gateway);
+        let admin = id(MembershipRole::Admin);
+
+        let deny = configure_membership_voters_authorized(handle, vec![1, 2, 3], &gateway)
+            .expect_err("gateway must be denied");
+        assert!(deny.message.contains("unauthorized rpc"));
+
+        configure_membership_voters_authorized(handle, vec![1, 2, 3], &admin).expect("admin ok");
+        begin_joint_membership_change_authorized(
+            handle,
+            MembershipChange::AddVoter { node_id: 4 },
+            12,
+            &admin,
+        )
+        .expect("admin can start joint change");
+        commit_joint_membership_change_authorized(handle, &admin)
+            .expect("admin can commit joint change");
+        put(handle, b"core".to_vec(), b"k".to_vec(), b"v".to_vec(), None).expect("write");
+        assert!(close(handle));
+    }
+
+    #[test]
+    fn membership_mutations_support_valid_cluster_admin_cert() {
+        let dir = temp_dir();
+        let handle = open(&dir).expect("open");
+        let admin = id(MembershipRole::Admin);
+        let mut pki = PkiStore::default();
+        let cert = pki.issue_cert("cluster-a".to_string(), "node-1".to_string(), 100, 60);
+
+        configure_membership_voters_authorized_with_cert(
+            handle,
+            vec![1, 2, 3],
+            &admin,
+            &pki,
+            cert.serial,
+            120,
+        )
+        .expect("cert admin membership change");
         assert!(close(handle));
     }
 

@@ -18,6 +18,7 @@
 - CDC cursor paging/shard-filter tests for deterministic resume behavior.
 - CDC checkpoint ack monotonicity tests.
 - CDC checkpoint persistence and stream-resume cursor tests.
+- CDC checkpoint copy-on-write persist-failure tests (in-memory checkpoint must not advance).
 - CDC backfill+tail and duplicate-ack storm idempotency tests.
 - CDC page correctness gate tests (monotonic ordering + cursor non-regression).
 - CDC perf gate threshold tests (throughput ratio, backlog cap, replay lag cap).
@@ -60,11 +61,19 @@
   conflict index reporting, conflict truncation, duplicate retry idempotency, and commit-index
   advance bounds.
 - Joint membership abort rollback tests that restore outgoing voters and outgoing learners exactly.
+- Joint membership live-write dual-quorum integration tests (outgoing+incoming voter quorum).
+- Restart durability tests for Raft term/vote/commit/log-tail + membership/joint config.
+- Corrupt raft durable-state file tests that fail open path closed with typed `Io`.
+- Authenticated-only membership mutation tests (`ClusterAdmin` allow, wrappers fail-closed deny).
 - Safe-time observation tests proving `observe` keeps shard/region/global safe times fresh without
   manual recompute calls.
 - Audit redaction tests for delimiter-aware secrets (`token:abc`, `secret=foo;`,
   `Authorization: Bearer ...`) plus JSON key redaction.
 - WAL replay incremental decode tests for bounded-memory large-log replay and torn-tail truncation.
+- `close_db` flush-failure tests proving handle unregister still occurs.
+- Lock-poison tests proving public DB APIs return typed `Io` instead of panicking.
+- Replication convergence tests for deep conflict distance (`>16`) and no-progress retryable exits.
+- Persistence health-surface tests (error set on failure, cleared on later success).
 - Live-history invariant lane tests derived from real runtime DB traces (not only synthetic events).
 - Multipart upload resume/retry progress contract tests.
 - Reindex worker bounded/resumable stepping and remediation determinism tests.
@@ -93,11 +102,18 @@
 - `cargo test -p wrela_runtime db::codec::tests -- --nocapture`
 - `cargo test -p wrela_runtime db::raft::append::tests -- --nocapture`
 - `cargo test -p wrela_runtime db::replication:: -- --nocapture`
+- `cargo test -p wrela_runtime raft_membership_state_persists_across_restart -- --nocapture`
+- `cargo test -p wrela_runtime raft_durable_state_corruption_fails_open_fail_closed -- --nocapture`
+- `cargo test -p wrela_runtime membership_mutations_require_cluster_admin_role -- --nocapture`
+- `cargo test -p wrela_runtime close_db_removes_handle_even_when_clock_flush_fails -- --nocapture`
+- `cargo test -p wrela_runtime replication_converges_for_conflict_distance_beyond_legacy_cap -- --nocapture`
 - `cargo test -p wrela_runtime db::time::safe_time::tests -- --nocapture`
 - `cargo test -p wrela_runtime db::audit::tests -- --nocapture`
 - `cargo test -p wrela_runtime db::wal::segment::tests -- --nocapture`
 - `cargo test -p wrela_runtime --test db_invariant_history -- --nocapture`
 - `bash scripts/db-jepsen/check_history.sh`
+- `bash scripts/db-hardening/clippy-db.sh`
+- `bash scripts/db-hardening/check.sh`
 - `cargo test -p wrela_runtime cdc_page_ -- --nocapture`
 - `cargo test -p wrela_runtime cdc_checkpoint_persists_across_restart -- --nocapture`
 - `cargo test -p wrela_runtime cdc_stream_page_resumes_from_stored_checkpoint -- --nocapture`

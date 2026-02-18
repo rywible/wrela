@@ -137,19 +137,40 @@ pub fn handle_append_entries(
 
         match state.log_term_at(entry.index) {
             Some(existing_term) if existing_term == entry.term => {
-                // Duplicate entry at this index/term; nothing to do.
+                let existing_payload = state
+                    .log
+                    .get((entry.index.saturating_sub(1)) as usize)
+                    .map(|existing| existing.payload.as_slice());
+                if existing_payload != Some(entry.payload.as_slice()) {
+                    return reject(state, entry.index, appended_entries, state.commit_index);
+                }
+                // Duplicate entry at this index/term with matching payload.
             }
             Some(_) => {
                 state.truncate_log_from(entry.index);
                 for new_entry in &req.entries[idx..] {
-                    state.append_log_entry(new_entry.clone());
+                    if state.append_log_entry_checked(new_entry.clone()).is_err() {
+                        return reject(
+                            state,
+                            state.last_log_index().saturating_add(1),
+                            appended_entries,
+                            state.commit_index,
+                        );
+                    }
                     appended_entries += 1;
                 }
                 break;
             }
             None => {
                 for new_entry in &req.entries[idx..] {
-                    state.append_log_entry(new_entry.clone());
+                    if state.append_log_entry_checked(new_entry.clone()).is_err() {
+                        return reject(
+                            state,
+                            state.last_log_index().saturating_add(1),
+                            appended_entries,
+                            state.commit_index,
+                        );
+                    }
                     appended_entries += 1;
                 }
                 break;
@@ -450,5 +471,30 @@ mod tests {
             tracker.record_follower_response(4, &stale_failure),
             AppendDisposition::Stale
         );
+    }
+
+    #[test]
+    fn rejects_duplicate_index_term_with_mismatched_payload() {
+        let mut state = NodeState::with_timing(1, 0, 10);
+        state.append_log_entry(LogEntry {
+            index: 1,
+            term: 2,
+            payload: b"old".to_vec(),
+        });
+        let req = AppendEntries {
+            term: 2,
+            leader_id: 9,
+            prev_log_index: 0,
+            prev_log_term: 0,
+            leader_commit: 1,
+            entries: vec![LogEntry {
+                index: 1,
+                term: 2,
+                payload: b"new".to_vec(),
+            }],
+        };
+        let result = handle_append_entries(&mut state, &req, 5, 10);
+        assert!(!result.response.success);
+        assert_eq!(result.response.conflict_index, Some(1));
     }
 }

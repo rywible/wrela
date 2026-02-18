@@ -3,12 +3,21 @@ use crate::db::hlc::HybridLogicalClock;
 use crate::db::keyspace::{decode_user_key, encode_user_key};
 use crate::db::mvcc::memtable::Memtable;
 use crate::db::mvcc::occ::validate_expected_version;
+use crate::db::raft::append::handle_append_entries;
+use crate::db::raft::membership::{MembershipChange, MembershipConfig};
+use crate::db::raft::message::{AppendEntries, AppendEntriesResponse, LogEntry};
+use crate::db::raft::persistence::{
+    PersistedRaftState, load_persisted_raft_state, persist_raft_state,
+};
 use crate::db::raft::pipeline::{RaftCommand, build_append_frame};
+use crate::db::raft::state::NodeState;
 use crate::db::read::iterator::{RangeCancellation, RangeIterator};
+use crate::db::read::rejection::{StrongReadErrorCode, enforce_strong_read};
 use crate::db::read::{ReadPath, ReadPathStats};
 use crate::db::replication::ack::{LeaderAckInput, evaluate_leader_ack};
-use crate::db::replication::quorum::FollowerAppendResponse;
+use crate::db::replication::quorum::{FollowerAppendResponse, response_is_durable_ack};
 use crate::db::time::persistence::{load_hlc_state, persist_hlc_state};
+use crate::db::time::safe_time::{SafeTimeDiagnostics, SafeTimeLagBudget, SafeTimePropagator};
 use crate::db::time::uncertainty::{UncertaintyTracker, UncertaintyWindow};
 use crate::db::time::watermarks::SafeReadWatermarks;
 #[cfg(test)]
@@ -20,11 +29,12 @@ use crate::db::types::{
 use crate::db::wal::format::{Record, RecordKind};
 use crate::db::wal::recovery::recover;
 use crate::db::wal::segment::WalSegment;
-use crate::db::writer::DetachedWriterQueue;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
+use std::fs::{File, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 pub mod abi;
 pub mod admin_api;
@@ -75,11 +85,11 @@ pub struct DbEngine {
     memtable: Memtable,
     read_path: ReadPath,
     wal: WalSegment,
-    writer_queue: DetachedWriterQueue<BatchOp>,
-    raft_voters: usize,
+    replication: ReplicationState,
     raft_current_term: u64,
     raft_last_log_index: u64,
     raft_last_committed_index: u64,
+    #[cfg(test)]
     pending_append_responses: Vec<FollowerAppendResponse>,
     clock: HybridLogicalClock,
     next_txn_id: u64,
@@ -92,6 +102,38 @@ pub struct DbEngine {
     wal_path: PathBuf,
     uncertainty: UncertaintyTracker,
     watermarks: SafeReadWatermarks,
+    safe_time: SafeTimePropagator,
+    clock_persist_error: Option<String>,
+    clock_persist_error_at: Option<u64>,
+    raft_persist_error: Option<String>,
+    raft_persist_error_at: Option<u64>,
+    cdc_checkpoint_persist_error: Option<String>,
+    cdc_checkpoint_persist_error_at: Option<u64>,
+    #[cfg(test)]
+    fail_next_cdc_checkpoint_persist: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ReplicationState {
+    leader: NodeState,
+    followers: HashMap<u64, NodeState>,
+    membership: MembershipConfig,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadConsistency {
+    Strong,
+    Eventual,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DbHealthStatus {
+    pub clock_persist_error: Option<String>,
+    pub clock_persist_error_at: Option<u64>,
+    pub raft_persist_error: Option<String>,
+    pub raft_persist_error_at: Option<u64>,
+    pub cdc_checkpoint_persist_error: Option<String>,
+    pub cdc_checkpoint_persist_error_at: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,12 +159,39 @@ struct SnapshotRecord {
     restored_ts: Option<u64>,
 }
 
+#[derive(Debug, Clone)]
+enum StagedApplyOp {
+    Put {
+        user_key: Vec<u8>,
+        cache_key: Vec<u8>,
+        namespace: Vec<u8>,
+        key: Vec<u8>,
+        value: Vec<u8>,
+        version: u64,
+    },
+    Delete {
+        user_key: Vec<u8>,
+        cache_key: Vec<u8>,
+        namespace: Vec<u8>,
+        key: Vec<u8>,
+        version: u64,
+    },
+}
+
 const DEFAULT_POINT_READ_IN_FLIGHT_LIMIT: usize = 64;
 const DEFAULT_RANGE_READ_IN_FLIGHT_LIMIT: usize = 8;
 const DEFAULT_POINT_READ_CACHE_CAPACITY: usize = 1024;
 const DEFAULT_NEGATIVE_BLOOM_CAPACITY: usize = 1024;
 const LOCAL_NODE_ID: u64 = 1;
 const DEFAULT_MAX_CLOCK_SKEW_MS: u64 = 25;
+const LOCAL_REGION_ID: &str = "local";
+
+fn now_epoch_s() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|dur| dur.as_secs())
+        .unwrap_or(0)
+}
 
 impl DbEngine {
     pub fn open(path: &Path) -> Result<Self, DbError> {
@@ -132,11 +201,29 @@ impl DbEngine {
         let clock = HybridLogicalClock::new();
         let uncertainty = UncertaintyTracker::new(DEFAULT_MAX_CLOCK_SKEW_MS);
         let watermarks = SafeReadWatermarks::new();
+        let mut safe_time = SafeTimePropagator::default();
+        let mut leader = NodeState::with_timing(LOCAL_NODE_ID, 0, 10);
+        leader.current_term = 1;
+        let mut membership = MembershipConfig::new([LOCAL_NODE_ID])
+            .map_err(|err| DbError::invalid_argument(format!("membership init failed: {err:?}")))?;
+        if let Some(persisted) =
+            load_persisted_raft_state(path).map_err(|err| DbError::io(err.to_string()))?
+        {
+            membership = persisted
+                .restore(&mut leader, 0, 10)
+                .map_err(|err| DbError::io(err.to_string()))?;
+        }
+        let replication = ReplicationState {
+            leader,
+            followers: HashMap::new(),
+            membership,
+        };
 
         if let Some(persisted) = load_hlc_state(path).map_err(|err| DbError::io(err.to_string()))? {
             clock.observe_packed(persisted);
             uncertainty.observe_remote_packed(persisted);
             watermarks.observe(LOCAL_NODE_ID, persisted);
+            safe_time.observe_shard_safe_time("clock", LOCAL_REGION_ID, persisted);
         }
 
         let mut memtable = Memtable::default();
@@ -150,11 +237,17 @@ impl DbEngine {
             clock.observe_packed(rec.version);
             uncertainty.observe_remote_packed(rec.version);
             watermarks.observe(LOCAL_NODE_ID, rec.version);
+            safe_time.observe_shard_safe_time(
+                String::from_utf8_lossy(&rec.namespace).to_string(),
+                LOCAL_REGION_ID,
+                rec.version,
+            );
         }
         let current_clock = clock.peek().pack();
         watermarks.observe(LOCAL_NODE_ID, current_clock);
+        safe_time.observe_shard_safe_time("clock", LOCAL_REGION_ID, current_clock);
         persist_hlc_state(path, current_clock).map_err(|err| DbError::io(err.to_string()))?;
-        Ok(Self {
+        let mut engine = Self {
             memtable,
             read_path: ReadPath::new(
                 DEFAULT_POINT_READ_IN_FLIGHT_LIMIT,
@@ -163,11 +256,11 @@ impl DbEngine {
                 DEFAULT_NEGATIVE_BLOOM_CAPACITY,
             ),
             wal,
-            writer_queue: DetachedWriterQueue::new(256),
-            raft_voters: 1,
+            replication,
             raft_current_term: 1,
             raft_last_log_index: 0,
             raft_last_committed_index: 0,
+            #[cfg(test)]
             pending_append_responses: Vec::new(),
             clock,
             next_txn_id: 1,
@@ -180,22 +273,83 @@ impl DbEngine {
             wal_path: path.to_path_buf(),
             uncertainty,
             watermarks,
-        })
+            safe_time,
+            clock_persist_error: None,
+            clock_persist_error_at: None,
+            raft_persist_error: None,
+            raft_persist_error_at: None,
+            cdc_checkpoint_persist_error: None,
+            cdc_checkpoint_persist_error_at: None,
+            #[cfg(test)]
+            fail_next_cdc_checkpoint_persist: false,
+        };
+        engine.raft_current_term = engine.replication.leader.current_term.max(1);
+        engine.raft_last_log_index = engine.replication.leader.last_log_index();
+        engine.raft_last_committed_index = engine.replication.leader.commit_index;
+        engine.refresh_replication_followers();
+        Ok(engine)
     }
 
     fn persist_clock_state(&self, packed: u64) -> Result<(), DbError> {
         persist_hlc_state(&self.wal_path, packed).map_err(|err| DbError::io(err.to_string()))
     }
 
-    fn tick_clock(&mut self) -> Result<u64, DbError> {
+    fn tick_clock(&mut self) -> u64 {
         let packed = self.clock.tick().pack();
         self.watermarks.observe(LOCAL_NODE_ID, packed);
-        self.persist_clock_state(packed)?;
-        Ok(packed)
+        packed
     }
 
-    fn clear_writer_queue(&mut self) {
-        while self.writer_queue.pop().is_some() {}
+    fn persist_clock_state_best_effort(&mut self, packed: u64) {
+        if let Err(err) = self.persist_clock_state(packed) {
+            self.clock_persist_error = Some(err.message);
+            self.clock_persist_error_at = Some(now_epoch_s());
+        } else {
+            self.clock_persist_error = None;
+            self.clock_persist_error_at = None;
+        }
+    }
+
+    fn persist_raft_state_now(&self) -> Result<(), DbError> {
+        let persisted =
+            PersistedRaftState::capture(&self.replication.leader, &self.replication.membership);
+        persist_raft_state(&self.wal_path, &persisted).map_err(|err| DbError::io(err.to_string()))
+    }
+
+    fn persist_raft_state_best_effort(&mut self) {
+        if let Err(err) = self.persist_raft_state_now() {
+            self.raft_persist_error = Some(err.message);
+            self.raft_persist_error_at = Some(now_epoch_s());
+        } else {
+            self.raft_persist_error = None;
+            self.raft_persist_error_at = None;
+        }
+    }
+
+    fn persist_raft_state_required(&mut self) -> Result<(), DbError> {
+        match self.persist_raft_state_now() {
+            Ok(()) => {
+                self.raft_persist_error = None;
+                self.raft_persist_error_at = None;
+                Ok(())
+            }
+            Err(err) => {
+                self.raft_persist_error = Some(err.message.clone());
+                self.raft_persist_error_at = Some(now_epoch_s());
+                Err(err)
+            }
+        }
+    }
+
+    pub fn health_status(&self) -> DbHealthStatus {
+        DbHealthStatus {
+            clock_persist_error: self.clock_persist_error.clone(),
+            clock_persist_error_at: self.clock_persist_error_at,
+            raft_persist_error: self.raft_persist_error.clone(),
+            raft_persist_error_at: self.raft_persist_error_at,
+            cdc_checkpoint_persist_error: self.cdc_checkpoint_persist_error.clone(),
+            cdc_checkpoint_persist_error_at: self.cdc_checkpoint_persist_error_at,
+        }
     }
 
     fn validate_batch(batch: &[BatchOp]) -> Result<(), DbError> {
@@ -246,15 +400,25 @@ impl DbEngine {
 
     pub fn submit_batch(&mut self, batch: &[BatchOp]) -> Result<u64, DbError> {
         Self::validate_batch(batch)?;
-        // Drop leftovers from prior failed submits; each submit must be isolated.
-        self.clear_writer_queue();
-        let frame = build_append_frame(batch);
-        let required_index = self
-            .raft_last_log_index
-            .saturating_add(frame.command_count as u64);
-        let mut shadow_versions: HashMap<Vec<u8>, Option<u64>> = HashMap::new();
 
-        for (idx, op) in batch.iter().enumerate() {
+        let frame = build_append_frame(batch);
+        let required_term = self
+            .replication
+            .leader
+            .current_term
+            .max(self.raft_current_term);
+        let required_index = self
+            .replication
+            .leader
+            .last_log_index()
+            .saturating_add(frame.command_count as u64);
+
+        let mut shadow_versions: HashMap<Vec<u8>, Option<u64>> = HashMap::new();
+        let mut staged_records = Vec::with_capacity(batch.len());
+        let mut staged_ops = Vec::with_capacity(batch.len());
+        let mut max_version = self.clock.peek().pack();
+
+        for op in batch {
             let (namespace, key, expected_version) = match op {
                 BatchOp::Put {
                     namespace,
@@ -275,106 +439,361 @@ impl DbEngine {
                 .unwrap_or_else(|| self.memtable.latest_version(&user_key));
             validate_expected_version(expected_version, current)?;
 
-            // Maintain sequential OCC behavior for duplicate keys in the same batch.
-            let synthetic_version = Some(u64::MAX - idx as u64);
-            shadow_versions.insert(user_key, synthetic_version);
-        }
+            let version = self.tick_clock();
+            max_version = max_version.max(version);
+            let cache_key = user_key.clone();
+            shadow_versions.insert(user_key.clone(), Some(version));
 
-        for command in &frame.commands {
-            if let Err(err) = self.writer_queue.push(command_to_batch_op(command)) {
-                self.clear_writer_queue();
-                return Err(err);
+            match op {
+                BatchOp::Put {
+                    namespace,
+                    key,
+                    value,
+                    ..
+                } => {
+                    staged_records.push(Record {
+                        kind: RecordKind::Put,
+                        namespace: namespace.clone(),
+                        key: key.clone(),
+                        value: value.clone(),
+                        version,
+                    });
+                    staged_ops.push(StagedApplyOp::Put {
+                        user_key,
+                        cache_key,
+                        namespace: namespace.clone(),
+                        key: key.clone(),
+                        value: value.clone(),
+                        version,
+                    });
+                }
+                BatchOp::Delete { namespace, key, .. } => {
+                    staged_records.push(Record {
+                        kind: RecordKind::Delete,
+                        namespace: namespace.clone(),
+                        key: key.clone(),
+                        value: Vec::new(),
+                        version,
+                    });
+                    staged_ops.push(StagedApplyOp::Delete {
+                        user_key,
+                        cache_key,
+                        namespace: namespace.clone(),
+                        key: key.clone(),
+                        version,
+                    });
+                }
             }
         }
 
+        let staged_entries: Vec<LogEntry> = frame
+            .commands
+            .iter()
+            .enumerate()
+            .map(|(offset, command)| LogEntry {
+                index: self
+                    .replication
+                    .leader
+                    .last_log_index()
+                    .saturating_add(offset as u64)
+                    .saturating_add(1),
+                term: required_term,
+                payload: command_payload(command),
+            })
+            .collect();
+
+        self.replicate_entries_for_quorum(required_term, required_index, &staged_entries)?;
+
+        self.wal
+            .append_batch(&staged_records)
+            .map_err(|err| DbError::io(err.to_string()))?;
+        self.apply_staged_ops(&staged_ops);
+
+        self.replication.leader.commit_index = required_index;
+        self.raft_last_log_index = self.replication.leader.last_log_index();
+        self.raft_last_committed_index = self.replication.leader.commit_index;
+        self.raft_current_term = self.replication.leader.current_term;
+        self.persist_raft_state_best_effort();
+        self.persist_clock_state_best_effort(max_version);
+        Ok(max_version)
+    }
+
+    fn refresh_replication_followers(&mut self) {
+        let mut membership_nodes = self.replication.membership.voters().clone();
+        membership_nodes.extend(self.replication.membership.learners().iter().copied());
+        if let Some(joint) = self.replication.membership.joint() {
+            membership_nodes.extend(joint.outgoing_voters.iter().copied());
+            membership_nodes.extend(joint.incoming_voters.iter().copied());
+            membership_nodes.extend(joint.outgoing_learners.iter().copied());
+        }
+
+        self.replication
+            .followers
+            .retain(|node_id, _| *node_id != LOCAL_NODE_ID && membership_nodes.contains(node_id));
+        for node_id in membership_nodes {
+            if node_id == LOCAL_NODE_ID {
+                continue;
+            }
+            self.replication
+                .followers
+                .entry(node_id)
+                .or_insert_with(|| NodeState::with_timing(node_id, 0, 10));
+        }
+    }
+
+    pub fn set_membership_voters(
+        &mut self,
+        voters: impl IntoIterator<Item = u64>,
+    ) -> Result<(), DbError> {
+        let previous_membership = self.replication.membership.clone();
+        let previous_followers = self.replication.followers.clone();
+        self.replication.membership = MembershipConfig::new(voters)
+            .map_err(|err| DbError::invalid_argument(format!("membership invalid: {err:?}")))?;
+        self.refresh_replication_followers();
+        if let Err(err) = self.persist_raft_state_required() {
+            self.replication.membership = previous_membership;
+            self.replication.followers = previous_followers;
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    pub fn begin_membership_change(
+        &mut self,
+        change: MembershipChange,
+        log_index: u64,
+    ) -> Result<(), DbError> {
+        let previous_membership = self.replication.membership.clone();
+        let previous_followers = self.replication.followers.clone();
+        self.replication
+            .membership
+            .begin_joint_change(change, log_index)
+            .map_err(|err| {
+                DbError::invalid_argument(format!("membership change rejected: {err:?}"))
+            })?;
+        self.refresh_replication_followers();
+        if let Err(err) = self.persist_raft_state_required() {
+            self.replication.membership = previous_membership;
+            self.replication.followers = previous_followers;
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    pub fn commit_membership_change(&mut self) -> Result<(), DbError> {
+        let previous_membership = self.replication.membership.clone();
+        let previous_followers = self.replication.followers.clone();
+        self.replication
+            .membership
+            .commit_joint_change()
+            .map_err(|err| {
+                DbError::invalid_argument(format!("membership commit rejected: {err:?}"))
+            })?;
+        self.refresh_replication_followers();
+        if let Err(err) = self.persist_raft_state_required() {
+            self.replication.membership = previous_membership;
+            self.replication.followers = previous_followers;
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    pub fn abort_membership_change(&mut self) -> Result<(), DbError> {
+        let previous_membership = self.replication.membership.clone();
+        let previous_followers = self.replication.followers.clone();
+        self.replication
+            .membership
+            .abort_joint_change()
+            .map_err(|err| {
+                DbError::invalid_argument(format!("membership abort rejected: {err:?}"))
+            })?;
+        self.refresh_replication_followers();
+        if let Err(err) = self.persist_raft_state_required() {
+            self.replication.membership = previous_membership;
+            self.replication.followers = previous_followers;
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    fn replicate_entries_for_quorum(
+        &mut self,
+        required_term: u64,
+        required_index: u64,
+        entries: &[LogEntry],
+    ) -> Result<(), DbError> {
+        let mut leader = self.replication.leader.clone();
+        for entry in entries {
+            leader
+                .append_log_entry_checked(entry.clone())
+                .map_err(|_| DbError::invalid_argument("non-contiguous leader log append"))?;
+        }
+
+        let mut followers = self.replication.followers.clone();
+        let mut voter_ids = self.replication.membership.voters().clone();
+        if let Some(joint) = self.replication.membership.joint() {
+            voter_ids.extend(joint.outgoing_voters.iter().copied());
+            voter_ids.extend(joint.incoming_voters.iter().copied());
+        }
+        let mut follower_responses = Vec::new();
+        let mut replication_error: Option<DbError> = None;
+        for node_id in voter_ids {
+            if node_id == LOCAL_NODE_ID {
+                continue;
+            }
+            let follower_state = followers
+                .entry(node_id)
+                .or_insert_with(|| NodeState::with_timing(node_id, 0, 10));
+            match replicate_to_follower(&leader, follower_state, leader.commit_index) {
+                Ok(response) => {
+                    follower_responses.push(FollowerAppendResponse {
+                        node_id,
+                        response,
+                        replication_latency_ns: 0,
+                        fsync_latency_ns: 0,
+                    });
+                }
+                Err(err) => {
+                    if replication_error.is_none() {
+                        replication_error = Some(err);
+                    }
+                }
+            }
+        }
+
+        #[cfg(test)]
+        if !self.pending_append_responses.is_empty() {
+            follower_responses = self.pending_append_responses.clone();
+        }
+
         let ack_decision = evaluate_leader_ack(&LeaderAckInput {
-            voters: self.raft_voters,
+            voters: self.replication.membership.voters().len(),
             leader_durable: true,
-            required_term: self.raft_current_term,
+            required_term,
             required_index,
-            follower_responses: self.pending_append_responses.clone(),
+            follower_responses: follower_responses.clone(),
         });
-        if !ack_decision.ack_emitted {
-            self.clear_writer_queue();
+        let mut durable_acks = BTreeSet::from([LOCAL_NODE_ID]);
+        for follower in &follower_responses {
+            if response_is_durable_ack(&follower.response, required_term, required_index) {
+                durable_acks.insert(follower.node_id);
+            }
+        }
+        if !ack_decision.ack_emitted
+            || !self
+                .replication
+                .membership
+                .has_durable_quorum(&durable_acks)
+        {
+            if let Some(err) = replication_error {
+                return Err(err);
+            }
             return Err(DbError::limit(format!(
                 "durability quorum not reached; durable_acks={} quorum={}",
                 ack_decision.durable_acks, ack_decision.quorum_size
             )));
         }
 
-        let mut max_version = self.clock.peek().pack();
-        while let Some(op) = self.writer_queue.pop() {
+        self.replication.leader = leader;
+        self.replication.followers = followers;
+        #[cfg(test)]
+        self.pending_append_responses.clear();
+        Ok(())
+    }
+
+    fn apply_staged_ops(&mut self, staged_ops: &[StagedApplyOp]) {
+        let mut max_applied_version = None;
+        for op in staged_ops {
             match op {
-                BatchOp::Put {
+                StagedApplyOp::Put {
+                    user_key,
+                    cache_key,
                     namespace,
                     key,
                     value,
-                    expected_version,
+                    version,
                 } => {
-                    let user_key = encode_user_key(&namespace, &key)?;
-                    validate_expected_version(
-                        expected_version,
-                        self.memtable.latest_version(&user_key),
-                    )?;
-                    let version = self.tick_clock()?;
-                    let rec = Record {
-                        kind: RecordKind::Put,
-                        namespace: namespace.clone(),
-                        key: key.clone(),
-                        value: value.clone(),
-                        version,
-                    };
-                    self.wal
-                        .append(&rec)
-                        .map_err(|err| DbError::io(err.to_string()))?;
-                    self.memtable.apply(user_key, version, Some(value.clone()));
+                    self.memtable
+                        .apply(user_key.clone(), *version, Some(value.clone()));
                     self.cdc
-                        .emit_put(namespace.clone(), key.clone(), value, version);
-                    self.read_path
-                        .observe_present_key(&namespace_key(namespace, key)?);
-                    max_version = max_version.max(version);
+                        .emit_put(namespace.clone(), key.clone(), value.clone(), *version);
+                    self.read_path.observe_present_key(cache_key);
+                    self.safe_time.observe_shard_safe_time(
+                        String::from_utf8_lossy(namespace).to_string(),
+                        LOCAL_REGION_ID,
+                        *version,
+                    );
+                    max_applied_version = Some(max_applied_version.unwrap_or(0).max(*version));
                 }
-                BatchOp::Delete {
+                StagedApplyOp::Delete {
+                    user_key,
+                    cache_key,
                     namespace,
                     key,
-                    expected_version,
+                    version,
                 } => {
-                    let user_key = encode_user_key(&namespace, &key)?;
-                    validate_expected_version(
-                        expected_version,
-                        self.memtable.latest_version(&user_key),
-                    )?;
-                    let version = self.tick_clock()?;
-                    let rec = Record {
-                        kind: RecordKind::Delete,
-                        namespace: namespace.clone(),
-                        key: key.clone(),
-                        value: Vec::new(),
-                        version,
-                    };
-                    self.wal
-                        .append(&rec)
-                        .map_err(|err| DbError::io(err.to_string()))?;
-                    self.memtable.apply(user_key, version, None);
+                    self.memtable.apply(user_key.clone(), *version, None);
                     self.cdc
-                        .emit_delete(namespace.clone(), key.clone(), version);
-                    self.read_path
-                        .observe_absent_key(&namespace_key(namespace, key)?);
-                    max_version = max_version.max(version);
+                        .emit_delete(namespace.clone(), key.clone(), *version);
+                    self.read_path.observe_absent_key(cache_key);
+                    self.safe_time.observe_shard_safe_time(
+                        String::from_utf8_lossy(namespace).to_string(),
+                        LOCAL_REGION_ID,
+                        *version,
+                    );
+                    max_applied_version = Some(max_applied_version.unwrap_or(0).max(*version));
                 }
             }
         }
-        self.raft_last_log_index = required_index;
-        self.raft_last_committed_index = required_index;
-        self.pending_append_responses.clear();
-        Ok(max_version)
+        if let Some(version) = max_applied_version {
+            self.safe_time
+                .observe_shard_safe_time("clock", LOCAL_REGION_ID, version);
+        }
     }
 
-    pub fn read_point(&self, namespace: &[u8], key: &[u8]) -> Result<Option<Vec<u8>>, DbError> {
-        let read_version = self
-            .watermarks
-            .node_safe_read(LOCAL_NODE_ID)
-            .unwrap_or_else(|| self.clock.peek().pack());
+    fn read_version_for_consistency(
+        &self,
+        consistency: ReadConsistency,
+        requested_ts: Option<u64>,
+    ) -> Result<u64, DbError> {
+        match consistency {
+            ReadConsistency::Eventual => Ok(self
+                .watermarks
+                .node_safe_read(LOCAL_NODE_ID)
+                .unwrap_or_else(|| self.clock.peek().pack())),
+            ReadConsistency::Strong => {
+                let node_safe = self.watermarks.node_safe_read(LOCAL_NODE_ID);
+                let propagated_safe = self.safe_time.global_safe_time();
+                let safe_time = match (propagated_safe, node_safe) {
+                    (Some(propagated), Some(node)) => Some(propagated.max(node)),
+                    (Some(propagated), None) => Some(propagated),
+                    (None, Some(node)) => Some(node),
+                    (None, None) => None,
+                };
+                let requested = requested_ts
+                    .unwrap_or_else(|| safe_time.unwrap_or_else(|| self.clock.peek().pack()));
+                let safe_time = safe_time.unwrap_or(requested);
+                let uncertainty = self.uncertainty.window_for_read_packed(requested);
+                enforce_strong_read(requested, safe_time, uncertainty).map_err(|err| {
+                    let token = match err.code {
+                        StrongReadErrorCode::SafeTimeLag => "STRONG_READ_SAFE_TIME_LAG",
+                        StrongReadErrorCode::UncertaintyWindow => "STRONG_READ_UNCERTAINTY_WINDOW",
+                    };
+                    DbError::limit(format!("{token}: {}", err.explain))
+                })?;
+                Ok(requested)
+            }
+        }
+    }
+
+    pub fn read_point(
+        &self,
+        namespace: &[u8],
+        key: &[u8],
+        consistency: ReadConsistency,
+        requested_ts: Option<u64>,
+    ) -> Result<Option<Vec<u8>>, DbError> {
+        let read_version = self.read_version_for_consistency(consistency, requested_ts)?;
         let user_key = encode_user_key(namespace, key)?;
         self.read_path.read_point(&user_key, || {
             self.memtable
@@ -383,6 +802,7 @@ impl DbEngine {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn read_range_iter(
         &self,
         namespace: &[u8],
@@ -390,11 +810,10 @@ impl DbEngine {
         end_key: &[u8],
         limit: usize,
         cancellation: RangeCancellation,
+        consistency: ReadConsistency,
+        requested_ts: Option<u64>,
     ) -> Result<RangeIterator, DbError> {
-        let read_version = self
-            .watermarks
-            .node_safe_read(LOCAL_NODE_ID)
-            .unwrap_or_else(|| self.clock.peek().pack());
+        let read_version = self.read_version_for_consistency(consistency, requested_ts)?;
         let start = encode_user_key(namespace, start_key)?;
         let end = encode_user_key(namespace, end_key)?;
         let rows = self
@@ -409,6 +828,8 @@ impl DbEngine {
         start_key: &[u8],
         end_key: &[u8],
         limit: usize,
+        consistency: ReadConsistency,
+        requested_ts: Option<u64>,
     ) -> Result<Vec<(Vec<u8>, Vec<u8>, u64)>, DbError> {
         let mut iter = self.read_range_iter(
             namespace,
@@ -416,6 +837,8 @@ impl DbEngine {
             end_key,
             limit,
             RangeCancellation::new(),
+            consistency,
+            requested_ts,
         )?;
         let mut rows = Vec::new();
         while let Some(row) = iter.try_next()? {
@@ -432,7 +855,7 @@ impl DbEngine {
     pub fn txn_begin(&mut self) -> Result<u64, DbError> {
         let txn_id = self.next_txn_id;
         self.next_txn_id = self.next_txn_id.saturating_add(1);
-        let start_ts = self.tick_clock()?;
+        let start_ts = self.tick_clock();
         self.txns.insert(
             txn_id,
             TxnRecord {
@@ -453,7 +876,7 @@ impl DbEngine {
             .ok_or_else(|| DbError::invalid_argument("unknown txn id"))?;
         match state {
             TxnState::Active => {
-                let prepared_ts = self.tick_clock()?.max(start_ts);
+                let prepared_ts = self.tick_clock().max(start_ts);
                 let record = self
                     .txns
                     .get_mut(&txn_id)
@@ -480,7 +903,7 @@ impl DbEngine {
             .ok_or_else(|| DbError::invalid_argument("unknown txn id"))?;
         match state {
             TxnState::Active | TxnState::Prepared => {
-                let commit_ts = self.tick_clock()?.max(lower_bound);
+                let commit_ts = self.tick_clock().max(lower_bound);
                 let record = self
                     .txns
                     .get_mut(&txn_id)
@@ -518,7 +941,7 @@ impl DbEngine {
     pub fn snapshot_start(&mut self) -> Result<u64, DbError> {
         let snapshot_id = self.next_snapshot_id;
         self.next_snapshot_id = self.next_snapshot_id.saturating_add(1);
-        let created_ts = self.tick_clock()?;
+        let created_ts = self.tick_clock();
         self.snapshots.insert(
             snapshot_id,
             SnapshotRecord {
@@ -543,7 +966,7 @@ impl DbEngine {
             .get(&snapshot_id)
             .map(|r| r.created_ts)
             .ok_or_else(|| DbError::invalid_argument("unknown snapshot id"))?;
-        let restored_ts = self.tick_clock()?.max(created_ts);
+        let restored_ts = self.tick_clock().max(created_ts);
         let record = self
             .snapshots
             .get_mut(&snapshot_id)
@@ -707,13 +1130,41 @@ impl DbEngine {
     }
 
     fn cdc_ack(&mut self, stream: &str, commit_seq: u64) -> Result<u64, DbError> {
-        let checkpoint = self.cdc_checkpoints.ack(stream, commit_seq);
-        persist_cdc_checkpoints(&self.wal_path, &self.cdc_checkpoints)?;
+        let mut staged = self.cdc_checkpoints.clone();
+        let checkpoint = staged.ack(stream, commit_seq);
+        let persist_result = persist_cdc_checkpoints(
+            &self.wal_path,
+            &staged,
+            #[cfg(test)]
+            self.fail_next_cdc_checkpoint_persist,
+        );
+        #[cfg(test)]
+        {
+            self.fail_next_cdc_checkpoint_persist = false;
+        }
+        if let Err(err) = persist_result {
+            self.cdc_checkpoint_persist_error = Some(err.message.clone());
+            self.cdc_checkpoint_persist_error_at = Some(now_epoch_s());
+            return Err(err);
+        }
+        self.cdc_checkpoints = staged;
+        self.cdc_checkpoint_persist_error = None;
+        self.cdc_checkpoint_persist_error_at = None;
         Ok(checkpoint)
     }
 
     fn cdc_checkpoint(&self, stream: &str) -> Option<u64> {
         self.cdc_checkpoints.checkpoint(stream)
+    }
+
+    pub fn safe_time_diagnostics(&self, budgets: SafeTimeLagBudget) -> SafeTimeDiagnostics {
+        self.safe_time
+            .diagnostics(self.clock.peek().pack(), budgets)
+    }
+
+    #[cfg(test)]
+    fn inject_cdc_checkpoint_persist_failure(&mut self) {
+        self.fail_next_cdc_checkpoint_persist = true;
     }
 }
 
@@ -763,53 +1214,163 @@ fn load_cdc_checkpoints(wal_path: &Path) -> Result<crate::db::cdc::CdcCheckpoint
 fn persist_cdc_checkpoints(
     wal_path: &Path,
     store: &crate::db::cdc::CdcCheckpointStore,
+    #[cfg(test)] fail_dir_fsync: bool,
 ) -> Result<(), DbError> {
     let path = cdc_checkpoint_path_from(wal_path);
     let payload = serde_json::to_vec_pretty(store.checkpoints())
         .map_err(|err| DbError::io(err.to_string()))?;
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, payload).map_err(|err| DbError::io(err.to_string()))?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&tmp)
+        .map_err(|err| DbError::io(err.to_string()))?;
+    file.write_all(&payload)
+        .map_err(|err| DbError::io(err.to_string()))?;
+    file.sync_data()
+        .map_err(|err| DbError::io(err.to_string()))?;
     std::fs::rename(&tmp, &path).map_err(|err| DbError::io(err.to_string()))?;
+    #[cfg(test)]
+    if fail_dir_fsync {
+        return Err(DbError::io("injected cdc checkpoint dir fsync failure"));
+    }
+    fsync_parent_dir(&path)?;
     Ok(())
 }
 
-fn namespace_key(namespace: Vec<u8>, key: Vec<u8>) -> Result<Vec<u8>, DbError> {
-    encode_user_key(&namespace, &key)
+fn fsync_parent_dir(path: &Path) -> Result<(), DbError> {
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
+    let dir = File::open(parent).map_err(|err| DbError::io(err.to_string()))?;
+    dir.sync_all().map_err(|err| DbError::io(err.to_string()))
 }
 
-fn command_to_batch_op(command: &RaftCommand) -> BatchOp {
+fn append_bytes_part(out: &mut Vec<u8>, part: &[u8]) {
+    out.extend_from_slice(&(part.len() as u32).to_be_bytes());
+    out.extend_from_slice(part);
+}
+
+fn command_payload(command: &RaftCommand) -> Vec<u8> {
+    let mut out = Vec::new();
     match command {
         RaftCommand::Put {
             namespace,
             key,
             value,
             expected_version,
-        } => BatchOp::Put {
-            namespace: namespace.clone(),
-            key: key.clone(),
-            value: value.clone(),
-            expected_version: *expected_version,
-        },
+        } => {
+            out.push(b'P');
+            append_bytes_part(&mut out, namespace);
+            append_bytes_part(&mut out, key);
+            append_bytes_part(&mut out, value);
+            out.extend_from_slice(&expected_version.unwrap_or(0).to_be_bytes());
+        }
         RaftCommand::Delete {
             namespace,
             key,
             expected_version,
-        } => BatchOp::Delete {
-            namespace: namespace.clone(),
-            key: key.clone(),
-            expected_version: *expected_version,
-        },
+        } => {
+            out.push(b'D');
+            append_bytes_part(&mut out, namespace);
+            append_bytes_part(&mut out, key);
+            out.extend_from_slice(&expected_version.unwrap_or(0).to_be_bytes());
+        }
     }
+    out
+}
+
+fn replicate_to_follower(
+    leader: &NodeState,
+    follower: &mut NodeState,
+    leader_commit: u64,
+) -> Result<AppendEntriesResponse, DbError> {
+    let mut next_index = follower
+        .last_log_index()
+        .saturating_add(1)
+        .min(leader.last_log_index().saturating_add(1));
+    let max_attempts = leader.last_log_index().saturating_add(2).max(1);
+    let mut attempts = 0u64;
+    while attempts < max_attempts {
+        attempts = attempts.saturating_add(1);
+        let prev_log_index = next_index.saturating_sub(1);
+        let prev_log_term = leader.log_term_at(prev_log_index).unwrap_or(0);
+        let entries = leader
+            .log
+            .iter()
+            .filter(|entry| entry.index >= next_index)
+            .cloned()
+            .collect::<Vec<_>>();
+        let req = AppendEntries {
+            term: leader.current_term,
+            leader_id: leader.node_id,
+            prev_log_index,
+            prev_log_term,
+            leader_commit,
+            entries,
+        };
+        let result = handle_append_entries(follower, &req, 0, 10);
+        if result.response.success {
+            return Ok(result.response);
+        }
+        if result.response.term > leader.current_term {
+            return Ok(result.response);
+        }
+        let Some(conflict_index) = result.response.conflict_index else {
+            return Ok(result.response);
+        };
+        let bounded_conflict = conflict_index.min(leader.last_log_index().saturating_add(1));
+        if bounded_conflict >= next_index {
+            return Err(DbError::limit(format!(
+                "replication convergence stalled at index {next_index}; RETRY_AFTER_MS=25"
+            )));
+        }
+        next_index = bounded_conflict;
+    }
+
+    Err(DbError::limit(format!(
+        "replication convergence exceeded attempt bound {}; RETRY_AFTER_MS=25",
+        max_attempts
+    )))
 }
 
 fn db_for_handle(handle: i64) -> Result<Arc<Mutex<DbEngine>>, DbError> {
-    registry()
-        .handles
-        .lock()
-        .expect("DB registry lock")
+    lock_registry_handles()?
         .get(&handle)
         .cloned()
         .ok_or_else(|| DbError::invalid_argument("unknown DB handle"))
+}
+
+fn lock_registry_handles()
+-> Result<MutexGuard<'static, HashMap<i64, Arc<Mutex<DbEngine>>>>, DbError> {
+    registry()
+        .handles
+        .lock()
+        .map_err(|_| DbError::io("DB registry lock poisoned"))
+}
+
+fn lock_engine(db: &Arc<Mutex<DbEngine>>) -> Result<MutexGuard<'_, DbEngine>, DbError> {
+    db.lock()
+        .map_err(|_| DbError::io("DB engine lock poisoned"))
+}
+
+fn with_engine<T, F>(handle: i64, f: F) -> Result<T, DbError>
+where
+    F: FnOnce(&DbEngine) -> Result<T, DbError>,
+{
+    let db = db_for_handle(handle)?;
+    let engine = lock_engine(&db)?;
+    f(&engine)
+}
+
+fn with_engine_mut<T, F>(handle: i64, f: F) -> Result<T, DbError>
+where
+    F: FnOnce(&mut DbEngine) -> Result<T, DbError>,
+{
+    let db = db_for_handle(handle)?;
+    let mut engine = lock_engine(&db)?;
+    f(&mut engine)
 }
 
 pub fn open_db(data_dir: &Path) -> Result<i64, DbError> {
@@ -817,31 +1378,23 @@ pub fn open_db(data_dir: &Path) -> Result<i64, DbError> {
     let wal_path = wal_path_from(data_dir);
     let engine = DbEngine::open(&wal_path)?;
     let handle = registry().next_handle.fetch_add(1, Ordering::Relaxed);
-    registry()
-        .handles
-        .lock()
-        .expect("DB registry lock")
-        .insert(handle, Arc::new(Mutex::new(engine)));
+    lock_registry_handles()?.insert(handle, Arc::new(Mutex::new(engine)));
     Ok(handle)
 }
 
 pub fn close_db(handle: i64) -> bool {
-    if let Ok(db) = db_for_handle(handle) {
-        if db
-            .lock()
-            .expect("DB engine lock")
-            .flush_clock_state()
-            .is_err()
-        {
-            return false;
-        }
-    }
-    registry()
-        .handles
-        .lock()
-        .expect("DB registry lock")
-        .remove(&handle)
-        .is_some()
+    let flush_ok = match db_for_handle(handle) {
+        Ok(db) => match lock_engine(&db) {
+            Ok(engine) => engine.flush_clock_state().is_ok(),
+            Err(_) => false,
+        },
+        Err(_) => true,
+    };
+    let removed = match lock_registry_handles() {
+        Ok(mut handles) => handles.remove(&handle).is_some(),
+        Err(_) => false,
+    };
+    flush_ok && removed
 }
 
 pub fn submit_put(
@@ -851,20 +1404,18 @@ pub fn submit_put(
     value: Vec<u8>,
     expected_version: Option<u64>,
 ) -> Result<u64, DbError> {
-    let db = db_for_handle(handle)?;
-    let mut engine = db.lock().expect("DB engine lock");
-    engine.submit_batch(&[BatchOp::Put {
-        namespace,
-        key,
-        value,
-        expected_version,
-    }])
+    with_engine_mut(handle, |engine| {
+        engine.submit_batch(&[BatchOp::Put {
+            namespace,
+            key,
+            value,
+            expected_version,
+        }])
+    })
 }
 
 pub fn submit_batch(handle: i64, batch: &[BatchOp]) -> Result<u64, DbError> {
-    let db = db_for_handle(handle)?;
-    let mut engine = db.lock().expect("DB engine lock");
-    engine.submit_batch(batch)
+    with_engine_mut(handle, |engine| engine.submit_batch(batch))
 }
 
 pub fn read_point(
@@ -872,9 +1423,19 @@ pub fn read_point(
     namespace: Vec<u8>,
     key: Vec<u8>,
 ) -> Result<Option<Vec<u8>>, DbError> {
-    let db = db_for_handle(handle)?;
-    let engine = db.lock().expect("DB engine lock");
-    engine.read_point(&namespace, &key)
+    read_point_consistent(handle, namespace, key, ReadConsistency::Strong, None)
+}
+
+pub fn read_point_consistent(
+    handle: i64,
+    namespace: Vec<u8>,
+    key: Vec<u8>,
+    consistency: ReadConsistency,
+    requested_ts: Option<u64>,
+) -> Result<Option<Vec<u8>>, DbError> {
+    with_engine(handle, |engine| {
+        engine.read_point(&namespace, &key, consistency, requested_ts)
+    })
 }
 
 pub fn read_range(
@@ -884,33 +1445,52 @@ pub fn read_range(
     end_key: Vec<u8>,
     limit: usize,
 ) -> Result<Vec<(Vec<u8>, Vec<u8>, u64)>, DbError> {
-    let db = db_for_handle(handle)?;
-    let engine = db.lock().expect("DB engine lock");
-    engine.read_range(&namespace, &start_key, &end_key, limit)
+    read_range_consistent(
+        handle,
+        namespace,
+        start_key,
+        end_key,
+        limit,
+        ReadConsistency::Strong,
+        None,
+    )
+}
+
+pub fn read_range_consistent(
+    handle: i64,
+    namespace: Vec<u8>,
+    start_key: Vec<u8>,
+    end_key: Vec<u8>,
+    limit: usize,
+    consistency: ReadConsistency,
+    requested_ts: Option<u64>,
+) -> Result<Vec<(Vec<u8>, Vec<u8>, u64)>, DbError> {
+    with_engine(handle, |engine| {
+        engine.read_range(
+            &namespace,
+            &start_key,
+            &end_key,
+            limit,
+            consistency,
+            requested_ts,
+        )
+    })
 }
 
 pub fn txn_begin(handle: i64) -> Result<u64, DbError> {
-    let db = db_for_handle(handle)?;
-    let mut engine = db.lock().expect("DB engine lock");
-    engine.txn_begin()
+    with_engine_mut(handle, |engine| engine.txn_begin())
 }
 
 pub fn txn_prepare(handle: i64, txn_id: u64) -> Result<(), DbError> {
-    let db = db_for_handle(handle)?;
-    let mut engine = db.lock().expect("DB engine lock");
-    engine.txn_prepare(txn_id)
+    with_engine_mut(handle, |engine| engine.txn_prepare(txn_id))
 }
 
 pub fn txn_commit(handle: i64, txn_id: u64) -> Result<(), DbError> {
-    let db = db_for_handle(handle)?;
-    let mut engine = db.lock().expect("DB engine lock");
-    engine.txn_commit(txn_id)
+    with_engine_mut(handle, |engine| engine.txn_commit(txn_id))
 }
 
 pub fn txn_abort(handle: i64, txn_id: u64) -> Result<(), DbError> {
-    let db = db_for_handle(handle)?;
-    let mut engine = db.lock().expect("DB engine lock");
-    engine.txn_abort(txn_id)
+    with_engine_mut(handle, |engine| engine.txn_abort(txn_id))
 }
 
 pub fn txn_lock_key(
@@ -919,9 +1499,9 @@ pub fn txn_lock_key(
     namespace: Vec<u8>,
     key: Vec<u8>,
 ) -> Result<(), DbError> {
-    let db = db_for_handle(handle)?;
-    let mut engine = db.lock().expect("DB engine lock");
-    engine.txn_lock_key(txn_id, &namespace, &key)
+    with_engine_mut(handle, |engine| {
+        engine.txn_lock_key(txn_id, &namespace, &key)
+    })
 }
 
 pub fn txn_lock_range(
@@ -931,27 +1511,43 @@ pub fn txn_lock_range(
     start_key: Vec<u8>,
     end_key: Vec<u8>,
 ) -> Result<(), DbError> {
-    let db = db_for_handle(handle)?;
-    let mut engine = db.lock().expect("DB engine lock");
-    engine.txn_lock_range(txn_id, &namespace, &start_key, &end_key)
+    with_engine_mut(handle, |engine| {
+        engine.txn_lock_range(txn_id, &namespace, &start_key, &end_key)
+    })
+}
+
+pub fn membership_set_voters(handle: i64, voters: Vec<u64>) -> Result<(), DbError> {
+    with_engine_mut(handle, |engine| engine.set_membership_voters(voters))
+}
+
+pub fn membership_begin_joint_change(
+    handle: i64,
+    change: MembershipChange,
+    log_index: u64,
+) -> Result<(), DbError> {
+    with_engine_mut(handle, |engine| {
+        engine.begin_membership_change(change, log_index)
+    })
+}
+
+pub fn membership_commit_joint_change(handle: i64) -> Result<(), DbError> {
+    with_engine_mut(handle, |engine| engine.commit_membership_change())
+}
+
+pub fn membership_abort_joint_change(handle: i64) -> Result<(), DbError> {
+    with_engine_mut(handle, |engine| engine.abort_membership_change())
 }
 
 pub fn snapshot_start(handle: i64) -> Result<u64, DbError> {
-    let db = db_for_handle(handle)?;
-    let mut engine = db.lock().expect("DB engine lock");
-    engine.snapshot_start()
+    with_engine_mut(handle, |engine| engine.snapshot_start())
 }
 
 pub fn snapshot_status(handle: i64, snapshot_id: u64) -> Result<u8, DbError> {
-    let db = db_for_handle(handle)?;
-    let engine = db.lock().expect("DB engine lock");
-    engine.snapshot_status(snapshot_id)
+    with_engine(handle, |engine| engine.snapshot_status(snapshot_id))
 }
 
 pub fn restore_snapshot(handle: i64, snapshot_id: u64) -> Result<(), DbError> {
-    let db = db_for_handle(handle)?;
-    let mut engine = db.lock().expect("DB engine lock");
-    engine.restore_snapshot(snapshot_id)
+    with_engine_mut(handle, |engine| engine.restore_snapshot(snapshot_id))
 }
 
 pub fn cdc_page(
@@ -960,27 +1556,34 @@ pub fn cdc_page(
     limit: usize,
     shard_filter: Option<Vec<u8>>,
 ) -> Result<crate::db::cdc::CdcPage, DbError> {
-    let db = db_for_handle(handle)?;
-    let engine = db.lock().expect("DB engine lock");
-    Ok(engine.cdc_page(after_commit_seq, limit, shard_filter.as_deref()))
+    with_engine(handle, |engine| {
+        Ok(engine.cdc_page(after_commit_seq, limit, shard_filter.as_deref()))
+    })
 }
 
 pub fn cdc_ack(handle: i64, stream: String, commit_seq: u64) -> Result<u64, DbError> {
     if stream.trim().is_empty() {
         return Err(DbError::invalid_argument("cdc stream must be non-empty"));
     }
-    let db = db_for_handle(handle)?;
-    let mut engine = db.lock().expect("DB engine lock");
-    engine.cdc_ack(&stream, commit_seq)
+    with_engine_mut(handle, |engine| engine.cdc_ack(&stream, commit_seq))
 }
 
 pub fn cdc_checkpoint(handle: i64, stream: String) -> Result<Option<u64>, DbError> {
     if stream.trim().is_empty() {
         return Err(DbError::invalid_argument("cdc stream must be non-empty"));
     }
-    let db = db_for_handle(handle)?;
-    let engine = db.lock().expect("DB engine lock");
-    Ok(engine.cdc_checkpoint(&stream))
+    with_engine(handle, |engine| Ok(engine.cdc_checkpoint(&stream)))
+}
+
+pub fn safe_time_diagnostics(
+    handle: i64,
+    budgets: SafeTimeLagBudget,
+) -> Result<SafeTimeDiagnostics, DbError> {
+    with_engine(handle, |engine| Ok(engine.safe_time_diagnostics(budgets)))
+}
+
+pub fn db_health_status(handle: i64) -> Result<DbHealthStatus, DbError> {
+    with_engine(handle, |engine| Ok(engine.health_status()))
 }
 
 pub fn cdc_stream_page(
@@ -1019,6 +1622,8 @@ mod tests {
     use crate::db::replication::quorum::FollowerAppendResponse;
     use crate::db::types::ErrorCode;
     use crate::db::wal::format::{Record, RecordKind, encode};
+    use crate::db::writer::DetachedWriterQueue;
+    use std::collections::BTreeSet;
     use std::fs::OpenOptions;
     use std::io::{Read, Seek, SeekFrom, Write};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -1113,7 +1718,15 @@ mod tests {
         let mut iter = {
             let engine = db.lock().expect("DB engine lock");
             engine
-                .read_range_iter(b"core", b"a", b"z", 10, cancel.clone())
+                .read_range_iter(
+                    b"core",
+                    b"a",
+                    b"z",
+                    10,
+                    cancel.clone(),
+                    ReadConsistency::Strong,
+                    None,
+                )
                 .expect("range iterator")
         };
         assert!(iter.try_next().expect("first row").is_some());
@@ -1614,13 +2227,152 @@ mod tests {
     }
 
     #[test]
+    fn cdc_ack_persist_failure_does_not_advance_in_memory_checkpoint() {
+        let dir = temp_dir();
+        let handle = open_db(&dir).expect("open db");
+        submit_batch(
+            handle,
+            &[BatchOp::Put {
+                namespace: b"core".to_vec(),
+                key: b"k1".to_vec(),
+                value: b"v1".to_vec(),
+                expected_version: None,
+            }],
+        )
+        .expect("submit batch");
+        assert_eq!(cdc_ack(handle, "orders".to_string(), 1).expect("ack"), 1);
+
+        {
+            let db = db_for_handle(handle).expect("db handle");
+            let mut engine = db.lock().expect("DB engine lock");
+            engine.inject_cdc_checkpoint_persist_failure();
+        }
+
+        let err = cdc_ack(handle, "orders".to_string(), 2).expect_err("inject persist failure");
+        assert_eq!(err.code, ErrorCode::Io);
+        assert_eq!(
+            cdc_checkpoint(handle, "orders".to_string()).expect("checkpoint"),
+            Some(1),
+            "checkpoint must remain unchanged when persist fails"
+        );
+
+        assert_eq!(
+            cdc_ack(handle, "orders".to_string(), 2).expect("retry ack"),
+            2
+        );
+        assert_eq!(
+            cdc_checkpoint(handle, "orders".to_string()).expect("checkpoint"),
+            Some(2)
+        );
+        assert!(close_db(handle));
+    }
+
+    #[test]
+    fn submit_batch_wal_mid_batch_failure_is_atomic() {
+        let dir = temp_dir();
+        let handle = open_db(&dir).expect("open db");
+        {
+            let db = db_for_handle(handle).expect("db handle");
+            let engine = db.lock().expect("DB engine lock");
+            engine.wal.fail_batch_after_records(1);
+        }
+
+        let err = submit_batch(
+            handle,
+            &[
+                BatchOp::Put {
+                    namespace: b"core".to_vec(),
+                    key: b"k1".to_vec(),
+                    value: b"v1".to_vec(),
+                    expected_version: None,
+                },
+                BatchOp::Put {
+                    namespace: b"core".to_vec(),
+                    key: b"k2".to_vec(),
+                    value: b"v2".to_vec(),
+                    expected_version: None,
+                },
+            ],
+        )
+        .expect_err("mid-batch WAL failure must fail batch");
+        assert_eq!(err.code, ErrorCode::Io);
+
+        let k1 = read_point(handle, b"core".to_vec(), b"k1".to_vec()).expect("read k1");
+        let k2 = read_point(handle, b"core".to_vec(), b"k2".to_vec()).expect("read k2");
+        assert_eq!(k1, None);
+        assert_eq!(k2, None);
+        assert!(close_db(handle));
+    }
+
+    #[test]
+    fn submit_batch_wal_sync_failure_is_atomic() {
+        let dir = temp_dir();
+        let handle = open_db(&dir).expect("open db");
+        {
+            let db = db_for_handle(handle).expect("db handle");
+            let engine = db.lock().expect("DB engine lock");
+            engine.wal.fail_next_sync();
+        }
+
+        let err = submit_batch(
+            handle,
+            &[BatchOp::Put {
+                namespace: b"core".to_vec(),
+                key: b"k1".to_vec(),
+                value: b"v1".to_vec(),
+                expected_version: None,
+            }],
+        )
+        .expect_err("WAL sync failure must fail batch");
+        assert_eq!(err.code, ErrorCode::Io);
+        let k1 = read_point(handle, b"core".to_vec(), b"k1".to_vec()).expect("read k1");
+        assert_eq!(k1, None);
+        assert!(close_db(handle));
+    }
+
+    #[test]
+    fn submit_batch_wal_prewrite_failure_is_atomic() {
+        let dir = temp_dir();
+        let handle = open_db(&dir).expect("open db");
+        {
+            let db = db_for_handle(handle).expect("db handle");
+            let engine = db.lock().expect("DB engine lock");
+            engine.wal.fail_next_batch_write();
+        }
+
+        let err = submit_batch(
+            handle,
+            &[BatchOp::Put {
+                namespace: b"core".to_vec(),
+                key: b"k1".to_vec(),
+                value: b"v1".to_vec(),
+                expected_version: None,
+            }],
+        )
+        .expect_err("WAL write failure must fail batch");
+        assert_eq!(err.code, ErrorCode::Io);
+        let k1 = read_point(handle, b"core".to_vec(), b"k1".to_vec()).expect("read k1");
+        assert_eq!(k1, None);
+        {
+            let db = db_for_handle(handle).expect("db handle");
+            let engine = db.lock().expect("DB engine lock");
+            engine.wal.clear_failpoints();
+        }
+        assert!(close_db(handle));
+    }
+
+    #[test]
     fn submit_batch_enforces_quorum_gate_for_multi_voter_mode() {
         let dir = temp_dir();
         let handle = open_db(&dir).expect("open db");
         let db = db_for_handle(handle).expect("db handle");
         {
             let mut engine = db.lock().expect("DB engine lock");
-            engine.raft_voters = 3;
+            engine.set_membership_voters([1, 2, 3]).expect("set voters");
+            let stalled_term = engine.replication.leader.current_term.saturating_add(5);
+            for follower in engine.replication.followers.values_mut() {
+                follower.current_term = stalled_term;
+            }
         }
 
         let err = submit_batch(
@@ -1647,7 +2399,7 @@ mod tests {
         let db = db_for_handle(handle).expect("db handle");
         {
             let mut engine = db.lock().expect("DB engine lock");
-            engine.raft_voters = 3;
+            engine.set_membership_voters([1, 2, 3]).expect("set voters");
             engine.pending_append_responses = vec![FollowerAppendResponse {
                 node_id: 2,
                 response: AppendEntriesResponse {
@@ -1681,7 +2433,11 @@ mod tests {
         let db = db_for_handle(handle).expect("db handle");
         {
             let mut engine = db.lock().expect("DB engine lock");
-            engine.raft_voters = 3;
+            engine.set_membership_voters([1, 2, 3]).expect("set voters");
+            let stalled_term = engine.replication.leader.current_term.saturating_add(5);
+            for follower in engine.replication.followers.values_mut() {
+                follower.current_term = stalled_term;
+            }
         }
 
         let rejected = submit_batch(
@@ -1741,7 +2497,7 @@ mod tests {
         let db = db_for_handle(handle).expect("db handle");
         {
             let mut engine = db.lock().expect("DB engine lock");
-            engine.raft_voters = 3;
+            engine.set_membership_voters([1, 2, 3]).expect("set voters");
             engine.raft_current_term = 5;
             engine.pending_append_responses = vec![FollowerAppendResponse {
                 node_id: 2,
@@ -1766,6 +2522,121 @@ mod tests {
         )
         .expect_err("stale-term response must not count toward quorum");
         assert_eq!(err.code, ErrorCode::LimitExceeded);
+        assert!(close_db(handle));
+    }
+
+    #[test]
+    fn joint_membership_requires_dual_quorum_in_live_write_path() {
+        let dir = temp_dir();
+        let handle = open_db(&dir).expect("open db");
+        let db = db_for_handle(handle).expect("db handle");
+        {
+            let mut engine = db.lock().expect("DB engine lock");
+            engine.set_membership_voters([1, 2, 3]).expect("set voters");
+            engine
+                .begin_membership_change(MembershipChange::AddVoter { node_id: 4 }, 7)
+                .expect("begin joint");
+            engine.pending_append_responses = vec![FollowerAppendResponse {
+                node_id: 2,
+                response: AppendEntriesResponse {
+                    term: engine.raft_current_term,
+                    success: true,
+                    match_index: u64::MAX,
+                    conflict_index: None,
+                },
+                replication_latency_ns: 10,
+                fsync_latency_ns: 5,
+            }];
+        }
+
+        let err = submit_batch(
+            handle,
+            &[BatchOp::Put {
+                namespace: b"core".to_vec(),
+                key: b"joint-k".to_vec(),
+                value: b"v1".to_vec(),
+                expected_version: None,
+            }],
+        )
+        .expect_err("single old-quorum ack must fail dual quorum");
+        assert_eq!(err.code, ErrorCode::LimitExceeded);
+
+        {
+            let mut engine = db.lock().expect("DB engine lock");
+            engine.pending_append_responses = vec![
+                FollowerAppendResponse {
+                    node_id: 2,
+                    response: AppendEntriesResponse {
+                        term: engine.raft_current_term,
+                        success: true,
+                        match_index: u64::MAX,
+                        conflict_index: None,
+                    },
+                    replication_latency_ns: 10,
+                    fsync_latency_ns: 5,
+                },
+                FollowerAppendResponse {
+                    node_id: 4,
+                    response: AppendEntriesResponse {
+                        term: engine.raft_current_term,
+                        success: true,
+                        match_index: u64::MAX,
+                        conflict_index: None,
+                    },
+                    replication_latency_ns: 10,
+                    fsync_latency_ns: 5,
+                },
+            ];
+        }
+
+        submit_batch(
+            handle,
+            &[BatchOp::Put {
+                namespace: b"core".to_vec(),
+                key: b"joint-k".to_vec(),
+                value: b"v2".to_vec(),
+                expected_version: None,
+            }],
+        )
+        .expect("dual quorum should pass");
+        assert!(close_db(handle));
+    }
+
+    #[test]
+    fn abort_membership_change_restores_quorum_immediately() {
+        let dir = temp_dir();
+        let handle = open_db(&dir).expect("open db");
+        let db = db_for_handle(handle).expect("db handle");
+        {
+            let mut engine = db.lock().expect("DB engine lock");
+            engine.set_membership_voters([1, 2, 3]).expect("set voters");
+            engine
+                .begin_membership_change(MembershipChange::AddVoter { node_id: 4 }, 9)
+                .expect("begin joint");
+            engine.abort_membership_change().expect("abort joint");
+            engine.pending_append_responses = vec![FollowerAppendResponse {
+                node_id: 2,
+                response: AppendEntriesResponse {
+                    term: engine.raft_current_term,
+                    success: true,
+                    match_index: u64::MAX,
+                    conflict_index: None,
+                },
+                replication_latency_ns: 10,
+                fsync_latency_ns: 5,
+            }];
+        }
+
+        submit_batch(
+            handle,
+            &[BatchOp::Put {
+                namespace: b"core".to_vec(),
+                key: b"abort-joint-k".to_vec(),
+                value: b"v".to_vec(),
+                expected_version: None,
+            }],
+        )
+        .expect("post-abort old quorum should apply");
         assert!(close_db(handle));
     }
 
@@ -2093,6 +2964,214 @@ mod tests {
             "clock regressed across restart: before={before_close}, after={after_reopen}"
         );
         assert!(close_db(reopened));
+    }
+
+    #[test]
+    fn raft_membership_state_persists_across_restart() {
+        let dir = temp_dir();
+        let handle = open_db(&dir).expect("open db");
+        membership_set_voters(handle, vec![1, 2, 3]).expect("set voters");
+        membership_begin_joint_change(handle, MembershipChange::AddVoter { node_id: 4 }, 17)
+            .expect("begin joint");
+        assert!(close_db(handle));
+
+        let reopened = open_db(&dir).expect("reopen");
+        let db = db_for_handle(reopened).expect("db handle");
+        let engine = db.lock().expect("DB engine lock");
+        assert_eq!(
+            engine.replication.membership.voters(),
+            &BTreeSet::from([1, 2, 3])
+        );
+        let joint = engine
+            .replication
+            .membership
+            .joint()
+            .expect("joint config restored");
+        assert_eq!(joint.outgoing_voters, BTreeSet::from([1, 2, 3]));
+        assert_eq!(joint.incoming_voters, BTreeSet::from([1, 2, 3, 4]));
+        assert_eq!(joint.started_at_log_index, 17);
+        drop(engine);
+        assert!(close_db(reopened));
+    }
+
+    #[test]
+    fn raft_committed_log_tail_persists_across_restart() {
+        let dir = temp_dir();
+        let handle = open_db(&dir).expect("open db");
+        submit_put(
+            handle,
+            b"core".to_vec(),
+            b"k1".to_vec(),
+            b"v1".to_vec(),
+            None,
+        )
+        .expect("put");
+        submit_put(
+            handle,
+            b"core".to_vec(),
+            b"k2".to_vec(),
+            b"v2".to_vec(),
+            None,
+        )
+        .expect("put");
+        assert!(close_db(handle));
+
+        let reopened = open_db(&dir).expect("reopen");
+        let db = db_for_handle(reopened).expect("db handle");
+        let engine = db.lock().expect("DB engine lock");
+        let leader = &engine.replication.leader;
+        assert!(leader.current_term >= 1);
+        assert!(leader.last_log_index() >= 2);
+        assert!(leader.commit_index <= leader.last_log_index());
+        assert_eq!(engine.raft_last_log_index, leader.last_log_index());
+        assert_eq!(engine.raft_last_committed_index, leader.commit_index);
+        assert_eq!(engine.raft_current_term, leader.current_term);
+        drop(engine);
+        assert!(close_db(reopened));
+    }
+
+    #[test]
+    fn raft_durable_state_corruption_fails_open_fail_closed() {
+        let dir = temp_dir();
+        let handle = open_db(&dir).expect("open db");
+        submit_put(
+            handle,
+            b"core".to_vec(),
+            b"persist".to_vec(),
+            b"v".to_vec(),
+            None,
+        )
+        .expect("commit");
+        assert!(close_db(handle));
+
+        let raft_state_path =
+            crate::db::raft::persistence::raft_state_path_from(&wal_path_from(&dir));
+        std::fs::write(&raft_state_path, br#"{"schema_version":"broken"}"#)
+            .expect("corrupt raft state");
+        let err = open_db(&dir).expect_err("corrupt raft state must fail closed");
+        assert_eq!(err.code, ErrorCode::Io);
+    }
+
+    #[test]
+    fn close_db_removes_handle_even_when_clock_flush_fails() {
+        let dir = temp_dir();
+        let handle = open_db(&dir).expect("open db");
+        std::fs::remove_dir_all(&dir).expect("remove backing dir");
+        assert!(
+            !close_db(handle),
+            "close should report false when flush fails"
+        );
+        let err = read_point(handle, b"core".to_vec(), b"k".to_vec())
+            .expect_err("handle must be removed even on flush failure");
+        assert_eq!(err.code, ErrorCode::InvalidArgument);
+    }
+
+    #[test]
+    fn poisoned_engine_lock_returns_typed_error_instead_of_panicking() {
+        let dir = temp_dir();
+        let handle = open_db(&dir).expect("open db");
+        let db = db_for_handle(handle).expect("db handle");
+        let poison_target = db.clone();
+        let _ = std::panic::catch_unwind(move || {
+            let _guard = poison_target.lock().expect("lock");
+            panic!("poison engine lock");
+        });
+
+        let err = submit_put(handle, b"core".to_vec(), b"k".to_vec(), b"v".to_vec(), None)
+            .expect_err("poisoned lock should be mapped to io error");
+        assert_eq!(err.code, ErrorCode::Io);
+        assert!(err.message.contains("lock poisoned"));
+        let _ = close_db(handle);
+    }
+
+    #[test]
+    fn replication_converges_for_conflict_distance_beyond_legacy_cap() {
+        let mut leader = NodeState::with_timing(1, 0, 10);
+        leader.current_term = 9;
+        for index in 1..=40 {
+            leader
+                .append_log_entry_checked(LogEntry {
+                    index,
+                    term: 1,
+                    payload: vec![index as u8],
+                })
+                .expect("contiguous append");
+        }
+        leader.commit_index = leader.last_log_index();
+
+        let mut follower = NodeState::with_timing(2, 0, 10);
+        follower.current_term = 9;
+        for index in 1..=40 {
+            follower
+                .append_log_entry_checked(LogEntry {
+                    index,
+                    term: index,
+                    payload: b"stale".to_vec(),
+                })
+                .expect("contiguous append");
+        }
+
+        let response = replicate_to_follower(&leader, &mut follower, leader.commit_index)
+            .expect("must converge without fixed 16-attempt cap");
+        assert!(response.success);
+        assert_eq!(follower.last_log_index(), leader.last_log_index());
+        assert_eq!(follower.log_term_at(40), Some(1));
+    }
+
+    #[test]
+    fn replication_no_progress_returns_retryable_limit_error() {
+        let mut leader = NodeState::with_timing(1, 0, 10);
+        leader.current_term = 2;
+        leader.log = vec![
+            LogEntry {
+                index: 1,
+                term: 2,
+                payload: b"a".to_vec(),
+            },
+            LogEntry {
+                index: 3,
+                term: 2,
+                payload: b"gap".to_vec(),
+            },
+        ];
+        leader.commit_index = 1;
+
+        let mut follower = NodeState::with_timing(2, 0, 10);
+        follower.current_term = 2;
+        let err = replicate_to_follower(&leader, &mut follower, 1).expect_err("must fail");
+        assert_eq!(err.code, ErrorCode::LimitExceeded);
+        assert!(err.message.contains("RETRY_AFTER_MS=25"));
+    }
+
+    #[test]
+    fn cdc_persist_failure_surfaces_and_clears_health() {
+        let dir = temp_dir();
+        let handle = open_db(&dir).expect("open db");
+        submit_put(
+            handle,
+            b"core".to_vec(),
+            b"k1".to_vec(),
+            b"v1".to_vec(),
+            None,
+        )
+        .expect("put");
+
+        {
+            let db = db_for_handle(handle).expect("db handle");
+            let mut engine = db.lock().expect("DB engine lock");
+            engine.inject_cdc_checkpoint_persist_failure();
+        }
+        let err = cdc_ack(handle, "orders".to_string(), 1).expect_err("injected fsync failure");
+        assert_eq!(err.code, ErrorCode::Io);
+        let health = db_health_status(handle).expect("health");
+        assert!(health.cdc_checkpoint_persist_error.is_some());
+        assert!(health.cdc_checkpoint_persist_error_at.is_some());
+
+        cdc_ack(handle, "orders".to_string(), 1).expect("retry ack");
+        let cleared = db_health_status(handle).expect("health");
+        assert!(cleared.cdc_checkpoint_persist_error.is_none());
+        assert!(cleared.cdc_checkpoint_persist_error_at.is_none());
+        assert!(close_db(handle));
     }
 
     #[test]

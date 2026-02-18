@@ -7,6 +7,16 @@ use std::sync::Mutex;
 #[derive(Debug)]
 pub struct WalSegment {
     file: Mutex<File>,
+    #[cfg(test)]
+    failpoints: Mutex<WalTestFailpoints>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct WalTestFailpoints {
+    fail_before_batch_write: bool,
+    fail_on_sync: bool,
+    fail_after_records: Option<usize>,
 }
 
 impl WalSegment {
@@ -19,14 +29,57 @@ impl WalSegment {
             .open(path)?;
         Ok(Self {
             file: Mutex::new(file),
+            #[cfg(test)]
+            failpoints: Mutex::new(WalTestFailpoints::default()),
         })
     }
 
     pub fn append(&self, record: &Record) -> io::Result<u64> {
-        let bytes = encode(record);
+        self.append_batch(std::slice::from_ref(record))
+    }
+
+    pub fn append_batch(&self, records: &[Record]) -> io::Result<u64> {
+        let mut bytes = Vec::new();
+        #[cfg(test)]
+        for (record_idx, record) in records.iter().enumerate() {
+            let fail_after_records = self
+                .failpoints
+                .lock()
+                .expect("WAL failpoint lock")
+                .fail_after_records;
+            if let Some(limit) = fail_after_records
+                && record_idx >= limit
+            {
+                return Err(io::Error::other("injected wal batch write failure"));
+            }
+            bytes.extend_from_slice(&encode(record));
+        }
+        #[cfg(not(test))]
+        for record in records {
+            bytes.extend_from_slice(&encode(record));
+        }
+
         let mut file = self.file.lock().expect("WAL lock");
         let offset = file.seek(SeekFrom::End(0))?;
+        #[cfg(test)]
+        {
+            let mut failpoints = self.failpoints.lock().expect("WAL failpoint lock");
+            if failpoints.fail_before_batch_write {
+                failpoints.fail_before_batch_write = false;
+                return Err(io::Error::other("injected wal write failure"));
+            }
+        }
         file.write_all(&bytes)?;
+        #[cfg(test)]
+        {
+            let mut failpoints = self.failpoints.lock().expect("WAL failpoint lock");
+            if failpoints.fail_on_sync {
+                failpoints.fail_on_sync = false;
+                file.set_len(offset)?;
+                file.seek(SeekFrom::Start(offset))?;
+                return Err(io::Error::other("injected wal sync failure"));
+            }
+        }
         file.sync_data()?;
         Ok(offset)
     }
@@ -45,31 +98,45 @@ impl WalSegment {
                 break;
             }
             bytes.extend_from_slice(&chunk[..read]);
-            loop {
-                match decode_at(&bytes, offset)? {
-                    Some((record, next)) => {
-                        out.push(record);
-                        offset = next;
-                    }
-                    None => break,
-                }
+            while let Some((record, next)) = decode_at(&bytes, offset)? {
+                out.push(record);
+                offset = next;
             }
-            if offset > 0 && offset >= 64 * 1024 {
+            if offset >= 64 * 1024 {
                 bytes.drain(..offset);
                 offset = 0;
             }
         }
 
-        loop {
-            match decode_at(&bytes, offset)? {
-                Some((record, next)) => {
-                    out.push(record);
-                    offset = next;
-                }
-                None => break,
-            }
+        while let Some((record, next)) = decode_at(&bytes, offset)? {
+            out.push(record);
+            offset = next;
         }
         Ok(out)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_batch_write(&self) {
+        let mut failpoints = self.failpoints.lock().expect("WAL failpoint lock");
+        failpoints.fail_before_batch_write = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_sync(&self) {
+        let mut failpoints = self.failpoints.lock().expect("WAL failpoint lock");
+        failpoints.fail_on_sync = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_batch_after_records(&self, record_count: usize) {
+        let mut failpoints = self.failpoints.lock().expect("WAL failpoint lock");
+        failpoints.fail_after_records = Some(record_count);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_failpoints(&self) {
+        let mut failpoints = self.failpoints.lock().expect("WAL failpoint lock");
+        *failpoints = WalTestFailpoints::default();
     }
 }
 

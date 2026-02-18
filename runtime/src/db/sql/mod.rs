@@ -665,8 +665,6 @@ pub fn plan(mutations: &[RowMutation]) -> Result<DmlPlan, DbError> {
             .then_with(|| a.key.cmp(&b.key))
     });
     key_locks.dedup();
-    batch.sort_by(batch_order);
-
     Ok(DmlPlan { key_locks, batch })
 }
 
@@ -684,23 +682,6 @@ pub fn row_key(table: &[u8], primary_key: &[u8]) -> Vec<u8> {
 
 pub fn index_key(table: &[u8], index_name: &[u8], index_key: &[u8], primary_key: &[u8]) -> Vec<u8> {
     encode_parts(&[table, index_name, index_key, primary_key])
-}
-
-fn batch_order(a: &BatchOp, b: &BatchOp) -> std::cmp::Ordering {
-    let a_fields = batch_fields(a);
-    let b_fields = batch_fields(b);
-    a_fields
-        .0
-        .cmp(b_fields.0)
-        .then_with(|| a_fields.1.cmp(b_fields.1))
-        .then_with(|| a_fields.2.cmp(&b_fields.2))
-}
-
-fn batch_fields(op: &BatchOp) -> (&[u8], &[u8], u8) {
-    match op {
-        BatchOp::Delete { namespace, key, .. } => (namespace, key, 0),
-        BatchOp::Put { namespace, key, .. } => (namespace, key, 1),
-    }
 }
 
 fn encode_parts(parts: &[&[u8]]) -> Vec<u8> {
@@ -963,7 +944,7 @@ mod tests {
             panic!("expected explain output");
         };
         assert_eq!(explain.stats_version, 1);
-        assert_eq!(explain.stats_stale, false);
+        assert!(!explain.stats_stale);
     }
 
     #[test]
@@ -1008,5 +989,89 @@ mod tests {
         assert!(results[1].passed);
         assert!(results[2].passed);
         assert!(!results[3].passed);
+    }
+
+    #[test]
+    fn execute_preserves_same_key_put_then_delete_order() {
+        let dir = temp_dir();
+        let handle = open_db(&dir).expect("open db");
+        execute(
+            handle,
+            &[sample_put(b"u-order-1"), sample_delete(b"u-order-1")],
+        )
+        .expect("execute ordered mutation batch");
+
+        let row_key = row_key(b"users", b"u-order-1");
+        let row = read_point(handle, row_namespace().to_vec(), row_key).expect("read row");
+        assert_eq!(row, None);
+        assert!(close_db(handle));
+    }
+
+    #[test]
+    fn execute_preserves_same_key_delete_then_put_order() {
+        let dir = temp_dir();
+        let handle = open_db(&dir).expect("open db");
+        execute(
+            handle,
+            &[sample_delete(b"u-order-2"), sample_put(b"u-order-2")],
+        )
+        .expect("execute ordered mutation batch");
+
+        let row_key = row_key(b"users", b"u-order-2");
+        let row = read_point(handle, row_namespace().to_vec(), row_key).expect("read row");
+        assert_eq!(row, Some(b"{\"name\":\"ada\"}".to_vec()));
+        assert!(close_db(handle));
+    }
+
+    #[test]
+    fn planner_is_deterministic_without_reordering_mutation_batch() {
+        let mutations = vec![
+            sample_put(b"u-order-3"),
+            sample_delete(b"u-order-3"),
+            sample_put(b"u-order-4"),
+        ];
+        let planned_a = plan(&mutations).expect("plan a");
+        let planned_b = plan(&mutations).expect("plan b");
+        let signature = |ops: &[BatchOp]| -> Vec<String> {
+            ops.iter()
+                .map(|op| match op {
+                    BatchOp::Put {
+                        namespace,
+                        key,
+                        value,
+                        expected_version,
+                    } => format!(
+                        "put:{:?}:{:?}:{:?}:{expected_version:?}",
+                        namespace, key, value
+                    ),
+                    BatchOp::Delete {
+                        namespace,
+                        key,
+                        expected_version,
+                    } => format!("del:{:?}:{:?}:{expected_version:?}", namespace, key),
+                })
+                .collect()
+        };
+        assert_eq!(signature(&planned_a.batch), signature(&planned_b.batch));
+
+        let target_row_key = row_key(b"users", b"u-order-3");
+        let op_order: Vec<&'static str> = planned_a
+            .batch
+            .iter()
+            .filter_map(|op| match op {
+                BatchOp::Put { namespace, key, .. }
+                    if namespace == ROW_NAMESPACE && key == &target_row_key =>
+                {
+                    Some("put")
+                }
+                BatchOp::Delete { namespace, key, .. }
+                    if namespace == ROW_NAMESPACE && key == &target_row_key =>
+                {
+                    Some("delete")
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(op_order, vec!["put", "delete"]);
     }
 }

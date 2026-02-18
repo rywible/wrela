@@ -31,6 +31,7 @@ pub enum MembershipError {
     NodeAlreadyLearner(u64),
     NodeMissing(u64),
     LastVoterRemovalDenied(u64),
+    InvalidJointConfig(&'static str),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,6 +81,20 @@ impl MembershipConfig {
 
     pub fn joint(&self) -> Option<&JointMembership> {
         self.joint.as_ref()
+    }
+
+    pub fn from_parts(
+        voters: BTreeSet<u64>,
+        learners: BTreeSet<u64>,
+        joint: Option<JointMembership>,
+    ) -> Result<Self, MembershipError> {
+        let cfg = Self {
+            voters,
+            learners,
+            joint,
+        };
+        cfg.validate()?;
+        Ok(cfg)
     }
 
     pub fn is_voter(&self, node_id: u64) -> bool {
@@ -136,6 +151,44 @@ impl MembershipConfig {
         } else {
             has_quorum(&self.voters, durable_acks)
         }
+    }
+
+    fn validate(&self) -> Result<(), MembershipError> {
+        if self.voters.is_empty() {
+            return Err(MembershipError::EmptyVoterSet);
+        }
+        if self.voters.iter().any(|node| self.learners.contains(node)) {
+            return Err(MembershipError::InvalidJointConfig(
+                "voters and learners must be disjoint",
+            ));
+        }
+        if let Some(joint) = &self.joint {
+            if joint.outgoing_voters.is_empty() || joint.incoming_voters.is_empty() {
+                return Err(MembershipError::InvalidJointConfig(
+                    "joint config requires non-empty outgoing/incoming voters",
+                ));
+            }
+            if joint.started_at_log_index == 0 {
+                return Err(MembershipError::InvalidJointConfig(
+                    "joint config started_at_log_index must be > 0",
+                ));
+            }
+            if joint
+                .outgoing_voters
+                .iter()
+                .any(|node| joint.outgoing_learners.contains(node))
+            {
+                return Err(MembershipError::InvalidJointConfig(
+                    "outgoing voters and outgoing learners must be disjoint",
+                ));
+            }
+            if !self.voters.eq(&joint.outgoing_voters) {
+                return Err(MembershipError::InvalidJointConfig(
+                    "during joint config active voters must equal outgoing voters",
+                ));
+            }
+        }
+        Ok(())
     }
 }
 

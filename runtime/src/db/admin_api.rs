@@ -4,6 +4,7 @@ use crate::db::routing::{
     CompiledRoutingPolicy, RoutingPolicyError, RoutingPolicySpec, compile_policy,
 };
 use crate::db::security::residency::{ResidencyErrorToken, ResidencyPolicy};
+use crate::db::{DbError, DbHealthStatus, db_health_status as runtime_db_health_status};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,11 +128,33 @@ pub fn residency_audit(
     }
 }
 
+pub fn db_health_status(handle: i64) -> Result<DbHealthStatus, DbError> {
+    runtime_db_health_status(handle)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::routing::RoutingPolicySpec;
     use crate::db::security::residency::{ResidencyPolicy, ResidencyRule};
+    use crate::db::{close_db, open_db};
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn temp_dir() -> PathBuf {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+        let base = std::env::temp_dir().join(format!(
+            "wrela_db_admin_api_test_{}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("unix epoch")
+                .as_nanos(),
+            NEXT_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&base).expect("create temp dir");
+        base
+    }
 
     #[test]
     fn cluster_health_snapshot_counts_states_and_regions() {
@@ -233,5 +256,16 @@ mod tests {
             unsat.token,
             Some(ResidencyErrorToken::EgressPolicyUnsat.as_str())
         );
+    }
+
+    #[test]
+    fn db_health_status_reports_clean_engine_after_open() {
+        let dir = temp_dir();
+        let handle = open_db(&dir).expect("open");
+        let health = super::db_health_status(handle).expect("health");
+        assert!(health.clock_persist_error.is_none());
+        assert!(health.raft_persist_error.is_none());
+        assert!(health.cdc_checkpoint_persist_error.is_none());
+        assert!(close_db(handle));
     }
 }

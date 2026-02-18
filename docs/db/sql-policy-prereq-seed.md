@@ -16,6 +16,8 @@ This seed introduces minimal-but-real runtime behavior for policy prerequisites:
 - `runtime/src/db/sql/mod.rs`
   - Deterministic SQL DML seed planner/executor modeling row mutations plus secondary-index
     maintenance.
+  - Lock acquisition remains deterministic (sorted), while mutation apply order follows caller order
+    so same-key `Put/Delete` sequencing is preserved.
   - Minimal SQL statement layer for phase conformance:
     - parser (`INSERT`, `DELETE`, `EXPLAIN`) with deterministic typed `InvalidArgument` failures.
     - deterministic tokenization supports quoted tokens (single or double quotes) for values
@@ -28,6 +30,8 @@ This seed introduces minimal-but-real runtime behavior for policy prerequisites:
       returns deterministic pass/fail records per case.
   - Transactional execute flow: begin txn, key locks, `submit_batch`, prepare+commit on success,
     abort on error.
+  - Read integration follows DB strong-read defaults; conformance tests can explicitly request
+    eventual consistency where appropriate.
   - `execute_with_result(handle, mutations)` adds a deterministic SQL mutation error surface for
     callers while preserving `execute(handle, mutations) -> Result<u64, DbError>`.
   - Deterministic SQL mutation tokens:
