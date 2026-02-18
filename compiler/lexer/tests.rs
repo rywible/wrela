@@ -725,7 +725,7 @@ fn test_lexer_exhaustiveness() {
     for token in Token::iter() {
         if token.is_keyword() {
             assert!(
-                lexer.keywords.contains_key(token.as_ref().into()),
+                lexer.keywords.contains_key(token.as_ref()),
                 "Keyword not registered: {:?}",
                 token
             );

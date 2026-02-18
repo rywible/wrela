@@ -21,7 +21,7 @@ cargo build --workspace                  # build compiler + runtime
 cargo test --workspace                   # run all Rust tests
 cargo test -p wrela --test cli           # run a focused integration test file
 cargo run -p wrela -- --help             # inspect CLI commands/options
-cargo run -p wrela -- test language/spec/spec.wr  # execute spec tests
+cargo run -p wrela -- test . --lane=spec          # execute spec-lane tests
 cargo fmt --all                          # format Rust code
 cargo clippy --workspace --all-targets   # lint with configured thresholds
 ```

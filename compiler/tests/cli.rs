@@ -452,6 +452,27 @@ fn cli_check_success() {
 }
 
 #[test]
+fn cli_check_reports_lexical_invalid_character() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("src").join("main.wr");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "to run() -> Integer:\n    return 1\n$\n").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("check")
+        .arg(&path)
+        .output()
+        .expect("run wrela");
+    assert!(
+        !output.status.success(),
+        "lexically invalid source should fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("lang::lex::error"), "{stderr}");
+    assert!(stderr.contains("unexpected character '$'"), "{stderr}");
+}
+
+#[test]
 fn cli_check_without_run_is_ok() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("spec.wr");
@@ -478,6 +499,23 @@ fn write_test_project(root: &std::path::Path) {
     std::fs::write(
         tests_dir.join("basic_test.wr"),
         "to test_basic() -> Nothing:\n    value = 1 + 1\n    assert value value == 2\n",
+    )
+    .unwrap();
+}
+
+fn write_lexically_invalid_project(root: &std::path::Path) {
+    let src_dir = root.join("src");
+    let tests_dir = root.join("tests");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::create_dir_all(&tests_dir).unwrap();
+    std::fs::write(
+        src_dir.join("main.wr"),
+        "to run() -> Integer:\n    return 0\n$\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tests_dir.join("basic_test.wr"),
+        "to test_basic() -> Nothing:\n    assert value 1 == 1\n",
     )
     .unwrap();
 }
@@ -511,7 +549,7 @@ fn write_nondeterministic_cert_project(root: &std::path::Path) {
     .unwrap();
     std::fs::write(
         tests_dir.join("nondeterministic_cert_test.wr"),
-        "to test_nondeterministic_cert() -> Nothing:\n    assert value (__wr_clock_ns() % 2) == 0\n",
+        "to test_nondeterministic_cert() -> Nothing:\n    workspace_root = __wr_env_get(\"WRELA_WORKSPACE_ROOT\")\n    mutable marker = \"\"\n    match workspace_root:\n        String:\n            marker = \"{workspace_root}/determinism_marker.txt\"\n        otherwise:\n            assert value 1 == 0\n            return\n\n    match __wr_fs_read_bytes(marker):\n        Ok(_):\n            __wr_fs_write_bytes(marker, __wr_bytes_from_string(\"next\")) otherwise nothing\n            assert value 1 == 0\n        Err(_):\n            __wr_fs_write_bytes(marker, __wr_bytes_from_string(\"first\")) otherwise nothing\n            assert value 1 == 1\n        otherwise:\n            assert value 1 == 0\n",
     )
     .unwrap();
 }
@@ -1197,8 +1235,37 @@ fn cli_build_blocks_artifact_when_certification_fails() {
 }
 
 #[test]
+fn cli_build_rejects_lexically_invalid_source() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_lexically_invalid_project(dir.path());
+    let entry = dir.path().join("src").join("main.wr");
+    let bin = dir.path().join("lex_invalid_build_bin");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .current_dir(dir.path())
+        .arg("build")
+        .arg(&entry)
+        .arg("-o")
+        .arg(&bin)
+        .output()
+        .expect("run build");
+
+    assert!(!output.status.success(), "build unexpectedly passed");
+    assert!(
+        !bin.exists(),
+        "artifact should not exist for lexically invalid source"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("coverage id mapping requires parse-clean src modules"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("unexpected character '$'"), "{stderr}");
+}
+
+#[test]
 fn cli_build_certification_fails_when_outcome_signature_changes() {
-    let mut saw_determinism_mismatch = false;
+    let mut saw_signature_mismatch = false;
     for _ in 0..16 {
         let dir = tempfile::tempdir().expect("tempdir");
         write_nondeterministic_cert_project(dir.path());
@@ -1215,12 +1282,13 @@ fn cli_build_certification_fails_when_outcome_signature_changes() {
             .expect("run build");
 
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("determinism gate failed") {
-            saw_determinism_mismatch = true;
+        if stderr.contains("determinism gate failed") || stderr.contains("differential gate failed")
+        {
+            saw_signature_mismatch = true;
             assert!(!output.status.success());
             assert!(
                 !bin.exists(),
-                "artifact should not exist on determinism gate failure"
+                "artifact should not exist on certification signature mismatch"
             );
             assert!(
                 stderr.contains("mismatch detail"),
@@ -1231,8 +1299,8 @@ fn cli_build_certification_fails_when_outcome_signature_changes() {
     }
 
     assert!(
-        saw_determinism_mismatch,
-        "expected at least one determinism mismatch across attempts"
+        saw_signature_mismatch,
+        "expected at least one certification signature mismatch across attempts"
     );
 }
 

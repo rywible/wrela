@@ -5,9 +5,9 @@ mod linux_io_uring;
 #[cfg(target_os = "macos")]
 mod macos_kqueue;
 pub mod task {
-    use std::ptr;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicU64, AtomicUsize, Ordering};
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -16,7 +16,6 @@ pub mod task {
     const WAITER_CANCELLED: u8 = 2;
 
     struct WaiterNode {
-        next: AtomicPtr<WaiterNode>,
         thread: thread::Thread,
         state: AtomicU8,
     }
@@ -24,7 +23,7 @@ pub mod task {
     pub struct TaskSignal {
         epoch: AtomicU64,
         waiter_count: AtomicUsize,
-        waiters_head: AtomicPtr<WaiterNode>,
+        waiters: Mutex<Vec<Arc<WaiterNode>>>,
     }
 
     impl TaskSignal {
@@ -32,7 +31,7 @@ pub mod task {
             Self {
                 epoch: AtomicU64::new(0),
                 waiter_count: AtomicUsize::new(0),
-                waiters_head: AtomicPtr::new(ptr::null_mut()),
+                waiters: Mutex::new(Vec::new()),
             }
         }
 
@@ -69,7 +68,6 @@ pub mod task {
                 return epoch;
             }
             let waiter = Arc::new(WaiterNode {
-                next: AtomicPtr::new(ptr::null_mut()),
                 thread: thread::current(),
                 state: AtomicU8::new(WAITER_WAITING),
             });
@@ -94,7 +92,6 @@ pub mod task {
             }
             let deadline = Instant::now() + timeout;
             let waiter = Arc::new(WaiterNode {
-                next: AtomicPtr::new(ptr::null_mut()),
                 thread: thread::current(),
                 state: AtomicU8::new(WAITER_WAITING),
             });
@@ -123,37 +120,18 @@ pub mod task {
         }
 
         fn push_waiter(&self, waiter: Arc<WaiterNode>) {
-            let raw = Arc::into_raw(waiter.clone()) as *mut WaiterNode;
-            loop {
-                let head = self.waiters_head.load(Ordering::Acquire);
-                waiter.next.store(head, Ordering::Release);
-                if self
-                    .waiters_head
-                    .compare_exchange(head, raw, Ordering::AcqRel, Ordering::Relaxed)
-                    .is_ok()
-                {
-                    self.waiter_count.fetch_add(1, Ordering::AcqRel);
-                    return;
-                }
-            }
+            let mut waiters = self.waiters.lock().expect("task signal waiter lock");
+            waiters.push(waiter);
+            self.waiter_count.fetch_add(1, Ordering::AcqRel);
         }
 
         fn pop_waiter(&self) -> Option<Arc<WaiterNode>> {
-            loop {
-                let head = self.waiters_head.load(Ordering::Acquire);
-                if head.is_null() {
-                    return None;
-                }
-                let next = unsafe { (*head).next.load(Ordering::Acquire) };
-                if self
-                    .waiters_head
-                    .compare_exchange(head, next, Ordering::AcqRel, Ordering::Relaxed)
-                    .is_ok()
-                {
-                    self.waiter_count.fetch_sub(1, Ordering::AcqRel);
-                    return Some(unsafe { Arc::from_raw(head) });
-                }
+            let mut waiters = self.waiters.lock().expect("task signal waiter lock");
+            let waiter = waiters.pop();
+            if waiter.is_some() {
+                self.waiter_count.fetch_sub(1, Ordering::AcqRel);
             }
+            waiter
         }
 
         fn cancel_waiter(&self, waiter: &Arc<WaiterNode>) {
@@ -161,24 +139,13 @@ pub mod task {
             if state != WAITER_WAITING {
                 return;
             }
-            let raw = Arc::as_ptr(waiter) as *mut WaiterNode;
-            loop {
-                let head = self.waiters_head.load(Ordering::Acquire);
-                if head != raw {
-                    break;
-                }
-                let next = waiter.next.load(Ordering::Acquire);
-                if self
-                    .waiters_head
-                    .compare_exchange(head, next, Ordering::AcqRel, Ordering::Relaxed)
-                    .is_ok()
-                {
-                    self.waiter_count.fetch_sub(1, Ordering::AcqRel);
-                    unsafe {
-                        drop(Arc::from_raw(raw));
-                    }
-                    break;
-                }
+            let mut waiters = self.waiters.lock().expect("task signal waiter lock");
+            if let Some(pos) = waiters
+                .iter()
+                .position(|candidate| Arc::ptr_eq(candidate, waiter))
+            {
+                waiters.swap_remove(pos);
+                self.waiter_count.fetch_sub(1, Ordering::AcqRel);
             }
         }
     }
@@ -284,6 +251,30 @@ pub mod task {
                 }
             }
             assert!(notified > 0, "race run should observe wakeups");
+        }
+
+        #[test]
+        fn wake_signal_timeout_cancels_non_head_waiter_without_leak() {
+            let signal = Arc::new(TaskSignal::new());
+            let observed = signal.snapshot();
+
+            let first_signal = signal.clone();
+            let first = thread::spawn(move || {
+                first_signal.wait_timeout(observed, Duration::from_millis(25))
+            });
+            thread::sleep(Duration::from_millis(5));
+
+            let second_signal = signal.clone();
+            let second = thread::spawn(move || {
+                second_signal.wait_timeout(observed, Duration::from_millis(150))
+            });
+            let _ = first.join().expect("first waiter join");
+            thread::sleep(Duration::from_millis(5));
+            assert_eq!(signal.waiter_count.load(Ordering::Acquire), 1);
+
+            signal.notify_waiters();
+            let _ = second.join().expect("second waiter join");
+            assert_eq!(signal.waiter_count.load(Ordering::Acquire), 0);
         }
     }
 }

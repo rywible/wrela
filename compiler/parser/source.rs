@@ -1,5 +1,5 @@
 use crate::lexer::Lexer;
-use crate::lexer::{SpannedToken, Token};
+use crate::lexer::{LexError, SpannedToken, Token};
 use crate::parser::kind::SyntaxKind;
 use miette::SourceSpan;
 
@@ -18,6 +18,19 @@ impl<'a> TokenSource<'a> {
             cursor: 0,
             source,
         }
+    }
+
+    pub fn from_tokens(source: &'a str, tokens: Vec<SpannedToken>) -> Self {
+        Self {
+            tokens,
+            cursor: 0,
+            source,
+        }
+    }
+
+    pub fn lex_with_errors(source: &'a str) -> (Vec<SpannedToken>, Vec<LexError>) {
+        let mut lexer = Lexer::new(source);
+        lexer.lex()
     }
 
     pub fn peek(&self) -> SyntaxKind {

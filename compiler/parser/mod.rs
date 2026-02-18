@@ -7,6 +7,7 @@ pub mod source;
 pub mod validate;
 
 use crate::diag::catalog::ParseDiagKind;
+use crate::lexer::LexError;
 use event::Event;
 use kind::SyntaxKind;
 use miette::SourceSpan;
@@ -39,12 +40,85 @@ pub fn parse(text: &str) -> SyntaxNode {
 }
 
 pub fn parse_with_errors(text: &str) -> (SyntaxNode, Vec<ParseError>) {
-    let source = TokenSource::new(text);
+    let (tokens, lex_errors) = TokenSource::lex_with_errors(text);
+    let source = TokenSource::from_tokens(text, tokens.clone());
     let mut parser = Parser::new(source);
     grammar::root(&mut parser);
-    let (events, errors) = parser.finish();
-    let sink = sink::TreeSink::new(text, events);
+    let (events, mut errors) = parser.finish();
+    let sink = sink::TreeSink::from_tokens(text, tokens, events);
+    errors.extend(lex_errors.into_iter().map(parse_error_from_lex_error));
     (SyntaxNode::new_root(sink.finish()), errors)
+}
+
+fn parse_error_from_lex_error(error: LexError) -> ParseError {
+    match error {
+        LexError::UnexpectedTopLevelIndent { span } => ParseError {
+            kind: ParseDiagKind::Lexical,
+            message: "unexpected indentation at top level".to_string(),
+            span,
+            code: Some("lang::lex::unexpected_indent".to_string()),
+            help: Some("Remove leading whitespace on the first line.".to_string()),
+        },
+        LexError::UnexpectedTabCharacter { span } => ParseError {
+            kind: ParseDiagKind::Lexical,
+            message: "unexpected tab (\\t) character".to_string(),
+            span,
+            code: Some("lang::lex::unexpected_tab".to_string()),
+            help: Some("Use spaces instead of tab characters.".to_string()),
+        },
+        LexError::IndentNotMultipleOfFour { span, .. } => ParseError {
+            kind: ParseDiagKind::Lexical,
+            message: "indent not multiple of four".to_string(),
+            span,
+            code: Some("lang::lex::indent_error".to_string()),
+            help: Some("Use indentation in multiples of four spaces.".to_string()),
+        },
+        LexError::InconsistentIndent { span, .. } => ParseError {
+            kind: ParseDiagKind::Lexical,
+            message: "inconsistent indentation level".to_string(),
+            span,
+            code: Some("lang::lex::inconsistent_indent".to_string()),
+            help: Some("Dedent must match a previous indentation level.".to_string()),
+        },
+        LexError::UnexpectedCharacter { span, char } => ParseError {
+            kind: ParseDiagKind::Lexical,
+            message: format!("unexpected character '{char}'"),
+            span,
+            code: Some("lang::lex::unexpected_char".to_string()),
+            help: Some("This character is not valid in this position.".to_string()),
+        },
+        LexError::UnterminatedString { span } => ParseError {
+            kind: ParseDiagKind::Lexical,
+            message: "unterminated string literal".to_string(),
+            span,
+            code: Some("lang::lex::unterminated_string".to_string()),
+            help: Some("Add a closing quote (\") to the end of the string.".to_string()),
+        },
+        LexError::InvalidEscapeSequence { span, char } => ParseError {
+            kind: ParseDiagKind::Lexical,
+            message: format!("invalid escape sequence '\\{char}'"),
+            span,
+            code: Some("lang::lex::invalid_escape".to_string()),
+            help: Some("Supported escapes are \\n, \\r, \\t, \\\", and \\\\".to_string()),
+        },
+        LexError::InvalidMultilineIndent { span } => ParseError {
+            kind: ParseDiagKind::Lexical,
+            message: "invalid multiline indent".to_string(),
+            span,
+            code: Some("lang::lex::invalid_multiline_indent".to_string()),
+            help: Some(
+                "Indent content inside parentheses/brackets deeper than the enclosing block."
+                    .to_string(),
+            ),
+        },
+        LexError::InvalidLiteral { span } => ParseError {
+            kind: ParseDiagKind::Lexical,
+            message: "invalid numeric literal".to_string(),
+            span,
+            code: Some("lang::lex::invalid_literal".to_string()),
+            help: Some("Check the format of this numeric literal.".to_string()),
+        },
+    }
 }
 
 #[derive(Debug, Clone)]

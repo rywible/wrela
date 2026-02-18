@@ -18,10 +18,11 @@ fn is_syntactic_stringish(body: &hir::Body, expr: hir::Idx<hir::Expr>) -> bool {
 }
 
 pub fn lower_module(module: &Module) -> MirModule {
-    lower_module_with_types(module, None)
+    let (_type_errors, type_info) = crate::hir::typeck::check_module_with_info(module);
+    lower_module_with_types(module, &type_info)
 }
 
-pub fn lower_module_with_types(module: &Module, type_info: Option<&TypeInfo>) -> MirModule {
+pub fn lower_module_with_types(module: &Module, type_info: &TypeInfo) -> MirModule {
     const CLASS_ID_BASE: usize = 100;
     let mut type_tags = Vec::new();
     let mut tag_map = HashMap::new();
@@ -151,7 +152,9 @@ pub fn lower_module_with_types(module: &Module, type_info: Option<&TypeInfo>) ->
             continue;
         };
         let is_method = method_ids.contains(&_idx.into_raw());
-        let fn_types = type_info.and_then(|info| info.function(_idx));
+        let fn_types = type_info
+            .function(_idx)
+            .expect("missing type info for function during MIR lowering");
         let name = if is_method {
             method_qnames
                 .get(&_idx)
@@ -201,7 +204,7 @@ fn lower_function(
     class_derived: &HashMap<SmolStr, HashSet<SmolStr>>,
     interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
     is_method: bool,
-    type_info: Option<&FunctionTypeInfo>,
+    type_info: &FunctionTypeInfo,
 ) -> MirFunction {
     let mut lowerer = FunctionLowerer::new(
         name,
@@ -217,7 +220,7 @@ fn lower_function(
             func.ret_type.as_ref().map(|t| t.name.as_str()),
             Some("Result")
         ),
-        type_info,
+        Some(type_info),
     );
 
     if is_method {
@@ -309,7 +312,7 @@ A Counter:
         let root = ast::Root::cast(node).unwrap();
         let module = hir_lower::lower(root);
         let (_type_errors, type_info) = typeck::check_module_with_info(&module);
-        let mir_module = lower_module_with_types(&module, Some(&type_info));
+        let mir_module = lower_module_with_types(&module, &type_info);
         let func = mir_module
             .functions
             .iter()
@@ -392,7 +395,7 @@ to run() -> Integer:
         let root = ast::Root::cast(node).unwrap();
         let module = hir_lower::lower(root);
         let (_type_errors, type_info) = typeck::check_module_with_info(&module);
-        let mir_module = lower_module_with_types(&module, Some(&type_info));
+        let mir_module = lower_module_with_types(&module, &type_info);
         let func = mir_module
             .functions
             .iter()
@@ -461,7 +464,7 @@ to run() -> Integer:
         let root = ast::Root::cast(node).unwrap();
         let module = hir_lower::lower(root);
         let (_type_errors, type_info) = typeck::check_module_with_info(&module);
-        let mir_module = lower_module_with_types(&module, Some(&type_info));
+        let mir_module = lower_module_with_types(&module, &type_info);
 
         let mut saw_get_value_slot = false;
         let mut saw_get_other_slot = false;

@@ -8231,7 +8231,7 @@ fn compile_to_mir_with_root(
     if had_errors {
         return Err(EXIT_TYPE);
     }
-    let mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     had_errors = false;
     for err in mir::validate::validate_module(&mir_module) {
         let desc = mir_descriptor(err.kind);
@@ -8446,7 +8446,7 @@ fn compile_to_mir(
         }
     }
 
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     stage("mir_lower", &start);
     if emit_mir {
         println!("{:#?}", mir_module);

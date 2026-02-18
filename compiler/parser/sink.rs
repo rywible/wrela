@@ -12,8 +12,21 @@ pub struct TreeSink<'a> {
 
 impl<'a> TreeSink<'a> {
     pub fn new(source_text: &'a str, events: Vec<Event>) -> Self {
+        Self::from_tokens(source_text, Vec::new(), events)
+    }
+
+    pub fn from_tokens(
+        source_text: &'a str,
+        tokens: Vec<crate::lexer::SpannedToken>,
+        events: Vec<Event>,
+    ) -> Self {
+        let source = if tokens.is_empty() {
+            TokenSource::new(source_text)
+        } else {
+            TokenSource::from_tokens(source_text, tokens)
+        };
         Self {
-            source: TokenSource::new(source_text),
+            source,
             events,
             builder: GreenNodeBuilder::new(),
         }

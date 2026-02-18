@@ -154,15 +154,45 @@ pub fn parse(raw_args: Vec<String>) -> CommandSpec {
             continue;
         }
         if let Some(ms) = arg.strip_prefix("--poll-ms=") {
-            poll_ms = ms.parse::<u64>().ok();
+            match ms.parse::<u64>() {
+                Ok(parsed) => poll_ms = Some(parsed),
+                Err(_) => {
+                    return CommandSpec {
+                        trace_enabled,
+                        parsed: ParsedCommandSpec::Error(format!(
+                            "error: invalid --poll-ms value `{ms}`"
+                        )),
+                    };
+                }
+            }
             continue;
         }
         if let Some(jobs) = arg.strip_prefix("--jobs=") {
-            test_jobs = jobs.parse::<usize>().ok();
+            match jobs.parse::<usize>() {
+                Ok(parsed) => test_jobs = Some(parsed),
+                Err(_) => {
+                    return CommandSpec {
+                        trace_enabled,
+                        parsed: ParsedCommandSpec::Error(format!(
+                            "error: invalid --jobs value `{jobs}`"
+                        )),
+                    };
+                }
+            }
             continue;
         }
         if let Some(ms) = arg.strip_prefix("--test-timeout-ms=") {
-            test_timeout_ms = ms.parse::<u64>().ok();
+            match ms.parse::<u64>() {
+                Ok(parsed) => test_timeout_ms = Some(parsed),
+                Err(_) => {
+                    return CommandSpec {
+                        trace_enabled,
+                        parsed: ParsedCommandSpec::Error(format!(
+                            "error: invalid --test-timeout-ms value `{ms}`"
+                        )),
+                    };
+                }
+            }
             continue;
         }
         if arg == "--record" {
@@ -222,7 +252,17 @@ pub fn parse(raw_args: Vec<String>) -> CommandSpec {
             continue;
         }
         if let Some(runs) = arg.strip_prefix("--runs=") {
-            perf_runs = runs.parse::<usize>().ok();
+            match runs.parse::<usize>() {
+                Ok(parsed) => perf_runs = Some(parsed),
+                Err(_) => {
+                    return CommandSpec {
+                        trace_enabled,
+                        parsed: ParsedCommandSpec::Error(format!(
+                            "error: invalid --runs value `{runs}`"
+                        )),
+                    };
+                }
+            }
             continue;
         }
         if let Some(path) = arg.strip_prefix("--baseline-out=") {
@@ -234,51 +274,171 @@ pub fn parse(raw_args: Vec<String>) -> CommandSpec {
             continue;
         }
         if let Some(value) = arg.strip_prefix("--perf-max-regression-pct=") {
-            perf_max_regression_pct = value.parse::<f64>().ok();
+            match value.parse::<f64>() {
+                Ok(parsed) => perf_max_regression_pct = Some(parsed),
+                Err(_) => {
+                    return CommandSpec {
+                        trace_enabled,
+                        parsed: ParsedCommandSpec::Error(format!(
+                            "error: invalid --perf-max-regression-pct value `{value}`"
+                        )),
+                    };
+                }
+            }
             continue;
         }
         if let Some(value) = arg.strip_prefix("--perf-cv-max-pct=") {
-            perf_cv_max_pct = value.parse::<f64>().ok();
+            match value.parse::<f64>() {
+                Ok(parsed) => perf_cv_max_pct = Some(parsed),
+                Err(_) => {
+                    return CommandSpec {
+                        trace_enabled,
+                        parsed: ParsedCommandSpec::Error(format!(
+                            "error: invalid --perf-cv-max-pct value `{value}`"
+                        )),
+                    };
+                }
+            }
             continue;
         }
         if let Some(value) = arg.strip_prefix("--kpi-check-fallback-max=") {
-            kpi_check_fallback_max = value.parse::<f64>().ok();
+            match value.parse::<f64>() {
+                Ok(parsed) => kpi_check_fallback_max = Some(parsed),
+                Err(_) => {
+                    return CommandSpec {
+                        trace_enabled,
+                        parsed: ParsedCommandSpec::Error(format!(
+                            "error: invalid --kpi-check-fallback-max value `{value}`"
+                        )),
+                    };
+                }
+            }
             continue;
         }
         if let Some(value) = arg.strip_prefix("--kpi-check-batch-min=") {
-            kpi_check_batch_min = value.parse::<f64>().ok();
+            match value.parse::<f64>() {
+                Ok(parsed) => kpi_check_batch_min = Some(parsed),
+                Err(_) => {
+                    return CommandSpec {
+                        trace_enabled,
+                        parsed: ParsedCommandSpec::Error(format!(
+                            "error: invalid --kpi-check-batch-min value `{value}`"
+                        )),
+                    };
+                }
+            }
             continue;
         }
         if let Some(value) = arg.strip_prefix("--kpi-scheduler-p99-improve-min-pct=") {
-            kpi_scheduler_p99_improve_min_pct = value.parse::<f64>().ok();
+            match value.parse::<f64>() {
+                Ok(parsed) => kpi_scheduler_p99_improve_min_pct = Some(parsed),
+                Err(_) => {
+                    return CommandSpec {
+                        trace_enabled,
+                        parsed: ParsedCommandSpec::Error(format!(
+                            "error: invalid --kpi-scheduler-p99-improve-min-pct value `{value}`"
+                        )),
+                    };
+                }
+            }
             continue;
         }
         if let Some(value) = arg.strip_prefix("--kpi-rewrite-overhead-max-pct=") {
-            kpi_rewrite_overhead_max_pct = value.parse::<f64>().ok();
+            match value.parse::<f64>() {
+                Ok(parsed) => kpi_rewrite_overhead_max_pct = Some(parsed),
+                Err(_) => {
+                    return CommandSpec {
+                        trace_enabled,
+                        parsed: ParsedCommandSpec::Error(format!(
+                            "error: invalid --kpi-rewrite-overhead-max-pct value `{value}`"
+                        )),
+                    };
+                }
+            }
             continue;
         }
         if let Some(value) = arg.strip_prefix("--kpi-actor-throughput-improve-min-pct=") {
-            kpi_actor_throughput_improve_min_pct = value.parse::<f64>().ok();
+            match value.parse::<f64>() {
+                Ok(parsed) => kpi_actor_throughput_improve_min_pct = Some(parsed),
+                Err(_) => {
+                    return CommandSpec {
+                        trace_enabled,
+                        parsed: ParsedCommandSpec::Error(format!(
+                            "error: invalid --kpi-actor-throughput-improve-min-pct value `{value}`"
+                        )),
+                    };
+                }
+            }
             continue;
         }
         if let Some(value) = arg.strip_prefix("--kpi-queue-age-p99-max-regress-pct=") {
-            kpi_queue_age_p99_max_regress_pct = value.parse::<f64>().ok();
+            match value.parse::<f64>() {
+                Ok(parsed) => kpi_queue_age_p99_max_regress_pct = Some(parsed),
+                Err(_) => {
+                    return CommandSpec {
+                        trace_enabled,
+                        parsed: ParsedCommandSpec::Error(format!(
+                            "error: invalid --kpi-queue-age-p99-max-regress-pct value `{value}`"
+                        )),
+                    };
+                }
+            }
             continue;
         }
         if let Some(value) = arg.strip_prefix("--kpi-starvation-violations-max=") {
-            kpi_starvation_violations_max = value.parse::<f64>().ok();
+            match value.parse::<f64>() {
+                Ok(parsed) => kpi_starvation_violations_max = Some(parsed),
+                Err(_) => {
+                    return CommandSpec {
+                        trace_enabled,
+                        parsed: ParsedCommandSpec::Error(format!(
+                            "error: invalid --kpi-starvation-violations-max value `{value}`"
+                        )),
+                    };
+                }
+            }
             continue;
         }
         if let Some(value) = arg.strip_prefix("--kpi-scheduler-throughput-improve-min-pct=") {
-            kpi_scheduler_throughput_improve_min_pct = value.parse::<f64>().ok();
+            match value.parse::<f64>() {
+                Ok(parsed) => kpi_scheduler_throughput_improve_min_pct = Some(parsed),
+                Err(_) => {
+                    return CommandSpec {
+                        trace_enabled,
+                        parsed: ParsedCommandSpec::Error(format!(
+                            "error: invalid --kpi-scheduler-throughput-improve-min-pct value `{value}`"
+                        )),
+                    };
+                }
+            }
             continue;
         }
         if let Some(value) = arg.strip_prefix("--kpi-scheduler-loop-p99-max-regress-pct=") {
-            kpi_scheduler_loop_p99_max_regress_pct = value.parse::<f64>().ok();
+            match value.parse::<f64>() {
+                Ok(parsed) => kpi_scheduler_loop_p99_max_regress_pct = Some(parsed),
+                Err(_) => {
+                    return CommandSpec {
+                        trace_enabled,
+                        parsed: ParsedCommandSpec::Error(format!(
+                            "error: invalid --kpi-scheduler-loop-p99-max-regress-pct value `{value}`"
+                        )),
+                    };
+                }
+            }
             continue;
         }
         if let Some(value) = arg.strip_prefix("--kpi-scheduler-local-hit-min=") {
-            kpi_scheduler_local_hit_min = value.parse::<f64>().ok();
+            match value.parse::<f64>() {
+                Ok(parsed) => kpi_scheduler_local_hit_min = Some(parsed),
+                Err(_) => {
+                    return CommandSpec {
+                        trace_enabled,
+                        parsed: ParsedCommandSpec::Error(format!(
+                            "error: invalid --kpi-scheduler-local-hit-min value `{value}`"
+                        )),
+                    };
+                }
+            }
             continue;
         }
         if let Some(path) = arg.strip_prefix("--benchmark-manifest=") {
@@ -533,6 +693,29 @@ mod tests {
         let spec = parse(vec!["perfcmp".to_string(), "--confidence=x".to_string()]);
         match spec.parsed {
             ParsedCommandSpec::Error(err) => assert!(err.contains("invalid --confidence value")),
+            other => panic!("unexpected parse result: {other:?}"),
+        }
+
+        let spec = parse(vec!["test".to_string(), "--jobs=abc".to_string()]);
+        match spec.parsed {
+            ParsedCommandSpec::Error(err) => assert!(err.contains("invalid --jobs value")),
+            other => panic!("unexpected parse result: {other:?}"),
+        }
+
+        let spec = parse(vec!["dev".to_string(), "--poll-ms=fast".to_string()]);
+        match spec.parsed {
+            ParsedCommandSpec::Error(err) => assert!(err.contains("invalid --poll-ms value")),
+            other => panic!("unexpected parse result: {other:?}"),
+        }
+
+        let spec = parse(vec![
+            "perf".to_string(),
+            "--kpi-check-batch-min=nope".to_string(),
+        ]);
+        match spec.parsed {
+            ParsedCommandSpec::Error(err) => {
+                assert!(err.contains("invalid --kpi-check-batch-min value"))
+            }
             other => panic!("unexpected parse result: {other:?}"),
         }
     }

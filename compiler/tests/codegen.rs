@@ -49,7 +49,7 @@ fn compile_and_run_native_source(source: &str, executable_name: &str) -> std::pr
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
     let check_ir = hir::checkir::extract_module(&module);
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     optimize_mir_module(&mut mir_module, Some(&check_ir));
     let mir_errors = mir::validate::validate_module(&mir_module);
     assert!(mir_errors.is_empty(), "mir errors: {mir_errors:?}");
@@ -94,7 +94,7 @@ to run() -> Integer:
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
     let check_ir = hir::checkir::extract_module(&module);
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     optimize_mir_module(&mut mir_module, Some(&check_ir));
     let mir_errors = mir::validate::validate_module(&mir_module);
     assert!(mir_errors.is_empty(), "mir errors: {mir_errors:?}");
@@ -136,7 +136,7 @@ to run() -> Integer:
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
     let check_ir = hir::checkir::extract_module(&module);
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     optimize_mir_module(&mut mir_module, Some(&check_ir));
     let mir_errors = mir::validate::validate_module(&mir_module);
     assert!(mir_errors.is_empty(), "mir errors: {mir_errors:?}");
@@ -171,7 +171,7 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     for func in &mut mir_module.functions {
         mir::opt::run_function_passes(func);
     }
@@ -235,7 +235,7 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     for func in &mut mir_module.functions {
         mir::opt::run_function_passes(func);
     }
@@ -278,7 +278,7 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     for func in &mut mir_module.functions {
         mir::opt::run_function_passes(func);
     }
@@ -316,7 +316,7 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     for func in &mut mir_module.functions {
         mir::opt::run_function_passes(func);
     }
@@ -368,7 +368,7 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     for func in &mut mir_module.functions {
         mir::opt::run_function_passes(func);
     }
@@ -411,7 +411,7 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     for func in &mut mir_module.functions {
         mir::opt::run_function_passes(func);
     }
@@ -452,7 +452,7 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     for func in &mut mir_module.functions {
         mir::opt::run_function_passes(func);
     }
@@ -597,7 +597,7 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
-    let mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     let analysis = analysis::analyze_module(&mir_module);
 
     let g_name = "g".into();
@@ -646,7 +646,7 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     for func in &mut mir_module.functions {
         mir::opt::run_function_passes(func);
     }
@@ -698,7 +698,7 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     for func in &mut mir_module.functions {
         mir::opt::run_function_passes(func);
     }
@@ -743,7 +743,7 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     for func in &mut mir_module.functions {
         mir::opt::run_function_passes(func);
     }
@@ -791,7 +791,7 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     for func in &mut mir_module.functions {
         mir::opt::run_function_passes(func);
     }
@@ -843,7 +843,7 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     for func in &mut mir_module.functions {
         mir::opt::run_function_passes(func);
     }
@@ -904,7 +904,7 @@ to run() -> Integer:
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
     let check_ir = hir::checkir::extract_module(&module);
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     optimize_mir_module(&mut mir_module, Some(&check_ir));
     let mir_errors = mir::validate::validate_module(&mir_module);
     assert!(mir_errors.is_empty(), "mir errors: {mir_errors:?}");
@@ -959,7 +959,7 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     for func in &mut mir_module.functions {
         mir::opt::run_function_passes(func);
     }
@@ -1003,7 +1003,7 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     for func in &mut mir_module.functions {
         mir::opt::run_function_passes(func);
     }
@@ -1048,7 +1048,7 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     for func in &mut mir_module.functions {
         mir::opt::run_function_passes(func);
     }
@@ -1101,7 +1101,7 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     for func in &mut mir_module.functions {
         mir::opt::run_function_passes(func);
     }
@@ -1157,7 +1157,7 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     for func in &mut mir_module.functions {
         mir::opt::run_function_passes(func);
     }
@@ -1226,7 +1226,7 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     for func in &mut mir_module.functions {
         mir::opt::run_function_passes(func);
     }
@@ -1298,7 +1298,7 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     for func in &mut mir_module.functions {
         mir::opt::run_function_passes(func);
     }
@@ -1358,7 +1358,7 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     for func in &mut mir_module.functions {
         mir::opt::run_function_passes(func);
     }
@@ -1577,7 +1577,7 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     for func in &mut mir_module.functions {
         mir::opt::run_function_passes(func);
     }
@@ -1631,7 +1631,7 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     for func in &mut mir_module.functions {
         mir::opt::run_function_passes(func);
     }
@@ -1685,7 +1685,7 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     for func in &mut mir_module.functions {
         mir::opt::run_function_passes(func);
     }
@@ -1739,7 +1739,7 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     for func in &mut mir_module.functions {
         mir::opt::run_function_passes(func);
     }
@@ -1790,7 +1790,7 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     for func in &mut mir_module.functions {
         mir::opt::run_function_passes(func);
     }
@@ -1855,7 +1855,7 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     for func in &mut mir_module.functions {
         mir::opt::run_function_passes(func);
     }
@@ -1911,7 +1911,7 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     for func in &mut mir_module.functions {
         mir::opt::run_function_passes(func);
     }
@@ -1955,7 +1955,7 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     for func in &mut mir_module.functions {
         mir::opt::run_function_passes(func);
     }
@@ -1999,7 +1999,7 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     for func in &mut mir_module.functions {
         mir::opt::run_function_passes(func);
     }
@@ -2040,7 +2040,7 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     for func in &mut mir_module.functions {
         mir::opt::run_function_passes(func);
     }
@@ -2094,7 +2094,7 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     for func in &mut mir_module.functions {
         mir::opt::run_function_passes(func);
     }
@@ -2139,7 +2139,7 @@ to run() -> Integer:
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
     let check_ir = hir::checkir::extract_module(&module);
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     optimize_mir_module(&mut mir_module, Some(&check_ir));
 
     let call_fn = mir_module
@@ -2221,7 +2221,7 @@ to run() -> Integer:
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
     let check_ir = hir::checkir::extract_module(&module);
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     optimize_mir_module(&mut mir_module, Some(&check_ir));
 
     let call_fn = mir_module
@@ -2310,7 +2310,7 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     for func in &mut mir_module.functions {
         mir::opt::run_function_passes(func);
     }
@@ -2363,7 +2363,7 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     for func in &mut mir_module.functions {
         mir::opt::run_function_passes(func);
     }
@@ -2400,7 +2400,7 @@ to run() -> Integer:
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
-    let mut mir_module = mir::lower::lower_module_with_types(&module, Some(&type_info));
+    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
     for func in &mut mir_module.functions {
         mir::opt::run_function_passes(func);
     }

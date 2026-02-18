@@ -2,6 +2,7 @@ use crate::diag::{DiagSeverity, DiagStage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ParseDiagKind {
+    Lexical,
     SyntaxError,
     UnexpectedToken,
     ExpectedToken,
@@ -43,6 +44,13 @@ pub struct DiagDescriptor {
 
 pub fn parse_descriptor(kind: ParseDiagKind) -> DiagDescriptor {
     match kind {
+        ParseDiagKind::Lexical => DiagDescriptor {
+            diag_id: "parse.lexical",
+            code: "lang::lex::error",
+            stage: DiagStage::Parse,
+            severity_default: DiagSeverity::Error,
+            help_template: "Fix the lexical error near this token.",
+        },
         ParseDiagKind::SyntaxError => DiagDescriptor {
             diag_id: "parse.syntax_error",
             code: "lang::parse::syntax_error",

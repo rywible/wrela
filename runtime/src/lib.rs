@@ -476,6 +476,7 @@ pub extern "C" fn wr_bytes_from_string(val: Value) -> Value {
     bytes::bytes_from_string(val)
 }
 
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_bytes_from_slice_local(ptr: *const u8, len: usize) -> Value {
     if ptr.is_null() && len != 0 {
