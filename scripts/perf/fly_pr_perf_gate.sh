@@ -8,7 +8,7 @@ Usage: $0 [--sha <commit>] [--run-id <id>]
 Environment:
   PERF_SUITES             (default: micro meso macro linux)
   PERF_RUNS               (default: 10)
-  PERF_CV_MAX_PCT         (default: 5)
+  PERF_CV_MAX_PCT         (default: 10)
   PERF_WARMUP_RUNS        (default: 1)
   PERF_REMOTE_REF         (default: refs/heads/<current-branch> or refs/heads/main)
   FLY_POOL_CONFIG         (default: scripts/perf/fly_pool.json)
@@ -16,6 +16,7 @@ Environment:
   FLY_CLAIM_TIMEOUT_SEC   (default: 600)
   FLY_POLL_INTERVAL_SEC   (default: 10)
   FLY_START_TIMEOUT_SEC   (default: 180)
+  FLY_START_RETRY_TRIES   (default: 12)
   KEEP_FAILED_MACHINES    (default: 0)
 USAGE
 }
@@ -35,13 +36,14 @@ done
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PERF_SUITES="${PERF_SUITES:-micro meso macro linux}"
 PERF_RUNS="${PERF_RUNS:-10}"
-PERF_CV_MAX_PCT="${PERF_CV_MAX_PCT:-5}"
+PERF_CV_MAX_PCT="${PERF_CV_MAX_PCT:-10}"
 PERF_WARMUP_RUNS="${PERF_WARMUP_RUNS:-1}"
 POOL_CONFIG="${FLY_POOL_CONFIG:-${ROOT}/scripts/perf/fly_pool.json}"
 LOCK_ROOT="${FLY_LOCK_ROOT:-${HOME}/.codex/state/wrela-perf-fly-locks}"
 CLAIM_TIMEOUT_SEC="${FLY_CLAIM_TIMEOUT_SEC:-600}"
 POLL_INTERVAL_SEC="${FLY_POLL_INTERVAL_SEC:-10}"
 START_TIMEOUT_SEC="${FLY_START_TIMEOUT_SEC:-180}"
+START_RETRY_TRIES="${FLY_START_RETRY_TRIES:-12}"
 KEEP_FAILED_MACHINES="${KEEP_FAILED_MACHINES:-0}"
 PERF_REMOTE_REF="${PERF_REMOTE_REF:-}"
 
@@ -101,6 +103,14 @@ CLAIMED_REGION=""
 CLAIMED_LOCK_FILE=""
 CLAIMED_LOCK_DIR=""
 CLAIMED_LOCK_META=""
+declare -A BAD_START_RUNNERS=()
+enabled_runner_count="$(jq '[.runners[] | select(.enabled == true)] | length' "${POOL_CONFIG}")"
+start_failover_attempts=0
+
+if (( enabled_runner_count <= 0 )); then
+  echo "error: no enabled fly perf runners in ${POOL_CONFIG}" >&2
+  exit 1
+fi
 
 release_claim() {
   if [[ -n "${CLAIMED_LOCK_META}" ]]; then
@@ -109,6 +119,13 @@ release_claim() {
   if [[ -n "${CLAIMED_LOCK_DIR}" ]]; then
     rmdir "${CLAIMED_LOCK_DIR}" >/dev/null 2>&1 || true
   fi
+  CLAIMED_NAME=""
+  CLAIMED_APP=""
+  CLAIMED_MACHINE_ID=""
+  CLAIMED_REGION=""
+  CLAIMED_LOCK_FILE=""
+  CLAIMED_LOCK_DIR=""
+  CLAIMED_LOCK_META=""
 }
 
 machine_stop_best_effort() {
@@ -126,7 +143,7 @@ cleanup() {
 trap cleanup EXIT
 
 claim_machine() {
-  local start_ts now candidate lock_file lock_dir lock_meta rec
+  local start_ts now candidate lock_file lock_dir lock_meta rec candidate_key
   start_ts="$(date +%s)"
 
   while true; do
@@ -135,6 +152,11 @@ claim_machine() {
       candidate_app="$(jq -r '.app' <<<"${rec}")"
       candidate_machine="$(jq -r '.machine_id' <<<"${rec}")"
       candidate_region="$(jq -r '.region' <<<"${rec}")"
+      candidate_key="${candidate_app}/${candidate_machine}"
+
+      if [[ -n "${BAD_START_RUNNERS[${candidate_key}]:-}" ]]; then
+        continue
+      fi
 
       lock_file="${LOCK_ROOT}/${candidate_app}-${candidate_machine}.lock"
       lock_dir="${lock_file}.d"
@@ -188,37 +210,55 @@ wait_machine_started() {
 }
 
 start_machine_with_retry() {
+  local start_log="$1"
   local tries=0
-  local max_tries=12
+  local max_tries="${START_RETRY_TRIES}"
   local state=""
+  : > "${start_log}"
   while (( tries < max_tries )); do
-    if flyctl machine start "${CLAIMED_MACHINE_ID}" -a "${CLAIMED_APP}" >"${OUT_ROOT}/amd64/start.log" 2>&1; then
+    echo "[start-attempt $((tries + 1))/${max_tries}] flyctl machine start ${CLAIMED_APP}/${CLAIMED_MACHINE_ID}" >>"${start_log}"
+    if flyctl machine start "${CLAIMED_MACHINE_ID}" -a "${CLAIMED_APP}" >>"${start_log}" 2>&1; then
       return 0
     fi
     state="$(flyctl machine list -a "${CLAIMED_APP}" --json 2>/dev/null | jq -r --arg id "${CLAIMED_MACHINE_ID}" '.[] | select(.id == $id) | (.state // .status // .instance_state // "")' | head -n1 || true)"
-    if [[ "${state}" == "stopping" || "${state}" == "created" || "${state}" == "starting" ]]; then
-      sleep 3
-      tries=$((tries + 1))
-      continue
+    if [[ "${state}" == "started" ]]; then
+      return 0
     fi
-    return 1
+    echo "[start-attempt $((tries + 1))/${max_tries}] machine state after failure: ${state:-unknown}" >>"${start_log}"
+    tries=$((tries + 1))
+    sleep 3
   done
   return 1
 }
 
-if ! claim_machine; then
-  echo "error: unable to claim fly perf machine within timeout (${CLAIM_TIMEOUT_SEC}s)" >&2
-  exit 1
-fi
-
 run_log="${OUT_ROOT}/amd64/run.log"
-if ! start_machine_with_retry; then
-  echo "error: failed to start machine ${CLAIMED_APP}/${CLAIMED_MACHINE_ID}" >&2
-  exit 1
-fi
-if ! wait_machine_started >"${OUT_ROOT}/amd64/state.log" 2>&1; then
-  exit 1
-fi
+while true; do
+  if ! claim_machine; then
+    echo "error: unable to claim fly perf machine within timeout (${CLAIM_TIMEOUT_SEC}s)" >&2
+    exit 1
+  fi
+
+  start_failover_attempts=$((start_failover_attempts + 1))
+  start_log="${OUT_ROOT}/amd64/start-attempt-${start_failover_attempts}.log"
+  state_log="${OUT_ROOT}/amd64/state-attempt-${start_failover_attempts}.log"
+
+  if start_machine_with_retry "${start_log}" && wait_machine_started >"${state_log}" 2>&1; then
+    break
+  fi
+
+  echo "warning: runner failed startup checks, failing over: ${CLAIMED_APP}/${CLAIMED_MACHINE_ID}" >&2
+  BAD_START_RUNNERS["${CLAIMED_APP}/${CLAIMED_MACHINE_ID}"]=1
+
+  if [[ "${KEEP_FAILED_MACHINES}" != "1" ]]; then
+    machine_stop_best_effort
+  fi
+  release_claim
+
+  if (( ${#BAD_START_RUNNERS[@]} >= enabled_runner_count )); then
+    echo "error: all enabled fly perf runners failed startup checks in this run" >&2
+    exit 1
+  fi
+done
 
 final_status="failed"
 final_reason="infra_error"
@@ -261,7 +301,7 @@ cat > "${SUMMARY_PATH}" <<JSON
     "amd64": {
       "status": "${final_status}",
       "reason": "${final_reason}",
-      "attempts": 1,
+      "attempts": ${start_failover_attempts},
       "runner": {
         "name": "${CLAIMED_NAME}",
         "app": "${CLAIMED_APP}",

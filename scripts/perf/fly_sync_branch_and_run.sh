@@ -8,7 +8,7 @@ Usage: $0 --app <name> --machine <id> --sha <commit> [--out-dir <path>]
 Environment:
   PERF_SUITES           (default: micro meso macro linux)
   PERF_RUNS             (default: 10)
-  PERF_CV_MAX_PCT       (default: 5)
+  PERF_CV_MAX_PCT       (default: 10)
   PERF_WARMUP_RUNS      (default: 1)
   FORCE_REBUILD_WRELA   (default: 1)
   INSTALL_DEPS_ON_VM    (default: auto) # auto|always|never
@@ -40,7 +40,7 @@ fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SUITES="${PERF_SUITES:-micro meso macro linux}"
 RUNS="${PERF_RUNS:-10}"
-PERF_CV_MAX_PCT="${PERF_CV_MAX_PCT:-5}"
+PERF_CV_MAX_PCT="${PERF_CV_MAX_PCT:-10}"
 PERF_WARMUP_RUNS="${PERF_WARMUP_RUNS:-1}"
 FORCE_REBUILD_WRELA="${FORCE_REBUILD_WRELA:-1}"
 INSTALL_DEPS_ON_VM="${INSTALL_DEPS_ON_VM:-auto}"

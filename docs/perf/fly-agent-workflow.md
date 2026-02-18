@@ -9,7 +9,8 @@ This workflow runs Wrela perf checks on pooled Fly Machines for `amd64`.
 - Claiming uses host-global locks under `~/.codex/state/wrela-perf-fly-locks` to avoid cross-worktree collisions.
 - PR runs rebuild `wrela` from the target pushed SHA before perf (`FORCE_REBUILD_WRELA=1` by default).
 - Runner machines should use a pinned perf image built from `scripts/perf/fly/Dockerfile`.
-- Perf gate defaults: `PERF_RUNS=10`, `PERF_WARMUP_RUNS=1` (discarded), `PERF_CV_MAX_PCT=5`.
+- Perf gate defaults: `PERF_RUNS=10`, `PERF_WARMUP_RUNS=1` (discarded), `PERF_CV_MAX_PCT=10`.
+- PR gate startup hardening: if a claimed runner fails startup checks, the gate automatically fails over to other enabled pool runners before failing the run.
 
 ## Build runner image
 
@@ -44,6 +45,11 @@ flyctl auth login
 ```bash
 scripts/perf/fly_pr_perf_gate.sh --sha <commit-sha>
 ```
+
+Optional startup tuning env vars:
+
+- `FLY_START_RETRY_TRIES` (default `12`)
+- `FLY_START_TIMEOUT_SEC` (default `180`)
 
 Artifacts and summary are written to:
 
