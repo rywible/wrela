@@ -595,6 +595,39 @@ fn cli_check_without_run_is_ok() {
     assert!(output.status.success());
 }
 
+#[test]
+fn cli_check_allows_duplicate_private_function_names_across_modules() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let src_dir = dir.path().join("src");
+    std::fs::create_dir_all(src_dir.join("domain")).unwrap();
+    std::fs::write(
+        src_dir.join("main.wr"),
+        "use run_orders from domain/orders\nuse run_payments from domain/payments\n\nto run() -> Integer:\n    return run_orders() + run_payments()\n",
+    )
+    .unwrap();
+    std::fs::write(
+        src_dir.join("domain").join("orders.wr"),
+        "private:\n    to load_value() -> Integer:\n        return 1\n\nto run_orders() -> Integer:\n    return load_value()\n",
+    )
+    .unwrap();
+    std::fs::write(
+        src_dir.join("domain").join("payments.wr"),
+        "private:\n    to load_value() -> Integer:\n        return 2\n\nto run_payments() -> Integer:\n    return load_value()\n",
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("check")
+        .arg(src_dir.join("main.wr"))
+        .output()
+        .expect("run wrela");
+    assert!(
+        output.status.success(),
+        "duplicate private names across modules should be allowed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 fn write_test_project(root: &std::path::Path) {
     let src_dir = root.join("src");
     let tests_dir = root.join("tests");

@@ -145,6 +145,112 @@ fn build_trace() -> bool {
     std::env::var("WRELA_BUILD_TRACE").is_ok()
 }
 
+fn module_name_suffix(name: &SmolStr) -> SmolStr {
+    let mut out = String::with_capacity(name.len());
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push('_');
+        }
+    }
+    while out.contains("__") {
+        out = out.replace("__", "_");
+    }
+    SmolStr::new(out.trim_matches('_'))
+}
+
+fn rewrite_private_call_targets(body: &mut Body, renamed: &HashMap<SmolStr, SmolStr>) {
+    let mut to_rewrite = Vec::new();
+    for raw in 0..body.exprs.len() {
+        let idx = Idx::new(raw);
+        match &body.exprs[idx] {
+            Expr::Call { callee, .. }
+            | Expr::GivenCall { callee, .. }
+            | Expr::TypeApply { callee, .. } => {
+                if let Expr::Variable(name) = &body.exprs[*callee]
+                    && renamed.contains_key(name)
+                {
+                    to_rewrite.push(*callee);
+                }
+            }
+            _ => {}
+        }
+    }
+    to_rewrite.sort_by_key(|idx| idx.into_raw());
+    to_rewrite.dedup();
+    for callee in to_rewrite {
+        if let Expr::Variable(name) = &mut body.exprs[callee]
+            && let Some(new_name) = renamed.get(name)
+        {
+            *name = new_name.clone();
+        }
+    }
+}
+
+fn rewrite_private_function_collisions(modules: &mut HashMap<SmolStr, LoadedModule>) {
+    let mut private_origins: HashMap<SmolStr, Vec<SmolStr>> = HashMap::new();
+    for module in modules.values() {
+        let mut method_ids = HashSet::new();
+        for (_, class) in module.module.classes.iter() {
+            for method in &class.methods {
+                method_ids.insert(*method);
+            }
+        }
+        for (idx, func) in module.module.functions.iter() {
+            if method_ids.contains(&idx) || !matches!(func.visibility, Visibility::Private) {
+                continue;
+            }
+            private_origins
+                .entry(func.name.clone())
+                .or_default()
+                .push(module.name.clone());
+        }
+    }
+
+    for module in modules.values_mut() {
+        let mut renamed: HashMap<SmolStr, SmolStr> = HashMap::new();
+        let mut method_ids = HashSet::new();
+        for (_, class) in module.module.classes.iter() {
+            for method in &class.methods {
+                method_ids.insert(*method);
+            }
+        }
+        for (idx, func) in module.module.functions.iter() {
+            if method_ids.contains(&idx) || !matches!(func.visibility, Visibility::Private) {
+                continue;
+            }
+            let Some(origins) = private_origins.get(&func.name) else {
+                continue;
+            };
+            if origins.len() < 2 {
+                continue;
+            }
+            let new_name = SmolStr::new(format!(
+                "{}_m_{}",
+                func.name,
+                module_name_suffix(&module.name)
+            ));
+            renamed.insert(func.name.clone(), new_name);
+        }
+
+        if renamed.is_empty() {
+            continue;
+        }
+
+        let function_ids: Vec<_> = module.module.functions.iter().map(|(idx, _)| idx).collect();
+        for idx in function_ids {
+            let function = &mut module.module.functions[idx];
+            if let Some(new_name) = renamed.get(&function.name) {
+                function.name = new_name.clone();
+            }
+            if let Some(body) = function.body.as_mut() {
+                rewrite_private_call_targets(body, &renamed);
+            }
+        }
+    }
+}
+
 pub fn load_project(entry_path: &Path) -> Result<LoadedProject, Vec<ProjectError>> {
     load_project_with_entrypoint(entry_path, true)
 }
@@ -203,6 +309,7 @@ pub fn load_project_with_roots(
     if build_trace() {
         eprintln!("project: load_module done");
     }
+    rewrite_private_function_collisions(&mut loader.modules);
     if enforce_entrypoint {
         loader.enforce_entrypoint(&entry_name);
     }

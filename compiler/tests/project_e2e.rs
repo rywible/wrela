@@ -88,6 +88,48 @@ fn project_provenance_tracks_owner_paths_for_merged_symbols() {
 }
 
 #[test]
+fn project_allows_duplicate_private_function_names_across_modules() {
+    let base = tempfile::tempdir().expect("tempdir");
+    let entry_path = base.path().join("src").join("main.wr");
+    let orders_path = base.path().join("src").join("domain").join("orders.wr");
+    let payments_path = base.path().join("src").join("domain").join("payments.wr");
+
+    write_temp(
+        &entry_path,
+        "use run_orders from domain/orders\nuse run_payments from domain/payments\n\nto run() -> Integer:\n    return run_orders() + run_payments()\n",
+    );
+    write_temp(
+        &orders_path,
+        "private:\n    to load_value() -> Integer:\n        return 1\n\nto run_orders() -> Integer:\n    return load_value()\n",
+    );
+    write_temp(
+        &payments_path,
+        "private:\n    to load_value() -> Integer:\n        return 2\n\nto run_payments() -> Integer:\n    return load_value()\n",
+    );
+
+    let project = load_project(&entry_path).expect("load project");
+    let mut private_helpers = project
+        .module
+        .functions
+        .iter()
+        .filter_map(|(_, func)| {
+            if func.name.starts_with("load_value_m_") {
+                Some(func.name.clone())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    private_helpers.sort();
+    private_helpers.dedup();
+    assert_eq!(
+        private_helpers.len(),
+        2,
+        "expected private helper names to be module-scoped"
+    );
+}
+
+#[test]
 fn project_missing_module_has_span() {
     let base = tempfile::tempdir().expect("tempdir");
     let entry_path = base.path().join("src").join("main.wr");
