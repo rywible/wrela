@@ -1853,6 +1853,7 @@ pub(crate) mod string {
     pub struct StrObj {
         header: ObjHeader,
         bytes: Vec<u8>,
+        hash: u64,
         arena_backed: bool,
     }
 
@@ -1873,6 +1874,7 @@ pub(crate) mod string {
         let s = Box::new(StrObj {
             header: header(TypeId::String),
             bytes: bytes.to_vec(),
+            hash: hash_bytes(bytes),
             arena_backed: false,
         });
         #[cfg(feature = "metrics")]
@@ -1900,6 +1902,7 @@ pub(crate) mod string {
         let s = Box::new(StrObj {
             header: header(TypeId::String),
             bytes: bytes.to_vec(),
+            hash: hash_bytes(bytes),
             arena_backed: false,
         });
         #[cfg(feature = "metrics")]
@@ -1915,6 +1918,7 @@ pub(crate) mod string {
         let s = Box::new(StrObj {
             header: header(TypeId::String),
             bytes: bytes.to_vec(),
+            hash: hash_bytes(bytes),
             arena_backed: false,
         });
         #[cfg(feature = "metrics")]
@@ -1956,9 +1960,11 @@ pub(crate) mod string {
         for part in parts {
             write_value_bytes(*part, &mut out);
         }
+        let hash = hash_bytes(&out);
         let s = Box::new(StrObj {
             header: header(TypeId::String),
             bytes: out,
+            hash,
             arena_backed: false,
         });
         #[cfg(feature = "metrics")]
@@ -1981,9 +1987,11 @@ pub(crate) mod string {
                 for part in parts {
                     write_value_bytes(*part, &mut out);
                 }
+                let hash = hash_bytes(&out);
                 let obj = StrObj {
                     header: header(TypeId::String),
                     bytes: out,
+                    hash,
                     arena_backed: true,
                 };
                 if let Some(ptr) = arena::alloc_in_current(obj) {
@@ -2027,6 +2035,31 @@ pub(crate) mod string {
             let s = &*(val.as_ptr() as *const StrObj);
             Some(f(&s.bytes))
         }
+    }
+
+    pub(crate) fn string_hash(val: Value) -> Option<u64> {
+        if !val.is_ptr() {
+            return None;
+        }
+        unsafe {
+            let header = &*val.as_ptr();
+            if header.type_id != TypeId::String as u32 {
+                return None;
+            }
+            let s = &*(val.as_ptr() as *const StrObj);
+            Some(s.hash)
+        }
+    }
+
+    #[inline]
+    fn hash_bytes(bytes: &[u8]) -> u64 {
+        // FNV-1a style mixing to keep hashing cheap for runtime-heavy maps.
+        let mut h = 0xcbf2_9ce4_8422_2325u64;
+        for &b in bytes {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100_0000_01b3);
+        }
+        h
     }
 
     fn value_bytes_len(val: Value) -> usize {
@@ -2357,6 +2390,15 @@ pub(crate) mod value {
                 let ah = &*a.as_ptr();
                 let bh = &*b.as_ptr();
                 if ah.type_id == TypeId::String as u32 && bh.type_id == TypeId::String as u32 {
+                    let Some(ahash) = crate::string::string_hash(a) else {
+                        return false;
+                    };
+                    let Some(bhash) = crate::string::string_hash(b) else {
+                        return false;
+                    };
+                    if ahash != bhash {
+                        return false;
+                    }
                     let eq = with_string_bytes(a, |ab| {
                         with_string_bytes(b, |bb| ab == bb).unwrap_or(false)
                     });
@@ -2403,9 +2445,10 @@ pub(crate) mod value {
             unsafe {
                 let header = &*val.as_ptr();
                 if header.type_id == TypeId::String as u32 {
-                    let _ = with_string_bytes(val, |bytes| {
-                        bytes.hash(state);
-                    });
+                    if let Some(hash) = crate::string::string_hash(val) {
+                        hash.hash(state);
+                        return;
+                    }
                     return;
                 }
                 if header.type_id == TypeId::Bytes as u32 {
