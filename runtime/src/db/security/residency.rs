@@ -38,10 +38,28 @@ pub struct ResidencyPolicy {
 
 impl ResidencyPolicy {
     pub fn with_rules(rules: Vec<ResidencyRule>) -> Self {
-        Self { rules }
+        let normalized = rules
+            .into_iter()
+            .map(|rule| {
+                let mut allowed_regions = rule
+                    .allowed_regions
+                    .into_iter()
+                    .map(|region| normalize_region(&region))
+                    .filter(|region| !region.is_empty())
+                    .collect::<Vec<_>>();
+                allowed_regions.sort();
+                allowed_regions.dedup();
+                ResidencyRule {
+                    shard: rule.shard,
+                    allowed_regions,
+                }
+            })
+            .collect();
+        Self { rules: normalized }
     }
 
     pub fn authorize_egress(&self, shard: &[u8], sink_region: &str) -> Result<(), ResidencyError> {
+        let normalized_sink_region = normalize_region(sink_region);
         let Some(rule) = self
             .rules
             .iter()
@@ -58,7 +76,7 @@ impl ResidencyPolicy {
         if rule
             .allowed_regions
             .iter()
-            .any(|region| region == sink_region)
+            .any(|region| region == &normalized_sink_region)
         {
             return Ok(());
         }
@@ -67,11 +85,15 @@ impl ResidencyPolicy {
             reason: format!(
                 "shard={} sink_region={} allowed={:?}",
                 String::from_utf8_lossy(shard),
-                sink_region,
+                normalized_sink_region,
                 rule.allowed_regions
             ),
         })
     }
+}
+
+fn normalize_region(region: &str) -> String {
+    region.trim().to_ascii_lowercase()
 }
 
 #[cfg(test)]
@@ -123,5 +145,15 @@ mod tests {
                 .expect("token prefix"),
             ResidencyErrorToken::EgressPolicyUnsat.as_str()
         );
+    }
+
+    #[test]
+    fn allows_equivalent_region_with_case_and_whitespace_variants() {
+        let policy = ResidencyPolicy::with_rules(vec![ResidencyRule {
+            shard: b"core".to_vec(),
+            allowed_regions: vec![" US-CENTRAL ".to_string()],
+        }]);
+        assert!(policy.authorize_egress(b"core", "us-central").is_ok());
+        assert!(policy.authorize_egress(b"core", "  Us-Central ").is_ok());
     }
 }

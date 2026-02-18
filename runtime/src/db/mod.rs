@@ -42,6 +42,7 @@ pub mod erasure;
 pub mod failover;
 pub mod gateway;
 pub mod hlc;
+pub mod invariant_history;
 pub mod keyspace;
 pub mod lsm;
 pub mod mvcc;
@@ -193,6 +194,10 @@ impl DbEngine {
         Ok(packed)
     }
 
+    fn clear_writer_queue(&mut self) {
+        while self.writer_queue.pop().is_some() {}
+    }
+
     fn validate_batch(batch: &[BatchOp]) -> Result<(), DbError> {
         if batch.is_empty() {
             return Err(DbError::invalid_argument("empty batch"));
@@ -241,6 +246,8 @@ impl DbEngine {
 
     pub fn submit_batch(&mut self, batch: &[BatchOp]) -> Result<u64, DbError> {
         Self::validate_batch(batch)?;
+        // Drop leftovers from prior failed submits; each submit must be isolated.
+        self.clear_writer_queue();
         let frame = build_append_frame(batch);
         let required_index = self
             .raft_last_log_index
@@ -274,7 +281,10 @@ impl DbEngine {
         }
 
         for command in &frame.commands {
-            self.writer_queue.push(command_to_batch_op(command))?;
+            if let Err(err) = self.writer_queue.push(command_to_batch_op(command)) {
+                self.clear_writer_queue();
+                return Err(err);
+            }
         }
 
         let ack_decision = evaluate_leader_ack(&LeaderAckInput {
@@ -285,6 +295,7 @@ impl DbEngine {
             follower_responses: self.pending_append_responses.clone(),
         });
         if !ack_decision.ack_emitted {
+            self.clear_writer_queue();
             return Err(DbError::limit(format!(
                 "durability quorum not reached; durable_acks={} quorum={}",
                 ack_decision.durable_acks, ack_decision.quorum_size
@@ -1660,6 +1671,66 @@ mod tests {
             }],
         )
         .expect("quorum satisfied");
+        assert!(close_db(handle));
+    }
+
+    #[test]
+    fn quorum_rejection_does_not_leak_operations_into_future_success() {
+        let dir = temp_dir();
+        let handle = open_db(&dir).expect("open db");
+        let db = db_for_handle(handle).expect("db handle");
+        {
+            let mut engine = db.lock().expect("DB engine lock");
+            engine.raft_voters = 3;
+        }
+
+        let rejected = submit_batch(
+            handle,
+            &[BatchOp::Put {
+                namespace: b"core".to_vec(),
+                key: b"k1".to_vec(),
+                value: b"v1".to_vec(),
+                expected_version: None,
+            }],
+        );
+        assert!(
+            rejected.is_err(),
+            "first batch must be rejected without quorum"
+        );
+
+        {
+            let mut engine = db.lock().expect("DB engine lock");
+            engine.pending_append_responses = vec![FollowerAppendResponse {
+                node_id: 2,
+                response: AppendEntriesResponse {
+                    term: engine.raft_current_term,
+                    success: true,
+                    match_index: u64::MAX,
+                    conflict_index: None,
+                },
+                replication_latency_ns: 10,
+                fsync_latency_ns: 5,
+            }];
+        }
+
+        submit_batch(
+            handle,
+            &[BatchOp::Put {
+                namespace: b"core".to_vec(),
+                key: b"k2".to_vec(),
+                value: b"v2".to_vec(),
+                expected_version: None,
+            }],
+        )
+        .expect("second batch should pass with quorum");
+
+        let leaked = read_point(handle, b"core".to_vec(), b"k1".to_vec()).expect("read k1");
+        let committed = read_point(handle, b"core".to_vec(), b"k2".to_vec()).expect("read k2");
+        assert_eq!(
+            leaked, None,
+            "rejected op must never leak into later commit"
+        );
+        assert_eq!(committed, Some(b"v2".to_vec()));
         assert!(close_db(handle));
     }
 

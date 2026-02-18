@@ -45,6 +45,7 @@ impl SafeTimePropagator {
             .entry(region)
             .or_default()
             .insert(shard_id);
+        self.recompute_region_safe_times();
     }
 
     pub fn recompute_region_safe_times(&mut self) {
@@ -212,5 +213,58 @@ mod tests {
         assert_eq!(diag.violations[0].id, "us");
         assert_eq!(diag.violations[1].scope, "shard");
         assert_eq!(diag.violations[1].id, "s-1");
+    }
+
+    #[test]
+    fn observe_keeps_region_and_global_safe_time_fresh_without_manual_recompute() {
+        let mut p = SafeTimePropagator::default();
+        p.observe_shard_safe_time(
+            "s-a",
+            "us",
+            HlTimestamp {
+                physical_ms: 120,
+                logical: 0,
+            }
+            .pack(),
+        );
+        p.observe_shard_safe_time(
+            "s-b",
+            "us",
+            HlTimestamp {
+                physical_ms: 110,
+                logical: 0,
+            }
+            .pack(),
+        );
+        p.observe_shard_safe_time(
+            "s-c",
+            "eu",
+            HlTimestamp {
+                physical_ms: 130,
+                logical: 0,
+            }
+            .pack(),
+        );
+
+        assert_eq!(
+            p.region_safe_time("us"),
+            Some(
+                HlTimestamp {
+                    physical_ms: 110,
+                    logical: 0
+                }
+                .pack()
+            )
+        );
+        assert_eq!(
+            p.global_safe_time(),
+            Some(
+                HlTimestamp {
+                    physical_ms: 110,
+                    logical: 0
+                }
+                .pack()
+            )
+        );
     }
 }

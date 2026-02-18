@@ -18,6 +18,9 @@ This seed introduces minimal-but-real runtime behavior for policy prerequisites:
     maintenance.
   - Minimal SQL statement layer for phase conformance:
     - parser (`INSERT`, `DELETE`, `EXPLAIN`) with deterministic typed `InvalidArgument` failures.
+    - deterministic tokenization supports quoted tokens (single or double quotes) for values
+      containing whitespace.
+    - unterminated quoted tokens fail with typed parse errors.
     - catalog validation for table/index existence before mutation planning.
     - planner explain binding via `compile_statement(...) -> CompiledSql::Explain(...)`.
   - Conformance harness:

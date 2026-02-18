@@ -189,22 +189,22 @@ pub fn parse_statement(statement: &str) -> Result<SqlStatement, DbError> {
         return Err(DbError::invalid_argument("sql parse: empty statement"));
     }
 
-    let mut parts = statement.split_whitespace();
-    let keyword = parts
-        .next()
+    let tokens = tokenize_statement(statement)?;
+    let keyword = tokens
+        .first()
         .ok_or_else(|| DbError::invalid_argument("sql parse: missing statement keyword"))?;
 
     if keyword.eq_ignore_ascii_case("INSERT") {
-        let table = parts
-            .next()
+        let table = tokens
+            .get(1)
             .ok_or_else(|| DbError::invalid_argument("sql parse: INSERT missing table"))?;
-        let primary_key = parts
-            .next()
+        let primary_key = tokens
+            .get(2)
             .ok_or_else(|| DbError::invalid_argument("sql parse: INSERT missing primary key"))?;
-        let row_value = parts
-            .next()
+        let row_value = tokens
+            .get(3)
             .ok_or_else(|| DbError::invalid_argument("sql parse: INSERT missing row value"))?;
-        let secondary_indexes = parse_optional_indexes(parts.collect::<Vec<_>>().as_slice())?;
+        let secondary_indexes = parse_optional_indexes(&tokens[4..])?;
         return Ok(SqlStatement::Insert {
             table: table.as_bytes().to_vec(),
             primary_key: primary_key.as_bytes().to_vec(),
@@ -214,13 +214,13 @@ pub fn parse_statement(statement: &str) -> Result<SqlStatement, DbError> {
     }
 
     if keyword.eq_ignore_ascii_case("DELETE") {
-        let table = parts
-            .next()
+        let table = tokens
+            .get(1)
             .ok_or_else(|| DbError::invalid_argument("sql parse: DELETE missing table"))?;
-        let primary_key = parts
-            .next()
+        let primary_key = tokens
+            .get(2)
             .ok_or_else(|| DbError::invalid_argument("sql parse: DELETE missing primary key"))?;
-        let secondary_indexes = parse_optional_indexes(parts.collect::<Vec<_>>().as_slice())?;
+        let secondary_indexes = parse_optional_indexes(&tokens[3..])?;
         return Ok(SqlStatement::Delete {
             table: table.as_bytes().to_vec(),
             primary_key: primary_key.as_bytes().to_vec(),
@@ -229,34 +229,34 @@ pub fn parse_statement(statement: &str) -> Result<SqlStatement, DbError> {
     }
 
     if keyword.eq_ignore_ascii_case("EXPLAIN") {
-        let table = parts
-            .next()
+        let table = tokens
+            .get(1)
             .ok_or_else(|| DbError::invalid_argument("sql parse: EXPLAIN missing table"))?;
-        let tokens = parts.collect::<Vec<_>>();
-        if tokens.len() != 8 {
+        let clause_tokens = &tokens[2..];
+        if clause_tokens.len() != 8 {
             return Err(DbError::invalid_argument(
                 "sql parse: EXPLAIN requires SELECTIVITY/CARDINALITY/INDEX/STALE clauses",
             ));
         }
-        if !tokens[0].eq_ignore_ascii_case("SELECTIVITY")
-            || !tokens[2].eq_ignore_ascii_case("CARDINALITY")
-            || !tokens[4].eq_ignore_ascii_case("INDEX")
-            || !tokens[6].eq_ignore_ascii_case("STALE")
+        if !clause_tokens[0].eq_ignore_ascii_case("SELECTIVITY")
+            || !clause_tokens[2].eq_ignore_ascii_case("CARDINALITY")
+            || !clause_tokens[4].eq_ignore_ascii_case("INDEX")
+            || !clause_tokens[6].eq_ignore_ascii_case("STALE")
         {
             return Err(DbError::invalid_argument(
                 "sql parse: EXPLAIN clause order must be SELECTIVITY CARDINALITY INDEX STALE",
             ));
         }
 
-        let selectivity = parse_u32(tokens[1], "sql parse: invalid SELECTIVITY")?;
+        let selectivity = parse_u32(&clause_tokens[1], "sql parse: invalid SELECTIVITY")?;
         if selectivity > 10_000 {
             return Err(DbError::invalid_argument(
                 "sql parse: SELECTIVITY must be in 0..=10000",
             ));
         }
-        let cardinality_estimate = parse_u64(tokens[3], "sql parse: invalid CARDINALITY")?;
-        let index_available = parse_index_flag(tokens[5])?;
-        let stats_stale = parse_bool(tokens[7], "sql parse: invalid STALE flag")?;
+        let cardinality_estimate = parse_u64(&clause_tokens[3], "sql parse: invalid CARDINALITY")?;
+        let index_available = parse_index_flag(&clause_tokens[5])?;
+        let stats_stale = parse_bool(&clause_tokens[7], "sql parse: invalid STALE flag")?;
 
         return Ok(SqlStatement::Explain {
             table: table.as_bytes().to_vec(),
@@ -270,6 +270,59 @@ pub fn parse_statement(statement: &str) -> Result<SqlStatement, DbError> {
     Err(DbError::invalid_argument(format!(
         "sql parse: unsupported statement keyword `{keyword}`"
     )))
+}
+
+fn tokenize_statement(statement: &str) -> Result<Vec<String>, DbError> {
+    let mut tokens = Vec::new();
+    let mut chars = statement.chars().peekable();
+    while let Some(ch) = chars.peek().copied() {
+        if ch.is_whitespace() {
+            chars.next();
+            continue;
+        }
+
+        if ch == '"' || ch == '\'' {
+            let quote = ch;
+            chars.next();
+            let mut token = String::new();
+            let mut escaped = false;
+            let mut terminated = false;
+            for next in chars.by_ref() {
+                if escaped {
+                    token.push(next);
+                    escaped = false;
+                    continue;
+                }
+                if next == '\\' {
+                    escaped = true;
+                    continue;
+                }
+                if next == quote {
+                    terminated = true;
+                    break;
+                }
+                token.push(next);
+            }
+            if !terminated {
+                return Err(DbError::invalid_argument(
+                    "sql parse: unterminated quoted token",
+                ));
+            }
+            tokens.push(token);
+            continue;
+        }
+
+        let mut token = String::new();
+        while let Some(next) = chars.peek().copied() {
+            if next.is_whitespace() {
+                break;
+            }
+            token.push(next);
+            chars.next();
+        }
+        tokens.push(token);
+    }
+    Ok(tokens)
 }
 
 pub fn compile_statement(
@@ -431,7 +484,7 @@ fn classify_sql_mutation_error(err: &DbError) -> Option<SqlMutationErrorKind> {
     }
 }
 
-fn parse_optional_indexes(tokens: &[&str]) -> Result<Vec<SecondaryIndexEntry>, DbError> {
+fn parse_optional_indexes(tokens: &[String]) -> Result<Vec<SecondaryIndexEntry>, DbError> {
     if tokens.is_empty() {
         return Ok(Vec::new());
     }
@@ -862,6 +915,25 @@ mod tests {
         let err = parse_statement("UPSERT users u1 value").expect_err("must reject unsupported");
         assert_eq!(err.code, ErrorCode::InvalidArgument);
         assert!(err.message.contains("unsupported statement"));
+    }
+
+    #[test]
+    fn parse_statement_supports_quoted_row_values() {
+        let parsed = parse_statement(
+            "INSERT users u9 \"{\\\"name\\\":\\\"ada lovelace\\\"}\" INDEX by_email=ada@example.com",
+        )
+        .expect("parse quoted row value");
+        let SqlStatement::Insert { row_value, .. } = parsed else {
+            panic!("expected insert");
+        };
+        assert_eq!(row_value, b"{\"name\":\"ada lovelace\"}".to_vec());
+    }
+
+    #[test]
+    fn parse_statement_rejects_unterminated_quote() {
+        let err = parse_statement("INSERT users u9 \"unterminated").expect_err("must reject");
+        assert_eq!(err.code, ErrorCode::InvalidArgument);
+        assert!(err.message.contains("unterminated quoted token"));
     }
 
     #[test]

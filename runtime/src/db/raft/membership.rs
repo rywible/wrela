@@ -37,6 +37,7 @@ pub enum MembershipError {
 pub struct JointMembership {
     pub outgoing_voters: BTreeSet<u64>,
     pub incoming_voters: BTreeSet<u64>,
+    pub outgoing_learners: BTreeSet<u64>,
     pub started_at_log_index: u64,
 }
 
@@ -105,6 +106,7 @@ impl MembershipConfig {
         self.joint = Some(JointMembership {
             outgoing_voters: self.voters.clone(),
             incoming_voters,
+            outgoing_learners: self.learners.clone(),
             started_at_log_index: log_index,
         });
         self.learners = incoming_learners;
@@ -123,8 +125,7 @@ impl MembershipConfig {
     pub fn abort_joint_change(&mut self) -> Result<(), MembershipError> {
         let joint = self.joint.take().ok_or(MembershipError::NoJointConfig)?;
         self.voters = joint.outgoing_voters;
-        self.learners
-            .retain(|node_id| !self.voters.contains(node_id));
+        self.learners = joint.outgoing_learners;
         Ok(())
     }
 
@@ -242,5 +243,29 @@ mod tests {
             .begin_joint_change(MembershipChange::RemoveVoter { node_id: 11 }, 5)
             .expect_err("must reject");
         assert_eq!(err, MembershipError::LastVoterRemovalDenied(11));
+    }
+
+    #[test]
+    fn abort_restores_outgoing_learners_exactly() {
+        let mut cfg = MembershipConfig::new([1, 2, 3]).expect("init");
+        cfg.begin_joint_change(MembershipChange::AddLearner { node_id: 9 }, 1)
+            .expect("add learner");
+        cfg.commit_joint_change().expect("commit add learner");
+        assert!(cfg.is_learner(9));
+
+        cfg.begin_joint_change(MembershipChange::PromoteLearner { node_id: 9 }, 2)
+            .expect("promote learner");
+        assert!(
+            cfg.joint()
+                .expect("joint in progress")
+                .incoming_voters
+                .contains(&9)
+        );
+        assert!(!cfg.is_learner(9));
+
+        cfg.abort_joint_change()
+            .expect("abort must restore prior sets");
+        assert!(!cfg.is_voter(9));
+        assert!(cfg.is_learner(9));
     }
 }

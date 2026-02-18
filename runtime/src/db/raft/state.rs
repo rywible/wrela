@@ -1,3 +1,5 @@
+use crate::db::raft::message::LogEntry;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     Follower,
@@ -13,6 +15,8 @@ pub struct NodeState {
     pub role: Role,
     pub election_deadline_tick: u64,
     pub last_heartbeat_tick: u64,
+    pub commit_index: u64,
+    pub log: Vec<LogEntry>,
 }
 
 impl NodeState {
@@ -28,6 +32,8 @@ impl NodeState {
             role: Role::Follower,
             election_deadline_tick: now_tick.saturating_add(election_timeout_ticks.max(1)),
             last_heartbeat_tick: now_tick,
+            commit_index: 0,
+            log: Vec::new(),
         }
     }
 
@@ -37,5 +43,38 @@ impl NodeState {
 
     pub fn reset_election_deadline(&mut self, now_tick: u64, election_timeout_ticks: u64) {
         self.election_deadline_tick = now_tick.saturating_add(election_timeout_ticks.max(1));
+    }
+
+    pub fn last_log_index(&self) -> u64 {
+        self.log.last().map(|entry| entry.index).unwrap_or(0)
+    }
+
+    pub fn last_log_term(&self) -> u64 {
+        self.log.last().map(|entry| entry.term).unwrap_or(0)
+    }
+
+    pub fn log_term_at(&self, index: u64) -> Option<u64> {
+        if index == 0 {
+            return Some(0);
+        }
+        let position = (index - 1) as usize;
+        self.log.get(position).map(|entry| entry.term)
+    }
+
+    pub fn truncate_log_from(&mut self, from_index: u64) {
+        if from_index == 0 {
+            self.log.clear();
+            self.commit_index = 0;
+            return;
+        }
+        let keep_len = (from_index - 1) as usize;
+        if keep_len < self.log.len() {
+            self.log.truncate(keep_len);
+        }
+        self.commit_index = self.commit_index.min(self.last_log_index());
+    }
+
+    pub fn append_log_entry(&mut self, entry: LogEntry) {
+        self.log.push(entry);
     }
 }

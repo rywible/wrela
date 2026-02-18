@@ -26,7 +26,7 @@ pub fn evaluate_strong_read(
     let uncertainty_lower = HlTimestamp::unpack(uncertainty.lower_bound);
     let uncertainty_upper = HlTimestamp::unpack(uncertainty.upper_bound);
 
-    if requested.physical_ms > safe_time.physical_ms {
+    if requested_ts_packed > safe_time_packed {
         return StrongReadDecision::RetryAfter {
             wait_ms: requested.physical_ms.saturating_sub(safe_time.physical_ms),
             reason: StrongReadRejectReason::SafeTimeLag,
@@ -147,5 +147,40 @@ mod tests {
         );
 
         assert_eq!(decision, StrongReadDecision::Serve);
+    }
+
+    #[test]
+    fn rejects_when_requested_logical_exceeds_safe_time_at_same_physical_tick() {
+        let decision = evaluate_strong_read(
+            HlTimestamp {
+                physical_ms: 200,
+                logical: 5,
+            }
+            .pack(),
+            HlTimestamp {
+                physical_ms: 200,
+                logical: 2,
+            }
+            .pack(),
+            UncertaintyWindow {
+                lower_bound: HlTimestamp {
+                    physical_ms: 100,
+                    logical: 0,
+                }
+                .pack(),
+                upper_bound: HlTimestamp {
+                    physical_ms: 100,
+                    logical: 1,
+                }
+                .pack(),
+            },
+        );
+        assert_eq!(
+            decision,
+            StrongReadDecision::RetryAfter {
+                wait_ms: 0,
+                reason: StrongReadRejectReason::SafeTimeLag,
+            }
+        );
     }
 }

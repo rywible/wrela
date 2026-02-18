@@ -133,20 +133,73 @@ impl AuditLog {
 }
 
 fn redact_detail(detail: &str) -> String {
-    let mut out = String::with_capacity(detail.len());
-    for token in detail.split_whitespace() {
-        let token_lower = token.to_ascii_lowercase();
-        if token_lower.contains("secret")
-            || token_lower.contains("token")
-            || token_lower.contains("key=")
-        {
-            out.push_str("[REDACTED]");
-        } else {
-            out.push_str(token);
-        }
-        out.push(' ');
+    if let Ok(mut json) = serde_json::from_str::<serde_json::Value>(detail) {
+        redact_json_value(&mut json, None);
+        return json.to_string();
     }
-    out.trim_end().to_string()
+    redact_text_detail(detail)
+}
+
+fn redact_text_detail(detail: &str) -> String {
+    let mut redactions_after_auth_header = 0usize;
+    let mut out = Vec::new();
+    for token in detail.split_whitespace() {
+        if redactions_after_auth_header > 0 {
+            out.push("[REDACTED]".to_string());
+            redactions_after_auth_header = redactions_after_auth_header.saturating_sub(1);
+            continue;
+        }
+
+        let normalized = token
+            .trim_matches(|ch: char| ch == '"' || ch == '\'' || ch == ',' || ch == ';')
+            .to_ascii_lowercase();
+        let is_sensitive = normalized.contains("secret")
+            || normalized.contains("token")
+            || normalized.contains("password")
+            || normalized.starts_with("authorization")
+            || normalized.contains("apikey")
+            || normalized.contains("api_key")
+            || normalized.contains("key=");
+        if is_sensitive {
+            if normalized.starts_with("authorization") {
+                redactions_after_auth_header = 2;
+            }
+            out.push("[REDACTED]".to_string());
+        } else {
+            out.push(token.to_string());
+        }
+    }
+    out.join(" ")
+}
+
+fn redact_json_value(value: &mut serde_json::Value, parent_key: Option<&str>) {
+    if parent_key.is_some_and(is_sensitive_key) {
+        *value = serde_json::Value::String("[REDACTED]".to_string());
+        return;
+    }
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, nested) in map {
+                redact_json_value(nested, Some(key));
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for nested in values {
+                redact_json_value(nested, None);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_sensitive_key(key: &str) -> bool {
+    let normalized = key.trim().to_ascii_lowercase();
+    normalized.contains("secret")
+        || normalized.contains("token")
+        || normalized.contains("password")
+        || normalized == "authorization"
+        || normalized == "api_key"
+        || normalized == "apikey"
 }
 
 #[cfg(test)]
@@ -193,5 +246,38 @@ mod tests {
 
         let exported = log.redact_for_export();
         assert!(exported[0].detail.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn redaction_catches_delimiter_tokens_and_auth_headers() {
+        let mut log = AuditLog::default();
+        log.record_authz_denied(
+            "gw",
+            "rpc:write",
+            "token:abc secret=foo; Authorization: Bearer xyz",
+            1,
+        );
+        let exported = log.redact_for_export();
+        assert_eq!(
+            exported[0].detail,
+            "[REDACTED] [REDACTED] [REDACTED] [REDACTED] [REDACTED]"
+        );
+    }
+
+    #[test]
+    fn redaction_catches_json_secret_fields() {
+        let mut log = AuditLog::default();
+        log.record_authz_denied(
+            "gw",
+            "rpc:write",
+            r#"{"user":"ada","token":"abc","nested":{"api_key":"k1"}}"#,
+            1,
+        );
+        let exported = log.redact_for_export();
+        let payload: serde_json::Value =
+            serde_json::from_str(&exported[0].detail).expect("redacted payload remains json");
+        assert_eq!(payload["token"], "[REDACTED]");
+        assert_eq!(payload["nested"]["api_key"], "[REDACTED]");
+        assert_eq!(payload["user"], "ada");
     }
 }

@@ -46,10 +46,11 @@ pub fn evaluate_cost_guardrail(input: CostGuardrailInput) -> CostGuardrailDecisi
         };
     }
 
-    let utilization_bps = ((input.estimated_monthly_cost_cents as u128)
+    let utilization_bps_raw = (input.estimated_monthly_cost_cents as u128)
         .saturating_mul(10_000)
         .checked_div(input.max_monthly_budget_cents as u128)
-        .unwrap_or(u128::MAX)) as u32;
+        .unwrap_or(u128::MAX);
+    let utilization_bps = utilization_bps_raw.min(u128::from(u32::MAX)) as u32;
 
     if utilization_bps >= input.hard_stop_ratio_bps {
         return CostGuardrailDecision {
@@ -159,5 +160,16 @@ mod tests {
             proof.rows[1].token,
             Some(ResidencyErrorToken::EgressPolicyUnsat.as_str())
         );
+    }
+
+    #[test]
+    fn cost_guardrail_saturates_extreme_utilization_instead_of_wrapping() {
+        let decision = evaluate_cost_guardrail(CostGuardrailInput {
+            estimated_monthly_cost_cents: u64::MAX,
+            max_monthly_budget_cents: 1,
+            hard_stop_ratio_bps: 12_000,
+        });
+        assert_eq!(decision.action, CostGuardrailAction::FreezeChanges);
+        assert_eq!(decision.budget_utilization_bps, u32::MAX);
     }
 }

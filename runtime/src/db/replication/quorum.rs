@@ -111,6 +111,11 @@ fn response_precedence(left: &AppendEntriesResponse, right: &AppendEntriesRespon
         .cmp(&right.term)
         .then_with(|| left.match_index.cmp(&right.match_index))
         .then_with(|| left.success.cmp(&right.success))
+        .then_with(|| {
+            left.conflict_index
+                .unwrap_or(0)
+                .cmp(&right.conflict_index.unwrap_or(0))
+        })
 }
 
 #[cfg(test)]
@@ -323,5 +328,39 @@ mod tests {
         assert_eq!(follower_acks.len(), 1);
         assert!(!follower_acks[0].durable);
         assert_eq!(follower_acks[0].node_id, 9);
+    }
+
+    #[test]
+    fn dedupe_prefers_higher_conflict_index_for_equal_term_and_match() {
+        let responses = [
+            FollowerAppendResponse {
+                node_id: 4,
+                response: AppendEntriesResponse {
+                    term: 10,
+                    success: false,
+                    match_index: 90,
+                    conflict_index: Some(30),
+                },
+                replication_latency_ns: 10,
+                fsync_latency_ns: 5,
+            },
+            FollowerAppendResponse {
+                node_id: 4,
+                response: AppendEntriesResponse {
+                    term: 10,
+                    success: false,
+                    match_index: 90,
+                    conflict_index: Some(40),
+                },
+                replication_latency_ns: 11,
+                fsync_latency_ns: 6,
+            },
+        ];
+        let follower_acks = follower_acks_from_append_responses(10, 91, &responses);
+        assert_eq!(follower_acks.len(), 1);
+        assert_eq!(follower_acks[0].node_id, 4);
+        assert!(!follower_acks[0].durable);
+        assert_eq!(follower_acks[0].replication_latency_ns, 11);
+        assert_eq!(follower_acks[0].fsync_latency_ns, 6);
     }
 }

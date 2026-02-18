@@ -12,6 +12,7 @@
   - atomic batch all-or-nothing behavior
   - read-your-write visibility across randomized operation traces
 - Consensus quorum accounting tests for duplicate follower response idempotency.
+- Quorum rejection isolation tests to prove rejected batches never leak into later successful writes.
 - Canonical codec tests for deterministic frame round-trip and legacy-aware decode.
 - Replay trace schema contract tests for sim/model failure artifacts.
 - CDC cursor paging/shard-filter tests for deterministic resume behavior.
@@ -30,8 +31,10 @@
 - Transport scheduler state visibility tests for per-lane pending/in-flight backpressure accounting.
 - Admin surface machine-readable cluster/quorum/policy explain tests.
 - Residency audit fail-closed token tests (`DENY`, `POLICY_UNSAT`).
+- Residency policy canonicalization tests (`trim + lowercase`) for case/whitespace-equivalent regions.
 - Autopilot replay harness deterministic scenario replay tests.
 - Cost/residency compliance proof tests for guardrail decisions.
+- Cost guardrail saturation tests for extreme utilization ratios without integer wraparound.
 - Residency-aware read-SLO controller deterministic action tests.
 - Bounded fuzz lane for DB wire/storage parsers:
   - SQL statement parser.
@@ -45,12 +48,24 @@
   - tokenized unsat-policy path (`RESIDENCY_EGRESS_POLICY_UNSAT`)
 - SQL DML deterministic mutation token mapping tests.
 - SQL conformance suite for parser/catalog/planner expectations.
+- SQL tokenizer/parser tests for quoted values with spaces and deterministic parse failures on
+  unsupported/unterminated constructs.
 - Schema evolution state-machine transition legality and backfill monotonicity tests.
 - Planner cost/explain deterministic selection and tie-break tests.
 - Backup/restore manifest integrity and restore-plan typing tests.
 - Schema job API lifecycle/persistence roundtrip tests.
 - Planner stats refresh trigger + persistence codec tests.
 - Snapshot manifest watermark/version validation tests.
+- Raft append log-matching tests for stale-term reject, `prev_log_index/term` mismatch reject,
+  conflict index reporting, conflict truncation, duplicate retry idempotency, and commit-index
+  advance bounds.
+- Joint membership abort rollback tests that restore outgoing voters and outgoing learners exactly.
+- Safe-time observation tests proving `observe` keeps shard/region/global safe times fresh without
+  manual recompute calls.
+- Audit redaction tests for delimiter-aware secrets (`token:abc`, `secret=foo;`,
+  `Authorization: Bearer ...`) plus JSON key redaction.
+- WAL replay incremental decode tests for bounded-memory large-log replay and torn-tail truncation.
+- Live-history invariant lane tests derived from real runtime DB traces (not only synthetic events).
 - Multipart upload resume/retry progress contract tests.
 - Reindex worker bounded/resumable stepping and remediation determinism tests.
 - Plan baseline drift gate and explain-schema contract tests.
@@ -76,6 +91,13 @@
 - `cargo test -p wrela_runtime --test db_model_kv -- --nocapture`
 - `cargo test -p wrela_runtime --test db_consensus_faults -- --nocapture`
 - `cargo test -p wrela_runtime db::codec::tests -- --nocapture`
+- `cargo test -p wrela_runtime db::raft::append::tests -- --nocapture`
+- `cargo test -p wrela_runtime db::replication:: -- --nocapture`
+- `cargo test -p wrela_runtime db::time::safe_time::tests -- --nocapture`
+- `cargo test -p wrela_runtime db::audit::tests -- --nocapture`
+- `cargo test -p wrela_runtime db::wal::segment::tests -- --nocapture`
+- `cargo test -p wrela_runtime --test db_invariant_history -- --nocapture`
+- `bash scripts/db-jepsen/check_history.sh`
 - `cargo test -p wrela_runtime cdc_page_ -- --nocapture`
 - `cargo test -p wrela_runtime cdc_checkpoint_persists_across_restart -- --nocapture`
 - `cargo test -p wrela_runtime cdc_stream_page_resumes_from_stored_checkpoint -- --nocapture`
