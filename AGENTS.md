@@ -40,47 +40,42 @@ cargo clippy --workspace --all-targets   # lint with configured thresholds
 - When changing parsing/type/codegen behavior, include at least one regression test.
 - Run `cargo test --workspace` before opening a PR.
 
-## Perf on GCP (Agent Policy)
+## Perf on Fly (Agent Policy)
 
-- Use the Spot-based dual-arch workflow by default for perf checks. Do not hand-roll `gcloud` commands unless debugging a script.
-- Build/refresh prewarmed image families first (or when stale):
+- Use the Fly-machine pooled workflow by default for perf checks.
+- Fly perf is currently `amd64` only.
+- Runner inventory in `scripts/perf/fly_pool.json` is pre-provisioned and should be treated as stable for normal perf runs (do not modify pool setup in routine agent workflows).
+- Claiming is lock-first and host-global to avoid cross-worktree collisions:
+  - lock root defaults to `~/.codex/state/wrela-perf-fly-locks`
+  - locks are keyed by `<app>-<machine_id>`
+- Run PR perf gate with a pushed SHA (required for reproducibility):
 
 ```bash
-scripts/perf/gcp_build_perf_images.sh
-```
-
-- Run PR perf gate (both `amd64` and `arm64`, merge-blocking on regression):
-
-```bash
-scripts/perf/gcp_pr_perf_gate.sh --sha <commit-sha>
+scripts/perf/fly_pr_perf_gate.sh --sha <commit-sha>
 ```
 
 - Refresh canonical `main` baseline after merges:
 
 ```bash
-scripts/perf/gcp_refresh_main_baseline.sh --sha <main-sha>
+scripts/perf/fly_refresh_main_baseline.sh --sha <main-sha>
 ```
 
-- Defaults are strict unless explicitly overridden:
-  - `GCP_USE_SPOT=1`
-  - `GCP_SPOT_MAX_RETRIES=3`
-  - `GCP_SPOT_BACKOFF_SEC=20`
-  - `GCP_ALLOW_FALLBACK_ONDEMAND=0`
-  - `GCP_AMD64_IMAGE_FAMILY=wrela-perf-amd64`
-  - `GCP_ARM64_IMAGE_FAMILY=wrela-perf-arm64`
-  - `FORCE_REBUILD_WRELA=1`
-
 - Operational rule:
-  - Do not run `gcp_build_perf_images.sh` for ordinary PR perf runs.
-  - Use prebuilt image families for PR runs, and only run image builds on maintenance cadence (or after toolchain/base-image changes).
-  - Every PR perf run must rebuild `wrela` from the current checked-out branch/worktree before running suites.
   - Real perf checks must run the whole suite set (`micro meso macro linux`), not partial suites.
   - Real perf checks should use at least `PERF_RUNS=5` for stable stats; use more only when investigating noisy deltas.
   - `PERF_RUNS=1-3` is only for quick smoke/debug loops and must not be used to claim perf wins or update canonical baseline.
+  - Every PR perf run must target a commit SHA available on `origin`.
+  - Every perf run should start/stop machines through the Fly scripts; avoid ad-hoc manual lifecycle changes.
 
 - Canonical baseline pointer is `.artifacts/perf/main/CANONICAL.json`.
-  - Update it only when dual-arch run passes and the target SHA is still current `main` head.
-  - If run result is `infra_preempted` or `perf_failed`, do not advance canonical baseline.
+  - Update it only when amd64 run passes and the target SHA is still current `main` head.
+  - If run result is `infra_unavailable` or `perf_failed`, do not advance canonical baseline.
+
+- Deprecated workflows:
+  - Do not use any `scripts/perf/gcp_*` scripts.
+  - Do not use ad-hoc `gcloud` perf flows.
+  - Do not run perf from mutable branch heads; always use pushed commit SHA.
+  - Do not rebuild/reprovision Fly pool infrastructure during ordinary perf runs.
 
 ### Latest Main Benchmark (Where To Look)
 
@@ -90,5 +85,5 @@ scripts/perf/gcp_refresh_main_baseline.sh --sha <main-sha>
   - `.artifacts/perf/main/<sha>/`
 - Branch-vs-main comparison flow for agents:
   1. Read `.artifacts/perf/main/CANONICAL.json` to get canonical `sha` and `summary_path`.
-  2. Run branch perf via `scripts/perf/gcp_pr_perf_gate.sh --sha <branch-sha>`.
-  3. Compare branch run summary/artifacts under `.artifacts/perf/gcp/<run-id>/` against canonical artifacts in `.artifacts/perf/main/<sha>/`.
+  2. Run branch perf via `scripts/perf/fly_pr_perf_gate.sh --sha <branch-sha>`.
+  3. Compare branch run summary/artifacts under `.artifacts/perf/fly/<run-id>/` against canonical artifacts in `.artifacts/perf/main/<sha>/`.

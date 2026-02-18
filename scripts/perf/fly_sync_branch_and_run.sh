@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<USAGE >&2
+Usage: $0 --app <name> --machine <id> --sha <commit> [--out-dir <path>]
+
+Environment:
+  PERF_SUITES           (default: micro meso macro linux)
+  PERF_RUNS             (default: 5)
+  FORCE_REBUILD_WRELA   (default: 1)
+  INSTALL_DEPS_ON_VM    (default: auto) # auto|always|never
+USAGE
+}
+
+APP=""
+MACHINE_ID=""
+SHA=""
+OUT_DIR=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --app) APP="${2:-}"; shift 2 ;;
+    --machine) MACHINE_ID="${2:-}"; shift 2 ;;
+    --sha) SHA="${2:-}"; shift 2 ;;
+    --out-dir) OUT_DIR="${2:-}"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown arg: $1" >&2; usage; exit 1 ;;
+  esac
+done
+
+if [[ -z "${APP}" || -z "${MACHINE_ID}" || -z "${SHA}" ]]; then
+  usage
+  exit 1
+fi
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SUITES="${PERF_SUITES:-micro meso macro linux}"
+RUNS="${PERF_RUNS:-5}"
+FORCE_REBUILD_WRELA="${FORCE_REBUILD_WRELA:-1}"
+INSTALL_DEPS_ON_VM="${INSTALL_DEPS_ON_VM:-auto}"
+REMOTE_URL="${REMOTE_URL:-$(git -C "${ROOT}" remote get-url origin)}"
+
+if [[ -z "${OUT_DIR}" ]]; then
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  OUT_DIR="${ROOT}/.artifacts/perf/fly/${APP}-${MACHINE_ID}-${stamp}"
+fi
+mkdir -p "${OUT_DIR}"
+
+remote_cmd="$(cat <<'RCMD'
+set -euo pipefail
+if [[ -f "$HOME/.cargo/env" ]]; then
+  source "$HOME/.cargo/env"
+fi
+
+mode="__INSTALL_DEPS_ON_VM__"
+need_install=0
+if [[ "${mode}" == "always" ]]; then
+  need_install=1
+elif [[ "${mode}" == "auto" ]]; then
+  for c in git jq clang; do
+    if ! command -v "$c" >/dev/null 2>&1; then
+      need_install=1
+      break
+    fi
+  done
+  if [[ "${need_install}" == "0" ]] && ! command -v cargo >/dev/null 2>&1; then
+    need_install=1
+  fi
+fi
+
+if [[ "${need_install}" == "1" ]]; then
+  apt_prefix=""
+  if command -v sudo >/dev/null 2>&1; then
+    apt_prefix="sudo"
+  fi
+  ${apt_prefix} apt-get update
+  ${apt_prefix} DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential pkg-config libssl-dev clang llvm make git curl ca-certificates jq
+  if ! command -v cargo >/dev/null 2>&1; then
+    curl https://sh.rustup.rs -sSf | sh -s -- -y
+    source "$HOME/.cargo/env"
+  fi
+fi
+
+if [[ -d "$HOME/wrela/.git" ]]; then
+  cd "$HOME/wrela"
+  git remote set-url origin __REMOTE_URL__ || true
+else
+  rm -rf "$HOME/wrela"
+  git clone __REMOTE_URL__ "$HOME/wrela"
+  cd "$HOME/wrela"
+fi
+
+git fetch origin __SHA__
+git checkout --detach FETCH_HEAD
+
+pkill -f "target/release/wrela perf" >/dev/null 2>&1 || true
+rm -rf .artifacts/perf
+mkdir -p .artifacts/perf
+
+# Seed from baked bootstrap build to reduce first-run rebuild cost.
+if [[ ! -d "target/release" && -d "/opt/wrela-bootstrap/target/release" ]]; then
+  mkdir -p target
+  cp -R /opt/wrela-bootstrap/target/release target/ || true
+fi
+
+if [[ "__FORCE_REBUILD_WRELA__" == "1" ]]; then
+  cargo build -p wrela --release
+fi
+
+for suite in __SUITES__; do
+  ./target/release/wrela perf --runs=__RUNS__ --baseline-out=".artifacts/perf/${suite}-baseline.json" "benchmarks/${suite}"
+done
+
+uname -a > .artifacts/perf/host.txt
+RCMD
+)"
+
+remote_cmd="${remote_cmd//__INSTALL_DEPS_ON_VM__/${INSTALL_DEPS_ON_VM}}"
+remote_cmd="${remote_cmd//__SHA__/${SHA}}"
+remote_cmd="${remote_cmd//__FORCE_REBUILD_WRELA__/${FORCE_REBUILD_WRELA}}"
+remote_cmd="${remote_cmd//__SUITES__/${SUITES}}"
+remote_cmd="${remote_cmd//__RUNS__/${RUNS}}"
+remote_cmd="${remote_cmd//__REMOTE_URL__/${REMOTE_URL}}"
+
+flyctl ssh console -a "${APP}" --machine "${MACHINE_ID}" --command "${remote_cmd}" >"${OUT_DIR}/run.log" 2>&1
+
+if ! flyctl ssh console -a "${APP}" --machine "${MACHINE_ID}" --command 'set -euo pipefail; tar -C "$HOME/wrela/.artifacts" -czf - perf' > "${OUT_DIR}/perf.tar.gz" 2>>"${OUT_DIR}/run.log"; then
+  echo "error: failed to copy perf artifacts from ${APP}/${MACHINE_ID}" >&2
+  exit 1
+fi
+
+tar -xzf "${OUT_DIR}/perf.tar.gz" -C "${OUT_DIR}"
+rm -f "${OUT_DIR}/perf.tar.gz"
+
+echo "Artifacts: ${OUT_DIR}/perf"
