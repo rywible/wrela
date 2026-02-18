@@ -9,6 +9,7 @@ This workflow runs Wrela perf checks on pooled Fly Machines for `amd64`.
 - Claiming uses host-global locks under `~/.codex/state/wrela-perf-fly-locks` to avoid cross-worktree collisions.
 - PR runs rebuild `wrela` from the target pushed SHA before perf (`FORCE_REBUILD_WRELA=1` by default).
 - Runner machines should use a pinned perf image built from `scripts/perf/fly/Dockerfile`.
+- Perf gate defaults: `PERF_RUNS=10`, `PERF_WARMUP_RUNS=1` (discarded), `PERF_CV_MAX_PCT=5`.
 
 ## Build runner image
 

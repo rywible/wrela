@@ -7,7 +7,10 @@ Usage: $0 [--sha <commit>] [--run-id <id>]
 
 Environment:
   PERF_SUITES             (default: micro meso macro linux)
-  PERF_RUNS               (default: 5)
+  PERF_RUNS               (default: 10)
+  PERF_CV_MAX_PCT         (default: 5)
+  PERF_WARMUP_RUNS        (default: 1)
+  PERF_REMOTE_REF         (default: refs/heads/<current-branch> or refs/heads/main)
   FLY_POOL_CONFIG         (default: scripts/perf/fly_pool.json)
   FLY_LOCK_ROOT           (default: ~/.codex/state/wrela-perf-fly-locks)
   FLY_CLAIM_TIMEOUT_SEC   (default: 600)
@@ -31,22 +34,21 @@ done
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PERF_SUITES="${PERF_SUITES:-micro meso macro linux}"
-PERF_RUNS="${PERF_RUNS:-5}"
+PERF_RUNS="${PERF_RUNS:-10}"
+PERF_CV_MAX_PCT="${PERF_CV_MAX_PCT:-5}"
+PERF_WARMUP_RUNS="${PERF_WARMUP_RUNS:-1}"
 POOL_CONFIG="${FLY_POOL_CONFIG:-${ROOT}/scripts/perf/fly_pool.json}"
 LOCK_ROOT="${FLY_LOCK_ROOT:-${HOME}/.codex/state/wrela-perf-fly-locks}"
 CLAIM_TIMEOUT_SEC="${FLY_CLAIM_TIMEOUT_SEC:-600}"
 POLL_INTERVAL_SEC="${FLY_POLL_INTERVAL_SEC:-10}"
 START_TIMEOUT_SEC="${FLY_START_TIMEOUT_SEC:-180}"
 KEEP_FAILED_MACHINES="${KEEP_FAILED_MACHINES:-0}"
+PERF_REMOTE_REF="${PERF_REMOTE_REF:-}"
 
 mkdir -p "${LOCK_ROOT}"
 
 if ! command -v jq >/dev/null 2>&1; then
   echo "error: jq is required" >&2
-  exit 1
-fi
-if ! command -v flock >/dev/null 2>&1; then
-  echo "error: flock is required" >&2
   exit 1
 fi
 if ! command -v flyctl >/dev/null 2>&1; then
@@ -60,8 +62,27 @@ if [[ -z "${SHA}" ]]; then
   SHA="$(git -C "${ROOT}" rev-parse HEAD)"
 fi
 
-if ! git -C "${ROOT}" fetch -q origin "${SHA}" >/dev/null 2>&1; then
-  echo "error: sha ${SHA} not found on origin. push first." >&2
+if [[ -z "${PERF_REMOTE_REF}" ]]; then
+  current_branch="$(git -C "${ROOT}" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  if [[ -n "${current_branch}" && "${current_branch}" != "HEAD" ]] && git -C "${ROOT}" ls-remote --exit-code --heads origin "${current_branch}" >/dev/null 2>&1; then
+    PERF_REMOTE_REF="refs/heads/${current_branch}"
+  else
+    PERF_REMOTE_REF="refs/heads/main"
+  fi
+fi
+
+if ! git -C "${ROOT}" fetch -q origin "${PERF_REMOTE_REF}" >/dev/null 2>&1; then
+  echo "error: failed to fetch ${PERF_REMOTE_REF} from origin" >&2
+  exit 1
+fi
+
+if ! git -C "${ROOT}" cat-file -e "${SHA}^{commit}" >/dev/null 2>&1; then
+  echo "error: local sha ${SHA} is not a commit" >&2
+  exit 1
+fi
+
+if ! git -C "${ROOT}" merge-base --is-ancestor "${SHA}" FETCH_HEAD; then
+  echo "error: sha ${SHA} is not reachable from ${PERF_REMOTE_REF}. push branch and/or set PERF_REMOTE_REF." >&2
   exit 1
 fi
 
@@ -78,16 +99,15 @@ CLAIMED_APP=""
 CLAIMED_MACHINE_ID=""
 CLAIMED_REGION=""
 CLAIMED_LOCK_FILE=""
+CLAIMED_LOCK_DIR=""
 CLAIMED_LOCK_META=""
-CLAIMED_LOCK_FD=""
 
 release_claim() {
   if [[ -n "${CLAIMED_LOCK_META}" ]]; then
     rm -f "${CLAIMED_LOCK_META}" || true
   fi
-  if [[ -n "${CLAIMED_LOCK_FD}" ]]; then
-    flock -u "${CLAIMED_LOCK_FD}" >/dev/null 2>&1 || true
-    eval "exec ${CLAIMED_LOCK_FD}>&-" || true
+  if [[ -n "${CLAIMED_LOCK_DIR}" ]]; then
+    rmdir "${CLAIMED_LOCK_DIR}" >/dev/null 2>&1 || true
   fi
 }
 
@@ -106,7 +126,7 @@ cleanup() {
 trap cleanup EXIT
 
 claim_machine() {
-  local start_ts now candidate lock_file lock_meta fd rec
+  local start_ts now candidate lock_file lock_dir lock_meta rec
   start_ts="$(date +%s)"
 
   while true; do
@@ -117,17 +137,17 @@ claim_machine() {
       candidate_region="$(jq -r '.region' <<<"${rec}")"
 
       lock_file="${LOCK_ROOT}/${candidate_app}-${candidate_machine}.lock"
+      lock_dir="${lock_file}.d"
       lock_meta="${lock_file}.meta.json"
 
-      eval "exec {fd}>\"${lock_file}\""
-      if flock -n "${fd}"; then
+      if mkdir "${lock_dir}" >/dev/null 2>&1; then
         CLAIMED_NAME="${candidate_name}"
         CLAIMED_APP="${candidate_app}"
         CLAIMED_MACHINE_ID="${candidate_machine}"
         CLAIMED_REGION="${candidate_region}"
         CLAIMED_LOCK_FILE="${lock_file}"
+        CLAIMED_LOCK_DIR="${lock_dir}"
         CLAIMED_LOCK_META="${lock_meta}"
-        CLAIMED_LOCK_FD="${fd}"
 
         cat > "${CLAIMED_LOCK_META}" <<JSON
 {
@@ -140,7 +160,6 @@ claim_machine() {
 JSON
         return 0
       fi
-      eval "exec ${fd}>&-"
     done < <(jq -c '.runners[] | select(.enabled == true)' "${POOL_CONFIG}")
 
     now="$(date +%s)"
@@ -168,13 +187,32 @@ wait_machine_started() {
   done
 }
 
+start_machine_with_retry() {
+  local tries=0
+  local max_tries=12
+  local state=""
+  while (( tries < max_tries )); do
+    if flyctl machine start "${CLAIMED_MACHINE_ID}" -a "${CLAIMED_APP}" >"${OUT_ROOT}/amd64/start.log" 2>&1; then
+      return 0
+    fi
+    state="$(flyctl machine list -a "${CLAIMED_APP}" --json 2>/dev/null | jq -r --arg id "${CLAIMED_MACHINE_ID}" '.[] | select(.id == $id) | (.state // .status // .instance_state // "")' | head -n1 || true)"
+    if [[ "${state}" == "stopping" || "${state}" == "created" || "${state}" == "starting" ]]; then
+      sleep 3
+      tries=$((tries + 1))
+      continue
+    fi
+    return 1
+  done
+  return 1
+}
+
 if ! claim_machine; then
   echo "error: unable to claim fly perf machine within timeout (${CLAIM_TIMEOUT_SEC}s)" >&2
   exit 1
 fi
 
 run_log="${OUT_ROOT}/amd64/run.log"
-if ! flyctl machine start "${CLAIMED_MACHINE_ID}" -a "${CLAIMED_APP}" >"${OUT_ROOT}/amd64/start.log" 2>&1; then
+if ! start_machine_with_retry; then
   echo "error: failed to start machine ${CLAIMED_APP}/${CLAIMED_MACHINE_ID}" >&2
   exit 1
 fi
@@ -185,7 +223,7 @@ fi
 final_status="failed"
 final_reason="infra_error"
 set +e
-PERF_SUITES="${PERF_SUITES}" PERF_RUNS="${PERF_RUNS}" \
+PERF_SUITES="${PERF_SUITES}" PERF_RUNS="${PERF_RUNS}" PERF_CV_MAX_PCT="${PERF_CV_MAX_PCT}" PERF_WARMUP_RUNS="${PERF_WARMUP_RUNS}" REMOTE_REF="${PERF_REMOTE_REF}" \
   "${ROOT}/scripts/perf/fly_sync_branch_and_run.sh" \
   --app "${CLAIMED_APP}" --machine "${CLAIMED_MACHINE_ID}" --sha "${SHA}" \
   --out-dir "${OUT_ROOT}/amd64/artifacts" >"${run_log}" 2>&1

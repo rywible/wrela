@@ -7,9 +7,12 @@ Usage: $0 --app <name> --machine <id> --sha <commit> [--out-dir <path>]
 
 Environment:
   PERF_SUITES           (default: micro meso macro linux)
-  PERF_RUNS             (default: 5)
+  PERF_RUNS             (default: 10)
+  PERF_CV_MAX_PCT       (default: 5)
+  PERF_WARMUP_RUNS      (default: 1)
   FORCE_REBUILD_WRELA   (default: 1)
   INSTALL_DEPS_ON_VM    (default: auto) # auto|always|never
+  REMOTE_REF            (default: refs/heads/main)
 USAGE
 }
 
@@ -36,10 +39,13 @@ fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SUITES="${PERF_SUITES:-micro meso macro linux}"
-RUNS="${PERF_RUNS:-5}"
+RUNS="${PERF_RUNS:-10}"
+PERF_CV_MAX_PCT="${PERF_CV_MAX_PCT:-5}"
+PERF_WARMUP_RUNS="${PERF_WARMUP_RUNS:-1}"
 FORCE_REBUILD_WRELA="${FORCE_REBUILD_WRELA:-1}"
 INSTALL_DEPS_ON_VM="${INSTALL_DEPS_ON_VM:-auto}"
 REMOTE_URL="${REMOTE_URL:-$(git -C "${ROOT}" remote get-url origin)}"
+REMOTE_REF="${REMOTE_REF:-refs/heads/main}"
 
 if [[ -z "${OUT_DIR}" ]]; then
   stamp="$(date +%Y%m%d-%H%M%S)"
@@ -91,8 +97,12 @@ else
   cd "$HOME/wrela"
 fi
 
-git fetch origin __SHA__
-git checkout --detach FETCH_HEAD
+git fetch origin __REMOTE_REF__
+if ! git cat-file -e "__SHA__^{commit}" >/dev/null 2>&1; then
+  echo "error: target sha __SHA__ not found after fetching __REMOTE_REF__" >&2
+  exit 1
+fi
+git checkout --detach __SHA__
 
 pkill -f "target/release/wrela perf" >/dev/null 2>&1 || true
 rm -rf .artifacts/perf
@@ -108,8 +118,19 @@ if [[ "__FORCE_REBUILD_WRELA__" == "1" ]]; then
   cargo build -p wrela --release
 fi
 
+cv_arg=""
+if [[ -n "__PERF_CV_MAX_PCT__" ]]; then
+  cv_arg="--perf-cv-max-pct=__PERF_CV_MAX_PCT__"
+fi
+
 for suite in __SUITES__; do
-  ./target/release/wrela perf --runs=__RUNS__ --baseline-out=".artifacts/perf/${suite}-baseline.json" "benchmarks/${suite}"
+  if [[ "__PERF_WARMUP_RUNS__" -gt 0 ]]; then
+    for _warm in $(seq 1 "__PERF_WARMUP_RUNS__"); do
+      # Warmup run: intentionally ignored and not used as baseline.
+      ./target/release/wrela perf --runs=1 --perf-cv-max-pct=100 --baseline-out=".artifacts/perf/${suite}-warmup.json" "benchmarks/${suite}" >/dev/null
+    done
+  fi
+  ./target/release/wrela perf --runs=__RUNS__ ${cv_arg} --baseline-out=".artifacts/perf/${suite}-baseline.json" "benchmarks/${suite}"
 done
 
 uname -a > .artifacts/perf/host.txt
@@ -121,11 +142,16 @@ remote_cmd="${remote_cmd//__SHA__/${SHA}}"
 remote_cmd="${remote_cmd//__FORCE_REBUILD_WRELA__/${FORCE_REBUILD_WRELA}}"
 remote_cmd="${remote_cmd//__SUITES__/${SUITES}}"
 remote_cmd="${remote_cmd//__RUNS__/${RUNS}}"
+remote_cmd="${remote_cmd//__PERF_WARMUP_RUNS__/${PERF_WARMUP_RUNS}}"
 remote_cmd="${remote_cmd//__REMOTE_URL__/${REMOTE_URL}}"
+remote_cmd="${remote_cmd//__REMOTE_REF__/${REMOTE_REF}}"
+remote_cmd="${remote_cmd//__PERF_CV_MAX_PCT__/${PERF_CV_MAX_PCT}}"
 
-flyctl ssh console -a "${APP}" --machine "${MACHINE_ID}" --command "${remote_cmd}" >"${OUT_DIR}/run.log" 2>&1
+remote_script_b64="$(printf "%s\n" "${remote_cmd}" | base64 | tr -d '\n')"
+remote_exec_cmd="bash -lc 'set -euo pipefail; echo ${remote_script_b64} | base64 -d >/tmp/wrela-perf-run.sh; chmod 700 /tmp/wrela-perf-run.sh; bash /tmp/wrela-perf-run.sh'"
+flyctl ssh console -a "${APP}" --machine "${MACHINE_ID}" --command "${remote_exec_cmd}" >"${OUT_DIR}/run.log" 2>&1
 
-if ! flyctl ssh console -a "${APP}" --machine "${MACHINE_ID}" --command 'set -euo pipefail; tar -C "$HOME/wrela/.artifacts" -czf - perf' > "${OUT_DIR}/perf.tar.gz" 2>>"${OUT_DIR}/run.log"; then
+if ! flyctl ssh console -a "${APP}" --machine "${MACHINE_ID}" --command 'bash -lc '\''set -euo pipefail; tar -C "$HOME/wrela/.artifacts" -czf - perf'\''' > "${OUT_DIR}/perf.tar.gz" 2>>"${OUT_DIR}/run.log"; then
   echo "error: failed to copy perf artifacts from ${APP}/${MACHINE_ID}" >&2
   exit 1
 fi

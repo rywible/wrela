@@ -62,7 +62,7 @@ scripts/perf/fly_refresh_main_baseline.sh --sha <main-sha>
 
 - Operational rule:
   - Real perf checks must run the whole suite set (`micro meso macro linux`), not partial suites.
-  - Real perf checks should use at least `PERF_RUNS=5` for stable stats; use more only when investigating noisy deltas.
+  - Real perf checks default to `PERF_RUNS=10`, with `PERF_WARMUP_RUNS=1` (warmup is discarded), and `PERF_CV_MAX_PCT=5`.
   - `PERF_RUNS=1-3` is only for quick smoke/debug loops and must not be used to claim perf wins or update canonical baseline.
   - Every PR perf run must target a commit SHA available on `origin`.
   - Every perf run should start/stop machines through the Fly scripts; avoid ad-hoc manual lifecycle changes.
