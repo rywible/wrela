@@ -1847,6 +1847,8 @@ pub(crate) mod string {
     use crate::value::{TypeId, Value, header, int_value};
     use crate::{wr_rc_dec, wr_rc_inc};
     use std::collections::HashMap;
+    use std::hash::BuildHasherDefault;
+    use std::hash::Hasher;
     use std::sync::{Mutex, OnceLock};
 
     #[repr(C)]
@@ -1856,10 +1858,54 @@ pub(crate) mod string {
         arena_backed: bool,
     }
 
-    static INTERN: OnceLock<Mutex<HashMap<Vec<u8>, Value>>> = OnceLock::new();
+    #[derive(Default)]
+    struct FastHasher {
+        hash: u64,
+    }
 
-    fn intern_map() -> &'static Mutex<HashMap<Vec<u8>, Value>> {
-        INTERN.get_or_init(|| Mutex::new(HashMap::new()))
+    impl Hasher for FastHasher {
+        #[inline]
+        fn finish(&self) -> u64 {
+            self.hash
+        }
+
+        #[inline]
+        fn write(&mut self, bytes: &[u8]) {
+            // FNV-ish: cheap and decent for small keys.
+            let mut h = self.hash;
+            for &b in bytes {
+                h ^= b as u64;
+                h = h.wrapping_mul(0x100_0000_01b3);
+            }
+            self.hash = h;
+        }
+
+        #[inline]
+        fn write_u64(&mut self, i: u64) {
+            // Mix 64-bit chunks with a single multiply; good enough for ints/pointers.
+            let mut h = self.hash ^ i;
+            h = h.wrapping_mul(0x517c_c1b7_2722_0a95);
+            self.hash = h;
+        }
+
+        #[inline]
+        fn write_i64(&mut self, i: i64) {
+            self.write_u64(i as u64);
+        }
+
+        #[inline]
+        fn write_usize(&mut self, i: usize) {
+            self.write_u64(i as u64);
+        }
+    }
+
+    type FastBuildHasher = BuildHasherDefault<FastHasher>;
+    type FastHashMap<K, V> = HashMap<K, V, FastBuildHasher>;
+
+    static INTERN: OnceLock<Mutex<FastHashMap<Vec<u8>, Value>>> = OnceLock::new();
+
+    fn intern_map() -> &'static Mutex<FastHashMap<Vec<u8>, Value>> {
+        INTERN.get_or_init(|| Mutex::new(HashMap::with_hasher(Default::default())))
     }
 
     pub fn str_from_utf8(ptr: *const u8, len: usize) -> Value {
@@ -1932,13 +1978,13 @@ pub(crate) mod string {
                 return val;
             }
         }
-        let bytes = unsafe { &*(val.as_ptr() as *mut StrObj) }.bytes.clone();
+        let bytes = unsafe { &*(val.as_ptr() as *mut StrObj) }.bytes.as_slice();
         let mut map = intern_map().lock().expect("intern map lock");
-        if let Some(existing) = map.get(&bytes) {
+        if let Some(existing) = map.get(bytes) {
             unsafe { wr_rc_dec(val) };
             return *existing;
         }
-        map.insert(bytes, val);
+        map.insert(bytes.to_vec(), val);
         unsafe { wr_rc_inc(val) };
         val
     }
