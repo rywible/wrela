@@ -151,15 +151,15 @@ so:
     - notify waiters
     - create wake action from event reason
 
-to example_task_wake_flow() -> Integer:
+to example_task_wake_flow() -> Boolean:
     state = create_task_state(7)
     initial_epoch = snapshot_epoch(state)
     register_waiter(state)
     next_epoch = notify_waiters(state)
     action = create_wake_action(7, "readable")
     if initial_epoch == 0 and next_epoch == 1 and (task_should_wake given action):
-        return 1
-    return 0
+        return true
+    return false
 
 
 so:
@@ -168,7 +168,7 @@ so:
     - unpark and read epoch
     - update/read counter
     - drop handles
-to example_task_primitive_flow() -> Integer:
+to example_task_primitive_flow() -> Boolean:
     task_signal = create_task_signal()
     counter = create_atomic_counter(0)
     unpark_one(task_signal)
@@ -182,5 +182,5 @@ to example_task_primitive_flow() -> Integer:
         previous_value == 0 and
         current_value == 3
     ):
-        return 1
-    return 0
+        return true
+    return false

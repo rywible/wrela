@@ -1,3 +1,4 @@
+use crate::diag::catalog::ValidationDiagKind;
 use crate::parser::SyntaxKind;
 use crate::parser::SyntaxNode;
 use crate::parser::ast;
@@ -6,6 +7,7 @@ use miette::SourceSpan;
 
 #[derive(Debug, Clone)]
 pub struct ValidationError {
+    pub kind: ValidationDiagKind,
     pub message: String,
     pub span: SourceSpan,
 }
@@ -19,6 +21,7 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
         };
         if token.kind() == SyntaxKind::InvalidLiteral {
             errors.push(ValidationError {
+                kind: ValidationDiagKind::InvalidLiteral,
                 message: "invalid numeric literal".to_string(),
                 span: span_for_token(&token),
             });
@@ -29,6 +32,7 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
             SyntaxKind::FuncDef | SyntaxKind::CheckDef => {
                 if !has_token(&node, SyntaxKind::Ident) {
                     errors.push(ValidationError {
+                        kind: ValidationDiagKind::AstRule,
                         message: "function definition requires a name".to_string(),
                         span: span_for_node(&node),
                     });
@@ -39,6 +43,7 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                     .any(|child| child.kind() == SyntaxKind::TypeRef);
                 if !has_arrow || !has_return_type {
                     errors.push(ValidationError {
+                        kind: ValidationDiagKind::AstRule,
                         message: "function requires an explicit return type".to_string(),
                         span: span_for_node(&node),
                     });
@@ -47,6 +52,7 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
             SyntaxKind::ClassDef => {
                 if !has_token(&node, SyntaxKind::Ident) {
                     errors.push(ValidationError {
+                        kind: ValidationDiagKind::AstRule,
                         message: "class definition requires a name".to_string(),
                         span: span_for_node(&node),
                     });
@@ -59,12 +65,14 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                         SyntaxKind::IsAClause => {
                             if has_is_a {
                                 errors.push(ValidationError {
+                                    kind: ValidationDiagKind::AstRule,
                                     message: "only one 'is a' clause is allowed".to_string(),
                                     span: span_for_node(&child),
                                 });
                             }
                             if saw_class_item {
                                 errors.push(ValidationError {
+                                    kind: ValidationDiagKind::AstRule,
                                     message: "'is a' must appear before other class items"
                                         .to_string(),
                                     span: span_for_node(&child),
@@ -89,6 +97,7 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                 if has_must {
                     if has_is_a {
                         errors.push(ValidationError {
+                            kind: ValidationDiagKind::AstRule,
                             message: "interfaces cannot declare 'is a'".to_string(),
                             span: span_for_node(&node),
                         });
@@ -103,6 +112,7 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                             | SyntaxKind::DeriveDef
                             | SyntaxKind::PrivateBlock => {
                                 errors.push(ValidationError {
+                                    kind: ValidationDiagKind::AstRule,
                                     message: "interfaces may only contain 'must' method signatures"
                                         .to_string(),
                                     span: span_for_node(&child),
@@ -116,6 +126,7 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
             SyntaxKind::MethodDef | SyntaxKind::CheckMethodDef => {
                 if !has_token(&node, SyntaxKind::Ident) {
                     errors.push(ValidationError {
+                        kind: ValidationDiagKind::AstRule,
                         message: "method definition requires a name".to_string(),
                         span: span_for_node(&node),
                     });
@@ -126,6 +137,7 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                     .any(|child| child.kind() == SyntaxKind::TypeRef);
                 if !has_arrow || !has_return_type {
                     errors.push(ValidationError {
+                        kind: ValidationDiagKind::AstRule,
                         message: "method requires an explicit return type".to_string(),
                         span: span_for_node(&node),
                     });
@@ -134,6 +146,7 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
             SyntaxKind::MustMethodDef => {
                 if !has_token(&node, SyntaxKind::Ident) {
                     errors.push(ValidationError {
+                        kind: ValidationDiagKind::AstRule,
                         message: "interface method requires a name".to_string(),
                         span: span_for_node(&node),
                     });
@@ -144,6 +157,7 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                     .any(|child| child.kind() == SyntaxKind::TypeRef);
                 if !has_arrow || !has_return_type {
                     errors.push(ValidationError {
+                        kind: ValidationDiagKind::AstRule,
                         message: "interface method requires an explicit return type".to_string(),
                         span: span_for_node(&node),
                     });
@@ -152,6 +166,7 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
             SyntaxKind::DeriveDef => {
                 if !has_token(&node, SyntaxKind::Ident) {
                     errors.push(ValidationError {
+                        kind: ValidationDiagKind::AstRule,
                         message: "derived definition requires a name".to_string(),
                         span: span_for_node(&node),
                     });
@@ -162,6 +177,7 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                     .any(|child| child.kind() == SyntaxKind::TypeRef);
                 if !has_arrow || !has_return_type {
                     errors.push(ValidationError {
+                        kind: ValidationDiagKind::AstRule,
                         message: "derived definition requires an explicit return type".to_string(),
                         span: span_for_node(&node),
                     });
@@ -170,6 +186,7 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
             SyntaxKind::Param => {
                 if !has_token(&node, SyntaxKind::Ident) {
                     errors.push(ValidationError {
+                        kind: ValidationDiagKind::AstRule,
                         message: "parameter requires a name".to_string(),
                         span: span_for_node(&node),
                     });
@@ -178,6 +195,7 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
             SyntaxKind::FieldDef => {
                 if !has_token(&node, SyntaxKind::Ident) {
                     errors.push(ValidationError {
+                        kind: ValidationDiagKind::AstRule,
                         message: "field definition requires a name".to_string(),
                         span: span_for_node(&node),
                     });
@@ -186,6 +204,7 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                     if let Some(default_expr) = field.default_expr() {
                         if !field_default_is_allowed(default_expr) {
                             errors.push(ValidationError {
+                                kind: ValidationDiagKind::AstRule,
                                 message: "field defaults must be literals, lists, or maps"
                                     .to_string(),
                                 span: span_for_node(&node),
@@ -197,6 +216,7 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
             SyntaxKind::TypeRef => {
                 if !has_token(&node, SyntaxKind::Ident) {
                     errors.push(ValidationError {
+                        kind: ValidationDiagKind::AstRule,
                         message: "type reference requires a name".to_string(),
                         span: span_for_node(&node),
                     });
@@ -205,6 +225,7 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
             SyntaxKind::ItExpr => {
                 if !is_in_return(&node) {
                     errors.push(ValidationError {
+                        kind: ValidationDiagKind::AstRule,
                         message: "it is only valid in return statements".to_string(),
                         span: span_for_node(&node),
                     });
@@ -217,6 +238,7 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                     Some(SyntaxKind::Root | SyntaxKind::ClassDef | SyntaxKind::HasBlock)
                 ) {
                     errors.push(ValidationError {
+                        kind: ValidationDiagKind::AstRule,
                         message: "private blocks are only valid at the top level, in classes, \
 or inside 'has' blocks"
                             .to_string(),
@@ -233,6 +255,7 @@ or inside 'has' blocks"
                                         | SyntaxKind::CheckDef
                                 ) {
                                     errors.push(ValidationError {
+                                        kind: ValidationDiagKind::AstRule,
                                         message: "private blocks at the top level may only \
 contain functions, checks, and classes"
                                             .to_string(),
@@ -252,6 +275,7 @@ contain functions, checks, and classes"
                                 | SyntaxKind::DeriveDef
                         ) {
                             errors.push(ValidationError {
+                                kind: ValidationDiagKind::AstRule,
                                 message: "private blocks in classes may only contain 'has' \
 blocks, methods, checks, or derives"
                                     .to_string(),
@@ -269,6 +293,7 @@ blocks, methods, checks, or derives"
                             for stmt in child.children() {
                                 if stmt.kind() != SyntaxKind::FieldDef {
                                     errors.push(ValidationError {
+                                        kind: ValidationDiagKind::AstRule,
                                         message: "private blocks inside 'has' may only contain \
 field definitions"
                                             .to_string(),
@@ -278,6 +303,7 @@ field definitions"
                             }
                         } else if child.kind() != SyntaxKind::FieldDef {
                             errors.push(ValidationError {
+                                kind: ValidationDiagKind::AstRule,
                                 message: "private blocks inside 'has' may only contain field \
 definitions"
                                     .to_string(),
@@ -287,6 +313,7 @@ definitions"
                     }
                     if !saw_block && !saw_child {
                         errors.push(ValidationError {
+                            kind: ValidationDiagKind::AstRule,
                             message: "private blocks inside 'has' may only contain field \
 definitions"
                                 .to_string(),
@@ -303,6 +330,7 @@ definitions"
                 if let Some(token) = obj_token {
                     if !objectives.contains(&token.text()) {
                         errors.push(ValidationError {
+                            kind: ValidationDiagKind::AstRule,
                             message: "invalid optimize objective".to_string(),
                             span: span_for_token(&token),
                         });
@@ -312,6 +340,7 @@ definitions"
             SyntaxKind::ReturnStmt => {
                 if !is_in_function(&node) {
                     errors.push(ValidationError {
+                        kind: ValidationDiagKind::AstRule,
                         message: "return is only valid inside functions".to_string(),
                         span: span_for_node(&node),
                     });
@@ -320,6 +349,7 @@ definitions"
             SyntaxKind::BreakStmt => {
                 if !is_in_loop(&node) {
                     errors.push(ValidationError {
+                        kind: ValidationDiagKind::AstRule,
                         message: "break is only valid inside loops".to_string(),
                         span: span_for_node(&node),
                     });
@@ -328,6 +358,7 @@ definitions"
             SyntaxKind::ContinueStmt => {
                 if !is_in_loop(&node) {
                     errors.push(ValidationError {
+                        kind: ValidationDiagKind::AstRule,
                         message: "continue is only valid inside loops".to_string(),
                         span: span_for_node(&node),
                     });
@@ -336,6 +367,7 @@ definitions"
             SyntaxKind::UseStmt => {
                 if node.parent().map(|p| p.kind()) != Some(SyntaxKind::Root) {
                     errors.push(ValidationError {
+                        kind: ValidationDiagKind::AstRule,
                         message: "use is only valid at the top level".to_string(),
                         span: span_for_node(&node),
                     });
@@ -366,18 +398,21 @@ definitions"
                 }
                 if name_count == 0 && !saw_glob {
                     errors.push(ValidationError {
+                        kind: ValidationDiagKind::AstRule,
                         message: "use requires at least one name or '*'".to_string(),
                         span: span_for_node(&node),
                     });
                 }
                 if module_count == 0 {
                     errors.push(ValidationError {
+                        kind: ValidationDiagKind::AstRule,
                         message: "use requires a module path".to_string(),
                         span: span_for_node(&node),
                     });
                 }
                 if saw_glob && saw_named {
                     errors.push(ValidationError {
+                        kind: ValidationDiagKind::AstRule,
                         message: "use '*' cannot be combined with named imports".to_string(),
                         span: span_for_node(&node),
                     });
@@ -419,6 +454,7 @@ fn validate_detach_tail(node: &SyntaxNode, objectives: &[&str], errors: &mut Vec
                             SyntaxKind::Ident => {
                                 if tok.text() != "n" {
                                     errors.push(ValidationError {
+                                        kind: ValidationDiagKind::AstRule,
                                         message: "pool size must be an integer literal or 'n'"
                                             .to_string(),
                                         span: span_for_token(&tok),
@@ -427,6 +463,7 @@ fn validate_detach_tail(node: &SyntaxNode, objectives: &[&str], errors: &mut Vec
                             }
                             _ => {
                                 errors.push(ValidationError {
+                                    kind: ValidationDiagKind::AstRule,
                                     message: "pool size must be an integer literal or 'n'"
                                         .to_string(),
                                     span: span_for_token(&tok),
@@ -449,6 +486,7 @@ fn validate_detach_tail(node: &SyntaxNode, objectives: &[&str], errors: &mut Vec
                     if let Some(tok) = obj_token {
                         if tok.kind() == SyntaxKind::Ident && !objectives.contains(&tok.text()) {
                             errors.push(ValidationError {
+                                kind: ValidationDiagKind::AstRule,
                                 message: "invalid optimize objective".to_string(),
                                 span: span_for_token(&tok),
                             });

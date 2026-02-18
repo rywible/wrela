@@ -1,7 +1,9 @@
 use crate::hir::arena::{Arena, Idx};
 use crate::hir::body::{Body, Literal, UseName};
+use miette::SourceSpan;
 use rowan::TextRange;
 use smol_str::SmolStr;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Module {
@@ -10,6 +12,12 @@ pub struct Module {
     pub enums: Arena<Enum>,
     pub interfaces: Arena<Interface>,
     pub uses: Vec<UseStmt>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceOrigin {
+    pub path: PathBuf,
+    pub span: SourceSpan,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

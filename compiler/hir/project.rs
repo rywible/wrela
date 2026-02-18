@@ -1,3 +1,4 @@
+use crate::diag::catalog::ProjectDiagKind;
 use crate::hir::arena::Idx;
 use crate::hir::lower::{lower, lower_root_body};
 use crate::hir::{
@@ -17,10 +18,23 @@ pub struct LoadedProject {
     pub entry_source: String,
     pub warnings: Vec<ProjectWarning>,
     pub function_effects: Vec<FunctionEffectEntry>,
+    pub module_sources: HashMap<PathBuf, String>,
+    pub provenance: ProjectProvenance,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ProjectProvenance {
+    pub function_owner_path_by_id: HashMap<usize, PathBuf>,
+    pub function_owner_span_by_id: HashMap<usize, TextRange>,
+    pub function_owner_path_by_name: HashMap<SmolStr, PathBuf>,
+    pub class_owner_path_by_name: HashMap<SmolStr, PathBuf>,
+    pub enum_owner_path_by_name: HashMap<SmolStr, PathBuf>,
+    pub interface_owner_path_by_name: HashMap<SmolStr, PathBuf>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ProjectError {
+    pub kind: ProjectDiagKind,
     pub path: PathBuf,
     pub source: String,
     pub message: String,
@@ -29,6 +43,7 @@ pub struct ProjectError {
 
 #[derive(Debug, Clone)]
 pub struct ProjectWarning {
+    pub kind: ProjectDiagKind,
     pub path: PathBuf,
     pub source: String,
     pub message: String,
@@ -147,6 +162,7 @@ pub fn load_project_with_entrypoint(
             Some(parent) => parent.to_path_buf(),
             None => {
                 return Err(vec![ProjectError {
+                    kind: ProjectDiagKind::LoadError,
                     path: entry_path.to_path_buf(),
                     source: String::new(),
                     message: "entry file must have a parent directory".to_string(),
@@ -234,6 +250,7 @@ pub fn load_project_with_roots(
                 function_origins.get(&func.name)
             {
                 loader.errors.push(ProjectError {
+                    kind: ProjectDiagKind::LoadError,
                     path: module.path.clone(),
                     source: module.source.clone(),
                     message: format!(
@@ -245,6 +262,7 @@ pub fn load_project_with_roots(
                     ),
                 });
                 loader.errors.push(ProjectError {
+                    kind: ProjectDiagKind::LoadError,
                     path: prev_path.clone(),
                     source: prev_src.clone(),
                     message: format!(
@@ -269,6 +287,7 @@ pub fn load_project_with_roots(
             if let Some((prev_mod, prev_span, prev_path, prev_src)) = class_origins.get(&class.name)
             {
                 loader.errors.push(ProjectError {
+                    kind: ProjectDiagKind::LoadError,
                     path: module.path.clone(),
                     source: module.source.clone(),
                     message: format!(
@@ -282,6 +301,7 @@ pub fn load_project_with_roots(
                     ),
                 });
                 loader.errors.push(ProjectError {
+                    kind: ProjectDiagKind::LoadError,
                     path: prev_path.clone(),
                     source: prev_src.clone(),
                     message: format!(
@@ -305,6 +325,7 @@ pub fn load_project_with_roots(
         for (_, en) in module.module.enums.iter() {
             if let Some((prev_mod, prev_span, prev_path, prev_src)) = enum_origins.get(&en.name) {
                 loader.errors.push(ProjectError {
+                    kind: ProjectDiagKind::LoadError,
                     path: module.path.clone(),
                     source: module.source.clone(),
                     message: format!(
@@ -316,6 +337,7 @@ pub fn load_project_with_roots(
                     ),
                 });
                 loader.errors.push(ProjectError {
+                    kind: ProjectDiagKind::LoadError,
                     path: prev_path.clone(),
                     source: prev_src.clone(),
                     message: format!(
@@ -341,6 +363,7 @@ pub fn load_project_with_roots(
                 interface_origins.get(&interface.name)
             {
                 loader.errors.push(ProjectError {
+                    kind: ProjectDiagKind::LoadError,
                     path: module.path.clone(),
                     source: module.source.clone(),
                     message: format!(
@@ -354,6 +377,7 @@ pub fn load_project_with_roots(
                     ),
                 });
                 loader.errors.push(ProjectError {
+                    kind: ProjectDiagKind::LoadError,
                     path: prev_path.clone(),
                     source: prev_src.clone(),
                     message: format!(
@@ -380,11 +404,39 @@ pub fn load_project_with_roots(
         return Err(loader.errors);
     }
 
+    let mut provenance = ProjectProvenance::default();
     for module in loader.modules.values() {
         let mut func_map = HashMap::new();
         for (idx, func) in module.module.functions.iter() {
             let new_idx = merged.functions.alloc(func.clone());
             func_map.insert(idx, new_idx);
+            provenance
+                .function_owner_path_by_id
+                .insert(new_idx.into_raw(), module.path.clone());
+            let owner_span = func
+                .name_span
+                .map(|span| {
+                    if let Some(body) = &func.body {
+                        let mut covering = span;
+                        for stmt_span in &body.stmt_spans {
+                            covering = covering.cover(*stmt_span);
+                        }
+                        for expr_span in &body.expr_spans {
+                            covering = covering.cover(*expr_span);
+                        }
+                        covering
+                    } else {
+                        span
+                    }
+                })
+                .unwrap_or_else(|| TextRange::empty(0.into()));
+            provenance
+                .function_owner_span_by_id
+                .insert(new_idx.into_raw(), owner_span);
+            provenance
+                .function_owner_path_by_name
+                .entry(func.name.clone())
+                .or_insert_with(|| module.path.clone());
         }
         for (_, class) in module.module.classes.iter() {
             let mut new_class = class.clone();
@@ -394,12 +446,21 @@ pub fn load_project_with_roots(
                 .map(|idx| *func_map.get(idx).expect("missing function mapping"))
                 .collect();
             merged.classes.alloc(new_class);
+            provenance
+                .class_owner_path_by_name
+                .insert(class.name.clone(), module.path.clone());
         }
         for (_, en) in module.module.enums.iter() {
             merged.enums.alloc(en.clone());
+            provenance
+                .enum_owner_path_by_name
+                .insert(en.name.clone(), module.path.clone());
         }
         for (_, interface) in module.module.interfaces.iter() {
             merged.interfaces.alloc(interface.clone());
+            provenance
+                .interface_owner_path_by_name
+                .insert(interface.name.clone(), module.path.clone());
         }
     }
 
@@ -409,6 +470,12 @@ pub fn load_project_with_roots(
         .map(|m| m.source.clone())
         .unwrap_or_default();
 
+    let module_sources = loader
+        .modules
+        .values()
+        .map(|module| (module.path.clone(), module.source.clone()))
+        .collect();
+
     Ok(LoadedProject {
         module: merged,
         entry_source,
@@ -417,6 +484,8 @@ pub fn load_project_with_roots(
             .into_iter()
             .map(|entry| entry.entry)
             .collect(),
+        module_sources,
+        provenance,
     })
 }
 
@@ -432,6 +501,7 @@ impl ProjectLoader {
             Ok(src) => src,
             Err(err) => {
                 self.errors.push(ProjectError {
+                    kind: ProjectDiagKind::LoadError,
                     path: path.clone(),
                     source: String::new(),
                     message: format!("failed to read module '{}': {}", name, err),
@@ -451,6 +521,7 @@ impl ProjectLoader {
         if !parse_errors.is_empty() {
             for err in parse_errors {
                 self.errors.push(ProjectError {
+                    kind: ProjectDiagKind::Parse(err.kind),
                     path: path.clone(),
                     source: source.clone(),
                     message: err.message,
@@ -470,6 +541,7 @@ impl ProjectLoader {
         if !validation_errors.is_empty() {
             for err in validation_errors {
                 self.errors.push(ProjectError {
+                    kind: ProjectDiagKind::Validate(err.kind),
                     path: path.clone(),
                     source: source.clone(),
                     message: err.message,
@@ -532,6 +604,7 @@ impl ProjectLoader {
                     .find(|(_, func)| func.name == "main")
                 {
                     self.errors.push(ProjectError {
+                        kind: ProjectDiagKind::LoadError,
                         path: module.path.clone(),
                         source: module.source.clone(),
                         message: "function name 'main' is reserved (use 'run' as the entrypoint)"
@@ -557,6 +630,7 @@ impl ProjectLoader {
                 .find(|(_, func)| func.name == "run")
             {
                 self.errors.push(ProjectError {
+                    kind: ProjectDiagKind::LoadError,
                     path: module.path.clone(),
                     source: module.source.clone(),
                     message: "only the entry module may define 'run'".to_string(),
@@ -571,6 +645,7 @@ impl ProjectLoader {
             if let Some(body) = &module.root_body {
                 if let Some(first) = body.root_stmts.first() {
                     self.errors.push(ProjectError {
+                    kind: ProjectDiagKind::LoadError,
                         path: module.path.clone(),
                         source: module.source.clone(),
                         message: "top-level executable statements are not allowed; only class/func/use are allowed at the top level"
@@ -592,6 +667,7 @@ impl ProjectLoader {
             .any(|(_, func)| func.name == "run");
         if !has_run {
             self.errors.push(ProjectError {
+                kind: ProjectDiagKind::LoadError,
                 path: entry_module.path.clone(),
                 source: entry_module.source.clone(),
                 message: "entry module must define 'to run() -> Type'".to_string(),
@@ -648,6 +724,7 @@ impl ProjectLoader {
                         .join(" -> ");
                     if let Some(origin) = loader.modules.get(name) {
                         loader.errors.push(ProjectError {
+                            kind: ProjectDiagKind::LoadError,
                             path: origin.path.clone(),
                             source: origin.source.clone(),
                             message: format!("circular module dependency detected: {}", path),
@@ -738,6 +815,7 @@ impl ProjectLoader {
                         UseNameKind::Name(item) => {
                             if locals.contains(item) {
                                 self.errors.push(ProjectError {
+                                    kind: ProjectDiagKind::LoadError,
                                     path: module.path.clone(),
                                     source: module.source.clone(),
                                     message: format!(
@@ -751,6 +829,7 @@ impl ProjectLoader {
                             if let Some((prev, prev_span)) = imported_names.get(item) {
                                 if prev != &target {
                                     self.errors.push(ProjectError {
+                                        kind: ProjectDiagKind::LoadError,
                                         path: module.path.clone(),
                                         source: module.source.clone(),
                                         message: format!(
@@ -760,6 +839,7 @@ impl ProjectLoader {
                                         span: span_from_range(name.span),
                                     });
                                     self.errors.push(ProjectError {
+                                        kind: ProjectDiagKind::LoadError,
                                         path: module.path.clone(),
                                         source: module.source.clone(),
                                         message: format!(
@@ -775,6 +855,7 @@ impl ProjectLoader {
                             imported_set.insert(item.clone());
                             if !used.contains_key(item) {
                                 self.warnings.push(ProjectWarning {
+                                    kind: ProjectDiagKind::LoadError,
                                     path: module.path.clone(),
                                     source: module.source.clone(),
                                     message: format!("unused import '{}'", item),
@@ -794,6 +875,7 @@ impl ProjectLoader {
                     for export in &target_public {
                         if locals.contains(export) {
                             self.errors.push(ProjectError {
+                                kind: ProjectDiagKind::LoadError,
                                 path: module.path.clone(),
                                 source: module.source.clone(),
                                 message: format!(
@@ -807,6 +889,7 @@ impl ProjectLoader {
                         if let Some((prev, prev_span)) = imported_names.get(export) {
                             if prev != &target {
                                 self.errors.push(ProjectError {
+                                    kind: ProjectDiagKind::LoadError,
                                     path: module.path.clone(),
                                     source: module.source.clone(),
                                     message: format!(
@@ -816,6 +899,7 @@ impl ProjectLoader {
                                     span: span_from_range(use_site.span),
                                 });
                                 self.errors.push(ProjectError {
+                                    kind: ProjectDiagKind::LoadError,
                                     path: module.path.clone(),
                                     source: module.source.clone(),
                                     message: format!(
@@ -835,6 +919,7 @@ impl ProjectLoader {
                         && !target_public.iter().any(|export| used.contains_key(export))
                     {
                         self.warnings.push(ProjectWarning {
+                            kind: ProjectDiagKind::LoadError,
                             path: module.path.clone(),
                             source: module.source.clone(),
                             message: format!("unused glob import from '{}'", target),
@@ -853,6 +938,7 @@ impl ProjectLoader {
                         continue;
                     }
                     self.errors.push(ProjectError {
+                        kind: ProjectDiagKind::LoadError,
                         path: module.path.clone(),
                         source: module.source.clone(),
                         message: "type 'Any' is reserved for stdlib".to_string(),
@@ -867,6 +953,7 @@ impl ProjectLoader {
                     continue;
                 }
                 self.errors.push(ProjectError {
+                    kind: ProjectDiagKind::LoadError,
                     path: module.path.clone(),
                     source: module.source.clone(),
                     message: format!("use of '{}' requires an explicit import", name),
@@ -967,6 +1054,7 @@ impl ProjectLoader {
                     let message = removed_core_stdlib_module_message(use_site.module.as_str())
                         .unwrap_or_else(|| format!("module '{}' not found", use_site.module));
                     self.errors.push(ProjectError {
+                        kind: ProjectDiagKind::LoadError,
                         path: module.path.clone(),
                         source: module.source.clone(),
                         message,
@@ -989,6 +1077,7 @@ impl ProjectLoader {
                             }
                             if target_all.contains_key(item) {
                                 self.errors.push(ProjectError {
+                                    kind: ProjectDiagKind::LoadError,
                                     path: module.path.clone(),
                                     source: module.source.clone(),
                                     message: format!(
@@ -1001,6 +1090,7 @@ impl ProjectLoader {
                                 });
                             } else {
                                 self.errors.push(ProjectError {
+                                    kind: ProjectDiagKind::LoadError,
                                     path: module.path.clone(),
                                     source: module.source.clone(),
                                     message: format!(
@@ -1015,6 +1105,7 @@ impl ProjectLoader {
                 }
                 if saw_glob && target_exports.is_empty() {
                     self.warnings.push(ProjectWarning {
+                        kind: ProjectDiagKind::LoadError,
                         path: module.path.clone(),
                         source: module.source.clone(),
                         message: format!(
@@ -1044,6 +1135,7 @@ impl ProjectLoader {
                 let target_layer = classify_module_layer(use_site.module.as_str());
                 if !architecture_import_allowed(source_layer, target_layer) {
                     self.errors.push(ProjectError {
+                        kind: ProjectDiagKind::LoadError,
                         path: module.path.clone(),
                         source: module.source.clone(),
                         message: architecture_layer_violation_message(
@@ -1058,6 +1150,7 @@ impl ProjectLoader {
                 }
                 if is_host_module(use_site.module.as_str()) && !host_import_allowed(source_layer) {
                     self.errors.push(ProjectError {
+                        kind: ProjectDiagKind::LoadError,
                         path: module.path.clone(),
                         source: module.source.clone(),
                         message: host_import_violation_message(
@@ -1073,6 +1166,7 @@ impl ProjectLoader {
                     && !is_infrastructure_integration_module(module.name.as_str())
                 {
                     self.errors.push(ProjectError {
+                        kind: ProjectDiagKind::LoadError,
                         path: module.path.clone(),
                         source: module.source.clone(),
                         message: host_http_import_violation_message(module.name.as_str()),
@@ -1265,6 +1359,7 @@ impl ProjectLoader {
                     continue;
                 };
                 self.errors.push(ProjectError {
+                    kind: ProjectDiagKind::LoadError,
                     path: module.path.clone(),
                     source: module.source.clone(),
                     message: format!(
@@ -1289,6 +1384,7 @@ impl ProjectLoader {
                 continue;
             };
             self.errors.push(ProjectError {
+                    kind: ProjectDiagKind::LoadError,
                 path: module.path.clone(),
                 source: module.source.clone(),
                 message: format!(
@@ -1318,6 +1414,7 @@ impl ProjectLoader {
                 continue;
             };
             self.errors.push(ProjectError {
+                    kind: ProjectDiagKind::LoadError,
                 path: module.path.clone(),
                 source: module.source.clone(),
                 message: format!(
@@ -1781,6 +1878,7 @@ fn enforce_external_call_policy_in_expr(
                     let call_span = body.expr_span(expr_id);
                     if !is_infrastructure_integration_module(module_name) {
                         errors.push(ProjectError {
+                    kind: ProjectDiagKind::LoadError,
                             path: path.to_path_buf(),
                             source: source.to_string(),
                             message: format!(
@@ -1798,6 +1896,7 @@ fn enforce_external_call_policy_in_expr(
                             _ => "a string literal",
                         };
                         errors.push(ProjectError {
+                    kind: ProjectDiagKind::LoadError,
                             path: path.to_path_buf(),
                             source: source.to_string(),
                             message: format!(

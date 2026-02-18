@@ -1,0 +1,63 @@
+usage: wrela <command> [options] <path> [-- args]
+
+commands:
+init [path]           initialize a new project
+update                update the installed toolchain
+check <path>          parse and typecheck (no codegen)
+build <path>          run certification, then compile executable on success only
+compile <path>        alias for build (also certification-gated)
+verify-cert <path>    verify an emitted cert.json report and hashes
+run <path>            compile and run
+dev <path>            watch and rebuild (polling)
+test [path]           run tests from project root or a single .wr file
+perf [path]           run perf harness and write baseline JSON
+perfcmp [path]        run paired baseline/candidate perf comparison
+matrix [path]         run workspace test/spec/perf matrix and write evidence bundle
+
+options:
+--prefix PATH         install/update prefix (default: $PREFIX or ~/.local/wrela)
+-o, --out PATH        output path for build/run
+--emit-mir            emit MIR before optimization
+--emit-mir-opt        emit MIR after optimization
+--emit-obj=PATH       emit object file
+--emit-bin=PATH       emit executable
+--poll-ms=N           poll interval for dev (default: 500)
+--jobs=N              test runner parallelism (default: 1)
+--test-timeout-ms=N   per-test timeout in milliseconds (default: 5000)
+env: WRELA_BUDGET_*   Budget Policy v1 overrides (autogen/sim/fuzz/mutation + time caps)
+--record              test maintenance mode; updates integration cassettes
+--update-public-surface  test maintenance mode; updates API snapshot baselines
+--list                list discovered tests with stable id/lane metadata
+--id=ID               run/list a single test by stable id
+--filter=PATTERN      run/list tests matching pattern
+--lane=NAME           run/list tests for lane (spec|integration|sim|model|default); valid for test/perf
+--seed=N              schedule seed for sim tests; valid for test/perf
+--benchmark-manifest=PATH  benchmark manifest path (bench.toml)
+--profile=NAME        benchmark profile (smoke|standard|deep)
+--repro PATH          replay a single typed repro artifact (autogen|fuzz)
+--perf-debug          dump perf counters after tests
+--runs=N              perf harness run count (default: 5)
+--baseline-out=PATH   perf baseline JSON output path
+--perf-gate=PATH      compare perf summary against baseline JSON
+--perf-max-regression-pct=N  allowed regression percentage (default: 5)
+--perf-cv-max-pct=N   max coefficient of variation percentage (default: 5)
+--kpi-check-fallback-max=N  max allowed check fallback rate
+--kpi-check-batch-min=N  minimum required average check batch size
+--kpi-scheduler-p99-improve-min-pct=N  min scheduler p99 improvement vs baseline
+--kpi-rewrite-overhead-max-pct=N  max rewrite compile overhead percentage
+--kpi-actor-throughput-improve-min-pct=N  min actor throughput improvement vs baseline
+--kpi-queue-age-p99-max-regress-pct=N  max queue age p99 regression percentage
+--kpi-starvation-violations-max=N  max scheduler starvation violations
+--kpi-scheduler-throughput-improve-min-pct=N  min scheduler throughput improvement vs baseline
+--kpi-scheduler-loop-p99-max-regress-pct=N  max scheduler loop p99 regression percentage
+--kpi-scheduler-local-hit-min=N  minimum local dispatch hit ratio
+--baseline-ref=REF    perfcmp baseline git ref (default: origin/main)
+--candidate-ref=REF   perfcmp candidate git ref (default: HEAD)
+--warmup-pairs=N      perfcmp warmup pair count override
+--measure-pairs=N     perfcmp measured pair count override
+--min-effect-pct=N    perfcmp practical effect threshold (default: 2.0)
+--confidence=N        perfcmp bootstrap CI confidence percent (default: 95)
+--format=json         emit diagnostics as JSON
+-h, --help            show this help
+-V, --version         show version
+

@@ -54,11 +54,11 @@ so:
     - arm timer
     - deregister token
     - drop reactor
-to example_reactor_flow() -> Integer:
+to example_reactor_flow() -> Boolean:
     reactor_handle = create_reactor()
     register_token(reactor_handle, 101)
     timeout_milliseconds = normalize_timer_timeout_milliseconds(5)
     arm_timer(reactor_handle, 101, timeout_milliseconds)
     deregister_token(reactor_handle, 101)
     drop_reactor(reactor_handle)
-    return 1
+    return true

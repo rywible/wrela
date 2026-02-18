@@ -6,6 +6,7 @@ pub mod sink;
 pub mod source;
 pub mod validate;
 
+use crate::diag::catalog::ParseDiagKind;
 use event::Event;
 use kind::SyntaxKind;
 use miette::SourceSpan;
@@ -48,8 +49,11 @@ pub fn parse_with_errors(text: &str) -> (SyntaxNode, Vec<ParseError>) {
 
 #[derive(Debug, Clone)]
 pub struct ParseError {
+    pub kind: ParseDiagKind,
     pub message: String,
     pub span: SourceSpan,
+    pub code: Option<String>,
+    pub help: Option<String>,
 }
 
 pub struct Parser<'a> {
@@ -140,22 +144,30 @@ impl<'a> Parser<'a> {
     }
 
     pub fn error_expected_indented_block(&mut self) {
-        self.error_with_message("expected indented block after ':'", false);
+        self.error_with_kind(
+            ParseDiagKind::ExpectedIndentedBlock,
+            "expected indented block after ':'",
+            false,
+        );
     }
 
     pub fn error_expected_stmt_boundary(&mut self) {
-        self.error_with_message("expected end of line", false);
+        self.error_with_kind(
+            ParseDiagKind::ExpectedStatementBoundary,
+            "expected end of line",
+            false,
+        );
     }
 
     pub fn error_with_message_no_bump(&mut self, message: &str) {
-        self.error_with_message(message, false);
+        self.error_with_kind(ParseDiagKind::SyntaxError, message, false);
     }
 
     pub fn expect_with_message(&mut self, kind: SyntaxKind, message: &str) {
         if self.at(kind) {
             self.bump();
         } else {
-            self.error_with_message(message, true);
+            self.error_with_kind(ParseDiagKind::ExpectedToken, message, true);
         }
     }
 
@@ -214,10 +226,18 @@ impl<'a> Parser<'a> {
     }
 
     fn error_with_message(&mut self, message: &str, should_bump: bool) {
+        self.error_with_kind(ParseDiagKind::SyntaxError, message, should_bump);
+    }
+
+    fn error_with_kind(&mut self, kind: ParseDiagKind, message: &str, should_bump: bool) {
+        let desc = crate::diag::catalog::parse_descriptor(kind);
         let span = self.source.peek_span();
         self.errors.push(ParseError {
+            kind,
             message: message.to_string(),
             span,
+            code: Some(desc.code.to_string()),
+            help: Some(desc.help_template.to_string()),
         });
         let m = self.start();
         if should_bump && !self.is_at_eof() {
@@ -230,7 +250,7 @@ impl<'a> Parser<'a> {
         let found_kind = self.peek();
         let found = format_found(found_kind, self.source.text());
         let message = format!("unexpected {}", found);
-        self.error_with_message(&message, should_bump);
+        self.error_with_kind(ParseDiagKind::UnexpectedToken, &message, should_bump);
     }
 
     fn error_expected(&mut self, expected: SyntaxKind) {
@@ -238,7 +258,7 @@ impl<'a> Parser<'a> {
         let found_kind = self.peek();
         let found = format_found(found_kind, self.source.text());
         let message = format!("expected {}, found {}", expected_label, found);
-        self.error_with_message(&message, true);
+        self.error_with_kind(ParseDiagKind::ExpectedToken, &message, true);
     }
 
     fn bump_any(&mut self) {
