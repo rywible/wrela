@@ -1,0 +1,5 @@
+use run_website_slice_bootstrap from application/website_slice_bootstrap
+
+fn run() -> Integer {
+    return run_website_slice_bootstrap()
+}

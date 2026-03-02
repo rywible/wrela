@@ -1,0 +1,146 @@
+//
+// Minimal animation system: state tracking, blend, and events.
+// Phase 1 uses this for state tracking; actual bone-to-vertex skinning deferred to Phase 2.
+
+use {
+    QuaternionFixed,
+    quat_identity,
+    quat_slerp
+}
+from game/math/quaternion
+
+resource BoneTransform {
+    mutable bone_id: Integer = 0
+    mutable parent_id: Integer = -1
+    mutable position_x: Integer = 0
+    mutable position_y: Integer = 0
+    mutable position_z: Integer = 0
+    mutable rotation_w: Integer = 1000
+    mutable rotation_x: Integer = 0
+    mutable rotation_y: Integer = 0
+    mutable rotation_z: Integer = 0
+    mutable scale_milli: Integer = 1000
+}
+
+resource AnimationClipState {
+    mutable clip_id: Integer = 0
+    mutable current_tick: Integer = 0
+    mutable total_ticks: Integer = 0
+    mutable looping: Boolean = false
+    mutable playback_speed_milli: Integer = 1000
+}
+
+resource AnimationBlendState {
+    mutable primary_clip_id: Integer = 0
+    mutable secondary_clip_id: Integer = 0
+    mutable blend_factor_milli: Integer = 0
+    mutable blend_duration_ticks: Integer = 0
+    mutable blend_elapsed_ticks: Integer = 0
+}
+
+event AnimationEvent {
+    mutable clip_id: Integer = 0
+    mutable event_tick: Integer = 0
+    mutable event_type: Integer = 0
+}
+
+fn create_default_bone_transform() -> BoneTransform {
+    return BoneTransform()
+}
+
+fn create_animation_clip(
+    clip_id: Integer,
+    total_ticks: Integer,
+    looping: Boolean
+) -> AnimationClipState {
+    return AnimationClipState(
+        clip_id=clip_id,
+        current_tick=0,
+        total_ticks=total_ticks,
+        looping=looping,
+        playback_speed_milli=1000
+    )
+}
+
+fn create_animation_blend() -> AnimationBlendState {
+    return AnimationBlendState()
+}
+
+fn tick_animation_clip(clip: AnimationClipState) -> AnimationClipState {
+    new_tick = clip.current_tick + clip.playback_speed_milli / 1000
+    if new_tick >= clip.total_ticks {
+        if clip.looping {
+            new_tick = new_tick % clip.total_ticks
+        }
+        if clip.looping == false {
+            new_tick = clip.total_ticks
+        }
+    }
+    return AnimationClipState(
+        clip_id=clip.clip_id,
+        current_tick=new_tick,
+        total_ticks=clip.total_ticks,
+        looping=clip.looping,
+        playback_speed_milli=clip.playback_speed_milli
+    )
+}
+
+fn start_blend(
+    state: AnimationBlendState,
+    from_clip_id: Integer,
+    to_clip_id: Integer,
+    duration_ticks: Integer
+) -> AnimationBlendState {
+    return AnimationBlendState(
+        primary_clip_id=from_clip_id,
+        secondary_clip_id=to_clip_id,
+        blend_factor_milli=0,
+        blend_duration_ticks=duration_ticks,
+        blend_elapsed_ticks=0
+    )
+}
+
+fn tick_blend(state: AnimationBlendState) -> AnimationBlendState {
+    if state.blend_duration_ticks <= 0 {
+        return state
+    }
+    new_elapsed = state.blend_elapsed_ticks + 1
+    new_factor = new_elapsed * 1000 / state.blend_duration_ticks
+    if new_factor > 1000 {
+        new_factor = 1000
+    }
+    return AnimationBlendState(
+        primary_clip_id=state.primary_clip_id,
+        secondary_clip_id=state.secondary_clip_id,
+        blend_factor_milli=new_factor,
+        blend_duration_ticks=state.blend_duration_ticks,
+        blend_elapsed_ticks=new_elapsed
+    )
+}
+
+fn sample_clip_at_tick(clip: AnimationClipState) -> Integer {
+    // Returns normalized progress 0-1000
+    if clip.total_ticks <= 0 {
+        return 0
+    }
+    return clip.current_tick * 1000 / clip.total_ticks
+}
+
+fn is_clip_finished(clip: AnimationClipState) -> Boolean {
+    if clip.looping {
+        return false
+    }
+    return clip.current_tick >= clip.total_ticks
+}
+
+fn create_animation_event(
+    clip_id: Integer,
+    event_tick: Integer,
+    event_type: Integer
+) -> AnimationEvent {
+    return AnimationEvent(
+        clip_id=clip_id,
+        event_tick=event_tick,
+        event_type=event_type
+    )
+}

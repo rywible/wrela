@@ -1,0 +1,81 @@
+use {
+    CollectorRuntime,
+    CollectorTheme
+}
+from domain/game_lane
+
+assets CollectorSurfaceAssets {
+    manifest collector_surface_manifest
+    streaming chunked
+}
+
+render CollectorSurface {
+    resources CollectorSurfaceAssets
+    temporal reproject
+    quality tier balanced
+    budget tags gameplay, pbr, temporal, "resource-contract"
+    shader material collector_surface_pbr_contract
+}
+
+material collector_surface_pbr_contract {
+    surface_model pbr
+    preset gameplay
+    textures orm "collector-surface-pbr-temporal-resource-v5.orm.ktx2"
+    render alpha opaque
+    render double_sided false
+    render receives_decals true
+}
+
+gpu fn collector_surface_shader() -> String {
+    return "const MAX_COLLECTIBLES: u32 = 32u;\n\nstruct FrameUniform \{\n    canvas_world: vec4<f32>,\n    player: vec4<f32>,\n    ui: vec4<u32>,\n    pbr: vec4<f32>,\n    temporal: vec4<f32>,\n    resource_contract: vec4<u32>,\n    collectibles: array<vec4<f32>, MAX_COLLECTIBLES>,\n};\n\n@group(0) @binding(0)\nvar<uniform> frame: FrameUniform;\n\nstruct VsOut \{\n    @builtin(position) position: vec4<f32>,\n};\n\n@vertex\nfn vs_main(@builtin(vertex_index) vertex_index: u32) -> VsOut \{\n    var positions = array<vec2<f32>, 3>(\n        vec2<f32>(-1.0, -1.0),\n        vec2<f32>(3.0, -1.0),\n        vec2<f32>(-1.0, 3.0),\n    );\n\n    var out: VsOut;\n    out.position = vec4<f32>(positions[vertex_index], 0.0, 1.0);\n    return out;\n\}\n\n@fragment\nfn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> \{\n    let canvas_size = max(frame.canvas_world.xy, vec2<f32>(1.0, 1.0));\n    let world_size = max(frame.canvas_world.zw, vec2<f32>(1.0, 1.0));\n    let temporal_jitter = frame.temporal.xy;\n    let temporal_mix = clamp(frame.temporal.z, 0.0, 1.0);\n    let pbr_roughness = clamp(frame.pbr.x, 0.04, 1.0);\n    let pbr_metallic = clamp(frame.pbr.y, 0.0, 1.0);\n    let pbr_ao = clamp(frame.pbr.z, 0.0, 1.0);\n    let exposure = max(frame.pbr.w, 0.001);\n    let contract_seed = f32(frame.resource_contract.x & 1023u) * 0.0001;\n    let world_pos = vec2<f32>(\n        (frag_pos.x + temporal_jitter.x) / canvas_size.x * world_size.x,\n        (frag_pos.y + temporal_jitter.y) / canvas_size.y * world_size.y,\n    );\n\n    var color = vec4<f32>(0.02745, 0.07059, 0.11373, 1.0);\n\n    if (frag_pos.y <= 36.0) \{\n        color = vec4<f32>(0.07843, 0.18823, 0.27843, 1.0);\n    \}\n\n    let collectible_count = min(frame.ui.x, MAX_COLLECTIBLES);\n    for (var i: u32 = 0u; i < MAX_COLLECTIBLES; i = i + 1u) \{\n        if (i >= collectible_count) \{\n            break;\n        \}\n\n        let collectible = frame.collectibles[i];\n        let half_world = vec2<f32>(\n            collectible.z / canvas_size.x * world_size.x,\n            collectible.z / canvas_size.y * world_size.y,\n        );\n        let delta = abs(world_pos - collectible.xy);\n\n        if (delta.x <= half_world.x && delta.y <= half_world.y) \{\n            let collected = (frame.ui.y & (1u << i)) != 0u;\n            if (collected) \{\n                color = mix(color, vec4<f32>(0.24705, 0.30196, 0.34901, 1.0), 0.35);\n            } else \{\n                color = vec4<f32>(1.0, 0.83921, 0.35294, 1.0);\n            \}\n        \}\n    \}\n\n    let player_half_world = vec2<f32>(\n        frame.player.z / canvas_size.x * world_size.x,\n        frame.player.z / canvas_size.y * world_size.y,\n    );\n    let player_delta = abs(world_pos - frame.player.xy);\n\n    if (player_delta.x <= player_half_world.x && player_delta.y <= player_half_world.y) \{\n        color = vec4<f32>(0.35686, 0.86274, 1.0, 1.0);\n    \}\n\n    let shaded = mix(color.rgb * pbr_ao, vec3<f32>(1.0, 1.0, 1.0), pbr_metallic * 0.08);\n    let tone_mapped = shaded / (shaded + vec3<f32>(exposure + pbr_roughness));\n    let stabilized = mix(color.rgb, tone_mapped, temporal_mix * 0.35) + vec3<f32>(contract_seed);\n\n    return vec4<f32>(clamp(stabilized, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);\n\}\n"
+}
+
+fn create_collector_surface_schema_family() -> String {
+    return "render-schema-v6+shader-bundle-v6+asset-pack-v4+world-chunk-v3"
+}
+
+node LaneWidgetNode profile ui {
+    mutable node_key: String = "widget"
+    mutable kind: String = "label"
+    mutable x: Integer = 0
+    mutable y: Integer = 0
+    mutable width: Integer = 0
+    mutable height: Integer = 0
+    mutable text: String = ""
+    mutable color: String = "#67d5ff"
+    mutable score_hint: Integer = 0
+}
+
+node CollectorScene profile canvas {
+    mutable scene_name: String = "collector"
+    mutable headline: String = "collector lane"
+    mutable score_text: String = "score"
+    mutable player_x: Integer = 0
+    mutable player_y: Integer = 0
+    mutable accent_color: String = "#67d5ff"
+}
+
+fn create_collector_scene(runtime: CollectorRuntime, theme_tokens: CollectorTheme) -> CollectorScene {
+    return CollectorScene(
+        scene_name="collector",
+        headline="collector lane",
+        score_text="score",
+        player_x=runtime.player_x,
+        player_y=runtime.player_y,
+        accent_color=theme_tokens.accent
+    )
+}
+
+view create_collector_widget(runtime: CollectorRuntime, theme_tokens: CollectorTheme) -> LaneWidgetNode {
+    return LaneWidgetNode(
+        node_key="collector-score",
+        kind="label",
+        x=12,
+        y=12,
+        width=220,
+        height=24,
+        text="score",
+        color=theme_tokens.accent,
+        score_hint=runtime.score
+    )
+}

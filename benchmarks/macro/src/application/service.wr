@@ -1,0 +1,59 @@
+use {
+    try_to_apply_ledger_delta,
+    try_to_validate_positive_amount
+} from domain/ledger
+use {
+    compute_order_score,
+    normalize_order_route
+} from domain/order
+use resolve_policy_score from domain/policy
+use compute_replay_transition from domain/replay
+
+
+fn run_macro_sanity() -> Integer {
+    return 1
+
+
+}
+fn handle_ledger_entry(balance: Integer, delta: Integer) -> Integer {
+    validity = try_to_validate_positive_amount(delta)
+    match validity {
+        Ok(_) {
+            applied = try_to_apply_ledger_delta(current_balance=balance,delta=delta)
+            match applied {
+                Ok(next_balance) {
+                    return next_balance
+                }
+                Err(_) {
+                    return balance
+                }
+                default {
+                    return balance
+                }
+            }
+        }
+        Err(_) {
+            return balance
+        }
+        default {
+            return balance
+
+
+        }
+    }
+}
+fn handle_order_entry(order_id: Integer, quantity: Integer, lane_count: Integer) -> Integer {
+    lane = normalize_order_route(order_id=order_id,lane_count=lane_count)
+    score = compute_order_score(quantity=quantity,risk_weight=lane)
+    return score + lane
+
+
+}
+fn handle_policy_entry(account_id: Integer, action_code: Integer) -> Integer {
+    return resolve_policy_score(account_id=account_id,action_code=action_code)
+
+
+}
+fn handle_replay_entry(current_state: Integer, event_code: Integer) -> Integer {
+    return compute_replay_transition(current_state=current_state,event_code=event_code)
+}

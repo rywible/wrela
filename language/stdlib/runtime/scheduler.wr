@@ -1,0 +1,105 @@
+//
+// Scheduler policy helpers.
+// Keep these pure so behavior is deterministic in tests and easy to reason about.
+
+
+fn scheduler_at_least(value: Integer, minimum: Integer) -> Integer {
+    if value < minimum {
+        return minimum
+    }
+    return value
+
+
+}
+fn scheduler_clamp_integer(
+    value: Integer,
+    min_value: Integer,
+    max_value: Integer
+) -> Integer {
+    if value < min_value {
+        return min_value
+    }
+    if value > max_value {
+        return max_value
+    }
+    return value
+
+
+}
+// Compute shard count for runtime configuration.
+fn normalize_shard_count(requested_shard_count: Integer, is_deterministic_mode: Boolean) -> Integer {
+    if deterministic_mode {
+        return 1
+    }
+    return scheduler_at_least(value=requested_shard_count,minimum=1)
+
+
+}
+//
+// Choose shard assignment for a pool.
+// Deterministic mode always picks shard 0 so replay is stable.
+fn choose_next_shard(
+    pool_identifier: Integer,
+    shard_count: Integer,
+    is_deterministic_mode: Boolean
+) -> Integer {
+    safe_shard_count = normalize_shard_count(requested_shard_count=shard_count,deterministic_mode=deterministic_mode)
+    if deterministic_mode {
+        return 0
+    }
+    return pool_identifier % safe_shard_count
+
+
+}
+//
+// Fairness budget for a dispatch turn.
+// Uses queue depth, configured batch limit, and fairness budget cap.
+fn compute_dispatch_budget(
+    queue_depth: Integer,
+    configured_batch_limit: Integer,
+    fairness_budget: Integer
+) -> Integer {
+    base_limit = scheduler_at_least(value=configured_batch_limit,minimum=1)
+    budget_cap = scheduler_at_least(value=fairness_budget,minimum=1)
+    depth_lift = scheduler_at_least(value=queue_depth,minimum=1)
+    mutable proposed_budget = base_limit
+    if depth_lift > base_limit {
+        proposed_budget = base_limit * 2
+    }
+    return scheduler_clamp_integer(value=proposed_budget,min_value=1,max_value=budget_cap)
+
+
+}
+//
+// Decide whether local shard should steal from another shard.
+// Deterministic mode keeps stealing disabled for reproducible ordering.
+fn scheduler_should_steal_work(
+    local_ready_count: Integer,
+    remote_ready_count: Integer,
+    is_deterministic_mode: Boolean
+) -> Boolean {
+    if deterministic_mode {
+        return false
+    }
+    if local_ready_count > 0 {
+        return false
+    }
+    return remote_ready_count > 0
+
+
+}
+//
+// Refill credits for weighted fairness scheduling.
+// Works with min/max share boundaries and saturates inside them.
+fn refill_credits(
+    minimum_share: Integer,
+    maximum_share: Integer,
+    weight: Integer,
+    current_credits: Integer
+) -> Integer {
+    min_share = scheduler_at_least(value=minimum_share,minimum=1)
+    max_share = scheduler_at_least(value=maximum_share,minimum=min_share)
+    normalized_weight = scheduler_at_least(value=weight,minimum=1)
+    delta = min_share + normalized_weight
+    return scheduler_clamp_integer(value=current_credits + delta,min_value=0,max_value=max_share)
+}

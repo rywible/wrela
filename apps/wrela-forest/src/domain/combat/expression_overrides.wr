@@ -1,0 +1,21 @@
+//
+// Expression overrides: stub for Phase 1.
+// Phase 1 only has expression_id = 0 (base).
+// Future: precision (id=1), aggression (id=2), fracture (id=3), steward (id=4).
+
+fn get_expression_name(expression_id: Integer) -> String {
+    if expression_id == 0 { return "base" }
+    if expression_id == 1 { return "precision" }
+    if expression_id == 2 { return "aggression" }
+    if expression_id == 3 { return "fracture" }
+    if expression_id == 4 { return "steward" }
+    return "unknown"
+}
+
+fn is_expression_unlocked(expression_id: Integer) -> Boolean {
+    // Phase 1: only base expression is unlocked
+    if expression_id == 0 {
+        return true
+    }
+    return false
+}

@@ -1,0 +1,5 @@
+use run_server from infrastructure/integrations/web_server_runtime
+
+fn run() -> Integer {
+    return run_server()
+}

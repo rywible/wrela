@@ -1,0 +1,246 @@
+//
+// Bearer token extraction and validation helpers for protected HTTP routes.
+
+use {
+    get_bytes_from_list,
+    get_bytes_from_string,
+    get_list_from_bytes,
+    get_string_from_bytes
+}
+from bytes
+
+use {
+    try_to_verify_json_web_token
+}
+from host/web_authentication
+
+use json_web_token_identifier_is_revoked from pkg/web/auth/authentication_store
+
+use try_to_parse_json_request_body from host/web_server
+
+
+class BearerTokenAuthenticationContext {
+    mutable subject_identifier: String = ""
+    mutable tenant_identifier: String = ""
+    mutable json_web_token_identifier: String = ""
+    mutable scope_values: List[String] = []
+    mutable authentication_state: Boolean = false
+
+
+}
+fn get_authorization_header_value(request_headers: Map[Any, Any]) -> String {
+    authorization_value = request_headers.get("Authorization")
+    match authorization_value {
+        String(authorization_header_value) {
+            return authorization_header_value
+        }
+        default {
+            lower_authorization_value = request_headers.get("authorization")
+            match lower_authorization_value {
+                String(lower_authorization_header_value) {
+                    return lower_authorization_header_value
+                }
+                default {
+                    return ""
+
+
+                }
+            }
+        }
+    }
+}
+fn text_has_prefix(text: String, prefix: String) -> Boolean {
+    text_bytes = get_list_from_bytes(get_bytes_from_string(text))
+    prefix_bytes = get_list_from_bytes(get_bytes_from_string(prefix))
+
+    mutable prefix_length = 0
+    for prefix_byte in prefix_bytes {
+        prefix_length = prefix_length + 1
+
+    }
+    mutable text_length = 0
+    for text_byte in text_bytes {
+        text_length = text_length + 1
+
+    }
+    if text_length < prefix_length {
+        return false
+
+    }
+    mutable prefix_index = 0
+    for prefix_byte in prefix_bytes {
+        mutable text_index = 0
+        mutable has_matched_prefix_byte = false
+        for text_byte in text_bytes {
+            if text_index == prefix_index and text_byte != prefix_byte {
+                return false
+            }
+            if text_index == prefix_index {
+                has_matched_prefix_byte = true
+                break
+            }
+            text_index = text_index + 1
+        }
+        if not has_matched_prefix_byte {
+            return false
+        }
+        prefix_index = prefix_index + 1
+    }
+    return true
+
+
+}
+fn get_text_suffix(text: String, prefix_length: Integer) -> String {
+    text_bytes = get_list_from_bytes(get_bytes_from_string(text))
+    suffix_bytes = []
+    mutable index = 0
+    for text_byte in text_bytes {
+        if index >= prefix_length {
+            suffix_bytes.push(text_byte)
+        }
+        index = index + 1
+    }
+    return get_string_from_bytes(get_bytes_from_list(suffix_bytes))
+
+
+}
+fn try_to_extract_bearer_token(authorization_header_value: String) -> Result[String] {
+    if authorization_header_value == "" {
+        return error "bearer token authentication: authorization header is missing"
+    }
+    if not text_has_prefix(authorization_header_value, "Bearer ") {
+        return error "bearer token authentication: authorization header must use Bearer scheme"
+
+    }
+    access_token = get_text_suffix(authorization_header_value, 7)
+    if access_token == "" {
+        return error "bearer token authentication: bearer token is missing"
+    }
+    return access_token
+
+
+}
+fn create_scope_values_from_scope_value_text(scope_value_text: String) -> List[String] {
+    scope_values = []
+    if scope_value_text == "" {
+        return scope_values
+
+    }
+    scope_value_text_bytes = get_list_from_bytes(get_bytes_from_string(scope_value_text))
+    current_scope_value_bytes = []
+
+    for scope_value_text_byte in scope_value_text_bytes {
+        if scope_value_text_byte == 32 {
+            current_scope_value = get_string_from_bytes(
+                get_bytes_from_list(current_scope_value_bytes)
+            )
+            if current_scope_value != "" {
+                scope_values.push(current_scope_value)
+            }
+            current_scope_value_bytes = []
+            continue
+        }
+        current_scope_value_bytes.push(scope_value_text_byte)
+
+    }
+    trailing_scope_value = get_string_from_bytes(get_bytes_from_list(current_scope_value_bytes))
+    if trailing_scope_value != "" {
+        scope_values.push(trailing_scope_value)
+    }
+    return scope_values
+
+
+}
+fn try_to_resolve_authenticated_principal_from_bearer_token(
+    request_headers: Map[Any, Any]
+) -> Result[BearerTokenAuthenticationContext] {
+    return try_to_resolve_authenticated_principal_from_bearer_token_with_authentication_store(
+        request_headers,
+        0
+    )
+
+
+}
+fn try_to_resolve_authenticated_principal_from_bearer_token_with_authentication_store(
+    request_headers: Map[Any, Any],
+    authentication_store_handle: Integer
+) -> Result[BearerTokenAuthenticationContext] {
+    authorization_header_value = get_authorization_header_value(request_headers)
+    access_token_result = try_to_extract_bearer_token(authorization_header_value)
+    match access_token_result {
+        Ok(access_token) {
+            verified_claims_json_result = try_to_verify_json_web_token(access_token)
+            match verified_claims_json_result {
+                Ok(verified_claims_json) {
+                    claims_items_result = try_to_parse_json_request_body(verified_claims_json)
+                    match claims_items_result {
+                        Ok(claims_items) {
+                            authentication_context = BearerTokenAuthenticationContext()
+                            authentication_context.authentication_state = true
+
+                            subject_identifier_value = claims_items.get("sub")
+                            match subject_identifier_value {
+                                String(subject_identifier) {
+                                    authentication_context.subject_identifier = subject_identifier
+                                }
+                                default {
+                                    authentication_context.subject_identifier = ""
+
+                                }
+                            }
+                            tenant_identifier_value = claims_items.get("tenant_id")
+                            match tenant_identifier_value {
+                                String(tenant_identifier) {
+                                    authentication_context.tenant_identifier = tenant_identifier
+                                }
+                                default {
+                                    authentication_context.tenant_identifier = ""
+
+                                }
+                            }
+                            json_web_token_identifier_value = claims_items.get("jti")
+                            match json_web_token_identifier_value {
+                                String(json_web_token_identifier) {
+                                    authentication_context.json_web_token_identifier = json_web_token_identifier
+                                }
+                                default {
+                                    authentication_context.json_web_token_identifier = ""
+
+                                }
+                            }
+                            scope_value_text_value = claims_items.get("scope")
+                            match scope_value_text_value {
+                                String(scope_value_text) {
+                                    authentication_context.scope_values = create_scope_values_from_scope_value_text(
+                                        scope_value_text
+                                    )
+                                }
+                                default {
+                                    authentication_context.scope_values = []
+
+                                }
+                            }
+                            if authentication_store_handle > 0 and authentication_context.json_web_token_identifier != "" and json_web_token_identifier_is_revoked(
+                                authentication_store_handle,
+                                authentication_context.json_web_token_identifier
+                            ) {
+                                return error "bearer token authentication: token has been revoked"
+
+                            }
+                            return authentication_context
+                        }
+                        Err(error_message) {
+                            return error error_message
+                        }
+                    }
+                }
+                Err(error_message) {
+                    return error error_message
+                }
+            }
+        }
+        Err(error_message) {
+            return error error_message
+        }
+    }
+}

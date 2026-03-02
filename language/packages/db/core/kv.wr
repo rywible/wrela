@@ -1,0 +1,89 @@
+//
+// Typed package-level DB API.
+// This adapter keeps product-facing signatures stable over stdlib core kernel wrappers.
+
+use {
+    open_db,
+    close_db,
+    put_db,
+    get_db,
+    scan_db,
+    begin_txn_db,
+    prepare_txn_db,
+    commit_txn_db,
+    abort_txn_db
+}
+from db/core_kernel
+
+fn open(path: String) -> Integer {
+    return open_db(path=path)
+}
+
+fn close(db_handle_close: Integer) -> Result[Nothing] {
+    return close_db(db_handle_close=db_handle_close)
+}
+
+fn put(
+    db_handle_put: Integer,
+    namespace_put: String,
+    key_put: String,
+    value_put: String,
+    expected_version_put: Integer
+) -> Integer {
+    return put_db(
+        db_handle_put=db_handle_put,
+        namespace_put=namespace_put,
+        key_put=key_put,
+        value_put=value_put,
+        expected_version_put=expected_version_put
+    )
+}
+
+fn get(db_handle_get: Integer, namespace_get: String, key_get: String) -> Result[String] {
+    return get_db(
+        db_handle_get=db_handle_get,
+        namespace_get=namespace_get,
+        key_get=key_get
+    )
+}
+
+fn scan(
+    db_handle_scan: Integer,
+    namespace_scan: String,
+    start_key_scan: String,
+    end_key_scan: String,
+    limit_scan: Integer
+) -> List[String] {
+    return scan_db(
+        db_handle_scan=db_handle_scan,
+        namespace_scan=namespace_scan,
+        start_key_scan=start_key_scan,
+        end_key_scan=end_key_scan,
+        limit_scan=limit_scan
+    )
+}
+
+fn begin_txn(db_handle_begin_txn: Integer) -> Integer {
+    return begin_txn_db(db_handle_begin_txn=db_handle_begin_txn)
+}
+
+fn prepare_txn(db_handle_prepare_txn: Integer, txn_prepare: Integer) -> Result[Nothing] {
+    return prepare_txn_db(
+        db_handle_prepare_txn=db_handle_prepare_txn,
+        txn_prepare=txn_prepare
+    )
+}
+
+fn commit_txn(db_handle_commit_txn: Integer, txn_commit: Integer) -> Result[Nothing] {
+    return commit_txn_db(
+        db_handle_commit_txn=db_handle_commit_txn,
+        txn_commit=txn_commit
+    )
+}
+
+fn abort_txn(db_handle_abort_txn: Integer, txn_abort: Integer) -> Result[Nothing] {
+    return abort_txn_db(
+        db_handle_abort_txn=db_handle_abort_txn,
+        txn_abort=txn_abort
+    )
+}

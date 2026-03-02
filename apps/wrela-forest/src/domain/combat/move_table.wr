@@ -1,0 +1,96 @@
+//
+// Hand-tuned frame data for Soul Blade and combat moves.
+// Every number authored by feel. All milli-scaled where applicable.
+
+use {
+    FrameDataEntry,
+    HitboxDescriptor,
+    HurtboxDescriptor,
+    create_frame_data_entry,
+    create_hitbox,
+    create_hurtbox
+}
+from pkg/game/combat/frame_data
+
+// Move IDs
+fn move_id_light() -> Integer { return 1 }
+fn move_id_heavy() -> Integer { return 2 }
+fn move_id_parry() -> Integer { return 3 }
+
+// --- Soul Blade Light Attack ---
+// Fast, reliable. 3 startup, 4 active, 8 recovery = 15 total frames (~240ms)
+fn soul_blade_light_attack() -> FrameDataEntry {
+    return create_frame_data_entry(
+        move_id=1,
+        startup_ticks=3,
+        active_ticks=4,
+        recovery_ticks=8,
+        damage_milli=12000,
+        stamina_cost_milli=8000,
+        hitstun_ticks=6,
+        poise_damage_milli=15000,
+        knockback_milli=500
+    )
+}
+
+fn soul_blade_light_hitbox() -> HitboxDescriptor {
+    return create_hitbox(
+        offset_x=0, offset_y=500, offset_z=800,
+        half_x=400, half_y=400, half_z=500
+    )
+}
+
+// --- Soul Blade Heavy Attack ---
+// Slow, powerful. 7 startup, 5 active, 14 recovery = 26 total frames (~416ms)
+fn soul_blade_heavy_attack() -> FrameDataEntry {
+    return create_frame_data_entry(
+        move_id=2,
+        startup_ticks=7,
+        active_ticks=5,
+        recovery_ticks=14,
+        damage_milli=25000,
+        stamina_cost_milli=18000,
+        hitstun_ticks=10,
+        poise_damage_milli=40000,
+        knockback_milli=1000
+    )
+}
+
+fn soul_blade_heavy_hitbox() -> HitboxDescriptor {
+    return create_hitbox(
+        offset_x=0, offset_y=500, offset_z=700,
+        half_x=600, half_y=500, half_z=700
+    )
+}
+
+// --- Soul Blade Parry ---
+// 2 startup, 4-tick parry window (~64ms), whiff recovery 16, success recovery 3
+fn soul_blade_parry_data() -> FrameDataEntry {
+    return create_frame_data_entry(
+        move_id=3,
+        startup_ticks=2,
+        active_ticks=4,
+        recovery_ticks=16,
+        damage_milli=0,
+        stamina_cost_milli=5000,
+        hitstun_ticks=0,
+        poise_damage_milli=0,
+        knockback_milli=0
+    )
+}
+
+fn soul_blade_parry_success_recovery() -> Integer {
+    return 3
+}
+
+fn soul_blade_parry_counter_window() -> Integer {
+    return 10
+}
+
+// --- Player Hurtbox ---
+fn player_hurtbox() -> HurtboxDescriptor {
+    return create_hurtbox(
+        offset_x=0, offset_y=500, offset_z=0,
+        half_x=300, half_y=600, half_z=300
+    )
+}

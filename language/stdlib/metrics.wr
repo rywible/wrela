@@ -1,0 +1,17 @@
+//
+// Metrics helpers.
+
+// Fetch a metric by id.
+fn get(id: Integer) -> Integer {
+    return __wr_metrics_get(id)
+
+}
+// Metric id for messages dropped due to pause.
+fn get_dropped_paused_id() -> Integer {
+    return __wr_metrics_dropped_paused_id()
+
+}
+// Metric id for messages dropped overall.
+fn get_messages_dropped_id() -> Integer {
+    return __wr_metrics_messages_dropped_id()
+}

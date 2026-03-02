@@ -1,0 +1,87 @@
+use {
+    create_default_forest_world,
+    create_default_forest_archetype_id,
+    create_forest_world_state,
+    create_forest_world_with_activity_delta,
+    create_forest_world_with_baked_focus_body,
+    create_forest_world_after_tick_system,
+    get_world_activity,
+    get_focus_body_state,
+    create_focus_body_snapshot,
+    create_focus_body_lifecycle_event
+}
+from domain/world_state
+
+use {
+    get_persistent_physics_state_static,
+    get_persistent_physics_state_active,
+    get_persistent_physics_state_sleeping,
+    get_persistent_physics_state_harvested,
+    check_persistent_physics_state_terminal
+}
+from pkg/game/physics/persistent
+
+fn test_default_world_uses_generic_focus_body_contract() -> Nothing {
+    state = create_default_forest_world()
+    snapshot = create_focus_body_snapshot(state)
+    assert value snapshot.entity_id == 1
+    assert value snapshot.archetype_id == create_default_forest_archetype_id()
+    assert value snapshot.lifecycle_state == get_persistent_physics_state_static()
+}
+
+fn test_world_activity_clamps_to_ratio_range() -> Nothing {
+    state = create_default_forest_world()
+    over = create_forest_world_with_activity_delta(state=state, amount=5000)
+    under = create_forest_world_with_activity_delta(state=over, amount=-9000)
+    assert value get_world_activity(over) == 1000
+    assert value get_world_activity(under) == 0
+}
+
+fn test_tick_transitions_active_and_consumes_activity() -> Nothing {
+    state = create_default_forest_world()
+    active_candidate = create_forest_world_with_activity_delta(state=state, amount=10)
+    next = create_forest_world_after_tick_system(state=active_candidate)
+    assert value get_world_activity(next) == 9
+    assert value get_focus_body_state(next) == get_persistent_physics_state_active()
+}
+
+fn test_tick_transitions_sleeping_when_stability_is_low() -> Nothing {
+    state = create_forest_world_state(
+        focus_body_id=1,
+        focus_archetype_id=create_default_forest_archetype_id(),
+        focus_body_state=get_persistent_physics_state_static(),
+        focus_body_stability=200,
+        focus_body_wear=100,
+        world_activity=0,
+        world_resonance=0,
+        world_damage=0,
+        tick=0
+    )
+    next = create_forest_world_after_tick_system(state=state)
+    assert value get_focus_body_state(next) == get_persistent_physics_state_sleeping()
+}
+
+fn test_terminal_states_are_preserved_during_tick() -> Nothing {
+    state = create_forest_world_with_baked_focus_body(state=create_default_forest_world())
+    active_candidate = create_forest_world_with_activity_delta(state=state, amount=100)
+    next = create_forest_world_after_tick_system(state=active_candidate)
+    assert value get_focus_body_state(next) == get_focus_body_state(state)
+}
+
+fn test_focus_body_lifecycle_event_captures_transition() -> Nothing {
+    state = create_default_forest_world()
+    event_record = create_focus_body_lifecycle_event(
+        state=state,
+        next_state=get_persistent_physics_state_active(),
+        reason_code=7
+    )
+    assert value event_record.entity_id == 1
+    assert value event_record.previous_state == get_persistent_physics_state_static()
+    assert value event_record.next_state == get_persistent_physics_state_active()
+    assert value event_record.reason_code == 7
+}
+
+fn test_persistent_physics_terminal_state_contract() -> Nothing {
+    assert value check_persistent_physics_state_terminal(get_persistent_physics_state_harvested()) == true
+    assert value check_persistent_physics_state_terminal(get_persistent_physics_state_active()) == false
+}

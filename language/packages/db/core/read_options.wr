@@ -1,0 +1,14 @@
+//
+// Read policy hints for DB scan and point paths.
+// These options stay Wrela-owned and can be mapped to runtime controls.
+
+class ReadOptions {
+    mutable max_point_in_flight: Integer = 64
+    mutable max_range_in_flight: Integer = 8
+    mutable range_limit: Integer = 100
+    mutable is_interactive: Boolean = true
+
+}
+fn default_read_options() -> ReadOptions {
+    return ReadOptions()
+}

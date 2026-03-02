@@ -1,0 +1,127 @@
+//
+// Actor control helpers.
+
+fn actor_at_least(value: Integer, minimum: Integer) -> Integer {
+    if value < minimum {
+        return minimum
+    }
+    return value
+
+
+}
+fn objective_scale(value: Integer, objective: Integer) -> Integer {
+    if objective == 0 {
+        return actor_at_least(value / 2, 1)
+    }
+    if objective == 1 {
+        return actor_at_least(value * 2, 1)
+    }
+    return actor_at_least(value, 1)
+
+
+}
+//
+// Resolve mailbox capacity policy in Wrela.
+// Examples {
+// * latency objective (0) prefers tighter mailboxes.
+// * throughput objective (1) prefers larger mailboxes.
+// }
+fn normalize_mailbox_capacity(
+    requested_capacity: Integer,
+    default_capacity: Integer,
+    objective: Integer
+) -> Integer {
+    if requested_capacity > 0 {
+        return actor_at_least(requested_capacity, 1)
+    }
+    return objective_scale(default_capacity, objective)
+
+
+}
+// Resolve enqueue timeout policy in Wrela.
+fn normalize_enqueue_timeout_milliseconds(
+    requested_timeout_milliseconds: Integer,
+    default_timeout_milliseconds: Integer,
+    objective: Integer
+) -> Integer {
+    if requested_timeout_milliseconds >= 0 {
+        return actor_at_least(requested_timeout_milliseconds, 1)
+    }
+    return objective_scale(default_timeout_milliseconds, objective)
+
+
+}
+// Resolve actor batch limit policy in Wrela.
+fn normalize_batch_limit(
+    requested_batch_limit: Integer,
+    default_batch_limit: Integer,
+    objective: Integer
+) -> Integer {
+    if requested_batch_limit > 0 {
+        return actor_at_least(requested_batch_limit, 1)
+    }
+    return objective_scale(default_batch_limit, objective)
+
+
+}
+//
+// Decide paused-mailbox drop behavior in Wrela.
+// This stays deterministic because it only reads explicit inputs.
+fn paused_mailbox_should_drop_message(
+    is_paused: Boolean,
+    mailbox_length: Integer,
+    pause_queue_capacity: Integer
+) -> Boolean {
+    if not is_paused {
+        return false
+    }
+    return mailbox_length >= actor_at_least(pause_queue_capacity, 1)
+
+
+}
+// Get the mailbox length for an actor handle.
+fn get_mailbox_length(handle: Any) -> Integer {
+    return __wr_actor_mailbox_len(handle)
+
+}
+// Pause an actor.
+fn pause(handle: Any) -> Nothing {
+    __wr_actor_pause(handle)
+    return nothing
+
+}
+// Resume an actor.
+fn resume(handle: Any) -> Nothing {
+    __wr_actor_resume(handle)
+    return nothing
+
+}
+// Pause an actor and wait for the pause to take effect.
+fn pause_and_wait(handle: Any) -> Nothing {
+    __wr_actor_pause_wait(handle)
+    return nothing
+
+
+}
+// Backward-compatible short alias used by existing tests.
+fn pause_wait(handle: Any) -> Nothing {
+    return pause_and_wait(handle)
+
+}
+// Begin a scoped producer burst for an actor or pool handle.
+fn fire_burst_begin(handle: Any) -> Nothing {
+    __wr_actor_fire_burst_begin(handle)
+    return nothing
+
+}
+// Flush a scoped producer burst for an actor or pool handle.
+fn fire_burst_end(handle: Any) -> Nothing {
+    __wr_actor_fire_burst_end(handle)
+    return nothing
+
+}
+// Abort a scoped producer burst for an actor or pool handle.
+fn fire_burst_abort(handle: Any) -> Nothing {
+    __wr_actor_fire_burst_abort(handle)
+    return nothing
+}

@@ -1,0 +1,48 @@
+//
+// Soul Blade: the player's weapon. Tracks expression, resonance charge, and combat stats.
+
+resource SoulBlade {
+    mutable expression_id: Integer = 0
+    mutable resonance_charge_milli: Integer = 0
+    mutable total_strikes: Integer = 0
+    mutable total_parries: Integer = 0
+    mutable total_damage_dealt: Integer = 0
+}
+
+fn create_default_soul_blade() -> SoulBlade {
+    return SoulBlade()
+}
+
+fn record_strike(blade: SoulBlade, damage_milli: Integer) -> SoulBlade {
+    return SoulBlade(
+        expression_id=blade.expression_id,
+        resonance_charge_milli=blade.resonance_charge_milli,
+        total_strikes=blade.total_strikes + 1,
+        total_parries=blade.total_parries,
+        total_damage_dealt=blade.total_damage_dealt + damage_milli
+    )
+}
+
+fn record_parry(blade: SoulBlade) -> SoulBlade {
+    return SoulBlade(
+        expression_id=blade.expression_id,
+        resonance_charge_milli=blade.resonance_charge_milli,
+        total_strikes=blade.total_strikes,
+        total_parries=blade.total_parries + 1,
+        total_damage_dealt=blade.total_damage_dealt
+    )
+}
+
+fn add_resonance_charge(blade: SoulBlade, amount_milli: Integer) -> SoulBlade {
+    new_charge = blade.resonance_charge_milli + amount_milli
+    if new_charge > 1000 {
+        new_charge = 1000
+    }
+    return SoulBlade(
+        expression_id=blade.expression_id,
+        resonance_charge_milli=new_charge,
+        total_strikes=blade.total_strikes,
+        total_parries=blade.total_parries,
+        total_damage_dealt=blade.total_damage_dealt
+    )
+}

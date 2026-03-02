@@ -1,0 +1,108 @@
+//
+// Static asset and single-page application fallback helpers.
+
+use {
+    get_bytes_from_string,
+    get_list_from_bytes
+}
+from bytes
+
+class StaticAssetServingConfiguration {
+    single_page_application_mount_prefix: String = "/app"
+    single_page_application_index_file_path: String = "./app/index.html"
+
+
+}
+fn route_is_application_mount_route(path: String, mount_prefix: String) -> Boolean {
+    if path == mount_prefix {
+        return true
+    }
+    if path == mount_prefix + "/" {
+        return true
+    }
+    if get_route_prefix_match_flag(path, mount_prefix + "/") == 1 {
+        return true
+    }
+    return false
+
+
+}
+fn path_is_reserved_api_or_auth_route(path: String) -> Boolean {
+    if path == "/api" or path == "/api/" or get_route_prefix_match_flag(path, "/api/") == 1 {
+        return true
+    }
+    if path == "/auth" or path == "/auth/" or get_route_prefix_match_flag(path, "/auth/") == 1 {
+        return true
+    }
+    if path == "/oauth" or path == "/oauth/" or get_route_prefix_match_flag(path, "/oauth/") == 1 {
+        return true
+    }
+    if path == "/db" or path == "/db/" or get_route_prefix_match_flag(path, "/db/") == 1 {
+        return true
+    }
+    return false
+
+
+}
+fn get_route_prefix_match_flag(path: String, prefix: String) -> Integer {
+    path_bytes = get_list_from_bytes(get_bytes_from_string(path))
+    prefix_bytes = get_list_from_bytes(get_bytes_from_string(prefix))
+
+    mutable prefix_length = 0
+    for path_prefix_byte in prefix_bytes {
+        prefix_length = prefix_length + 1
+
+    }
+    mutable path_length = 0
+    for path_byte in path_bytes {
+        path_length = path_length + 1
+
+    }
+    if path_length < prefix_length {
+        return 0
+
+    }
+    mutable prefix_index = 0
+    for prefix_byte in prefix_bytes {
+        mutable path_index = 0
+        mutable has_matched_prefix_byte = false
+        for path_byte in path_bytes {
+            if path_index == prefix_index and path_byte != prefix_byte {
+                return 0
+            }
+            if path_index == prefix_index {
+                has_matched_prefix_byte = true
+                break
+            }
+            path_index = path_index + 1
+        }
+        if not has_matched_prefix_byte {
+            return 0
+        }
+        prefix_index = prefix_index + 1
+
+    }
+    return 1
+
+
+}
+fn resolve_single_page_application_fallback_path(
+    path: String,
+    configuration: StaticAssetServingConfiguration
+) -> String {
+    if route_is_application_mount_route(path, configuration.single_page_application_mount_prefix) {
+        return configuration.single_page_application_index_file_path
+    }
+    return path
+
+
+}
+fn path_is_single_page_application_fallback_enabled(
+    path: String,
+    configuration: StaticAssetServingConfiguration
+) -> Boolean {
+    if path_is_reserved_api_or_auth_route(path) {
+        return false
+    }
+    return route_is_application_mount_route(path, configuration.single_page_application_mount_prefix)
+}

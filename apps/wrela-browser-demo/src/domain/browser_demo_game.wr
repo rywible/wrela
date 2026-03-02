@@ -1,0 +1,175 @@
+resource DemoRuntime {
+    mutable tick: Integer = 0
+    mutable player_x: Integer = 1
+    mutable player_y: Integer = 1
+    mutable score: Integer = 0
+    mutable collected_mask: Integer = 0
+    mutable victory_state: Boolean = false
+    mutable restart_count: Integer = 0
+}
+
+event DemoInput {
+    mutable axis_x: Integer = 0
+    mutable axis_y: Integer = 0
+    mutable restart_signal: Boolean = false
+}
+
+fn create_default_demo_runtime() -> DemoRuntime {
+    return DemoRuntime()
+}
+
+fn compute_abs(value: Integer) -> Integer {
+    if value < 0 {
+        return 0 - value
+    }
+    return value
+}
+
+fn choose_minimum(left: Integer, right: Integer) -> Integer {
+    if left < right {
+        return left
+    }
+    return right
+}
+
+fn choose_maximum(left: Integer, right: Integer) -> Integer {
+    if left > right {
+        return left
+    }
+    return right
+}
+
+fn clamp_axis_value(value: Integer, minimum: Integer, maximum: Integer) -> Integer {
+    lower = choose_minimum(left=minimum, right=maximum)
+    upper = choose_maximum(left=minimum, right=maximum)
+    if value < lower {
+        return lower
+    }
+    if value > upper {
+        return upper
+    }
+    return value
+}
+
+fn count_set_bits(value: Integer) -> Integer {
+    mutable bits = value
+    if bits < 0 {
+        bits = 0 - bits
+    }
+    mutable count = 0
+    while bits > 0 {
+        count = count + (bits & 1)
+        bits = bits >> 1
+    }
+    return count
+}
+
+fn compute_pickup_overlap_mask(
+    player_x: Integer,
+    player_y: Integer,
+    pickup_x: Integer,
+    pickup_y: Integer,
+    pickup_mask: Integer
+) -> Integer {
+    dx = compute_abs(value=player_x - pickup_x)
+    dy = compute_abs(value=player_y - pickup_y)
+    if dx <= 1 {
+        if dy <= 1 {
+            return pickup_mask
+        }
+    }
+    return 0
+}
+
+fn compute_collected_mask(player_x: Integer, player_y: Integer, collected_mask: Integer) -> Integer {
+    mutable next_mask = collected_mask
+
+    if (next_mask & 1) == 0 {
+        next_mask = next_mask + compute_pickup_overlap_mask(
+            player_x=player_x,
+            player_y=player_y,
+            pickup_x=4,
+            pickup_y=4,
+            pickup_mask=1
+        )
+    }
+    if (next_mask & 2) == 0 {
+        next_mask = next_mask + compute_pickup_overlap_mask(
+            player_x=player_x,
+            player_y=player_y,
+            pickup_x=12,
+            pickup_y=6,
+            pickup_mask=2
+        )
+    }
+    if (next_mask & 4) == 0 {
+        next_mask = next_mask + compute_pickup_overlap_mask(
+            player_x=player_x,
+            player_y=player_y,
+            pickup_x=18,
+            pickup_y=12,
+            pickup_mask=4
+        )
+    }
+
+    return next_mask
+}
+
+fn count_collected_pickups(collected_mask: Integer) -> Integer {
+    return count_set_bits(value=collected_mask)
+}
+
+fn create_demo_input(axis_x: Integer, axis_y: Integer, is_restart_pressed: Boolean) -> DemoInput {
+    return DemoInput(
+        axis_x=clamp_axis_value(value=axis_x, minimum=-1, maximum=1),
+        axis_y=clamp_axis_value(value=axis_y, minimum=-1, maximum=1),
+        restart_signal=is_restart_pressed
+    )
+}
+
+system create_demo_runtime_after_step[stage=fixed, reads=[DemoInput], writes=[DemoRuntime]](
+    runtime: DemoRuntime,
+    input_event: DemoInput
+) -> DemoRuntime {
+    if input_event.restart_signal {
+        if runtime.victory_state {
+            return DemoRuntime(
+                tick=runtime.tick + 1,
+                player_x=1,
+                player_y=1,
+                score=0,
+                collected_mask=0,
+                victory_state=false,
+                restart_count=runtime.restart_count + 1
+            )
+        }
+    }
+
+    next_x = clamp_axis_value(
+        value=runtime.player_x + clamp_axis_value(value=input_event.axis_x, minimum=-1, maximum=1),
+        minimum=0,
+        maximum=20
+    )
+    next_y = clamp_axis_value(
+        value=runtime.player_y + clamp_axis_value(value=input_event.axis_y, minimum=-1, maximum=1),
+        minimum=0,
+        maximum=14
+    )
+
+    next_mask = compute_collected_mask(
+        player_x=next_x,
+        player_y=next_y,
+        collected_mask=runtime.collected_mask
+    )
+    next_score = count_collected_pickups(next_mask)
+
+    return DemoRuntime(
+        tick=runtime.tick + 1,
+        player_x=next_x,
+        player_y=next_y,
+        score=next_score,
+        collected_mask=next_mask,
+        victory_state=next_score >= 3,
+        restart_count=runtime.restart_count
+    )
+}

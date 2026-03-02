@@ -1,0 +1,559 @@
+//
+// DB-backed authentication persistence for service accounts, refresh tokens, and revocations.
+
+use {
+    close,
+    get,
+    open,
+    put
+}
+from pkg/db/core/kv
+
+use {
+    get_bytes_from_list,
+    get_bytes_from_string,
+    get_list_from_bytes,
+    get_string_from_bytes
+}
+from bytes
+
+use {
+    WebAuthenticationStoreConfiguration,
+    create_web_authentication_store_configuration_from_environment,
+    try_to_hash_password
+}
+from host/web_authentication
+
+use {
+    try_to_parse_json_request_body,
+    try_to_render_json_response_body
+}
+from host/web_server
+
+fn try_to_parse_authentication_store_json_text(text: String) -> Result[Map[Any, Any]] {
+    return try_to_parse_json_request_body(text)
+
+
+}
+class WebRefreshTokenRecord {
+    mutable refresh_token_identifier: String = ""
+    mutable refresh_token_family_identifier: String = ""
+    mutable subject_identifier: String = ""
+    mutable client_identifier: String = ""
+    mutable tenant_identifier: String = ""
+    mutable scope_value_text: String = ""
+    mutable expires_at_unix_seconds: Integer = 0
+    mutable rotation_state: Boolean = false
+    mutable next_refresh_token_identifier: String = ""
+
+
+}
+class JsonWebTokenRevocationRecord {
+    mutable token_identifier: String = ""
+    mutable revoked_at_unix_seconds: Integer = 0
+    mutable expires_at_unix_seconds: Integer = 0
+
+
+}
+class WebServiceAccountRegistration {
+    mutable client_identifier: String = ""
+    mutable hashed_client_secret: String = ""
+    mutable allowed_scope_values: List[String] = []
+    mutable tenant_identifier: String = ""
+
+
+}
+fn create_default_web_authentication_store_configuration(
+) -> WebAuthenticationStoreConfiguration {
+    return create_web_authentication_store_configuration_from_environment()
+
+
+}
+fn open_web_authentication_store_handle(
+    configuration: WebAuthenticationStoreConfiguration
+) -> Integer {
+    return open(configuration.auth_store_path)
+
+
+}
+fn close_web_authentication_store_handle(
+    authentication_store_handle: Integer
+) -> Result[Nothing] {
+    return close(authentication_store_handle)
+
+
+}
+fn create_service_account_namespace_key(client_identifier: String) -> String {
+    return "client:" + client_identifier
+
+
+}
+fn create_refresh_token_namespace_key(refresh_token_identifier: String) -> String {
+    return "refresh:" + refresh_token_identifier
+
+
+}
+fn create_refresh_token_family_namespace_key(refresh_token_family_identifier: String) -> String {
+    return "family:" + refresh_token_family_identifier
+
+
+}
+fn create_json_web_token_revocation_namespace_key(token_identifier: String) -> String {
+    return "jti:" + token_identifier
+
+
+}
+fn create_scope_values_from_scope_value_text_for_store(scope_value_text: String) -> List[String] {
+    scope_values = []
+    if scope_value_text == "" {
+        return scope_values
+
+    }
+    scope_value_text_bytes = get_list_from_bytes(get_bytes_from_string(scope_value_text))
+    mutable current_scope_value_bytes = []
+
+    for scope_value_text_byte in scope_value_text_bytes {
+        if scope_value_text_byte == 32 {
+            current_scope_value = get_string_from_bytes(
+                get_bytes_from_list(current_scope_value_bytes)
+            )
+            if current_scope_value != "" {
+                scope_values.push(current_scope_value)
+            }
+            current_scope_value_bytes = []
+            continue
+        }
+        current_scope_value_bytes.push(scope_value_text_byte)
+
+    }
+    trailing_scope_value = get_string_from_bytes(get_bytes_from_list(current_scope_value_bytes))
+    if trailing_scope_value != "" {
+        scope_values.push(trailing_scope_value)
+    }
+    return scope_values
+
+
+}
+fn create_scope_value_text_for_store(scope_values: List[String]) -> String {
+    mutable scope_value_text = ""
+    mutable is_first_scope_value = true
+    for scope_value in scope_values {
+        if is_first_scope_value {
+            scope_value_text = scope_value
+            is_first_scope_value = false
+        }
+        else {
+            scope_value_text = scope_value_text + " " + scope_value
+        }
+    }
+    return scope_value_text
+
+
+}
+fn create_service_account_registration_json(
+    registration: WebServiceAccountRegistration
+) -> Result[String] {
+    registration_items = {}
+    registration_items.set("client_identifier", registration.client_identifier)
+    registration_items.set("hashed_client_secret", registration.hashed_client_secret)
+    registration_items.set("allowed_scope_text", create_scope_value_text_for_store(registration.allowed_scope_values)
+    )
+    registration_items.set("tenant_identifier", registration.tenant_identifier)
+    return try_to_render_json_response_body(registration_items)
+
+
+}
+fn create_service_account_registration_from_json_text(
+    registration_json_text: String
+) -> Result[WebServiceAccountRegistration] {
+    match try_to_parse_authentication_store_json_text(registration_json_text) {
+        Ok(registration_items) {
+            registration = WebServiceAccountRegistration()
+
+            client_identifier_value = registration_items.get("client_identifier")
+            match client_identifier_value {
+                String(client_identifier) {
+                    registration.client_identifier = client_identifier
+                }
+                default {
+                    return error "auth store: service account missing client_identifier"
+
+                }
+            }
+            hashed_client_secret_value = registration_items.get("hashed_client_secret")
+            match hashed_client_secret_value {
+                String(hashed_client_secret) {
+                    registration.hashed_client_secret = hashed_client_secret
+                }
+                default {
+                    return error "auth store: service account missing hashed_client_secret"
+
+                }
+            }
+            allowed_scope_text_value = registration_items.get("allowed_scope_text")
+            match allowed_scope_text_value {
+                String(allowed_scope_text) {
+                    registration.allowed_scope_values = create_scope_values_from_scope_value_text_for_store(
+                        allowed_scope_text
+                    )
+                }
+                default {
+                    registration.allowed_scope_values = []
+
+                }
+            }
+            tenant_identifier_value = registration_items.get("tenant_identifier")
+            match tenant_identifier_value {
+                String(tenant_identifier) {
+                    registration.tenant_identifier = tenant_identifier
+                }
+                default {
+                    registration.tenant_identifier = ""
+
+                }
+            }
+            return registration
+        }
+        Err(error_message) {
+            return error error_message
+
+
+        }
+    }
+}
+fn try_to_store_service_account_registration(
+    authentication_store_handle: Integer,
+    registration: WebServiceAccountRegistration
+) -> Result[Nothing] {
+    if registration.client_identifier == "" {
+        return error "auth store: client_identifier is required"
+    }
+    if registration.hashed_client_secret == "" {
+        return error "auth store: hashed_client_secret is required"
+
+    }
+    registration_json_result = create_service_account_registration_json(registration)
+    match registration_json_result {
+        Ok(registration_json_text) {
+            write_version = put(
+                authentication_store_handle,
+                "web_auth_service_accounts",
+                create_service_account_namespace_key(registration.client_identifier),
+                registration_json_text,
+                -1
+            )
+            if write_version <= 0 {
+                return error "auth store: failed to persist service account registration"
+            }
+            return nothing
+        }
+        Err(error_message) {
+            return error error_message
+
+
+        }
+    }
+}
+fn try_to_register_service_account_client(
+    authentication_store_handle: Integer,
+    client_identifier: String,
+    raw_client_secret: String,
+    allowed_scope_values: List[String],
+    tenant_identifier: String
+) -> Result[WebServiceAccountRegistration] {
+    if client_identifier == "" {
+        return error "auth store: client_identifier is required"
+    }
+    if raw_client_secret == "" {
+        return error "auth store: raw_client_secret is required"
+
+    }
+    match try_to_hash_password(raw_client_secret) {
+        Ok(hashed_client_secret) {
+            registration = WebServiceAccountRegistration()
+            registration.client_identifier = client_identifier
+            registration.hashed_client_secret = hashed_client_secret
+            registration.allowed_scope_values = allowed_scope_values
+            registration.tenant_identifier = tenant_identifier
+            match try_to_store_service_account_registration(
+                authentication_store_handle,
+                registration
+            ) {
+                Ok(_) {
+                    return registration
+                }
+                Err(error_message) {
+                    return error error_message
+                }
+            }
+        }
+        Err(error_message) {
+            return error error_message
+
+
+        }
+    }
+}
+fn try_to_read_service_account_registration(
+    authentication_store_handle: Integer,
+    client_identifier: String
+) -> Result[WebServiceAccountRegistration] {
+    if client_identifier == "" {
+        return error "auth store: client_identifier is required"
+    }
+    match get(
+        authentication_store_handle,
+        "web_auth_service_accounts",
+        create_service_account_namespace_key(client_identifier)
+    ) {
+        Ok(registration_json_text) {
+            return create_service_account_registration_from_json_text(registration_json_text)
+        }
+        Err(error_message) {
+            return error error_message
+
+
+        }
+    }
+}
+fn create_refresh_token_record_json_text(
+    refresh_token_record: WebRefreshTokenRecord
+) -> Result[String] {
+    refresh_token_record_items = {}
+    refresh_token_record_items.set("refresh_token_identifier", refresh_token_record.refresh_token_identifier)
+    refresh_token_record_items.set("refresh_token_family_identifier", refresh_token_record.refresh_token_family_identifier)
+    refresh_token_record_items.set("subject_identifier", refresh_token_record.subject_identifier)
+    refresh_token_record_items.set("client_identifier", refresh_token_record.client_identifier)
+    refresh_token_record_items.set("tenant_identifier", refresh_token_record.tenant_identifier)
+    refresh_token_record_items.set("scope_value_text", refresh_token_record.scope_value_text)
+    refresh_token_record_items.set("expires_at_unix_seconds", refresh_token_record.expires_at_unix_seconds)
+    refresh_token_record_items.set("is_rotated", refresh_token_record.rotation_state)
+    refresh_token_record_items.set("next_refresh_token_identifier", refresh_token_record.next_refresh_token_identifier)
+    return try_to_render_json_response_body(refresh_token_record_items)
+
+
+}
+fn create_refresh_token_record_from_json_text(
+    refresh_token_record_json_text: String
+) -> Result[WebRefreshTokenRecord] {
+    match try_to_parse_authentication_store_json_text(refresh_token_record_json_text) {
+        Ok(refresh_token_record_items) {
+            refresh_token_record = WebRefreshTokenRecord()
+
+            refresh_token_identifier_value = refresh_token_record_items.get("refresh_token_identifier")
+            match refresh_token_identifier_value {
+                String(refresh_token_identifier) {
+                    refresh_token_record.refresh_token_identifier = refresh_token_identifier
+                }
+                default {
+                    return error "auth store: refresh token missing refresh_token_identifier"
+
+                }
+            }
+            refresh_token_family_identifier_value = refresh_token_record_items.get("refresh_token_family_identifier")
+            match refresh_token_family_identifier_value {
+                String(refresh_token_family_identifier) {
+                    refresh_token_record.refresh_token_family_identifier = refresh_token_family_identifier
+                }
+                default {
+                    refresh_token_record.refresh_token_family_identifier = ""
+
+                }
+            }
+            subject_identifier_value = refresh_token_record_items.get("subject_identifier")
+            match subject_identifier_value {
+                String(subject_identifier) {
+                    refresh_token_record.subject_identifier = subject_identifier
+                }
+                default {
+                    refresh_token_record.subject_identifier = ""
+
+                }
+            }
+            client_identifier_value = refresh_token_record_items.get("client_identifier")
+            match client_identifier_value {
+                String(client_identifier) {
+                    refresh_token_record.client_identifier = client_identifier
+                }
+                default {
+                    refresh_token_record.client_identifier = ""
+
+                }
+            }
+            tenant_identifier_value = refresh_token_record_items.get("tenant_identifier")
+            match tenant_identifier_value {
+                String(tenant_identifier) {
+                    refresh_token_record.tenant_identifier = tenant_identifier
+                }
+                default {
+                    refresh_token_record.tenant_identifier = ""
+
+                }
+            }
+            scope_value_text_value = refresh_token_record_items.get("scope_value_text")
+            match scope_value_text_value {
+                String(scope_value_text) {
+                    refresh_token_record.scope_value_text = scope_value_text
+                }
+                default {
+                    refresh_token_record.scope_value_text = ""
+
+                }
+            }
+            expires_at_unix_seconds_value = refresh_token_record_items.get("expires_at_unix_seconds")
+            match expires_at_unix_seconds_value {
+                Integer(expires_at_unix_seconds) {
+                    refresh_token_record.expires_at_unix_seconds = expires_at_unix_seconds
+                }
+                default {
+                    refresh_token_record.expires_at_unix_seconds = 0
+
+                }
+            }
+            is_rotated_value = refresh_token_record_items.get("is_rotated")
+            if is_rotated_value == true {
+                refresh_token_record.rotation_state = true
+            }
+            if is_rotated_value == false {
+                refresh_token_record.rotation_state = false
+
+            }
+            next_refresh_token_identifier_value = refresh_token_record_items.get("next_refresh_token_identifier")
+            match next_refresh_token_identifier_value {
+                String(next_refresh_token_identifier) {
+                    refresh_token_record.next_refresh_token_identifier = next_refresh_token_identifier
+                }
+                default {
+                    refresh_token_record.next_refresh_token_identifier = ""
+
+                }
+            }
+            return refresh_token_record
+        }
+        Err(error_message) {
+            return error error_message
+
+
+        }
+    }
+}
+fn try_to_store_refresh_token_record(
+    authentication_store_handle: Integer,
+    refresh_token_record: WebRefreshTokenRecord
+) -> Result[Nothing] {
+    if refresh_token_record.refresh_token_identifier == "" {
+        return error "auth store: refresh_token_identifier is required"
+
+    }
+    refresh_token_record_json_text_result = create_refresh_token_record_json_text(refresh_token_record)
+    match refresh_token_record_json_text_result {
+        Ok(refresh_token_record_json_text) {
+            write_version = put(
+                authentication_store_handle,
+                "web_auth_refresh_tokens",
+                create_refresh_token_namespace_key(refresh_token_record.refresh_token_identifier),
+                refresh_token_record_json_text,
+                -1
+            )
+            if write_version <= 0 {
+                return error "auth store: failed to persist refresh token record"
+
+            }
+            family_write_version = put(
+                authentication_store_handle,
+                "web_auth_refresh_token_family",
+                create_refresh_token_family_namespace_key(
+                    refresh_token_record.refresh_token_family_identifier
+                ),
+                refresh_token_record.refresh_token_identifier,
+                -1
+            )
+            if family_write_version <= 0 {
+                return error "auth store: failed to persist refresh token family index"
+            }
+            return nothing
+        }
+        Err(error_message) {
+            return error error_message
+
+
+        }
+    }
+}
+fn try_to_read_refresh_token_record(
+    authentication_store_handle: Integer,
+    refresh_token_identifier: String
+) -> Result[WebRefreshTokenRecord] {
+    if refresh_token_identifier == "" {
+        return error "auth store: refresh_token_identifier is required"
+
+    }
+    match get(
+        authentication_store_handle,
+        "web_auth_refresh_tokens",
+        create_refresh_token_namespace_key(refresh_token_identifier)
+    ) {
+        Ok(refresh_token_record_json_text) {
+            return create_refresh_token_record_from_json_text(refresh_token_record_json_text)
+        }
+        Err(error_message) {
+            return error error_message
+
+
+        }
+    }
+}
+fn try_to_store_json_web_token_revocation_record(
+    authentication_store_handle: Integer,
+    revocation_record: JsonWebTokenRevocationRecord
+) -> Result[Nothing] {
+    revocation_record_items = {}
+    revocation_record_items.set("token_identifier", revocation_record.token_identifier)
+    revocation_record_items.set("revoked_at_unix_seconds", revocation_record.revoked_at_unix_seconds)
+    revocation_record_items.set("expires_at_unix_seconds", revocation_record.expires_at_unix_seconds)
+
+    revocation_record_json_result = try_to_render_json_response_body(
+        revocation_record_items
+    )
+    match revocation_record_json_result {
+        Ok(revocation_record_json_text) {
+            write_version = put(
+                authentication_store_handle,
+                "web_auth_revocations",
+                create_json_web_token_revocation_namespace_key(revocation_record.token_identifier),
+                revocation_record_json_text,
+                -1
+            )
+            if write_version <= 0 {
+                return error "auth store: failed to persist json web token revocation record"
+            }
+            return nothing
+        }
+        Err(error_message) {
+            return error error_message
+
+
+        }
+    }
+}
+fn json_web_token_identifier_is_revoked(
+    authentication_store_handle: Integer,
+    token_identifier: String
+) -> Boolean {
+    if token_identifier == "" {
+        return false
+    }
+    revocation_result = get(
+        authentication_store_handle,
+        "web_auth_revocations",
+        create_json_web_token_revocation_namespace_key(token_identifier)
+    )
+    match revocation_result {
+        Ok(_) {
+            return true
+        }
+        Err(_) {
+            return false
+        }
+    }
+}

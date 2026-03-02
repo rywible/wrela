@@ -1,0 +1,27 @@
+//
+// Bytes convenience helpers.
+
+// Build Bytes from a String.
+fn get_bytes_from_string(text: String) -> Bytes {
+    return __wr_bytes_from_string(text)
+
+}
+// Decode Bytes into a String.
+fn get_string_from_bytes(bytes: Bytes) -> String {
+    return __wr_bytes_to_string(bytes)
+
+}
+// Return the length of a Bytes value.
+fn get_length(bytes: Bytes) -> Integer {
+    return __wr_bytes_len(bytes)
+
+}
+// Decode Bytes into a list of byte values.
+fn get_list_from_bytes(bytes: Bytes) -> List[Integer] {
+    return __wr_bytes_to_list(bytes)
+
+}
+// Build Bytes from a list of byte values.
+fn get_bytes_from_list(items: List[Integer]) -> Bytes {
+    return __wr_bytes_from_list(items)
+}

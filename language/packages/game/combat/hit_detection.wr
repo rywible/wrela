@@ -1,0 +1,159 @@
+//
+// Hit detection: tests hitbox vs hurtbox overlap and prevents double-hit per swing.
+
+use {
+    AabbFixed,
+    create_aabb_from_center,
+    test_aabb_overlap
+}
+from game/physics/collision
+
+use {
+    HitboxDescriptor,
+    HurtboxDescriptor
+}
+from game/combat/frame_data
+
+event CombatHitEvent {
+    mutable attacker_id: Integer = 0
+    mutable defender_id: Integer = 0
+    mutable move_id: Integer = 0
+    mutable damage_milli: Integer = 0
+    mutable hitstun_ticks: Integer = 0
+    mutable poise_damage_milli: Integer = 0
+    mutable knockback_x: Integer = 0
+    mutable knockback_z: Integer = 0
+    mutable was_parried: Boolean = false
+}
+
+resource CombatHitMemory {
+    mutable attacker_id: Integer = 0
+    mutable last_hit_move_id: Integer = -1
+    mutable last_hit_defender_id: Integer = -1
+}
+
+fn create_combat_hit_event(
+    attacker_id: Integer,
+    defender_id: Integer,
+    move_id: Integer,
+    damage_milli: Integer,
+    hitstun_ticks: Integer,
+    poise_damage_milli: Integer,
+    knockback_x: Integer,
+    knockback_z: Integer,
+    was_parried: Boolean
+) -> CombatHitEvent {
+    return CombatHitEvent(
+        attacker_id=attacker_id,
+        defender_id=defender_id,
+        move_id=move_id,
+        damage_milli=damage_milli,
+        hitstun_ticks=hitstun_ticks,
+        poise_damage_milli=poise_damage_milli,
+        knockback_x=knockback_x,
+        knockback_z=knockback_z,
+        was_parried=was_parried
+    )
+}
+
+fn create_combat_hit_memory(attacker_id: Integer) -> CombatHitMemory {
+    return CombatHitMemory(attacker_id=attacker_id)
+}
+
+fn test_hitbox_hurtbox_overlap(
+    hitbox: HitboxDescriptor,
+    attacker_x: Integer, attacker_y: Integer, attacker_z: Integer,
+    hurtbox: HurtboxDescriptor,
+    defender_x: Integer, defender_y: Integer, defender_z: Integer
+) -> Boolean {
+    hit_aabb = create_aabb_from_center(
+        cx=attacker_x + hitbox.offset_x,
+        cy=attacker_y + hitbox.offset_y,
+        cz=attacker_z + hitbox.offset_z,
+        hx=hitbox.half_x,
+        hy=hitbox.half_y,
+        hz=hitbox.half_z
+    )
+    hurt_aabb = create_aabb_from_center(
+        cx=defender_x + hurtbox.offset_x,
+        cy=defender_y + hurtbox.offset_y,
+        cz=defender_z + hurtbox.offset_z,
+        hx=hurtbox.half_x,
+        hy=hurtbox.half_y,
+        hz=hurtbox.half_z
+    )
+    return test_aabb_overlap(hit_aabb, hurt_aabb)
+}
+
+fn already_hit_this_swing(
+    memory: CombatHitMemory,
+    move_id: Integer,
+    defender_id: Integer
+) -> Boolean {
+    if memory.last_hit_move_id == move_id {
+        if memory.last_hit_defender_id == defender_id {
+            return true
+        }
+    }
+    return false
+}
+
+fn record_hit(
+    memory: CombatHitMemory,
+    move_id: Integer,
+    defender_id: Integer
+) -> CombatHitMemory {
+    return CombatHitMemory(
+        attacker_id=memory.attacker_id,
+        last_hit_move_id=move_id,
+        last_hit_defender_id=defender_id
+    )
+}
+
+fn reset_hit_memory(memory: CombatHitMemory) -> CombatHitMemory {
+    return CombatHitMemory(
+        attacker_id=memory.attacker_id,
+        last_hit_move_id=-1,
+        last_hit_defender_id=-1
+    )
+}
+
+system detect_combat_hits[stage=fixed, reads=[HitboxDescriptor, HurtboxDescriptor, CombatHitMemory], writes=[CombatHitEvent, CombatHitMemory]](
+    hitbox: HitboxDescriptor,
+    attacker_x: Integer, attacker_y: Integer, attacker_z: Integer,
+    attacker_id: Integer,
+    move_id: Integer,
+    damage_milli: Integer,
+    hitstun_ticks: Integer,
+    poise_damage_milli: Integer,
+    hurtbox: HurtboxDescriptor,
+    defender_x: Integer, defender_y: Integer, defender_z: Integer,
+    defender_id: Integer,
+    memory: CombatHitMemory,
+    facing_x: Integer,
+    facing_z: Integer
+) -> CombatHitEvent {
+    if already_hit_this_swing(memory, move_id, defender_id) {
+        return CombatHitEvent()
+    }
+    overlaps = test_hitbox_hurtbox_overlap(
+        hitbox=hitbox,
+        attacker_x=attacker_x, attacker_y=attacker_y, attacker_z=attacker_z,
+        hurtbox=hurtbox,
+        defender_x=defender_x, defender_y=defender_y, defender_z=defender_z
+    )
+    if overlaps == false {
+        return CombatHitEvent()
+    }
+    return create_combat_hit_event(
+        attacker_id=attacker_id,
+        defender_id=defender_id,
+        move_id=move_id,
+        damage_milli=damage_milli,
+        hitstun_ticks=hitstun_ticks,
+        poise_damage_milli=poise_damage_milli,
+        knockback_x=facing_x,
+        knockback_z=facing_z,
+        was_parried=false
+    )
+}

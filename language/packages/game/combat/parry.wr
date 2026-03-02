@@ -1,0 +1,76 @@
+//
+// Parry system: active window check for incoming attacks. Success triggers bonus counter window.
+
+resource ParryState {
+    mutable active: Boolean = false
+    mutable window_remaining_ticks: Integer = 0
+    mutable succeeded: Boolean = false
+    mutable counter_window_remaining: Integer = 0
+}
+
+fn create_default_parry() -> ParryState {
+    return ParryState()
+}
+
+fn activate_parry(state: ParryState, window_ticks: Integer) -> ParryState {
+    return ParryState(
+        active=true,
+        window_remaining_ticks=window_ticks,
+        succeeded=false,
+        counter_window_remaining=0
+    )
+}
+
+fn tick_parry(state: ParryState) -> ParryState {
+    mutable new_window = state.window_remaining_ticks
+    mutable new_active = state.active
+    mutable new_counter = state.counter_window_remaining
+
+    if state.active {
+        new_window = new_window - 1
+        if new_window <= 0 {
+            new_active = false
+            new_window = 0
+        }
+    }
+
+    if state.counter_window_remaining > 0 {
+        new_counter = new_counter - 1
+        if new_counter < 0 {
+            new_counter = 0
+        }
+    }
+
+    return ParryState(
+        active=new_active,
+        window_remaining_ticks=new_window,
+        succeeded=state.succeeded,
+        counter_window_remaining=new_counter
+    )
+}
+
+fn test_parry(state: ParryState) -> Boolean {
+    // Returns true if parry is active during incoming hit
+    return state.active
+}
+
+fn on_parry_success(state: ParryState, counter_window_ticks: Integer) -> ParryState {
+    return ParryState(
+        active=false,
+        window_remaining_ticks=0,
+        succeeded=true,
+        counter_window_remaining=counter_window_ticks
+    )
+}
+
+fn is_in_counter_window(state: ParryState) -> Boolean {
+    return state.counter_window_remaining > 0
+}
+
+fn was_parry_successful(state: ParryState) -> Boolean {
+    return state.succeeded
+}
+
+fn reset_parry(state: ParryState) -> ParryState {
+    return ParryState()
+}

@@ -1,0 +1,16 @@
+//
+// Deterministic routing policy compile helpers.
+
+fn derive_policy_hash_seed(policy_id: String, shard_count: Integer) -> String {
+    if shard_count <= 0 {
+        return "invalid_shard_count"
+    }
+    return policy_id
+
+}
+fn validate_shard_count(shard_count: Integer) -> Integer {
+    if shard_count > 0 {
+        return 1
+    }
+    return 0
+}

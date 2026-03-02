@@ -1,0 +1,126 @@
+//
+// Fixed-point 4x4 matrix math. All values milli-scaled (1000 = 1.0).
+
+use {
+    Vec3Fixed,
+    vec3_sub,
+    vec3_normalize,
+    vec3_cross,
+    vec3_dot,
+    vec3_negate
+}
+from game/math/vec3
+
+resource Mat4Fixed {
+    mutable m00: Integer = 1000
+    mutable m01: Integer = 0
+    mutable m02: Integer = 0
+    mutable m03: Integer = 0
+    mutable m10: Integer = 0
+    mutable m11: Integer = 1000
+    mutable m12: Integer = 0
+    mutable m13: Integer = 0
+    mutable m20: Integer = 0
+    mutable m21: Integer = 0
+    mutable m22: Integer = 1000
+    mutable m23: Integer = 0
+    mutable m30: Integer = 0
+    mutable m31: Integer = 0
+    mutable m32: Integer = 0
+    mutable m33: Integer = 1000
+}
+
+fn mat4_identity() -> Mat4Fixed {
+    return Mat4Fixed()
+}
+
+fn mat4_look_at(eye: Vec3Fixed, target: Vec3Fixed, up: Vec3Fixed) -> Mat4Fixed {
+    f = vec3_normalize(vec3_sub(target, eye))
+    s = vec3_normalize(vec3_cross(f, up))
+    u = vec3_cross(s, f)
+    neg_f = vec3_negate(f)
+
+    tx = 0 - vec3_dot(s, eye)
+    ty = 0 - vec3_dot(u, eye)
+    tz = vec3_dot(neg_f, eye)
+
+    return Mat4Fixed(
+        m00=s.x, m01=u.x, m02=neg_f.x, m03=0,
+        m10=s.y, m11=u.y, m12=neg_f.y, m13=0,
+        m20=s.z, m21=u.z, m22=neg_f.z, m23=0,
+        m30=tx, m31=ty, m32=tz, m33=1000
+    )
+}
+
+fn mat4_perspective(
+    fov_milliradians: Integer,
+    aspect_milli: Integer,
+    near_milli: Integer,
+    far_milli: Integer
+) -> Mat4Fixed {
+    // tan(fov/2) approximation: for fov ~ 1047 millirad (~60 deg), tan ~ 577 milli
+    // Using small-angle/lookup: tan(fov_milli/2000) * 1000
+    half_fov = fov_milliradians / 2
+    // Polynomial approx of tan for range 0-800 millirad: t + t^3/3000
+    tan_milli = half_fov + half_fov * half_fov * half_fov / 3000000
+    if tan_milli <= 0 {
+        tan_milli = 1
+    }
+
+    f_milli = 1000000 / tan_milli
+    range_inv = 1000000 / (near_milli - far_milli)
+
+    a = f_milli * 1000 / aspect_milli
+    b = f_milli
+    c = (far_milli + near_milli) * range_inv / 1000
+    d = 2 * far_milli * near_milli * range_inv / 1000000
+
+    return Mat4Fixed(
+        m00=a, m01=0, m02=0, m03=0,
+        m10=0, m11=b, m12=0, m13=0,
+        m20=0, m21=0, m22=c, m23=0 - 1000,
+        m30=0, m31=0, m32=d, m33=0
+    )
+}
+
+fn mat4_multiply(a: Mat4Fixed, b: Mat4Fixed) -> Mat4Fixed {
+    return Mat4Fixed(
+        m00=(a.m00 * b.m00 + a.m10 * b.m01 + a.m20 * b.m02 + a.m30 * b.m03) / 1000,
+        m01=(a.m01 * b.m00 + a.m11 * b.m01 + a.m21 * b.m02 + a.m31 * b.m03) / 1000,
+        m02=(a.m02 * b.m00 + a.m12 * b.m01 + a.m22 * b.m02 + a.m32 * b.m03) / 1000,
+        m03=(a.m03 * b.m00 + a.m13 * b.m01 + a.m23 * b.m02 + a.m33 * b.m03) / 1000,
+        m10=(a.m00 * b.m10 + a.m10 * b.m11 + a.m20 * b.m12 + a.m30 * b.m13) / 1000,
+        m11=(a.m01 * b.m10 + a.m11 * b.m11 + a.m21 * b.m12 + a.m31 * b.m13) / 1000,
+        m12=(a.m02 * b.m10 + a.m12 * b.m11 + a.m22 * b.m12 + a.m32 * b.m13) / 1000,
+        m13=(a.m03 * b.m10 + a.m13 * b.m11 + a.m23 * b.m12 + a.m33 * b.m13) / 1000,
+        m20=(a.m00 * b.m20 + a.m10 * b.m21 + a.m20 * b.m22 + a.m30 * b.m23) / 1000,
+        m21=(a.m01 * b.m20 + a.m11 * b.m21 + a.m21 * b.m22 + a.m31 * b.m23) / 1000,
+        m22=(a.m02 * b.m20 + a.m12 * b.m21 + a.m22 * b.m22 + a.m32 * b.m23) / 1000,
+        m23=(a.m03 * b.m20 + a.m13 * b.m21 + a.m23 * b.m22 + a.m33 * b.m23) / 1000,
+        m30=(a.m00 * b.m30 + a.m10 * b.m31 + a.m20 * b.m32 + a.m30 * b.m33) / 1000,
+        m31=(a.m01 * b.m30 + a.m11 * b.m31 + a.m21 * b.m32 + a.m31 * b.m33) / 1000,
+        m32=(a.m02 * b.m30 + a.m12 * b.m31 + a.m22 * b.m32 + a.m32 * b.m33) / 1000,
+        m33=(a.m03 * b.m30 + a.m13 * b.m31 + a.m23 * b.m32 + a.m33 * b.m33) / 1000
+    )
+}
+
+fn mat4_transform_point(m: Mat4Fixed, p: Vec3Fixed) -> Vec3Fixed {
+    w = (m.m03 * p.x + m.m13 * p.y + m.m23 * p.z + m.m33 * 1000) / 1000
+    if w == 0 {
+        w = 1
+    }
+    return Vec3Fixed(
+        x=(m.m00 * p.x + m.m10 * p.y + m.m20 * p.z + m.m30 * 1000) / w,
+        y=(m.m01 * p.x + m.m11 * p.y + m.m21 * p.z + m.m31 * 1000) / w,
+        z=(m.m02 * p.x + m.m12 * p.y + m.m22 * p.z + m.m32 * 1000) / w
+    )
+}
+
+fn mat4_translation(x: Integer, y: Integer, z: Integer) -> Mat4Fixed {
+    return Mat4Fixed(
+        m00=1000, m01=0, m02=0, m03=0,
+        m10=0, m11=1000, m12=0, m13=0,
+        m20=0, m21=0, m22=1000, m23=0,
+        m30=x, m31=y, m32=z, m33=1000
+    )
+}

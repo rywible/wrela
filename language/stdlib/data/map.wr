@@ -1,0 +1,22 @@
+//
+// Map helpers backed by literal map values (`{}`).
+
+fn create_map() -> Any {
+    return {}
+
+
+}
+fn get(items: Any, key: Any) -> Any {
+    return items.get(key)
+
+
+}
+fn get_length(items: Any) -> Integer {
+    return items.len()
+
+
+}
+fn set(items: Any, key: Any, value: Any) -> Nothing {
+    items.set(key, value)
+    return nothing
+}

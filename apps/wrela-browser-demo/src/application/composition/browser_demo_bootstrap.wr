@@ -1,0 +1,76 @@
+use {
+    DemoRuntime,
+    create_demo_runtime_after_step,
+    create_default_demo_runtime,
+    create_demo_input
+}
+from domain/browser_demo_game
+
+use {
+    create_restarted_demo_runtime,
+    create_runtime_after_steps,
+    create_victory_demo_runtime
+}
+from application/browser_demo_orchestrator
+
+use {
+    compute_banner_pulse,
+    create_demo_hud,
+    create_demo_scene
+}
+from presentation/browser_demo_surface
+
+use map_scene_to_status from frontend/integrations/browser_input_adapter
+
+fn check_movement(before_state: DemoRuntime, after_state: DemoRuntime) -> Boolean {
+    if before_state.player_x != after_state.player_x {
+        return true
+    }
+    if before_state.player_y != after_state.player_y {
+        return true
+    }
+    return false
+}
+
+fn run_browser_demo_bootstrap() -> Integer {
+    initial_runtime = create_default_demo_runtime()
+    moved_runtime = create_demo_runtime_after_step(
+        runtime=initial_runtime,
+        input_event=create_demo_input(axis_x=1, axis_y=0, is_restart_pressed=false)
+    )
+
+    victory_runtime = create_victory_demo_runtime(runtime=initial_runtime)
+    restarted_runtime = create_restarted_demo_runtime(runtime=victory_runtime)
+    stable_runtime = create_runtime_after_steps(runtime=restarted_runtime, axis_x=0, axis_y=0, steps_remaining=1)
+
+    victory_scene = create_demo_scene(runtime=victory_runtime)
+    restart_scene = create_demo_scene(runtime=stable_runtime)
+    hud = create_demo_hud(runtime=victory_runtime)
+    pulse = compute_banner_pulse(tick=victory_runtime.tick)
+
+    mutable checklist = 0
+    if check_movement(before_state=initial_runtime, after_state=moved_runtime) {
+        checklist = checklist + 1
+    }
+    if victory_runtime.score >= 3 {
+        checklist = checklist + 1
+    }
+    if victory_runtime.victory_state {
+        checklist = checklist + 1
+    }
+    if restarted_runtime.restart_count == 1 {
+        if restarted_runtime.score == 0 {
+            if restarted_runtime.victory_state == false {
+                checklist = checklist + 1
+            }
+        }
+    }
+    if map_scene_to_status(victory_scene) == "victory" {
+        checklist = checklist + 1
+    }
+    if restart_scene.status_code == "running" {
+        checklist = checklist + 1
+    }
+
+    return checklist + hud.score + pulse
+}

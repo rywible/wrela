@@ -1,0 +1,745 @@
+use crate::hir::arena::Idx;
+use crate::hir::{BinaryOp, Body, Expr, Function, FunctionKind, Literal, Module, Stmt, UnaryOp};
+use smol_str::SmolStr;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CheckIrModule {
+    pub checks: Vec<CheckIrFunction>,
+    pub skipped: Vec<SkippedCheck>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkippedCheck {
+    pub name: SmolStr,
+    pub reason: SmolStr,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CheckIrFunction {
+    pub name: SmolStr,
+    pub params: Vec<SmolStr>,
+    pub dag: DecisionDag,
+    pub ops_used: BTreeSet<CheckBinaryOp>,
+    pub shape_id: u64,
+    pub supports_vector_lane: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DecisionDag {
+    pub nodes: Vec<DecisionNode>,
+    pub root: NodeId,
+}
+
+pub type NodeId = usize;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum DecisionNode {
+    Const(CheckValue),
+    Param(usize),
+    Unary {
+        op: CheckUnaryOp,
+        input: NodeId,
+    },
+    Binary {
+        op: CheckBinaryOp,
+        lhs: NodeId,
+        rhs: NodeId,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckUnaryOp {
+    Not,
+    Neg,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum CheckBinaryOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Eq,
+    Ne,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+    And,
+    Or,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum CheckValue {
+    Integer(i64),
+    Float(f64),
+    Boolean(bool),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckDagShapeFamily {
+    Generic,
+    ParamCmpConst,
+    ParamCmpParam,
+    AndOrCmpPair,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CachedExecutionPath {
+    Scalar,
+    Specialized(CheckDagShapeFamily),
+    VectorLaneStub(CheckDagShapeFamily),
+}
+
+pub type FallbackReasonCounts = BTreeMap<String, usize>;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BatchPlan {
+    pub shape_id: u64,
+    pub lane_width: usize,
+    pub supports_vector_lane: bool,
+    pub cached_execution_path: CachedExecutionPath,
+    pub fallback_reason_counts: FallbackReasonCounts,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BatchEvalResult {
+    pub lane_width: usize,
+    pub values: Vec<Option<bool>>,
+    pub fallback_reason_counts: FallbackReasonCounts,
+    pub cached_execution_path: CachedExecutionPath,
+}
+
+pub fn extract_module(module: &Module) -> CheckIrModule {
+    let mut class_by_method = HashMap::new();
+    for (_class_idx, class) in module.classes.iter() {
+        for method_id in &class.methods {
+            class_by_method.insert(method_id.into_raw(), class.name.clone());
+        }
+    }
+
+    let mut checks = Vec::new();
+    let mut skipped = Vec::new();
+
+    for (func_idx, func) in module.functions.iter() {
+        let is_legacy_check = matches!(func.kind, FunctionKind::Check | FunctionKind::CheckMethod);
+        let is_boolean_fn = matches!(func.kind, FunctionKind::Function | FunctionKind::Method)
+            && returns_boolean(func);
+        if !is_legacy_check && !is_boolean_fn {
+            continue;
+        }
+
+        let name = if matches!(func.kind, FunctionKind::CheckMethod | FunctionKind::Method) {
+            if let Some(class_name) = class_by_method.get(&func_idx.into_raw()) {
+                SmolStr::new(format!("{}.{}", class_name, func.name))
+            } else {
+                func.name.clone()
+            }
+        } else {
+            func.name.clone()
+        };
+
+        let Some(body) = &func.body else {
+            skipped.push(SkippedCheck {
+                name,
+                reason: SmolStr::new("missing body"),
+            });
+            continue;
+        };
+        let Some(ret_expr) = find_direct_return_expr(body) else {
+            skipped.push(SkippedCheck {
+                name,
+                reason: SmolStr::new("no direct return expression"),
+            });
+            continue;
+        };
+
+        let mut builder = DagBuilder::new(body, &func.params);
+        let Some(root) = builder.lower_expr(ret_expr) else {
+            skipped.push(SkippedCheck {
+                name,
+                reason: SmolStr::new("unsupported check expression"),
+            });
+            continue;
+        };
+
+        let dag = DecisionDag {
+            nodes: builder.nodes,
+            root,
+        };
+        let canonical_signature = dag.canonical_signature();
+        let shape_id = stable_hash64(canonical_signature.as_bytes());
+        let supports_vector_lane = supports_vector_lane(&dag, &builder.ops_used);
+
+        checks.push(CheckIrFunction {
+            name,
+            params: func.params.iter().map(|p| p.name.clone()).collect(),
+            dag,
+            ops_used: builder.ops_used,
+            shape_id,
+            supports_vector_lane,
+        });
+    }
+
+    CheckIrModule { checks, skipped }
+}
+
+fn find_direct_return_expr(body: &Body) -> Option<Idx<Expr>> {
+    for stmt_id in &body.root_stmts {
+        if let Stmt::Return(Some(expr)) = &body.stmts[*stmt_id] {
+            return Some(*expr);
+        }
+    }
+    None
+}
+
+fn returns_boolean(func: &Function) -> bool {
+    func.ret_type
+        .as_ref()
+        .map(|ty| ty.name.as_str() == "Boolean" && ty.args.is_empty())
+        .unwrap_or(false)
+}
+
+impl CheckIrFunction {
+    pub fn eval_scalar_bool(&self, args: &[CheckValue]) -> Option<bool> {
+        self.dag.eval_bool(args)
+    }
+
+    pub fn build_batch_plan(&self, lane_width: usize) -> BatchPlan {
+        let family = crate::backend::cranelift::classify_check_shape_family(self);
+        let cached_execution_path = if self.supports_vector_lane {
+            CachedExecutionPath::VectorLaneStub(family)
+        } else if !matches!(family, CheckDagShapeFamily::Generic) {
+            CachedExecutionPath::Specialized(family)
+        } else {
+            CachedExecutionPath::Scalar
+        };
+        BatchPlan {
+            shape_id: self.shape_id,
+            lane_width: lane_width.max(1),
+            supports_vector_lane: self.supports_vector_lane,
+            cached_execution_path,
+            fallback_reason_counts: BTreeMap::new(),
+        }
+    }
+
+    pub fn eval_batch_with_plan(
+        &self,
+        rows: &[Vec<CheckValue>],
+        plan: &mut BatchPlan,
+    ) -> BatchEvalResult {
+        plan.eval(self, rows)
+    }
+
+    pub fn eval_batch_bool(&self, rows: &[Vec<CheckValue>]) -> BatchEvalResult {
+        let mut plan = self.build_batch_plan(8);
+        plan.eval(self, rows)
+    }
+}
+
+impl BatchPlan {
+    pub fn eval(&mut self, func: &CheckIrFunction, rows: &[Vec<CheckValue>]) -> BatchEvalResult {
+        let mut local_fallbacks: FallbackReasonCounts = BTreeMap::new();
+        let values = match self.cached_execution_path {
+            CachedExecutionPath::VectorLaneStub(family) => {
+                if let Some(values) = crate::backend::cranelift::dispatch_vector_lane_stub(
+                    func,
+                    rows,
+                    family,
+                    self.lane_width,
+                ) {
+                    values
+                } else {
+                    bump_fallback(&mut self.fallback_reason_counts, "vector_lane_stub_miss");
+                    bump_fallback(&mut local_fallbacks, "vector_lane_stub_miss");
+                    self.eval_scalar_rows(func, rows, &mut local_fallbacks)
+                }
+            }
+            CachedExecutionPath::Specialized(family) => {
+                let mut out = Vec::with_capacity(rows.len());
+                for row in rows {
+                    if let Some(value) =
+                        crate::backend::cranelift::try_eval_specialized_check_family(
+                            func, row, family,
+                        )
+                    {
+                        out.push(Some(value));
+                        continue;
+                    }
+                    bump_fallback(&mut self.fallback_reason_counts, "specialized_eval_miss");
+                    bump_fallback(&mut local_fallbacks, "specialized_eval_miss");
+                    let scalar = func.eval_scalar_bool(row);
+                    if scalar.is_none() {
+                        bump_fallback(&mut self.fallback_reason_counts, "scalar_eval_none");
+                        bump_fallback(&mut local_fallbacks, "scalar_eval_none");
+                    }
+                    out.push(scalar);
+                }
+                out
+            }
+            CachedExecutionPath::Scalar => self.eval_scalar_rows(func, rows, &mut local_fallbacks),
+        };
+
+        BatchEvalResult {
+            lane_width: self.lane_width,
+            values,
+            fallback_reason_counts: local_fallbacks,
+            cached_execution_path: self.cached_execution_path,
+        }
+    }
+
+    fn eval_scalar_rows(
+        &mut self,
+        func: &CheckIrFunction,
+        rows: &[Vec<CheckValue>],
+        local_fallbacks: &mut FallbackReasonCounts,
+    ) -> Vec<Option<bool>> {
+        if !self.supports_vector_lane {
+            let count = rows.len();
+            if count != 0 {
+                bump_fallback_n(
+                    &mut self.fallback_reason_counts,
+                    "vector_lane_unsupported",
+                    count,
+                );
+                bump_fallback_n(local_fallbacks, "vector_lane_unsupported", count);
+            }
+        }
+
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let scalar = func.eval_scalar_bool(row);
+            if scalar.is_none() {
+                bump_fallback(&mut self.fallback_reason_counts, "scalar_eval_none");
+                bump_fallback(local_fallbacks, "scalar_eval_none");
+            }
+            out.push(scalar);
+        }
+        out
+    }
+}
+
+impl DecisionDag {
+    pub fn eval_bool(&self, args: &[CheckValue]) -> Option<bool> {
+        let value = self.eval_value(args)?;
+        match value {
+            CheckValue::Boolean(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    pub fn eval_value(&self, args: &[CheckValue]) -> Option<CheckValue> {
+        let mut memo = vec![None; self.nodes.len()];
+        self.eval_node(self.root, args, &mut memo)
+    }
+
+    pub fn canonical_signature(&self) -> String {
+        let mut memo: Vec<Option<String>> = vec![None; self.nodes.len()];
+        self.canonical_signature_node(self.root, &mut memo)
+            .unwrap_or_else(|| "invalid".to_string())
+    }
+
+    fn canonical_signature_node(&self, id: NodeId, memo: &mut [Option<String>]) -> Option<String> {
+        if let Some(sig) = memo.get(id).cloned().flatten() {
+            return Some(sig);
+        }
+
+        let node = self.nodes.get(id)?;
+        let signature = match node {
+            DecisionNode::Const(value) => canonical_value(value),
+            DecisionNode::Param(idx) => format!("p{idx}"),
+            DecisionNode::Unary { op, input } => {
+                let input = self.canonical_signature_node(*input, memo)?;
+                format!("({}{})", canonical_unary(*op), input)
+            }
+            DecisionNode::Binary { op, lhs, rhs } => {
+                let mut lhs = self.canonical_signature_node(*lhs, memo)?;
+                let mut rhs = self.canonical_signature_node(*rhs, memo)?;
+                if is_commutative(*op) && rhs < lhs {
+                    std::mem::swap(&mut lhs, &mut rhs);
+                }
+                format!("({} {} {})", canonical_binary(*op), lhs, rhs)
+            }
+        };
+
+        if let Some(slot) = memo.get_mut(id) {
+            *slot = Some(signature.clone());
+        }
+        Some(signature)
+    }
+
+    fn eval_node(
+        &self,
+        id: NodeId,
+        args: &[CheckValue],
+        memo: &mut [Option<CheckValue>],
+    ) -> Option<CheckValue> {
+        if let Some(value) = memo.get(id).cloned().flatten() {
+            return Some(value);
+        }
+
+        let node = self.nodes.get(id)?;
+        let value = match node {
+            DecisionNode::Const(value) => value.clone(),
+            DecisionNode::Param(idx) => args.get(*idx)?.clone(),
+            DecisionNode::Unary { op, input } => {
+                let input = self.eval_node(*input, args, memo)?;
+                eval_unary(*op, input)?
+            }
+            DecisionNode::Binary { op, lhs, rhs } => {
+                let lhs = self.eval_node(*lhs, args, memo)?;
+                let rhs = self.eval_node(*rhs, args, memo)?;
+                eval_binary(*op, lhs, rhs)?
+            }
+        };
+
+        if let Some(slot) = memo.get_mut(id) {
+            *slot = Some(value.clone());
+        }
+        Some(value)
+    }
+}
+
+fn supports_vector_lane(dag: &DecisionDag, ops_used: &BTreeSet<CheckBinaryOp>) -> bool {
+    if ops_used.contains(&CheckBinaryOp::Div) || ops_used.contains(&CheckBinaryOp::Mod) {
+        return false;
+    }
+    for node in &dag.nodes {
+        match node {
+            DecisionNode::Const(CheckValue::Float(_)) => return false,
+            DecisionNode::Unary {
+                op: CheckUnaryOp::Neg,
+                ..
+            } => return false,
+            _ => {}
+        }
+    }
+    true
+}
+
+fn bump_fallback(map: &mut FallbackReasonCounts, key: &str) {
+    bump_fallback_n(map, key, 1);
+}
+
+fn bump_fallback_n(map: &mut FallbackReasonCounts, key: &str, amount: usize) {
+    if amount == 0 {
+        return;
+    }
+    let entry = map.entry(key.to_string()).or_insert(0);
+    *entry += amount;
+}
+
+fn is_commutative(op: CheckBinaryOp) -> bool {
+    matches!(
+        op,
+        CheckBinaryOp::Add
+            | CheckBinaryOp::Mul
+            | CheckBinaryOp::Eq
+            | CheckBinaryOp::Ne
+            | CheckBinaryOp::And
+            | CheckBinaryOp::Or
+    )
+}
+
+fn canonical_unary(op: CheckUnaryOp) -> &'static str {
+    match op {
+        CheckUnaryOp::Not => "not ",
+        CheckUnaryOp::Neg => "neg ",
+    }
+}
+
+fn canonical_binary(op: CheckBinaryOp) -> &'static str {
+    match op {
+        CheckBinaryOp::Add => "+",
+        CheckBinaryOp::Sub => "-",
+        CheckBinaryOp::Mul => "*",
+        CheckBinaryOp::Div => "/",
+        CheckBinaryOp::Mod => "%",
+        CheckBinaryOp::Eq => "==",
+        CheckBinaryOp::Ne => "!=",
+        CheckBinaryOp::Lt => "<",
+        CheckBinaryOp::Gt => ">",
+        CheckBinaryOp::Le => "<=",
+        CheckBinaryOp::Ge => ">=",
+        CheckBinaryOp::And => "&&",
+        CheckBinaryOp::Or => "||",
+    }
+}
+
+fn canonical_value(value: &CheckValue) -> String {
+    match value {
+        CheckValue::Integer(value) => format!("i:{value}"),
+        CheckValue::Float(value) => format!("f:{:016x}", value.to_bits()),
+        CheckValue::Boolean(value) => format!("b:{}", if *value { 1 } else { 0 }),
+    }
+}
+
+fn stable_hash64(data: &[u8]) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x1000_0000_01b3;
+
+    let mut hash = FNV_OFFSET;
+    for byte in data {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+fn eval_unary(op: CheckUnaryOp, input: CheckValue) -> Option<CheckValue> {
+    match (op, input) {
+        (CheckUnaryOp::Not, CheckValue::Boolean(value)) => Some(CheckValue::Boolean(!value)),
+        (CheckUnaryOp::Neg, CheckValue::Integer(value)) => Some(CheckValue::Integer(-value)),
+        (CheckUnaryOp::Neg, CheckValue::Float(value)) => Some(CheckValue::Float(-value)),
+        _ => None,
+    }
+}
+
+fn eval_binary(op: CheckBinaryOp, lhs: CheckValue, rhs: CheckValue) -> Option<CheckValue> {
+    match (op, lhs, rhs) {
+        (CheckBinaryOp::Add, CheckValue::Integer(lhs), CheckValue::Integer(rhs)) => {
+            Some(CheckValue::Integer(lhs + rhs))
+        }
+        (CheckBinaryOp::Sub, CheckValue::Integer(lhs), CheckValue::Integer(rhs)) => {
+            Some(CheckValue::Integer(lhs - rhs))
+        }
+        (CheckBinaryOp::Mul, CheckValue::Integer(lhs), CheckValue::Integer(rhs)) => {
+            Some(CheckValue::Integer(lhs * rhs))
+        }
+        (CheckBinaryOp::Div, CheckValue::Integer(lhs), CheckValue::Integer(rhs)) => {
+            if rhs == 0 {
+                None
+            } else {
+                Some(CheckValue::Integer(lhs / rhs))
+            }
+        }
+        (CheckBinaryOp::Mod, CheckValue::Integer(lhs), CheckValue::Integer(rhs)) => {
+            if rhs == 0 {
+                None
+            } else {
+                Some(CheckValue::Integer(lhs % rhs))
+            }
+        }
+        (CheckBinaryOp::Eq, CheckValue::Integer(lhs), CheckValue::Integer(rhs)) => {
+            Some(CheckValue::Boolean(lhs == rhs))
+        }
+        (CheckBinaryOp::Ne, CheckValue::Integer(lhs), CheckValue::Integer(rhs)) => {
+            Some(CheckValue::Boolean(lhs != rhs))
+        }
+        (CheckBinaryOp::Lt, CheckValue::Integer(lhs), CheckValue::Integer(rhs)) => {
+            Some(CheckValue::Boolean(lhs < rhs))
+        }
+        (CheckBinaryOp::Gt, CheckValue::Integer(lhs), CheckValue::Integer(rhs)) => {
+            Some(CheckValue::Boolean(lhs > rhs))
+        }
+        (CheckBinaryOp::Le, CheckValue::Integer(lhs), CheckValue::Integer(rhs)) => {
+            Some(CheckValue::Boolean(lhs <= rhs))
+        }
+        (CheckBinaryOp::Ge, CheckValue::Integer(lhs), CheckValue::Integer(rhs)) => {
+            Some(CheckValue::Boolean(lhs >= rhs))
+        }
+        (CheckBinaryOp::And, CheckValue::Boolean(lhs), CheckValue::Boolean(rhs)) => {
+            Some(CheckValue::Boolean(lhs && rhs))
+        }
+        (CheckBinaryOp::Or, CheckValue::Boolean(lhs), CheckValue::Boolean(rhs)) => {
+            Some(CheckValue::Boolean(lhs || rhs))
+        }
+        (CheckBinaryOp::Eq, CheckValue::Boolean(lhs), CheckValue::Boolean(rhs)) => {
+            Some(CheckValue::Boolean(lhs == rhs))
+        }
+        (CheckBinaryOp::Ne, CheckValue::Boolean(lhs), CheckValue::Boolean(rhs)) => {
+            Some(CheckValue::Boolean(lhs != rhs))
+        }
+        _ => None,
+    }
+}
+
+struct DagBuilder<'a> {
+    body: &'a Body,
+    params: HashMap<SmolStr, usize>,
+    nodes: Vec<DecisionNode>,
+    ops_used: BTreeSet<CheckBinaryOp>,
+}
+
+impl<'a> DagBuilder<'a> {
+    fn new(body: &'a Body, params: &[crate::hir::Param]) -> Self {
+        let mut param_map = HashMap::new();
+        for (idx, param) in params.iter().enumerate() {
+            param_map.insert(param.name.clone(), idx);
+        }
+        Self {
+            body,
+            params: param_map,
+            nodes: Vec::new(),
+            ops_used: BTreeSet::new(),
+        }
+    }
+
+    fn alloc(&mut self, node: DecisionNode) -> NodeId {
+        let id = self.nodes.len();
+        self.nodes.push(node);
+        id
+    }
+
+    fn lower_expr(&mut self, expr_id: Idx<Expr>) -> Option<NodeId> {
+        let expr = &self.body.exprs[expr_id];
+        match expr {
+            Expr::Literal(lit) => {
+                let value = match lit {
+                    Literal::Integer(value) => CheckValue::Integer(*value),
+                    Literal::Float(value) => CheckValue::Float(*value),
+                    Literal::Boolean(value) => CheckValue::Boolean(*value),
+                    _ => return None,
+                };
+                Some(self.alloc(DecisionNode::Const(value)))
+            }
+            Expr::Variable(name) => {
+                let idx = *self.params.get(name)?;
+                Some(self.alloc(DecisionNode::Param(idx)))
+            }
+            Expr::Unary { op, expr, .. } => {
+                let op = match op {
+                    UnaryOp::Not => CheckUnaryOp::Not,
+                    UnaryOp::Neg => CheckUnaryOp::Neg,
+                    _ => return None,
+                };
+                let input = self.lower_expr(*expr)?;
+                Some(self.alloc(DecisionNode::Unary { op, input }))
+            }
+            Expr::Binary { lhs, op, rhs, .. } => {
+                let op = match op {
+                    BinaryOp::Add => CheckBinaryOp::Add,
+                    BinaryOp::Sub => CheckBinaryOp::Sub,
+                    BinaryOp::Mul => CheckBinaryOp::Mul,
+                    BinaryOp::Div => CheckBinaryOp::Div,
+                    BinaryOp::Mod => CheckBinaryOp::Mod,
+                    BinaryOp::Eq => CheckBinaryOp::Eq,
+                    BinaryOp::Ne => CheckBinaryOp::Ne,
+                    BinaryOp::Lt => CheckBinaryOp::Lt,
+                    BinaryOp::Gt => CheckBinaryOp::Gt,
+                    BinaryOp::Le => CheckBinaryOp::Le,
+                    BinaryOp::Ge => CheckBinaryOp::Ge,
+                    BinaryOp::And => CheckBinaryOp::And,
+                    BinaryOp::Or => CheckBinaryOp::Or,
+                    _ => return None,
+                };
+                self.ops_used.insert(op);
+                let lhs = self.lower_expr(*lhs)?;
+                let rhs = self.lower_expr(*rhs)?;
+                Some(self.alloc(DecisionNode::Binary { op, lhs, rhs }))
+            }
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn eq_param_const_dag(param_idx: usize, constant: i64) -> DecisionDag {
+        DecisionDag {
+            nodes: vec![
+                DecisionNode::Param(param_idx),
+                DecisionNode::Const(CheckValue::Integer(constant)),
+                DecisionNode::Binary {
+                    op: CheckBinaryOp::Eq,
+                    lhs: 0,
+                    rhs: 1,
+                },
+            ],
+            root: 2,
+        }
+    }
+
+    #[test]
+    fn canonical_signature_is_stable_for_commutative_forms() {
+        let lhs_first = DecisionDag {
+            nodes: vec![
+                DecisionNode::Param(0),
+                DecisionNode::Const(CheckValue::Integer(7)),
+                DecisionNode::Binary {
+                    op: CheckBinaryOp::Eq,
+                    lhs: 0,
+                    rhs: 1,
+                },
+            ],
+            root: 2,
+        };
+        let rhs_first = DecisionDag {
+            nodes: vec![
+                DecisionNode::Param(0),
+                DecisionNode::Const(CheckValue::Integer(7)),
+                DecisionNode::Binary {
+                    op: CheckBinaryOp::Eq,
+                    lhs: 1,
+                    rhs: 0,
+                },
+            ],
+            root: 2,
+        };
+        assert_eq!(
+            lhs_first.canonical_signature(),
+            rhs_first.canonical_signature()
+        );
+    }
+
+    #[test]
+    fn eval_batch_with_scalar_path_tracks_fallback_counts() {
+        let function = CheckIrFunction {
+            name: SmolStr::new("check_gate"),
+            params: vec![SmolStr::new("input")],
+            dag: eq_param_const_dag(0, 7),
+            ops_used: [CheckBinaryOp::Eq].into_iter().collect(),
+            shape_id: stable_hash64(b"shape"),
+            supports_vector_lane: false,
+        };
+        let mut plan = function.build_batch_plan(0);
+        plan.cached_execution_path = CachedExecutionPath::Scalar;
+
+        let rows = vec![
+            vec![CheckValue::Integer(7)],
+            vec![CheckValue::Integer(5)],
+            vec![CheckValue::Boolean(true)],
+        ];
+        let result = function.eval_batch_with_plan(&rows, &mut plan);
+        assert_eq!(plan.lane_width, 1);
+        assert_eq!(result.lane_width, 1);
+        assert_eq!(
+            result.values,
+            vec![Some(true), Some(false), None],
+            "expected scalar fallback evaluation output"
+        );
+        assert_eq!(
+            result
+                .fallback_reason_counts
+                .get("vector_lane_unsupported")
+                .copied(),
+            Some(rows.len())
+        );
+        assert_eq!(
+            result
+                .fallback_reason_counts
+                .get("scalar_eval_none")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            plan.fallback_reason_counts
+                .get("vector_lane_unsupported")
+                .copied(),
+            Some(rows.len())
+        );
+    }
+
+    #[test]
+    fn stable_hash64_is_deterministic() {
+        let first = stable_hash64(b"checkir-shape");
+        let second = stable_hash64(b"checkir-shape");
+        let different = stable_hash64(b"checkir-shape-2");
+        assert_eq!(first, second);
+        assert_ne!(first, different);
+    }
+}

@@ -1,0 +1,5 @@
+use run_forest_bootstrap from application/forest_bootstrap
+
+fn run() -> Integer {
+    return run_forest_bootstrap()
+}

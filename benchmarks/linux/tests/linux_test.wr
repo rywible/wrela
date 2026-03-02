@@ -1,0 +1,89 @@
+fn compute_checksum_mix(current: Integer, value: Integer) -> Integer {
+    return (current * 41) + value
+}
+
+fn normalize_timer_timeout_milliseconds(requested_timeout_milliseconds: Integer) -> Integer {
+    if requested_timeout_milliseconds < 0 {
+        return 0
+    }
+    return requested_timeout_milliseconds
+}
+
+fn normalize_shard_count(requested_shard_count: Integer, is_deterministic_mode: Boolean) -> Integer {
+    if requested_shard_count <= 0 {
+        return 1
+    }
+    if is_deterministic_mode and requested_shard_count > 8 {
+        return 8
+    }
+    return requested_shard_count
+}
+
+fn choose_next_shard(pool_identifier: Integer, shard_count: Integer, is_deterministic_mode: Boolean) -> Integer {
+    if shard_count <= 1 {
+        return 0
+    }
+    if is_deterministic_mode {
+        return pool_identifier % shard_count
+    }
+    return ((pool_identifier * 13) + 5) % shard_count
+}
+
+fn test_reactor_timer_fanout_latency_ops_500000() -> Nothing {
+    mutable checksum = 0
+    mutable registered_tokens = 0
+    for i in 1...500000 {
+        token = (i % 64) + 1
+        registered_tokens += token % 3
+        timeout_milliseconds = normalize_timer_timeout_milliseconds(requested_timeout_milliseconds=i % 2)
+        registered_tokens -= token % 2
+        checksum = compute_checksum_mix(
+            current=checksum,
+            value=token + timeout_milliseconds + registered_tokens
+        )
+    }
+    assert value checksum != 0
+}
+
+fn test_reactor_backend_selection_overhead_ops_500000() -> Nothing {
+    mutable checksum = 0
+    for i in 1...500000 {
+        backend_score = (i % 2) + ((i % 5) * 3)
+        token = (i % 7) + 1
+        checksum = compute_checksum_mix(current=checksum, value=backend_score + token)
+    }
+    assert value checksum != 0
+}
+
+fn test_mailbox_empty_spin_throughput_tradeoff_ops_1500000() -> Nothing {
+    mutable checksum = 0
+    for i in 1...1500000 {
+        shard_count = normalize_shard_count(requested_shard_count=16, is_deterministic_mode=false)
+        shard_id = choose_next_shard(
+            pool_identifier=i,
+            shard_count=shard_count,
+            is_deterministic_mode=false
+        )
+        checksum = compute_checksum_mix(current=checksum, value=shard_id)
+    }
+    assert value checksum != 0
+}
+
+fn test_sched_shards_scaling_ops_2000000() -> Nothing {
+    mutable checksum = 0
+    for i in 1...2000000 {
+        shard_count = normalize_shard_count(
+            requested_shard_count=(i % 32) + 1,
+            is_deterministic_mode=false
+        )
+        deterministic_shards = normalize_shard_count(
+            requested_shard_count=(i % 32) + 1,
+            is_deterministic_mode=true
+        )
+        checksum = compute_checksum_mix(
+            current=checksum,
+            value=shard_count - deterministic_shards
+        )
+    }
+    assert value checksum != 0
+}

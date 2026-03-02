@@ -1,0 +1,74 @@
+//
+// Reactor primitive wrappers.
+// Keep this layer mechanism-oriented and explicit.
+
+
+fn reactor_at_least(value: Integer, minimum: Integer) -> Integer {
+    if value < minimum {
+        return minimum
+    }
+    return value
+
+
+}
+// Create a reactor handle.
+fn create_reactor() -> Integer {
+    return __wr_reactor_new()
+
+
+}
+// Drop a reactor handle.
+fn drop_reactor(reactor_handle: Integer) -> Nothing {
+    __wr_reactor_drop(reactor_handle)
+    return nothing
+
+
+}
+// Register a token with a reactor handle.
+fn register_token(reactor_handle: Integer, token: Integer) -> Nothing {
+    __wr_reactor_register(reactor_handle, token)
+    return nothing
+
+
+}
+// Deregister a token from a reactor handle.
+fn deregister_token(reactor_handle: Integer, token: Integer) -> Nothing {
+    __wr_reactor_deregister(reactor_handle, token)
+    return nothing
+
+
+}
+// Arm a timer for a token on the reactor handle.
+fn arm_timer(
+    reactor_handle: Integer,
+    token: Integer,
+    timeout_milliseconds: Integer
+) -> Nothing {
+    __wr_reactor_arm_timer(reactor_handle, token, timeout_milliseconds)
+    return nothing
+
+
+}
+// Resolve reactor timer timeout policy in Wrela.
+fn normalize_timer_timeout_milliseconds(requested_timeout_milliseconds: Integer) -> Integer {
+    return reactor_at_least(value=requested_timeout_milliseconds,minimum=0)
+
+
+}
+//
+// Example flow {
+// }
+// - create reactor
+// - register token
+// - arm timer
+// - deregister token
+// - drop reactor
+fn example_reactor_flow() -> Boolean {
+    reactor_handle = create_reactor()
+    register_token(reactor_handle=reactor_handle,token=101)
+    timeout_milliseconds = normalize_timer_timeout_milliseconds(5)
+    arm_timer(reactor_handle=reactor_handle,token=101,timeout_milliseconds=timeout_milliseconds)
+    deregister_token(reactor_handle=reactor_handle,token=101)
+    drop_reactor(reactor_handle)
+    return true
+}

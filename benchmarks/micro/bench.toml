@@ -1,0 +1,80 @@
+version = 1
+suite = "micro"
+
+[profiles.smoke]
+warmup_pairs = 2
+measure_pairs = 6
+coverage = "critical"
+
+[profiles.standard]
+warmup_pairs = 3
+measure_pairs = 10
+coverage = "all"
+
+[profiles.deep]
+warmup_pairs = 5
+measure_pairs = 18
+coverage = "all"
+
+[[scenarios]]
+id = "typed_integer_loop"
+test_name = "tests/micro::test_typed_integer_loop_ops_20000000"
+ops = 20000000
+class = "critical"
+min_runtime_ms = 1000
+timeout_ms = 120000
+allow_unstable = false
+
+[[scenarios]]
+id = "check_given_boolean_lane"
+test_name = "tests/micro::test_check_given_boolean_lane_ops_12000000"
+ops = 12000000
+class = "critical"
+min_runtime_ms = 1000
+timeout_ms = 120000
+allow_unstable = false
+
+[[scenarios]]
+id = "result_unwrap_fastpath"
+test_name = "tests/micro::test_result_unwrap_fastpath_ops_8000000"
+ops = 8000000
+class = "critical"
+min_runtime_ms = 1000
+timeout_ms = 120000
+allow_unstable = false
+
+[[scenarios]]
+id = "map_mutate_lookup_mix"
+test_name = "tests/micro::test_map_mutate_lookup_mix_ops_6000000"
+ops = 6000000
+class = "critical"
+min_runtime_ms = 800
+timeout_ms = 120000
+allow_unstable = false
+
+[[scenarios]]
+id = "string_concat_interpolation"
+test_name = "tests/micro::test_string_concat_interpolation_ops_5000000"
+ops = 5000000
+class = "informational"
+min_runtime_ms = 800
+timeout_ms = 120000
+allow_unstable = true
+
+[[scenarios]]
+id = "list_append_iterate"
+test_name = "tests/micro::test_list_append_iterate_ops_7000000"
+ops = 7000000
+class = "informational"
+min_runtime_ms = 800
+timeout_ms = 120000
+allow_unstable = true
+
+[[scenarios]]
+id = "class_instance_churn"
+test_name = "tests/micro::test_class_instance_churn_ops_4000000"
+ops = 4000000
+class = "informational"
+min_runtime_ms = 800
+timeout_ms = 120000
+allow_unstable = true

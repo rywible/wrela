@@ -1,0 +1,14 @@
+//
+// HTTP connector helper routed through replay/record cassette engine.
+
+fn try_to_http_call(
+    service: String,
+    endpoint: String,
+    method: String,
+    url: String,
+    headers: Map[String, String],
+    body: String,
+    timeout_ms: Integer
+) -> Result[String] {
+    return __wr_http_call(service=service, endpoint=endpoint, method=method, url=url, headers=headers, body=body, timeout_ms=timeout_ms)
+}

@@ -1,0 +1,39 @@
+fn physics_create_body(entity_id: Integer, collider_type: Integer, mass: Integer, hx: Integer, hy: Integer, hz: Integer) -> Integer {
+    return __wr_physics_create_body(entity_id, collider_type, mass, hx, hy, hz)
+}
+
+fn physics_remove_body(entity_id: Integer) -> Integer {
+    return __wr_physics_remove_body(entity_id)
+}
+
+fn physics_set_velocity(entity_id: Integer, vx: Integer, vy: Integer, vz: Integer) -> Integer {
+    return __wr_physics_set_velocity(entity_id, vx, vy, vz)
+}
+
+fn physics_get_position_x(entity_id: Integer) -> Integer {
+    return __wr_physics_get_position_x(entity_id)
+}
+
+fn physics_get_position_y(entity_id: Integer) -> Integer {
+    return __wr_physics_get_position_y(entity_id)
+}
+
+fn physics_get_position_z(entity_id: Integer) -> Integer {
+    return __wr_physics_get_position_z(entity_id)
+}
+
+fn physics_step(dt_ms: Integer) -> Integer {
+    return __wr_physics_step(dt_ms)
+}
+
+fn physics_query_contacts(entity_id: Integer) -> Integer {
+    return __wr_physics_query_contacts(entity_id)
+}
+
+fn physics_raycast(ox: Integer, oy: Integer, oz: Integer, dx: Integer, dy: Integer, dz: Integer, max_dist: Integer) -> Integer {
+    return __wr_physics_raycast(ox, oy, oz, dx, dy, dz, max_dist)
+}
+
+fn physics_add_breakable_joint(parent_id: Integer, child_id: Integer, threshold: Integer) -> Integer {
+    return __wr_physics_add_breakable_joint(parent_id, child_id, threshold)
+}

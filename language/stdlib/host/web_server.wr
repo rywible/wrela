@@ -1,0 +1,586 @@
+//
+// Wrela-native HTTP server primitives.
+// NOTE: The legacy interactive HTTP transport lane has been retired.
+// Compatibility wrappers remain only to keep compile surfaces stable.
+
+use {
+    get_bytes_from_string,
+    get_list_from_bytes
+}
+from bytes
+
+class HttpListenerConfiguration {
+    mutable bind_address: String = "127.0.0.1:8080"
+    mutable listener_namespace: String = "app"
+    mutable reuse_port_enabled: Boolean = false
+
+}
+class HttpRouteDefinition {
+    mutable method: String = "GET"
+    mutable path: String = "/"
+    mutable required_scope: String = ""
+
+}
+class HttpRequest {
+    mutable method: String = ""
+    mutable path: String = ""
+    mutable headers: Map[Any, Any] = {}
+    mutable body: Any = nothing
+    mutable keep_alive_requested: Boolean = true
+
+}
+class HttpResponse {
+    mutable status_code: Integer = 200
+    mutable reason_phrase: String = ""
+    mutable headers: Map[Any, Any] = {}
+    mutable body: Any = nothing
+    mutable should_close_connection: Boolean = false
+
+}
+class HttpMiddlewarePipeline {
+    mutable middleware_names: List[String] = []
+
+}
+class HttpRequestQueueThresholdConfiguration {
+    mutable authentication_queue_threshold: Integer = 128
+    mutable application_queue_threshold: Integer = 512
+    mutable static_asset_queue_threshold: Integer = 256
+    mutable retry_after_seconds: Integer = 1
+
+
+}
+fn create_http_server_configuration(
+    bind_address: String,
+    listener_namespace: String
+) -> HttpListenerConfiguration {
+    return HttpListenerConfiguration(
+        bind_address=bind_address,
+        listener_namespace=listener_namespace
+    )
+
+
+}
+fn create_http_server_configuration_map(configuration: HttpListenerConfiguration) -> Map[Any, Any] {
+    configuration_items = __wr_map_new()
+    __wr_map_set(map=configuration_items, key="bind_address", value=configuration.bind_address)
+    __wr_map_set(map=configuration_items, key="listener_namespace", value=configuration.listener_namespace)
+    __wr_map_set(map=configuration_items, key="reuse_port_enabled", value=configuration.reuse_port_enabled)
+    return configuration_items
+
+
+}
+fn create_web_interactive_lane_retired_error() -> String {
+    return "host/web_server interactive lane retired: use host/game_transport and pkg/game"
+
+
+}
+// Create a listener for the configured HTTP server namespace.
+fn try_to_create_http_server_listener(configuration: HttpListenerConfiguration) -> Result[Integer] {
+    return error create_web_interactive_lane_retired_error()
+
+
+}
+// Poll for next listener or connection readiness event.
+fn try_to_poll_http_server_event(
+    listener_handle: Integer,
+    timeout_milliseconds: Integer
+) -> Result[Map[Any, Any]] {
+    return error create_web_interactive_lane_retired_error()
+
+
+}
+// Accept a pending TCP connection handle from a listener.
+fn try_to_accept_http_connection(listener_handle: Integer) -> Result[Integer] {
+    return error create_web_interactive_lane_retired_error()
+
+
+}
+//
+// Read bytes from a connection handle.
+// This is a low-level transport escape hatch.
+fn try_to_read_http_connection_bytes(
+    listener_handle: Integer,
+    connection_handle: Integer,
+    maximum_bytes_to_read: Integer
+) -> Result[Bytes] {
+    return error create_web_interactive_lane_retired_error()
+
+
+}
+//
+// Read a framed HTTP request context from a connection handle.
+fn try_to_read_http_request_context(
+    listener_handle: Integer,
+    connection_handle: Integer
+) -> Result[HttpRequest] {
+    return error create_web_interactive_lane_retired_error()
+
+
+}
+//
+// Write bytes to a connection handle.
+// This is a low-level transport escape hatch.
+fn try_to_write_http_connection_bytes(
+    listener_handle: Integer,
+    connection_handle: Integer,
+    payload: Bytes
+) -> Result[Integer] {
+    return error create_web_interactive_lane_retired_error()
+
+
+}
+//
+// Write a framed HTTP response context to a connection handle.
+fn try_to_write_http_response_frame_items(
+    listener_handle: Integer,
+    connection_handle: Integer,
+    response_frame_items: Map[Any, Any]
+) -> Result[Integer] {
+    return error create_web_interactive_lane_retired_error()
+
+
+}
+//
+// Write a response using pre-rendered head/body buffers with vectored I/O.
+fn try_to_write_http_response_vectored(
+    listener_handle: Integer,
+    connection_handle: Integer,
+    response_head_bytes: Bytes,
+    response_body_bytes: Bytes,
+    is_close_connection: Boolean
+) -> Result[Integer] {
+    return error create_web_interactive_lane_retired_error()
+
+
+}
+//
+// Stream a file response directly from runtime socket/file path.
+fn try_to_send_http_file_response(
+    listener_handle: Integer,
+    connection_handle: Integer,
+    file_path: String,
+    content_type: String,
+    is_close_connection: Boolean
+) -> Result[Integer] {
+    return error create_web_interactive_lane_retired_error()
+
+
+}
+//
+// Configure listener socket options at runtime.
+fn try_to_configure_http_listener_socket(
+    listener_handle: Integer,
+    is_reuse_port_enabled: Boolean
+) -> Result[Integer] {
+    return error create_web_interactive_lane_retired_error()
+
+
+}
+//
+// Write a framed HTTP response context to a connection handle.
+fn try_to_write_http_response_context(
+    listener_handle: Integer,
+    connection_handle: Integer,
+    response_context: HttpResponse
+) -> Result[Integer] {
+    return error create_web_interactive_lane_retired_error()
+
+
+}
+// Close a connection handle.
+fn try_to_close_http_connection(
+    listener_handle: Integer,
+    connection_handle: Integer
+) -> Result[Nothing] {
+    return error create_web_interactive_lane_retired_error()
+
+
+}
+// Close a listener handle.
+fn try_to_close_http_server_listener(listener_handle: Integer) -> Result[Integer] {
+    return error create_web_interactive_lane_retired_error()
+
+
+}
+// Parse request JSON body into a map payload.
+fn try_to_parse_json_request_body(text: String) -> Result[Map[Any, Any]] {
+    return __wr_web_parse_json_text(text)
+
+
+}
+// Render response value as JSON text.
+fn try_to_render_json_response_body(value: Any) -> Result[String] {
+    return __wr_web_render_json_text(value)
+
+
+}
+fn create_http_request_context_from_request_frame_items(
+    request_frame_items: Map[Any, Any]
+) -> HttpRequest {
+    mutable method = ""
+    mutable path = ""
+    mutable headers = {}
+    mutable body = nothing
+    mutable is_keep_alive_requested = true
+
+    method_value = __wr_map_get(map=request_frame_items, key="method")
+    match method_value {
+        String(method_text) {
+            method = method_text
+        }
+        default {
+            method = ""
+
+        }
+    }
+    path_value = __wr_map_get(map=request_frame_items, key="path")
+    match path_value {
+        String(path_text) {
+            path = path_text
+        }
+        default {
+            path = ""
+
+        }
+    }
+    header_items = __wr_map_get(map=request_frame_items, key="headers")
+    if header_items != nothing {
+        headers = header_items
+
+    }
+    keep_alive_requested_value = __wr_map_get(map=request_frame_items, key="keep_alive_requested")
+    if keep_alive_requested_value == true {
+        is_keep_alive_requested = true
+    }
+    if keep_alive_requested_value == false {
+        is_keep_alive_requested = false
+
+    }
+    body_text_value = __wr_map_get(map=request_frame_items, key="body_text")
+    match body_text_value {
+        String(body_text) {
+            body = body_text
+        }
+        default {
+            body_bytes_value = __wr_map_get(map=request_frame_items, key="body_bytes")
+            if body_bytes_value != nothing {
+                body = body_bytes_value
+            }
+            else {
+                body = nothing
+
+            }
+        }
+    }
+    return HttpRequest(
+        method=method,
+        path=path,
+        headers=headers,
+        body=body,
+        keep_alive_requested=is_keep_alive_requested
+    )
+
+
+}
+fn create_http_response_frame_map(response_context: HttpResponse) -> Map[Any, Any] {
+    response_frame_items = __wr_map_new()
+
+    __wr_map_set(map=response_frame_items, key="status_code", value=response_context.status_code)
+    __wr_map_set(map=response_frame_items, key="headers", value=response_context.headers)
+    __wr_map_set(map=response_frame_items, key="should_close_connection", value=response_context.should_close_connection)
+
+    if response_context.reason_phrase != "" {
+        __wr_map_set(map=response_frame_items, key="reason_phrase", value=response_context.reason_phrase)
+
+    }
+    body_value = response_context.body
+    if body_value == nothing {
+        return response_frame_items
+
+    }
+    match body_value {
+        String(body_text) {
+            __wr_map_set(map=response_frame_items, key="body_text", value=body_text)
+        }
+        Bytes(body_bytes) {
+            __wr_map_set(map=response_frame_items, key="body_bytes", value=body_bytes)
+        }
+        default {
+            rendered_body_result = try_to_render_json_response_body(body_value)
+            match rendered_body_result {
+                Ok(rendered_body_text) {
+                    __wr_map_set(map=response_frame_items, key="body_text", value=rendered_body_text)
+                }
+                Err(_) {
+                    __wr_map_set(map=response_frame_items, key="body_text", value="")
+                }
+                default {
+                    __wr_map_set(map=response_frame_items, key="body_text", value="")
+
+                }
+            }
+        }
+    }
+    return response_frame_items
+
+
+}
+fn check_reserved_database_namespace_path(path: String) -> Boolean {
+    if path == "/db" {
+        return true
+    }
+    if path == "/db/" {
+        return true
+    }
+    if get_namespace_prefix_match_flag(path=path, prefix="/db/") == 1 {
+        return true
+    }
+    return false
+
+
+}
+fn get_namespace_prefix_match_flag(path: String, prefix: String) -> Integer {
+    path_bytes = get_list_from_bytes(get_bytes_from_string(path))
+    prefix_bytes = get_list_from_bytes(get_bytes_from_string(prefix))
+
+    mutable prefix_length = 0
+    for path_prefix_byte in prefix_bytes {
+        prefix_length = prefix_length + 1
+
+    }
+    mutable path_length = 0
+    for path_byte in path_bytes {
+        path_length = path_length + 1
+
+    }
+    if path_length < prefix_length {
+        return 0
+
+    }
+    mutable prefix_index = 0
+    for prefix_byte in prefix_bytes {
+        mutable path_index = 0
+        mutable has_matched_prefix_byte = false
+        for path_byte in path_bytes {
+            if path_index == prefix_index and path_byte != prefix_byte {
+                return 0
+            }
+            if path_index == prefix_index {
+                has_matched_prefix_byte = true
+                break
+            }
+            path_index = path_index + 1
+        }
+        if not has_matched_prefix_byte {
+            return 0
+        }
+        prefix_index = prefix_index + 1
+
+    }
+    return 1
+
+
+}
+//
+// Determine pool size for request worker lanes using runtime pool sizing policy.
+fn compute_http_worker_pool_size(
+    objective: Integer,
+    minimum_size: Integer,
+    maximum_size: Integer,
+    weight: Integer
+) -> Integer {
+    cpu_count = __wr_runtime_cpu_count()
+
+    normalized_objective = normalize_objective(objective)
+    base_size = compute_worker_pool_base_size(normalized_objective=normalized_objective, cpu_count=cpu_count)
+
+    mutable bounded_minimum_size = minimum_size
+    if bounded_minimum_size <= 0 {
+        bounded_minimum_size = 1
+
+    }
+    mutable bounded_maximum_size = maximum_size
+    if bounded_maximum_size <= 0 {
+        bounded_maximum_size = cpu_count
+    }
+    if bounded_maximum_size < bounded_minimum_size {
+        bounded_maximum_size = bounded_minimum_size
+
+    }
+    mutable bounded_weight = weight
+    if bounded_weight <= 0 {
+        bounded_weight = 1
+
+    }
+    weighted_size = base_size * bounded_weight
+    return clamp_integer_with_bounds(value=weighted_size, minimum=bounded_minimum_size, maximum=bounded_maximum_size)
+
+
+}
+fn normalize_objective(objective: Integer) -> Integer {
+    if objective == 0 or objective == 1 or objective == 2 or objective == 3 {
+        return objective
+    }
+    return 3
+
+
+}
+fn compute_worker_pool_base_size(normalized_objective: Integer, cpu_count: Integer) -> Integer {
+    if normalized_objective == 0 {
+        return cpu_count
+    }
+    if normalized_objective == 1 {
+        return cpu_count * 2
+    }
+    if normalized_objective == 2 {
+        half_size = cpu_count / 2
+        if half_size < 1 {
+            return 1
+        }
+        return half_size
+    }
+    return cpu_count
+
+
+}
+fn clamp_integer_with_bounds(value: Integer, minimum: Integer, maximum: Integer) -> Integer {
+    if value < minimum {
+        return minimum
+    }
+    if value > maximum {
+        return maximum
+    }
+    return value
+
+
+}
+fn parse_positive_integer_or_default(text: String, default_value: Integer) -> Integer {
+    text_bytes = get_list_from_bytes(get_bytes_from_string(text))
+    mutable has_digit = false
+    mutable value = 0
+
+    for byte_value in text_bytes {
+        if byte_value < 48 or byte_value > 57 {
+            return default_value
+        }
+        has_digit = true
+        value = value * 10 + (byte_value - 48)
+
+    }
+    if not has_digit {
+        return default_value
+    }
+    if value <= 0 {
+        return default_value
+    }
+    return value
+
+
+}
+fn get_positive_integer_from_environment_or_default(
+    default_value: Integer,
+    environment_key: String
+) -> Integer {
+    if environment_key == "" {
+        return default_value
+    }
+    return default_value
+
+
+}
+//
+// Resolve queue threshold configuration from explicit defaults and environment overrides.
+fn create_http_request_queue_threshold_configuration_from_environment(
+) -> HttpRequestQueueThresholdConfiguration {
+    queue_threshold_configuration = HttpRequestQueueThresholdConfiguration()
+    queue_threshold_configuration.authentication_queue_threshold = get_positive_integer_from_environment_or_default(default_value=queue_threshold_configuration.authentication_queue_threshold, environment_key="WRELA_WEB_AUTHENTICATION_QUEUE_THRESHOLD")
+    queue_threshold_configuration.application_queue_threshold = get_positive_integer_from_environment_or_default(default_value=queue_threshold_configuration.application_queue_threshold, environment_key="WRELA_WEB_APPLICATION_QUEUE_THRESHOLD")
+    queue_threshold_configuration.static_asset_queue_threshold = get_positive_integer_from_environment_or_default(default_value=queue_threshold_configuration.static_asset_queue_threshold, environment_key="WRELA_WEB_STATIC_ASSET_QUEUE_THRESHOLD")
+    queue_threshold_configuration.retry_after_seconds = get_positive_integer_from_environment_or_default(default_value=queue_threshold_configuration.retry_after_seconds, environment_key="WRELA_WEB_RETRY_AFTER_SECONDS")
+    return queue_threshold_configuration
+
+
+}
+//
+// Create a deterministic queue-saturated response context.
+fn create_http_queue_saturated_response_context(
+    retry_after_seconds: Integer
+) -> HttpResponse {
+    response_headers = __wr_map_new()
+    __wr_map_set(map=response_headers, key="Retry-After", value=retry_after_seconds)
+    __wr_map_set(map=response_headers, key="Content-Type", value="application/json")
+
+    response_body_items = __wr_map_new()
+    __wr_map_set(map=response_body_items, key="error", value="queue_saturated")
+    __wr_map_set(map=response_body_items, key="error_description", value="request queue threshold exceeded")
+    __wr_map_set(map=response_body_items, key="retry_after_seconds", value=retry_after_seconds)
+    return HttpResponse(
+        status_code=503,
+        reason_phrase="Service Unavailable",
+        headers=response_headers,
+        body=response_body_items,
+        should_close_connection=false
+    )
+
+
+}
+fn create_http_json_response_context(
+    status_code: Integer,
+    response_body: Any
+) -> HttpResponse {
+    response_headers = __wr_map_new()
+    __wr_map_set(map=response_headers, key="Content-Type", value="application/json")
+    return HttpResponse(status_code=status_code, headers=response_headers, body=response_body)
+
+
+}
+fn create_http_json_error_response_context(
+    status_code: Integer,
+    error_code: String,
+    error_description: String
+) -> HttpResponse {
+    error_body_items = __wr_map_new()
+    __wr_map_set(map=error_body_items, key="error", value=error_code)
+    __wr_map_set(map=error_body_items, key="error_description", value=error_description)
+    return create_http_json_response_context(status_code=status_code, response_body=error_body_items)
+
+
+}
+//
+// Begin a dispatch batch using runtime burst primitives.
+fn begin_request_dispatch_batch(worker_pool_handle: Any) -> Nothing {
+    __wr_actor_fire_burst_begin(worker_pool_handle)
+    return nothing
+
+
+}
+//
+// Flush a dispatch batch using runtime burst primitives.
+fn run_request_dispatch_batch_end(worker_pool_handle: Any) -> Nothing {
+    __wr_actor_fire_burst_end(worker_pool_handle)
+    return nothing
+
+
+}
+//
+// Abort a dispatch batch using runtime burst primitives.
+fn abort_request_dispatch_batch(worker_pool_handle: Any) -> Nothing {
+    __wr_actor_fire_burst_abort(worker_pool_handle)
+    return nothing
+
+
+}
+//
+// Enforce fail-fast backpressure semantics before enqueue.
+fn try_to_enforce_request_backpressure(
+    worker_pool_handle: Any,
+    queue_limit: Integer
+) -> Result[Nothing] {
+    if queue_limit <= 0 {
+        return nothing
+    }
+    if __wr_pool_queue_len(worker_pool_handle) >= queue_limit {
+        return error "http queue saturated: return 503 with retry-after"
+    }
+    return nothing
+}

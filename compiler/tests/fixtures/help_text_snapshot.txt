@@ -1,0 +1,103 @@
+usage: wrela <command> [options] <path> [-- args]
+
+commands:
+init [path]           initialize a new project
+game <subcommand> <path>  game vertical slice commands (init|build|run|dev|check|profile)
+realtime <subcommand> <path>  hard alias for game runtime commands (init|build|run|dev|check|profile)
+mmo <subcommand> <path>  hard alias for realtime runtime commands (init|build|run|dev|check|profile|gateway|zone|world|loadtest|ops)
+frontend <subcommand> <path>  frontend app commands (init|build|check|run|preview|explain|fix)
+studio <subcommand> <path>  frontend app + orchestration commands (init|build|check|run|preview|explain|fix|synth|bake|pack|gate|ship|synth-assets|bake-assets|validate-assets|package-assets|promote-assets|full-factory)
+agent-run <path>      prompt-driven orchestration for game app path
+update                update the installed toolchain
+check <path>          parse and typecheck (no codegen)
+analyze <path>        alias for check (parse and typecheck; no codegen)
+fix <path>            apply safe non-overlapping fixes
+fmt <path>            canonical formatting pass (idempotent)
+build <path>          run certification, then compile executable on success only
+compile <path>        alias for build (also certification-gated)
+verify-cert <path>    verify an emitted cert.json report and hashes
+deploy [path]         generate deploy assets and deploy all-Wrela app (target: fly)
+run <path>            compile and run
+dev <path>            watch and rebuild (polling)
+test [path]           run tests from a project root directory
+eval <kind> <path>    run agent evaluation harnesses (currently: one-shot v2 executable corpus)
+perf [path]           run perf harness and write baseline JSON
+perfcmp [path]        run paired baseline/candidate perf comparison
+matrix [path]         run workspace test/spec/perf matrix and write evidence bundle
+
+options:
+--prefix PATH         install/update prefix (default: $PREFIX or ~/.local/wrela)
+--target=NAME         deploy target (`fly`) or game/realtime build target (`native|wasm|dual`)
+--render=NAME         game/realtime render backend (`webgpu`)
+--host=NAME           game/realtime host mode (`pure-wasm`)
+--client-runtime=MODE game/realtime build/check strict gate: client runtime mode (`compiled`)
+--shader-provenance   game/realtime build/check strict gate: require shader provenance manifests
+--no-shortcuts        game/realtime build/check strict gate: require no-shortcuts manifest gate
+--app=NAME            deploy app name (required for `wrela deploy --target=fly`)
+--region=REGION       deploy primary region (default: $PRIMARY_REGION or ord)
+--machines=N          desired machine count for deploy (default: 3)
+--deploy-policy=PATH  optional deploy policy TOML (defaults to ./wrela.deploy.toml if present)
+--rf=N                replication factor override (default: 3)
+--wq=N                write quorum override (default: 2; majority required)
+--logical-shards=N    initial logical shard count for raft-group sharding (default: 16)
+--active-groups=N     initial active raft group count (default: 3)
+--force               overwrite generated deploy assets (fly.toml/Dockerfile)
+--generate-only       only generate deploy assets; skip provider deploy
+-o, --out PATH        output path for build/run
+--emit-mir            emit MIR before optimization
+--emit-mir-opt        emit MIR after optimization
+--emit-obj=PATH       emit object file
+--emit-bin=PATH       emit executable
+--integration-mode    run/build fixture mode; bypasses strict naming policy for integration executables
+--poll-ms=N           poll interval for dev (default: 500)
+--jobs=N              test runner parallelism (default: 1)
+--test-timeout-ms=N   per-test timeout in milliseconds (default: 10000)
+env: WRELA_BUDGET_*   Budget Policy v1 overrides (autogen/sim/fuzz/mutation + time caps)
+--record              test maintenance mode; updates integration cassettes
+--update-public-surface  test maintenance mode; updates API snapshot baselines
+--list                list discovered tests with stable id/lane metadata
+--id=ID               run/list a single test by stable id
+--filter=PATTERN      run/list tests matching pattern
+--lane=NAME           run/list tests for lane (spec|integration|sim|model|default); valid for test/perf
+--seed=N              schedule seed for sim tests; valid for test/perf
+--benchmark-manifest=PATH  benchmark manifest path (bench.toml)
+--profile=NAME        benchmark profile (smoke|standard|deep)
+--repro PATH          replay a single typed repro artifact (autogen|fuzz)
+--replay-trace PATH   validate a sim/model replay trace artifact
+--perf-debug          dump perf counters after tests
+--runs=N              perf/eval run count (default: 5)
+--baseline-out=PATH   perf baseline JSON output path
+--perf-gate=PATH      compare perf summary against baseline JSON
+--perf-max-regression-pct=N  allowed regression percentage (default: 5)
+--perf-cv-max-pct=N   max coefficient of variation percentage (default: 5)
+--kpi-check-fallback-max=N  max allowed check fallback rate
+--kpi-check-batch-min=N  minimum required average check batch size
+--kpi-scheduler-p99-improve-min-pct=N  min scheduler p99 improvement vs baseline
+--kpi-rewrite-overhead-max-pct=N  max rewrite compile overhead percentage
+--kpi-actor-throughput-improve-min-pct=N  min actor throughput improvement vs baseline
+--kpi-queue-age-p99-max-regress-pct=N  max queue age p99 regression percentage
+--kpi-starvation-violations-max=N  max scheduler starvation violations
+--kpi-scheduler-throughput-improve-min-pct=N  min scheduler throughput improvement vs baseline
+--kpi-scheduler-loop-p99-max-regress-pct=N  max scheduler loop p99 regression percentage
+--kpi-scheduler-local-hit-min=N  minimum local dispatch hit ratio
+--intent-v2           required hard-cut intent schema selector for `wrela agent-run` (implied by `wrela studio synth`/`wrela studio synth-assets`/`wrela studio full-factory`)
+--baseline-ref=REF    perfcmp baseline git ref (default: origin/main)
+--candidate-ref=REF   perfcmp candidate git ref (default: HEAD)
+--warmup-pairs=N      perfcmp warmup pair count override
+--measure-pairs=N     perfcmp measured pair count override
+--min-effect-pct=N    perfcmp practical effect threshold (default: 2.0)
+--confidence=N        perfcmp bootstrap CI confidence percent (default: 95)
+--json                shorthand for --error-format=json
+--determinism         game/realtime check mode: enforce native-vs-wasm domain hash parity
+--rollback            game/realtime check mode: enforce rollback convergence simulation
+--render-lane         game/realtime check mode: enforce render-lane manifest contracts
+--asset-streaming     game/realtime check mode: enforce asset-streaming manifest contracts
+--gpu-metrics         game/realtime profile mode: emit GPU metrics only
+--streaming-metrics   game/realtime profile mode: emit streaming metrics only
+--holes-only          check/analyze mode: emit typed-hole diagnostics only
+--allow-review-fixes  fix/fmt mode: also apply review-tier fixes
+--workspace-diagnostics  fix/fmt: include diagnostics/fixes from imported modules (default: target file only)
+--strict-naming       check/analyze/build/compile/run/dev: promote naming strong/style tiers to errors
+--error-format=human|json|sarif  set diagnostic output format (default: human)
+-h, --help            show this help
+-V, --version         show version

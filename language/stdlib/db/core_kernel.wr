@@ -1,0 +1,143 @@
+//
+// DB core kernel wrappers around runtime core intrinsics.
+// This module owns raw intrinsic calls so package-level APIs can stay typed.
+
+fn open_db(path: String) -> Integer {
+    open_result = __wr_db_core_open(path)
+    match open_result {
+        Integer(opened_handle) {
+            return opened_handle
+        }
+        default {
+            return 0
+        }
+    }
+}
+
+fn close_db(db_handle_close: Integer) -> Result[Nothing] {
+    if __wr_db_core_close(db_handle_close) {
+        return nothing
+    }
+    return error "close_db failed"
+}
+
+fn put_db(
+    db_handle_put: Integer,
+    namespace_put: String,
+    key_put: String,
+    value_put: String,
+    expected_version_put: Integer
+) -> Integer {
+    if expected_version_put < 0 {
+        unguarded_commit_result = __wr_db_core_submit_batch(
+            db_handle_put,
+            namespace_put,
+            key_put,
+            value_put,
+            nothing
+        )
+        match unguarded_commit_result {
+            Integer(unguarded_version) {
+                return unguarded_version
+            }
+            default {
+                return -1
+            }
+        }
+    }
+    else {
+        guarded_commit_result = __wr_db_core_submit_batch(
+            db_handle_put,
+            namespace_put,
+            key_put,
+            value_put,
+            expected_version_put
+        )
+        match guarded_commit_result {
+            Integer(guarded_version) {
+                return guarded_version
+            }
+            default {
+                return -1
+            }
+        }
+    }
+}
+
+fn get_db(db_handle_get: Integer, namespace_get: String, key_get: String) -> Result[String] {
+    raw_bytes = __wr_db_core_read_point(db_handle_get, namespace_get, key_get)
+    if raw_bytes == nothing {
+        return error "not found"
+    }
+    decoded_value_result = __wr_bytes_to_string(raw_bytes)
+    match decoded_value_result {
+        String(decoded_value) {
+            return decoded_value
+        }
+        default {
+            return error "invalid utf8"
+        }
+    }
+}
+
+fn scan_db(
+    db_handle_scan: Integer,
+    namespace_scan: String,
+    start_key_scan: String,
+    end_key_scan: String,
+    limit_scan: Integer
+) -> List[String] {
+    raw_rows = __wr_db_core_read_range(
+        db_handle_scan,
+        namespace_scan,
+        start_key_scan,
+        end_key_scan,
+        limit_scan
+    )
+    mutable decoded_rows = []
+    for raw_row in raw_rows {
+        decoded_row_result = __wr_bytes_to_string(raw_row)
+        match decoded_row_result {
+            String(decoded_row) {
+                __wr_list_push(decoded_rows, decoded_row)
+            }
+            default {
+                continue
+            }
+        }
+    }
+    return decoded_rows
+}
+
+fn begin_txn_db(db_handle_begin_txn: Integer) -> Integer {
+    begin_result = __wr_db_core_txn_begin(db_handle_begin_txn)
+    match begin_result {
+        Integer(txn_id) {
+            return txn_id
+        }
+        default {
+            return 0
+        }
+    }
+}
+
+fn prepare_txn_db(db_handle_prepare_txn: Integer, txn_prepare: Integer) -> Result[Nothing] {
+    if __wr_db_core_txn_prepare(db_handle_prepare_txn, txn_prepare) {
+        return nothing
+    }
+    return error "prepare_txn_db failed"
+}
+
+fn commit_txn_db(db_handle_commit_txn: Integer, txn_commit: Integer) -> Result[Nothing] {
+    if __wr_db_core_txn_commit(db_handle_commit_txn, txn_commit) {
+        return nothing
+    }
+    return error "commit_txn_db failed"
+}
+
+fn abort_txn_db(db_handle_abort_txn: Integer, txn_abort: Integer) -> Result[Nothing] {
+    if __wr_db_core_txn_abort(db_handle_abort_txn, txn_abort) {
+        return nothing
+    }
+    return error "abort_txn_db failed"
+}

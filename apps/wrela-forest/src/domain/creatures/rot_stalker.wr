@@ -1,0 +1,276 @@
+//
+// Rot Stalker: Phase 1 enemy creature. Lurks in clearings, has 4 melee attacks.
+
+use {
+    FrameDataEntry,
+    HitboxDescriptor,
+    HurtboxDescriptor,
+    create_frame_data_entry,
+    create_hitbox,
+    create_hurtbox,
+    is_in_active,
+    is_move_complete
+}
+from pkg/game/combat/frame_data
+
+resource RotStalker {
+    mutable entity_id: Integer = 1
+    mutable position_x: Integer = 3000
+    mutable position_y: Integer = 0
+    mutable position_z: Integer = 3000
+    mutable current_move: Integer = 0
+    mutable move_tick: Integer = 0
+    mutable aggro_range_milli: Integer = 3000
+    mutable attack_range_milli: Integer = 800
+    mutable cooldown_ticks: Integer = 0
+    mutable facing_x: Integer = 0
+    mutable facing_z: Integer = -1000
+}
+
+fn create_default_rot_stalker() -> RotStalker {
+    return RotStalker()
+}
+
+// Move IDs: 10=claw_swipe, 11=lunge, 12=tail_sweep, 13=roar
+fn rot_stalker_claw_swipe() -> FrameDataEntry {
+    return create_frame_data_entry(
+        move_id=10,
+        startup_ticks=5,
+        active_ticks=6,
+        recovery_ticks=10,
+        damage_milli=15000,
+        stamina_cost_milli=0,
+        hitstun_ticks=6,
+        poise_damage_milli=10000,
+        knockback_milli=500
+    )
+}
+
+fn rot_stalker_lunge() -> FrameDataEntry {
+    return create_frame_data_entry(
+        move_id=11,
+        startup_ticks=8,
+        active_ticks=5,
+        recovery_ticks=15,
+        damage_milli=20000,
+        stamina_cost_milli=0,
+        hitstun_ticks=8,
+        poise_damage_milli=20000,
+        knockback_milli=1500
+    )
+}
+
+fn rot_stalker_tail_sweep() -> FrameDataEntry {
+    return create_frame_data_entry(
+        move_id=12,
+        startup_ticks=6,
+        active_ticks=8,
+        recovery_ticks=12,
+        damage_milli=10000,
+        stamina_cost_milli=0,
+        hitstun_ticks=4,
+        poise_damage_milli=8000,
+        knockback_milli=800
+    )
+}
+
+fn rot_stalker_roar() -> FrameDataEntry {
+    return create_frame_data_entry(
+        move_id=13,
+        startup_ticks=12,
+        active_ticks=10,
+        recovery_ticks=20,
+        damage_milli=0,
+        stamina_cost_milli=0,
+        hitstun_ticks=0,
+        poise_damage_milli=30000,
+        knockback_milli=0
+    )
+}
+
+fn rot_stalker_claw_hitbox() -> HitboxDescriptor {
+    return create_hitbox(
+        offset_x=0, offset_y=400, offset_z=700,
+        half_x=500, half_y=400, half_z=600
+    )
+}
+
+fn rot_stalker_lunge_hitbox() -> HitboxDescriptor {
+    return create_hitbox(
+        offset_x=0, offset_y=400, offset_z=900,
+        half_x=400, half_y=400, half_z=800
+    )
+}
+
+fn rot_stalker_sweep_hitbox() -> HitboxDescriptor {
+    return create_hitbox(
+        offset_x=0, offset_y=200, offset_z=0,
+        half_x=800, half_y=300, half_z=800
+    )
+}
+
+fn rot_stalker_roar_hitbox() -> HitboxDescriptor {
+    return create_hitbox(
+        offset_x=0, offset_y=500, offset_z=0,
+        half_x=1500, half_y=500, half_z=1500
+    )
+}
+
+fn rot_stalker_hurtbox() -> HurtboxDescriptor {
+    return create_hurtbox(
+        offset_x=0, offset_y=500, offset_z=0,
+        half_x=400, half_y=600, half_z=400
+    )
+}
+
+fn select_rot_stalker_move(distance_milli: Integer) -> Integer {
+    // Simple distance-based AI
+    if distance_milli > 2000 {
+        return 11
+    }
+    if distance_milli > 1200 {
+        return 10
+    }
+    if distance_milli > 600 {
+        return 12
+    }
+    return 10
+}
+
+fn get_rot_stalker_frame_data(move_id: Integer) -> FrameDataEntry {
+    if move_id == 10 { return rot_stalker_claw_swipe() }
+    if move_id == 11 { return rot_stalker_lunge() }
+    if move_id == 12 { return rot_stalker_tail_sweep() }
+    if move_id == 13 { return rot_stalker_roar() }
+    return rot_stalker_claw_swipe()
+}
+
+fn get_rot_stalker_hitbox(move_id: Integer) -> HitboxDescriptor {
+    if move_id == 10 { return rot_stalker_claw_hitbox() }
+    if move_id == 11 { return rot_stalker_lunge_hitbox() }
+    if move_id == 12 { return rot_stalker_sweep_hitbox() }
+    if move_id == 13 { return rot_stalker_roar_hitbox() }
+    return rot_stalker_claw_hitbox()
+}
+
+system tick_rot_stalker_ai[stage=fixed, reads=[RotStalker], writes=[RotStalker]](
+    stalker: RotStalker,
+    player_x: Integer,
+    player_z: Integer
+) -> RotStalker {
+    // Compute distance to player
+    dx = player_x - stalker.position_x
+    dz = player_z - stalker.position_z
+    dist_sq = (dx * dx + dz * dz) / 1000
+
+    // Simple sqrt approx
+    mutable estimate = dist_sq
+    if estimate > 0 {
+        mutable prev = 0
+        while estimate != prev {
+            prev = estimate
+            estimate = (estimate + dist_sq / estimate) / 2
+        }
+    }
+    distance = estimate
+
+    // If currently attacking, advance tick
+    if stalker.current_move > 0 {
+        frame_data = get_rot_stalker_frame_data(stalker.current_move)
+        if is_move_complete(frame_data, stalker.move_tick) {
+            return RotStalker(
+                entity_id=stalker.entity_id,
+                position_x=stalker.position_x,
+                position_y=stalker.position_y,
+                position_z=stalker.position_z,
+                current_move=0,
+                move_tick=0,
+                aggro_range_milli=stalker.aggro_range_milli,
+                attack_range_milli=stalker.attack_range_milli,
+                cooldown_ticks=20,
+                facing_x=stalker.facing_x,
+                facing_z=stalker.facing_z
+            )
+        }
+        return RotStalker(
+            entity_id=stalker.entity_id,
+            position_x=stalker.position_x,
+            position_y=stalker.position_y,
+            position_z=stalker.position_z,
+            current_move=stalker.current_move,
+            move_tick=stalker.move_tick + 1,
+            aggro_range_milli=stalker.aggro_range_milli,
+            attack_range_milli=stalker.attack_range_milli,
+            cooldown_ticks=stalker.cooldown_ticks,
+            facing_x=stalker.facing_x,
+            facing_z=stalker.facing_z
+        )
+    }
+
+    // Cooldown
+    if stalker.cooldown_ticks > 0 {
+        return RotStalker(
+            entity_id=stalker.entity_id,
+            position_x=stalker.position_x,
+            position_y=stalker.position_y,
+            position_z=stalker.position_z,
+            current_move=0,
+            move_tick=0,
+            aggro_range_milli=stalker.aggro_range_milli,
+            attack_range_milli=stalker.attack_range_milli,
+            cooldown_ticks=stalker.cooldown_ticks - 1,
+            facing_x=stalker.facing_x,
+            facing_z=stalker.facing_z
+        )
+    }
+
+    // Out of aggro range: idle
+    if distance > stalker.aggro_range_milli {
+        return stalker
+    }
+
+    // In attack range: select and start a move
+    if distance <= stalker.attack_range_milli {
+        chosen_move = select_rot_stalker_move(distance)
+        // Update facing toward player
+        mutable new_facing_x = dx
+        mutable new_facing_z = dz
+        if new_facing_x == 0 { if new_facing_z == 0 { new_facing_z = -1000 } }
+        return RotStalker(
+            entity_id=stalker.entity_id,
+            position_x=stalker.position_x,
+            position_y=stalker.position_y,
+            position_z=stalker.position_z,
+            current_move=chosen_move,
+            move_tick=0,
+            aggro_range_milli=stalker.aggro_range_milli,
+            attack_range_milli=stalker.attack_range_milli,
+            cooldown_ticks=0,
+            facing_x=new_facing_x,
+            facing_z=new_facing_z
+        )
+    }
+
+    // In aggro range but not attack range: move toward player
+    move_speed = 30
+    mutable move_x = 0
+    mutable move_z = 0
+    if dx > 0 { move_x = move_speed }
+    if dx < 0 { move_x = 0 - move_speed }
+    if dz > 0 { move_z = move_speed }
+    if dz < 0 { move_z = 0 - move_speed }
+
+    return RotStalker(
+        entity_id=stalker.entity_id,
+        position_x=stalker.position_x + move_x,
+        position_y=stalker.position_y,
+        position_z=stalker.position_z + move_z,
+        current_move=0,
+        move_tick=0,
+        aggro_range_milli=stalker.aggro_range_milli,
+        attack_range_milli=stalker.attack_range_milli,
+        cooldown_ticks=0,
+        facing_x=dx,
+        facing_z=dz
+    )
+}

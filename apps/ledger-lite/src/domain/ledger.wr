@@ -1,0 +1,17 @@
+fn try_to_validate_positive_amount(amount: Integer) -> Result[Nothing] {
+    if amount > 0 {
+        return nothing
+    }
+    return error "amount must be positive"
+
+}
+fn try_to_validate_non_negative_balance(balance: Integer) -> Result[Nothing] {
+    if balance >= 0 {
+        return nothing
+    }
+    return error "balance must be non-negative"
+
+}
+fn compute_new_balance(current_balance: Integer, delta: Integer) -> Integer {
+    return current_balance + delta
+}

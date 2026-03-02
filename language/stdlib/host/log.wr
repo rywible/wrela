@@ -1,0 +1,122 @@
+//
+// Logging helpers and configuration.
+
+class Logger {
+    level: String = "info"
+
+    // Apply logging configuration when fields are provided.
+    fn __configure__() -> Nothing {
+        if self.level != nothing {
+            return __wr_log_configure(self)
+        }
+        return nothing
+
+    }
+    // Log a debug message.
+    fn debug(message: String) -> Nothing {
+        __wr_log("debug", message, __wr_map_new())
+        return nothing
+
+    // Log an info message.
+    fn info(message: String) -> Nothing {
+        __wr_log("info", message, __wr_map_new())
+        return nothing
+
+    // Log a warning message.
+    fn warn(message: String) -> Nothing {
+        __wr_log("warn", message, __wr_map_new())
+        return nothing
+
+    // Log an error message.
+    fn err(message: String) -> Nothing {
+        __wr_log("error", message, __wr_map_new())
+        return nothing
+
+    // Log a debug message with fields.
+    fn debug_with(message: String, fields: Map[Any, Any]) -> Nothing {
+        __wr_log("debug", message, fields)
+        return nothing
+
+    // Log an info message with fields.
+    fn info_with(message: String, fields: Map[Any, Any]) -> Nothing {
+        __wr_log("info", message, fields)
+        return nothing
+
+    // Log a warning message with fields.
+    fn warn_with(message: String, fields: Map[Any, Any]) -> Nothing {
+        __wr_log("warn", message, fields)
+        return nothing
+
+    // Log an error message with fields.
+    fn error_with(message: String, fields: Map[Any, Any]) -> Nothing {
+        __wr_log("error", message, fields)
+        return nothing
+
+    // Log a debug message.
+    fn log_debug(message: String) -> Nothing {
+        __wr_log("debug", message, __wr_map_new())
+        return nothing
+
+    // Log an info message.
+    fn log_info(message: String) -> Nothing {
+        __wr_log("info", message, __wr_map_new())
+        return nothing
+
+    // Log a warning message.
+    fn log_warn(message: String) -> Nothing {
+        __wr_log("warn", message, __wr_map_new())
+        return nothing
+
+    // Log a warning message (alias).
+    fn log_warning(message: String) -> Nothing {
+        __wr_log("warn", message, __wr_map_new())
+        return nothing
+
+    // Log an error message.
+    fn log_error(message: String) -> Nothing {
+        __wr_log("error", message, __wr_map_new())
+        return nothing
+
+    // Log a debug message with fields.
+    fn log_debug_with(message: String, fields: Map[Any, Any]) -> Nothing {
+        __wr_log("debug", message, fields)
+        return nothing
+
+    // Log an info message with fields.
+    fn log_info_with(message: String, fields: Map[Any, Any]) -> Nothing {
+        __wr_log("info", message, fields)
+        return nothing
+
+    // Log a warning message with fields.
+    fn log_warn_with(message: String, fields: Map[Any, Any]) -> Nothing {
+        __wr_log("warn", message, fields)
+        return nothing
+
+    // Log a warning message with fields (alias).
+    fn log_warning_with(message: String, fields: Map[Any, Any]) -> Nothing {
+        __wr_log("warn", message, fields)
+        return nothing
+
+    // Log an error message with fields.
+    fn log_error_with(message: String, fields: Map[Any, Any]) -> Nothing {
+        __wr_log("error", message, fields)
+        return nothing
+}
+}
+}
+}
+}
+}
+}
+}
+}
+}
+}
+}
+}
+}
+}
+}
+}
+}
+}

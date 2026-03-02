@@ -1,0 +1,130 @@
+syntax = "proto3";
+
+package wrpc;
+
+// Batch operation: Put or Delete.
+message BatchOp {
+  oneof op {
+    PutOp put = 1;
+    DeleteOp delete = 2;
+  }
+}
+
+message PutOp {
+  bytes namespace = 1;
+  bytes key = 2;
+  bytes value = 3;
+  optional uint64 expected_version = 4;
+}
+
+message DeleteOp {
+  bytes namespace = 1;
+  bytes key = 2;
+  optional uint64 expected_version = 3;
+}
+
+// WriteBatch RPC
+message WriteBatchRequest {
+  int64 handle = 1;
+  repeated BatchOp ops = 2;
+  optional string idempotency_token = 3;
+  // Pre-encoded WAL bytes from the leader. When present, the follower writes
+  // these directly to its WAL and applies ops to memtable, bypassing the
+  // writer-lane queue and WAL re-encoding.
+  optional bytes wal_payload = 4;
+  // Required write-fence fields. Requests with zero epochs or blank ownership
+  // token are rejected by the write/replica RPC handlers.
+  uint64 expected_home_epoch = 5;
+  uint64 expected_shard_map_epoch = 6;
+  string ownership_token = 7;
+}
+
+message WriteBatchResponse {
+  uint64 commit_version = 1;
+  bool idempotent_replay = 2;
+  // Follower-side WAL write duration (ns). Set by followers on replica_write_batch
+  // so the leader can distinguish follower disk time from RPC overhead.
+  optional uint64 follower_wal_fsync_ns = 3;
+}
+
+// PointRead RPC
+message PointReadRequest {
+  int64 handle = 1;
+  bytes namespace = 2;
+  bytes key = 3;
+}
+
+message PointReadResponse {
+  optional bytes value = 1;
+}
+
+// RangeRead RPC
+message RangeReadRequest {
+  int64 handle = 1;
+  bytes namespace = 2;
+  bytes start_key = 3;
+  bytes end_key = 4;
+  uint64 limit = 5;
+}
+
+message RangeReadRow {
+  bytes key = 1;
+  bytes value = 2;
+  uint64 version = 3;
+}
+
+message RangeReadResponse {
+  repeated RangeReadRow rows = 1;
+}
+
+// Sorted-run catch-up transport (additive, mixed-version safe).
+message SortedRunCatchUpChunkRequest {
+  int64 handle = 1;
+  uint64 term = 2;
+  uint64 chunk_stream_id = 3;
+  uint64 chunk_index = 4;
+  uint64 total_chunks = 5;
+  bytes payload = 6;
+}
+
+message SortedRunCatchUpChunkResponse {
+  bool accepted = 1;
+  uint64 next_chunk_index = 2;
+  string rejection_reason = 3;
+}
+
+// Streaming replication: persistent bidirectional gRPC stream that amortizes
+// per-batch HTTP/2 framing overhead. Additive — the unary ReplicaWriteBatch
+// path remains as a fallback for older nodes.
+message ReplicationStreamBatch {
+  // Monotonic sequence number for request/ack correlation.
+  uint64 sequence = 1;
+  repeated BatchOp ops = 2;
+  // Pre-encoded WAL bytes (same as WriteBatchRequest.wal_payload).
+  bytes wal_payload = 3;
+  optional string idempotency_token = 4;
+  int64 handle = 5;
+  uint64 expected_home_epoch = 6;
+  uint64 expected_shard_map_epoch = 7;
+  string ownership_token = 8;
+}
+
+message ReplicationStreamAck {
+  // Matches the sequence from the corresponding ReplicationStreamBatch.
+  uint64 sequence = 1;
+  uint64 commit_version = 2;
+  optional uint64 follower_wal_fsync_ns = 3;
+  // Non-empty on failure. The leader should treat this as a failed ack.
+  string error = 4;
+}
+
+service WrelaDb {
+  rpc WriteBatch(WriteBatchRequest) returns (WriteBatchResponse);
+  rpc ReplicaWriteBatch(WriteBatchRequest) returns (WriteBatchResponse);
+  rpc PointRead(PointReadRequest) returns (PointReadResponse);
+  rpc RangeRead(RangeReadRequest) returns (RangeReadResponse);
+  rpc ReplicaInstallSortedRunChunk(SortedRunCatchUpChunkRequest) returns (SortedRunCatchUpChunkResponse);
+  // Persistent bidirectional replication stream. Falls back to unary
+  // ReplicaWriteBatch if the follower returns UNIMPLEMENTED.
+  rpc ReplicateStream(stream ReplicationStreamBatch) returns (stream ReplicationStreamAck);
+}

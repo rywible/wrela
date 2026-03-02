@@ -1,0 +1,261 @@
+//
+// Primary class-first HTTP server surface for web applications.
+
+use {
+    HttpRequest,
+    HttpResponse,
+    create_http_json_error_response_context,
+    create_http_server_configuration,
+    check_reserved_database_namespace_path,
+    try_to_close_http_server_listener,
+    try_to_create_http_server_listener
+}
+from host/web_server
+
+use {
+    BearerJsonWebTokenAuthenticationMethodConfiguration,
+    JsonWebKeySetRouteInstallationConfiguration,
+    OAuthClientCredentialsAuthenticationInstallationConfiguration,
+    RefreshTokenExchangeInstallationConfiguration
+}
+from pkg/web/auth/installers
+
+use apply_security_headers from pkg/web/security/headers
+
+class HttpRouteAuthorizationPolicy {
+    authentication_method_identifier: String = ""
+    required_scope_values: List[String] = []
+    required_tenant_identifier: String = ""
+    cross_site_request_forgery_protection_required: Boolean = false
+}
+
+class HttpRouteHandler {
+    must handle_route(request: HttpRequest) -> HttpResponse
+}
+
+class HttpMiddleware {
+    must handle_middleware(request: HttpRequest) -> Nothing
+}
+
+class HttpRouteRegistration {
+    method: String
+    path: String
+    route_handler: HttpRouteHandler
+    authentication_required: Boolean = false
+    authentication_method_identifier: String = ""
+    required_scope_values: List[String] = []
+    required_tenant_identifier: String = ""
+    cross_site_request_forgery_protection_required: Boolean = false
+}
+
+fn create_route_registration_key(method: String, path: String) -> String {
+    return method + " " + path
+}
+
+class HttpServer {
+    bind_address: String = "127.0.0.1:8080"
+    listener_namespace: String = "app"
+    mutable listener_handle: Integer = 0
+    mutable running_state: Boolean = false
+
+    mutable route_registrations: Map[String, HttpRouteRegistration] = {}
+    mutable bearer_authentication_method_configurations: Map[String, BearerJsonWebTokenAuthenticationMethodConfiguration] = {}
+
+    mutable json_web_key_set_route_installation_state: Boolean = false
+    mutable json_web_key_set_path: String = "/.well-known/jwks.json"
+
+    mutable oauth_client_credentials_installation_state: Boolean = false
+    mutable oauth_client_credentials_token_path: String = "/oauth/token"
+    mutable oauth_client_credentials_access_token_ttl_seconds: Integer = 900
+
+    mutable refresh_token_exchange_installation_state: Boolean = false
+    mutable refresh_token_exchange_path: String = "/auth/refresh"
+    mutable refresh_token_exchange_access_token_ttl_seconds: Integer = 900
+
+    fn register_route(registration: HttpRouteRegistration) -> Nothing {
+        key = create_route_registration_key(method=registration.method, path=registration.path)
+        self.route_registrations.set(key=key, value=registration)
+        return nothing
+    }
+
+    fn register_get_route(path: String, route_handler: HttpRouteHandler) -> Nothing {
+        registration = HttpRouteRegistration(
+            method="GET",
+            path=path,
+            route_handler=route_handler
+        )
+        self.register_route(registration=registration)
+        return nothing
+    }
+
+    fn register_post_route(path: String, route_handler: HttpRouteHandler) -> Nothing {
+        registration = HttpRouteRegistration(
+            method="POST",
+            path=path,
+            route_handler=route_handler
+        )
+        self.register_route(registration=registration)
+        return nothing
+    }
+
+    fn install_bearer_json_web_token_authentication_method(
+        configuration: BearerJsonWebTokenAuthenticationMethodConfiguration
+    ) -> Nothing {
+        self.bearer_authentication_method_configurations.set(key=configuration.authentication_method_identifier, value=configuration)
+        return nothing
+    }
+
+    fn install_json_web_key_set_route(
+        configuration: JsonWebKeySetRouteInstallationConfiguration
+    ) -> Nothing {
+        self.json_web_key_set_route_installation_state = true
+        self.json_web_key_set_path = configuration.json_web_key_set_path
+        return nothing
+    }
+
+    fn install_oauth_client_credentials_authentication(
+        configuration: OAuthClientCredentialsAuthenticationInstallationConfiguration
+    ) -> Nothing {
+        self.oauth_client_credentials_installation_state = true
+        self.oauth_client_credentials_token_path = configuration.token_path
+        self.oauth_client_credentials_access_token_ttl_seconds = configuration.access_token_ttl_seconds
+        return nothing
+    }
+
+    fn install_refresh_token_exchange(
+        configuration: RefreshTokenExchangeInstallationConfiguration
+    ) -> Nothing {
+        self.refresh_token_exchange_installation_state = true
+        self.refresh_token_exchange_path = configuration.refresh_path
+        self.refresh_token_exchange_access_token_ttl_seconds = configuration.access_token_ttl_seconds
+        return nothing
+    }
+
+    fn start() -> Result[Nothing] {
+        if self.running_state {
+            return nothing
+        }
+
+        configuration = create_http_server_configuration(
+            bind_address=self.bind_address,
+            listener_namespace=self.listener_namespace
+        )
+        match try_to_create_http_server_listener(configuration=configuration) {
+            Ok(listener_handle) {
+                self.listener_handle = listener_handle
+                self.running_state = true
+                return nothing
+            }
+            Err(err) {
+                return error err
+            }
+            default {
+                return error "failed to start listener"
+            }
+        }
+    }
+
+    fn stop() -> Nothing {
+        if self.listener_handle > 0 {
+            try_to_close_http_server_listener(listener_handle=self.listener_handle) ?? 0
+            self.listener_handle = 0
+        }
+        self.running_state = false
+        return nothing
+    }
+
+    fn try_to_dispatch_http_request(request: HttpRequest) -> Result[HttpResponse] {
+        if check_reserved_database_namespace_path(path=request.path) {
+            return create_http_forbidden_response(error_description="reserved namespace")
+        }
+
+        if request.path == self.json_web_key_set_path and self.json_web_key_set_route_installation_state {
+            return create_json_web_key_set_route_response()
+        }
+        if request.path == self.json_web_key_set_path {
+            return create_http_not_found_response()
+        }
+
+        return create_http_not_found_response()
+    }
+
+    fn try_to_dispatch_http_request_context(request: HttpRequest) -> Result[HttpResponse] {
+        return self.try_to_dispatch_http_request(request=request)
+    }
+}
+
+class DefaultNotFoundRouteHandler {
+    is a HttpRouteHandler
+
+    fn handle_route(request: HttpRequest) -> HttpResponse {
+        if request.path == "" {
+            nothing
+        }
+        return create_http_not_found_response()
+    }
+}
+
+fn create_http_response_with_security_headers(response: HttpResponse) -> HttpResponse {
+    response_headers = apply_security_headers(response.headers)
+    return HttpResponse(
+        status_code=response.status_code,
+        reason_phrase=response.reason_phrase,
+        headers=response_headers,
+        body=response.body,
+        should_close_connection=response.should_close_connection
+    )
+}
+
+fn create_http_error_response(
+    status_code: Integer,
+    error_code: String,
+    error_description: String
+) -> HttpResponse {
+    return create_http_response_with_security_headers(
+        response=create_http_json_error_response_context(
+            status_code=status_code,
+            error_code=error_code,
+            error_description=error_description
+        )
+    )
+}
+
+fn create_http_not_found_response() -> HttpResponse {
+    return create_http_error_response(
+        status_code=404,
+        error_code="not_found",
+        error_description="route not found"
+    )
+}
+
+fn create_http_unauthorized_response(error_description: String) -> HttpResponse {
+    return create_http_error_response(
+        status_code=401,
+        error_code="unauthorized",
+        error_description=error_description
+    )
+}
+
+fn create_http_forbidden_response(error_description: String) -> HttpResponse {
+    return create_http_error_response(
+        status_code=403,
+        error_code="forbidden",
+        error_description=error_description
+    )
+}
+
+fn create_json_web_key_set_route_response() -> HttpResponse {
+    response_headers = {}
+    response_headers.set("Content-Type", "application/json")
+
+    response_body_items = {}
+    response_body_items.set("keys", [])
+
+    return create_http_response_with_security_headers(
+        response=HttpResponse(
+            status_code=200,
+            headers=response_headers,
+            body=response_body_items
+        )
+    )
+}

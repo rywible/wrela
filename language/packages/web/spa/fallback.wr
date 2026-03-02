@@ -1,0 +1,28 @@
+//
+// Single-page application fallback helpers.
+
+use {
+    StaticAssetServingConfiguration,
+    path_is_single_page_application_fallback_enabled,
+    resolve_single_page_application_fallback_path
+}
+from host/web_static_assets
+
+
+fn try_to_resolve_single_page_application_path(
+    path: String,
+    configuration: StaticAssetServingConfiguration
+) -> Result[String] {
+    if not path_is_single_page_application_fallback_enabled(path=path, configuration=configuration) {
+        return error "single-page application fallback disabled for this path"
+    }
+    return resolve_single_page_application_fallback_path(path=path, configuration=configuration)
+
+
+}
+fn try_to_resolve_single_page_application_default_path(path: String) -> Result[String] {
+    return try_to_resolve_single_page_application_path(
+        path=path,
+        configuration=StaticAssetServingConfiguration()
+    )
+}

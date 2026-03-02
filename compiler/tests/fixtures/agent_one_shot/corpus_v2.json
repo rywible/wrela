@@ -1,0 +1,702 @@
+{
+  "schema_version": 2,
+  "suite_id": "agent_one_shot_v2",
+  "cases": [
+    {
+      "id": "parse_1",
+      "workspace_dir": "cases/parse_1",
+      "command": "check",
+      "target": ".",
+      "max_loops": 2,
+      "attempts": [
+        {
+          "id": "a1",
+          "visible_to_agent": false,
+          "machine_applicable": false,
+          "writes": [
+            {
+              "path": "src/main.wr",
+              "content": "fn run() -> Integer {\n    return 1 +\n}"
+            }
+          ],
+          "deletes": []
+        },
+        {
+          "id": "a2",
+          "visible_to_agent": true,
+          "machine_applicable": true,
+          "writes": [
+            {
+              "path": "src/main.wr",
+              "content": "fn run() -> Integer {\n    return 1\n}"
+            }
+          ],
+          "deletes": []
+        }
+      ]
+    },
+    {
+      "id": "parse_2",
+      "workspace_dir": "cases/parse_2",
+      "command": "check",
+      "target": ".",
+      "max_loops": 2,
+      "attempts": [
+        {
+          "id": "a1",
+          "visible_to_agent": false,
+          "machine_applicable": false,
+          "writes": [
+            {
+              "path": "src/main.wr",
+              "content": "fn run() -> Integer {\n    return 1 +\n}"
+            }
+          ],
+          "deletes": []
+        },
+        {
+          "id": "a2",
+          "visible_to_agent": true,
+          "machine_applicable": true,
+          "writes": [
+            {
+              "path": "src/main.wr",
+              "content": "fn run() -> Integer {\n    return 1\n}"
+            }
+          ],
+          "deletes": []
+        }
+      ]
+    },
+    {
+      "id": "parse_3",
+      "workspace_dir": "cases/parse_3",
+      "command": "check",
+      "target": ".",
+      "max_loops": 2,
+      "attempts": [
+        {
+          "id": "a1",
+          "visible_to_agent": false,
+          "machine_applicable": false,
+          "writes": [
+            {
+              "path": "src/main.wr",
+              "content": "fn run() -> Integer {\n    return 1 +\n}"
+            }
+          ],
+          "deletes": []
+        },
+        {
+          "id": "a2",
+          "visible_to_agent": true,
+          "machine_applicable": true,
+          "writes": [
+            {
+              "path": "src/main.wr",
+              "content": "fn run() -> Integer {\n    return 1\n}"
+            }
+          ],
+          "deletes": []
+        }
+      ]
+    },
+    {
+      "id": "parse_4",
+      "workspace_dir": "cases/parse_4",
+      "command": "check",
+      "target": ".",
+      "max_loops": 2,
+      "attempts": [
+        {
+          "id": "a1",
+          "visible_to_agent": false,
+          "machine_applicable": false,
+          "writes": [
+            {
+              "path": "src/main.wr",
+              "content": "fn run() -> Integer {\n    return 1 +\n}"
+            }
+          ],
+          "deletes": []
+        },
+        {
+          "id": "a2",
+          "visible_to_agent": true,
+          "machine_applicable": true,
+          "writes": [
+            {
+              "path": "src/main.wr",
+              "content": "fn run() -> Integer {\n    return 1\n}"
+            }
+          ],
+          "deletes": []
+        }
+      ]
+    },
+    {
+      "id": "parse_5",
+      "workspace_dir": "cases/parse_5",
+      "command": "check",
+      "target": ".",
+      "max_loops": 2,
+      "attempts": [
+        {
+          "id": "a1",
+          "visible_to_agent": true,
+          "machine_applicable": false,
+          "writes": [
+            {
+              "path": "src/main.wr",
+              "content": "fn run() -> Integer {\n    return 1 +\n}"
+            }
+          ],
+          "deletes": []
+        },
+        {
+          "id": "a2",
+          "visible_to_agent": true,
+          "machine_applicable": true,
+          "writes": [
+            {
+              "path": "src/main.wr",
+              "content": "fn run() -> Integer {\n    return 1\n}"
+            }
+          ],
+          "deletes": []
+        }
+      ]
+    },
+    {
+      "id": "parse_6",
+      "workspace_dir": "cases/parse_6",
+      "command": "check",
+      "target": ".",
+      "max_loops": 2,
+      "attempts": [
+        {
+          "id": "a1",
+          "visible_to_agent": true,
+          "machine_applicable": false,
+          "writes": [
+            {
+              "path": "src/main.wr",
+              "content": "fn run() -> Integer {\n    return 1 +\n}"
+            }
+          ],
+          "deletes": []
+        },
+        {
+          "id": "a2",
+          "visible_to_agent": true,
+          "machine_applicable": true,
+          "writes": [
+            {
+              "path": "src/main.wr",
+              "content": "fn run() -> Integer {\n    return 1\n}"
+            }
+          ],
+          "deletes": []
+        }
+      ]
+    },
+    {
+      "id": "parse_7",
+      "workspace_dir": "cases/parse_7",
+      "command": "check",
+      "target": ".",
+      "max_loops": 2,
+      "attempts": [
+        {
+          "id": "a1",
+          "visible_to_agent": true,
+          "machine_applicable": false,
+          "writes": [
+            {
+              "path": "src/main.wr",
+              "content": "fn run() -> Integer {\n    return 1 +\n}"
+            }
+          ],
+          "deletes": []
+        },
+        {
+          "id": "a2",
+          "visible_to_agent": true,
+          "machine_applicable": true,
+          "writes": [
+            {
+              "path": "src/main.wr",
+              "content": "fn run() -> Integer {\n    return 1\n}"
+            }
+          ],
+          "deletes": []
+        }
+      ]
+    },
+    {
+      "id": "parse_8",
+      "workspace_dir": "cases/parse_8",
+      "command": "check",
+      "target": ".",
+      "max_loops": 2,
+      "attempts": [
+        {
+          "id": "a1",
+          "visible_to_agent": true,
+          "machine_applicable": false,
+          "writes": [
+            {
+              "path": "src/main.wr",
+              "content": "fn run() -> Integer {\n    return 1 +\n}"
+            }
+          ],
+          "deletes": []
+        },
+        {
+          "id": "a2",
+          "visible_to_agent": true,
+          "machine_applicable": true,
+          "writes": [
+            {
+              "path": "src/main.wr",
+              "content": "fn run() -> Integer {\n    return 1\n}"
+            }
+          ],
+          "deletes": []
+        }
+      ]
+    },
+    {
+      "id": "check_1",
+      "workspace_dir": "cases/check_1",
+      "command": "check",
+      "target": ".",
+      "max_loops": 2,
+      "attempts": [
+        {
+          "id": "a1",
+          "visible_to_agent": true,
+          "machine_applicable": false,
+          "writes": [
+            {
+              "path": "src/main.wr",
+              "content": "fn run() -> Integer {\n    return true\n}"
+            }
+          ],
+          "deletes": []
+        },
+        {
+          "id": "a2",
+          "visible_to_agent": true,
+          "machine_applicable": true,
+          "writes": [
+            {
+              "path": "src/main.wr",
+              "content": "fn run() -> Integer {\n    return 1\n}"
+            }
+          ],
+          "deletes": []
+        }
+      ]
+    },
+    {
+      "id": "check_2",
+      "workspace_dir": "cases/check_2",
+      "command": "check",
+      "target": ".",
+      "max_loops": 2,
+      "attempts": [
+        {
+          "id": "a1",
+          "visible_to_agent": true,
+          "machine_applicable": false,
+          "writes": [
+            {
+              "path": "src/main.wr",
+              "content": "fn run() -> Integer {\n    return true\n}"
+            }
+          ],
+          "deletes": []
+        },
+        {
+          "id": "a2",
+          "visible_to_agent": true,
+          "machine_applicable": true,
+          "writes": [
+            {
+              "path": "src/main.wr",
+              "content": "fn run() -> Integer {\n    return 1\n}"
+            }
+          ],
+          "deletes": []
+        }
+      ]
+    },
+    {
+      "id": "check_3",
+      "workspace_dir": "cases/check_3",
+      "command": "check",
+      "target": ".",
+      "max_loops": 2,
+      "attempts": [
+        {
+          "id": "a1",
+          "visible_to_agent": true,
+          "machine_applicable": false,
+          "writes": [
+            {
+              "path": "src/main.wr",
+              "content": "fn run() -> Integer {\n    return true\n}"
+            }
+          ],
+          "deletes": []
+        },
+        {
+          "id": "a2",
+          "visible_to_agent": true,
+          "machine_applicable": true,
+          "writes": [
+            {
+              "path": "src/main.wr",
+              "content": "fn run() -> Integer {\n    return 1\n}"
+            }
+          ],
+          "deletes": []
+        }
+      ]
+    },
+    {
+      "id": "check_4",
+      "workspace_dir": "cases/check_4",
+      "command": "check",
+      "target": ".",
+      "max_loops": 2,
+      "attempts": [
+        {
+          "id": "a1",
+          "visible_to_agent": true,
+          "machine_applicable": false,
+          "writes": [
+            {
+              "path": "src/main.wr",
+              "content": "fn run() -> Integer {\n    return true\n}"
+            }
+          ],
+          "deletes": []
+        },
+        {
+          "id": "a2",
+          "visible_to_agent": true,
+          "machine_applicable": true,
+          "writes": [
+            {
+              "path": "src/main.wr",
+              "content": "fn run() -> Integer {\n    return 1\n}"
+            }
+          ],
+          "deletes": []
+        }
+      ]
+    },
+    {
+      "id": "check_5",
+      "workspace_dir": "cases/check_5",
+      "command": "check",
+      "target": ".",
+      "max_loops": 2,
+      "attempts": [
+        {
+          "id": "a1",
+          "visible_to_agent": true,
+          "machine_applicable": false,
+          "writes": [
+            {
+              "path": "src/main.wr",
+              "content": "fn run() -> Integer {\n    return true\n}"
+            }
+          ],
+          "deletes": []
+        },
+        {
+          "id": "a2",
+          "visible_to_agent": true,
+          "machine_applicable": true,
+          "writes": [
+            {
+              "path": "src/main.wr",
+              "content": "fn run() -> Integer {\n    return 1\n}"
+            }
+          ],
+          "deletes": []
+        }
+      ]
+    },
+    {
+      "id": "check_6",
+      "workspace_dir": "cases/check_6",
+      "command": "check",
+      "target": ".",
+      "max_loops": 2,
+      "attempts": [
+        {
+          "id": "a1",
+          "visible_to_agent": true,
+          "machine_applicable": false,
+          "writes": [
+            {
+              "path": "src/main.wr",
+              "content": "fn run() -> Integer {\n    return true\n}"
+            }
+          ],
+          "deletes": []
+        },
+        {
+          "id": "a2",
+          "visible_to_agent": true,
+          "machine_applicable": true,
+          "writes": [
+            {
+              "path": "src/main.wr",
+              "content": "fn run() -> Integer {\n    return 1\n}"
+            }
+          ],
+          "deletes": []
+        }
+      ]
+    },
+    {
+      "id": "check_7",
+      "workspace_dir": "cases/check_7",
+      "command": "check",
+      "target": ".",
+      "max_loops": 2,
+      "attempts": [
+        {
+          "id": "a1",
+          "visible_to_agent": true,
+          "machine_applicable": false,
+          "writes": [
+            {
+              "path": "src/main.wr",
+              "content": "fn run() -> Integer {\n    return true\n}"
+            }
+          ],
+          "deletes": []
+        },
+        {
+          "id": "a2",
+          "visible_to_agent": true,
+          "machine_applicable": true,
+          "writes": [
+            {
+              "path": "src/main.wr",
+              "content": "fn run() -> Integer {\n    return 1\n}"
+            }
+          ],
+          "deletes": []
+        }
+      ]
+    },
+    {
+      "id": "check_8",
+      "workspace_dir": "cases/check_8",
+      "command": "check",
+      "target": ".",
+      "max_loops": 2,
+      "attempts": [
+        {
+          "id": "a1",
+          "visible_to_agent": true,
+          "machine_applicable": false,
+          "writes": [
+            {
+              "path": "src/main.wr",
+              "content": "fn run() -> Integer {\n    return true\n}"
+            }
+          ],
+          "deletes": []
+        },
+        {
+          "id": "a2",
+          "visible_to_agent": true,
+          "machine_applicable": true,
+          "writes": [
+            {
+              "path": "src/main.wr",
+              "content": "fn run() -> Integer {\n    return 1\n}"
+            }
+          ],
+          "deletes": []
+        }
+      ]
+    },
+    {
+      "id": "test_1",
+      "workspace_dir": "cases/test_1",
+      "command": "test",
+      "target": ".",
+      "max_loops": 1,
+      "attempts": [
+        {
+          "id": "a1",
+          "visible_to_agent": true,
+          "machine_applicable": false,
+          "writes": [
+            {
+              "path": "tests/spec/eval_test.wr",
+              "content": "fn test_eval_case() -> Nothing {\n    assert value 1 == 1\n}"
+            }
+          ],
+          "deletes": []
+        }
+      ]
+    },
+    {
+      "id": "test_2",
+      "workspace_dir": "cases/test_2",
+      "command": "test",
+      "target": ".",
+      "max_loops": 1,
+      "attempts": [
+        {
+          "id": "a1",
+          "visible_to_agent": true,
+          "machine_applicable": false,
+          "writes": [
+            {
+              "path": "tests/spec/eval_test.wr",
+              "content": "fn test_eval_case() -> Nothing {\n    assert value 1 == 1\n}"
+            }
+          ],
+          "deletes": []
+        }
+      ]
+    },
+    {
+      "id": "test_3",
+      "workspace_dir": "cases/test_3",
+      "command": "test",
+      "target": ".",
+      "max_loops": 1,
+      "attempts": [
+        {
+          "id": "a1",
+          "visible_to_agent": true,
+          "machine_applicable": false,
+          "writes": [
+            {
+              "path": "tests/spec/eval_test.wr",
+              "content": "fn test_eval_case() -> Nothing {\n    assert value 1 == 1\n}"
+            }
+          ],
+          "deletes": []
+        }
+      ]
+    },
+    {
+      "id": "test_4",
+      "workspace_dir": "cases/test_4",
+      "command": "test",
+      "target": ".",
+      "max_loops": 1,
+      "attempts": [
+        {
+          "id": "a1",
+          "visible_to_agent": true,
+          "machine_applicable": false,
+          "writes": [
+            {
+              "path": "tests/spec/eval_test.wr",
+              "content": "fn test_eval_case() -> Nothing {\n    assert value 1 == 1\n}"
+            }
+          ],
+          "deletes": []
+        }
+      ]
+    },
+    {
+      "id": "test_5",
+      "workspace_dir": "cases/test_5",
+      "command": "test",
+      "target": ".",
+      "max_loops": 1,
+      "attempts": [
+        {
+          "id": "a1",
+          "visible_to_agent": true,
+          "machine_applicable": false,
+          "writes": [
+            {
+              "path": "tests/spec/eval_test.wr",
+              "content": "fn test_eval_case() -> Nothing {\n    assert value 1 == 1\n}"
+            }
+          ],
+          "deletes": []
+        }
+      ]
+    },
+    {
+      "id": "test_6",
+      "workspace_dir": "cases/test_6",
+      "command": "test",
+      "target": ".",
+      "max_loops": 1,
+      "attempts": [
+        {
+          "id": "a1",
+          "visible_to_agent": true,
+          "machine_applicable": false,
+          "writes": [
+            {
+              "path": "tests/spec/eval_test.wr",
+              "content": "fn test_eval_case() -> Nothing {\n    assert value 1 == 1\n}"
+            }
+          ],
+          "deletes": []
+        }
+      ]
+    },
+    {
+      "id": "test_7",
+      "workspace_dir": "cases/test_7",
+      "command": "test",
+      "target": ".",
+      "max_loops": 1,
+      "attempts": [
+        {
+          "id": "a1",
+          "visible_to_agent": true,
+          "machine_applicable": false,
+          "writes": [
+            {
+              "path": "tests/spec/eval_test.wr",
+              "content": "fn test_eval_case() -> Nothing {\n    assert value 1 == 1\n}"
+            }
+          ],
+          "deletes": []
+        }
+      ]
+    },
+    {
+      "id": "test_8",
+      "workspace_dir": "cases/test_8",
+      "command": "test",
+      "target": ".",
+      "max_loops": 1,
+      "attempts": [
+        {
+          "id": "a1",
+          "visible_to_agent": true,
+          "machine_applicable": false,
+          "writes": [
+            {
+              "path": "tests/spec/eval_test.wr",
+              "content": "fn test_eval_case() -> Nothing {\n    assert value 1 == 1\n}"
+            }
+          ],
+          "deletes": []
+        }
+      ]
+    }
+  ]
+}

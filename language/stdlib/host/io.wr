@@ -1,0 +1,8 @@
+//
+// Console IO helpers.
+
+// Print a line to stdout.
+fn print_line(text: String) -> Nothing {
+    __wr_print(text)
+    return nothing
+}

@@ -1,0 +1,159 @@
+//
+// Core HTTP server orchestration policies.
+
+use {
+    HttpRequestQueueThresholdConfiguration,
+    HttpResponse,
+    HttpListenerConfiguration,
+    abort_request_dispatch_batch,
+    begin_request_dispatch_batch,
+    create_http_queue_saturated_response_context,
+    create_http_request_queue_threshold_configuration_from_environment,
+    create_http_response_frame_map,
+    compute_http_worker_pool_size,
+    run_request_dispatch_batch_end,
+    try_to_create_http_server_listener,
+    try_to_enforce_request_backpressure
+}
+from host/web_server
+
+class HttpWorkerPoolConfiguration {
+    mutable authentication_objective: Integer = 0
+    mutable application_objective: Integer = 1
+    mutable static_asset_objective: Integer = 3
+    mutable minimum_pool_size: Integer = 1
+    mutable maximum_pool_size: Integer = 0
+
+
+}
+fn create_default_http_worker_pool_configuration() -> HttpWorkerPoolConfiguration {
+    return HttpWorkerPoolConfiguration()
+
+
+}
+fn create_default_http_request_queue_threshold_configuration(
+) -> HttpRequestQueueThresholdConfiguration {
+    return create_http_request_queue_threshold_configuration_from_environment()
+
+
+}
+fn try_to_start_http_server(configuration: HttpListenerConfiguration) -> Result[Integer] {
+    return try_to_create_http_server_listener(configuration)
+
+
+}
+fn compute_authentication_worker_pool_size(
+    configuration: HttpWorkerPoolConfiguration
+) -> Integer {
+    return compute_http_worker_pool_size(
+        configuration.authentication_objective,
+        configuration.minimum_pool_size,
+        configuration.maximum_pool_size,
+        1
+    )
+
+
+}
+fn compute_application_worker_pool_size(
+    configuration: HttpWorkerPoolConfiguration
+) -> Integer {
+    return compute_http_worker_pool_size(
+        configuration.application_objective,
+        configuration.minimum_pool_size,
+        configuration.maximum_pool_size,
+        1
+    )
+
+
+}
+fn compute_static_asset_worker_pool_size(
+    configuration: HttpWorkerPoolConfiguration
+) -> Integer {
+    return compute_http_worker_pool_size(
+        configuration.static_asset_objective,
+        configuration.minimum_pool_size,
+        configuration.maximum_pool_size,
+        1
+    )
+
+
+}
+fn get_authentication_queue_limit(
+    queue_threshold_configuration: HttpRequestQueueThresholdConfiguration
+) -> Integer {
+    return queue_threshold_configuration.authentication_queue_threshold
+
+
+}
+fn get_application_queue_limit(
+    queue_threshold_configuration: HttpRequestQueueThresholdConfiguration
+) -> Integer {
+    return queue_threshold_configuration.application_queue_threshold
+
+
+}
+fn get_static_asset_queue_limit(
+    queue_threshold_configuration: HttpRequestQueueThresholdConfiguration
+) -> Integer {
+    return queue_threshold_configuration.static_asset_queue_threshold
+
+
+}
+fn create_queue_saturated_response_context(
+    queue_threshold_configuration: HttpRequestQueueThresholdConfiguration
+) -> HttpResponse {
+    return create_http_queue_saturated_response_context(
+        queue_threshold_configuration.retry_after_seconds
+    )
+
+
+}
+fn create_http_request_dispatch_result(
+    worker_pool_handle: Integer,
+    queue_limit: Integer,
+    retry_after_seconds: Integer
+) -> Map[Any, Any] {
+    dispatch_result_items = {}
+
+    begin_request_dispatch_batch(worker_pool_handle)
+    match try_to_enforce_request_backpressure(
+        worker_pool_handle,
+        queue_limit
+    ) {
+        Ok(_) {
+            run_request_dispatch_batch_end(worker_pool_handle)
+            dispatch_result_items.set("dispatch_success", true)
+            dispatch_result_items.set("queue_saturated_response_context", {})
+            dispatch_result_items.set("rejection_message", "")
+            return dispatch_result_items
+        }
+        Err(error_message) {
+            abort_request_dispatch_batch(worker_pool_handle)
+            dispatch_result_items.set("dispatch_success", false)
+            dispatch_result_items.set("queue_saturated_response_context", create_http_response_frame_map(
+                    create_http_queue_saturated_response_context(retry_after_seconds)
+                )
+            )
+            dispatch_result_items.set("rejection_message", error_message)
+            return dispatch_result_items
+
+
+        }
+    }
+}
+//
+// Compatibility helper for existing call sites that only need dispatch success/failure.
+fn try_to_dispatch_http_request_batch(
+    worker_pool_handle: Integer,
+    queue_limit: Integer
+) -> Result[Nothing] {
+    dispatch_result_items = create_http_request_dispatch_result(
+        worker_pool_handle,
+        queue_limit,
+        1
+    )
+    if dispatch_result_items.get("dispatch_success") == true {
+        return nothing
+    }
+    return error "http dispatch rejected: queue pressure"
+}

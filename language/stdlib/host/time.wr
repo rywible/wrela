@@ -1,0 +1,12 @@
+//
+// Time helpers.
+
+// Return a monotonic clock value in nanoseconds.
+fn get_current_nanoseconds_since_epoch() -> Integer {
+    return __wr_clock_ns()
+
+}
+// Sleep for the(duration in milliseconds.)
+fn sleep(milliseconds: Integer) -> Pending[Nothing] {
+    return __wr_sleep_ms(milliseconds)
+}

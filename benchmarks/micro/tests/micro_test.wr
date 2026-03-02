@@ -1,0 +1,125 @@
+fn compute_checksum_mix(current: Integer, value: Integer) -> Integer {
+    return (current * 31) + value
+}
+
+fn value_is_even(value: Integer) -> Boolean {
+    return value % 2 == 0
+}
+
+fn try_to_parse_small(value: Integer) -> Result[Integer] {
+    if value % 7 == 0 {
+        return error "skip"
+    }
+    return value + 1
+}
+
+class SmallObject {
+    value: Integer
+}
+
+fn test_typed_integer_loop_ops_20000000() -> Nothing {
+    mutable checksum = 0
+    for i in 1...20000000 {
+        checksum = compute_checksum_mix(current=checksum, value=i % 17)
+    }
+    assert value checksum != 0
+}
+
+fn test_check_given_boolean_lane_ops_12000000() -> Nothing {
+    mutable matches = 0
+    for i in 1...12000000 {
+        if value_is_even(value=i) {
+            matches += 1
+        }
+    }
+    assert value matches == 6000000
+}
+
+fn test_result_unwrap_fastpath_ops_8000000() -> Nothing {
+    mutable checksum = 0
+    for i in 1...8000000 {
+        parsed = try_to_parse_small(value=i)
+        match parsed {
+            Ok(value) {
+                checksum = compute_checksum_mix(current=checksum, value=value % 23)
+            }
+            Err(_) {
+                checksum = compute_checksum_mix(current=checksum, value=3)
+            }
+            default {
+                checksum = compute_checksum_mix(current=checksum, value=5)
+            }
+        }
+    }
+    assert value checksum > 0
+}
+
+fn test_map_mutate_lookup_mix_ops_6000000() -> Nothing {
+    mutable a = 0
+    mutable b = 0
+    mutable c = 0
+    mutable d = 0
+    mutable checksum = 0
+    for i in 1...6000000 {
+        key = i % 4
+        if key == 0 {
+            a += 1
+            checksum = compute_checksum_mix(current=checksum, value=a % 19)
+        }
+        if key == 1 {
+            b += 1
+            checksum = compute_checksum_mix(current=checksum, value=b % 19)
+        }
+        if key == 2 {
+            c += 1
+            checksum = compute_checksum_mix(current=checksum, value=c % 19)
+        }
+        if key == 3 {
+            d += 1
+            checksum = compute_checksum_mix(current=checksum, value=d % 19)
+        }
+    }
+    assert value checksum > 0
+}
+
+fn test_string_concat_interpolation_ops_5000000() -> Nothing {
+    mutable checksum = 0
+    mutable cursor = "0:0"
+    for i in 1...5000000 {
+        left = i % 100
+        right = (i + 37) % 100
+        cursor = "{left}:{right}"
+        if i % 8 == 0 {
+            cursor = "{left}:{right}/edge"
+        }
+        checksum = compute_checksum_mix(current=checksum, value=i % 11)
+    }
+    assert value checksum != 0
+    assert value cursor != ""
+}
+
+fn test_list_append_iterate_ops_7000000() -> Nothing {
+    mutable checksum = 0
+    mutable stage = []
+    for i in 1...7000000 {
+        __wr_list_push(stage, i % 13)
+        if i % 1024 == 0 {
+            mutable inner = 0
+            for value in stage {
+                inner = (inner + value) % 97
+            }
+            checksum = compute_checksum_mix(current=checksum, value=inner)
+            stage = []
+        }
+    }
+    assert value checksum >= 0
+}
+
+fn test_class_instance_churn_ops_4000000() -> Nothing {
+    mutable checksum = 0
+    for i in 1...4000000 {
+        item = SmallObject(value=i % 29)
+        checksum = compute_checksum_mix(current=checksum, value=item.value)
+    }
+    assert value checksum != 0
+}

@@ -1,0 +1,9 @@
+//
+// Spatial audio helpers for 3D positioned sound.
+
+use {play_combat_impact, set_audio_listener} from audio
+
+fn play_spatial_impact(sound_id: Integer, volume: Integer, x: Integer, y: Integer, z: Integer) -> Integer {
+    set_audio_listener(x, y, z)
+    return play_combat_impact(sound_id, volume)
+}

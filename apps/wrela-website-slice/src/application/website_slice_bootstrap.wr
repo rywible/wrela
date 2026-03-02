@@ -1,0 +1,45 @@
+use {
+    create_default_game_session_runtime_configuration,
+    run_game_session_once
+}
+from pkg/game/core/session
+
+use {
+    create_site_state_after_step,
+    create_default_site_input,
+    create_default_site_state,
+    create_default_site_theme,
+    run_site_wave
+}
+from domain/site_lane
+
+use {
+    create_site_scene,
+    create_site_surface_schema_family,
+    create_site_widget,
+}
+from frontend/integrations/site_lane
+
+fn run_website_slice_bootstrap() -> Integer {
+    configuration = create_default_game_session_runtime_configuration()
+    run_game_session_once(configuration=configuration) ?? nothing
+
+    initial_state = create_default_site_state()
+    site_input = create_default_site_input()
+    site_input.pointer_signal = true
+    stepped_state = create_site_state_after_step(state=initial_state, input=site_input)
+
+    site_theme = create_default_site_theme()
+    site_scene = create_site_scene(state=stepped_state, site_theme=site_theme)
+    create_site_widget(state=stepped_state, site_theme=site_theme)
+    schema_family = create_site_surface_schema_family()
+    material_contract = "site-surface-pbr-temporal-resource-v5"
+    if schema_family == "" {
+        return -1
+    }
+    if material_contract == "" {
+        return -2
+    }
+
+    return stepped_state.click_count + run_site_wave(tick=stepped_state.tick) + site_scene.click_count
+}

@@ -1,0 +1,46 @@
+use {
+    create_default_game_session_runtime_configuration,
+    run_game_session_once
+}
+from pkg/game/core/session
+
+use {
+    create_default_forest_world,
+    create_forest_world_after_tick_system,
+    get_focus_body_stability,
+    get_focus_body_wear,
+    get_world_activity,
+    get_world_resonance,
+    get_world_damage
+} from domain/world_state
+
+use {
+    create_forest_clearing_schema_family,
+    create_forest_hud
+}
+from frontend/integrations/forest_scene
+
+fn run_forest_bootstrap() -> Integer {
+    configuration = create_default_game_session_runtime_configuration()
+    run_game_session_once(configuration=configuration) ?? nothing
+
+    mutable forest_world = create_default_forest_world()
+    forest_world = create_forest_world_after_tick_system(state=forest_world)
+    schema_family = create_forest_clearing_schema_family()
+    material_contract = "forest-clearing-pbr-temporal-resource-v5"
+    forest_hud = create_forest_hud(
+        health_ratio=get_focus_body_stability(forest_world),
+        stamina_ratio=1000 - get_focus_body_wear(forest_world),
+        resonance_tier=get_world_resonance(forest_world) / 250,
+        resonance_charge=get_world_activity(forest_world),
+        enemy_health_ratio=1000 - get_world_damage(forest_world)
+    )
+    if schema_family == "" {
+        return -1
+    }
+    if material_contract == "" {
+        return -2
+    }
+
+    return forest_hud.health_ratio + forest_hud.resonance_charge + forest_world.tick
+}

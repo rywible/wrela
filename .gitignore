@@ -1,0 +1,39 @@
+target
+node_modules
+zed-treesitter
+mir_smoke
+test_output.txt
+.plans
+.vscode
+__pycache__
+.artifacts
+
+# Generated certification and native build artifacts
+cert.json
+compiler/cert.json
+wrela.out
+wrela.out.*.o
+compiler/wrela.out
+compiler/wrela.out.*.o
+
+# App-local generated outputs
+apps/*/target/
+apps/*/tests/.artifacts/
+apps/*/cert.json
+apps/*/*.out
+apps/*/*.o
+
+.squidward
+.checkpoints
+.data
+.cache
+# Generated runtime/deploy artifacts
+artifacts/
+.serena
+.wrela
+.claude
+.cursor
+.opencode
+.playwright-mcp
+.wrela
+wrela-cli-*

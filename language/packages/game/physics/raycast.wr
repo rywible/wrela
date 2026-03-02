@@ -1,0 +1,147 @@
+//
+// Fixed-point raycasting for ground detection and simple collision queries.
+
+use {
+    AabbFixed
+}
+from game/physics/collision
+
+resource RayFixed {
+    mutable origin_x: Integer = 0
+    mutable origin_y: Integer = 1000
+    mutable origin_z: Integer = 0
+    mutable direction_x: Integer = 0
+    mutable direction_y: Integer = -1000
+    mutable direction_z: Integer = 0
+}
+
+resource RayHitFixed {
+    mutable hit: Boolean = false
+    mutable distance_milli: Integer = 0
+    mutable point_x: Integer = 0
+    mutable point_y: Integer = 0
+    mutable point_z: Integer = 0
+    mutable normal_x: Integer = 0
+    mutable normal_y: Integer = 1000
+    mutable normal_z: Integer = 0
+}
+
+fn create_ray(
+    origin_x: Integer, origin_y: Integer, origin_z: Integer,
+    direction_x: Integer, direction_y: Integer, direction_z: Integer
+) -> RayFixed {
+    return RayFixed(
+        origin_x=origin_x, origin_y=origin_y, origin_z=origin_z,
+        direction_x=direction_x, direction_y=direction_y, direction_z=direction_z
+    )
+}
+
+fn create_ray_hit_miss() -> RayHitFixed {
+    return RayHitFixed(hit=false)
+}
+
+fn raycast_ground_plane(ray: RayFixed, ground_y: Integer) -> RayHitFixed {
+    // Ground plane at y = ground_y. Ray must point downward.
+    if ray.direction_y == 0 {
+        return RayHitFixed(hit=false)
+    }
+    // t = (ground_y - origin_y) / direction_y
+    t_milli = (ground_y - ray.origin_y) * 1000 / ray.direction_y
+    if t_milli < 0 {
+        return RayHitFixed(hit=false)
+    }
+
+    hit_x = ray.origin_x + ray.direction_x * t_milli / 1000
+    hit_z = ray.origin_z + ray.direction_z * t_milli / 1000
+
+    return RayHitFixed(
+        hit=true,
+        distance_milli=t_milli,
+        point_x=hit_x,
+        point_y=ground_y,
+        point_z=hit_z,
+        normal_x=0,
+        normal_y=1000,
+        normal_z=0
+    )
+}
+
+fn raycast_aabb(ray: RayFixed, box: AabbFixed) -> RayHitFixed {
+    // Slab method for AABB intersection
+    mutable t_min = -999999
+    mutable t_max = 999999
+
+    // X slab
+    if ray.direction_x != 0 {
+        tx1 = (box.min_x - ray.origin_x) * 1000 / ray.direction_x
+        tx2 = (box.max_x - ray.origin_x) * 1000 / ray.direction_x
+        if tx1 > tx2 {
+            mutable temp = tx1
+            tx1 = tx2
+            tx2 = temp
+        }
+        if tx1 > t_min { t_min = tx1 }
+        if tx2 < t_max { t_max = tx2 }
+    }
+
+    // Y slab
+    if ray.direction_y != 0 {
+        ty1 = (box.min_y - ray.origin_y) * 1000 / ray.direction_y
+        ty2 = (box.max_y - ray.origin_y) * 1000 / ray.direction_y
+        if ty1 > ty2 {
+            mutable temp = ty1
+            ty1 = ty2
+            ty2 = temp
+        }
+        if ty1 > t_min { t_min = ty1 }
+        if ty2 < t_max { t_max = ty2 }
+    }
+
+    // Z slab
+    if ray.direction_z != 0 {
+        tz1 = (box.min_z - ray.origin_z) * 1000 / ray.direction_z
+        tz2 = (box.max_z - ray.origin_z) * 1000 / ray.direction_z
+        if tz1 > tz2 {
+            mutable temp = tz1
+            tz1 = tz2
+            tz2 = temp
+        }
+        if tz1 > t_min { t_min = tz1 }
+        if tz2 < t_max { t_max = tz2 }
+    }
+
+    if t_max < 0 {
+        return RayHitFixed(hit=false)
+    }
+    if t_min > t_max {
+        return RayHitFixed(hit=false)
+    }
+
+    t = t_min
+    if t < 0 {
+        t = t_max
+    }
+
+    hit_x = ray.origin_x + ray.direction_x * t / 1000
+    hit_y = ray.origin_y + ray.direction_y * t / 1000
+    hit_z = ray.origin_z + ray.direction_z * t / 1000
+
+    return RayHitFixed(
+        hit=true,
+        distance_milli=t,
+        point_x=hit_x,
+        point_y=hit_y,
+        point_z=hit_z,
+        normal_x=0,
+        normal_y=1000,
+        normal_z=0
+    )
+}
+
+fn is_grounded(position_y: Integer, ground_y: Integer, tolerance: Integer) -> Boolean {
+    diff = position_y - ground_y
+    if diff < 0 {
+        diff = 0 - diff
+    }
+    return diff <= tolerance
+}

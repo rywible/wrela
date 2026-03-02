@@ -1,0 +1,66 @@
+//
+// Shader/material registration contracts for custom-shader-first rendering.
+
+class ShaderModuleReference {
+    mutable shader_id: String = "shader_main"
+    mutable vertex_entry: String = "vs_main"
+    mutable fragment_entry: String = "fs_main"
+}
+
+class MaterialDescriptor {
+    mutable material_id: String = "default"
+    mutable shader_id: String = "shader_main"
+    mutable blend_mode: String = "opaque"
+    mutable depth_mode: String = "less-equal"
+}
+
+fn create_shader_module_reference(
+    shader_id: String,
+    vertex_entry: String,
+    fragment_entry: String
+) -> ShaderModuleReference {
+    return ShaderModuleReference(
+        shader_id=shader_id,
+        vertex_entry=vertex_entry,
+        fragment_entry=fragment_entry
+    )
+}
+
+fn create_material_descriptor(
+    material_id: String,
+    shader_id: String
+) -> MaterialDescriptor {
+    return MaterialDescriptor(
+        material_id=material_id,
+        shader_id=shader_id
+    )
+}
+
+class DefaultLightingContract {
+    mutable pbr_enabled: Boolean = true
+    mutable hdr_enabled: Boolean = true
+    mutable tonemap_operator: String = "aces"
+    mutable clustered_lighting_enabled: Boolean = true
+    mutable max_lights_per_cluster: Integer = 64
+    mutable shadows_enabled: Boolean = true
+}
+
+class DefaultReflectionFallbackContract {
+    mutable fallback_chain: String = "planar->ssr->probe"
+    mutable planar_max_planes: Integer = 2
+    mutable ssr_max_steps: Integer = 32
+    mutable probe_max_active_probes: Integer = 32
+}
+
+class DefaultTemporalStackContract {
+    mutable motion_vectors_enabled: Boolean = true
+    mutable taa_enabled: Boolean = true
+    mutable temporal_upscaling_enabled: Boolean = true
+    mutable reactive_mask_enabled: Boolean = true
+    mutable disocclusion_mask_enabled: Boolean = true
+    mutable dynamic_resolution_min_scale: Float = 0.6
+    mutable dynamic_resolution_max_scale: Float = 1.0
+    mutable dynamic_resolution_target_frame_time_ms: Float = 16.7
+    mutable temporal_metrics_window_frames: Integer = 120
+    mutable temporal_metrics_report_interval_ms: Integer = 1000
+}

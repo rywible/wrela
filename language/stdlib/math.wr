@@ -1,0 +1,83 @@
+//
+// Numeric helpers.
+
+fn abs(value: Integer) -> Integer {
+    if value < 0 {
+        return 0 - value
+    }
+    return value
+
+
+}
+fn min(left: Integer, right: Integer) -> Integer {
+    if left < right {
+        return left
+    }
+    return right
+
+
+}
+fn max(left: Integer, right: Integer) -> Integer {
+    if left > right {
+        return left
+    }
+    return right
+
+
+}
+fn clamp(value: Integer, minimum: Integer, maximum: Integer) -> Integer {
+    lower = min(left=minimum, right=maximum)
+    upper = max(left=minimum, right=maximum)
+    if value < lower {
+        return lower
+    }
+    if value > upper {
+        return upper
+    }
+    return value
+
+
+}
+fn sign(value: Integer) -> Integer {
+    if value > 0 {
+        return 1
+    }
+    if value < 0 {
+        return -1
+    }
+    return 0
+
+
+}
+fn lerp(start: Integer, end: Integer, amount: Integer) -> Integer {
+    return start + ((end - start) * amount)
+
+
+}
+fn popcount(value: Integer) -> Integer {
+    mutable bits = value
+    if bits < 0 {
+        bits = 0 - bits
+    }
+    mutable count = 0
+    while bits > 0 {
+        count = count + (bits & 1)
+        bits = bits >> 1
+    }
+    return count
+
+
+}
+fn floor(value: Integer) -> Integer {
+    return value
+
+
+}
+fn ceil(value: Integer) -> Integer {
+    return value
+
+
+}
+fn round(value: Integer) -> Integer {
+    return value
+}

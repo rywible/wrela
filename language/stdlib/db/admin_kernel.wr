@@ -1,0 +1,142 @@
+//
+// DB admin kernel wrappers around runtime admin intrinsics.
+// This module owns mutable ownership and control-plane operations.
+
+fn start_snapshot_db(db_handle_start_snapshot: Integer) -> Integer {
+    snapshot_start_result = __wr_db_admin_snapshot_start(db_handle_start_snapshot)
+    match snapshot_start_result {
+        Integer(snapshot_id) {
+            return snapshot_id
+        }
+        default {
+            return 0
+        }
+    }
+}
+
+fn snapshot_status_db(
+    db_handle_snapshot_status: Integer,
+    snapshot_id_status: Integer
+) -> Integer {
+    snapshot_status_result = __wr_db_admin_snapshot_status(db_handle_snapshot_status, snapshot_id_status)
+    match snapshot_status_result {
+        Integer(snapshot_progress) {
+            return snapshot_progress
+        }
+        default {
+            return -1
+        }
+    }
+}
+
+fn restore_snapshot_db(
+    db_handle_restore_snapshot: Integer,
+    snapshot_id_restore: Integer
+) -> Result[Nothing] {
+    if __wr_db_admin_restore(db_handle_restore_snapshot, snapshot_id_restore) {
+        return nothing
+    }
+    return error "restore_snapshot_db failed"
+}
+
+fn checkpoint_create_db(db_handle_checkpoint_create: Integer) -> Result[Nothing] {
+    if __wr_db_admin_checkpoint_create(db_handle_checkpoint_create) {
+        return nothing
+    }
+    return error "checkpoint_create_db failed"
+}
+
+fn checkpoint_restore_latest_db(db_handle_checkpoint_restore_latest: Integer) -> Result[Nothing] {
+    if __wr_db_admin_checkpoint_restore_latest(db_handle_checkpoint_restore_latest) {
+        return nothing
+    }
+    return error "checkpoint_restore_latest_db failed"
+}
+
+fn schema_epoch_set_db(db_handle_schema_epoch_set: Integer, epoch_set: Integer) -> Result[Nothing] {
+    if __wr_db_admin_schema_epoch_set(db_handle_schema_epoch_set, epoch_set) {
+        return nothing
+    }
+    return error "schema_epoch_set_db failed"
+}
+
+fn schema_set_all_voters_on_target_binary_db(
+    db_handle_schema_set_binary: Integer,
+    ready_set_binary: Boolean
+) -> Result[Nothing] {
+    if __wr_db_admin_schema_set_all_voters_on_target_binary(db_handle_schema_set_binary, ready_set_binary) {
+        return nothing
+    }
+    return error "schema_set_all_voters_on_target_binary_db failed"
+}
+
+fn autoscale_tick_db(db_handle_autoscale_tick: Integer) -> Result[Nothing] {
+    if __wr_db_admin_autoscale_tick(db_handle_autoscale_tick) == nothing {
+        return error "autoscale_tick_db failed"
+    }
+    return nothing
+}
+
+fn plan_rehome_db(
+    db_handle_plan_rehome: Integer,
+    keyrange_plan_rehome: String,
+    target_region_plan_rehome: String,
+    reason_plan_rehome: String
+) -> Result[String] {
+    plan_result = __wr_db_admin_plan_rehome(
+        db_handle_plan_rehome,
+        keyrange_plan_rehome,
+        target_region_plan_rehome,
+        reason_plan_rehome
+    )
+    match plan_result {
+        String(job_id) {
+            return job_id
+        }
+        default {
+            return error "plan_rehome_db failed"
+        }
+    }
+}
+
+fn advance_rehome_db(
+    db_handle_advance_rehome: Integer,
+    job_id_advance_rehome: String,
+    phase_ack_advance_rehome: String
+) -> Result[String] {
+    advance_result = __wr_db_admin_advance_rehome(
+        db_handle_advance_rehome,
+        job_id_advance_rehome,
+        phase_ack_advance_rehome
+    )
+    match advance_result {
+        String(phase_name) {
+            return phase_name
+        }
+        default {
+            return error "advance_rehome_db failed"
+        }
+    }
+}
+
+fn promote_async_failover_db(
+    db_handle_promote_async_failover: Integer,
+    keyrange_promote_async_failover: String,
+    region_promote_async_failover: String,
+    expected_epoch_promote_async_failover: Integer
+) -> Result[String] {
+    promote_result = __wr_db_admin_promote_async_failover(
+        db_handle_promote_async_failover,
+        keyrange_promote_async_failover,
+        region_promote_async_failover,
+        expected_epoch_promote_async_failover
+    )
+    match promote_result {
+        String(owner_json) {
+            return owner_json
+        }
+        default {
+            return error "promote_async_failover_db failed"
+        }
+    }
+}

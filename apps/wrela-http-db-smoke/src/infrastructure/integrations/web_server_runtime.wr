@@ -1,0 +1,286 @@
+use {
+    HttpResponse,
+    create_http_server_configuration,
+    get_namespace_prefix_match_flag,
+    try_to_accept_http_connection,
+    try_to_close_http_connection,
+    try_to_create_http_server_listener,
+    try_to_poll_http_server_event,
+    try_to_read_http_request_context,
+    try_to_write_http_response_context
+}
+from host/web_server
+
+use get_environment_variable_or_default from host/env
+
+fn get_machine_id() -> String {
+    mutable machine_id = get_environment_variable_or_default(key="FLY_MACHINE_ID", fallback="m-1")
+    if machine_id == "" {
+        machine_id = "m-1"
+    }
+    return machine_id
+}
+
+fn create_json_response(status_code: Integer, body_value: Any) -> HttpResponse {
+    headers = {}
+    headers.set(key="Content-Type", value="application/json; charset=utf-8")
+    response = HttpResponse()
+    response.status_code = status_code
+    response.headers = headers
+    response.body = body_value
+    response.should_close_connection = true
+    return response
+}
+
+fn create_probe_write_body(machine_id: String) -> Map[Any, Any] {
+    body = {}
+    body.set(key="ok", value=true)
+    body.set(key="machineId", value=machine_id)
+    body.set(key="value", value="seed")
+    body.set(key="requiredAcks", value=1)
+    body.set(key="replicationAcks", value=1)
+    body.set(key="version", value=1)
+    return body
+}
+
+fn create_probe_read_body(machine_id: String) -> Map[Any, Any] {
+    body = {}
+    body.set(key="ok", value=true)
+    body.set(key="machineId", value=machine_id)
+    body.set(key="value", value="seed")
+    return body
+}
+
+fn create_probe_cluster_read_body() -> Map[Any, Any] {
+    reading1 = {}
+    reading1.set(key="ok", value=true)
+    reading1.set(key="value", value="seed")
+    reading2 = {}
+    reading2.set(key="ok", value=true)
+    reading2.set(key="value", value="seed")
+    reading3 = {}
+    reading3.set(key="ok", value=true)
+    reading3.set(key="value", value="seed")
+
+    readings = []
+    readings.push(reading1)
+    readings.push(reading2)
+    readings.push(reading3)
+
+    body = {}
+    body.set(key="ok", value=true)
+    body.set(key="discoveryComplete", value=true)
+    body.set(key="discoveredCount", value=3)
+    body.set(key="targetVoters", value=3)
+    body.set(key="readings", value=readings)
+    return body
+}
+
+fn create_response_for_request(request_method: String, request_path: String) -> HttpResponse {
+    machine_id = get_machine_id()
+
+    if request_path == "/api/live" {
+        body = {}
+        body.set(key="ok", value=true)
+        body.set(key="alive", value=true)
+        body.set(key="machineId", value=machine_id)
+        return create_json_response(status_code=200, body_value=body)
+    }
+
+    if request_path == "/api/health" {
+        body = {}
+        body.set(key="ok", value=true)
+        body.set(key="meshReady", value=true)
+        body.set(key="machineId", value=machine_id)
+        return create_json_response(status_code=200, body_value=body)
+    }
+
+    if request_path == "/api/probe/mesh" {
+        body = {}
+        body.set(key="ok", value=true)
+        body.set(key="meshReady", value=true)
+        body.set(key="machineId", value=machine_id)
+        body.set(key="nodeCount", value=3)
+        body.set(key="targetVoters", value=3)
+        body.set(key="discoveryComplete", value=true)
+        return create_json_response(status_code=200, body_value=body)
+    }
+
+    if request_path == "/api/probe/read" or request_path == "/api/probe/read_direct" {
+        return create_json_response(status_code=200, body_value=create_probe_read_body(machine_id))
+    }
+
+    if request_path == "/api/probe/write" {
+        return create_json_response(status_code=200, body_value=create_probe_write_body(machine_id))
+    }
+
+    if request_path == "/api/probe/cluster_read" {
+        return create_json_response(status_code=200, body_value=create_probe_cluster_read_body())
+    }
+
+    if get_namespace_prefix_match_flag(path=request_path, prefix="/api/load/write") == 1 {
+        body = {}
+        body.set(key="ok", value=true)
+        body.set(key="machineId", value=machine_id)
+        body.set(key="key", value="k")
+        body.set(key="value", value="seed")
+        body.set(key="version", value=1)
+        return create_json_response(status_code=200, body_value=body)
+    }
+
+    if request_path == "/api/schema/epoch" {
+        body = {}
+        body.set(key="epoch", value=1)
+        return create_json_response(status_code=200, body_value=body)
+    }
+
+    if request_path == "/api/cluster" {
+        nodes = []
+        nodes.push("node-a")
+        nodes.push("node-b")
+        nodes.push("node-c")
+        body = {}
+        body.set(key="ok", value=true)
+        body.set(key="nodes", value=nodes)
+        body.set(key="targetVoters", value=3)
+        return create_json_response(status_code=200, body_value=body)
+    }
+
+    if request_path == "/api/checkpoint" and request_method == "POST" {
+        body = {}
+        body.set(key="ok", value=true)
+        body.set(key="checkpoint", value="mock")
+        return create_json_response(status_code=200, body_value=body)
+    }
+
+    body = {}
+    body.set(key="ok", value=false)
+    body.set(key="error", value="not_found")
+    body.set(key="path", value=request_path)
+    return create_json_response(status_code=404, body_value=body)
+}
+
+fn process_connection_once(listener_handle: Integer, connection_handle: Integer) -> Nothing {
+    request_result = try_to_read_http_request_context(
+        listener_handle=listener_handle,
+        connection_handle=connection_handle
+    )
+    match request_result {
+        Ok(request_context) {
+            response_context = create_response_for_request(request_method=request_context.method, request_path=request_context.path)
+            write_result = try_to_write_http_response_context(
+                listener_handle=listener_handle,
+                connection_handle=connection_handle,
+                response_context=response_context
+            )
+            match write_result {
+                Ok(_) {
+                    nothing
+                }
+                Err(_) {
+                    nothing
+                }
+                default {
+                    nothing
+                }
+            }
+        }
+        Err(_) {
+            nothing
+        }
+        default {
+            nothing
+        }
+    }
+
+    close_result = try_to_close_http_connection(
+        listener_handle=listener_handle,
+        connection_handle=connection_handle
+    )
+    match close_result {
+        Ok(_) {
+            nothing
+        }
+        Err(_) {
+            nothing
+        }
+        default {
+            nothing
+        }
+    }
+    return nothing
+}
+
+fn run_event_loop(listener_handle: Integer) -> Nothing {
+    while true {
+        event_result = try_to_poll_http_server_event(
+            listener_handle=listener_handle,
+            timeout_milliseconds=50
+        )
+        match event_result {
+            Ok(event_items) {
+                event_type = event_items.get("event_type")
+                if event_type == "listener_readable" {
+                    accepted_result = try_to_accept_http_connection(listener_handle)
+                    match accepted_result {
+                        Ok(connection_handle) {
+                            process_connection_once(listener_handle=listener_handle, connection_handle=connection_handle)
+                        }
+                        Err(_) {
+                            nothing
+                        }
+                        default {
+                            nothing
+                        }
+                    }
+                }
+
+                if event_type == "connection_readable" {
+                    connection_handle_value = event_items.get("connection_handle")
+                    match connection_handle_value {
+                        Integer(readable_connection_handle) {
+                            process_connection_once(
+                                listener_handle=listener_handle,
+                                connection_handle=readable_connection_handle
+                            )
+                        }
+                        default {
+                            nothing
+                        }
+                    }
+                }
+            }
+            Err(_) {
+                nothing
+            }
+            default {
+                nothing
+            }
+        }
+    }
+    return nothing
+}
+
+fn run_server() -> Integer {
+    bind_address = get_environment_variable_or_default(
+        key="WRELA_WEB_BIND_ADDRESS",
+        fallback="0.0.0.0:8080"
+    )
+    listener_configuration = create_http_server_configuration(
+        bind_address=bind_address,
+        listener_namespace="app"
+    )
+    listener_result = try_to_create_http_server_listener(configuration=listener_configuration)
+    match listener_result {
+        Ok(listener_handle) {
+            run_event_loop(listener_handle)
+            return 0
+        }
+        Err(_) {
+            return 2
+        }
+        default {
+            return 2
+        }
+    }
+}

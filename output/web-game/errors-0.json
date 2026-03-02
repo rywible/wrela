@@ -1,0 +1,28 @@
+[
+  {
+    "id": 3,
+    "timestamp": "2026-02-26T17:05:11.472Z",
+    "type": "console",
+    "level": "error",
+    "text": "Failed to load resource: the server responded with a status of 404 (File not found)",
+    "location": {
+      "url": "http://127.0.0.1:8091/favicon.ico",
+      "lineNumber": 0,
+      "columnNumber": 0
+    },
+    "iteration": -1
+  },
+  {
+    "id": 5,
+    "timestamp": "2026-02-26T17:05:11.472Z",
+    "type": "console",
+    "level": "error",
+    "text": "WebSocket connection to 'ws://127.0.0.1:8091/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+    "location": {
+      "url": "http://127.0.0.1:8091/client-runtime.js",
+      "lineNumber": 334,
+      "columnNumber": 0
+    },
+    "iteration": -1
+  }
+]

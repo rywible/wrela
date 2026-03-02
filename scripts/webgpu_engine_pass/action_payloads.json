@@ -1,0 +1,141 @@
+{
+  "steps": [
+    { "buttons": [], "frames": 10 },
+    { "buttons": ["left"], "frames": 8 },
+    { "buttons": [], "frames": 4 },
+    { "buttons": ["right"], "frames": 8 },
+    { "buttons": [], "frames": 4 },
+    { "buttons": ["space"], "frames": 2 },
+    { "buttons": [], "frames": 6 }
+  ],
+  "presets": {
+    "warmup": {
+      "expect": {
+        "minAckDelta": 0,
+        "minTickDelta": 20,
+        "minDrawCallsDelta": 20,
+        "requireHashChange": true
+      },
+      "steps": [
+        { "buttons": [], "frames": 10 },
+        { "buttons": ["left"], "frames": 8 },
+        { "buttons": [], "frames": 4 },
+        { "buttons": ["right"], "frames": 8 },
+        { "buttons": [], "frames": 4 },
+        { "buttons": ["space"], "frames": 2 },
+        { "buttons": [], "frames": 6 }
+      ]
+    },
+    "movement_sweep": {
+      "expect": {
+        "minAckDelta": 0,
+        "minTickDelta": 24,
+        "minDrawCallsDelta": 24,
+        "requireHashChange": true
+      },
+      "steps": [
+        { "buttons": ["left"], "frames": 12 },
+        { "buttons": [], "frames": 3 },
+        { "buttons": ["right"], "frames": 12 },
+        { "buttons": [], "frames": 3 },
+        { "buttons": ["up"], "frames": 10 },
+        { "buttons": [], "frames": 3 },
+        { "buttons": ["down"], "frames": 10 },
+        { "buttons": [], "frames": 3 },
+        { "buttons": ["left", "up"], "frames": 8 },
+        { "buttons": [], "frames": 4 }
+      ]
+    },
+    "pickup_attempt": {
+      "expect": {
+        "minAckDelta": 0,
+        "minTickDelta": 20,
+        "minDrawCallsDelta": 24,
+        "requireHashChange": true
+      },
+      "steps": [
+        { "buttons": [], "frames": 6 },
+        { "buttons": ["up"], "frames": 18 },
+        { "buttons": [], "frames": 2 },
+        { "buttons": ["left"], "frames": 10 },
+        { "buttons": [], "frames": 2 },
+        { "buttons": ["down"], "frames": 8 },
+        { "buttons": [], "frames": 2 },
+        { "buttons": ["right"], "frames": 14 },
+        { "buttons": [], "frames": 4 },
+        { "buttons": ["left", "up"], "frames": 8 },
+        { "buttons": [], "frames": 4 }
+      ]
+    },
+    "website_interaction": {
+      "expect": {
+        "minAckDelta": 0,
+        "minTickDelta": 18,
+        "minDrawCallsDelta": 18,
+        "requireHashChange": true,
+        "statusIncludes": "website slice"
+      },
+      "steps": [
+        { "buttons": [], "frames": 12 },
+        { "buttons": ["left_mouse_button"], "frames": 2, "mouse_x": 120, "mouse_y": 80 },
+        { "buttons": [], "frames": 6 },
+        { "buttons": ["down"], "frames": 2 },
+        { "buttons": [], "frames": 2 },
+        { "buttons": ["up"], "frames": 2 },
+        { "buttons": [], "frames": 10 },
+        { "buttons": ["left_mouse_button"], "frames": 2, "mouse_x": 200, "mouse_y": 140 },
+        { "buttons": [], "frames": 6 }
+      ]
+    },
+    "game_stress": {
+      "expect": {
+        "minAckDelta": 0,
+        "minTickDelta": 20,
+        "minDrawCallsDelta": 30,
+        "requireHashChange": true
+      },
+      "steps": [
+        { "buttons": ["left", "up"], "frames": 10 },
+        { "buttons": ["right", "up"], "frames": 10 },
+        { "buttons": ["right", "down"], "frames": 10 },
+        { "buttons": ["left", "down"], "frames": 10 },
+        { "buttons": [], "frames": 4 },
+        { "buttons": ["left"], "frames": 8 },
+        { "buttons": [], "frames": 2 },
+        { "buttons": ["right"], "frames": 8 },
+        { "buttons": [], "frames": 2 },
+        { "buttons": ["up"], "frames": 8 },
+        { "buttons": [], "frames": 2 },
+        { "buttons": ["down"], "frames": 8 },
+        { "buttons": [], "frames": 8 }
+      ]
+    },
+    "website_stress": {
+      "expect": {
+        "minAckDelta": 0,
+        "minTickDelta": 0,
+        "minDrawCallsDelta": 30,
+        "requireHashChange": false
+      },
+      "steps": [
+        { "buttons": ["left", "up"], "frames": 10 },
+        { "buttons": ["right", "up"], "frames": 10 },
+        { "buttons": ["right", "down"], "frames": 10 },
+        { "buttons": ["left", "down"], "frames": 10 },
+        { "buttons": [], "frames": 4 },
+        { "buttons": ["left"], "frames": 8 },
+        { "buttons": [], "frames": 2 },
+        { "buttons": ["right"], "frames": 8 },
+        { "buttons": [], "frames": 2 },
+        { "buttons": ["up"], "frames": 8 },
+        { "buttons": [], "frames": 2 },
+        { "buttons": ["down"], "frames": 8 },
+        { "buttons": [], "frames": 2 },
+        { "buttons": ["left_mouse_button"], "frames": 2, "mouse_x": 120, "mouse_y": 80 },
+        { "buttons": [], "frames": 4 },
+        { "buttons": ["left_mouse_button"], "frames": 2, "mouse_x": 200, "mouse_y": 140 },
+        { "buttons": [], "frames": 8 }
+      ]
+    }
+  }
+}

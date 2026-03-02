@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "kind": "asset-generation-spec-v1",
+  "jobs": [
+    {
+      "id": "forest_ground",
+      "kind": "mesh",
+      "prompt": "Forest clearing ground base mesh with gentle undulation and traversal-friendly topology",
+      "style": "balanced",
+      "constraints": ["no-floaters", "deterministic-topology"],
+      "output_group": "environment",
+      "lod_policy": "near-mid-far",
+      "material_policy": "pbr-ground",
+      "reference_bindings": ["forest"]
+    },
+    {
+      "id": "forest_tree_cluster",
+      "kind": "mesh",
+      "prompt": "Stylized conifer cluster mesh kit for forest edge silhouette",
+      "style": "balanced",
+      "constraints": ["no-intersections", "atlas-friendly-uv"],
+      "output_group": "environment",
+      "lod_policy": "near-mid-far",
+      "material_policy": "pbr-foliage",
+      "reference_bindings": ["forest"]
+    },
+    {
+      "id": "ground_albedo",
+      "kind": "texture",
+      "prompt": "Forest floor albedo texture map with moss and soil breakup",
+      "style": "balanced",
+      "constraints": ["tileable", "no-text"],
+      "output_group": "textures",
+      "lod_policy": "texture-mips",
+      "material_policy": "pbr-ground",
+      "reference_bindings": ["forest"]
+    },
+    {
+      "id": "ground_normal",
+      "kind": "texture",
+      "prompt": "Forest floor normal texture map matching albedo breakup",
+      "style": "balanced",
+      "constraints": ["tileable", "no-artifacts"],
+      "output_group": "textures",
+      "lod_policy": "texture-mips",
+      "material_policy": "pbr-ground",
+      "reference_bindings": ["forest"]
+    },
+    {
+      "id": "hud_frame",
+      "kind": "ui",
+      "prompt": "Forest combat HUD frame with readability-first bars and sockets",
+      "style": "high",
+      "constraints": ["high-contrast", "safe-areas"],
+      "output_group": "ui",
+      "lod_policy": "ui-static",
+      "material_policy": "ui-flat",
+      "reference_bindings": ["ui"]
+    },
+    {
+      "id": "resonance_slash_card",
+      "kind": "vfx",
+      "prompt": "Resonance slash VFX card texture for sword trail and hit flash",
+      "style": "high",
+      "constraints": ["premultiplied-alpha-friendly", "no-text"],
+      "output_group": "vfx",
+      "lod_policy": "vfx-mips",
+      "material_policy": "additive",
+      "reference_bindings": ["hero", "forest"]
+    }
+  ]
+}

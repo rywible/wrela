@@ -1,0 +1,12 @@
+use explain_ownership_db from db/explain_kernel
+
+//
+// Read-only ownership explain wrappers.
+
+fn explain_ownership(db_handle: Integer, namespace: String, key: String) -> Result[String] {
+    return explain_ownership_db(
+        db_handle_explain_ownership=db_handle,
+        namespace_explain_ownership=namespace,
+        key_explain_ownership=key
+    )
+}

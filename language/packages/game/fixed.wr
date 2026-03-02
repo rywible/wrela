@@ -1,0 +1,94 @@
+//
+// Deterministic fixed-step lane helpers.
+
+resource FixedLaneConfiguration {
+    mutable tick_milliseconds: Integer = 16
+    mutable max_catch_up_steps: Integer = 8
+    mutable max_frame_delta_milliseconds: Integer = 96
+}
+
+resource FixedLaneAccumulator {
+    mutable carry_milliseconds: Integer = 0
+    mutable simulated_tick: Integer = 0
+    mutable consumed_steps: Integer = 0
+}
+
+fn create_default_fixed_lane_configuration() -> FixedLaneConfiguration {
+    return FixedLaneConfiguration()
+}
+
+fn create_fixed_lane_accumulator() -> FixedLaneAccumulator {
+    return FixedLaneAccumulator()
+}
+
+fn clamp_frame_delta_milliseconds(
+    configuration: FixedLaneConfiguration,
+    frame_delta_milliseconds: Integer
+) -> Integer {
+    if frame_delta_milliseconds < 0 {
+        return 0
+    }
+    if frame_delta_milliseconds > configuration.max_frame_delta_milliseconds {
+        return configuration.max_frame_delta_milliseconds
+    }
+    return frame_delta_milliseconds
+}
+
+fn accumulate_fixed_lane(
+    accumulator: FixedLaneAccumulator,
+    frame_delta_milliseconds: Integer
+) -> FixedLaneAccumulator {
+    return FixedLaneAccumulator(
+        carry_milliseconds=accumulator.carry_milliseconds + frame_delta_milliseconds,
+        simulated_tick=accumulator.simulated_tick,
+        consumed_steps=0
+    )
+}
+
+fn should_step_fixed_lane(
+    accumulator: FixedLaneAccumulator,
+    configuration: FixedLaneConfiguration,
+    steps_so_far: Integer
+) -> Boolean {
+    if accumulator.carry_milliseconds < configuration.tick_milliseconds {
+        return false
+    }
+    if steps_so_far >= configuration.max_catch_up_steps {
+        return false
+    }
+    return true
+}
+
+fn step_fixed_lane_once(
+    accumulator: FixedLaneAccumulator,
+    configuration: FixedLaneConfiguration
+) -> FixedLaneAccumulator {
+    return FixedLaneAccumulator(
+        carry_milliseconds=accumulator.carry_milliseconds - configuration.tick_milliseconds,
+        simulated_tick=accumulator.simulated_tick + 1,
+        consumed_steps=accumulator.consumed_steps + 1
+    )
+}
+
+system run_fixed_lane_system[stage=fixed, reads=[FixedLaneAccumulator], writes=[FixedLaneAccumulator]](
+    accumulator: FixedLaneAccumulator,
+    configuration: FixedLaneConfiguration,
+    frame_delta_milliseconds: Integer
+) -> FixedLaneAccumulator {
+    clamped_delta = clamp_frame_delta_milliseconds(configuration, frame_delta_milliseconds)
+    mutable next = accumulate_fixed_lane(accumulator, clamped_delta)
+    mutable steps = 0
+    while should_step_fixed_lane(next, configuration, steps) {
+        next = step_fixed_lane_once(next, configuration)
+        steps = steps + 1
+    }
+    return next
+}
+
+fn reset_fixed_lane_step_counter(accumulator: FixedLaneAccumulator) -> FixedLaneAccumulator {
+    return FixedLaneAccumulator(
+        carry_milliseconds=accumulator.carry_milliseconds,
+        simulated_tick=accumulator.simulated_tick,
+        consumed_steps=0
+    )
+}

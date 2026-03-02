@@ -1,0 +1,53 @@
+//
+// Game transport package surface for the vertical slice lane.
+
+use {
+    GameSessionListenerConfiguration,
+    create_game_session_listener_configuration,
+    try_to_close_game_session_listener,
+    try_to_create_game_session_listener,
+    try_to_poll_game_session_event
+}
+from host/game_transport
+
+class GameSessionRuntimeConfiguration {
+    mutable bind_address: String = "127.0.0.1:8091"
+    mutable listener_namespace: String = "game"
+}
+
+fn create_default_game_session_runtime_configuration(
+) -> GameSessionRuntimeConfiguration {
+    return GameSessionRuntimeConfiguration()
+}
+
+fn create_runtime_listener_configuration(
+    configuration: GameSessionRuntimeConfiguration
+) -> GameSessionListenerConfiguration {
+    return create_game_session_listener_configuration(
+        bind_address=configuration.bind_address,
+        listener_namespace=configuration.listener_namespace
+    )
+}
+
+fn run_game_session_once(
+    configuration: GameSessionRuntimeConfiguration
+) -> Result[Nothing] {
+    listener_configuration = create_runtime_listener_configuration(configuration=configuration)
+    listener_result = try_to_create_game_session_listener(listener_configuration)
+    match listener_result {
+        Ok(listener_handle) {
+            try_to_poll_game_session_event(
+                poll_listener_handle=listener_handle,
+                poll_timeout_milliseconds=1
+            ) ?? {}
+            try_to_close_game_session_listener(listener_handle) ?? false
+            return nothing
+        }
+        Err(error_message) {
+            return error error_message
+        }
+        default {
+            return error "run_game_session_once failed to initialize listener"
+        }
+    }
+}

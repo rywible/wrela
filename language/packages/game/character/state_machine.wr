@@ -1,0 +1,317 @@
+//
+// Character state machine with fixed-step transition logic.
+// State enum: 0=idle, 1=walk, 2=run, 3=dodge, 4=attack, 5=stagger, 6=parry_active, 7=recovery
+
+resource CharacterState {
+    mutable current_state: Integer = 0
+    mutable state_tick: Integer = 0
+    mutable facing_x: Integer = 0
+    mutable facing_z: Integer = 1000
+    mutable speed_milli: Integer = 0
+    mutable grounded: Boolean = true
+    mutable recovery_ticks: Integer = 0
+    mutable prev_attack_light: Boolean = false
+    mutable prev_attack_heavy: Boolean = false
+    mutable prev_dodge: Boolean = false
+    mutable prev_parry: Boolean = false
+}
+
+event CharacterInputEvent {
+    mutable move_x: Integer = 0
+    mutable move_z: Integer = 0
+    mutable attack_light: Boolean = false
+    mutable attack_heavy: Boolean = false
+    mutable dodge: Boolean = false
+    mutable parry: Boolean = false
+}
+
+fn create_default_character_state() -> CharacterState {
+    return CharacterState()
+}
+
+fn create_character_input_event(
+    move_x: Integer,
+    move_z: Integer,
+    attack_light: Boolean,
+    attack_heavy: Boolean,
+    dodge: Boolean,
+    parry: Boolean
+) -> CharacterInputEvent {
+    return CharacterInputEvent(
+        move_x=move_x,
+        move_z=move_z,
+        attack_light=attack_light,
+        attack_heavy=attack_heavy,
+        dodge=dodge,
+        parry=parry
+    )
+}
+
+fn is_action_locked(state: CharacterState) -> Boolean {
+    // States 3-7 are action-locked (cannot freely transition)
+    if state.current_state >= 3 {
+        return true
+    }
+    return false
+}
+
+fn can_transition_to_attack(state: CharacterState) -> Boolean {
+    if state.current_state == 0 {
+        return true
+    }
+    if state.current_state == 1 {
+        return true
+    }
+    if state.current_state == 2 {
+        return true
+    }
+    return false
+}
+
+fn can_transition_to_dodge(state: CharacterState) -> Boolean {
+    if state.current_state == 0 {
+        return true
+    }
+    if state.current_state == 1 {
+        return true
+    }
+    if state.current_state == 2 {
+        return true
+    }
+    return false
+}
+
+fn can_transition_to_parry(state: CharacterState) -> Boolean {
+    if state.current_state == 0 {
+        return true
+    }
+    if state.current_state == 1 {
+        return true
+    }
+    if state.current_state == 2 {
+        return true
+    }
+    return false
+}
+
+fn transition_to_state(state: CharacterState, new_state: Integer) -> CharacterState {
+    return CharacterState(
+        current_state=new_state,
+        state_tick=0,
+        facing_x=state.facing_x,
+        facing_z=state.facing_z,
+        speed_milli=state.speed_milli,
+        grounded=state.grounded,
+        recovery_ticks=0,
+        prev_attack_light=state.prev_attack_light,
+        prev_attack_heavy=state.prev_attack_heavy,
+        prev_dodge=state.prev_dodge,
+        prev_parry=state.prev_parry
+    )
+}
+
+fn transition_to_recovery(state: CharacterState, ticks: Integer) -> CharacterState {
+    mutable normalized_ticks = ticks
+    if normalized_ticks < 1 {
+        normalized_ticks = 1
+    }
+    return CharacterState(
+        current_state=7,
+        state_tick=0,
+        facing_x=state.facing_x,
+        facing_z=state.facing_z,
+        speed_milli=state.speed_milli,
+        grounded=state.grounded,
+        recovery_ticks=normalized_ticks,
+        prev_attack_light=state.prev_attack_light,
+        prev_attack_heavy=state.prev_attack_heavy,
+        prev_dodge=state.prev_dodge,
+        prev_parry=state.prev_parry
+    )
+}
+
+fn compute_movement_state(move_x: Integer, move_z: Integer) -> Integer {
+    if move_x == 0 {
+        if move_z == 0 {
+            return 0
+        }
+    }
+    // walk = 1
+    return 1
+}
+
+fn update_facing(state: CharacterState, move_x: Integer, move_z: Integer) -> CharacterState {
+    if move_x == 0 {
+        if move_z == 0 {
+            return state
+        }
+    }
+    return CharacterState(
+        current_state=state.current_state,
+        state_tick=state.state_tick,
+        facing_x=move_x,
+        facing_z=move_z,
+        speed_milli=state.speed_milli,
+        grounded=state.grounded,
+        recovery_ticks=state.recovery_ticks,
+        prev_attack_light=state.prev_attack_light,
+        prev_attack_heavy=state.prev_attack_heavy,
+        prev_dodge=state.prev_dodge,
+        prev_parry=state.prev_parry
+    )
+}
+
+fn attack_startup_ticks() -> Integer { return 3 }
+fn attack_active_ticks() -> Integer { return 4 }
+fn attack_recovery_ticks() -> Integer { return 8 }
+
+fn parry_startup_ticks() -> Integer { return 2 }
+fn parry_active_ticks() -> Integer { return 4 }
+fn parry_recovery_ticks() -> Integer { return 16 }
+
+fn dodge_startup_ticks() -> Integer { return 2 }
+fn dodge_active_ticks() -> Integer { return 3 }
+fn dodge_recovery_ticks() -> Integer { return 10 }
+
+fn action_total_ticks(state_id: Integer) -> Integer {
+    if state_id == 4 {
+        return attack_startup_ticks() + attack_active_ticks()
+    }
+    if state_id == 6 {
+        return parry_startup_ticks() + parry_active_ticks()
+    }
+    if state_id == 3 {
+        return dodge_startup_ticks() + dodge_active_ticks()
+    }
+    return 0
+}
+
+fn action_recovery_ticks(state_id: Integer) -> Integer {
+    if state_id == 4 {
+        return attack_recovery_ticks()
+    }
+    if state_id == 6 {
+        return parry_recovery_ticks()
+    }
+    if state_id == 3 {
+        return dodge_recovery_ticks()
+    }
+    return 0
+}
+
+fn is_rising_edge(current: Boolean, previous: Boolean) -> Boolean {
+    if current {
+        if previous == false {
+            return true
+        }
+    }
+    return false
+}
+
+fn apply_input_history(state: CharacterState, input: CharacterInputEvent) -> CharacterState {
+    return CharacterState(
+        current_state=state.current_state,
+        state_tick=state.state_tick,
+        facing_x=state.facing_x,
+        facing_z=state.facing_z,
+        speed_milli=state.speed_milli,
+        grounded=state.grounded,
+        recovery_ticks=state.recovery_ticks,
+        prev_attack_light=input.attack_light,
+        prev_attack_heavy=input.attack_heavy,
+        prev_dodge=input.dodge,
+        prev_parry=input.parry
+    )
+}
+
+system advance_character_state[stage=fixed, reads=[CharacterInputEvent], writes=[CharacterState]](
+    state: CharacterState,
+    input: CharacterInputEvent
+) -> CharacterState {
+    mutable next = CharacterState(
+        current_state=state.current_state,
+        state_tick=state.state_tick + 1,
+        facing_x=state.facing_x,
+        facing_z=state.facing_z,
+        speed_milli=state.speed_milli,
+        grounded=state.grounded,
+        recovery_ticks=state.recovery_ticks,
+        prev_attack_light=state.prev_attack_light,
+        prev_attack_heavy=state.prev_attack_heavy,
+        prev_dodge=state.prev_dodge,
+        prev_parry=state.prev_parry
+    )
+
+    light_pressed = is_rising_edge(input.attack_light, state.prev_attack_light)
+    heavy_pressed = is_rising_edge(input.attack_heavy, state.prev_attack_heavy)
+    dodge_pressed = is_rising_edge(input.dodge, state.prev_dodge)
+    parry_pressed = is_rising_edge(input.parry, state.prev_parry)
+
+    // Deterministic action lifecycle:
+    // enter (tick 0) -> startup+active window -> recovery -> idle
+    if next.current_state == 4 {
+        if next.state_tick >= action_total_ticks(next.current_state) {
+            next = transition_to_recovery(next, action_recovery_ticks(next.current_state))
+        }
+        return apply_input_history(next, input)
+    }
+    if next.current_state == 6 {
+        if next.state_tick >= action_total_ticks(next.current_state) {
+            next = transition_to_recovery(next, action_recovery_ticks(next.current_state))
+        }
+        return apply_input_history(next, input)
+    }
+    if next.current_state == 3 {
+        if next.state_tick >= action_total_ticks(next.current_state) {
+            next = transition_to_recovery(next, action_recovery_ticks(next.current_state))
+        }
+        return apply_input_history(next, input)
+    }
+    if next.current_state == 7 {
+        if next.state_tick >= next.recovery_ticks {
+            next = transition_to_state(next, 0)
+        }
+        return apply_input_history(next, input)
+    }
+
+    // Check for combat input edges (priority: parry > dodge > attack).
+    // Held input does not retrigger.
+    if parry_pressed {
+        if can_transition_to_parry(next) {
+            return apply_input_history(transition_to_state(next, 6), input)
+        }
+    }
+    if dodge_pressed {
+        if can_transition_to_dodge(next) {
+            return apply_input_history(transition_to_state(next, 3), input)
+        }
+    }
+    if light_pressed {
+        if can_transition_to_attack(next) {
+            return apply_input_history(transition_to_state(next, 4), input)
+        }
+    }
+    if heavy_pressed {
+        if can_transition_to_attack(next) {
+            return apply_input_history(transition_to_state(next, 4), input)
+        }
+    }
+
+    // Movement
+    move_state = compute_movement_state(input.move_x, input.move_z)
+    next = CharacterState(
+        current_state=move_state,
+        state_tick=0,
+        facing_x=next.facing_x,
+        facing_z=next.facing_z,
+        speed_milli=next.speed_milli,
+        grounded=next.grounded,
+        recovery_ticks=0,
+        prev_attack_light=next.prev_attack_light,
+        prev_attack_heavy=next.prev_attack_heavy,
+        prev_dodge=next.prev_dodge,
+        prev_parry=next.prev_parry
+    )
+    next = update_facing(next, input.move_x, input.move_z)
+    return apply_input_history(next, input)
+}

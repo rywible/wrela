@@ -1,0 +1,26 @@
+use plan_rehome_db, advance_rehome_db from db/admin_kernel
+
+//
+// Cluster admin bindings to mutable rehome operations.
+
+fn plan_rehome(
+    db_handle: Integer,
+    keyrange: String,
+    target_region: String,
+    reason: String
+) -> Result[String] {
+    return plan_rehome_db(
+        db_handle_plan_rehome=db_handle,
+        keyrange_plan_rehome=keyrange,
+        target_region_plan_rehome=target_region,
+        reason_plan_rehome=reason
+    )
+}
+
+fn advance_rehome(db_handle: Integer, job_id: String, phase_ack: String) -> Result[String] {
+    return advance_rehome_db(
+        db_handle_advance_rehome=db_handle,
+        job_id_advance_rehome=job_id,
+        phase_ack_advance_rehome=phase_ack
+    )
+}

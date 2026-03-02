@@ -1,0 +1,40 @@
+//
+// DB codec helpers exposed at package level.
+// These wrappers keep codec surface Wrela-first while runtime owns hot-path primitives.
+
+use {
+    get_bytes_from_list,
+    get_bytes_from_string,
+    get_length,
+    get_list_from_bytes,
+    get_string_from_bytes
+}
+from bytes
+
+fn encode_text(value: String) -> Bytes {
+    return get_bytes_from_string(value)
+
+}
+fn decode_text(payload: Bytes) -> Result[String] {
+    decoded = get_string_from_bytes(payload)
+    match decoded {
+        String(text) {
+            return text
+        }
+        default {
+            return error "invalid utf8"
+
+        }
+    }
+}
+fn count_bytes(payload: Bytes) -> Integer {
+    return get_length(payload)
+
+}
+fn convert_to_byte_list(payload: Bytes) -> List[Integer] {
+    return get_list_from_bytes(payload)
+
+}
+fn convert_from_byte_list(items: List[Integer]) -> Bytes {
+    return get_bytes_from_list(items)
+}

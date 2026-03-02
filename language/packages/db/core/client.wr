@@ -1,0 +1,26 @@
+use default_root_path from pkg/db/core/types
+use {
+    open,
+    close,
+    put,
+    get,
+    scan,
+    begin_txn,
+    prepare_txn,
+    commit_txn
+}
+from pkg/db/core/kv
+
+fn run() -> Integer {
+    db = open(default_root_path())
+    write_version = put(db, "core", "demo-key", "demo-value", -1)
+    read_result = get(db, "core", "demo-key")
+    scan_results = scan(db, "core", "a", "z", 10)
+    txn = begin_txn(db)
+    if txn > 0 {
+        prep_result = prepare_txn(db, txn) ?? nothing
+        commit_result = commit_txn(db, txn) ?? nothing
+    }
+    close_result = close(db) ?? nothing
+    return 0
+}

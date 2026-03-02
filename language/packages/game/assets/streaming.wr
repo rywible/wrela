@@ -1,0 +1,46 @@
+//
+// Asset streaming and LOD policy contracts.
+
+class LODPolicy {
+    mutable lod_group: String = "base"
+    mutable distance_min: Integer = 0
+    mutable distance_max: Integer = 1000
+    mutable hysteresis: Integer = 64
+}
+
+class ResidencyBudget {
+    mutable cpu_bytes: Integer = 33554432
+    mutable gpu_bytes: Integer = 67108864
+    mutable max_chunks: Integer = 256
+}
+
+class StreamingChunk {
+    mutable chunk_id: String = "runtime-0"
+    mutable path: String = "domain-abi.json"
+    mutable bytes: Integer = 0
+    mutable checksum: Integer = 0
+    mutable residency_priority: String = "high"
+    mutable lod_group: String = "base"
+}
+
+fn create_default_lod_policy() -> LODPolicy {
+    return LODPolicy()
+}
+
+fn create_default_residency_budget() -> ResidencyBudget {
+    return ResidencyBudget()
+}
+
+fn create_streaming_chunk(
+    chunk_id: String,
+    path: String,
+    bytes: Integer,
+    checksum: Integer
+) -> StreamingChunk {
+    return StreamingChunk(
+        chunk_id=chunk_id,
+        path=path,
+        bytes=bytes,
+        checksum=checksum
+    )
+}

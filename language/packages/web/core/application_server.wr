@@ -1,0 +1,710 @@
+//
+// Wrela-native HTTP application server orchestration.
+
+use try_to_read_text from host/fs
+
+use {
+    WebAuthenticationStoreConfiguration,
+    create_web_authentication_store_configuration_from_environment
+}
+from host/web_authentication
+
+use {
+    HttpRequest,
+    HttpResponse,
+    abort_request_dispatch_batch,
+    begin_request_dispatch_batch,
+    create_http_queue_saturated_response_context,
+    create_http_request_queue_threshold_configuration_from_environment,
+    create_http_server_configuration,
+    run_request_dispatch_batch_end,
+    try_to_accept_http_connection,
+    try_to_create_http_server_listener,
+    try_to_enforce_request_backpressure,
+    try_to_poll_http_server_event,
+    try_to_send_http_file_response,
+    try_to_read_http_request_context,
+    try_to_write_http_response_context
+}
+from host/web_server
+
+use StaticAssetServingConfiguration from host/web_static_assets
+
+use create_http_route_classification from pkg/web/core/request_classification
+
+use apply_security_headers from pkg/web/security/headers
+
+use create_json_web_key_set_response_context from pkg/web/auth/jwks_endpoint
+
+use try_to_create_oauth_client_credentials_token_response_context from pkg/web/auth/oauth_token_endpoint
+
+use try_to_create_refresh_token_exchange_response_context from pkg/web/auth/refresh_token_endpoint
+
+use {
+    BearerTokenAuthenticationContext,
+    try_to_resolve_authenticated_principal_from_bearer_token_with_authentication_store
+}
+from pkg/web/auth/bearer_token_authentication
+
+use {
+    create_default_web_authentication_store_configuration,
+    open_web_authentication_store_handle
+}
+from pkg/web/auth/authentication_store
+
+use try_to_resolve_single_page_application_path from pkg/web/spa/fallback
+
+
+class HttpApplicationServerConfiguration {
+    mutable bind_address: String = "127.0.0.1:8080"
+    mutable listener_namespace: String = "app"
+    mutable issuer: String = "wrela-web"
+    mutable audience: String = "wrela-api"
+    mutable key_identifier: String = "wrela-default-key"
+    mutable single_page_application_mount_prefix: String = "/app"
+    mutable single_page_application_index_file_path: String = "./app/index.html"
+    mutable reuse_port_enabled: Boolean = false
+    mutable listener_shard_count: Integer = 1
+    mutable authentication_worker_pool_handle: Integer = 0
+    mutable application_worker_pool_handle: Integer = 0
+    mutable static_asset_worker_pool_handle: Integer = 0
+    mutable authentication_queue_threshold: Integer = 128
+    mutable application_queue_threshold: Integer = 512
+    mutable static_asset_queue_threshold: Integer = 256
+    mutable retry_after_seconds: Integer = 1
+    mutable authentication_store_path: String = ".data/web-auth"
+    mutable access_token_ttl_seconds: Integer = 900
+    mutable refresh_token_ttl_seconds: Integer = 2592000
+    mutable refresh_token_rotation_grace_seconds: Integer = 30
+    mutable authentication_store_handle: Integer = 0
+
+
+}
+class HttpConnectionDispatchContext {
+    mutable listener_handle: Integer = 0
+    mutable connection_handle: Integer = 0
+    mutable request_method: String = ""
+    mutable request_path: String = ""
+    mutable request_headers: Map[Any, Any] = {}
+
+
+}
+class HttpRouteDispatchDecision {
+    mutable matched_route_name: String = ""
+    mutable worker_lane_name: String = ""
+    mutable requires_authentication: Boolean = false
+    mutable route_match_state: Boolean = false
+
+
+}
+class AuthenticatedPrincipalContext {
+    mutable subject_identifier: String = ""
+    mutable tenant_identifier: String = ""
+    mutable json_web_token_identifier: String = ""
+    mutable scope_values: List[String] = []
+    mutable authentication_state: Boolean = false
+
+
+}
+fn create_http_application_server_configuration_from_environment(
+) -> HttpApplicationServerConfiguration {
+    configuration = HttpApplicationServerConfiguration()
+    queue_threshold_configuration = create_http_request_queue_threshold_configuration_from_environment()
+    configuration.authentication_queue_threshold = queue_threshold_configuration.authentication_queue_threshold
+    configuration.application_queue_threshold = queue_threshold_configuration.application_queue_threshold
+    configuration.static_asset_queue_threshold = queue_threshold_configuration.static_asset_queue_threshold
+    configuration.retry_after_seconds = queue_threshold_configuration.retry_after_seconds
+
+    authentication_store_configuration = create_web_authentication_store_configuration_from_environment()
+    configuration.authentication_store_path = authentication_store_configuration.auth_store_path
+    configuration.access_token_ttl_seconds = authentication_store_configuration.access_token_ttl_seconds
+    configuration.refresh_token_ttl_seconds = authentication_store_configuration.refresh_token_ttl_seconds
+    configuration.refresh_token_rotation_grace_seconds = authentication_store_configuration.refresh_token_rotation_grace_seconds
+    configuration.authentication_store_handle = open_web_authentication_store_handle(
+        authentication_store_configuration
+    )
+    return configuration
+
+
+}
+fn try_to_start_http_application_server(
+    configuration: HttpApplicationServerConfiguration
+) -> Result[Integer] {
+    listener_configuration = create_http_server_configuration(
+        configuration.bind_address,
+        configuration.listener_namespace
+    )
+    listener_configuration.reuse_port_enabled = configuration.reuse_port_enabled
+    return try_to_create_http_server_listener(listener_configuration)
+
+
+}
+fn try_to_start_http_application_server_listeners(
+    configuration: HttpApplicationServerConfiguration
+) -> Result[List[Integer]] {
+    mutable handles = []
+    mutable shard_count = configuration.listener_shard_count
+    if shard_count <= 0 {
+        shard_count = 1
+    }
+    mutable shard_index = 0
+    while shard_index < shard_count {
+        listener_result = try_to_start_http_application_server(configuration)
+        match listener_result {
+            Ok(listener_handle) {
+                handles.push(listener_handle)
+            }
+            Err(error_message) {
+                return error error_message
+            }
+        }
+        shard_index = shard_index + 1
+    }
+    return handles
+
+
+}
+fn try_to_open_http_authentication_store(
+    configuration: HttpApplicationServerConfiguration
+) -> Result[Integer] {
+    store_configuration = WebAuthenticationStoreConfiguration()
+    store_configuration.auth_store_path = configuration.authentication_store_path
+    store_configuration.access_token_ttl_seconds = configuration.access_token_ttl_seconds
+    store_configuration.refresh_token_ttl_seconds = configuration.refresh_token_ttl_seconds
+    store_configuration.refresh_token_rotation_grace_seconds = configuration.refresh_token_rotation_grace_seconds
+    if store_configuration.auth_store_path == "" {
+        store_configuration = create_default_web_authentication_store_configuration()
+    }
+    return open_web_authentication_store_handle(store_configuration)
+
+
+}
+fn create_response_context_with_security_headers(
+    response_context: HttpResponse
+) -> HttpResponse {
+    response_context.headers = apply_security_headers(response_context.headers)
+    return response_context
+
+
+}
+fn create_not_found_response_context() -> HttpResponse {
+    response_context = HttpResponse()
+    response_context.status_code = 404
+    response_body_items = {}
+    response_body_items.set("error", "not_found")
+    response_body_items.set("error_description", "route not found")
+    response_context.body = response_body_items
+    return create_response_context_with_security_headers(response_context)
+
+
+}
+fn create_unauthorized_response_context(error_description: String) -> HttpResponse {
+    response_context = HttpResponse()
+    response_context.status_code = 401
+    response_body_items = {}
+    response_body_items.set("error", "unauthorized")
+    response_body_items.set("error_description", error_description)
+    response_context.body = response_body_items
+    return create_response_context_with_security_headers(response_context)
+
+
+}
+fn create_forbidden_response_context(error_description: String) -> HttpResponse {
+    response_context = HttpResponse()
+    response_context.status_code = 403
+    response_body_items = {}
+    response_body_items.set("error", "forbidden")
+    response_body_items.set("error_description", error_description)
+    response_context.body = response_body_items
+    return create_response_context_with_security_headers(response_context)
+
+
+}
+fn create_server_error_response_context(error_description: String) -> HttpResponse {
+    response_context = HttpResponse()
+    response_context.status_code = 500
+    response_body_items = {}
+    response_body_items.set("error", "server_error")
+    response_body_items.set("error_description", error_description)
+    response_context.body = response_body_items
+    return create_response_context_with_security_headers(response_context)
+
+
+}
+fn try_to_create_queue_saturated_response_context(
+    worker_pool_handle: Integer,
+    queue_limit: Integer,
+    retry_after_seconds: Integer
+) -> Result[HttpResponse] {
+    if worker_pool_handle <= 0 {
+        return error "queue bypass: worker pool handle not configured"
+    }
+    if queue_limit <= 0 {
+        return error "queue bypass: queue limit disabled"
+
+    }
+    begin_request_dispatch_batch(worker_pool_handle)
+    backpressure_result = try_to_enforce_request_backpressure(worker_pool_handle, queue_limit)
+    match backpressure_result {
+        Ok(_) {
+            run_request_dispatch_batch_end(worker_pool_handle)
+            return error "queue below threshold"
+        }
+        Err(_) {
+            abort_request_dispatch_batch(worker_pool_handle)
+            saturated_response_context = create_http_queue_saturated_response_context(
+                retry_after_seconds
+            )
+            return create_response_context_with_security_headers(saturated_response_context)
+
+
+        }
+    }
+}
+fn create_http_route_dispatch_decision(path: String) -> HttpRouteDispatchDecision {
+    classification = create_http_route_classification(path)
+    decision = HttpRouteDispatchDecision()
+
+    if classification.database_namespace_path_match {
+        decision.matched_route_name = "reserved_database_namespace"
+        decision.worker_lane_name = "application"
+        decision.requires_authentication = false
+        decision.route_match_state = true
+        return decision
+
+    }
+    if classification.json_web_key_set_path_match {
+        decision.matched_route_name = "json_web_key_set"
+        decision.worker_lane_name = "authentication"
+        decision.requires_authentication = false
+        decision.route_match_state = true
+        return decision
+
+    }
+    if classification.oauth_token_path_match {
+        decision.matched_route_name = "oauth_token"
+        decision.worker_lane_name = "authentication"
+        decision.requires_authentication = false
+        decision.route_match_state = true
+        return decision
+
+    }
+    if classification.refresh_token_path_match {
+        decision.matched_route_name = "refresh_token"
+        decision.worker_lane_name = "authentication"
+        decision.requires_authentication = false
+        decision.route_match_state = true
+        return decision
+
+    }
+    if classification.api_namespace_path_match {
+        decision.matched_route_name = "protected_api"
+        decision.worker_lane_name = "application"
+        decision.requires_authentication = true
+        decision.route_match_state = true
+        return decision
+
+    }
+    if classification.single_page_application_namespace_path_match {
+        decision.matched_route_name = "single_page_application"
+        decision.worker_lane_name = "static_asset"
+        decision.requires_authentication = false
+        decision.route_match_state = true
+        return decision
+
+    }
+    return decision
+
+
+}
+fn create_authenticated_principal_context_from_authentication_context(
+    authentication_context: BearerTokenAuthenticationContext
+) -> AuthenticatedPrincipalContext {
+    principal_context = AuthenticatedPrincipalContext()
+    subject_identifier_value = authentication_context.subject_identifier
+    principal_context.subject_identifier = subject_identifier_value
+    principal_context.tenant_identifier = authentication_context.tenant_identifier
+    principal_context.json_web_token_identifier = authentication_context.json_web_token_identifier
+    principal_context.scope_values = authentication_context.scope_values
+    principal_context.authentication_state = authentication_context.authentication_state
+    return principal_context
+
+
+}
+fn create_protected_api_response_context(
+    principal_context: AuthenticatedPrincipalContext,
+    request_context: HttpRequest
+) -> HttpResponse {
+    response_context = HttpResponse()
+    response_context.status_code = 200
+    response_headers = {}
+    response_headers.set("Content-Type", "application/json")
+    response_context.headers = response_headers
+
+    response_body_items = {}
+    response_body_items.set("status", "ok")
+    response_body_items.set("path", request_context.path)
+    response_body_items.set("subject_identifier", principal_context.subject_identifier)
+    response_body_items.set("tenant_identifier", principal_context.tenant_identifier)
+    response_body_items.set("scope_values", principal_context.scope_values)
+    response_context.body = response_body_items
+    return create_response_context_with_security_headers(response_context)
+
+
+}
+fn try_to_create_single_page_application_response_context(
+    configuration: HttpApplicationServerConfiguration,
+    request_context: HttpRequest
+) -> Result[HttpResponse] {
+    static_asset_serving_configuration = StaticAssetServingConfiguration()
+    static_asset_serving_configuration.single_page_application_mount_prefix = configuration.single_page_application_mount_prefix
+    static_asset_serving_configuration.single_page_application_index_file_path = configuration.single_page_application_index_file_path
+
+    resolved_path_result = try_to_resolve_single_page_application_path(
+        request_context.path,
+        static_asset_serving_configuration
+    )
+    match resolved_path_result {
+        Ok(resolved_file_path) {
+            file_read_result = try_to_read_text(resolved_file_path)
+            match file_read_result {
+                Ok(file_text) {
+                    response_context = HttpResponse()
+                    response_context.status_code = 200
+                    response_headers = {}
+                    response_headers.set("Content-Type", "text/html; charset=utf-8")
+                    response_context.headers = response_headers
+                    response_context.body = file_text
+                    return create_response_context_with_security_headers(response_context)
+                }
+                Err(_) {
+                    return create_not_found_response_context()
+                }
+            }
+        }
+        Err(error_message) {
+            return error error_message
+
+
+        }
+    }
+}
+fn try_to_dispatch_http_request_context(
+    configuration: HttpApplicationServerConfiguration,
+    request_context: HttpRequest
+) -> Result[HttpResponse] {
+    decision = create_http_route_dispatch_decision(request_context.path)
+    if not decision.route_match_state {
+        return create_not_found_response_context()
+
+    }
+    if decision.matched_route_name == "reserved_database_namespace" {
+        return create_forbidden_response_context(
+            "path prefix /db is reserved on application listener"
+        )
+
+    }
+    if decision.matched_route_name == "json_web_key_set" {
+        match try_to_create_queue_saturated_response_context(
+            configuration.authentication_worker_pool_handle,
+            configuration.authentication_queue_threshold,
+            configuration.retry_after_seconds
+        ) {
+            Ok(saturated_response_context) {
+                return saturated_response_context
+            }
+            Err(_) {
+                return create_response_context_with_security_headers(
+                    create_json_web_key_set_response_context()
+                )
+
+            }
+        }
+    }
+    if decision.matched_route_name == "oauth_token" and configuration.authentication_store_handle <= 0 {
+        return create_server_error_response_context(
+            "authentication store is not available"
+        )
+    }
+    if decision.matched_route_name == "oauth_token" {
+        match try_to_create_queue_saturated_response_context(
+            configuration.authentication_worker_pool_handle,
+            configuration.authentication_queue_threshold,
+            configuration.retry_after_seconds
+        ) {
+            Ok(saturated_response_context) {
+                return saturated_response_context
+            }
+            Err(_) {
+                oauth_response_context_result = try_to_create_oauth_client_credentials_token_response_context(
+                    request_context,
+                    configuration.authentication_store_handle,
+                    configuration.issuer,
+                    configuration.audience,
+                    configuration.key_identifier,
+                    configuration.access_token_ttl_seconds
+                )
+                match oauth_response_context_result {
+                    Ok(oauth_response_context) {
+                        return create_response_context_with_security_headers(
+                            oauth_response_context
+                        )
+                    }
+                    Err(error_message) {
+                        return create_server_error_response_context(error_message)
+
+                    }
+                }
+            }
+        }
+    }
+    if decision.matched_route_name == "refresh_token" and configuration.authentication_store_handle <= 0 {
+        return create_server_error_response_context(
+            "authentication store is not available"
+        )
+    }
+    if decision.matched_route_name == "refresh_token" {
+        match try_to_create_queue_saturated_response_context(
+            configuration.authentication_worker_pool_handle,
+            configuration.authentication_queue_threshold,
+            configuration.retry_after_seconds
+        ) {
+            Ok(saturated_response_context) {
+                return saturated_response_context
+            }
+            Err(_) {
+                refresh_response_context_result = try_to_create_refresh_token_exchange_response_context(
+                    request_context,
+                    configuration.authentication_store_handle,
+                    configuration.issuer,
+                    configuration.audience,
+                    configuration.key_identifier,
+                    configuration.access_token_ttl_seconds,
+                    configuration.refresh_token_ttl_seconds,
+                    configuration.refresh_token_rotation_grace_seconds
+                )
+                match refresh_response_context_result {
+                    Ok(refresh_response_context) {
+                        return create_response_context_with_security_headers(
+                            refresh_response_context
+                        )
+                    }
+                    Err(error_message) {
+                        return create_server_error_response_context(error_message)
+
+                    }
+                }
+            }
+        }
+    }
+    if decision.matched_route_name == "protected_api" and configuration.authentication_store_handle <= 0 {
+        return create_server_error_response_context(
+            "authentication store is not available"
+        )
+    }
+    if decision.matched_route_name == "protected_api" {
+        match try_to_create_queue_saturated_response_context(
+            configuration.application_worker_pool_handle,
+            configuration.application_queue_threshold,
+            configuration.retry_after_seconds
+        ) {
+            Ok(saturated_response_context) {
+                return saturated_response_context
+            }
+            Err(_) {
+                principal_result = try_to_resolve_authenticated_principal_from_bearer_token_with_authentication_store(
+                    request_context.headers,
+                    configuration.authentication_store_handle
+                )
+                match principal_result {
+                    Ok(authentication_context) {
+                        principal_context = create_authenticated_principal_context_from_authentication_context(
+                            authentication_context
+                        )
+                        if not principal_context.authentication_state {
+                            return create_unauthorized_response_context(
+                                "authentication failed"
+                            )
+                        }
+                        return create_protected_api_response_context(
+                            principal_context,
+                            request_context
+                        )
+                    }
+                    Err(error_message) {
+                        return create_unauthorized_response_context(error_message)
+
+                    }
+                }
+            }
+        }
+    }
+    if decision.matched_route_name == "single_page_application" {
+        match try_to_create_queue_saturated_response_context(
+            configuration.static_asset_worker_pool_handle,
+            configuration.static_asset_queue_threshold,
+            configuration.retry_after_seconds
+        ) {
+            Ok(saturated_response_context) {
+                return saturated_response_context
+            }
+            Err(_) {
+                return try_to_create_single_page_application_response_context(
+                    configuration,
+                    request_context
+                )
+
+            }
+        }
+    }
+    return create_not_found_response_context()
+
+
+}
+fn try_to_process_http_connection_once(
+    listener_handle: Integer,
+    connection_handle: Integer,
+    configuration: HttpApplicationServerConfiguration
+) -> Result[Nothing] {
+    request_result = try_to_read_http_request_context(listener_handle, connection_handle)
+    match request_result {
+        Ok(request_context) {
+            decision = create_http_route_dispatch_decision(request_context.path)
+            if decision.matched_route_name == "single_page_application" {
+                static_asset_serving_configuration = StaticAssetServingConfiguration()
+                static_asset_serving_configuration.single_page_application_mount_prefix = configuration.single_page_application_mount_prefix
+                static_asset_serving_configuration.single_page_application_index_file_path = configuration.single_page_application_index_file_path
+                resolved_path_result = try_to_resolve_single_page_application_path(
+                    request_context.path,
+                    static_asset_serving_configuration
+                )
+                match resolved_path_result {
+                    Ok(resolved_file_path) {
+                        send_file_result = try_to_send_http_file_response(
+                            listener_handle,
+                            connection_handle,
+                            resolved_file_path,
+                            "text/html; charset=utf-8",
+                            false
+                        )
+                        match send_file_result {
+                            Ok(_) {
+                                return nothing
+                            }
+                            Err(_) {
+                                nothing
+                            }
+                        }
+                    }
+                    Err(_) {
+                        nothing
+                    }
+                }
+            }
+            response_context_result = try_to_dispatch_http_request_context(
+                configuration,
+                request_context
+            )
+            match response_context_result {
+                Ok(response_context) {
+                    write_result = try_to_write_http_response_context(
+                        listener_handle,
+                        connection_handle,
+                        response_context
+                    )
+                    match write_result {
+                        Ok(_) {
+                            return nothing
+                        }
+                        Err(_) {
+                            return error "failed to write response context"
+                        }
+                    }
+                }
+                Err(error_message) {
+                    fallback_error_response_context = create_http_queue_saturated_response_context(
+                        configuration.retry_after_seconds
+                    )
+                    fallback_error_response_context.status_code = 500
+                    fallback_error_response_context.body = {}
+                    fallback_error_response_context.body.set("error", "server_error")
+                    fallback_error_response_context.body.set("error_description", error_message)
+                    fallback_error_response_context = create_response_context_with_security_headers(
+                        fallback_error_response_context
+                    )
+                    fallback_write_result = try_to_write_http_response_context(
+                        listener_handle,
+                        connection_handle,
+                        fallback_error_response_context
+                    )
+                    match fallback_write_result {
+                        Ok(_) {
+                            return nothing
+                        }
+                        Err(_) {
+                            return error "failed to write fallback error response context"
+                        }
+                    }
+                }
+            }
+        }
+        Err(error_message) {
+            return error error_message
+
+
+        }
+    }
+}
+fn try_to_poll_and_process_http_application_event(
+    listener_handle: Integer,
+    configuration: HttpApplicationServerConfiguration,
+    timeout_milliseconds: Integer
+) -> Result[Nothing] {
+    event_result = try_to_poll_http_server_event(listener_handle, timeout_milliseconds)
+    match event_result {
+        Ok(event_items) {
+            event_type = event_items.get("event_type")
+            connection_handle = event_items.get("connection_handle")
+
+            if event_type == "listener_readable" {
+                accepted_connection_result = try_to_accept_http_connection(listener_handle)
+                match accepted_connection_result {
+                    Ok(accepted_connection_handle) {
+                        return try_to_process_http_connection_once(
+                            listener_handle,
+                            accepted_connection_handle,
+                            configuration
+                        )
+                    }
+                    Err(error_message) {
+                        return error error_message
+
+                    }
+                }
+            }
+            if event_type == "connection_readable" {
+                match connection_handle {
+                    Integer(readable_connection_handle) {
+                        return try_to_process_http_connection_once(
+                            listener_handle,
+                            readable_connection_handle,
+                            configuration
+                        )
+                    }
+                    default {
+                        return error "connection_readable event missing connection_handle"
+
+                    }
+                }
+            }
+            if event_type == "connection_closed" {
+                return nothing
+
+            }
+            return nothing
+        }
+        Err(error_message) {
+            return error error_message
+        }
+    }
+}

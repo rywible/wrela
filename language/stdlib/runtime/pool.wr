@@ -1,0 +1,127 @@
+//
+// Actor pool helpers.
+
+
+fn normalize_objective(objective: Integer) -> Integer {
+    if objective == 0 or objective == 1 or objective == 2 or objective == 3 {
+        return objective
+    }
+    return 3
+
+
+}
+fn objective_base(objective: Integer, cpu_count: Integer) -> Integer {
+    normalized = normalize_objective(objective)
+    if normalized == 0 {
+        return cpu_count
+    }
+    if normalized == 1 {
+        return cpu_count * 2
+    }
+    if normalized == 2 {
+        half = cpu_count / 2
+        if half < 1 {
+            return 1
+        }
+        return half
+    }
+    return cpu_count
+
+
+}
+fn clamp_integer(value: Integer, min_value: Integer, max_value: Integer) -> Integer {
+    if value < min_value {
+        return min_value
+    }
+    if value > max_value {
+        return max_value
+    }
+    return value
+
+
+}
+// Compute an automatic pool size for an objective and bounds.
+fn auto_size(objective: Integer, min: Integer, max: Integer, weight: Integer) -> Integer {
+    cpu_count = __wr_runtime_cpu_count()
+    mutable min_value = min
+    if min_value <= 0 {
+        min_value = 1
+
+    }
+    mutable max_value = max
+    if max_value <= 0 {
+        max_value = cpu_count
+    }
+    if max_value < min_value {
+        max_value = min_value
+
+    }
+    mutable weight_value = weight
+    if weight_value <= 0 {
+        weight_value = 1
+
+    }
+    base = objective_base(objective, cpu_count)
+    weighted = base * weight_value
+
+    return clamp_integer(weighted, min_value, max_value)
+
+
+}
+fn pool_at_least(value: Integer, minimum: Integer) -> Integer {
+    if value < minimum {
+        return minimum
+    }
+    return value
+
+
+}
+//
+// Resolve queue capacity policy in Wrela.
+// class requested capacity of `0` means drop on full.
+fn normalize_queue_capacity(
+    requested_queue_capacity: Integer,
+    default_queue_capacity: Integer,
+    objective: Integer
+) -> Integer {
+    if requested_queue_capacity > 0 {
+        return pool_at_least(requested_queue_capacity, 1)
+
+    }
+    base_capacity = pool_at_least(default_queue_capacity, 1)
+    normalized_objective = normalize_objective(objective)
+    if normalized_objective == 0 {
+        return pool_at_least(base_capacity, 32)
+    }
+    if normalized_objective == 1 {
+        return pool_at_least(base_capacity * 2, 64)
+    }
+    if normalized_objective == 2 {
+        return pool_at_least(base_capacity / 2, 16)
+    }
+    return pool_at_least(base_capacity, 32)
+
+
+}
+// Resolve drop-on-full policy from the backpressure request.
+fn queue_should_drop_on_full(requested_queue_capacity: Integer) -> Boolean {
+    return requested_queue_capacity == 0
+
+
+}
+// Return the current pool size.
+fn size(handle: Any) -> Integer {
+    return __wr_pool_size(handle)
+
+
+}
+// Return the next handle in round-robin order.
+fn round_robin(handle: Any) -> Any {
+    return __wr_pool_rr(handle)
+
+
+}
+// Return the current pool queue length.
+fn queue_len(handle: Any) -> Integer {
+    return __wr_pool_queue_len(handle)
+}

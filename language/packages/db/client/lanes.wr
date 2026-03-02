@@ -1,0 +1,120 @@
+//
+// Asynchronous DB lane helpers.
+// These helpers keep app code focused on domain logic while runtime actor/pool machinery
+// handles concurrency.
+
+use put, get from pkg/db/core/kv
+
+class DbReaderLaneWorker {
+    fn read_value(handle: Integer, namespace: String, key: String) -> Result[String] {
+        return get(db_handle_get=handle, namespace_get=namespace, key_get=key)
+
+}
+}
+class DbWriterLaneWorker {
+    fn put_value(
+        handle: Integer,
+        namespace: String,
+        key: String,
+        value: String,
+        expected_version: Integer
+    ) -> Integer {
+        return put(
+            db_handle_put=handle,
+            namespace_put=namespace,
+            key_put=key,
+            value_put=value,
+            expected_version_put=expected_version
+        )
+
+    }
+}
+fn create_writer_lane() -> Actor[DbWriterLaneWorker] {
+    return detach DbWriterLaneWorker() * 1
+
+}
+fn create_reader_pool(size: Integer, queue_capacity: Integer) -> Actor[DbReaderLaneWorker] {
+    if size <= 1 {
+        return detach Pool.of(DbReaderLaneWorker, size=1, backpressure=queue(queue_capacity)) * 1
+    }
+    if size <= 2 {
+        return detach Pool.of(DbReaderLaneWorker, size=2, backpressure=queue(queue_capacity)) * 1
+    }
+    if size <= 4 {
+        return detach Pool.of(DbReaderLaneWorker, size=4, backpressure=queue(queue_capacity)) * 1
+    }
+    return detach Pool.of(DbReaderLaneWorker, size=8, backpressure=queue(queue_capacity)) * 1
+
+}
+fn put_async(
+    writer_lane: Actor[DbWriterLaneWorker],
+    handle: Integer,
+    namespace: String,
+    key: String,
+    value: String,
+    expected_version: Integer
+) -> Result[Integer] {
+    write_result = await writer_lane.put_value(
+        handle=handle,
+        namespace=namespace,
+        key=key,
+        value=value,
+        expected_version=expected_version
+    )
+    match write_result {
+        Ok(committed_version) {
+            if committed_version < 0 {
+                return error "writer lane commit failed"
+            }
+            return committed_version
+        }
+        default {
+            return error "writer lane failed"
+
+        }
+    }
+}
+fn put_fire(
+    writer_lane: Actor[DbWriterLaneWorker],
+    handle: Integer,
+    namespace: String,
+    key: String,
+    value: String,
+    expected_version: Integer
+) -> Nothing {
+    fire writer_lane.put_value(
+        handle=handle,
+        namespace=namespace,
+        key=key,
+        value=value,
+        expected_version=expected_version
+    )
+    return nothing
+
+}
+fn get_async(
+    reader_pool: Actor[DbReaderLaneWorker],
+    handle: Integer,
+    namespace: String,
+    key: String
+) -> Result[String] {
+    read_result = await reader_pool.read_value(handle=handle, namespace=namespace, key=key)
+    match read_result {
+        Ok(inner_result) {
+            match inner_result {
+                Ok(found_value) {
+                    return found_value
+                }
+                Err(read_error) {
+                    return error read_error
+                }
+                default {
+                    return error "reader lane failed"
+                }
+            }
+        }
+        default {
+            return error "reader lane failed"
+        }
+    }
+}

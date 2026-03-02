@@ -1,0 +1,59 @@
+use {
+    create_default_game_session_runtime_configuration,
+    run_game_session_once
+}
+from pkg/game/core/session
+
+use {
+    compute_collector_bob,
+    create_collector_runtime_after_step,
+    create_collector_input_event,
+    create_default_collector_runtime,
+    create_default_collector_theme
+}
+from domain/game_lane
+
+use {
+    create_collector_surface_schema_family,
+    create_collector_scene,
+    create_collector_widget
+}
+from frontend/integrations/game_lane
+
+fn run_realtime_bootstrap() -> Integer {
+    configuration = create_default_game_session_runtime_configuration()
+    run_game_session_once(configuration=configuration) ?? nothing
+
+    collector_runtime = create_default_collector_runtime()
+    collector_theme = create_default_collector_theme()
+    collector_input = create_collector_input_event(
+        sequence=1,
+        axis_x=1,
+        axis_y=0,
+        is_pickup_signal=true
+    )
+
+    collector_runtime_after_step = create_collector_runtime_after_step(
+        runtime=collector_runtime,
+        input_event=collector_input
+    )
+    collector_scene = create_collector_scene(
+        runtime=collector_runtime_after_step,
+        theme_tokens=collector_theme
+    )
+    collector_widget = create_collector_widget(
+        runtime=collector_runtime_after_step,
+        theme_tokens=collector_theme
+    )
+    schema_family = create_collector_surface_schema_family()
+    material_contract = "collector-surface-pbr-temporal-resource-v5"
+    if schema_family == "" {
+        return -1
+    }
+    if material_contract == "" {
+        return -2
+    }
+
+    pulse = compute_collector_bob(tick=collector_runtime_after_step.tick)
+    return collector_runtime_after_step.score + pulse + collector_scene.player_x + collector_widget.score_hint
+}

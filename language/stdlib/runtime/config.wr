@@ -1,0 +1,371 @@
+//
+// Runtime configuration helpers.
+
+use {
+    get_bytes_from_string,
+    get_list_from_bytes
+}
+from bytes
+
+
+fn get_default_if_nothing(value: Number, fallback: Number) -> Number {
+    if value == nothing {
+        return fallback
+    }
+    return value
+
+
+}
+fn clamp_at_least(value: Number, minimum: Number) -> Number {
+    if value < minimum {
+        return minimum
+    }
+    return value
+
+
+}
+class Runtime {
+    mutable actor_mailbox_cap: Number = 256
+    mutable actor_enqueue_timeout_ms: Number = 10
+    mutable actor_batch_limit: Number = 64
+    mutable paused_queue_cap: Number = 128
+    mutable deterministic: Boolean = false
+    mutable actor_debug: Boolean = false
+    mutable actor_watchdog_ms: Number = 0
+    mutable sched_watchdog_ms: Number = 0
+    mutable sched_shards: Number = nothing
+    mutable sched_tick_ms: Number = 1
+    mutable sched_ready_cap: Number = 1024
+    mutable sched_batch_limit: Number = 64
+    mutable sched_profile_auto: Boolean = false
+    mutable sched_quantum_min: Number = 2
+    mutable sched_quantum_max: Number = 16
+    mutable sched_batch_min: Number = 4
+    mutable sched_batch_max: Number = 128
+    mutable sched_affinity_rebalance_ms: Number = 0
+    mutable mailbox_burst_drain_max: Number = 0
+    mutable mailbox_wake_coalesce: Boolean = false
+    mutable mailbox_rescue_wake_ns: Number = 0
+    mutable mailbox_empty_spin: Number = 0
+    mutable reactor_disable_io_uring: Boolean = false
+    mutable pool_min_share: Number = 1
+    mutable pool_max_share: Number = nothing
+    mutable pool_queue_cap: Number = 256
+    mutable pool_auto_min: Number = 1
+    mutable pool_auto_max: Number = nothing
+    mutable diagnostics_enabled: Boolean = false
+
+    // Parse a signed decimal string; return fallback when invalid.
+    fn parse_signed_decimal_or_default(text: String, fallback: Number) -> Number {
+        bytes = get_list_from_bytes(get_bytes_from_string(text))
+        mutable is_started = false
+        mutable has_seen_digit = false
+        mutable sign = 1
+        mutable value = 0
+
+        for byte_value in bytes {
+            if not is_started and (byte_value == 43 or byte_value == 45) {
+                is_started = true
+                if byte_value == 45 {
+                    sign = -1
+                }
+                continue
+
+            }
+            if byte_value >= 48 and byte_value <= 57 {
+                is_started = true
+                has_seen_digit = true
+                value = value * 10 + (byte_value - 48)
+                continue
+
+            }
+            return fallback
+
+        }
+        if not has_seen_digit {
+            return fallback
+
+        }
+        return value * sign
+
+    // Resolve a boolean field from environment, defaulting to explicit value.
+    fn is_boolean_enabled_from_environment(is_explicit_enabled: Boolean, env_key: String) -> Boolean {
+        raw = __wr_env_get(env_key)
+        match raw {
+            String(text) {
+                if text == "1" or text == "true" or text == "on" {
+                    return true
+                }
+                if text == "0" or text == "false" or text == "off" {
+                    return false
+                }
+                return is_explicit_enabled
+            }
+            default {
+                return is_explicit_enabled
+
+            }
+        }
+    // Resolve a numeric field from environment, defaulting to explicit value.
+    fn resolve_number_from_environment(explicit_value: Number, env_key: String) -> Number {
+        raw = __wr_env_get(env_key)
+        match raw {
+            String(text) {
+                return self.parse_signed_decimal_or_default(text, explicit_value)
+            }
+            default {
+                return explicit_value
+
+            }
+        }
+    // Resolve defaults, apply env overrides, and normalize runtime configuration.
+    fn create_runtime_from_environment() -> Runtime {
+        cpu_count = __wr_runtime_cpu_count()
+
+        is_deterministic = self.is_boolean_enabled_from_environment(self.deterministic, "WRELA_RUNTIME_DETERMINISTIC")
+        is_actor_debug = self.is_boolean_enabled_from_environment(self.actor_debug, "WRELA_RUNTIME_DEBUG_ACTOR")
+        is_diagnostics_enabled = self.is_boolean_enabled_from_environment(self.diagnostics_enabled, "WRELA_RUNTIME_DIAGNOSTICS_ENABLED")
+        is_reactor_disable_io_uring = self.is_boolean_enabled_from_environment(self.reactor_disable_io_uring, "WRELA_DISABLE_IO_URING")
+        mutable is_sched_profile_auto = self.is_boolean_enabled_from_environment(self.sched_profile_auto, "WRELA_RUNTIME_SCHED_PROFILE_AUTO")
+
+        actor_mailbox_cap_value = clamp_at_least(
+            self.resolve_number_from_environment(
+                self.actor_mailbox_cap,
+                "WRELA_RUNTIME_ACTOR_MAILBOX_CAP"
+            ),
+            1
+        )
+        actor_enqueue_timeout_ms_value = clamp_at_least(
+            self.resolve_number_from_environment(
+                self.actor_enqueue_timeout_ms,
+                "WRELA_RUNTIME_ACTOR_ENQUEUE_TIMEOUT_MS"
+            ),
+            1
+        )
+        actor_batch_limit_value = clamp_at_least(
+            self.resolve_number_from_environment(
+                self.actor_batch_limit,
+                "WRELA_RUNTIME_ACTOR_BATCH_LIMIT"
+            ),
+            1
+        )
+        pause_queue_cap_value = clamp_at_least(
+            self.resolve_number_from_environment(
+                self.paused_queue_cap,
+                "WRELA_RUNTIME_PAUSE_QUEUE_CAP"
+            ),
+            1
+        )
+        actor_watchdog_ms_value = clamp_at_least(
+            self.resolve_number_from_environment(
+                self.actor_watchdog_ms,
+                "WRELA_RUNTIME_ACTOR_WATCHDOG_MS"
+            ),
+            0
+        )
+        sched_watchdog_ms_value = clamp_at_least(
+            self.resolve_number_from_environment(
+                self.sched_watchdog_ms,
+                "WRELA_RUNTIME_SCHED_WATCHDOG_MS"
+            ),
+            0
+        )
+
+        mutable sched_shards_value = get_default_if_nothing(
+            self.resolve_number_from_environment(
+                self.sched_shards,
+                "WRELA_RUNTIME_SCHED_SHARDS"
+            ),
+            cpu_count
+        )
+        if is_deterministic {
+            sched_shards_value = 1
+        }
+        sched_shards_value = clamp_at_least(sched_shards_value, 1)
+
+        mutable sched_tick_ms_value = clamp_at_least(
+            self.resolve_number_from_environment(
+                self.sched_tick_ms,
+                "WRELA_RUNTIME_SCHED_TICK_MS"
+            ),
+            1
+        )
+        if is_deterministic {
+            sched_tick_ms_value = 1
+
+        }
+        sched_ready_cap_value = clamp_at_least(
+            self.resolve_number_from_environment(
+                self.sched_ready_cap,
+                "WRELA_RUNTIME_SCHED_READY_CAP"
+            ),
+            2
+        )
+        mutable sched_batch_limit_value = clamp_at_least(
+            self.resolve_number_from_environment(
+                self.sched_batch_limit,
+                "WRELA_RUNTIME_SCHED_BATCH_LIMIT"
+            ),
+            1
+        )
+        sched_quantum_min_value = clamp_at_least(
+            self.resolve_number_from_environment(
+                self.sched_quantum_min,
+                "WRELA_RUNTIME_SCHED_QUANTUM_MIN"
+            ),
+            1
+        )
+        mutable sched_quantum_max_value = clamp_at_least(
+            self.resolve_number_from_environment(
+                self.sched_quantum_max,
+                "WRELA_RUNTIME_SCHED_QUANTUM_MAX"
+            ),
+            sched_quantum_min_value
+        )
+        sched_batch_min_value = clamp_at_least(
+            self.resolve_number_from_environment(
+                self.sched_batch_min,
+                "WRELA_RUNTIME_SCHED_BATCH_MIN"
+            ),
+            1
+        )
+        mutable sched_batch_max_value = clamp_at_least(
+            self.resolve_number_from_environment(
+                self.sched_batch_max,
+                "WRELA_RUNTIME_SCHED_BATCH_MAX"
+            ),
+            sched_batch_min_value
+        )
+        if sched_batch_limit_value < sched_batch_min_value {
+            sched_batch_limit_value = sched_batch_min_value
+        }
+        if sched_batch_limit_value > sched_batch_max_value {
+            sched_batch_limit_value = sched_batch_max_value
+        }
+        mutable sched_affinity_rebalance_ms_value = clamp_at_least(
+            self.resolve_number_from_environment(
+                self.sched_affinity_rebalance_ms,
+                "WRELA_RUNTIME_SCHED_AFFINITY_REBALANCE_MS"
+            ),
+            0
+        )
+        mailbox_burst_drain_max_value = clamp_at_least(
+            self.resolve_number_from_environment(
+                self.mailbox_burst_drain_max,
+                "WRELA_RUNTIME_MAILBOX_BURST_DRAIN_MAX"
+            ),
+            0
+        )
+        mailbox_rescue_wake_ns_value = clamp_at_least(
+            self.resolve_number_from_environment(
+                self.mailbox_rescue_wake_ns,
+                "WRELA_RUNTIME_MAILBOX_RESCUE_WAKE_NS"
+            ),
+            0
+        )
+        mailbox_empty_spin_value = clamp_at_least(
+            self.resolve_number_from_environment(
+                self.mailbox_empty_spin,
+                "WRELA_RUNTIME_MAILBOX_EMPTY_SPIN"
+            ),
+            0
+        )
+        is_mailbox_wake_coalesce = self.is_boolean_enabled_from_environment(self.mailbox_wake_coalesce, "WRELA_RUNTIME_MAILBOX_WAKE_COALESCE")
+        if is_deterministic {
+            is_sched_profile_auto = false
+            sched_affinity_rebalance_ms_value = 0
+        }
+        pool_min_share_value = clamp_at_least(
+            self.resolve_number_from_environment(
+                self.pool_min_share,
+                "WRELA_RUNTIME_POOL_MIN_SHARE"
+            ),
+            1
+        )
+
+        mutable pool_max_share_value = get_default_if_nothing(
+            self.resolve_number_from_environment(
+                self.pool_max_share,
+                "WRELA_RUNTIME_POOL_MAX_SHARE"
+            ),
+            cpu_count * 2
+        )
+        pool_max_share_value = clamp_at_least(pool_max_share_value, 1)
+        if pool_max_share_value < pool_min_share_value {
+            pool_max_share_value = pool_min_share_value
+
+        }
+        pool_queue_cap_value = clamp_at_least(
+            self.resolve_number_from_environment(
+                self.pool_queue_cap,
+                "WRELA_RUNTIME_POOL_QUEUE_CAP"
+            ),
+            1
+        )
+        pool_auto_min_value = clamp_at_least(
+            self.resolve_number_from_environment(
+                self.pool_auto_min,
+                "WRELA_RUNTIME_POOL_AUTO_MIN"
+            ),
+            1
+        )
+        mutable pool_auto_max_value = get_default_if_nothing(
+            self.resolve_number_from_environment(
+                self.pool_auto_max,
+                "WRELA_RUNTIME_POOL_AUTO_MAX"
+            ),
+            cpu_count
+        )
+        pool_auto_max_value = clamp_at_least(pool_auto_max_value, 1)
+        if pool_auto_max_value < pool_auto_min_value {
+            pool_auto_max_value = pool_auto_min_value
+
+        }
+        self.actor_mailbox_cap = actor_mailbox_cap_value
+        self.actor_enqueue_timeout_ms = actor_enqueue_timeout_ms_value
+        self.actor_batch_limit = actor_batch_limit_value
+        self.paused_queue_cap = pause_queue_cap_value
+        self.deterministic = is_deterministic
+        self.actor_debug = is_actor_debug
+        self.actor_watchdog_ms = actor_watchdog_ms_value
+        self.sched_watchdog_ms = sched_watchdog_ms_value
+        self.sched_shards = sched_shards_value
+        self.sched_tick_ms = sched_tick_ms_value
+        self.sched_ready_cap = sched_ready_cap_value
+        self.sched_batch_limit = sched_batch_limit_value
+        self.sched_profile_auto = is_sched_profile_auto
+        self.sched_quantum_min = sched_quantum_min_value
+        self.sched_quantum_max = sched_quantum_max_value
+        self.sched_batch_min = sched_batch_min_value
+        self.sched_batch_max = sched_batch_max_value
+        self.sched_affinity_rebalance_ms = sched_affinity_rebalance_ms_value
+        self.mailbox_burst_drain_max = mailbox_burst_drain_max_value
+        self.mailbox_wake_coalesce = is_mailbox_wake_coalesce
+        self.mailbox_rescue_wake_ns = mailbox_rescue_wake_ns_value
+        self.mailbox_empty_spin = mailbox_empty_spin_value
+        self.reactor_disable_io_uring = is_reactor_disable_io_uring
+        self.pool_min_share = pool_min_share_value
+        self.pool_max_share = pool_max_share_value
+        self.pool_queue_cap = pool_queue_cap_value
+        self.pool_auto_min = pool_auto_min_value
+        self.pool_auto_max = pool_auto_max_value
+        self.diagnostics_enabled = is_diagnostics_enabled
+        return self
+
+    }
+    // Apply normalized runtime configuration.
+    fn __configure__() -> Nothing {
+        normalized = self.create_runtime_from_environment()
+        return __wr_runtime_configure(normalized)
+
+
+    }
+}
+}
+}
+}
+// Build a Runtime from defaults with environment overrides.
+fn create_runtime_from_environment() -> Runtime {
+    runtime = Runtime()
+    return runtime.create_runtime_from_environment()
+}

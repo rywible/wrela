@@ -1,0 +1,179 @@
+//
+// Wrela-native authentication helpers for HTTP services.
+
+use {
+    get_bytes_from_string,
+    get_list_from_bytes
+}
+from bytes
+
+class HttpAuthenticationContext {
+    subject_identifier: String = ""
+    tenant_identifier: String = ""
+    scopes: List[String] = []
+    roles: List[String] = []
+    authentication_state: Boolean = false
+
+}
+class ServiceClientCredential {
+    client_identifier: String = ""
+    client_secret: String = ""
+
+}
+class WebAuthenticationStoreConfiguration {
+    mutable auth_store_path: String = ".data/web-auth"
+    mutable access_token_ttl_seconds: Integer = 900
+    mutable refresh_token_ttl_seconds: Integer = 2592000
+    mutable refresh_token_rotation_grace_seconds: Integer = 30
+
+
+}
+fn try_to_hash_password(password: String) -> Result[String] {
+    return __wr_auth_hash_password(password)
+
+
+}
+fn try_to_verify_password_hash(
+    password: String,
+    hashed_password: String
+) -> Result[Integer] {
+    match __wr_auth_verify_password_hash(password, hashed_password) {
+        Ok(is_valid_password_hash) {
+            if is_valid_password_hash {
+                return 1
+            }
+            return 0
+        }
+        Err(error_message) {
+            return error error_message
+
+
+        }
+    }
+}
+fn try_to_sign_json_web_token(claims_json: String, key_id: String) -> Result[String] {
+    return __wr_auth_sign_jwt(claims_json, key_id)
+
+
+}
+fn try_to_verify_json_web_token(token: String) -> Result[String] {
+    return __wr_auth_verify_jwt(token)
+
+
+}
+fn try_to_generate_secure_token(byte_length: Integer) -> Result[String] {
+    return __wr_auth_generate_secure_token(byte_length)
+
+
+}
+fn try_to_render_json_web_key_set_document() -> Result[String] {
+    return __wr_auth_render_jwks_document()
+
+
+}
+fn create_http_only_secure_cookie_header(
+    name: String,
+    value: String,
+    max_age_seconds: String,
+    path: String
+) -> String {
+    return (
+        name + "=" + value +
+        "; Path=" + path +
+        "; Max-Age=" + max_age_seconds +
+        "; HttpOnly; Secure; SameSite=Lax"
+    )
+
+
+}
+fn request_is_cross_site_request_forgery_validation_required(method: String) -> Boolean {
+    if method == "POST" {
+        return true
+    }
+    if method == "PUT" {
+        return true
+    }
+    if method == "PATCH" {
+        return true
+    }
+    if method == "DELETE" {
+        return true
+    }
+    return false
+
+
+}
+fn parse_positive_integer_or_default_for_authentication(
+    text: String,
+    default_value: Integer
+) -> Integer {
+    text_bytes = get_list_from_bytes(get_bytes_from_string(text))
+    mutable has_digit = false
+    mutable value = 0
+
+    for byte_value in text_bytes {
+        if byte_value < 48 or byte_value > 57 {
+            return default_value
+        }
+        has_digit = true
+        value = value * 10 + (byte_value - 48)
+
+    }
+    if not has_digit {
+        return default_value
+    }
+    if value <= 0 {
+        return default_value
+    }
+    return value
+
+
+}
+fn resolve_positive_integer_from_environment_for_authentication(
+    default_value: Integer,
+    environment_key: String
+) -> Integer {
+    match __wr_env_get(environment_key) {
+        String(raw_value) {
+            return parse_positive_integer_or_default_for_authentication(
+                text=raw_value,
+                default_value=default_value
+            )
+        }
+        default {
+            return default_value
+
+
+        }
+    }
+}
+//
+// Resolve auth store and token lifecycle configuration from environment variables.
+fn create_web_authentication_store_configuration_from_environment(
+) -> WebAuthenticationStoreConfiguration {
+    store_configuration = WebAuthenticationStoreConfiguration()
+    match __wr_env_get("WRELA_WEB_AUTH_STORE_PATH") {
+        String(raw_value) {
+            if raw_value != "" {
+                store_configuration.auth_store_path = raw_value
+            }
+        }
+        default {
+            nothing
+
+        }
+    }
+    store_configuration.access_token_ttl_seconds = resolve_positive_integer_from_environment_for_authentication(
+        default_value=store_configuration.access_token_ttl_seconds,
+        environment_key="WRELA_WEB_ACCESS_TOKEN_TTL_SECONDS"
+    )
+    store_configuration.refresh_token_ttl_seconds = resolve_positive_integer_from_environment_for_authentication(
+        default_value=store_configuration.refresh_token_ttl_seconds,
+        environment_key="WRELA_WEB_REFRESH_TOKEN_TTL_SECONDS"
+    )
+    store_configuration.refresh_token_rotation_grace_seconds = resolve_positive_integer_from_environment_for_authentication(
+        default_value=store_configuration.refresh_token_rotation_grace_seconds,
+        environment_key="WRELA_WEB_REFRESH_TOKEN_ROTATION_GRACE_SECONDS"
+    )
+    return store_configuration
+}

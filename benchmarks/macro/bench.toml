@@ -1,0 +1,89 @@
+version = 1
+suite = "macro"
+
+[profiles.smoke]
+warmup_pairs = 2
+measure_pairs = 6
+coverage = "critical"
+
+[profiles.standard]
+warmup_pairs = 3
+measure_pairs = 10
+coverage = "all"
+
+[profiles.deep]
+warmup_pairs = 5
+measure_pairs = 18
+coverage = "all"
+
+[[scenarios]]
+id = "ledger_settlement_batch_small"
+test_name = "tests/integration/macro::test_ledger_settlement_batch_small_ops_300000"
+ops = 300000
+class = "critical"
+min_runtime_ms = 1000
+timeout_ms = 180000
+allow_unstable = false
+
+[[scenarios]]
+id = "ledger_settlement_batch_large"
+test_name = "tests/integration/macro::test_ledger_settlement_batch_large_ops_1200000"
+ops = 1200000
+class = "critical"
+min_runtime_ms = 1500
+timeout_ms = 180000
+allow_unstable = false
+
+[[scenarios]]
+id = "order_ingest_route_small"
+test_name = "tests/integration/macro::test_order_ingest_route_small_ops_200000"
+ops = 200000
+class = "critical"
+min_runtime_ms = 1000
+timeout_ms = 180000
+allow_unstable = false
+
+[[scenarios]]
+id = "order_ingest_route_large"
+test_name = "tests/integration/macro::test_order_ingest_route_large_ops_900000"
+ops = 900000
+class = "critical"
+min_runtime_ms = 1500
+timeout_ms = 180000
+allow_unstable = false
+
+[[scenarios]]
+id = "policy_decision_engine_small"
+test_name = "tests/integration/macro::test_policy_decision_engine_small_ops_300000"
+ops = 300000
+class = "critical"
+min_runtime_ms = 1000
+timeout_ms = 180000
+allow_unstable = false
+
+[[scenarios]]
+id = "policy_decision_engine_large"
+test_name = "tests/integration/macro::test_policy_decision_engine_large_ops_1200000"
+ops = 1200000
+class = "critical"
+min_runtime_ms = 1500
+timeout_ms = 180000
+allow_unstable = false
+
+[[scenarios]]
+id = "stateful_replay_pipeline_small"
+test_name = "tests/integration/macro::test_stateful_replay_pipeline_small_ops_250000"
+ops = 250000
+class = "critical"
+min_runtime_ms = 1000
+timeout_ms = 180000
+allow_unstable = false
+
+[[scenarios]]
+id = "stateful_replay_pipeline_large"
+test_name = "tests/integration/macro::test_stateful_replay_pipeline_large_ops_1000000"
+ops = 1000000
+class = "critical"
+min_runtime_ms = 1500
+timeout_ms = 180000
+allow_unstable = false

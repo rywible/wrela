@@ -1,0 +1,53 @@
+fn run_render_lane_configuration() -> Nothing {
+    return
+}
+
+resource SiteState {
+    mutable tick: Integer = 0
+    mutable click_count: Integer = 0
+    mutable headline: String = "Wrela Website Slice"
+}
+
+event SiteInput {
+    mutable pointer_signal: Boolean = false
+}
+
+theme SiteTheme {
+    mutable accent_color: String = "#00d7ff"
+    mutable panel_color: String = "#0f172a"
+}
+
+fn create_default_site_state() -> SiteState {
+    return SiteState()
+}
+
+fn create_default_site_input() -> SiteInput {
+    return SiteInput()
+}
+
+fn create_default_site_theme() -> SiteTheme {
+    return SiteTheme()
+}
+
+system create_site_state_after_step[stage=fixed, reads=[SiteInput], writes=[SiteState]](
+    state: SiteState,
+    input: SiteInput
+) -> SiteState {
+    mutable clicks = state.click_count
+    if input.pointer_signal {
+        clicks = clicks + 1
+    }
+    return SiteState(
+        tick=state.tick + 1,
+        click_count=clicks,
+        headline=state.headline
+    )
+}
+
+fn run_site_wave(tick: Integer) -> Integer {
+    phase = tick % 16
+    if phase <= 8 {
+        return phase
+    }
+    return 16 - phase
+}

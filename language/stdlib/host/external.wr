@@ -1,0 +1,15 @@
+//
+// External call helpers.
+
+// Deterministic external call stub (runtime-safe replay path).
+fn try_to_call_external(
+    service: String,
+    endpoint: String,
+    method: String,
+    url: String,
+    headers: Map[String, Integer],
+    body: String,
+    timeout_ms: Integer
+) -> Result[String] {
+    return __wr_external_call(service, endpoint, method, url, headers, body, timeout_ms)
+}

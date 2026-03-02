@@ -1,0 +1,26 @@
+{
+  "kind": "error",
+  "message": "unexpected character '$'",
+  "path": "<TMP>/src/main.wr",
+  "span": {
+    "offset": 37,
+    "len": 1
+  },
+  "stage": "parse",
+  "severity": "error",
+  "schema_version": 2,
+  "code": "lang::lex::error",
+  "rule": "error",
+  "help": "Fix the lexical error near this token.",
+  "labels": [
+    {
+      "message": "here",
+      "span": {
+        "offset": 37,
+        "len": 1
+      },
+      "is_primary": true
+    }
+  ],
+  "diag_id": "<normalized>"
+}

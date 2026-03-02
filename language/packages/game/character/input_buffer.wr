@@ -1,0 +1,63 @@
+//
+// Input buffer for queuing the next action during recovery frames.
+// Allows ~96ms (6 ticks at 16ms) of input buffering for responsive combat.
+
+resource InputBufferState {
+    mutable buffered_action: Integer = 0
+    mutable buffer_remaining_ticks: Integer = 0
+    mutable buffer_window_ticks: Integer = 6
+}
+
+fn create_default_input_buffer() -> InputBufferState {
+    return InputBufferState()
+}
+
+fn buffer_input(buffer: InputBufferState, action: Integer) -> InputBufferState {
+    if action <= 0 {
+        return buffer
+    }
+    return InputBufferState(
+        buffered_action=action,
+        buffer_remaining_ticks=buffer.buffer_window_ticks,
+        buffer_window_ticks=buffer.buffer_window_ticks
+    )
+}
+
+fn consume_buffer(buffer: InputBufferState) -> InputBufferState {
+    return InputBufferState(
+        buffered_action=0,
+        buffer_remaining_ticks=0,
+        buffer_window_ticks=buffer.buffer_window_ticks
+    )
+}
+
+fn tick_buffer(buffer: InputBufferState) -> InputBufferState {
+    if buffer.buffer_remaining_ticks <= 0 {
+        return InputBufferState(
+            buffered_action=0,
+            buffer_remaining_ticks=0,
+            buffer_window_ticks=buffer.buffer_window_ticks
+        )
+    }
+    new_remaining = buffer.buffer_remaining_ticks - 1
+    if new_remaining <= 0 {
+        return InputBufferState(
+            buffered_action=0,
+            buffer_remaining_ticks=0,
+            buffer_window_ticks=buffer.buffer_window_ticks
+        )
+    }
+    return InputBufferState(
+        buffered_action=buffer.buffered_action,
+        buffer_remaining_ticks=new_remaining,
+        buffer_window_ticks=buffer.buffer_window_ticks
+    )
+}
+
+fn has_buffered_action(buffer: InputBufferState) -> Boolean {
+    return buffer.buffered_action > 0
+}
+
+fn get_buffered_action(buffer: InputBufferState) -> Integer {
+    return buffer.buffered_action
+}

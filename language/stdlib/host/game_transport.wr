@@ -1,0 +1,256 @@
+//
+// Runtime-backed game session transport wrappers.
+// This is the interactive lane replacement for legacy host/web_server transport APIs.
+
+class GameSessionListenerConfiguration {
+    mutable bind_address: String = "127.0.0.1:8081"
+    mutable listener_namespace: String = "game"
+    mutable session_protocol_version: Integer = 1
+    mutable max_message_bytes: Integer = 65536
+
+
+}
+fn create_game_session_listener_configuration(
+    bind_address: String,
+    listener_namespace: String
+) -> GameSessionListenerConfiguration {
+    return GameSessionListenerConfiguration(
+        bind_address=bind_address,
+        listener_namespace=listener_namespace
+    )
+
+
+}
+fn create_game_session_listener_configuration_map(
+    configuration: GameSessionListenerConfiguration
+) -> Map[Any, Any] {
+    configuration_items = __wr_map_new()
+    __wr_map_set(map=configuration_items, key="bind_address", value=configuration.bind_address)
+    __wr_map_set(map=configuration_items, key="listener_namespace", value=configuration.listener_namespace)
+    __wr_map_set(map=configuration_items, key="session_protocol_version", value=configuration.session_protocol_version)
+    __wr_map_set(map=configuration_items, key="max_message_bytes", value=configuration.max_message_bytes)
+    return configuration_items
+
+
+}
+fn try_to_create_game_session_listener(
+    configuration: GameSessionListenerConfiguration
+) -> Result[Integer] {
+    listener_create_result = __wr_game_session_create_listener(
+        configuration=create_game_session_listener_configuration_map(
+            configuration=configuration
+        )
+    )
+    match listener_create_result {
+        Ok(created_listener_handle) {
+            return created_listener_handle
+        }
+        Err(listener_create_error) {
+            return error listener_create_error
+        }
+        default {
+            return error "game_session_create_listener returned unexpected value"
+
+
+        }
+    }
+}
+fn try_to_create_game_session_listener_by_address(
+    bind_address: String,
+    listener_namespace: String
+) -> Result[Integer] {
+    configuration = create_game_session_listener_configuration(
+        bind_address=bind_address,
+        listener_namespace=listener_namespace
+    )
+    return try_to_create_game_session_listener(configuration=configuration)
+
+
+}
+fn try_to_poll_game_session_event(
+    poll_listener_handle: Integer,
+    poll_timeout_milliseconds: Integer
+) -> Result[Map[Any, Any]] {
+    poll_event_result = __wr_game_session_poll_event(
+        listener_handle=poll_listener_handle,
+        timeout_ms=poll_timeout_milliseconds
+    )
+    match poll_event_result {
+        Ok(polled_event_items) {
+            return polled_event_items
+        }
+        Err(poll_event_error) {
+            return error poll_event_error
+        }
+        default {
+            return error "game_session_poll_event returned unexpected value"
+
+
+        }
+    }
+}
+fn try_to_accept_game_session_connection(
+    accept_listener_handle: Integer
+) -> Result[Integer] {
+    accept_connection_result = __wr_game_session_accept_connection(
+        listener_handle=accept_listener_handle
+    )
+    match accept_connection_result {
+        Ok(accepted_connection_handle) {
+            return accepted_connection_handle
+        }
+        Err(accept_connection_error) {
+            return error accept_connection_error
+        }
+        default {
+            return error "game_session_accept_connection returned unexpected value"
+
+
+        }
+    }
+}
+fn try_to_read_game_session_message(
+    read_listener_handle: Integer,
+    read_connection_handle: Integer
+) -> Result[Map[Any, Any]] {
+    read_message_result = __wr_game_session_read_message(
+        listener_handle=read_listener_handle,
+        connection_handle=read_connection_handle
+    )
+    match read_message_result {
+        Ok(read_message_items) {
+            return read_message_items
+        }
+        Err(read_message_error) {
+            return error read_message_error
+        }
+        default {
+            return error "game_session_read_message returned unexpected value"
+
+
+        }
+    }
+}
+fn try_to_write_game_session_message(
+    write_listener_handle: Integer,
+    write_connection_handle: Integer,
+    write_message_items: Map[Any, Any]
+) -> Result[Integer] {
+    write_result = __wr_game_session_write_message(
+        listener_handle=write_listener_handle,
+        connection_handle=write_connection_handle,
+        message=write_message_items
+    )
+    match write_result {
+        Ok(written_bytes_count) {
+            return written_bytes_count
+        }
+        Err(write_message_error) {
+            return error write_message_error
+        }
+        default {
+            return error "game_session_write_message returned unexpected value"
+
+
+        }
+    }
+}
+fn try_to_close_game_session_connection(
+    close_listener_handle: Integer,
+    close_connection_handle: Integer
+) -> Result[Nothing] {
+    close_connection_result = __wr_game_session_close_connection(
+        listener_handle=close_listener_handle,
+        connection_handle=close_connection_handle
+    )
+    match close_connection_result {
+        Ok(close_success) {
+            if close_success != nothing {
+                return nothing
+            }
+            return nothing
+        }
+        Err(close_connection_error) {
+            return error close_connection_error
+        }
+        default {
+            return error "game_session_close_connection returned unexpected value"
+
+
+        }
+    }
+}
+fn try_to_close_game_session_listener(
+    listener_handle: Integer
+) -> Result[Boolean] {
+    close_listener_result = __wr_game_session_close_listener(
+        listener_handle=listener_handle
+    )
+    match close_listener_result {
+        Ok(is_closed) {
+            return is_closed
+        }
+        Err(close_listener_error) {
+            return error close_listener_error
+        }
+        default {
+            return error "game_session_close_listener returned unexpected value"
+
+
+        }
+    }
+}
+fn get_game_session_event_type(event_items: Map[Any, Any]) -> String {
+    event_type_value = __wr_map_get(map=event_items, key="event_type")
+    match event_type_value {
+        String(event_type_text_value) {
+            return event_type_text_value
+        }
+        default {
+            return ""
+
+
+        }
+    }
+}
+fn get_game_session_event_connection_handle(event_items: Map[Any, Any]) -> Integer {
+    event_connection_value = __wr_map_get(map=event_items, key="connection_handle")
+    match event_connection_value {
+        Integer(event_connection_handle) {
+            return event_connection_handle
+        }
+        default {
+            return -1
+
+
+        }
+    }
+}
+fn get_game_session_message_type(message_items: Map[Any, Any]) -> String {
+    message_type_value = __wr_map_get(map=message_items, key="message_type")
+    match message_type_value {
+        String(message_type_text_value) {
+            return message_type_text_value
+        }
+        default {
+            return ""
+
+
+        }
+    }
+}
+fn create_game_session_message_envelope(
+    message_type: String,
+    payload: Any,
+    tick: Integer,
+    sequence: Integer,
+    acknowledgement: Integer
+) -> Map[Any, Any] {
+    message_items = __wr_map_new()
+    __wr_map_set(map=message_items, key="message_type", value=message_type)
+    __wr_map_set(map=message_items, key="payload", value=payload)
+    __wr_map_set(map=message_items, key="tick", value=tick)
+    __wr_map_set(map=message_items, key="seq", value=sequence)
+    __wr_map_set(map=message_items, key="ack", value=acknowledgement)
+    return message_items
+}

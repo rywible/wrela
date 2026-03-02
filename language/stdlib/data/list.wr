@@ -1,0 +1,12 @@
+//
+// List helpers backed by literal list values (`[]`).
+
+fn create_list() -> Any {
+    return []
+
+
+}
+fn push(items: Any, value: Any) -> Nothing {
+    items.push(value)
+    return nothing
+}
