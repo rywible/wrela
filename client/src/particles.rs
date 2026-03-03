@@ -291,12 +291,17 @@ impl CombatParticleSystem {
         // Rising edge of player_attack_hit means the hit just landed.
         if current.player_attack_hit && !self.prev_player_attack_hit {
             let hit_point = midpoint_milli(
-                current.player_x, current.player_y, current.player_z,
-                current.enemy_x, current.enemy_y, current.enemy_z,
+                current.player_x,
+                current.player_y,
+                current.player_z,
+                current.enemy_x,
+                current.enemy_y,
+                current.enemy_z,
                 m,
             );
             // Sparks at the midpoint between player and enemy
-            let (sparks_params, sparks_count) = CombatParticleEffect::HitSparks.emitter_at(hit_point);
+            let (sparks_params, sparks_count) =
+                CombatParticleEffect::HitSparks.emitter_at(hit_point);
             self.pool.spawn_burst(&sparks_params, sparks_count);
 
             // Blood/dark particles on the enemy
@@ -305,7 +310,8 @@ impl CombatParticleSystem {
                 (current.enemy_y as f32 / m) + 1.0, // chest height
                 current.enemy_z as f32 / m,
             ];
-            let (blood_params, blood_count) = CombatParticleEffect::EnemyHitBlood.emitter_at(enemy_pos);
+            let (blood_params, blood_count) =
+                CombatParticleEffect::EnemyHitBlood.emitter_at(enemy_pos);
             self.pool.spawn_burst(&blood_params, blood_count);
         }
         self.prev_player_attack_hit = current.player_attack_hit;
@@ -313,11 +319,16 @@ impl CombatParticleSystem {
         // --- Parry burst ---
         if current.parry_success_this_tick && !self.prev_parry_success {
             let parry_point = midpoint_milli(
-                current.player_x, current.player_y, current.player_z,
-                current.enemy_x, current.enemy_y, current.enemy_z,
+                current.player_x,
+                current.player_y,
+                current.player_z,
+                current.enemy_x,
+                current.enemy_y,
+                current.enemy_z,
                 m,
             );
-            let (parry_params, parry_count) = CombatParticleEffect::ParryBurst.emitter_at(parry_point);
+            let (parry_params, parry_count) =
+                CombatParticleEffect::ParryBurst.emitter_at(parry_point);
             self.pool.spawn_burst(&parry_params, parry_count);
         }
         self.prev_parry_success = current.parry_success_this_tick;
@@ -336,11 +347,21 @@ impl CombatParticleSystem {
 
         // --- Blade trail: continuous emission during active attack frames ---
         if current.player_state == STATE_ATTACK {
-            let startup = if current.player_attack_heavy { HEAVY_STARTUP } else { LIGHT_STARTUP };
-            let active = if current.player_attack_heavy { HEAVY_ACTIVE } else { LIGHT_ACTIVE };
-            if current.player_state_tick >= startup && current.player_state_tick < startup + active {
+            let startup = if current.player_attack_heavy {
+                HEAVY_STARTUP
+            } else {
+                LIGHT_STARTUP
+            };
+            let active = if current.player_attack_heavy {
+                HEAVY_ACTIVE
+            } else {
+                LIGHT_ACTIVE
+            };
+            if current.player_state_tick >= startup && current.player_state_tick < startup + active
+            {
                 let blade_tip = blade_tip_position(current, m);
-                let (trail_params, trail_count) = CombatParticleEffect::BladeTrail.emitter_at(blade_tip);
+                let (trail_params, trail_count) =
+                    CombatParticleEffect::BladeTrail.emitter_at(blade_tip);
                 self.pool.spawn_burst(&trail_params, trail_count);
             }
         }
@@ -356,11 +377,7 @@ impl CombatParticleSystem {
 }
 
 /// Compute the midpoint between player and enemy positions (milli-scaled).
-fn midpoint_milli(
-    px: i32, py: i32, pz: i32,
-    ex: i32, ey: i32, ez: i32,
-    m: f32,
-) -> [f32; 3] {
+fn midpoint_milli(px: i32, py: i32, pz: i32, ex: i32, ey: i32, ez: i32, m: f32) -> [f32; 3] {
     [
         (px + ex) as f32 / (2.0 * m),
         ((py + ey) as f32 / (2.0 * m)) + 1.0, // roughly chest height
@@ -381,8 +398,16 @@ fn blade_tip_position(state: &GameState, m: f32) -> [f32; 3] {
     let nx = fx / facing_len;
     let nz = fz / facing_len;
 
-    let startup = if state.player_attack_heavy { HEAVY_STARTUP } else { LIGHT_STARTUP };
-    let active = if state.player_attack_heavy { HEAVY_ACTIVE } else { LIGHT_ACTIVE };
+    let startup = if state.player_attack_heavy {
+        HEAVY_STARTUP
+    } else {
+        LIGHT_STARTUP
+    };
+    let active = if state.player_attack_heavy {
+        HEAVY_ACTIVE
+    } else {
+        LIGHT_ACTIVE
+    };
     // t goes from 0..1 across active frames
     let t = ((state.player_state_tick - startup) as f32) / (active as f32).max(1.0);
 
@@ -402,18 +427,18 @@ fn blade_tip_position(state: &GameState, m: f32) -> [f32; 3] {
 /// spawns particles into the pool. The caller is responsible for tracking
 /// any additional per-frame state (e.g., blade trail needs to be called
 /// every frame during active attack frames).
-pub fn emit_combat_particles(
-    prev: &GameState,
-    current: &GameState,
-    pool: &mut ParticlePool,
-) {
+pub fn emit_combat_particles(prev: &GameState, current: &GameState, pool: &mut ParticlePool) {
     let m = 1000.0_f32;
 
     // Hit sparks + enemy blood on player attack connecting
     if current.player_attack_hit && !prev.player_attack_hit {
         let hit_point = midpoint_milli(
-            current.player_x, current.player_y, current.player_z,
-            current.enemy_x, current.enemy_y, current.enemy_z,
+            current.player_x,
+            current.player_y,
+            current.player_z,
+            current.enemy_x,
+            current.enemy_y,
+            current.enemy_z,
             m,
         );
         let (sparks_params, sparks_count) = CombatParticleEffect::HitSparks.emitter_at(hit_point);
@@ -431,8 +456,12 @@ pub fn emit_combat_particles(
     // Parry burst
     if current.parry_success_this_tick && !prev.parry_success_this_tick {
         let parry_point = midpoint_milli(
-            current.player_x, current.player_y, current.player_z,
-            current.enemy_x, current.enemy_y, current.enemy_z,
+            current.player_x,
+            current.player_y,
+            current.player_z,
+            current.enemy_x,
+            current.enemy_y,
+            current.enemy_z,
             m,
         );
         let (parry_params, parry_count) = CombatParticleEffect::ParryBurst.emitter_at(parry_point);
@@ -452,13 +481,431 @@ pub fn emit_combat_particles(
 
     // Blade trail (continuous)
     if current.player_state == STATE_ATTACK {
-        let startup = if current.player_attack_heavy { HEAVY_STARTUP } else { LIGHT_STARTUP };
-        let active = if current.player_attack_heavy { HEAVY_ACTIVE } else { LIGHT_ACTIVE };
+        let startup = if current.player_attack_heavy {
+            HEAVY_STARTUP
+        } else {
+            LIGHT_STARTUP
+        };
+        let active = if current.player_attack_heavy {
+            HEAVY_ACTIVE
+        } else {
+            LIGHT_ACTIVE
+        };
         if current.player_state_tick >= startup && current.player_state_tick < startup + active {
             let blade_tip = blade_tip_position(current, m);
-            let (trail_params, trail_count) = CombatParticleEffect::BladeTrail.emitter_at(blade_tip);
+            let (trail_params, trail_count) =
+                CombatParticleEffect::BladeTrail.emitter_at(blade_tip);
             pool.spawn_burst(&trail_params, trail_count);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ambient particle effects: leaves, dust motes, ground fog
+// ---------------------------------------------------------------------------
+
+/// Leaf color palette: green, brown, golden tones.
+const LEAF_COLORS: [[f32; 4]; 5] = [
+    [0.30, 0.50, 0.15, 1.0], // forest green
+    [0.55, 0.45, 0.20, 1.0], // brown
+    [0.75, 0.60, 0.15, 1.0], // golden
+    [0.40, 0.55, 0.10, 1.0], // bright green
+    [0.60, 0.35, 0.12, 1.0], // russet
+];
+
+/// Falling leaf emitter: spawns leaves under a forest canopy that spiral
+/// downward with sinusoidal lateral drift. Maintains a sparse visible count
+/// (target 5-10 at any time).
+pub struct LeafEmitter {
+    pub pool: ParticlePool,
+    /// Accumulated time for sinusoidal motion (wraps naturally via f32).
+    pub time: f32,
+    /// RNG seed for spawning.
+    seed: u32,
+    /// Seconds since last spawn attempt.
+    spawn_timer: f32,
+    /// Center position around which leaves fall (tracks player).
+    pub center: [f32; 3],
+}
+
+impl LeafEmitter {
+    pub fn new(max_particles: usize) -> Self {
+        Self {
+            pool: ParticlePool::new(max_particles),
+            time: 0.0,
+            seed: 0xCAFE_BABE,
+            spawn_timer: 0.0,
+            center: [0.0, 0.0, 0.0],
+        }
+    }
+
+    /// Spawn leaves to maintain the target density and update existing ones.
+    /// `dt` is frame delta time in seconds.
+    pub fn update(&mut self, dt: f32) {
+        self.time += dt;
+        self.spawn_timer += dt;
+
+        // Target: ~8 visible leaves. Spawn one every ~1.0s if below target.
+        let target_count = 8;
+        let spawn_interval = 1.0;
+        if self.pool.alive_count() < target_count && self.spawn_timer >= spawn_interval {
+            self.spawn_timer = 0.0;
+            self.spawn_leaf();
+        }
+
+        // Update existing leaves: sinusoidal lateral drift + gravity descent
+        for p in self.pool.particles.iter_mut() {
+            // Unique phase per-particle derived from position to avoid synchronization
+            let phase = self.time + p.position[0] * 3.7 + p.position[2] * 2.3;
+
+            // Sinusoidal lateral drift
+            let drift_x = phase.sin() * 0.4;
+            let drift_z = (phase * 0.7).cos() * 0.3;
+
+            // Slow descent (gravity-like)
+            let fall_speed = -0.8;
+
+            p.velocity[0] = drift_x;
+            p.velocity[1] = fall_speed;
+            p.velocity[2] = drift_z;
+
+            p.position[0] += p.velocity[0] * dt;
+            p.position[1] += p.velocity[1] * dt;
+            p.position[2] += p.velocity[2] * dt;
+
+            p.life -= dt;
+
+            // Fade out near ground (y < 1.0)
+            if p.position[1] < 1.0 {
+                let ground_fade = p.position[1].max(0.0); // 0 at ground, 1 at y=1
+                p.color[3] = ground_fade;
+            }
+
+            // Kill if below ground
+            if p.position[1] < 0.0 {
+                p.life = 0.0;
+            }
+        }
+
+        self.pool.particles.retain(|p| p.life > 0.0);
+    }
+
+    fn spawn_leaf(&mut self) {
+        let budget = self.pool.max_particles.saturating_sub(self.pool.particles.len());
+        if budget == 0 {
+            return;
+        }
+
+        // Random position under canopy: y=8-15, x/z within +-10 of center
+        let x = self.center[0] + (pseudo_random(&mut self.seed) * 20.0 - 10.0);
+        let y = 8.0 + pseudo_random(&mut self.seed) * 7.0; // 8-15
+        let z = self.center[2] + (pseudo_random(&mut self.seed) * 20.0 - 10.0);
+
+        // Random color from palette
+        let color_idx = (pseudo_random(&mut self.seed) * LEAF_COLORS.len() as f32) as usize;
+        let color = LEAF_COLORS[color_idx.min(LEAF_COLORS.len() - 1)];
+
+        // Size: leaves are small-medium
+        let size = 0.08 + pseudo_random(&mut self.seed) * 0.12; // 0.08-0.20
+
+        // Life long enough to reach ground from canopy (~10-19 seconds at ~0.8 units/s)
+        let life = 12.0 + pseudo_random(&mut self.seed) * 8.0;
+
+        self.pool.particles.push(Particle {
+            position: [x, y, z],
+            life,
+            velocity: [0.0, -0.8, 0.0],
+            size,
+            color,
+        });
+    }
+
+    pub fn alive_count(&self) -> usize {
+        self.pool.alive_count()
+    }
+
+    pub fn alive_particles(&self) -> &[Particle] {
+        self.pool.alive_particles()
+    }
+}
+
+/// Dust mote / pollen particle system: tiny white/gold particles that drift
+/// with Brownian motion throughout the scene volume.
+pub struct DustMoteEmitter {
+    pub pool: ParticlePool,
+    seed: u32,
+    spawn_timer: f32,
+    /// Intensity multiplier (0.0-1.0). Higher when light shafts are visible.
+    pub intensity: f32,
+    /// Center position (tracks player for spawn region).
+    pub center: [f32; 3],
+}
+
+impl DustMoteEmitter {
+    pub fn new(max_particles: usize) -> Self {
+        Self {
+            pool: ParticlePool::new(max_particles),
+            seed: 0xDEAD_F00D,
+            spawn_timer: 0.0,
+            intensity: 0.5,
+            center: [0.0, 0.0, 0.0],
+        }
+    }
+
+    /// Update dust motes with Brownian drift. `dt` in seconds.
+    pub fn update(&mut self, dt: f32) {
+        self.spawn_timer += dt;
+
+        // Target: ~15 motes at intensity=1.0, scale down with intensity
+        let target_count = (15.0 * self.intensity).max(3.0) as usize;
+        let spawn_interval = 0.4;
+        if self.pool.alive_count() < target_count && self.spawn_timer >= spawn_interval {
+            self.spawn_timer = 0.0;
+            self.spawn_mote();
+        }
+
+        // Brownian drift: random velocity perturbation each frame
+        for p in self.pool.particles.iter_mut() {
+            // Small random velocity nudge
+            let nudge_x = (pseudo_random(&mut self.seed) * 2.0 - 1.0) * 0.3;
+            let nudge_y = (pseudo_random(&mut self.seed) * 2.0 - 1.0) * 0.15;
+            let nudge_z = (pseudo_random(&mut self.seed) * 2.0 - 1.0) * 0.3;
+
+            p.velocity[0] += nudge_x * dt;
+            p.velocity[1] += nudge_y * dt;
+            p.velocity[2] += nudge_z * dt;
+
+            // Dampen velocity to prevent runaway drift
+            let damping = 0.95_f32;
+            p.velocity[0] *= damping;
+            p.velocity[1] *= damping;
+            p.velocity[2] *= damping;
+
+            p.position[0] += p.velocity[0] * dt;
+            p.position[1] += p.velocity[1] * dt;
+            p.position[2] += p.velocity[2] * dt;
+
+            // Keep motes above ground
+            if p.position[1] < 0.5 {
+                p.position[1] = 0.5;
+                p.velocity[1] = p.velocity[1].abs() * 0.5;
+            }
+
+            p.life -= dt;
+
+            // Alpha modulated by intensity — derive stable per-particle base
+            // from spawn position to avoid per-frame flickering.
+            let pos_hash = (p.position[0] * 7919.0 + p.position[2] * 7331.0).fract().abs();
+            let base_alpha = 0.3 + pos_hash * 0.3;
+            let life_fade = p.life.clamp(0.0, 1.0);
+            p.color[3] = base_alpha * self.intensity * life_fade;
+        }
+
+        self.pool.particles.retain(|p| p.life > 0.0);
+    }
+
+    fn spawn_mote(&mut self) {
+        let budget = self.pool.max_particles.saturating_sub(self.pool.particles.len());
+        if budget == 0 {
+            return;
+        }
+
+        // Spawn throughout scene volume, biased upward (lit areas)
+        let x = self.center[0] + (pseudo_random(&mut self.seed) * 16.0 - 8.0);
+        let y = 1.0 + pseudo_random(&mut self.seed) * 6.0; // 1-7, biased toward lit canopy
+        let z = self.center[2] + (pseudo_random(&mut self.seed) * 16.0 - 8.0);
+
+        // White/gold color
+        let gold_bias = pseudo_random(&mut self.seed);
+        let r = 1.0;
+        let g = 0.9 + gold_bias * 0.1;
+        let b = 0.7 + (1.0 - gold_bias) * 0.3;
+        let alpha = 0.3 + pseudo_random(&mut self.seed) * 0.3; // 0.3-0.6
+
+        // Tiny size
+        let size = 0.02 + pseudo_random(&mut self.seed) * 0.03; // 0.02-0.05
+
+        let life = 6.0 + pseudo_random(&mut self.seed) * 6.0; // 6-12s
+
+        self.pool.particles.push(Particle {
+            position: [x, y, z],
+            life,
+            velocity: [0.0, 0.0, 0.0], // starts stationary, Brownian drift adds movement
+            size,
+            color: [r, g, b, alpha],
+        });
+    }
+
+    pub fn alive_count(&self) -> usize {
+        self.pool.alive_count()
+    }
+
+    pub fn alive_particles(&self) -> &[Particle] {
+        self.pool.alive_particles()
+    }
+}
+
+/// Ground-level fog wisp emitter: low-lying, wide, very transparent particles
+/// that drift along a wind direction.
+pub struct GroundFogEmitter {
+    pub pool: ParticlePool,
+    seed: u32,
+    spawn_timer: f32,
+    /// Wind direction (normalized XZ). Fog drifts along this.
+    pub wind_direction: [f32; 2],
+    /// Wind speed in units/second.
+    pub wind_speed: f32,
+    /// Center position (tracks player for spawn region).
+    pub center: [f32; 3],
+}
+
+impl GroundFogEmitter {
+    pub fn new(max_particles: usize) -> Self {
+        Self {
+            pool: ParticlePool::new(max_particles),
+            seed: 0xF06_F06F,
+            spawn_timer: 0.0,
+            wind_direction: [0.7, 0.7], // default: diagonal drift
+            wind_speed: 0.3,
+            center: [0.0, 0.0, 0.0],
+        }
+    }
+
+    /// Update fog wisps. `dt` in seconds.
+    pub fn update(&mut self, dt: f32) {
+        self.spawn_timer += dt;
+
+        // Target: ~6 wisps at a time
+        let target_count = 6;
+        let spawn_interval = 1.5;
+        if self.pool.alive_count() < target_count && self.spawn_timer >= spawn_interval {
+            self.spawn_timer = 0.0;
+            self.spawn_wisp();
+        }
+
+        let wind_vx = self.wind_direction[0] * self.wind_speed;
+        let wind_vz = self.wind_direction[1] * self.wind_speed;
+
+        for p in self.pool.particles.iter_mut() {
+            // Drift along wind + slight random turbulence
+            let turb_x = (pseudo_random(&mut self.seed) * 2.0 - 1.0) * 0.05;
+            let turb_z = (pseudo_random(&mut self.seed) * 2.0 - 1.0) * 0.05;
+
+            p.velocity[0] = wind_vx + turb_x;
+            p.velocity[1] = 0.0; // stay at ground level
+            p.velocity[2] = wind_vz + turb_z;
+
+            p.position[0] += p.velocity[0] * dt;
+            p.position[1] += p.velocity[1] * dt;
+            p.position[2] += p.velocity[2] * dt;
+
+            // Clamp to ground level
+            p.position[1] = p.position[1].clamp(0.0, 0.5);
+
+            p.life -= dt;
+
+            // Very low opacity, fade with life
+            let life_fade = (p.life / 8.0).clamp(0.0, 1.0); // fade over last 8s
+            p.color[3] = (0.05 + pseudo_random(&mut self.seed) * 0.05) * life_fade;
+        }
+
+        self.pool.particles.retain(|p| p.life > 0.0);
+    }
+
+    fn spawn_wisp(&mut self) {
+        let budget = self.pool.max_particles.saturating_sub(self.pool.particles.len());
+        if budget == 0 {
+            return;
+        }
+
+        // Spawn at ground level, spread around center
+        let x = self.center[0] + (pseudo_random(&mut self.seed) * 20.0 - 10.0);
+        let y = pseudo_random(&mut self.seed) * 0.3; // 0.0-0.3
+        let z = self.center[2] + (pseudo_random(&mut self.seed) * 20.0 - 10.0);
+
+        // White/grey fog
+        let grey = 0.7 + pseudo_random(&mut self.seed) * 0.3;
+        let alpha = 0.05 + pseudo_random(&mut self.seed) * 0.05; // 0.05-0.10
+
+        // Wide, flat particles
+        let size = 0.5 + pseudo_random(&mut self.seed) * 1.5; // 0.5-2.0
+
+        let life = 10.0 + pseudo_random(&mut self.seed) * 10.0; // 10-20s
+
+        self.pool.particles.push(Particle {
+            position: [x, y, z],
+            life,
+            velocity: [self.wind_direction[0] * self.wind_speed, 0.0, self.wind_direction[1] * self.wind_speed],
+            size,
+            color: [grey, grey, grey, alpha],
+        });
+    }
+
+    pub fn alive_count(&self) -> usize {
+        self.pool.alive_count()
+    }
+
+    pub fn alive_particles(&self) -> &[Particle] {
+        self.pool.alive_particles()
+    }
+}
+
+/// Aggregate container for all ambient particle effects. Manages leaf, dust,
+/// and fog emitters together with a unified update/query interface.
+pub struct AmbientParticleSystem {
+    pub leaves: LeafEmitter,
+    pub dust_motes: DustMoteEmitter,
+    pub ground_fog: GroundFogEmitter,
+}
+
+impl AmbientParticleSystem {
+    pub fn new() -> Self {
+        Self {
+            leaves: LeafEmitter::new(32),       // sparse: 5-10 at a time
+            dust_motes: DustMoteEmitter::new(64), // ~15 at a time
+            ground_fog: GroundFogEmitter::new(16), // ~6 at a time
+        }
+    }
+
+    /// Update all ambient emitters. `center` is the player position (for
+    /// region-relative spawning). `dt` is frame delta time in seconds.
+    /// `light_shaft_intensity` modulates dust mote density (0.0-1.0).
+    pub fn update(&mut self, dt: f32, center: [f32; 3], light_shaft_intensity: f32) {
+        self.leaves.center = center;
+        self.dust_motes.center = center;
+        self.dust_motes.intensity = light_shaft_intensity.clamp(0.0, 1.0);
+        self.ground_fog.center = center;
+
+        self.leaves.update(dt);
+        self.dust_motes.update(dt);
+        self.ground_fog.update(dt);
+    }
+
+    /// Set wind direction and speed for ground fog.
+    pub fn set_wind(&mut self, direction: [f32; 2], speed: f32) {
+        self.ground_fog.wind_direction = direction;
+        self.ground_fog.wind_speed = speed;
+    }
+
+    /// Total alive particle count across all ambient emitters.
+    pub fn total_alive(&self) -> usize {
+        self.leaves.alive_count() + self.dust_motes.alive_count() + self.ground_fog.alive_count()
+    }
+
+    /// Collect all ambient particles into a single slice for rendering.
+    /// Returns a Vec since particles live in separate pools.
+    pub fn all_particles(&self) -> Vec<Particle> {
+        let mut all = Vec::with_capacity(self.total_alive());
+        all.extend_from_slice(self.leaves.alive_particles());
+        all.extend_from_slice(self.dust_motes.alive_particles());
+        all.extend_from_slice(self.ground_fog.alive_particles());
+        all
+    }
+}
+
+impl Default for AmbientParticleSystem {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -1007,7 +1454,10 @@ mod tests {
     #[test]
     fn hit_sparks_emitter_produces_valid_params() {
         let (params, count) = CombatParticleEffect::HitSparks.emitter_at([1.0, 2.0, 3.0]);
-        assert!(count >= 10 && count <= 20, "hit sparks count {count} not in [10,20]");
+        assert!(
+            count >= 10 && count <= 20,
+            "hit sparks count {count} not in [10,20]"
+        );
         assert!(params.life_range[0] >= 0.1 && params.life_range[1] <= 0.2);
         assert!(params.initial_speed > 0.0);
         // Color should be bright (high red/green)
@@ -1019,13 +1469,19 @@ mod tests {
         let (params, count) = CombatParticleEffect::BladeTrail.emitter_at([0.0, 1.0, 0.0]);
         assert!(count > 0 && count <= 5);
         assert!(params.life_range[1] <= 0.2, "blade trail should fade fast");
-        assert!(params.initial_speed < 2.0, "blade trail should have low speed");
+        assert!(
+            params.initial_speed < 2.0,
+            "blade trail should have low speed"
+        );
     }
 
     #[test]
     fn parry_burst_emits_at_least_30_particles() {
         let (_, count) = CombatParticleEffect::ParryBurst.emitter_at([0.0, 0.0, 0.0]);
-        assert!(count >= 30, "parry burst should emit 30+ particles, got {count}");
+        assert!(
+            count >= 30,
+            "parry burst should emit 30+ particles, got {count}"
+        );
     }
 
     #[test]
@@ -1042,7 +1498,10 @@ mod tests {
         assert!(count > 0);
         // Shape should be a sphere centered at feet (y=0)
         if let EmitterShape::Sphere { center, .. } = params.shape {
-            assert!((center[1] - 0.0).abs() < 0.01, "dust should be at ground level");
+            assert!(
+                (center[1] - 0.0).abs() < 0.01,
+                "dust should be at ground level"
+            );
             assert!((center[0] - 5.0).abs() < 0.01);
         } else {
             panic!("DodgeDust should use Sphere shape");
@@ -1056,7 +1515,10 @@ mod tests {
         // Dark red: red channel much higher than green/blue
         assert!(params.color[0] > params.color[1]);
         assert!(params.color[0] > params.color[2]);
-        assert!(params.color[0] < 0.5, "blood should be dark red, not bright");
+        assert!(
+            params.color[0] < 0.5,
+            "blood should be dark red, not bright"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1147,10 +1609,7 @@ mod tests {
         current.player_state = STATE_DODGE; // 3
 
         sys.emit(&current);
-        assert!(
-            sys.alive_count() > 0,
-            "dodge dust should emit particles"
-        );
+        assert!(sys.alive_count() > 0, "dodge dust should emit particles");
     }
 
     #[test]
@@ -1195,11 +1654,7 @@ mod tests {
         state.player_state_tick = 0; // startup frame, not yet active
 
         sys.emit(&state);
-        assert_eq!(
-            sys.alive_count(),
-            0,
-            "no blade trail during startup frames"
-        );
+        assert_eq!(sys.alive_count(), 0, "no blade trail during startup frames");
     }
 
     #[test]
@@ -1242,12 +1697,19 @@ mod tests {
 
         sys.emit_and_update(&current, 0.016);
         let count_after_one_tick = sys.alive_count();
-        assert!(count_after_one_tick > 0, "particles should be alive after one tick");
+        assert!(
+            count_after_one_tick > 0,
+            "particles should be alive after one tick"
+        );
 
         // Advance far enough to kill all particles
         let idle = GameState::new();
         sys.emit_and_update(&idle, 10.0);
-        assert_eq!(sys.alive_count(), 0, "all particles should be dead after 10s");
+        assert_eq!(
+            sys.alive_count(),
+            0,
+            "all particles should be dead after 10s"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1330,7 +1792,10 @@ mod tests {
         state.player_state_tick = LIGHT_STARTUP;
 
         let tip = blade_tip_position(&state, 1000.0);
-        assert!(tip[0] > 0.0, "blade tip should be in front of player along +x");
+        assert!(
+            tip[0] > 0.0,
+            "blade tip should be in front of player along +x"
+        );
     }
 
     #[test]
@@ -1399,12 +1864,347 @@ mod tests {
 
         let mut sys = CombatParticleSystem::new(4096);
         let state = GameState::new();
-        let input = GameInput { dodge: true, ..Default::default() };
+        let input = GameInput {
+            dodge: true,
+            ..Default::default()
+        };
         let next = tick_game(&state, &input);
 
         sys.emit_and_update(&next, 0.016);
         if next.player_state == STATE_DODGE {
             assert!(sys.alive_count() > 0, "dodge should emit dust particles");
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Ambient particle system tests: LeafEmitter
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn leaf_emitter_starts_empty() {
+        let emitter = LeafEmitter::new(32);
+        assert_eq!(emitter.alive_count(), 0);
+    }
+
+    #[test]
+    fn leaf_emitter_spawns_after_interval() {
+        let mut emitter = LeafEmitter::new(32);
+        // Advance time past spawn interval (1.0s)
+        emitter.update(1.1);
+        assert!(
+            emitter.alive_count() > 0,
+            "should spawn at least one leaf after 1.1s"
+        );
+    }
+
+    #[test]
+    fn leaf_emitter_respects_target_density() {
+        let mut emitter = LeafEmitter::new(32);
+        // Run many updates to reach steady state
+        for _ in 0..100 {
+            emitter.update(1.1);
+        }
+        // Target is ~8 leaves
+        assert!(
+            emitter.alive_count() <= 12,
+            "should not exceed ~12 leaves, got {}",
+            emitter.alive_count()
+        );
+    }
+
+    #[test]
+    fn leaf_emitter_spawns_in_canopy_region() {
+        let mut emitter = LeafEmitter::new(32);
+        emitter.center = [5.0, 0.0, 5.0];
+        emitter.update(1.1);
+        for p in emitter.alive_particles() {
+            assert!(
+                p.position[1] >= 0.0 && p.position[1] <= 16.0,
+                "leaf y={} should be in canopy range",
+                p.position[1]
+            );
+        }
+    }
+
+    #[test]
+    fn leaf_emitter_descends_over_time() {
+        let mut emitter = LeafEmitter::new(32);
+        emitter.update(1.1); // spawn one
+        assert!(emitter.alive_count() > 0);
+        let initial_y = emitter.alive_particles()[0].position[1];
+        emitter.update(2.0); // advance 2s
+        let after_y = emitter.alive_particles()[0].position[1];
+        assert!(
+            after_y < initial_y,
+            "leaf should descend: {} -> {}",
+            initial_y,
+            after_y
+        );
+    }
+
+    #[test]
+    fn leaf_emitter_kills_below_ground() {
+        let mut emitter = LeafEmitter::new(32);
+        // Manually inject a particle at ground level with low life
+        emitter.pool.particles.push(Particle {
+            position: [0.0, 0.01, 0.0],
+            life: 100.0,
+            velocity: [0.0, -1.0, 0.0],
+            size: 0.1,
+            color: [0.3, 0.5, 0.15, 1.0],
+        });
+        emitter.update(0.1); // should fall below ground and be killed
+        assert_eq!(
+            emitter.alive_count(),
+            0,
+            "particle below ground should be removed"
+        );
+    }
+
+    #[test]
+    fn leaf_emitter_fades_near_ground() {
+        let mut emitter = LeafEmitter::new(32);
+        emitter.pool.particles.push(Particle {
+            position: [0.0, 0.5, 0.0],
+            life: 100.0,
+            velocity: [0.0, 0.0, 0.0], // stationary so update doesn't kill it
+            size: 0.1,
+            color: [0.3, 0.5, 0.15, 1.0],
+        });
+        emitter.update(0.01);
+        let p = &emitter.alive_particles()[0];
+        assert!(
+            p.color[3] < 1.0,
+            "alpha should fade near ground, got {}",
+            p.color[3]
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Ambient particle system tests: DustMoteEmitter
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn dust_mote_starts_empty() {
+        let emitter = DustMoteEmitter::new(64);
+        assert_eq!(emitter.alive_count(), 0);
+    }
+
+    #[test]
+    fn dust_mote_spawns_after_interval() {
+        let mut emitter = DustMoteEmitter::new(64);
+        emitter.update(0.5);
+        assert!(
+            emitter.alive_count() > 0,
+            "should spawn at least one dust mote"
+        );
+    }
+
+    #[test]
+    fn dust_mote_intensity_modulates_count() {
+        let mut low = DustMoteEmitter::new(64);
+        low.intensity = 0.1;
+        let mut high = DustMoteEmitter::new(64);
+        high.intensity = 1.0;
+
+        for _ in 0..50 {
+            low.update(0.5);
+            high.update(0.5);
+        }
+        // Higher intensity should yield more particles
+        assert!(
+            high.alive_count() >= low.alive_count(),
+            "high intensity {} should have >= low intensity {}",
+            high.alive_count(),
+            low.alive_count()
+        );
+    }
+
+    #[test]
+    fn dust_mote_stays_above_ground() {
+        let mut emitter = DustMoteEmitter::new(64);
+        emitter.pool.particles.push(Particle {
+            position: [0.0, 0.1, 0.0],
+            life: 10.0,
+            velocity: [0.0, -5.0, 0.0],
+            size: 0.03,
+            color: [1.0, 0.95, 0.8, 0.4],
+        });
+        emitter.update(1.0);
+        for p in emitter.alive_particles() {
+            assert!(
+                p.position[1] >= 0.4,
+                "dust mote y={} should stay above 0.5",
+                p.position[1]
+            );
+        }
+    }
+
+    #[test]
+    fn dust_mote_has_tiny_size() {
+        let mut emitter = DustMoteEmitter::new(64);
+        emitter.update(0.5);
+        for p in emitter.alive_particles() {
+            assert!(
+                p.size >= 0.02 && p.size <= 0.05,
+                "dust mote size {} out of range [0.02, 0.05]",
+                p.size
+            );
+        }
+    }
+
+    #[test]
+    fn dust_mote_low_alpha() {
+        let mut emitter = DustMoteEmitter::new(64);
+        emitter.intensity = 1.0;
+        emitter.update(0.5);
+        for p in emitter.alive_particles() {
+            assert!(
+                p.color[3] <= 0.7,
+                "dust mote alpha {} should be low",
+                p.color[3]
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Ambient particle system tests: GroundFogEmitter
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn ground_fog_starts_empty() {
+        let emitter = GroundFogEmitter::new(16);
+        assert_eq!(emitter.alive_count(), 0);
+    }
+
+    #[test]
+    fn ground_fog_spawns_after_interval() {
+        let mut emitter = GroundFogEmitter::new(16);
+        emitter.update(1.6);
+        assert!(
+            emitter.alive_count() > 0,
+            "should spawn fog wisp after 1.6s"
+        );
+    }
+
+    #[test]
+    fn ground_fog_stays_at_ground_level() {
+        let mut emitter = GroundFogEmitter::new(16);
+        emitter.update(1.6);
+        for p in emitter.alive_particles() {
+            assert!(
+                p.position[1] >= -0.01 && p.position[1] <= 0.51,
+                "fog wisp y={} should be in [0.0, 0.5]",
+                p.position[1]
+            );
+        }
+    }
+
+    #[test]
+    fn ground_fog_has_wide_size() {
+        let mut emitter = GroundFogEmitter::new(16);
+        emitter.update(1.6);
+        for p in emitter.alive_particles() {
+            assert!(
+                p.size >= 0.5 && p.size <= 2.0,
+                "fog size {} out of range [0.5, 2.0]",
+                p.size
+            );
+        }
+    }
+
+    #[test]
+    fn ground_fog_very_low_opacity() {
+        let mut emitter = GroundFogEmitter::new(16);
+        emitter.update(1.6);
+        for p in emitter.alive_particles() {
+            assert!(
+                p.color[3] <= 0.15,
+                "fog alpha {} should be very low",
+                p.color[3]
+            );
+        }
+    }
+
+    #[test]
+    fn ground_fog_drifts_with_wind() {
+        let mut emitter = GroundFogEmitter::new(16);
+        emitter.wind_direction = [1.0, 0.0];
+        emitter.wind_speed = 2.0;
+        emitter.pool.particles.push(Particle {
+            position: [0.0, 0.1, 0.0],
+            life: 20.0,
+            velocity: [2.0, 0.0, 0.0],
+            size: 1.0,
+            color: [0.8, 0.8, 0.8, 0.08],
+        });
+        emitter.update(1.0);
+        let p = &emitter.alive_particles()[0];
+        assert!(
+            p.position[0] > 0.5,
+            "fog should drift with wind in +x, got {}",
+            p.position[0]
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // AmbientParticleSystem aggregate tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn ambient_system_default_starts_empty() {
+        let sys = AmbientParticleSystem::new();
+        assert_eq!(sys.total_alive(), 0);
+    }
+
+    #[test]
+    fn ambient_system_populates_over_time() {
+        let mut sys = AmbientParticleSystem::new();
+        for _ in 0..100 {
+            sys.update(0.1, [0.0, 0.0, 0.0], 0.5);
+        }
+        assert!(
+            sys.total_alive() > 0,
+            "ambient system should have particles after 10s"
+        );
+    }
+
+    #[test]
+    fn ambient_system_all_particles_aggregates() {
+        let mut sys = AmbientParticleSystem::new();
+        for _ in 0..100 {
+            sys.update(0.1, [0.0, 0.0, 0.0], 0.5);
+        }
+        let all = sys.all_particles();
+        assert_eq!(
+            all.len(),
+            sys.total_alive(),
+            "all_particles should match total_alive"
+        );
+    }
+
+    #[test]
+    fn ambient_system_set_wind() {
+        let mut sys = AmbientParticleSystem::new();
+        sys.set_wind([1.0, 0.0], 5.0);
+        assert!((sys.ground_fog.wind_direction[0] - 1.0).abs() < 1e-6);
+        assert!((sys.ground_fog.wind_speed - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn ambient_system_light_shaft_modulates_dust() {
+        let mut low = AmbientParticleSystem::new();
+        let mut high = AmbientParticleSystem::new();
+        for _ in 0..50 {
+            low.update(0.1, [0.0, 0.0, 0.0], 0.1);
+            high.update(0.1, [0.0, 0.0, 0.0], 1.0);
+        }
+        // High light intensity should yield more dust motes
+        assert!(
+            high.dust_motes.alive_count() >= low.dust_motes.alive_count(),
+            "high light {} should have >= low light {} dust motes",
+            high.dust_motes.alive_count(),
+            low.dust_motes.alive_count()
+        );
     }
 }

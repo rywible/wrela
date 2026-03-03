@@ -26,8 +26,7 @@ fn hash_u64(mut x: u64) -> u32 {
 
 /// Hash two i32 coordinates into a u32. Used for lattice noise.
 fn hash_2d(x: i32, y: i32, seed: u32) -> u32 {
-    let combined = ((x as u64) & 0xFFFF_FFFF)
-        | (((y as u64) & 0xFFFF_FFFF) << 32);
+    let combined = ((x as u64) & 0xFFFF_FFFF) | (((y as u64) & 0xFFFF_FFFF) << 32);
     hash_u64(combined ^ (seed as u64))
 }
 
@@ -82,7 +81,15 @@ fn value_noise(x: f32, y: f32, period: i32, seed: u32) -> f32 {
 
 /// Fractal Brownian Motion (FBM) using value noise.
 /// Returns a value roughly in [0, 1].
-fn fbm(x: f32, y: f32, octaves: u32, base_period: i32, lacunarity: f32, gain: f32, seed: u32) -> f32 {
+fn fbm(
+    x: f32,
+    y: f32,
+    octaves: u32,
+    base_period: i32,
+    lacunarity: f32,
+    gain: f32,
+    seed: u32,
+) -> f32 {
     let mut sum = 0.0f32;
     let mut amplitude = 1.0f32;
     let mut frequency = 1.0f32;
@@ -174,7 +181,13 @@ fn worley_edge(x: f32, y: f32, period: i32, seed: u32) -> f32 {
 // ---------------------------------------------------------------------------
 
 fn clamp(v: f32, lo: f32, hi: f32) -> f32 {
-    if v < lo { lo } else if v > hi { hi } else { v }
+    if v < lo {
+        lo
+    } else if v > hi {
+        hi
+    } else {
+        v
+    }
 }
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
@@ -242,7 +255,13 @@ fn flat_normal_map() -> Vec<u8> {
 }
 
 /// Generate a heightfield (TEX_SIZE x TEX_SIZE) using FBM.
-fn generate_heightfield(octaves: u32, base_period: i32, lacunarity: f32, gain: f32, seed: u32) -> Vec<f32> {
+fn generate_heightfield(
+    octaves: u32,
+    base_period: i32,
+    lacunarity: f32,
+    gain: f32,
+    seed: u32,
+) -> Vec<f32> {
     let w = TEX_SIZE as usize;
     let h = TEX_SIZE as usize;
     let mut heights = vec![0.0f32; w * h];
@@ -332,9 +351,9 @@ pub fn generate_grass_textures() -> ProceduralTexture {
             let idx = y * w + x;
             let ao_noise = heights[idx]; // reuse heightfield for AO variation
             let p = idx * 4;
-            orm[p] = map_range_u8(ao_noise, 204, 255);       // AO: 0.8-1.0
-            orm[p + 1] = map_range_u8(ao_noise, 217, 242);   // R: 0.85-0.95
-            orm[p + 2] = 0;                                   // M: 0.0
+            orm[p] = map_range_u8(ao_noise, 204, 255); // AO: 0.8-1.0
+            orm[p + 1] = map_range_u8(ao_noise, 217, 242); // R: 0.85-0.95
+            orm[p + 2] = 0; // M: 0.0
             orm[p + 3] = 255;
         }
     }
@@ -399,9 +418,9 @@ pub fn generate_bark_textures() -> ProceduralTexture {
             let idx = y * w + x;
             let v = heights[idx];
             let p = idx * 4;
-            orm[p] = map_range_u8(v, 179, 255);       // AO: 0.7-1.0
-            orm[p + 1] = map_range_u8(v, 204, 242);   // R: 0.8-0.95
-            orm[p + 2] = 0;                            // M: 0.0
+            orm[p] = map_range_u8(v, 179, 255); // AO: 0.7-1.0
+            orm[p + 1] = map_range_u8(v, 204, 242); // R: 0.8-0.95
+            orm[p + 2] = 0; // M: 0.0
             orm[p + 3] = 255;
         }
     }
@@ -475,9 +494,9 @@ pub fn generate_leaf_textures() -> ProceduralTexture {
             let idx = y * w + x;
             let v = heights[idx];
             let p = idx * 4;
-            orm[p] = map_range_u8(v, 200, 255);       // AO: ~0.8-1.0
-            orm[p + 1] = map_range_u8(v, 153, 204);   // R: 0.6-0.8
-            orm[p + 2] = 0;                            // M: 0.0
+            orm[p] = map_range_u8(v, 200, 255); // AO: ~0.8-1.0
+            orm[p + 1] = map_range_u8(v, 153, 204); // R: 0.6-0.8
+            orm[p + 2] = 0; // M: 0.0
             orm[p + 3] = 255;
         }
     }
@@ -551,9 +570,9 @@ pub fn generate_rock_textures() -> ProceduralTexture {
             let idx = y * w + x;
             let v = heights[idx];
             let p = idx * 4;
-            orm[p] = map_range_u8(v, 180, 255);       // AO: ~0.7-1.0
-            orm[p + 1] = map_range_u8(v, 153, 230);   // R: 0.6-0.9
-            orm[p + 2] = 0;                            // M: 0.0
+            orm[p] = map_range_u8(v, 180, 255); // AO: ~0.7-1.0
+            orm[p + 1] = map_range_u8(v, 153, 230); // R: 0.6-0.9
+            orm[p + 2] = 0; // M: 0.0
             orm[p + 3] = 255;
         }
     }
@@ -614,9 +633,9 @@ pub fn generate_player_skin_textures() -> ProceduralTexture {
             let idx = y * w + x;
             let v = heights[idx];
             let p = idx * 4;
-            orm[p] = map_range_u8(v, 230, 255);       // AO: ~0.9-1.0
-            orm[p + 1] = map_range_u8(v, 102, 153);   // R: 0.4-0.6
-            orm[p + 2] = 0;                            // M: 0.0
+            orm[p] = map_range_u8(v, 230, 255); // AO: ~0.9-1.0
+            orm[p + 1] = map_range_u8(v, 102, 153); // R: 0.4-0.6
+            orm[p + 2] = 0; // M: 0.0
             orm[p + 3] = 255;
         }
     }
@@ -659,7 +678,8 @@ pub fn generate_player_armor_textures() -> ProceduralTexture {
             // Rivet pattern at regular intervals (use simple grid hash)
             let rivet_x = (nx * 2.0).fract();
             let rivet_y = (ny * 2.0).fract();
-            let rivet_dist = ((rivet_x - 0.5) * (rivet_x - 0.5) + (rivet_y - 0.5) * (rivet_y - 0.5)).sqrt();
+            let rivet_dist =
+                ((rivet_x - 0.5) * (rivet_x - 0.5) + (rivet_y - 0.5) * (rivet_y - 0.5)).sqrt();
             let rivet = clamp(1.0 - rivet_dist * 8.0, 0.0, 1.0);
 
             heights[y * w + x] = plate * 0.5 + (1.0 - plate_edge.min(1.0)) * 0.3 + rivet * 0.2;
@@ -694,9 +714,9 @@ pub fn generate_player_armor_textures() -> ProceduralTexture {
             let idx = y * w + x;
             let v = heights[idx];
             let p = idx * 4;
-            orm[p] = map_range_u8(v, 180, 255);       // AO: ~0.7-1.0
-            orm[p + 1] = map_range_u8(v, 77, 128);    // R: 0.3-0.5
-            orm[p + 2] = map_range_u8(v, 153, 204);   // M: 0.6-0.8
+            orm[p] = map_range_u8(v, 180, 255); // AO: ~0.7-1.0
+            orm[p + 1] = map_range_u8(v, 77, 128); // R: 0.3-0.5
+            orm[p + 2] = map_range_u8(v, 153, 204); // M: 0.6-0.8
             orm[p + 3] = 255;
         }
     }
@@ -762,9 +782,9 @@ pub fn generate_enemy_skin_textures() -> ProceduralTexture {
             let idx = y * w + x;
             let v = heights[idx];
             let p = idx * 4;
-            orm[p] = map_range_u8(v, 190, 255);       // AO: ~0.75-1.0
-            orm[p + 1] = map_range_u8(v, 128, 179);   // R: 0.5-0.7
-            orm[p + 2] = 26;                           // M: ~0.1
+            orm[p] = map_range_u8(v, 190, 255); // AO: ~0.75-1.0
+            orm[p + 1] = map_range_u8(v, 128, 179); // R: 0.5-0.7
+            orm[p + 2] = 26; // M: ~0.1
             orm[p + 3] = 255;
         }
     }
@@ -812,22 +832,39 @@ mod tests {
         }
     }
 
-    fn assert_orm_ranges(img: &TextureImage, ao_min: u8, ao_max: u8, r_min: u8, r_max: u8, m_min: u8, m_max: u8) {
+    fn assert_orm_ranges(
+        img: &TextureImage,
+        ao_min: u8,
+        ao_max: u8,
+        r_min: u8,
+        r_max: u8,
+        m_min: u8,
+        m_max: u8,
+    ) {
         for (i, chunk) in img.rgba_data.chunks(4).enumerate() {
             assert!(
                 chunk[0] >= ao_min && chunk[0] <= ao_max,
                 "ORM AO at pixel {} is {} (expected {}-{})",
-                i, chunk[0], ao_min, ao_max
+                i,
+                chunk[0],
+                ao_min,
+                ao_max
             );
             assert!(
                 chunk[1] >= r_min && chunk[1] <= r_max,
                 "ORM Roughness at pixel {} is {} (expected {}-{})",
-                i, chunk[1], r_min, r_max
+                i,
+                chunk[1],
+                r_min,
+                r_max
             );
             assert!(
                 chunk[2] >= m_min && chunk[2] <= m_max,
                 "ORM Metallic at pixel {} is {} (expected {}-{})",
-                i, chunk[2], m_min, m_max
+                i,
+                chunk[2],
+                m_min,
+                m_max
             );
         }
     }
@@ -856,7 +893,8 @@ mod tests {
             let p0 = (y * w) * 4;
             let p1 = (y * w + (w - 1)) * 4;
             for c in 0..3 {
-                let diff = (img.rgba_data[p0 + c] as i16 - img.rgba_data[p1 + c] as i16).unsigned_abs() as u8;
+                let diff = (img.rgba_data[p0 + c] as i16 - img.rgba_data[p1 + c] as i16)
+                    .unsigned_abs() as u8;
                 if diff > max_diff {
                     max_diff = diff;
                 }
@@ -867,7 +905,8 @@ mod tests {
         assert!(
             max_diff <= tolerance,
             "Horizontal tile seam max diff {} exceeds tolerance {}",
-            max_diff, tolerance
+            max_diff,
+            tolerance
         );
 
         // Check vertical tiling
@@ -876,7 +915,8 @@ mod tests {
             let p0 = x * 4;
             let p1 = ((h - 1) * w + x) * 4;
             for c in 0..3 {
-                let diff = (img.rgba_data[p0 + c] as i16 - img.rgba_data[p1 + c] as i16).unsigned_abs() as u8;
+                let diff = (img.rgba_data[p0 + c] as i16 - img.rgba_data[p1 + c] as i16)
+                    .unsigned_abs() as u8;
                 if diff > max_diff {
                     max_diff = diff;
                 }
@@ -885,23 +925,33 @@ mod tests {
         assert!(
             max_diff <= tolerance,
             "Vertical tile seam max diff {} exceeds tolerance {}",
-            max_diff, tolerance
+            max_diff,
+            tolerance
         );
     }
 
     fn assert_deterministic<F: Fn() -> ProceduralTexture>(generator: F) {
         let a = generator();
         let b = generator();
-        assert_eq!(a.albedo.rgba_data, b.albedo.rgba_data, "Albedo not deterministic");
-        assert_eq!(a.normal.rgba_data, b.normal.rgba_data, "Normal not deterministic");
+        assert_eq!(
+            a.albedo.rgba_data, b.albedo.rgba_data,
+            "Albedo not deterministic"
+        );
+        assert_eq!(
+            a.normal.rgba_data, b.normal.rgba_data,
+            "Normal not deterministic"
+        );
         assert_eq!(a.orm.rgba_data, b.orm.rgba_data, "ORM not deterministic");
     }
 
     fn full_check(
         tex: &ProceduralTexture,
-        ao_min: u8, ao_max: u8,
-        r_min: u8, r_max: u8,
-        m_min: u8, m_max: u8,
+        ao_min: u8,
+        ao_max: u8,
+        r_min: u8,
+        r_max: u8,
+        m_min: u8,
+        m_max: u8,
         tile_tolerance: u8,
     ) {
         // Dimensions
@@ -1160,7 +1210,9 @@ mod tests {
                 assert!(
                     dist > 3.0,
                     "Textures {} and {} have too-similar average color (dist={})",
-                    i, j, dist
+                    i,
+                    j,
+                    dist
                 );
             }
         }
@@ -1184,9 +1236,24 @@ mod tests {
         ];
         for (i, generator) in generators.iter().enumerate() {
             let tex = generator();
-            assert_eq!(tex.albedo.rgba_data.len(), expected, "Albedo len wrong for texture {}", i);
-            assert_eq!(tex.normal.rgba_data.len(), expected, "Normal len wrong for texture {}", i);
-            assert_eq!(tex.orm.rgba_data.len(), expected, "ORM len wrong for texture {}", i);
+            assert_eq!(
+                tex.albedo.rgba_data.len(),
+                expected,
+                "Albedo len wrong for texture {}",
+                i
+            );
+            assert_eq!(
+                tex.normal.rgba_data.len(),
+                expected,
+                "Normal len wrong for texture {}",
+                i
+            );
+            assert_eq!(
+                tex.orm.rgba_data.len(),
+                expected,
+                "ORM len wrong for texture {}",
+                i
+            );
         }
     }
 }

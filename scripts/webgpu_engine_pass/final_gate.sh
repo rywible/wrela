@@ -19,6 +19,12 @@ CLI_GATE_LOG_PATH="${WFE4_111_DIR}/cli-gate-test.log"
 CLI_GATE_MATRIX_PATH="${WFE4_111_DIR}/gate-failure-matrix.json"
 METRICS_V2_PATH="${ARTIFACT_ROOT}/WFE4-110/runtime-metrics-v2.json"
 GOVERNOR_TRACE_PATH="${ARTIFACT_ROOT}/WFE4-110/governor-action-trace.json"
+AAA_ARTIFACT_ROOT="${WRELA_AAA_ARTIFACT_ROOT:-${ROOT}/.artifacts/aaa-forest-demo}"
+AAA_LANE="${WRELA_AAA_LANE:-ORCH-00}"
+AAA_ITERATION="${WRELA_AAA_ITERATION:-iteration-001}"
+AAA_ITERATION_DIR="${AAA_ARTIFACT_ROOT}/${AAA_LANE}/${AAA_ITERATION}"
+AAA_SMOKE_REPORT_PATH="${WRELA_AAA_SMOKE_REPORT_PATH:-${AAA_ITERATION_DIR}/smoke-report.json}"
+AAA_ACTION_PAYLOAD_PATH="${WRELA_AAA_ACTION_PAYLOAD_PATH:-${ROOT}/scripts/webgpu_engine_pass/action_payloads.json}"
 
 mkdir -p "${WFE4_000_DIR}" "${FINAL_GATE_DIR}"
 
@@ -225,8 +231,46 @@ write_gate_contract() {
         "## Scope",
         "## Lane Validation",
         "## Anti-Shortcut Scan",
+        "## AAA Forest Smoke Contract",
         "## Report Sections",
         "## Outcome"
+      ]
+    },
+    "aaa_forest_smoke_report": {
+      "path": ".artifacts/aaa-forest-demo/ORCH-00/iteration-001/smoke-report.json",
+      "required_fields": [
+        "schema_version",
+        "kind",
+        "appPath",
+        "url",
+        "artifact_root",
+        "lane",
+        "iteration",
+        "preset_sequence",
+        "required_preset_fields",
+        "required_phase_report_fields",
+        "passed",
+        "failures",
+        "phases",
+        "phases.0.phase",
+        "phases.0.relevantFailedAssertions",
+        "runtime_metrics_v2",
+        "governor_action_trace"
+      ]
+    },
+    "aaa_forest_action_payloads": {
+      "path": "scripts/webgpu_engine_pass/action_payloads.json",
+      "required_fields": [
+        "schema_version",
+        "kind",
+        "presets",
+        "presets.idle_composition.meta.scenario",
+        "presets.camera_orbit.meta.scenario",
+        "presets.lock_toggle.meta.scenario",
+        "presets.target_cycle.meta.scenario",
+        "presets.dodge_parry_burst.meta.scenario",
+        "presets.combo_burst.meta.scenario",
+        "presets.death_restart_loop.meta.scenario"
       ]
     }
   }
@@ -376,6 +420,150 @@ if (!Array.isArray(governorTrace) || governorTrace.length === 0) {
 }
 NODE
 
+forest_required_presets=(
+  "idle_composition"
+  "camera_orbit"
+  "lock_toggle"
+  "target_cycle"
+  "dodge_parry_burst"
+  "combo_burst"
+  "death_restart_loop"
+)
+
+require_file "${AAA_ACTION_PAYLOAD_PATH}" "AAA forest action payloads"
+require_json_fields "${AAA_ACTION_PAYLOAD_PATH}" \
+  "schema_version" \
+  "kind" \
+  "presets" \
+  "presets.idle_composition.meta.scenario" \
+  "presets.camera_orbit.meta.scenario" \
+  "presets.lock_toggle.meta.scenario" \
+  "presets.target_cycle.meta.scenario" \
+  "presets.dodge_parry_burst.meta.scenario" \
+  "presets.combo_burst.meta.scenario" \
+  "presets.death_restart_loop.meta.scenario"
+
+node - "${AAA_ACTION_PAYLOAD_PATH}" "${forest_required_presets[@]}" <<'NODE'
+const fs = require("node:fs");
+const [payloadPath, ...requiredPresets] = process.argv.slice(2);
+const parsed = JSON.parse(fs.readFileSync(payloadPath, "utf8"));
+const fail = (message) => {
+  console.error(message);
+  process.exit(1);
+};
+if (Number(parsed.schema_version) !== 2) {
+  fail(`unexpected action payload schema_version in ${payloadPath}`);
+}
+if (parsed.kind !== "aaa-forest-action-payloads-v1") {
+  fail(`unexpected action payload kind in ${payloadPath}`);
+}
+const presets = parsed?.presets;
+if (!presets || typeof presets !== "object") {
+  fail(`missing presets object in ${payloadPath}`);
+}
+for (const presetName of requiredPresets) {
+  const preset = presets[presetName];
+  if (!preset || typeof preset !== "object") {
+    fail(`missing required preset '${presetName}' in ${payloadPath}`);
+  }
+  if (preset?.meta?.scenario !== presetName) {
+    fail(`preset '${presetName}' meta.scenario mismatch in ${payloadPath}`);
+  }
+  if (!Array.isArray(preset.steps) || preset.steps.length === 0) {
+    fail(`preset '${presetName}' missing non-empty steps in ${payloadPath}`);
+  }
+  if (!preset.expect || typeof preset.expect !== "object") {
+    fail(`preset '${presetName}' missing expect object in ${payloadPath}`);
+  }
+}
+NODE
+
+require_file "${AAA_SMOKE_REPORT_PATH}" "AAA forest smoke report"
+require_json_fields "${AAA_SMOKE_REPORT_PATH}" \
+  "schema_version" \
+  "kind" \
+  "appPath" \
+  "url" \
+  "artifact_root" \
+  "lane" \
+  "iteration" \
+  "preset_sequence" \
+  "required_preset_fields" \
+  "required_phase_report_fields" \
+  "passed" \
+  "failures" \
+  "phases" \
+  "phases.0.phase" \
+  "phases.0.relevantFailedAssertions" \
+  "runtime_metrics_v2" \
+  "governor_action_trace"
+
+node - "${AAA_SMOKE_REPORT_PATH}" "${AAA_ARTIFACT_ROOT}" "${AAA_LANE}" "${AAA_ITERATION}" "${forest_required_presets[@]}" <<'NODE'
+const fs = require("node:fs");
+const [reportPath, expectedRoot, expectedLane, expectedIteration, ...requiredPresets] = process.argv.slice(2);
+const report = JSON.parse(fs.readFileSync(reportPath, "utf8"));
+const fail = (message) => {
+  console.error(message);
+  process.exit(1);
+};
+if (Number(report.schema_version) !== 3) {
+  fail(`unexpected smoke report schema_version in ${reportPath}`);
+}
+if (report.kind !== "aaa-forest-browser-smoke-report-v3") {
+  fail(`unexpected smoke report kind in ${reportPath}`);
+}
+if (report.artifact_root !== expectedRoot) {
+  fail(`smoke report artifact_root mismatch in ${reportPath}`);
+}
+if (report.lane !== expectedLane) {
+  fail(`smoke report lane mismatch in ${reportPath}`);
+}
+if (report.iteration !== expectedIteration) {
+  fail(`smoke report iteration mismatch in ${reportPath}`);
+}
+if (report.passed !== true) {
+  fail(`smoke report marked failed in ${reportPath}`);
+}
+const presetSequence = Array.isArray(report.preset_sequence) ? report.preset_sequence : [];
+for (const preset of requiredPresets) {
+  if (!presetSequence.includes(preset)) {
+    fail(`smoke report missing preset '${preset}' in preset_sequence`);
+  }
+}
+const requiredPresetFields = Array.isArray(report.required_preset_fields)
+  ? report.required_preset_fields
+  : [];
+for (const field of ["meta.scenario", "meta.category", "expect.minTickDelta", "steps"]) {
+  if (!requiredPresetFields.includes(field)) {
+    fail(`smoke report missing required_preset_fields entry '${field}'`);
+  }
+}
+const requiredPhaseFields = Array.isArray(report.required_phase_report_fields)
+  ? report.required_phase_report_fields
+  : [];
+for (const field of ["schemaVersion", "actionPlan.preset", "assertions.failed", "strictExitCode"]) {
+  if (!requiredPhaseFields.includes(field)) {
+    fail(`smoke report missing required_phase_report_fields entry '${field}'`);
+  }
+}
+const phases = Array.isArray(report.phases) ? report.phases : [];
+if (phases.length < requiredPresets.length) {
+  fail(`smoke report phase count too low in ${reportPath}`);
+}
+for (const preset of requiredPresets) {
+  const phase = phases.find((entry) => entry?.phase === preset);
+  if (!phase) {
+    fail(`smoke report missing phase '${preset}' in ${reportPath}`);
+  }
+  if (Number(phase.strictExitCode ?? 1) !== 0) {
+    fail(`smoke report phase '${preset}' strictExitCode is non-zero`);
+  }
+  if (Number(phase.relevantFailedAssertions ?? 0) !== 0) {
+    fail(`smoke report phase '${preset}' has failed assertions`);
+  }
+}
+NODE
+
 scan_tokens=(
   "render-provenance-v1"
   "shader-provenance-v1"
@@ -477,11 +665,21 @@ cat > "${SUMMARY_PATH}" <<SUM
 2. Report: ${ANTI_SHORTCUT_PATH}
 3. Result: PASS
 
+## AAA Forest Smoke Contract
+
+1. Action payload contract: ${AAA_ACTION_PAYLOAD_PATH}
+2. Smoke report contract: ${AAA_SMOKE_REPORT_PATH}
+3. Required preset sequence:
+   $(printf '%s ' "${forest_required_presets[@]}")
+4. Artifact lane/iteration: ${AAA_LANE}/${AAA_ITERATION}
+
 ## Report Sections
 
 1. Independent review required headings present.
 2. Independent review required no-open-findings lines present.
 3. CLI gate failure matrix required fields present.
+4. AAA forest smoke report required fields present.
+5. AAA action payload preset metadata required fields present.
 
 ## Outcome
 
@@ -492,6 +690,7 @@ require_markdown_sections "${SUMMARY_PATH}" \
   "## Scope" \
   "## Lane Validation" \
   "## Anti-Shortcut Scan" \
+  "## AAA Forest Smoke Contract" \
   "## Report Sections" \
   "## Outcome"
 

@@ -388,3 +388,375 @@ fn parse_private_block(p: &mut Parser) {
     }
     m.complete(p, SyntaxKind::PrivateBlock);
 }
+
+pub fn asset_decl(p: &mut Parser) {
+    let m = p.start();
+    p.expect_with_message(
+        SyntaxKind::AssetKw,
+        "expected 'asset' to start an asset declaration",
+    );
+    p.expect_with_message(SyntaxKind::Ident, "expected asset name after 'asset'");
+    expect_block_intro(p, "expected '{' after asset name");
+
+    if p.at(SyntaxKind::LBrace) {
+        p.bump();
+        while !p.at(SyntaxKind::RBrace) && !p.is_at_eof() {
+            p.consume_trivia();
+            if p.at(SyntaxKind::RBrace) || p.is_at_eof() {
+                break;
+            }
+            if p.at_ident_text("kind") {
+                let cm = p.start();
+                p.bump(); // kind
+                p.expect(SyntaxKind::Colon);
+                if p.at(SyntaxKind::Ident) {
+                    p.bump();
+                } else {
+                    p.error_with_message("expected asset kind (mesh, texture, or audio)", true);
+                }
+                cm.complete(p, SyntaxKind::AssetKindClause);
+                p.expect_stmt_boundary();
+                continue;
+            }
+            if p.at_ident_text("prompt") {
+                let cm = p.start();
+                p.bump(); // prompt
+                p.expect(SyntaxKind::Colon);
+                if p.at(SyntaxKind::StringLiteral) {
+                    p.bump();
+                } else {
+                    p.error_with_message("expected string literal for prompt", true);
+                }
+                cm.complete(p, SyntaxKind::AssetPromptClause);
+                p.expect_stmt_boundary();
+                continue;
+            }
+            if p.at_ident_text("style") {
+                let cm = p.start();
+                p.bump(); // style
+                p.expect(SyntaxKind::Colon);
+                if p.at(SyntaxKind::StringLiteral) {
+                    p.bump();
+                } else {
+                    p.error_with_message("expected string literal for style", true);
+                }
+                cm.complete(p, SyntaxKind::AssetStyleClause);
+                p.expect_stmt_boundary();
+                continue;
+            }
+            if p.at_ident_text("negative") {
+                let cm = p.start();
+                p.bump(); // negative
+                p.expect(SyntaxKind::Colon);
+                if p.at(SyntaxKind::StringLiteral) {
+                    p.bump();
+                } else {
+                    p.error_with_message("expected string literal for negative", true);
+                }
+                cm.complete(p, SyntaxKind::AssetNegativeClause);
+                p.expect_stmt_boundary();
+                continue;
+            }
+            if p.at_ident_text("lod_budget") {
+                let cm = p.start();
+                p.bump(); // lod_budget
+                p.expect(SyntaxKind::Colon);
+                if p.at(SyntaxKind::IntNumber) {
+                    p.bump();
+                } else {
+                    p.error_with_message("expected integer for lod_budget", true);
+                }
+                cm.complete(p, SyntaxKind::AssetLodBudgetClause);
+                p.expect_stmt_boundary();
+                continue;
+            }
+            p.error_with_message(
+                "expected 'kind', 'prompt', 'style', 'negative', or 'lod_budget'",
+                true,
+            );
+            p.recover_until(&[SyntaxKind::Newline, SyntaxKind::RBrace]);
+            p.expect_stmt_boundary();
+        }
+        p.expect(SyntaxKind::RBrace);
+    } else {
+        p.error_with_message_no_bump("expected '{' after asset name");
+    }
+    m.complete(p, SyntaxKind::AssetDecl);
+}
+
+pub fn scene_decl(p: &mut Parser) {
+    let m = p.start();
+    p.expect_with_message(
+        SyntaxKind::SceneKw,
+        "expected 'scene' to start a scene declaration",
+    );
+    p.expect_with_message(SyntaxKind::Ident, "expected scene name after 'scene'");
+    expect_block_intro(p, "expected '{' after scene name");
+
+    if p.at(SyntaxKind::LBrace) {
+        p.bump();
+        while !p.at(SyntaxKind::RBrace) && !p.is_at_eof() {
+            p.consume_trivia();
+            if p.at(SyntaxKind::RBrace) || p.is_at_eof() {
+                break;
+            }
+            if p.at_ident_text("entity") {
+                parse_scene_entity_block(p);
+                continue;
+            }
+            if p.at_ident_text("lighting") {
+                parse_scene_lighting_block(p);
+                continue;
+            }
+            if p.at_ident_text("camera") {
+                parse_scene_camera_block(p);
+                continue;
+            }
+            p.error_with_message("expected 'entity', 'lighting', or 'camera'", true);
+            p.recover_until(&[SyntaxKind::Newline, SyntaxKind::RBrace]);
+            p.expect_stmt_boundary();
+        }
+        p.expect(SyntaxKind::RBrace);
+    } else {
+        p.error_with_message_no_bump("expected '{' after scene name");
+    }
+    m.complete(p, SyntaxKind::SceneDef);
+}
+
+fn parse_scene_entity_block(p: &mut Parser) {
+    let m = p.start();
+    p.bump(); // entity
+    p.expect_with_message(SyntaxKind::Ident, "expected entity name after 'entity'");
+    expect_block_intro(p, "expected '{' after entity name");
+
+    if p.at(SyntaxKind::LBrace) {
+        p.bump();
+        while !p.at(SyntaxKind::RBrace) && !p.is_at_eof() {
+            p.consume_trivia();
+            if p.at(SyntaxKind::RBrace) || p.is_at_eof() {
+                break;
+            }
+            if p.at_ident_text("mesh") {
+                let cm = p.start();
+                p.bump(); // mesh
+                p.expect(SyntaxKind::Colon);
+                if p.at(SyntaxKind::Ident) {
+                    p.bump();
+                } else {
+                    p.error_with_message("expected asset name for mesh", true);
+                }
+                cm.complete(p, SyntaxKind::SceneEntityMeshClause);
+                p.expect_stmt_boundary();
+                continue;
+            }
+            if p.at_ident_text("position") {
+                let cm = p.start();
+                p.bump(); // position
+                p.expect(SyntaxKind::Colon);
+                parse_vec3_or_rgb_literal(p);
+                cm.complete(p, SyntaxKind::SceneEntityPositionClause);
+                p.expect_stmt_boundary();
+                continue;
+            }
+            if p.at_ident_text("rotation") {
+                let cm = p.start();
+                p.bump(); // rotation
+                p.expect(SyntaxKind::Colon);
+                parse_vec3_or_rgb_literal(p);
+                cm.complete(p, SyntaxKind::SceneEntityRotationClause);
+                p.expect_stmt_boundary();
+                continue;
+            }
+            if p.at_ident_text("scale") {
+                let cm = p.start();
+                p.bump(); // scale
+                p.expect(SyntaxKind::Colon);
+                parse_vec3_or_rgb_literal(p);
+                cm.complete(p, SyntaxKind::SceneEntityScaleClause);
+                p.expect_stmt_boundary();
+                continue;
+            }
+            p.error_with_message("expected 'mesh', 'position', 'rotation', or 'scale'", true);
+            p.recover_until(&[SyntaxKind::Newline, SyntaxKind::RBrace]);
+            p.expect_stmt_boundary();
+        }
+        p.expect(SyntaxKind::RBrace);
+    } else {
+        p.error_with_message_no_bump("expected '{' after entity name");
+    }
+    m.complete(p, SyntaxKind::SceneEntityBlock);
+}
+
+fn parse_scene_lighting_block(p: &mut Parser) {
+    let m = p.start();
+    p.bump(); // lighting
+    expect_block_intro(p, "expected '{' after 'lighting'");
+
+    if p.at(SyntaxKind::LBrace) {
+        p.bump();
+        while !p.at(SyntaxKind::RBrace) && !p.is_at_eof() {
+            p.consume_trivia();
+            if p.at(SyntaxKind::RBrace) || p.is_at_eof() {
+                break;
+            }
+            if p.at_ident_text("sun_direction") {
+                let cm = p.start();
+                p.bump();
+                p.expect(SyntaxKind::Colon);
+                parse_vec3_or_rgb_literal(p);
+                cm.complete(p, SyntaxKind::SceneLightingSunDirectionClause);
+                p.expect_stmt_boundary();
+                continue;
+            }
+            if p.at_ident_text("sun_color") {
+                let cm = p.start();
+                p.bump();
+                p.expect(SyntaxKind::Colon);
+                parse_vec3_or_rgb_literal(p);
+                cm.complete(p, SyntaxKind::SceneLightingSunColorClause);
+                p.expect_stmt_boundary();
+                continue;
+            }
+            if p.at_ident_text("sun_intensity") {
+                let cm = p.start();
+                p.bump();
+                p.expect(SyntaxKind::Colon);
+                if p.at(SyntaxKind::IntNumber) {
+                    p.bump();
+                } else {
+                    p.error_with_message("expected integer for sun_intensity", true);
+                }
+                cm.complete(p, SyntaxKind::SceneLightingSunIntensityClause);
+                p.expect_stmt_boundary();
+                continue;
+            }
+            if p.at_ident_text("ambient_color") {
+                let cm = p.start();
+                p.bump();
+                p.expect(SyntaxKind::Colon);
+                parse_vec3_or_rgb_literal(p);
+                cm.complete(p, SyntaxKind::SceneLightingAmbientColorClause);
+                p.expect_stmt_boundary();
+                continue;
+            }
+            if p.at_ident_text("ambient_intensity") {
+                let cm = p.start();
+                p.bump();
+                p.expect(SyntaxKind::Colon);
+                if p.at(SyntaxKind::IntNumber) {
+                    p.bump();
+                } else {
+                    p.error_with_message("expected integer for ambient_intensity", true);
+                }
+                cm.complete(p, SyntaxKind::SceneLightingAmbientIntensityClause);
+                p.expect_stmt_boundary();
+                continue;
+            }
+            p.error_with_message(
+                "expected 'sun_direction', 'sun_color', 'sun_intensity', 'ambient_color', or 'ambient_intensity'",
+                true,
+            );
+            p.recover_until(&[SyntaxKind::Newline, SyntaxKind::RBrace]);
+            p.expect_stmt_boundary();
+        }
+        p.expect(SyntaxKind::RBrace);
+    } else {
+        p.error_with_message_no_bump("expected '{' after 'lighting'");
+    }
+    m.complete(p, SyntaxKind::SceneLightingBlock);
+}
+
+fn parse_scene_camera_block(p: &mut Parser) {
+    let m = p.start();
+    p.bump(); // camera
+    expect_block_intro(p, "expected '{' after 'camera'");
+
+    if p.at(SyntaxKind::LBrace) {
+        p.bump();
+        while !p.at(SyntaxKind::RBrace) && !p.is_at_eof() {
+            p.consume_trivia();
+            if p.at(SyntaxKind::RBrace) || p.is_at_eof() {
+                break;
+            }
+            if p.at_ident_text("mode") {
+                let cm = p.start();
+                p.bump();
+                p.expect(SyntaxKind::Colon);
+                if p.at(SyntaxKind::Ident) {
+                    p.bump();
+                } else {
+                    p.error_with_message("expected camera mode identifier", true);
+                }
+                cm.complete(p, SyntaxKind::SceneCameraModeClause);
+                p.expect_stmt_boundary();
+                continue;
+            }
+            if p.at_ident_text("target") {
+                let cm = p.start();
+                p.bump();
+                p.expect(SyntaxKind::Colon);
+                if p.at(SyntaxKind::Ident) {
+                    p.bump();
+                } else {
+                    p.error_with_message("expected target entity name", true);
+                }
+                cm.complete(p, SyntaxKind::SceneCameraTargetClause);
+                p.expect_stmt_boundary();
+                continue;
+            }
+            if p.at_ident_text("distance") {
+                let cm = p.start();
+                p.bump();
+                p.expect(SyntaxKind::Colon);
+                parse_possibly_negative_int(p);
+                cm.complete(p, SyntaxKind::SceneCameraDistanceClause);
+                p.expect_stmt_boundary();
+                continue;
+            }
+            if p.at_ident_text("pitch") {
+                let cm = p.start();
+                p.bump();
+                p.expect(SyntaxKind::Colon);
+                parse_possibly_negative_int(p);
+                cm.complete(p, SyntaxKind::SceneCameraPitchClause);
+                p.expect_stmt_boundary();
+                continue;
+            }
+            p.error_with_message("expected 'mode', 'target', 'distance', or 'pitch'", true);
+            p.recover_until(&[SyntaxKind::Newline, SyntaxKind::RBrace]);
+            p.expect_stmt_boundary();
+        }
+        p.expect(SyntaxKind::RBrace);
+    } else {
+        p.error_with_message_no_bump("expected '{' after 'camera'");
+    }
+    m.complete(p, SyntaxKind::SceneCameraBlock);
+}
+
+/// Parse `vec3(x, y, z)` or `rgb(r, g, b)` call syntax.
+fn parse_vec3_or_rgb_literal(p: &mut Parser) {
+    if p.at(SyntaxKind::Ident) {
+        p.bump(); // vec3 or rgb
+        p.expect(SyntaxKind::LParen);
+        parse_possibly_negative_int(p);
+        p.expect(SyntaxKind::Comma);
+        parse_possibly_negative_int(p);
+        p.expect(SyntaxKind::Comma);
+        parse_possibly_negative_int(p);
+        p.expect(SyntaxKind::RParen);
+    } else {
+        p.error_with_message("expected 'vec3(...)' or 'rgb(...)'", true);
+    }
+}
+
+/// Parse an integer that may optionally be prefixed with a minus sign.
+fn parse_possibly_negative_int(p: &mut Parser) {
+    if p.at(SyntaxKind::Minus) {
+        p.bump();
+    }
+    if p.at(SyntaxKind::IntNumber) {
+        p.bump();
+    } else {
+        p.error_with_message("expected integer", true);
+    }
+}

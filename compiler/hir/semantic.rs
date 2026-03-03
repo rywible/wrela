@@ -1322,6 +1322,9 @@ impl<'a> Checker<'a> {
 
         self.check_asset_factory_declarations();
 
+        self.check_asset_declarations();
+        self.check_scene_declarations();
+
         for contract in &self.module.render_contracts {
             match contract.kind {
                 SurfaceDeclarationKind::Render => self.check_render_contract(contract),
@@ -3025,6 +3028,58 @@ impl<'a> Checker<'a> {
             _ => return false,
         };
         self.is_pool_of_call(body, *callee)
+    }
+
+    fn check_asset_declarations(&mut self) {
+        let mut seen_names: HashMap<SmolStr, TextRange> = HashMap::new();
+        for asset in &self.module.asset_declarations {
+            if let Some(previous) = seen_names.insert(asset.name.clone(), asset.span) {
+                self.errors.push(SemanticError::DuplicateDefinition {
+                    name: asset.name.clone(),
+                    kind: "asset",
+                    span: span_from_range(asset.span),
+                    previous: Some(span_from_range(previous)),
+                });
+            }
+        }
+    }
+
+    fn check_scene_declarations(&mut self) {
+        let asset_names: HashMap<SmolStr, &crate::hir::HirAssetDecl> = self
+            .module
+            .asset_declarations
+            .iter()
+            .map(|a| (a.name.clone(), a))
+            .collect();
+        for scene in &self.module.scene_declarations {
+            let mut entity_names: HashSet<SmolStr> = HashSet::new();
+            for entity in &scene.entities {
+                if !entity_names.insert(entity.name.clone()) {
+                    self.errors.push(SemanticError::DuplicateDefinition {
+                        name: entity.name.clone(),
+                        kind: "entity",
+                        span: span_from_range(scene.span),
+                        previous: None,
+                    });
+                }
+                if let Some(asset) = asset_names.get(&entity.mesh_asset) {
+                    if asset.kind != crate::hir::AssetDeclKind::Mesh {
+                        self.errors.push(SemanticError::UndefinedName {
+                            name: SmolStr::new(format!(
+                                "asset '{}' is not a mesh (it is {:?})",
+                                entity.mesh_asset, asset.kind
+                            )),
+                            span: span_from_range(scene.span),
+                        });
+                    }
+                } else if !entity.mesh_asset.is_empty() {
+                    self.errors.push(SemanticError::UndefinedName {
+                        name: entity.mesh_asset.clone(),
+                        span: span_from_range(scene.span),
+                    });
+                }
+            }
+        }
     }
 }
 
@@ -6383,6 +6438,8 @@ system renderer[stage=render, writes=[Transform]]() -> Nothing {
             provenance_ledgers: Vec::new(),
             quality_gates: Vec::new(),
             shader_functions: Vec::new(),
+            asset_declarations: Vec::new(),
+            scene_declarations: Vec::new(),
         };
         module.functions.alloc(Function {
             name: SmolStr::new("sys_a"),

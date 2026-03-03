@@ -22,6 +22,8 @@ pub struct Module {
     pub provenance_ledgers: Vec<ProvenanceLedgerIRV1>,
     pub quality_gates: Vec<QualityGateIRV2>,
     pub shader_functions: Vec<ShaderFunction>,
+    pub asset_declarations: Vec<HirAssetDecl>,
+    pub scene_declarations: Vec<HirSceneDecl>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -483,4 +485,57 @@ pub struct TypeRef {
     pub name: SmolStr,
     pub name_span: Option<TextRange>,
     pub args: Vec<TypeRef>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirAssetDecl {
+    pub name: SmolStr,
+    pub kind: AssetDeclKind,
+    pub prompt: SmolStr,
+    pub style: Option<SmolStr>,
+    pub negative: Option<SmolStr>,
+    pub lod_budget: Option<i64>,
+    pub span: TextRange,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssetDeclKind {
+    Mesh,
+    Texture,
+    Audio,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirSceneDecl {
+    pub name: SmolStr,
+    pub entities: Vec<HirSceneEntity>,
+    pub lighting: Option<HirSceneLighting>,
+    pub camera: Option<HirSceneCamera>,
+    pub span: TextRange,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirSceneEntity {
+    pub name: SmolStr,
+    pub mesh_asset: SmolStr,
+    pub position: [i64; 3],
+    pub rotation: [i64; 3],
+    pub scale: [i64; 3],
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirSceneLighting {
+    pub sun_direction: [i64; 3],
+    pub sun_color: [u8; 3],
+    pub sun_intensity: i64,
+    pub ambient_color: [u8; 3],
+    pub ambient_intensity: i64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirSceneCamera {
+    pub mode: SmolStr,
+    pub target: SmolStr,
+    pub distance: i64,
+    pub pitch: i64,
 }

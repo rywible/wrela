@@ -34,6 +34,9 @@ pub(crate) struct Hud {
     enemy_bar: HtmlElement,
     enemy_hp_fill: HtmlElement,
     enemy_hp_text: HtmlElement,
+    lock_target_text: HtmlElement,
+    boss_phase_badge: HtmlElement,
+    readability_badge: HtmlElement,
 
     // Resonance
     res_label: HtmlElement,
@@ -97,43 +100,54 @@ impl Hud {
 
         // ── Main container ──────────────────────────────────────────
         let container = create_div(document, "wrela-hud")?;
-        set_styles(&container, &[
-            ("position", "absolute"),
-            ("top", "0"),
-            ("left", "0"),
-            ("width", "100%"),
-            ("height", "100%"),
-            ("pointer-events", "none"),
-            ("font-family", "'Segoe UI', 'Helvetica Neue', Arial, sans-serif"),
-            ("font-size", "13px"),
-            ("color", "#d4c8b8"),
-            ("z-index", "100"),
-            ("user-select", "none"),
-            ("overflow", "hidden"),
-        ]);
+        set_styles(
+            &container,
+            &[
+                ("position", "absolute"),
+                ("top", "0"),
+                ("left", "0"),
+                ("width", "100%"),
+                ("height", "100%"),
+                ("pointer-events", "none"),
+                (
+                    "font-family",
+                    "'Segoe UI', 'Helvetica Neue', Arial, sans-serif",
+                ),
+                ("font-size", "13px"),
+                ("color", "#d4c8b8"),
+                ("z-index", "100"),
+                ("user-select", "none"),
+                ("overflow", "hidden"),
+            ],
+        );
         parent
             .append_child(&container)
             .map_err(|_| "failed to append HUD container".to_string())?;
 
         // ── Player health bar (bottom-left) ─────────────────────────
         let player_hp_group = create_div(document, "wrela-hp")?;
-        set_styles(&player_hp_group, &[
-            ("position", "absolute"),
-            ("bottom", "60px"),
-            ("left", "28px"),
-            ("width", "220px"),
-        ]);
+        set_styles(
+            &player_hp_group,
+            &[
+                ("position", "absolute"),
+                ("bottom", "60px"),
+                ("left", "28px"),
+                ("width", "220px"),
+            ],
+        );
 
         let player_hp_text = create_div(document, "wrela-hp-text")?;
-        set_styles(&player_hp_text, &[
-            ("font-size", "11px"),
-            ("margin-bottom", "3px"),
-            ("letter-spacing", "1px"),
-            ("text-transform", "uppercase"),
-            ("color", "#a89888"),
-        ]);
-        player_hp_text
-            .set_inner_html("HP");
+        set_styles(
+            &player_hp_text,
+            &[
+                ("font-size", "11px"),
+                ("margin-bottom", "3px"),
+                ("letter-spacing", "1px"),
+                ("text-transform", "uppercase"),
+                ("color", "#a89888"),
+            ],
+        );
+        player_hp_text.set_inner_html("HP");
 
         let player_hp_track = create_bar_track(document, "wrela-hp-track")?;
         let player_hp_fill = create_bar_fill(document, "wrela-hp-fill", "#8b2020")?;
@@ -153,21 +167,27 @@ impl Hud {
 
         // ── Player stamina bar (below health) ───────────────────────
         let stamina_group = create_div(document, "wrela-stam")?;
-        set_styles(&stamina_group, &[
-            ("position", "absolute"),
-            ("bottom", "38px"),
-            ("left", "28px"),
-            ("width", "180px"),
-        ]);
+        set_styles(
+            &stamina_group,
+            &[
+                ("position", "absolute"),
+                ("bottom", "38px"),
+                ("left", "28px"),
+                ("width", "180px"),
+            ],
+        );
 
         let stamina_label = create_div(document, "wrela-stam-label")?;
-        set_styles(&stamina_label, &[
-            ("font-size", "10px"),
-            ("margin-bottom", "2px"),
-            ("letter-spacing", "1px"),
-            ("text-transform", "uppercase"),
-            ("color", "#708878"),
-        ]);
+        set_styles(
+            &stamina_label,
+            &[
+                ("font-size", "10px"),
+                ("margin-bottom", "2px"),
+                ("letter-spacing", "1px"),
+                ("text-transform", "uppercase"),
+                ("color", "#708878"),
+            ],
+        );
         stamina_label.set_inner_html("STAMINA");
 
         let stamina_track = create_bar_track(document, "wrela-stam-track")?;
@@ -188,31 +208,40 @@ impl Hud {
 
         // ── Enemy health bar (top-center) ───────────────────────────
         let enemy_bar = create_div(document, "wrela-enemy")?;
-        set_styles(&enemy_bar, &[
-            ("position", "absolute"),
-            ("top", "28px"),
-            ("left", "50%"),
-            ("transform", "translateX(-50%)"),
-            ("width", "340px"),
-            ("text-align", "center"),
-        ]);
+        set_styles(
+            &enemy_bar,
+            &[
+                ("position", "absolute"),
+                ("top", "28px"),
+                ("left", "50%"),
+                ("transform", "translateX(-50%)"),
+                ("width", "340px"),
+                ("text-align", "center"),
+            ],
+        );
 
         let enemy_name = create_div(document, "wrela-enemy-name")?;
-        set_styles(&enemy_name, &[
-            ("font-size", "12px"),
-            ("letter-spacing", "2px"),
-            ("text-transform", "uppercase"),
-            ("color", "#c85050"),
-            ("margin-bottom", "4px"),
-        ]);
+        set_styles(
+            &enemy_name,
+            &[
+                ("font-size", "12px"),
+                ("letter-spacing", "2px"),
+                ("text-transform", "uppercase"),
+                ("color", "#c85050"),
+                ("margin-bottom", "4px"),
+            ],
+        );
         enemy_name.set_inner_html("ROT STALKER");
 
         let enemy_hp_text = create_div(document, "wrela-enemy-hp-text")?;
-        set_styles(&enemy_hp_text, &[
-            ("font-size", "10px"),
-            ("color", "#a08080"),
-            ("margin-bottom", "3px"),
-        ]);
+        set_styles(
+            &enemy_hp_text,
+            &[
+                ("font-size", "10px"),
+                ("color", "#a08080"),
+                ("margin-bottom", "3px"),
+            ],
+        );
 
         let enemy_track = create_bar_track(document, "wrela-enemy-track")?;
         set_styles(&enemy_track, &[("height", "5px")]);
@@ -234,54 +263,146 @@ impl Hud {
             .append_child(&enemy_bar)
             .map_err(|_| "append enemy bar".to_string())?;
 
+        // ── Encounter readability strip (top-center, low-profile) ──────────
+        let encounter_strip = create_div(document, "wrela-encounter-strip")?;
+        set_styles(
+            &encounter_strip,
+            &[
+                ("position", "absolute"),
+                ("top", "72px"),
+                ("left", "50%"),
+                ("transform", "translateX(-50%)"),
+                ("display", "flex"),
+                ("align-items", "center"),
+                ("gap", "8px"),
+                ("padding", "4px 8px"),
+                ("border-radius", "999px"),
+                ("background", "rgba(8, 10, 14, 0.45)"),
+                ("border", "1px solid rgba(182, 150, 120, 0.18)"),
+                ("backdrop-filter", "blur(2px)"),
+                ("font-size", "10px"),
+                ("letter-spacing", "0.9px"),
+                ("text-transform", "uppercase"),
+                ("opacity", "0.92"),
+                ("transition", "opacity 0.15s ease-out"),
+            ],
+        );
+
+        let lock_target_text = create_div(document, "wrela-lock-target")?;
+        set_styles(
+            &lock_target_text,
+            &[
+                ("padding", "2px 6px"),
+                ("border-radius", "999px"),
+                ("border", "1px solid rgba(200, 112, 112, 0.42)"),
+                ("color", "#d08080"),
+                ("background", "rgba(50, 14, 14, 0.35)"),
+            ],
+        );
+        lock_target_text.set_text_content(Some("LOCK OFF"));
+
+        let boss_phase_badge = create_div(document, "wrela-boss-phase")?;
+        set_styles(
+            &boss_phase_badge,
+            &[
+                ("padding", "2px 6px"),
+                ("border-radius", "999px"),
+                ("border", "1px solid rgba(180, 150, 120, 0.34)"),
+                ("color", "#bda88d"),
+                ("background", "rgba(24, 20, 16, 0.45)"),
+            ],
+        );
+        boss_phase_badge.set_text_content(Some("PHASE -"));
+
+        let readability_badge = create_div(document, "wrela-readability")?;
+        set_styles(
+            &readability_badge,
+            &[
+                ("padding", "2px 6px"),
+                ("border-radius", "999px"),
+                ("border", "1px solid rgba(116, 150, 180, 0.34)"),
+                ("color", "#82a4bc"),
+                ("background", "rgba(14, 20, 30, 0.4)"),
+            ],
+        );
+        readability_badge.set_text_content(Some("READ STABLE"));
+
+        encounter_strip
+            .append_child(&lock_target_text)
+            .map_err(|_| "append lock target".to_string())?;
+        encounter_strip
+            .append_child(&boss_phase_badge)
+            .map_err(|_| "append boss phase".to_string())?;
+        encounter_strip
+            .append_child(&readability_badge)
+            .map_err(|_| "append readability".to_string())?;
+        container
+            .append_child(&encounter_strip)
+            .map_err(|_| "append encounter strip".to_string())?;
+
         // ── Resonance indicator (bottom-right) ──────────────────────
         let res_group = create_div(document, "wrela-res")?;
-        set_styles(&res_group, &[
-            ("position", "absolute"),
-            ("bottom", "40px"),
-            ("right", "28px"),
-            ("text-align", "right"),
-            ("width", "140px"),
-        ]);
+        set_styles(
+            &res_group,
+            &[
+                ("position", "absolute"),
+                ("bottom", "40px"),
+                ("right", "28px"),
+                ("text-align", "right"),
+                ("width", "140px"),
+            ],
+        );
 
         let res_label = create_div(document, "wrela-res-label")?;
-        set_styles(&res_label, &[
-            ("font-size", "11px"),
-            ("letter-spacing", "2px"),
-            ("text-transform", "uppercase"),
-            ("margin-bottom", "4px"),
-        ]);
+        set_styles(
+            &res_label,
+            &[
+                ("font-size", "11px"),
+                ("letter-spacing", "2px"),
+                ("text-transform", "uppercase"),
+                ("margin-bottom", "4px"),
+            ],
+        );
 
         let res_track = create_div(document, "wrela-res-track")?;
-        set_styles(&res_track, &[
-            ("width", "100%"),
-            ("height", "3px"),
-            ("background", "rgba(255,255,255,0.08)"),
-            ("border-radius", "2px"),
-            ("overflow", "hidden"),
-            ("margin-bottom", "4px"),
-        ]);
+        set_styles(
+            &res_track,
+            &[
+                ("width", "100%"),
+                ("height", "3px"),
+                ("background", "rgba(255,255,255,0.08)"),
+                ("border-radius", "2px"),
+                ("overflow", "hidden"),
+                ("margin-bottom", "4px"),
+            ],
+        );
 
         let res_fill = create_div(document, "wrela-res-fill")?;
-        set_styles(&res_fill, &[
-            ("height", "100%"),
-            ("width", "0%"),
-            ("border-radius", "2px"),
-            ("transition", "width 0.15s ease-out"),
-        ]);
+        set_styles(
+            &res_fill,
+            &[
+                ("height", "100%"),
+                ("width", "0%"),
+                ("border-radius", "2px"),
+                ("transition", "width 0.15s ease-out"),
+            ],
+        );
         res_track
             .append_child(&res_fill)
             .map_err(|_| "append res fill".to_string())?;
 
         let res_indicator = create_div(document, "wrela-res-ind")?;
-        set_styles(&res_indicator, &[
-            ("width", "8px"),
-            ("height", "8px"),
-            ("border-radius", "50%"),
-            ("display", "inline-block"),
-            ("margin-left", "6px"),
-            ("vertical-align", "middle"),
-        ]);
+        set_styles(
+            &res_indicator,
+            &[
+                ("width", "8px"),
+                ("height", "8px"),
+                ("border-radius", "50%"),
+                ("display", "inline-block"),
+                ("margin-left", "6px"),
+                ("vertical-align", "middle"),
+            ],
+        );
 
         res_group
             .append_child(&res_label)
@@ -298,14 +419,17 @@ impl Hud {
 
         // ── Kill counter (top-right) ────────────────────────────────
         let kill_text = create_div(document, "wrela-kills")?;
-        set_styles(&kill_text, &[
-            ("position", "absolute"),
-            ("top", "28px"),
-            ("right", "28px"),
-            ("font-size", "14px"),
-            ("letter-spacing", "1px"),
-            ("color", "#c8b898"),
-        ]);
+        set_styles(
+            &kill_text,
+            &[
+                ("position", "absolute"),
+                ("top", "28px"),
+                ("right", "28px"),
+                ("font-size", "14px"),
+                ("letter-spacing", "1px"),
+                ("color", "#c8b898"),
+            ],
+        );
         kill_text.set_inner_html("KILLS: 0");
         container
             .append_child(&kill_text)
@@ -313,38 +437,47 @@ impl Hud {
 
         // ── Death screen overlay ────────────────────────────────────
         let death_overlay = create_div(document, "wrela-death")?;
-        set_styles(&death_overlay, &[
-            ("position", "absolute"),
-            ("top", "0"),
-            ("left", "0"),
-            ("width", "100%"),
-            ("height", "100%"),
-            ("display", "none"),
-            ("flex-direction", "column"),
-            ("align-items", "center"),
-            ("justify-content", "center"),
-            ("background", "rgba(0, 0, 0, 0.65)"),
-            ("animation", "death-fade 1.5s ease-in forwards"),
-        ]);
+        set_styles(
+            &death_overlay,
+            &[
+                ("position", "absolute"),
+                ("top", "0"),
+                ("left", "0"),
+                ("width", "100%"),
+                ("height", "100%"),
+                ("display", "none"),
+                ("flex-direction", "column"),
+                ("align-items", "center"),
+                ("justify-content", "center"),
+                ("background", "rgba(0, 0, 0, 0.65)"),
+                ("animation", "death-fade 1.5s ease-in forwards"),
+            ],
+        );
 
         let death_text = create_div(document, "wrela-death-text")?;
-        set_styles(&death_text, &[
-            ("font-size", "48px"),
-            ("font-weight", "300"),
-            ("letter-spacing", "12px"),
-            ("color", "#8b2020"),
-            ("text-transform", "uppercase"),
-            ("text-shadow", "0 0 30px rgba(139,32,32,0.5)"),
-        ]);
+        set_styles(
+            &death_text,
+            &[
+                ("font-size", "48px"),
+                ("font-weight", "300"),
+                ("letter-spacing", "12px"),
+                ("color", "#8b2020"),
+                ("text-transform", "uppercase"),
+                ("text-shadow", "0 0 30px rgba(139,32,32,0.5)"),
+            ],
+        );
         death_text.set_inner_html("YOU DIED");
 
         let death_hint = create_div(document, "wrela-death-hint")?;
-        set_styles(&death_hint, &[
-            ("font-size", "14px"),
-            ("margin-top", "24px"),
-            ("color", "#887868"),
-            ("letter-spacing", "2px"),
-        ]);
+        set_styles(
+            &death_hint,
+            &[
+                ("font-size", "14px"),
+                ("margin-top", "24px"),
+                ("color", "#887868"),
+                ("letter-spacing", "2px"),
+            ],
+        );
         death_hint.set_inner_html("Press R to restart");
 
         death_overlay
@@ -359,20 +492,23 @@ impl Hud {
 
         // ── Controls help (bottom-center, fades after 5s) ───────────
         let controls_help = create_div(document, "wrela-controls")?;
-        set_styles(&controls_help, &[
-            ("position", "absolute"),
-            ("bottom", "12px"),
-            ("left", "50%"),
-            ("transform", "translateX(-50%)"),
-            ("font-size", "11px"),
-            ("letter-spacing", "1px"),
-            ("color", "rgba(168,152,136,0.8)"),
-            ("white-space", "nowrap"),
-            ("transition", "opacity 1.5s ease-out"),
-            ("opacity", "1"),
-        ]);
+        set_styles(
+            &controls_help,
+            &[
+                ("position", "absolute"),
+                ("bottom", "12px"),
+                ("left", "50%"),
+                ("transform", "translateX(-50%)"),
+                ("font-size", "11px"),
+                ("letter-spacing", "1px"),
+                ("color", "rgba(168,152,136,0.8)"),
+                ("white-space", "nowrap"),
+                ("transition", "opacity 1.5s ease-out"),
+                ("opacity", "1"),
+            ],
+        );
         controls_help.set_inner_html(
-            "WASD: Move &nbsp;|&nbsp; J: Light &nbsp;|&nbsp; K: Heavy &nbsp;|&nbsp; Space: Dodge &nbsp;|&nbsp; L: Parry",
+            "WASD: Move &nbsp;|&nbsp; Enter: Lock &nbsp;|&nbsp; A/B: Target Cycle &nbsp;|&nbsp; Space: Dodge",
         );
         container
             .append_child(&controls_help)
@@ -386,6 +522,9 @@ impl Hud {
             enemy_bar,
             enemy_hp_fill,
             enemy_hp_text,
+            lock_target_text,
+            boss_phase_badge,
+            readability_badge,
             res_label,
             res_indicator,
             res_fill,
@@ -464,6 +603,87 @@ impl Hud {
             let _ = self.enemy_bar.style().set_property("display", "none");
         }
 
+        // ── Lock-on readability treatment (minimal intrusive strip) ─────────
+        let lock_status = if state.player_dead {
+            "LOCK LOST"
+        } else if state.enemy_alive {
+            if state.player_stamina_ratio < 0.18 {
+                "LOCK UNSTABLE"
+            } else {
+                "LOCK ACTIVE"
+            }
+        } else {
+            "LOCK OFF"
+        };
+        self.lock_target_text.set_text_content(Some(lock_status));
+        let (lock_fg, lock_bg, lock_border) = match lock_status {
+            "LOCK ACTIVE" => ("#d88484", "rgba(70, 18, 18, 0.45)", "rgba(214, 132, 132, 0.48)"),
+            "LOCK UNSTABLE" => ("#d9a06c", "rgba(62, 28, 12, 0.45)", "rgba(220, 160, 108, 0.48)"),
+            "LOCK LOST" => ("#c17878", "rgba(50, 16, 16, 0.28)", "rgba(193, 120, 120, 0.4)"),
+            _ => ("#8f8b86", "rgba(24, 24, 24, 0.2)", "rgba(143, 139, 134, 0.32)"),
+        };
+        let _ = self.lock_target_text.style().set_property("color", lock_fg);
+        let _ = self.lock_target_text.style().set_property("background", lock_bg);
+        let _ = self
+            .lock_target_text
+            .style()
+            .set_property("border-color", lock_border);
+        let _ = self.lock_target_text.style().set_property(
+            "animation",
+            if lock_status == "LOCK ACTIVE" {
+                "hud-pulse 1.4s ease-in-out infinite"
+            } else {
+                "none"
+            },
+        );
+
+        // ── Boss phase/readability support (inferred from live combat state) ─
+        let (phase_label, phase_color, phase_bg, phase_border) = if !state.enemy_alive {
+            ("PHASE CLEAR", "#8fa08a", "rgba(18, 28, 18, 0.35)", "rgba(143, 160, 138, 0.36)")
+        } else if state.enemy_health_ratio > 0.66 {
+            ("PHASE I", "#bda88d", "rgba(24, 20, 16, 0.45)", "rgba(189, 168, 141, 0.34)")
+        } else if state.enemy_health_ratio > 0.33 {
+            ("PHASE II", "#c89473", "rgba(34, 18, 12, 0.44)", "rgba(200, 148, 115, 0.38)")
+        } else {
+            ("PHASE III", "#cf6d6d", "rgba(44, 12, 12, 0.46)", "rgba(207, 109, 109, 0.42)")
+        };
+        self.boss_phase_badge.set_text_content(Some(phase_label));
+        let _ = self.boss_phase_badge.style().set_property("color", phase_color);
+        let _ = self.boss_phase_badge.style().set_property("background", phase_bg);
+        let _ = self
+            .boss_phase_badge
+            .style()
+            .set_property("border-color", phase_border);
+
+        let (readability_label, readability_color, readability_bg, readability_border) =
+            if state.player_dead {
+                ("READ DOWN", "#ca7f7f", "rgba(40, 10, 10, 0.42)", "rgba(202, 127, 127, 0.4)")
+            } else if !state.enemy_alive {
+                ("READ CLEAR", "#88ad96", "rgba(16, 28, 20, 0.36)", "rgba(136, 173, 150, 0.34)")
+            } else if state.player_health_ratio < 0.25 {
+                ("READ CRITICAL", "#dc7e72", "rgba(54, 16, 12, 0.48)", "rgba(220, 126, 114, 0.44)")
+            } else if state.player_stamina_ratio < 0.25 {
+                ("READ PRESSURE", "#d3a56b", "rgba(52, 30, 12, 0.46)", "rgba(211, 165, 107, 0.42)")
+            } else if state.player_health_ratio < 0.5 || state.player_stamina_ratio < 0.5 {
+                ("READ TENSE", "#98abc4", "rgba(16, 24, 36, 0.44)", "rgba(152, 171, 196, 0.4)")
+            } else {
+                ("READ STABLE", "#82a4bc", "rgba(14, 20, 30, 0.4)", "rgba(130, 164, 188, 0.36)")
+            };
+        self.readability_badge
+            .set_text_content(Some(readability_label));
+        let _ = self
+            .readability_badge
+            .style()
+            .set_property("color", readability_color);
+        let _ = self
+            .readability_badge
+            .style()
+            .set_property("background", readability_bg);
+        let _ = self
+            .readability_badge
+            .style()
+            .set_property("border-color", readability_border);
+
         // ── Resonance ───────────────────────────────────────────────
         let (tier_name, tier_color) = match state.resonance_tier {
             0 => ("SURVIVOR", "#888888"),
@@ -481,10 +701,7 @@ impl Hud {
             .res_fill
             .style()
             .set_property("width", &format!("{res_pct:.1}%"));
-        let _ = self
-            .res_fill
-            .style()
-            .set_property("background", tier_color);
+        let _ = self.res_fill.style().set_property("background", tier_color);
 
         // Glow/pulse for higher tiers
         let animation = match state.resonance_tier {
@@ -559,25 +776,31 @@ fn set_styles(el: &HtmlElement, styles: &[(&str, &str)]) {
 
 fn create_bar_track(document: &Document, id: &str) -> Result<HtmlElement, String> {
     let track = create_div(document, id)?;
-    set_styles(&track, &[
-        ("width", "100%"),
-        ("height", "4px"),
-        ("background", "rgba(255,255,255,0.08)"),
-        ("border-radius", "2px"),
-        ("overflow", "hidden"),
-    ]);
+    set_styles(
+        &track,
+        &[
+            ("width", "100%"),
+            ("height", "4px"),
+            ("background", "rgba(255,255,255,0.08)"),
+            ("border-radius", "2px"),
+            ("overflow", "hidden"),
+        ],
+    );
     Ok(track)
 }
 
 fn create_bar_fill(document: &Document, id: &str, color: &str) -> Result<HtmlElement, String> {
     let fill = create_div(document, id)?;
-    set_styles(&fill, &[
-        ("height", "100%"),
-        ("width", "100%"),
-        ("background", color),
-        ("border-radius", "2px"),
-        ("transition", "width 0.1s ease-out"),
-    ]);
+    set_styles(
+        &fill,
+        &[
+            ("height", "100%"),
+            ("width", "100%"),
+            ("background", color),
+            ("border-radius", "2px"),
+            ("transition", "width 0.1s ease-out"),
+        ],
+    );
     Ok(fill)
 }
 

@@ -565,7 +565,7 @@ fn setup_animation_final_gate_artifacts_for_cli_test(
             "kind": "animation-contract-evidence-v2",
             "contract_versions": {
                 "character_bundle_manifest": "character-bundle-manifest-v3",
-                "animation_clip_bundle": "animation-clip-bundle-v2",
+                "animation_clip_bundle": "animation-clip-bundle-v3",
                 "animation_graph_contract": "animation-graph-contract-v2",
                 "animation_quality_report": "animation-quality-report-v2",
                 "protocol": "protocol-v5"
@@ -631,9 +631,7 @@ fn run_animation_perf_cert(
         .parent()
         .expect("workspace root")
         .to_path_buf();
-    let report_path = artifact_root
-        .join("ANIM-110")
-        .join("perf-cert-report.json");
+    let report_path = artifact_root.join("ANIM-110").join("perf-cert-report.json");
     let script_path = workspace_root
         .join("scripts")
         .join("animation_factory_pass")
@@ -2575,7 +2573,9 @@ fn cli_animation_final_gate_requires_protocol_v5_contract_evidence() {
     let dir = workspace_tempdir();
     let artifact_root =
         setup_animation_final_gate_artifacts_for_cli_test(dir.path(), None, None, true);
-    let contract_evidence_path = artifact_root.join("ANIM-111").join("contract-evidence.json");
+    let contract_evidence_path = artifact_root
+        .join("ANIM-111")
+        .join("contract-evidence.json");
     let mut contract_evidence: serde_json::Value = serde_json::from_slice(
         std::fs::read(contract_evidence_path.as_path())
             .expect("read contract evidence")
@@ -2608,7 +2608,9 @@ fn cli_animation_final_gate_requires_new_contract_versions() {
     let dir = workspace_tempdir();
     let artifact_root =
         setup_animation_final_gate_artifacts_for_cli_test(dir.path(), None, None, true);
-    let contract_evidence_path = artifact_root.join("ANIM-111").join("contract-evidence.json");
+    let contract_evidence_path = artifact_root
+        .join("ANIM-111")
+        .join("contract-evidence.json");
     let mut contract_evidence: serde_json::Value = serde_json::from_slice(
         std::fs::read(contract_evidence_path.as_path())
             .expect("read contract evidence")
@@ -2898,7 +2900,10 @@ fn cli_animation_pose_parity_gate() {
         report.get("kind").and_then(|value| value.as_str()),
         Some("animation-visual-regression-report-v3")
     );
-    assert_eq!(report.get("status").and_then(|value| value.as_str()), Some("pass"));
+    assert_eq!(
+        report.get("status").and_then(|value| value.as_str()),
+        Some("pass")
+    );
     assert_eq!(
         report
             .get("pose_parity")
@@ -2947,7 +2952,10 @@ fn cli_animation_perf_cert_passes_60fps_32_actor_contract() {
         report.get("kind").and_then(|value| value.as_str()),
         Some("animation-perf-cert-report-v3")
     );
-    assert_eq!(report.get("status").and_then(|value| value.as_str()), Some("pass"));
+    assert_eq!(
+        report.get("status").and_then(|value| value.as_str()),
+        Some("pass")
+    );
     assert_eq!(
         report
             .get("failing_metrics")
@@ -2984,14 +2992,20 @@ fn cli_animation_perf_cert_fails_with_attribution_for_under_target_profile() {
     );
 
     let report_path = artifact_root.join("ANIM-110").join("perf-cert-report.json");
-    assert!(report_path.exists(), "expected animation perf cert report on failure");
+    assert!(
+        report_path.exists(),
+        "expected animation perf cert report on failure"
+    );
     let report: serde_json::Value = serde_json::from_slice(
         std::fs::read(report_path.as_path())
             .expect("read animation perf cert report")
             .as_slice(),
     )
     .expect("parse animation perf cert report");
-    assert_eq!(report.get("status").and_then(|value| value.as_str()), Some("fail"));
+    assert_eq!(
+        report.get("status").and_then(|value| value.as_str()),
+        Some("fail")
+    );
     let failing = report
         .get("failing_metrics")
         .and_then(|value| value.as_array())
@@ -3000,7 +3014,8 @@ fn cli_animation_perf_cert_fails_with_attribution_for_under_target_profile() {
     assert!(
         failing.iter().any(|entry| {
             entry.get("metric").and_then(|value| value.as_str()) == Some("actor_count")
-                && entry.get("reason").and_then(|value| value.as_str()) == Some("actor_count_mismatch")
+                && entry.get("reason").and_then(|value| value.as_str())
+                    == Some("actor_count_mismatch")
         }),
         "expected actor_count mismatch attribution, got: {:?}",
         failing
@@ -3008,7 +3023,8 @@ fn cli_animation_perf_cert_fails_with_attribution_for_under_target_profile() {
     assert!(
         failing.iter().any(|entry| {
             entry.get("metric").and_then(|value| value.as_str()) == Some("fps")
-                && entry.get("reason").and_then(|value| value.as_str()) == Some("below_required_min")
+                && entry.get("reason").and_then(|value| value.as_str())
+                    == Some("below_required_min")
         }),
         "expected fps threshold attribution, got: {:?}",
         failing
@@ -3016,7 +3032,8 @@ fn cli_animation_perf_cert_fails_with_attribution_for_under_target_profile() {
     assert!(
         failing.iter().any(|entry| {
             entry.get("metric").and_then(|value| value.as_str()) == Some("skinning_upload_ms")
-                && entry.get("reason").and_then(|value| value.as_str()) == Some("missing_or_non_numeric")
+                && entry.get("reason").and_then(|value| value.as_str())
+                    == Some("missing_or_non_numeric")
         }),
         "expected missing skinning metric attribution, got: {:?}",
         failing
@@ -3197,7 +3214,9 @@ fn cli_anim_synth_allows_existing_assets_and_emits_clip_bundle_v2_tracks() {
     )
     .expect("parse animation clip bundle");
     assert_eq!(
-        clip_bundle.get("schema_version").and_then(|value| value.as_u64()),
+        clip_bundle
+            .get("schema_version")
+            .and_then(|value| value.as_u64()),
         Some(2)
     );
     assert_eq!(
@@ -3209,7 +3228,10 @@ fn cli_anim_synth_allows_existing_assets_and_emits_clip_bundle_v2_tracks() {
         .and_then(|value| value.as_array())
         .cloned()
         .unwrap_or_default();
-    assert!(!clips.is_empty(), "expected non-empty clip list in clip bundle");
+    assert!(
+        !clips.is_empty(),
+        "expected non-empty clip list in clip bundle"
+    );
     let first_tracks = clips
         .first()
         .and_then(|clip| clip.get("joint_tracks"))

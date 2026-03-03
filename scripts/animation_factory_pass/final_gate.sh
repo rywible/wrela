@@ -30,7 +30,7 @@ reject_legacy_contract_tokens() {
   local root="$1"
   local hits
   hits="$(rg -n -S --glob '*.json' --glob '*.jsonl' --glob '*.md' --glob '*.txt' \
-    'character-bundle-manifest-v1|character-bundle-manifest-v2|animation-clip-bundle-v1|animation-graph-contract-v1|animation-quality-report-v1|protocol-v1|protocol-v2|protocol-v3|protocol-v4' \
+    'character-bundle-manifest-v1|character-bundle-manifest-v2|animation-clip-bundle-v1|animation-clip-bundle-v2|animation-graph-contract-v1|animation-quality-report-v1|protocol-v1|protocol-v2|protocol-v3|protocol-v4' \
     "$root" || true)"
   if [[ -n "$hits" ]]; then
     fail "legacy token detected in animation artifacts: ${hits}"
@@ -229,7 +229,7 @@ if (payload?.passed !== true) {
 
 const requiredVersions = {
   character_bundle_manifest: "character-bundle-manifest-v3",
-  animation_clip_bundle: "animation-clip-bundle-v2",
+  animation_clip_bundle: "animation-clip-bundle-v3",
   animation_graph_contract: "animation-graph-contract-v2",
   animation_quality_report: "animation-quality-report-v2",
   protocol: "protocol-v5",

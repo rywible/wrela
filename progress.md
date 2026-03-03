@@ -98,3 +98,77 @@ TODO next:
   - malformed world-chunk test now restores original manifest via guard/Drop.
   - added host-runnable restart-latch tests and wasm-target key input wiring coverage in `web.rs`.
 - Final strict Playwright proof passed (`status=ok`, `assertions.failed=0`) using stable actions-json profile.
+
+Update: March 3, 2026 (hero GLB runtime integration + walk validation)
+
+- Hard-cut player rendering path to required hero GLB in `client/src/web.rs`:
+  - Added `PLAYER_HERO_GLB_FILE` and async GLB fetch/parse in `load_forest_procedural_assets`.
+  - Runtime now fail-closes on missing mesh/skeleton/clip data for player hero asset.
+  - Player animation state mappings now derive from GLB clip names via new `hero_clip_mapping` module.
+- Added `client/src/hero_clip_mapping.rs` with tested clip resolution behavior:
+  - case-insensitive exact+partial name priority matching,
+  - idle/walk/run mapping with actionable errors,
+  - single-clip fallback behavior.
+- Updated scene instance handling in `web.rs`:
+  - scene builder now returns explicit `player_instance_index` + `enemy_instance_index`;
+  - runtime stores these indices and uses them for transform updates (removed last-two-instance assumption).
+- Removed enemy skeleton/clip registration from runtime asset load path so the global joint palette is not overwritten by a second rig in the same frame.
+- Added `player_state` into `render_game_to_text()` payload for deterministic browser-side animation-state verification.
+
+Validation runs completed:
+- `cargo fmt -- client/src/web.rs client/src/hero_clip_mapping.rs client/src/lib.rs` (pass)
+- `cargo test -p wrela_client hero_clip_mapping` (pass)
+- `cargo check -p wrela_client --target wasm32-unknown-unknown` (pass)
+- `cargo test -p wrela_client` (pass; 411 tests)
+
+Browser/WebGPU evidence (Playwright skill loop):
+- Focused static proof (hero visible + walking state):
+  - `.artifacts/webgpu-engine-pass/hero-walk-static-final/playwright/shot-0.png`
+  - `.artifacts/webgpu-engine-pass/hero-walk-static-final/playwright/state-0.json` (`player_state: 1`)
+- Connected strict proof (authority online, strict pass):
+  - baseline: `.artifacts/webgpu-engine-pass/hero-walk-connected-proof/baseline/report.json` (`status=ok`, `strictExitCode=0`)
+  - walk: `.artifacts/webgpu-engine-pass/hero-walk-connected-proof/walk/report.json` (`status=ok`, `strictExitCode=0`)
+- Connected left-move strict proof (authority online, strict pass, walk state active with moved X):
+  - `.artifacts/webgpu-engine-pass/hero-walk-connected-left/report.json` (`status=ok`, `strictExitCode=0`)
+  - `.artifacts/webgpu-engine-pass/hero-walk-connected-left/state-0.json` (`player_state: 1`, `player.x: 642.5`)
+  - `.artifacts/webgpu-engine-pass/hero-walk-connected-left/shot-0.png`
+
+Independent review subagent rerun after these artifacts reported no blocking findings for user goal (render hero GLB + walk around); remaining risks are medium/low evidence rigor and single-clip semantics.
+
+Update: March 3, 2026 (AAA forest hard-cut iteration resume)
+
+- Root-caused strict Playwright `idle_composition` failure to stale/missing dist scene layout asset:
+  - runtime was serving `target/.../assets/generated/environment/forest-scene-layout-v1.json` at schema v1 (or absent), causing WebGPU bootstrap failure and draw-call assertions to fail.
+- Hard-cut build pipeline fix in `compiler/bin/wrela/commands/game.rs`:
+  - added required forest scene-layout contract constants (`FOREST_SCENE_LAYOUT_RELATIVE_PATH`, required keys).
+  - added `validate_forest_scene_layout_asset_contract(app_root)` to fail build if scene layout is missing/invalid or below schema v2.
+  - added `sync_authored_assets_to_dist(app_root, dist_dir)` to mirror app-authored assets into dist every build.
+  - wired both steps into `game_build_project` before loader/protocol emission.
+- Added unit tests in `compiler/bin/wrela/commands/game.rs`:
+  - `validate_forest_scene_layout_asset_contract_requires_v2_fields` (pass)
+  - `validate_forest_scene_layout_asset_contract_rejects_missing_required_fields` (pass)
+  - `sync_authored_assets_to_dist_copies_nested_assets` (pass)
+
+TODO next:
+- Rebuild forest app and verify served scene layout now reflects schema v2.
+- Re-run `scripts/webgpu_engine_pass/browser_smoke.sh` under AAA artifact lane iteration.
+- Inspect Playwright screenshots + runtime state + diagnostics for next failing strict assertion (if any) and iterate.
+- Continue through full scenario matrix and final gate scripts.
+- Added monotonic runtime tick telemetry in `client/src/web.rs` for strict Playwright progression checks across restart flows:
+  - runtime now tracks `runtime_tick_epoch_offset`, `runtime_tick_monotonic`, and `runtime_tick_last_source`.
+  - exported `window.__wrelaRuntime.tick` now uses monotonic timeline across authority reset events.
+  - exported `window.__wrelaRuntime.state_tick` preserves raw authoritative tick for debugging.
+- Verified compile after telemetry change: `cargo check -p wrela_client` (pass).
+- Added deterministic combat-floor overlay mesh in `load_scene_from_manifest` and scene builder integration:
+  - new arena-sized procedural floor is now instantiated from combat extents for stable readability.
+  - floor uses deterministic grass PBR textures and is anchored at arena min-Y.
+- Calibrated lighting/post profile in `client/src/web.rs`:
+  - lower exposure and bloom, darker sky gradient, cooler denser fog.
+- Iterated scene layout ground authoring in `apps/wrela-forest/assets/generated/environment/forest-scene-layout-v1.json` and validated via Playwright visual loops.
+- Focused Playwright loops run and inspected manually:
+  - `.artifacts/aaa-forest-demo/LIGHT-04/iter-004/playwright/idle_composition/shot-1.png`
+  - `.artifacts/aaa-forest-demo/ENV-03/iter-005/playwright/idle_composition/shot-1.png`
+  - `.artifacts/aaa-forest-demo/ENV-03/iter-006/playwright/idle_composition/shot-1.png`
+  - `.artifacts/aaa-forest-demo/ENV-03/iter-007/playwright/idle_composition/shot-1.png`
+- Full strict matrix rerun after latest environment/camera changes:
+  - `WRELA_AAA_LANE=ORCH-00 WRELA_AAA_ITERATION=iter-005 scripts/webgpu_engine_pass/browser_smoke.sh apps/wrela-forest` (pass).

@@ -5,10 +5,40 @@ pub fn calculate_mip_count(width: u32, height: u32) -> u32 {
     (width.max(height) as f32).log2().floor() as u32 + 1
 }
 
+/// Convert an sRGB byte value to linear-space f32.
+fn srgb_to_linear(v: u8) -> f32 {
+    let s = v as f32 / 255.0;
+    if s <= 0.04045 {
+        s / 12.92
+    } else {
+        ((s + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// Convert a linear-space f32 value to sRGB byte.
+fn linear_to_srgb(v: f32) -> u8 {
+    let c = v.clamp(0.0, 1.0);
+    let s = if c <= 0.0031308 {
+        c * 12.92
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    };
+    (s * 255.0 + 0.5) as u8
+}
+
 /// Generate mipmap data via CPU-side box-filter downsampling.
 /// Returns a Vec of (width, height, rgba_data) for each mip level starting from mip 1
 /// (mip 0 is the original data).
-pub fn generate_mip_data(width: u32, height: u32, rgba_data: &[u8]) -> Vec<(u32, u32, Vec<u8>)> {
+///
+/// When `is_srgb` is true, RGB channels are converted sRGB→linear before averaging
+/// and linear→sRGB after, preventing the darkening bias from gamma-space averaging.
+/// The alpha channel is always averaged in linear space.
+pub fn generate_mip_data(
+    width: u32,
+    height: u32,
+    rgba_data: &[u8],
+    is_srgb: bool,
+) -> Vec<(u32, u32, Vec<u8>)> {
     let mip_count = calculate_mip_count(width, height);
     let mut mips = Vec::new();
     let mut prev_width = width;
@@ -22,7 +52,6 @@ pub fn generate_mip_data(width: u32, height: u32, rgba_data: &[u8]) -> Vec<(u32,
 
         for y in 0..new_height {
             for x in 0..new_width {
-                // Sample up to a 2x2 block from the previous mip level
                 let sx = (x * 2).min(prev_width - 1);
                 let sy = (y * 2).min(prev_height - 1);
                 let sx1 = (sx + 1).min(prev_width - 1);
@@ -33,18 +62,29 @@ pub fn generate_mip_data(width: u32, height: u32, rgba_data: &[u8]) -> Vec<(u32,
                 let idx01 = ((sy1 * prev_width + sx) * 4) as usize;
                 let idx11 = ((sy1 * prev_width + sx1) * 4) as usize;
 
-                // NOTE: This box filter averages in gamma (byte) space, not
-                // linear space. For sRGB albedo textures this introduces a
-                // slight darkening bias at lower mip levels. The visual impact
-                // is modest at 512x512 with anisotropic filtering. A correct
-                // implementation would convert sRGB→linear before averaging
-                // and linear→sRGB after.
-                for c in 0..4 {
-                    let sum = prev_data[idx00 + c] as u32
-                        + prev_data[idx10 + c] as u32
-                        + prev_data[idx01 + c] as u32
-                        + prev_data[idx11 + c] as u32;
-                    new_data.push((sum / 4) as u8);
+                if is_srgb {
+                    // Average RGB in linear space to prevent darkening
+                    for c in 0..3 {
+                        let l0 = srgb_to_linear(prev_data[idx00 + c]);
+                        let l1 = srgb_to_linear(prev_data[idx10 + c]);
+                        let l2 = srgb_to_linear(prev_data[idx01 + c]);
+                        let l3 = srgb_to_linear(prev_data[idx11 + c]);
+                        new_data.push(linear_to_srgb((l0 + l1 + l2 + l3) * 0.25));
+                    }
+                    // Alpha channel always in linear space
+                    let a_sum = prev_data[idx00 + 3] as u32
+                        + prev_data[idx10 + 3] as u32
+                        + prev_data[idx01 + 3] as u32
+                        + prev_data[idx11 + 3] as u32;
+                    new_data.push((a_sum / 4) as u8);
+                } else {
+                    for c in 0..4 {
+                        let sum = prev_data[idx00 + c] as u32
+                            + prev_data[idx10 + c] as u32
+                            + prev_data[idx01 + c] as u32
+                            + prev_data[idx11 + c] as u32;
+                        new_data.push((sum / 4) as u8);
+                    }
                 }
             }
         }
@@ -180,10 +220,8 @@ pub fn create_material_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGro
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
                     min_binding_size: Some(
-                        std::num::NonZeroU64::new(
-                            std::mem::size_of::<MaterialUniforms>() as u64,
-                        )
-                        .expect("MaterialUniforms has non-zero size"),
+                        std::num::NonZeroU64::new(std::mem::size_of::<MaterialUniforms>() as u64)
+                            .expect("MaterialUniforms has non-zero size"),
                     ),
                 },
                 count: None,
@@ -252,7 +290,7 @@ fn upload_texture(
     );
 
     // Generate and upload mip levels 1..N
-    let mips = generate_mip_data(width, height, data);
+    let mips = generate_mip_data(width, height, data, is_srgb);
     for (i, (mip_w, mip_h, mip_data)) in mips.iter().enumerate() {
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
@@ -298,9 +336,11 @@ pub fn create_default_textures(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
 ) -> (wgpu::Texture, wgpu::Texture, wgpu::Texture) {
-    let albedo = create_default_texture(device, queue, [255, 255, 255, 255], "default-albedo", true);
+    let albedo =
+        create_default_texture(device, queue, [255, 255, 255, 255], "default-albedo", true);
     // Flat normal: (0.5, 0.5, 1.0) in [0,255] = (128, 128, 255)
-    let normal = create_default_texture(device, queue, [128, 128, 255, 255], "default-normal", false);
+    let normal =
+        create_default_texture(device, queue, [128, 128, 255, 255], "default-normal", false);
     // ORM default: AO=1.0(255), roughness=0.5(128), metallic=0.0(0)
     let orm = create_default_texture(device, queue, [255, 128, 0, 255], "default-orm", false);
     (albedo, normal, orm)
@@ -343,7 +383,13 @@ pub fn upload_material(
             "material-albedo",
             true, // sRGB for albedo
         ),
-        None => create_default_texture(device, queue, [255, 255, 255, 255], "material-albedo-default", true),
+        None => create_default_texture(
+            device,
+            queue,
+            [255, 255, 255, 255],
+            "material-albedo-default",
+            true,
+        ),
     };
 
     let normal_texture = match &material_data.normal_image {
@@ -356,7 +402,13 @@ pub fn upload_material(
             "material-normal",
             false, // linear for normal maps
         ),
-        None => create_default_texture(device, queue, [128, 128, 255, 255], "material-normal-default", false),
+        None => create_default_texture(
+            device,
+            queue,
+            [128, 128, 255, 255],
+            "material-normal-default",
+            false,
+        ),
     };
 
     let orm_texture = match &material_data.orm_image {
@@ -369,7 +421,13 @@ pub fn upload_material(
             "material-orm",
             false, // linear for ORM
         ),
-        None => create_default_texture(device, queue, [255, 128, 0, 255], "material-orm-default", false),
+        None => create_default_texture(
+            device,
+            queue,
+            [255, 128, 0, 255],
+            "material-orm-default",
+            false,
+        ),
     };
 
     let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -427,13 +485,7 @@ pub fn create_default_gpu_material(
     layout: &wgpu::BindGroupLayout,
     sampler: &wgpu::Sampler,
 ) -> GpuMaterial {
-    upload_material(
-        device,
-        queue,
-        layout,
-        sampler,
-        &MaterialData::default(),
-    )
+    upload_material(device, queue, layout, sampler, &MaterialData::default())
 }
 
 #[cfg(test)]
@@ -514,21 +566,15 @@ mod tests {
 
     #[test]
     fn generate_mip_data_4x4_produces_correct_chain() {
-        // 4x4 -> mip_count = 3 (4x4, 2x2, 1x1)
-        // So generate_mip_data returns 2 mip levels (mip 1 and mip 2)
         let width = 4u32;
         let height = 4u32;
         let data = vec![128u8; (width * height * 4) as usize];
-        let mips = generate_mip_data(width, height, &data);
+        let mips = generate_mip_data(width, height, &data, false);
 
-        assert_eq!(mips.len(), 2); // mip 1 (2x2) and mip 2 (1x1)
-
-        // Mip 1: 2x2
+        assert_eq!(mips.len(), 2);
         assert_eq!(mips[0].0, 2);
         assert_eq!(mips[0].1, 2);
         assert_eq!(mips[0].2.len(), (2 * 2 * 4) as usize);
-
-        // Mip 2: 1x1
         assert_eq!(mips[1].0, 1);
         assert_eq!(mips[1].1, 1);
         assert_eq!(mips[1].2.len(), (1 * 1 * 4) as usize);
@@ -536,45 +582,31 @@ mod tests {
 
     #[test]
     fn generate_mip_data_2x2_box_filter_averages() {
-        // 2x2 texture with known pixel values:
-        //  (0,0) = [100, 200, 50, 255]
-        //  (1,0) = [200, 100, 150, 255]
-        //  (0,1) = [50, 50, 200, 255]
-        //  (1,1) = [150, 150, 100, 255]
         let data: Vec<u8> = vec![
-            100, 200, 50, 255, // (0,0)
-            200, 100, 150, 255, // (1,0)
-            50, 50, 200, 255, // (0,1)
-            150, 150, 100, 255, // (1,1)
+            100, 200, 50, 255,
+            200, 100, 150, 255,
+            50, 50, 200, 255,
+            150, 150, 100, 255,
         ];
-        let mips = generate_mip_data(2, 2, &data);
+        let mips = generate_mip_data(2, 2, &data, false);
 
-        assert_eq!(mips.len(), 1); // only mip 1 (1x1)
+        assert_eq!(mips.len(), 1);
         assert_eq!(mips[0].0, 1);
         assert_eq!(mips[0].1, 1);
-
-        // Average of all 4 pixels per channel:
-        // R: (100+200+50+150)/4 = 125
-        // G: (200+100+50+150)/4 = 125
-        // B: (50+150+200+100)/4 = 125
-        // A: (255+255+255+255)/4 = 255
         assert_eq!(mips[0].2, vec![125, 125, 125, 255]);
     }
 
     #[test]
     fn generate_mip_data_1x1_returns_empty() {
-        // 1x1 texture: mip_count = 1, so no additional mip levels
         let data = vec![255, 128, 0, 255];
-        let mips = generate_mip_data(1, 1, &data);
+        let mips = generate_mip_data(1, 1, &data, false);
         assert_eq!(mips.len(), 0);
     }
 
     #[test]
     fn generate_mip_data_8x8_chain_length() {
-        // 8x8 -> mip_count = 4 (8x8, 4x4, 2x2, 1x1)
-        // generate_mip_data returns 3 levels
         let data = vec![100u8; 8 * 8 * 4];
-        let mips = generate_mip_data(8, 8, &data);
+        let mips = generate_mip_data(8, 8, &data, false);
 
         assert_eq!(mips.len(), 3);
         assert_eq!((mips[0].0, mips[0].1), (4, 4));
@@ -584,10 +616,8 @@ mod tests {
 
     #[test]
     fn generate_mip_data_non_square() {
-        // 4x2 -> max(4,2)=4, log2(4)=2, mip_count=3
-        // Mip 1: 2x1, Mip 2: 1x1
         let data = vec![64u8; 4 * 2 * 4];
-        let mips = generate_mip_data(4, 2, &data);
+        let mips = generate_mip_data(4, 2, &data, false);
 
         assert_eq!(mips.len(), 2);
         assert_eq!((mips[0].0, mips[0].1), (2, 1));
@@ -596,15 +626,73 @@ mod tests {
 
     #[test]
     fn generate_mip_data_uniform_texture_preserves_values() {
-        // A uniform color texture should produce identical mips at every level
         let val = 42u8;
         let data = vec![val; 16 * 16 * 4];
-        let mips = generate_mip_data(16, 16, &data);
+        let mips = generate_mip_data(16, 16, &data, false);
 
         for (w, h, mip_data) in &mips {
             assert_eq!(mip_data.len(), (*w * *h * 4) as usize);
             for &byte in mip_data {
                 assert_eq!(byte, val);
+            }
+        }
+    }
+
+    // --- sRGB mipmap tests ---
+
+    #[test]
+    fn srgb_roundtrip_preserves_values() {
+        for v in 0..=255u8 {
+            let linear = srgb_to_linear(v);
+            let back = linear_to_srgb(linear);
+            assert!(
+                (v as i16 - back as i16).unsigned_abs() <= 1,
+                "sRGB roundtrip failed for {v}: got {back}"
+            );
+        }
+    }
+
+    #[test]
+    fn srgb_mip_brighter_than_gamma_mip() {
+        // sRGB averaging of bright colors should be >= gamma averaging
+        // because gamma-space averaging underestimates (darkens)
+        let data: Vec<u8> = vec![
+            200, 200, 200, 255,
+            50, 50, 50, 255,
+            200, 200, 200, 255,
+            50, 50, 50, 255,
+        ];
+        let gamma_mips = generate_mip_data(2, 2, &data, false);
+        let srgb_mips = generate_mip_data(2, 2, &data, true);
+
+        // sRGB-correct averaging of disparate values should be brighter
+        // than naive gamma-space averaging
+        for c in 0..3 {
+            assert!(
+                srgb_mips[0].2[c] >= gamma_mips[0].2[c],
+                "sRGB mip channel {c} ({}) should be >= gamma mip ({})",
+                srgb_mips[0].2[c],
+                gamma_mips[0].2[c]
+            );
+        }
+        // Alpha should be the same
+        assert_eq!(srgb_mips[0].2[3], gamma_mips[0].2[3]);
+    }
+
+    #[test]
+    fn srgb_mip_uniform_texture_preserves_values() {
+        // A uniform sRGB texture should produce the same value at every mip
+        let val = 180u8;
+        let data = vec![val; 4 * 4 * 4];
+        let mips = generate_mip_data(4, 4, &data, true);
+
+        for (_w, _h, mip_data) in &mips {
+            for (i, &byte) in mip_data.iter().enumerate() {
+                // Allow ±1 for rounding
+                assert!(
+                    (byte as i16 - val as i16).unsigned_abs() <= 1,
+                    "uniform sRGB mip pixel[{i}] = {byte}, expected ~{val}"
+                );
             }
         }
     }

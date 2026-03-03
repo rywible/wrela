@@ -18,6 +18,15 @@ fn run_realtime_bootstrap() -> Integer {
 }
 "#;
 
+const FOREST_SCENE_LAYOUT_RELATIVE_PATH: &str =
+    "assets/generated/environment/forest-scene-layout-v1.json";
+const FOREST_SCENE_LAYOUT_REQUIRED_KEYS: [&str; 4] = [
+    "camera_anchors",
+    "combat_arena_extents",
+    "fog_volumes",
+    "lut_profile_id",
+];
+
 #[derive(Debug, Clone)]
 struct GameCommandInput {
     command: String,
@@ -997,6 +1006,8 @@ fn game_build_project(
         descriptor.domain_source_hash.as_str(),
         &loaded_project.module,
     )?;
+    validate_forest_scene_layout_asset_contract(app_root)?;
+    sync_authored_assets_to_dist(app_root, dist_dir.as_path())?;
     ensure_required_animation_artifacts_present(dist_dir.as_path(), "wrela game build")?;
     write_game_loader_assets(app_root, dist_dir.as_path())?;
     write_game_protocol_metadata(dist_dir.as_path())?;
@@ -1673,8 +1684,8 @@ fn adapter_kind_for_asset_declaration(
 
 fn default_provider_for_adapter_kind(kind: wrela::asset_factory::AssetAdapterKind) -> &'static str {
     match kind {
-        wrela::asset_factory::AssetAdapterKind::Image => "image-default",
-        wrela::asset_factory::AssetAdapterKind::Mesh3d => "mesh-default",
+        wrela::asset_factory::AssetAdapterKind::Image => "procedural-texture",
+        wrela::asset_factory::AssetAdapterKind::Mesh3d => "tripo3d",
         wrela::asset_factory::AssetAdapterKind::Audio => "audio-default",
         wrela::asset_factory::AssetAdapterKind::FigmaUi => "ui-default",
     }
@@ -1687,12 +1698,47 @@ fn generate_asset_factory_adapter_result(
 ) -> Result<wrela::asset_factory::AssetGenerationResult, String> {
     match kind {
         wrela::asset_factory::AssetAdapterKind::Image => {
-            let adapter = wrela::asset_factory::ImageGenerationAdapter::new(provider);
-            wrela::asset_factory::DeterministicAssetAdapter::generate(&adapter, request)
+            // Route Image requests through the async TextureGenerationAdapter which
+            // produces 512x512 procedural PBR texture sets (albedo, normal, ORM).
+            // Falls back to the deterministic ImageGenerationAdapter when the async
+            // adapter fails (e.g. missing cache directory, network issues).
+            let cache = wrela::asset_factory::AssetArtifactCache::new(
+                wrela::asset_factory::cache_root_for_workspace(
+                    resolve_game_workspace_root().as_path(),
+                ),
+            );
+            let adapter = wrela::asset_factory::texture_gen::TextureGenerationAdapter::new(cache);
+            match run_async_adapter(&adapter, request) {
+                Ok(result) => Ok(result),
+                Err(_) => {
+                    // Fallback: use the deterministic placeholder so offline builds
+                    // continue to produce valid manifests without the async adapter.
+                    let fallback =
+                        wrela::asset_factory::ImageGenerationAdapter::new("image-default");
+                    wrela::asset_factory::DeterministicAssetAdapter::generate(&fallback, request)
+                }
+            }
         }
         wrela::asset_factory::AssetAdapterKind::Mesh3d => {
-            let adapter = wrela::asset_factory::MeshGenerationAdapter::new(provider);
-            wrela::asset_factory::DeterministicAssetAdapter::generate(&adapter, request)
+            // Route Mesh3d requests through the TripoMeshAdapter. When TRIPO_API_KEY
+            // is not set the adapter returns an error — callers should fall back to
+            // the deterministic placeholder in that case so offline builds still work.
+            let cache = wrela::asset_factory::AssetArtifactCache::new(
+                wrela::asset_factory::cache_root_for_workspace(
+                    resolve_game_workspace_root().as_path(),
+                ),
+            );
+            let adapter = wrela::asset_factory::tripo::TripoMeshAdapter::new(cache);
+            match run_async_adapter(&adapter, request) {
+                Ok(result) => Ok(result),
+                Err(_) => {
+                    // Fallback: use the deterministic placeholder so offline builds
+                    // continue to produce valid manifests without an API key.
+                    let fallback =
+                        wrela::asset_factory::MeshGenerationAdapter::new("mesh-default");
+                    wrela::asset_factory::DeterministicAssetAdapter::generate(&fallback, request)
+                }
+            }
         }
         wrela::asset_factory::AssetAdapterKind::Audio => {
             let adapter = wrela::asset_factory::AudioGenerationAdapter::new(provider);
@@ -1701,6 +1747,42 @@ fn generate_asset_factory_adapter_result(
         wrela::asset_factory::AssetAdapterKind::FigmaUi => {
             let adapter = wrela::asset_factory::FigmaUiAdapter::new(provider);
             wrela::asset_factory::DeterministicAssetAdapter::generate(&adapter, request)
+        }
+    }
+}
+
+/// Run an AsyncAssetAdapter from a synchronous context by creating a one-shot
+/// tokio runtime. This bridges the sync build pipeline to the async adapters
+/// (Tripo3D, TextureGeneration) without requiring the entire build pipeline to
+/// be async.
+fn run_async_adapter(
+    adapter: &dyn wrela::asset_factory::AsyncAssetAdapter,
+    request: &wrela::asset_factory::AssetGenerationRequest,
+) -> Result<wrela::asset_factory::AssetGenerationResult, String> {
+    // Try to use an existing tokio runtime if we are already inside one,
+    // otherwise spin up a blocking one-shot runtime.
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            // We are inside an async runtime — use spawn_blocking + block_on
+            // to avoid nesting runtimes.
+            std::thread::scope(|s| {
+                s.spawn(|| {
+                    handle.block_on(async {
+                        wrela::asset_factory::AsyncAssetAdapter::generate(adapter, request).await
+                    })
+                })
+                .join()
+                .map_err(|_| "async adapter thread panicked".to_string())?
+            })
+        }
+        Err(_) => {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| format!("failed to create tokio runtime for asset adapter: {e}"))?;
+            rt.block_on(async {
+                wrela::asset_factory::AsyncAssetAdapter::generate(adapter, request).await
+            })
         }
     }
 }
@@ -3085,6 +3167,352 @@ fn collect_asset_files(root: &Path, out: &mut Vec<PathBuf>) -> Result<(), String
         } else if path.is_file() {
             out.push(path);
         }
+    }
+    Ok(())
+}
+
+fn validate_forest_scene_layout_asset_contract(app_root: &Path) -> Result<(), String> {
+    let scene_layout_path = app_root.join(FOREST_SCENE_LAYOUT_RELATIVE_PATH);
+    let contents = fs::read_to_string(scene_layout_path.as_path()).map_err(|error| {
+        format!(
+            "missing required forest scene layout asset '{}': {error}",
+            scene_layout_path.display()
+        )
+    })?;
+    let parsed: serde_json::Value = serde_json::from_str(contents.as_str()).map_err(|error| {
+        format!(
+            "forest scene layout asset '{}' is invalid JSON: {error}",
+            scene_layout_path.display()
+        )
+    })?;
+    let schema_version = parsed
+        .get("schema_version")
+        .and_then(|value| value.as_u64())
+        .ok_or_else(|| {
+            format!(
+                "forest scene layout asset '{}' must define numeric schema_version",
+                scene_layout_path.display()
+            )
+        })?;
+    if schema_version != 2 {
+        return Err(format!(
+            "forest scene layout asset '{}' must use schema_version=2 (found {schema_version})",
+            scene_layout_path.display()
+        ));
+    }
+    for key in FOREST_SCENE_LAYOUT_REQUIRED_KEYS {
+        if parsed.get(key).is_none() {
+            return Err(format!(
+                "forest scene layout asset '{}' is missing required field '{}'",
+                scene_layout_path.display(),
+                key
+            ));
+        }
+    }
+
+    let read_vec3 = |node: &serde_json::Value, pointer: &str| -> Result<[f64; 3], String> {
+        let arr = node
+            .as_array()
+            .ok_or_else(|| {
+                format!(
+                    "forest scene layout asset '{}' field '{}' must be an array of 3 finite numbers",
+                    scene_layout_path.display(),
+                    pointer
+                )
+            })?;
+        if arr.len() != 3 {
+            return Err(format!(
+                "forest scene layout asset '{}' field '{}' must have length 3",
+                scene_layout_path.display(),
+                pointer
+            ));
+        }
+        let mut out = [0.0_f64; 3];
+        for (idx, value) in arr.iter().enumerate() {
+            let number = value.as_f64().ok_or_else(|| {
+                format!(
+                    "forest scene layout asset '{}' field '{}[{}]' must be numeric",
+                    scene_layout_path.display(),
+                    pointer,
+                    idx
+                )
+            })?;
+            if !number.is_finite() {
+                return Err(format!(
+                    "forest scene layout asset '{}' field '{}[{}]' must be finite",
+                    scene_layout_path.display(),
+                    pointer,
+                    idx
+                ));
+            }
+            out[idx] = number;
+        }
+        Ok(out)
+    };
+
+    let camera_anchors = parsed
+        .get("camera_anchors")
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| {
+            format!(
+                "forest scene layout asset '{}' field 'camera_anchors' must be a non-empty array",
+                scene_layout_path.display()
+            )
+        })?;
+    if camera_anchors.is_empty() {
+        return Err(format!(
+            "forest scene layout asset '{}' field 'camera_anchors' must include at least one anchor",
+            scene_layout_path.display()
+        ));
+    }
+    for (index, anchor) in camera_anchors.iter().enumerate() {
+        let id = anchor
+            .get("id")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .ok_or_else(|| {
+                format!(
+                    "forest scene layout asset '{}' camera_anchors[{}].id must be a non-empty string",
+                    scene_layout_path.display(),
+                    index
+                )
+            })?;
+        if id.is_empty() {
+            return Err(format!(
+                "forest scene layout asset '{}' camera_anchors[{}].id must be a non-empty string",
+                scene_layout_path.display(),
+                index
+            ));
+        }
+        let position = read_vec3(
+            anchor
+                .get("position")
+                .ok_or_else(|| {
+                    format!(
+                        "forest scene layout asset '{}' camera_anchors[{}].position missing",
+                        scene_layout_path.display(),
+                        index
+                    )
+                })?,
+            &format!("camera_anchors[{index}].position"),
+        )?;
+        let target = read_vec3(
+            anchor
+                .get("target")
+                .ok_or_else(|| {
+                    format!(
+                        "forest scene layout asset '{}' camera_anchors[{}].target missing",
+                        scene_layout_path.display(),
+                        index
+                    )
+                })?,
+            &format!("camera_anchors[{index}].target"),
+        )?;
+        if position == target {
+            return Err(format!(
+                "forest scene layout asset '{}' camera_anchors[{}] position must differ from target",
+                scene_layout_path.display(),
+                index
+            ));
+        }
+        let fov_y_degrees = anchor
+            .get("fov_y_degrees")
+            .and_then(|value| value.as_f64())
+            .ok_or_else(|| {
+                format!(
+                    "forest scene layout asset '{}' camera_anchors[{}].fov_y_degrees must be numeric",
+                    scene_layout_path.display(),
+                    index
+                )
+            })?;
+        if !fov_y_degrees.is_finite() || !(20.0..=120.0).contains(&fov_y_degrees) {
+            return Err(format!(
+                "forest scene layout asset '{}' camera_anchors[{}].fov_y_degrees must be within [20, 120] (found {fov_y_degrees})",
+                scene_layout_path.display(),
+                index
+            ));
+        }
+    }
+
+    let combat_extents = parsed
+        .get("combat_arena_extents")
+        .and_then(|value| value.as_object())
+        .ok_or_else(|| {
+            format!(
+                "forest scene layout asset '{}' field 'combat_arena_extents' must be an object",
+                scene_layout_path.display()
+            )
+        })?;
+    let combat_min = read_vec3(
+        combat_extents
+            .get("min")
+            .ok_or_else(|| {
+                format!(
+                    "forest scene layout asset '{}' combat_arena_extents.min missing",
+                    scene_layout_path.display()
+                )
+            })?,
+        "combat_arena_extents.min",
+    )?;
+    let combat_max = read_vec3(
+        combat_extents
+            .get("max")
+            .ok_or_else(|| {
+                format!(
+                    "forest scene layout asset '{}' combat_arena_extents.max missing",
+                    scene_layout_path.display()
+                )
+            })?,
+        "combat_arena_extents.max",
+    )?;
+    for axis in 0..3 {
+        if combat_max[axis] <= combat_min[axis] {
+            return Err(format!(
+                "forest scene layout asset '{}' combat_arena_extents.max[{}] must be greater than min[{}]",
+                scene_layout_path.display(),
+                axis,
+                axis
+            ));
+        }
+    }
+
+    let fog_volumes = parsed
+        .get("fog_volumes")
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| {
+            format!(
+                "forest scene layout asset '{}' field 'fog_volumes' must be a non-empty array",
+                scene_layout_path.display()
+            )
+        })?;
+    if fog_volumes.is_empty() {
+        return Err(format!(
+            "forest scene layout asset '{}' field 'fog_volumes' must include at least one volume",
+            scene_layout_path.display()
+        ));
+    }
+    for (index, fog) in fog_volumes.iter().enumerate() {
+        let id = fog
+            .get("id")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .ok_or_else(|| {
+                format!(
+                    "forest scene layout asset '{}' fog_volumes[{}].id must be a non-empty string",
+                    scene_layout_path.display(),
+                    index
+                )
+            })?;
+        if id.is_empty() {
+            return Err(format!(
+                "forest scene layout asset '{}' fog_volumes[{}].id must be a non-empty string",
+                scene_layout_path.display(),
+                index
+            ));
+        }
+        let center = read_vec3(
+            fog.get("center").ok_or_else(|| {
+                format!(
+                    "forest scene layout asset '{}' fog_volumes[{}].center missing",
+                    scene_layout_path.display(),
+                    index
+                )
+            })?,
+            &format!("fog_volumes[{index}].center"),
+        )?;
+        let extents = read_vec3(
+            fog.get("extents").ok_or_else(|| {
+                format!(
+                    "forest scene layout asset '{}' fog_volumes[{}].extents missing",
+                    scene_layout_path.display(),
+                    index
+                )
+            })?,
+            &format!("fog_volumes[{index}].extents"),
+        )?;
+        let density = fog
+            .get("density")
+            .and_then(|value| value.as_f64())
+            .ok_or_else(|| {
+                format!(
+                    "forest scene layout asset '{}' fog_volumes[{}].density must be numeric",
+                    scene_layout_path.display(),
+                    index
+                )
+            })?;
+        if !density.is_finite() || !(0.0..=1.0).contains(&density) {
+            return Err(format!(
+                "forest scene layout asset '{}' fog_volumes[{}].density must be within [0, 1] (found {density})",
+                scene_layout_path.display(),
+                index
+            ));
+        }
+        if center.iter().any(|component| !component.is_finite()) {
+            return Err(format!(
+                "forest scene layout asset '{}' fog_volumes[{}].center must contain finite numbers",
+                scene_layout_path.display(),
+                index
+            ));
+        }
+        if extents
+            .iter()
+            .any(|component| !component.is_finite() || *component <= 0.0)
+        {
+            return Err(format!(
+                "forest scene layout asset '{}' fog_volumes[{}].extents must contain positive finite numbers",
+                scene_layout_path.display(),
+                index
+            ));
+        }
+    }
+
+    let lut_profile_id = parsed
+        .get("lut_profile_id")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .ok_or_else(|| {
+            format!(
+                "forest scene layout asset '{}' field 'lut_profile_id' must be a non-empty string",
+                scene_layout_path.display()
+            )
+        })?;
+    if lut_profile_id.is_empty() {
+        return Err(format!(
+            "forest scene layout asset '{}' field 'lut_profile_id' must be a non-empty string",
+            scene_layout_path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn sync_authored_assets_to_dist(app_root: &Path, dist_dir: &Path) -> Result<(), String> {
+    let mut asset_files = Vec::new();
+    collect_asset_files(app_root.join("assets").as_path(), &mut asset_files)?;
+    asset_files.sort();
+    for source in asset_files {
+        let relative = source.strip_prefix(app_root).map_err(|error| {
+            format!(
+                "failed to resolve authored asset path '{}' relative to app root '{}': {error}",
+                source.display(),
+                app_root.display()
+            )
+        })?;
+        let destination = dist_dir.join(relative);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                format!(
+                    "failed to create authored asset output directory '{}': {error}",
+                    parent.display()
+                )
+            })?;
+        }
+        fs::copy(source.as_path(), destination.as_path()).map_err(|error| {
+            format!(
+                "failed to copy authored asset '{}' to '{}': {error}",
+                source.display(),
+                destination.display()
+            )
+        })?;
     }
     Ok(())
 }
@@ -4620,7 +5048,9 @@ fn game_anim_mutate_project(
         "candidate_count": candidates.len(),
         "candidates": candidates
     });
-    let report_path = synth.dist_dir.join("animation-mutation-report-v1.json");
+    let report_path = synth
+        .dist_dir
+        .join(format!("animation-mutation-report-v1-{objective}.json"));
     fs::write(
         report_path.as_path(),
         serde_json::to_vec_pretty(&report)
@@ -6409,6 +6839,302 @@ mod game_tests {
         assert!(
             !bytes.is_empty(),
             "bootstrap asset should contain deterministic starter bytes"
+        );
+    }
+
+    #[test]
+    fn validate_forest_scene_layout_asset_contract_requires_v2_fields() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app_root = dir.path().join("wrela-forest");
+        let scene_layout_path = app_root.join(FOREST_SCENE_LAYOUT_RELATIVE_PATH);
+        fs::create_dir_all(
+            scene_layout_path
+                .parent()
+                .expect("scene layout path should have parent"),
+        )
+        .expect("create scene layout parent");
+        fs::write(
+            scene_layout_path.as_path(),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schema_version": 2,
+                "biome": "cathedral_redwood",
+                "camera_anchors": [{
+                    "id": "combat_default",
+                    "position": [5.5, 3.4, 8.6],
+                    "target": [0.0, 1.0, 0.0],
+                    "fov_y_degrees": 50.0
+                }],
+                "combat_arena_extents": {
+                    "min": [-10.5, -0.5, -10.5],
+                    "max": [10.5, 6.5, 10.5]
+                },
+                "fog_volumes": [{
+                    "id": "arena_ground_haze",
+                    "center": [0.0, 1.8, 0.0],
+                    "extents": [16.0, 4.5, 16.0],
+                    "density": 0.2
+                }],
+                "lut_profile_id": "forest_gothic_anime_v1",
+                "ground": { "asset": "forest_floor_tile.glb", "scale": [2.0, 1.0, 2.0] },
+                "instances": []
+            }))
+            .expect("serialize scene layout"),
+        )
+        .expect("write scene layout");
+        validate_forest_scene_layout_asset_contract(app_root.as_path())
+            .expect("v2 layout contract should pass");
+    }
+
+    #[test]
+    fn validate_forest_scene_layout_asset_contract_rejects_missing_required_fields() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app_root = dir.path().join("wrela-forest");
+        let scene_layout_path = app_root.join(FOREST_SCENE_LAYOUT_RELATIVE_PATH);
+        fs::create_dir_all(
+            scene_layout_path
+                .parent()
+                .expect("scene layout path should have parent"),
+        )
+        .expect("create scene layout parent");
+        fs::write(
+            scene_layout_path.as_path(),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schema_version": 2,
+                "biome": "cathedral_redwood",
+                "ground": { "asset": "forest_floor_tile.glb", "scale": [2.0, 1.0, 2.0] },
+                "instances": []
+            }))
+            .expect("serialize scene layout"),
+        )
+        .expect("write scene layout");
+        let error = validate_forest_scene_layout_asset_contract(app_root.as_path())
+            .expect_err("missing fields should fail hard");
+        assert!(
+            error.contains("camera_anchors"),
+            "unexpected error payload: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_forest_scene_layout_asset_contract_rejects_non_v2_schema() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app_root = dir.path().join("wrela-forest");
+        let scene_layout_path = app_root.join(FOREST_SCENE_LAYOUT_RELATIVE_PATH);
+        fs::create_dir_all(
+            scene_layout_path
+                .parent()
+                .expect("scene layout path should have parent"),
+        )
+        .expect("create scene layout parent");
+        fs::write(
+            scene_layout_path.as_path(),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schema_version": 3,
+                "biome": "cathedral_redwood",
+                "camera_anchors": [{
+                    "id": "combat_default",
+                    "position": [5.5, 3.4, 8.6],
+                    "target": [0.0, 1.0, 0.0],
+                    "fov_y_degrees": 50.0
+                }],
+                "combat_arena_extents": {
+                    "min": [-10.5, -0.5, -10.5],
+                    "max": [10.5, 6.5, 10.5]
+                },
+                "fog_volumes": [{
+                    "id": "arena_ground_haze",
+                    "center": [0.0, 1.8, 0.0],
+                    "extents": [16.0, 4.5, 16.0],
+                    "density": 0.2
+                }],
+                "lut_profile_id": "forest_gothic_anime_v1",
+                "ground": { "asset": "forest_floor_tile.glb", "scale": [2.0, 1.0, 2.0] },
+                "instances": []
+            }))
+            .expect("serialize scene layout"),
+        )
+        .expect("write scene layout");
+        let error = validate_forest_scene_layout_asset_contract(app_root.as_path())
+            .expect_err("non-v2 schema should fail hard");
+        assert!(
+            error.contains("schema_version=2"),
+            "unexpected error payload: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_forest_scene_layout_asset_contract_rejects_invalid_camera_anchor() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app_root = dir.path().join("wrela-forest");
+        let scene_layout_path = app_root.join(FOREST_SCENE_LAYOUT_RELATIVE_PATH);
+        fs::create_dir_all(
+            scene_layout_path
+                .parent()
+                .expect("scene layout path should have parent"),
+        )
+        .expect("create scene layout parent");
+        fs::write(
+            scene_layout_path.as_path(),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schema_version": 2,
+                "biome": "cathedral_redwood",
+                "camera_anchors": [{
+                    "id": "combat_default",
+                    "position": [1.0, 2.0, 3.0],
+                    "target": [1.0, 2.0, 3.0],
+                    "fov_y_degrees": 180.0
+                }],
+                "combat_arena_extents": {
+                    "min": [-10.5, -0.5, -10.5],
+                    "max": [10.5, 6.5, 10.5]
+                },
+                "fog_volumes": [{
+                    "id": "arena_ground_haze",
+                    "center": [0.0, 1.8, 0.0],
+                    "extents": [16.0, 4.5, 16.0],
+                    "density": 0.2
+                }],
+                "lut_profile_id": "forest_gothic_anime_v1",
+                "ground": { "asset": "forest_floor_tile.glb", "scale": [2.0, 1.0, 2.0] },
+                "instances": []
+            }))
+            .expect("serialize scene layout"),
+        )
+        .expect("write scene layout");
+        let error = validate_forest_scene_layout_asset_contract(app_root.as_path())
+            .expect_err("invalid camera anchor should fail hard");
+        assert!(
+            error.contains("position must differ from target"),
+            "unexpected error payload: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_forest_scene_layout_asset_contract_rejects_invalid_arena_extents() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app_root = dir.path().join("wrela-forest");
+        let scene_layout_path = app_root.join(FOREST_SCENE_LAYOUT_RELATIVE_PATH);
+        fs::create_dir_all(
+            scene_layout_path
+                .parent()
+                .expect("scene layout path should have parent"),
+        )
+        .expect("create scene layout parent");
+        fs::write(
+            scene_layout_path.as_path(),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schema_version": 2,
+                "biome": "cathedral_redwood",
+                "camera_anchors": [{
+                    "id": "combat_default",
+                    "position": [5.5, 3.4, 8.6],
+                    "target": [0.0, 1.0, 0.0],
+                    "fov_y_degrees": 50.0
+                }],
+                "combat_arena_extents": {
+                    "min": [-10.5, -0.5, -10.5],
+                    "max": [-11.5, 6.5, 10.5]
+                },
+                "fog_volumes": [{
+                    "id": "arena_ground_haze",
+                    "center": [0.0, 1.8, 0.0],
+                    "extents": [16.0, 4.5, 16.0],
+                    "density": 0.2
+                }],
+                "lut_profile_id": "forest_gothic_anime_v1",
+                "ground": { "asset": "forest_floor_tile.glb", "scale": [2.0, 1.0, 2.0] },
+                "instances": []
+            }))
+            .expect("serialize scene layout"),
+        )
+        .expect("write scene layout");
+        let error = validate_forest_scene_layout_asset_contract(app_root.as_path())
+            .expect_err("invalid arena extents should fail hard");
+        assert!(
+            error.contains("combat_arena_extents.max"),
+            "unexpected error payload: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_forest_scene_layout_asset_contract_rejects_invalid_fog_or_lut() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app_root = dir.path().join("wrela-forest");
+        let scene_layout_path = app_root.join(FOREST_SCENE_LAYOUT_RELATIVE_PATH);
+        fs::create_dir_all(
+            scene_layout_path
+                .parent()
+                .expect("scene layout path should have parent"),
+        )
+        .expect("create scene layout parent");
+        fs::write(
+            scene_layout_path.as_path(),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schema_version": 2,
+                "biome": "cathedral_redwood",
+                "camera_anchors": [{
+                    "id": "combat_default",
+                    "position": [5.5, 3.4, 8.6],
+                    "target": [0.0, 1.0, 0.0],
+                    "fov_y_degrees": 50.0
+                }],
+                "combat_arena_extents": {
+                    "min": [-10.5, -0.5, -10.5],
+                    "max": [10.5, 6.5, 10.5]
+                },
+                "fog_volumes": [{
+                    "id": "arena_ground_haze",
+                    "center": [0.0, 1.8, 0.0],
+                    "extents": [16.0, -4.5, 16.0],
+                    "density": 1.5
+                }],
+                "lut_profile_id": " ",
+                "ground": { "asset": "forest_floor_tile.glb", "scale": [2.0, 1.0, 2.0] },
+                "instances": []
+            }))
+            .expect("serialize scene layout"),
+        )
+        .expect("write scene layout");
+        let error = validate_forest_scene_layout_asset_contract(app_root.as_path())
+            .expect_err("invalid fog/lut should fail hard");
+        assert!(
+            error.contains("density") || error.contains("extents") || error.contains("lut_profile_id"),
+            "unexpected error payload: {error}"
+        );
+    }
+
+    #[test]
+    fn sync_authored_assets_to_dist_copies_nested_assets() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app_root = dir.path().join("wrela-forest");
+        let dist_dir = app_root.join("target").join("wrela-forest");
+        fs::create_dir_all(app_root.join("assets").join("generated").join("environment"))
+            .expect("create assets");
+        fs::create_dir_all(dist_dir.as_path()).expect("create dist");
+
+        let source_scene_layout = app_root.join(FOREST_SCENE_LAYOUT_RELATIVE_PATH);
+        fs::write(source_scene_layout.as_path(), br#"{"schema_version":2}"#)
+            .expect("write scene layout");
+        fs::write(app_root.join("assets").join("bootstrap.bin"), b"bootstrap")
+            .expect("write bootstrap");
+
+        sync_authored_assets_to_dist(app_root.as_path(), dist_dir.as_path())
+            .expect("sync authored assets");
+
+        let copied_scene_layout = dist_dir.join(FOREST_SCENE_LAYOUT_RELATIVE_PATH);
+        assert!(
+            copied_scene_layout.exists(),
+            "expected copied scene layout at {}",
+            copied_scene_layout.display()
+        );
+        assert_eq!(
+            fs::read(copied_scene_layout.as_path()).expect("read copied scene layout"),
+            br#"{"schema_version":2}"#
+        );
+        assert_eq!(
+            fs::read(dist_dir.join("assets").join("bootstrap.bin"))
+                .expect("read copied bootstrap"),
+            b"bootstrap"
         );
     }
 

@@ -464,7 +464,9 @@ pub(crate) fn parse_and_validate_animation_manifests_from_json(
         "animation rig catalog",
         rig_catalog_url,
     )?;
-    if clip_bundle_json.get("kind").and_then(|value| value.as_str())
+    if clip_bundle_json
+        .get("kind")
+        .and_then(|value| value.as_str())
         == Some("animation-clip-bundle-v1")
     {
         return Err(format!(
@@ -472,7 +474,9 @@ pub(crate) fn parse_and_validate_animation_manifests_from_json(
             clip_bundle_url
         ));
     }
-    if graph_contract_json.get("kind").and_then(|value| value.as_str())
+    if graph_contract_json
+        .get("kind")
+        .and_then(|value| value.as_str())
         == Some("animation-graph-contract-v1")
     {
         return Err(format!(
@@ -642,7 +646,10 @@ pub(crate) fn parse_and_validate_animation_manifests_from_json(
                 graph_contract_url, id
             ));
         }
-        let markers = match state_object.get("markers").and_then(|value| value.as_array()) {
+        let markers = match state_object
+            .get("markers")
+            .and_then(|value| value.as_array())
+        {
             Some(items) => {
                 let mut parsed = Vec::with_capacity(items.len());
                 for marker in items {
@@ -681,7 +688,8 @@ pub(crate) fn parse_and_validate_animation_manifests_from_json(
             graph_contract_url
         ));
     }
-    let mut transitions = Vec::<AnimationTransitionContract>::with_capacity(graph_transitions.len());
+    let mut transitions =
+        Vec::<AnimationTransitionContract>::with_capacity(graph_transitions.len());
     for transition in graph_transitions {
         let transition_object = transition.as_object().ok_or_else(|| {
             format!(
@@ -788,11 +796,13 @@ pub(crate) fn parse_and_validate_animation_manifests_from_json(
                 graph_contract_url, id, state_id
             ));
         };
-        states[state_index].windows.push(AnimationEventWindowContract {
-            id,
-            start_frame,
-            end_frame,
-        });
+        states[state_index]
+            .windows
+            .push(AnimationEventWindowContract {
+                id,
+                start_frame,
+                end_frame,
+            });
     }
 
     let flora_wind_bands = flora_contract_json
@@ -1009,9 +1019,202 @@ fn asset_report_has_conditioning_metadata(asset: &serde_json::Value) -> bool {
         && asset_has_conditioning_metadata(asset)
 }
 
+// ── Scene layout manifest types ─────────────────────────────────────────────
+
+/// Top-level scene layout manifest describing the biome, ground plane, and all
+/// environment instances to be placed in the scene.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct SceneLayoutManifest {
+    pub(crate) schema_version: u32,
+    pub(crate) biome: String,
+    pub(crate) camera_anchors: Vec<SceneLayoutCameraAnchor>,
+    pub(crate) combat_arena_extents: SceneLayoutCombatArenaExtents,
+    pub(crate) fog_volumes: Vec<SceneLayoutFogVolume>,
+    pub(crate) lut_profile_id: String,
+    pub(crate) ground: SceneLayoutGround,
+    pub(crate) instances: Vec<SceneLayoutInstance>,
+}
+
+/// Camera framing anchor used to seed camera defaults and automated framing
+/// assertions for the forest combat slice.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct SceneLayoutCameraAnchor {
+    pub(crate) id: String,
+    pub(crate) position: [f32; 3],
+    pub(crate) target: [f32; 3],
+    pub(crate) fov_y_degrees: f32,
+}
+
+/// Axis-aligned combat arena extents used for encounter framing and telemetry.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct SceneLayoutCombatArenaExtents {
+    pub(crate) min: [f32; 3],
+    pub(crate) max: [f32; 3],
+}
+
+/// Fog shaping volume for authored atmosphere control.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct SceneLayoutFogVolume {
+    pub(crate) id: String,
+    pub(crate) center: [f32; 3],
+    pub(crate) extents: [f32; 3],
+    pub(crate) density: f32,
+}
+
+/// Ground plane entry in the scene layout manifest.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct SceneLayoutGround {
+    pub(crate) asset: String,
+    pub(crate) scale: [f32; 3],
+}
+
+/// A single placed instance of an environment asset.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct SceneLayoutInstance {
+    pub(crate) asset: String,
+    pub(crate) position: [f32; 3],
+    pub(crate) rotation_y: f32,
+    pub(crate) scale: [f32; 3],
+}
+
+const SCENE_LAYOUT_SCHEMA_VERSION: u32 = 2;
+
+/// Parse and validate a scene layout manifest JSON string. Returns the parsed
+/// manifest on success or a descriptive error on failure.
+pub(crate) fn parse_and_validate_scene_layout_manifest(
+    json_str: &str,
+) -> Result<SceneLayoutManifest, String> {
+    let manifest: SceneLayoutManifest = serde_json::from_str(json_str).map_err(|error| {
+        format!("Forest scene boot failed: scene layout manifest JSON parse error: {error}")
+    })?;
+    if manifest.schema_version != SCENE_LAYOUT_SCHEMA_VERSION {
+        return Err(format!(
+            "Forest scene boot failed: expected schema_version {SCENE_LAYOUT_SCHEMA_VERSION}, got {}",
+            manifest.schema_version
+        ));
+    }
+    if manifest.biome.trim().is_empty() {
+        return Err(
+            "Forest scene boot failed: biome field is empty in scene layout manifest".to_string(),
+        );
+    }
+    if manifest.camera_anchors.is_empty() {
+        return Err("Forest scene boot failed: camera_anchors must include at least one anchor".to_string());
+    }
+    for (i, anchor) in manifest.camera_anchors.iter().enumerate() {
+        if anchor.id.trim().is_empty() {
+            return Err(format!(
+                "Forest scene boot failed: camera_anchors[{i}].id is empty in scene layout manifest"
+            ));
+        }
+        let mut anchor_delta_sq = 0.0f32;
+        for axis in 0..3 {
+            if !anchor.position[axis].is_finite() || !anchor.target[axis].is_finite() {
+                return Err(format!(
+                    "Forest scene boot failed: camera_anchors[{i}] contains non-finite position/target values"
+                ));
+            }
+            let delta = anchor.position[axis] - anchor.target[axis];
+            anchor_delta_sq += delta * delta;
+        }
+        if anchor_delta_sq <= 1e-4 {
+            return Err(format!(
+                "Forest scene boot failed: camera_anchors[{i}] position must differ from target"
+            ));
+        }
+        if !(20.0..=120.0).contains(&anchor.fov_y_degrees) {
+            return Err(format!(
+                "Forest scene boot failed: camera_anchors[{i}].fov_y_degrees must be within [20, 120], got {}",
+                anchor.fov_y_degrees
+            ));
+        }
+    }
+    for axis in 0..3 {
+        if manifest.combat_arena_extents.max[axis] <= manifest.combat_arena_extents.min[axis] {
+            return Err(format!(
+                "Forest scene boot failed: combat_arena_extents.max[{axis}] must be greater than min[{axis}]"
+            ));
+        }
+    }
+    if manifest.fog_volumes.is_empty() {
+        return Err("Forest scene boot failed: fog_volumes must include at least one volume".to_string());
+    }
+    for (i, fog_volume) in manifest.fog_volumes.iter().enumerate() {
+        if fog_volume.id.trim().is_empty() {
+            return Err(format!(
+                "Forest scene boot failed: fog_volumes[{i}].id is empty in scene layout manifest"
+            ));
+        }
+        if fog_volume.center.iter().any(|value| !value.is_finite()) {
+            return Err(format!(
+                "Forest scene boot failed: fog_volumes[{i}].center contains non-finite values"
+            ));
+        }
+        if fog_volume.extents.iter().any(|value| *value <= 0.0) {
+            return Err(format!(
+                "Forest scene boot failed: fog_volumes[{i}].extents must be positive on all axes"
+            ));
+        }
+        if !(0.0..=1.0).contains(&fog_volume.density) {
+            return Err(format!(
+                "Forest scene boot failed: fog_volumes[{i}].density must be within [0, 1], got {}",
+                fog_volume.density
+            ));
+        }
+    }
+    if manifest.lut_profile_id.trim().is_empty() {
+        return Err(
+            "Forest scene boot failed: lut_profile_id is empty in scene layout manifest"
+                .to_string(),
+        );
+    }
+    if manifest.ground.asset.trim().is_empty() {
+        return Err(
+            "Forest scene boot failed: ground.asset is empty in scene layout manifest".to_string(),
+        );
+    }
+    for (i, instance) in manifest.instances.iter().enumerate() {
+        if instance.asset.trim().is_empty() {
+            return Err(format!(
+                "Forest scene boot failed: instances[{i}].asset is empty in scene layout manifest"
+            ));
+        }
+    }
+    Ok(manifest)
+}
+
+/// Collect the unique set of asset filenames referenced by the manifest
+/// (ground asset + all instance assets). Returns a sorted, deduplicated list.
+pub(crate) fn collect_unique_scene_assets(manifest: &SceneLayoutManifest) -> Vec<String> {
+    let mut unique = std::collections::BTreeSet::new();
+    unique.insert(manifest.ground.asset.clone());
+    for instance in &manifest.instances {
+        unique.insert(instance.asset.clone());
+    }
+    unique.into_iter().collect()
+}
+
+/// Validate that raw GLB bytes parse successfully via `crate::mesh::load_glb`.
+/// Returns the number of meshes loaded from the GLB.
+pub(crate) fn validate_glb_asset(
+    asset_name: &str,
+    data: &[u8],
+) -> Result<usize, String> {
+    let meshes = crate::mesh::load_glb(data).map_err(|error| {
+        format!("Forest scene boot failed: asset '{asset_name}' GLB parse error: {error}")
+    })?;
+    if meshes.is_empty() {
+        return Err(format!(
+            "Forest scene boot failed: asset '{asset_name}' contains no meshes"
+        ));
+    }
+    Ok(meshes.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
+        collect_unique_scene_assets, parse_and_validate_scene_layout_manifest,
         parse_and_validate_animation_manifests_from_json,
         parse_and_validate_asset_factory_manifests_from_json,
         parse_and_validate_asset_pack_manifests_from_json, parse_asset_pack_manifest_json,
@@ -2070,5 +2273,445 @@ mod tests {
         )
         .expect_err("missing attestation should fail");
         assert!(error.contains("provenance.missing_attestation"));
+    }
+
+    // ── Scene layout manifest tests ─────────────────────────────────────
+
+    fn valid_scene_layout_json() -> &'static str {
+        r#"{
+            "schema_version": 2,
+            "biome": "cathedral_redwood",
+            "camera_anchors": [
+                {
+                    "id": "combat_default",
+                    "position": [4.5, 3.2, 8.0],
+                    "target": [0.0, 1.0, 0.0],
+                    "fov_y_degrees": 50.0
+                },
+                {
+                    "id": "overlook",
+                    "position": [-8.0, 6.0, -10.0],
+                    "target": [0.0, 1.0, 0.0],
+                    "fov_y_degrees": 42.0
+                }
+            ],
+            "combat_arena_extents": {
+                "min": [-9.5, -0.5, -9.5],
+                "max": [9.5, 6.0, 9.5]
+            },
+            "fog_volumes": [
+                {
+                    "id": "arena_fog",
+                    "center": [0.0, 1.5, 0.0],
+                    "extents": [15.0, 4.0, 15.0],
+                    "density": 0.18
+                }
+            ],
+            "lut_profile_id": "gothic_anime_twilight_v1",
+            "ground": {
+                "asset": "forest_ground.glb",
+                "scale": [1.0, 1.0, 1.0]
+            },
+            "instances": [
+                { "asset": "forest_tree_cluster.glb", "position": [-5.0, 0.0, -8.0], "rotation_y": 0.0, "scale": [2.5, 4.0, 2.5] },
+                { "asset": "forest_rock.glb", "position": [-3.0, 0.0, 2.0], "rotation_y": 30.0, "scale": [1.5, 1.5, 1.5] }
+            ]
+        }"#
+    }
+
+    #[test]
+    fn scene_layout_manifest_deserializes_valid_json() {
+        let manifest = parse_and_validate_scene_layout_manifest(valid_scene_layout_json())
+            .expect("valid scene layout JSON should parse");
+        assert_eq!(manifest.schema_version, 2);
+        assert_eq!(manifest.biome, "cathedral_redwood");
+        assert_eq!(manifest.camera_anchors.len(), 2);
+        assert_eq!(manifest.camera_anchors[0].id, "combat_default");
+        assert_eq!(manifest.camera_anchors[0].fov_y_degrees, 50.0);
+        assert_eq!(manifest.combat_arena_extents.min, [-9.5, -0.5, -9.5]);
+        assert_eq!(manifest.combat_arena_extents.max, [9.5, 6.0, 9.5]);
+        assert_eq!(manifest.fog_volumes.len(), 1);
+        assert_eq!(manifest.fog_volumes[0].id, "arena_fog");
+        assert_eq!(manifest.lut_profile_id, "gothic_anime_twilight_v1");
+        assert_eq!(manifest.ground.asset, "forest_ground.glb");
+        assert_eq!(manifest.ground.scale, [1.0, 1.0, 1.0]);
+        assert_eq!(manifest.instances.len(), 2);
+        assert_eq!(manifest.instances[0].asset, "forest_tree_cluster.glb");
+        assert_eq!(manifest.instances[0].position, [-5.0, 0.0, -8.0]);
+        assert_eq!(manifest.instances[0].rotation_y, 0.0);
+        assert_eq!(manifest.instances[0].scale, [2.5, 4.0, 2.5]);
+        assert_eq!(manifest.instances[1].asset, "forest_rock.glb");
+        assert_eq!(manifest.instances[1].rotation_y, 30.0);
+    }
+
+    #[test]
+    fn scene_layout_manifest_rejects_wrong_schema_version() {
+        let json = r#"{
+            "schema_version": 99,
+            "biome": "cathedral_redwood",
+            "camera_anchors": [
+                {
+                    "id": "combat_default",
+                    "position": [4.5, 3.2, 8.0],
+                    "target": [0.0, 1.0, 0.0],
+                    "fov_y_degrees": 50.0
+                }
+            ],
+            "combat_arena_extents": {
+                "min": [-9.5, -0.5, -9.5],
+                "max": [9.5, 6.0, 9.5]
+            },
+            "fog_volumes": [
+                {
+                    "id": "arena_fog",
+                    "center": [0.0, 1.5, 0.0],
+                    "extents": [15.0, 4.0, 15.0],
+                    "density": 0.18
+                }
+            ],
+            "lut_profile_id": "gothic_anime_twilight_v1",
+            "ground": { "asset": "forest_ground.glb", "scale": [1.0, 1.0, 1.0] },
+            "instances": []
+        }"#;
+        let error = parse_and_validate_scene_layout_manifest(json)
+            .expect_err("wrong schema_version should fail");
+        assert!(
+            error.contains("schema_version"),
+            "error should mention schema_version: {error}"
+        );
+        assert!(error.contains("99"), "error should mention the bad value: {error}");
+    }
+
+    #[test]
+    fn scene_layout_manifest_rejects_missing_fields() {
+        // Missing ground field entirely
+        let json = r#"{ "schema_version": 2, "biome": "test", "instances": [] }"#;
+        let error = parse_and_validate_scene_layout_manifest(json)
+            .expect_err("missing ground field should fail");
+        assert!(
+            error.contains("Forest scene boot failed"),
+            "error should include boot-fatal prefix: {error}"
+        );
+    }
+
+    #[test]
+    fn scene_layout_manifest_rejects_empty_biome() {
+        let json = r#"{
+            "schema_version": 2,
+            "biome": "  ",
+            "camera_anchors": [
+                {
+                    "id": "combat_default",
+                    "position": [4.5, 3.2, 8.0],
+                    "target": [0.0, 1.0, 0.0],
+                    "fov_y_degrees": 50.0
+                }
+            ],
+            "combat_arena_extents": {
+                "min": [-9.5, -0.5, -9.5],
+                "max": [9.5, 6.0, 9.5]
+            },
+            "fog_volumes": [
+                {
+                    "id": "arena_fog",
+                    "center": [0.0, 1.5, 0.0],
+                    "extents": [15.0, 4.0, 15.0],
+                    "density": 0.18
+                }
+            ],
+            "lut_profile_id": "gothic_anime_twilight_v1",
+            "ground": { "asset": "forest_ground.glb", "scale": [1.0, 1.0, 1.0] },
+            "instances": []
+        }"#;
+        let error = parse_and_validate_scene_layout_manifest(json)
+            .expect_err("empty biome should fail");
+        assert!(error.contains("biome"), "error should mention biome: {error}");
+    }
+
+    #[test]
+    fn scene_layout_manifest_rejects_empty_ground_asset() {
+        let json = r#"{
+            "schema_version": 2,
+            "biome": "test",
+            "camera_anchors": [
+                {
+                    "id": "combat_default",
+                    "position": [4.5, 3.2, 8.0],
+                    "target": [0.0, 1.0, 0.0],
+                    "fov_y_degrees": 50.0
+                }
+            ],
+            "combat_arena_extents": {
+                "min": [-9.5, -0.5, -9.5],
+                "max": [9.5, 6.0, 9.5]
+            },
+            "fog_volumes": [
+                {
+                    "id": "arena_fog",
+                    "center": [0.0, 1.5, 0.0],
+                    "extents": [15.0, 4.0, 15.0],
+                    "density": 0.18
+                }
+            ],
+            "lut_profile_id": "gothic_anime_twilight_v1",
+            "ground": { "asset": "", "scale": [1.0, 1.0, 1.0] },
+            "instances": []
+        }"#;
+        let error = parse_and_validate_scene_layout_manifest(json)
+            .expect_err("empty ground asset should fail");
+        assert!(
+            error.contains("ground.asset"),
+            "error should mention ground.asset: {error}"
+        );
+    }
+
+    #[test]
+    fn scene_layout_manifest_rejects_empty_instance_asset() {
+        let json = r#"{
+            "schema_version": 2,
+            "biome": "test",
+            "camera_anchors": [
+                {
+                    "id": "combat_default",
+                    "position": [4.5, 3.2, 8.0],
+                    "target": [0.0, 1.0, 0.0],
+                    "fov_y_degrees": 50.0
+                }
+            ],
+            "combat_arena_extents": {
+                "min": [-9.5, -0.5, -9.5],
+                "max": [9.5, 6.0, 9.5]
+            },
+            "fog_volumes": [
+                {
+                    "id": "arena_fog",
+                    "center": [0.0, 1.5, 0.0],
+                    "extents": [15.0, 4.0, 15.0],
+                    "density": 0.18
+                }
+            ],
+            "lut_profile_id": "gothic_anime_twilight_v1",
+            "ground": { "asset": "forest_ground.glb", "scale": [1.0, 1.0, 1.0] },
+            "instances": [
+                { "asset": "", "position": [0.0, 0.0, 0.0], "rotation_y": 0.0, "scale": [1.0, 1.0, 1.0] }
+            ]
+        }"#;
+        let error = parse_and_validate_scene_layout_manifest(json)
+            .expect_err("empty instance asset should fail");
+        assert!(
+            error.contains("instances[0].asset"),
+            "error should mention instance index: {error}"
+        );
+    }
+
+    #[test]
+    fn scene_layout_manifest_rejects_invalid_json() {
+        let error = parse_and_validate_scene_layout_manifest("not json at all {{{")
+            .expect_err("invalid JSON should fail");
+        assert!(
+            error.contains("Forest scene boot failed"),
+            "error should include boot-fatal prefix: {error}"
+        );
+    }
+
+    #[test]
+    fn scene_layout_collect_unique_assets_deduplicates() {
+        let manifest = parse_and_validate_scene_layout_manifest(valid_scene_layout_json())
+            .expect("valid JSON should parse");
+        let unique = collect_unique_scene_assets(&manifest);
+        assert_eq!(unique.len(), 3);
+        // BTreeSet returns sorted order
+        assert_eq!(unique[0], "forest_ground.glb");
+        assert_eq!(unique[1], "forest_rock.glb");
+        assert_eq!(unique[2], "forest_tree_cluster.glb");
+    }
+
+    #[test]
+    fn scene_layout_manifest_zero_instances_is_valid() {
+        let json = r#"{
+            "schema_version": 2,
+            "biome": "empty_test",
+            "camera_anchors": [
+                {
+                    "id": "combat_default",
+                    "position": [4.5, 3.2, 8.0],
+                    "target": [0.0, 1.0, 0.0],
+                    "fov_y_degrees": 50.0
+                }
+            ],
+            "combat_arena_extents": {
+                "min": [-9.5, -0.5, -9.5],
+                "max": [9.5, 6.0, 9.5]
+            },
+            "fog_volumes": [
+                {
+                    "id": "arena_fog",
+                    "center": [0.0, 1.5, 0.0],
+                    "extents": [15.0, 4.0, 15.0],
+                    "density": 0.18
+                }
+            ],
+            "lut_profile_id": "gothic_anime_twilight_v1",
+            "ground": { "asset": "forest_ground.glb", "scale": [1.0, 1.0, 1.0] },
+            "instances": []
+        }"#;
+        let manifest = parse_and_validate_scene_layout_manifest(json)
+            .expect("manifest with zero instances should be valid");
+        assert!(manifest.instances.is_empty());
+    }
+
+    #[test]
+    fn scene_layout_manifest_rejects_empty_camera_anchors() {
+        let json = r#"{
+            "schema_version": 2,
+            "biome": "test",
+            "camera_anchors": [],
+            "combat_arena_extents": {
+                "min": [-9.5, -0.5, -9.5],
+                "max": [9.5, 6.0, 9.5]
+            },
+            "fog_volumes": [
+                {
+                    "id": "arena_fog",
+                    "center": [0.0, 1.5, 0.0],
+                    "extents": [15.0, 4.0, 15.0],
+                    "density": 0.18
+                }
+            ],
+            "lut_profile_id": "gothic_anime_twilight_v1",
+            "ground": { "asset": "forest_ground.glb", "scale": [1.0, 1.0, 1.0] },
+            "instances": []
+        }"#;
+        let error = parse_and_validate_scene_layout_manifest(json)
+            .expect_err("empty camera anchors should fail");
+        assert!(
+            error.contains("camera_anchors"),
+            "error should mention camera_anchors: {error}"
+        );
+    }
+
+    #[test]
+    fn scene_layout_manifest_rejects_invalid_combat_arena_extents() {
+        let json = r#"{
+            "schema_version": 2,
+            "biome": "test",
+            "camera_anchors": [
+                {
+                    "id": "combat_default",
+                    "position": [4.5, 3.2, 8.0],
+                    "target": [0.0, 1.0, 0.0],
+                    "fov_y_degrees": 50.0
+                }
+            ],
+            "combat_arena_extents": {
+                "min": [-9.5, -0.5, -9.5],
+                "max": [-9.5, 6.0, 9.5]
+            },
+            "fog_volumes": [
+                {
+                    "id": "arena_fog",
+                    "center": [0.0, 1.5, 0.0],
+                    "extents": [15.0, 4.0, 15.0],
+                    "density": 0.18
+                }
+            ],
+            "lut_profile_id": "gothic_anime_twilight_v1",
+            "ground": { "asset": "forest_ground.glb", "scale": [1.0, 1.0, 1.0] },
+            "instances": []
+        }"#;
+        let error = parse_and_validate_scene_layout_manifest(json)
+            .expect_err("invalid combat arena extents should fail");
+        assert!(
+            error.contains("combat_arena_extents"),
+            "error should mention combat_arena_extents: {error}"
+        );
+    }
+
+    #[test]
+    fn scene_layout_manifest_rejects_empty_fog_volumes() {
+        let json = r#"{
+            "schema_version": 2,
+            "biome": "test",
+            "camera_anchors": [
+                {
+                    "id": "combat_default",
+                    "position": [4.5, 3.2, 8.0],
+                    "target": [0.0, 1.0, 0.0],
+                    "fov_y_degrees": 50.0
+                }
+            ],
+            "combat_arena_extents": {
+                "min": [-9.5, -0.5, -9.5],
+                "max": [9.5, 6.0, 9.5]
+            },
+            "fog_volumes": [],
+            "lut_profile_id": "gothic_anime_twilight_v1",
+            "ground": { "asset": "forest_ground.glb", "scale": [1.0, 1.0, 1.0] },
+            "instances": []
+        }"#;
+        let error = parse_and_validate_scene_layout_manifest(json)
+            .expect_err("empty fog volumes should fail");
+        assert!(
+            error.contains("fog_volumes"),
+            "error should mention fog_volumes: {error}"
+        );
+    }
+
+    #[test]
+    fn scene_layout_manifest_rejects_empty_lut_profile_id() {
+        let json = r#"{
+            "schema_version": 2,
+            "biome": "test",
+            "camera_anchors": [
+                {
+                    "id": "combat_default",
+                    "position": [4.5, 3.2, 8.0],
+                    "target": [0.0, 1.0, 0.0],
+                    "fov_y_degrees": 50.0
+                }
+            ],
+            "combat_arena_extents": {
+                "min": [-9.5, -0.5, -9.5],
+                "max": [9.5, 6.0, 9.5]
+            },
+            "fog_volumes": [
+                {
+                    "id": "arena_fog",
+                    "center": [0.0, 1.5, 0.0],
+                    "extents": [15.0, 4.0, 15.0],
+                    "density": 0.18
+                }
+            ],
+            "lut_profile_id": " ",
+            "ground": { "asset": "forest_ground.glb", "scale": [1.0, 1.0, 1.0] },
+            "instances": []
+        }"#;
+        let error = parse_and_validate_scene_layout_manifest(json)
+            .expect_err("empty lut profile id should fail");
+        assert!(
+            error.contains("lut_profile_id"),
+            "error should mention lut_profile_id: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_glb_rejects_corrupt_data() {
+        let error = super::validate_glb_asset("test_corrupt.glb", b"not a valid glb")
+            .expect_err("corrupt GLB should fail");
+        assert!(
+            error.contains("Forest scene boot failed"),
+            "error should include boot-fatal prefix: {error}"
+        );
+        assert!(
+            error.contains("test_corrupt.glb"),
+            "error should name the asset: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_glb_rejects_empty_data() {
+        let error = super::validate_glb_asset("empty.glb", &[])
+            .expect_err("empty GLB should fail");
+        assert!(error.contains("empty.glb"), "error should name the asset: {error}");
     }
 }

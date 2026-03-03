@@ -116,8 +116,9 @@ cat > "${REVIEW_REPORT_PATH}" <<'REPORT'
 1. Validate WL-00 final gate contract hardening and fail-fast lane dependency enforcement.
 2. Validate WL-11 CLI pass/fail gate matrix generation and negative-case coverage.
 3. Verify anti-shortcut scanner blocks legacy schema IDs in accepted paths.
-4. Verify final gate rejects success when required report sections are missing.
-5. Verify independent review artifact requirement is hard-enforced.
+4. Verify AAA forest smoke/action payload contracts are enforced by final gate.
+5. Verify final gate rejects success when required report sections are missing.
+6. Verify independent review artifact requirement is hard-enforced.
 
 ## Findings (P0-P2)
 
@@ -131,7 +132,7 @@ cat > "${REVIEW_REPORT_PATH}" <<'REPORT'
 2. `cargo test -p wrela --test cli cli_webgpu_final_gate_requires_independent_review_artifact -- --exact --nocapture`
 3. `cargo test -p wrela --test cli cli_webgpu_final_gate_rejects_legacy_schema_tokens_in_accepted_paths -- --exact --nocapture`
 4. `cargo test -p wrela --test cli cli_webgpu_final_gate_passes_with_complete_lane_artifacts -- --exact --nocapture`
-5. `scripts/webgpu_engine_pass/final_gate.sh`
+5. `scripts/webgpu_engine_pass/final_gate.sh` (including AAA forest smoke contract checks)
 REPORT
 
 node - "${CLI_GATE_MATRIX_PATH}" "${REVIEW_OUTCOME_PATH}" <<'NODE'

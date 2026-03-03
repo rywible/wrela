@@ -45,7 +45,9 @@ pub fn lower_root_body(root: ast::Root) -> Option<Body> {
             | ast::Stmt::EnumDef(_)
             | ast::Stmt::UseStmt(_)
             | ast::Stmt::PrivateBlock(_)
-            | ast::Stmt::ShaderDef(_) => {}
+            | ast::Stmt::ShaderDef(_)
+            | ast::Stmt::AssetDecl(_)
+            | ast::Stmt::SceneDecl(_) => {}
             other => {
                 let s = body_ctx.lower_stmt(other);
                 body_ctx.body.root_stmts.push(s);
@@ -79,6 +81,8 @@ impl Module {
             provenance_ledgers: Vec::new(),
             quality_gates: Vec::new(),
             shader_functions: Vec::new(),
+            asset_declarations: Vec::new(),
+            scene_declarations: Vec::new(),
         }
     }
 }
@@ -335,6 +339,14 @@ impl LoweringContext {
                                 let en = self.lower_enum(e);
                                 self.module.enums.alloc(en);
                             }
+                            ast::Stmt::AssetDecl(d) => {
+                                let asset = self.lower_asset_decl(d);
+                                self.module.asset_declarations.push(asset);
+                            }
+                            ast::Stmt::SceneDecl(d) => {
+                                let scene = self.lower_scene_decl(d);
+                                self.module.scene_declarations.push(scene);
+                            }
                             _ => {}
                         }
                     }
@@ -351,6 +363,14 @@ impl LoweringContext {
                 ast::Stmt::ShaderDef(s) => {
                     let shader = self.lower_shader(s);
                     self.module.shader_functions.push(shader);
+                }
+                ast::Stmt::AssetDecl(d) => {
+                    let asset = self.lower_asset_decl(d);
+                    self.module.asset_declarations.push(asset);
+                }
+                ast::Stmt::SceneDecl(d) => {
+                    let scene = self.lower_scene_decl(d);
+                    self.module.scene_declarations.push(scene);
                 }
                 _ => {
                     // Top-level executable statements are rejected; entrypoint is `run`.
@@ -378,6 +398,143 @@ impl LoweringContext {
             params,
             ret_type,
             body: Some(body_ctx.body),
+        }
+    }
+
+    fn lower_asset_decl(&mut self, d: ast::AssetDecl) -> HirAssetDecl {
+        let name = d.name().map(|t| SmolStr::new(t.text())).unwrap_or_default();
+        let kind_str = d
+            .kind_clause()
+            .and_then(|c| c.value())
+            .map(|t| t.text().to_string())
+            .unwrap_or_default();
+        let kind = match kind_str.as_str() {
+            "mesh" => AssetDeclKind::Mesh,
+            "texture" => AssetDeclKind::Texture,
+            "audio" => AssetDeclKind::Audio,
+            _ => AssetDeclKind::Mesh,
+        };
+        let prompt = d
+            .prompt_clause()
+            .and_then(|c| c.value())
+            .map(|t| SmolStr::new(t.text()))
+            .unwrap_or_default();
+        let style = d
+            .style_clause()
+            .and_then(|c| c.value())
+            .map(|t| SmolStr::new(t.text()));
+        let negative = d
+            .negative_clause()
+            .and_then(|c| c.value())
+            .map(|t| SmolStr::new(t.text()));
+        let lod_budget = d
+            .lod_budget_clause()
+            .and_then(|c| c.value())
+            .and_then(|t| t.text().parse::<i64>().ok());
+        HirAssetDecl {
+            name,
+            kind,
+            prompt,
+            style,
+            negative,
+            lod_budget,
+            span: d.syntax().text_range(),
+        }
+    }
+
+    fn lower_scene_decl(&mut self, d: ast::SceneDecl) -> HirSceneDecl {
+        let name = d.name().map(|t| SmolStr::new(t.text())).unwrap_or_default();
+        let entities: Vec<HirSceneEntity> = d
+            .entity_blocks()
+            .map(|eb| {
+                let entity_name = eb
+                    .name()
+                    .map(|t| SmolStr::new(t.text()))
+                    .unwrap_or_default();
+                let mesh_asset = eb
+                    .mesh_clause()
+                    .and_then(|c| c.value())
+                    .map(|t| SmolStr::new(t.text()))
+                    .unwrap_or_default();
+                let position = eb
+                    .position_clause()
+                    .map(|c| c.values())
+                    .unwrap_or([0, 0, 0]);
+                let rotation = eb
+                    .rotation_clause()
+                    .map(|c| c.values())
+                    .unwrap_or([0, 0, 0]);
+                let scale = eb
+                    .scale_clause()
+                    .map(|c| c.values())
+                    .unwrap_or([1000, 1000, 1000]);
+                HirSceneEntity {
+                    name: entity_name,
+                    mesh_asset,
+                    position,
+                    rotation,
+                    scale,
+                }
+            })
+            .collect();
+
+        let lighting = d.lighting_block().map(|lb| {
+            let sun_direction = lb
+                .sun_direction_clause()
+                .map(|c| c.values())
+                .unwrap_or([0, -1000, 0]);
+            let sun_color = lb
+                .sun_color_clause()
+                .map(|c| c.values())
+                .unwrap_or([255, 255, 255]);
+            let sun_intensity = lb
+                .sun_intensity_clause()
+                .and_then(|c| c.value())
+                .unwrap_or(1000);
+            let ambient_color = lb
+                .ambient_color_clause()
+                .map(|c| c.values())
+                .unwrap_or([50, 50, 50]);
+            let ambient_intensity = lb
+                .ambient_intensity_clause()
+                .and_then(|c| c.value())
+                .unwrap_or(500);
+            HirSceneLighting {
+                sun_direction,
+                sun_color,
+                sun_intensity,
+                ambient_color,
+                ambient_intensity,
+            }
+        });
+
+        let camera = d.camera_block().map(|cb| {
+            let mode = cb
+                .mode_clause()
+                .and_then(|c| c.value())
+                .map(|t| SmolStr::new(t.text()))
+                .unwrap_or_else(|| SmolStr::new("orbit"));
+            let target = cb
+                .target_clause()
+                .and_then(|c| c.value())
+                .map(|t| SmolStr::new(t.text()))
+                .unwrap_or_default();
+            let distance = cb.distance_clause().and_then(|c| c.value()).unwrap_or(5000);
+            let pitch = cb.pitch_clause().and_then(|c| c.value()).unwrap_or(0);
+            HirSceneCamera {
+                mode,
+                target,
+                distance,
+                pitch,
+            }
+        });
+
+        HirSceneDecl {
+            name,
+            entities,
+            lighting,
+            camera,
+            span: d.syntax().text_range(),
         }
     }
 
@@ -3343,6 +3500,104 @@ character_spec RootCharacter { id root_character profile fast }
         assert_eq!(
             module.asset_build_graphs[1].declaration.name,
             "RootCharacter"
+        );
+    }
+
+    #[test]
+    fn test_hir_asset_decl_lowers() {
+        let text = r#"asset keyblade_crystal {
+    kind: mesh
+    prompt: "crystalline keyblade with blue energy veins"
+    style: "anime_fantasy"
+    lod_budget: 10000
+    negative: "blurry, low-poly"
+}"#;
+        let node = parse(text);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        assert_eq!(module.asset_declarations.len(), 1);
+        let asset = &module.asset_declarations[0];
+        assert_eq!(asset.name, "keyblade_crystal");
+        assert_eq!(asset.kind, AssetDeclKind::Mesh);
+        assert_eq!(asset.prompt, "crystalline keyblade with blue energy veins");
+        assert_eq!(asset.style.as_deref(), Some("anime_fantasy"));
+        assert_eq!(asset.negative.as_deref(), Some("blurry, low-poly"));
+        assert_eq!(asset.lod_budget, Some(10000));
+    }
+
+    #[test]
+    fn test_hir_scene_entity_references_asset() {
+        let text = r#"asset keyblade_crystal {
+    kind: mesh
+    prompt: "crystalline keyblade"
+}
+
+scene preview_arena {
+    entity player_weapon {
+        mesh: keyblade_crystal
+        position: vec3(0, 0, 0)
+        rotation: vec3(0, 1000, 0)
+        scale: vec3(1000, 1000, 1000)
+    }
+}"#;
+        let node = parse(text);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        assert_eq!(module.asset_declarations.len(), 1);
+        assert_eq!(module.scene_declarations.len(), 1);
+        let scene = &module.scene_declarations[0];
+        assert_eq!(scene.name, "preview_arena");
+        assert_eq!(scene.entities.len(), 1);
+        assert_eq!(scene.entities[0].name, "player_weapon");
+        assert_eq!(scene.entities[0].mesh_asset, "keyblade_crystal");
+    }
+
+    #[test]
+    fn test_hir_scene_invalid_asset_ref() {
+        let text = r#"scene test_scene {
+    entity item {
+        mesh: nonexistent_asset
+        position: vec3(0, 0, 0)
+    }
+}"#;
+        let node = parse(text);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let diags = crate::hir::semantic::check_module(&module);
+        assert!(
+            diags.errors.iter().any(|e| {
+                let msg = format!("{}", e);
+                msg.contains("nonexistent_asset")
+            }),
+            "Expected error about nonexistent_asset, got: {:?}",
+            diags.errors
+        );
+    }
+
+    #[test]
+    fn test_hir_scene_wrong_asset_kind() {
+        let text = r#"asset my_sound {
+    kind: audio
+    prompt: "ambient forest sounds"
+}
+
+scene test_scene {
+    entity item {
+        mesh: my_sound
+        position: vec3(0, 0, 0)
+    }
+}"#;
+        let node = parse(text);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let diags = crate::hir::semantic::check_module(&module);
+        assert!(
+            diags.errors.iter().any(|e| {
+                let msg = format!("{}", e);
+                msg.contains("my_sound") && msg.contains("not a mesh")
+            }),
+            "Expected error about my_sound not being a mesh, got: {:?}",
+            diags.errors
         );
     }
 }

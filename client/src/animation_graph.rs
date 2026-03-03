@@ -692,7 +692,12 @@ mod blender_tests {
         AnimationChannel, AnimationClip, ChannelProperty, Keyframe, KeyframeValue,
     };
 
-    fn make_translation_clip(name: &str, duration: f32, start: [f32; 3], end: [f32; 3]) -> AnimationClip {
+    fn make_translation_clip(
+        name: &str,
+        duration: f32,
+        start: [f32; 3],
+        end: [f32; 3],
+    ) -> AnimationClip {
         AnimationClip {
             name: name.to_string(),
             duration_secs: duration,
@@ -700,8 +705,14 @@ mod blender_tests {
                 joint_index: 0,
                 property: ChannelProperty::Translation,
                 keyframes: vec![
-                    Keyframe { time: 0.0, value: KeyframeValue::Vec3(start) },
-                    Keyframe { time: duration, value: KeyframeValue::Vec3(end) },
+                    Keyframe {
+                        time: 0.0,
+                        value: KeyframeValue::Vec3(start),
+                    },
+                    Keyframe {
+                        time: duration,
+                        value: KeyframeValue::Vec3(end),
+                    },
                 ],
             }],
         }
@@ -719,9 +730,12 @@ mod blender_tests {
 
     #[test]
     fn blender_plays_single_clip_without_transition() {
-        let clips = vec![
-            make_translation_clip("idle", 1.0, [0.0, 0.0, 0.0], [10.0, 0.0, 0.0]),
-        ];
+        let clips = vec![make_translation_clip(
+            "idle",
+            1.0,
+            [0.0, 0.0, 0.0],
+            [10.0, 0.0, 0.0],
+        )];
         let mut blender = AnimationBlender::new();
         blender.set_state_mapping(0, 0);
         blender.transition_to_state(0);
@@ -805,9 +819,12 @@ mod blender_tests {
 
     #[test]
     fn blender_ignores_unmapped_state() {
-        let clips = vec![
-            make_translation_clip("idle", 1.0, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
-        ];
+        let clips = vec![make_translation_clip(
+            "idle",
+            1.0,
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+        )];
         let mut blender = AnimationBlender::new();
         blender.set_state_mapping(0, 0);
 
@@ -835,7 +852,10 @@ mod blender_tests {
 
         // Transition to the same state again
         blender.transition_to_state(0);
-        assert!(!blender.is_blending(), "same state should not trigger blend");
+        assert!(
+            !blender.is_blending(),
+            "same state should not trigger blend"
+        );
     }
 
     #[test]
@@ -867,9 +887,12 @@ mod blender_tests {
 
     #[test]
     fn blender_loops_clip_correctly() {
-        let clips = vec![
-            make_translation_clip("short", 0.5, [0.0, 0.0, 0.0], [10.0, 0.0, 0.0]),
-        ];
+        let clips = vec![make_translation_clip(
+            "short",
+            0.5,
+            [0.0, 0.0, 0.0],
+            [10.0, 0.0, 0.0],
+        )];
         let mut blender = AnimationBlender::new();
         blender.set_state_mapping(0, 0);
         blender.transition_to_state(0);
@@ -919,15 +942,27 @@ mod blender_tests {
         }];
 
         let at_zero = super::blend_poses(&a, &b, 0.0);
-        assert!(approx_eq_vec3(&at_zero[0].translation, &[0.0, 0.0, 0.0], 1e-5));
+        assert!(approx_eq_vec3(
+            &at_zero[0].translation,
+            &[0.0, 0.0, 0.0],
+            1e-5
+        ));
         assert!(approx_eq_vec3(&at_zero[0].scale, &[1.0, 1.0, 1.0], 1e-5));
 
         let at_one = super::blend_poses(&a, &b, 1.0);
-        assert!(approx_eq_vec3(&at_one[0].translation, &[10.0, 20.0, 30.0], 1e-5));
+        assert!(approx_eq_vec3(
+            &at_one[0].translation,
+            &[10.0, 20.0, 30.0],
+            1e-5
+        ));
         assert!(approx_eq_vec3(&at_one[0].scale, &[2.0, 2.0, 2.0], 1e-5));
 
         let at_half = super::blend_poses(&a, &b, 0.5);
-        assert!(approx_eq_vec3(&at_half[0].translation, &[5.0, 10.0, 15.0], 1e-5));
+        assert!(approx_eq_vec3(
+            &at_half[0].translation,
+            &[5.0, 10.0, 15.0],
+            1e-5
+        ));
         assert!(approx_eq_vec3(&at_half[0].scale, &[1.5, 1.5, 1.5], 1e-5));
     }
 }

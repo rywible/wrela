@@ -9,10 +9,10 @@ const MAX_SHADOW_INSTANCES: usize = 1024;
 const MODEL_ENTRY_SIZE: u64 = 128;
 
 /// Number of shadow cascades.
-pub const CASCADE_COUNT: usize = 2;
+pub const CASCADE_COUNT: usize = 3;
 
 /// Resolution of each cascade in the atlas (width = height per cascade).
-pub const CASCADE_RESOLUTION: u32 = 1024;
+pub const CASCADE_RESOLUTION: u32 = 2048;
 
 /// Total atlas width = CASCADE_RESOLUTION * CASCADE_COUNT, height = CASCADE_RESOLUTION.
 pub const SHADOW_ATLAS_WIDTH: u32 = CASCADE_RESOLUTION * CASCADE_COUNT as u32;
@@ -122,11 +122,7 @@ fn mat4_transform_vec4(m: Mat4, v: [f32; 4]) -> [f32; 4] {
 
 /// Compute a sub-frustum for a cascade between `near_t` and `far_t` (0..1 along the full
 /// frustum depth).  Returns 8 world-space corners.
-fn cascade_sub_frustum(
-    full_corners: &[[f32; 3]; 8],
-    near_t: f32,
-    far_t: f32,
-) -> [[f32; 3]; 8] {
+fn cascade_sub_frustum(full_corners: &[[f32; 3]; 8], near_t: f32, far_t: f32) -> [[f32; 3]; 8] {
     let mut sub = [[0.0f32; 3]; 8];
     // near corners (indices 0..4) are the full frustum near plane
     // far corners (indices 4..8) are the full frustum far plane
@@ -150,10 +146,9 @@ fn cascade_sub_frustum(
 
 /// Build a light-space view matrix looking along `light_dir` centred on `center`.
 fn light_view_matrix(light_dir: [f32; 3], center: [f32; 3]) -> Mat4 {
-    let len = (light_dir[0] * light_dir[0]
-        + light_dir[1] * light_dir[1]
-        + light_dir[2] * light_dir[2])
-        .sqrt();
+    let len =
+        (light_dir[0] * light_dir[0] + light_dir[1] * light_dir[1] + light_dir[2] * light_dir[2])
+            .sqrt();
     if len < 1e-10 {
         return mat4_identity();
     }
@@ -171,10 +166,7 @@ fn light_view_matrix(light_dir: [f32; 3], center: [f32; 3]) -> Mat4 {
 
 /// Compute the light-space view-projection matrix for one cascade.
 /// Applies texel snapping to prevent shimmer.
-pub fn compute_cascade_matrix(
-    cascade_corners: &[[f32; 3]; 8],
-    light_dir: [f32; 3],
-) -> Mat4 {
+pub fn compute_cascade_matrix(cascade_corners: &[[f32; 3]; 8], light_dir: [f32; 3]) -> Mat4 {
     // Compute frustum center
     let mut center = [0.0f32; 3];
     for c in cascade_corners {
@@ -254,10 +246,17 @@ pub fn update_shadow_data(
     data
 }
 
+/// Size of the shadow LightUniform buffer: mat4x4 (64) + wind_params vec4 (16) + wind_dir vec4 (16) = 96 bytes.
+pub const SHADOW_LIGHT_UNIFORM_SIZE: u64 = 96;
+
 /// WGSL source for the depth-only shadow pass vertex shader.
 pub const SHADOW_DEPTH_SHADER: &str = r#"
 struct LightUniform {
     light_view_proj: mat4x4<f32>,
+    // Wind parameters: x = time, y = strength, z = turbulence, w = unused
+    wind_params: vec4<f32>,
+    // Wind direction: xyz = direction, w = unused
+    wind_dir: vec4<f32>,
 };
 
 struct ModelEntry {
@@ -275,8 +274,47 @@ struct VertexInput {
     @location(2) uv: vec2<f32>,
     @location(3) joint_indices: vec4<u32>,
     @location(4) joint_weights: vec4<f32>,
+    @location(5) vertex_color: vec4<f32>,
+    @location(6) tangent: vec4<f32>,
     @builtin(instance_index) instance_id: u32,
 };
+
+// Wind displacement function (must match main shader exactly for shadow consistency)
+fn compute_wind_displacement(pos: vec3<f32>, wind_color: vec4<f32>, time: f32, wind_direction: vec3<f32>, strength: f32, turbulence: f32) -> vec3<f32> {
+    let trunk_weight = wind_color.r;
+    let branch_weight = wind_color.g;
+    let leaf_weight = wind_color.b;
+    let phase_offset = wind_color.a;
+
+    // If no wind weights, skip entirely
+    let total_weight = trunk_weight + branch_weight + leaf_weight;
+    if (total_weight < 0.001) {
+        return vec3<f32>(0.0);
+    }
+
+    // Gust cycle: slow sine modulation (period ~8 seconds)
+    let gust = sin(time * 0.7854) * 0.5 + 0.5;
+    let effective_strength = strength * (0.6 + 0.4 * gust);
+
+    // Trunk sway: slow, large displacement along wind direction
+    let trunk_phase = time * 1.2 + phase_offset * 6.283;
+    let trunk_sway = wind_direction * sin(trunk_phase) * trunk_weight * effective_strength;
+
+    // Branch oscillation: medium frequency, perpendicular-ish
+    let branch_phase = time * 3.5 + phase_offset * 12.566;
+    let branch_perp = normalize(vec3<f32>(-wind_direction.z, 0.0, wind_direction.x));
+    let branch_osc = (wind_direction * sin(branch_phase) * 0.5 + branch_perp * cos(branch_phase * 1.3) * 0.3) * branch_weight * effective_strength * 0.5;
+
+    // Leaf flutter: high frequency, small chaotic displacement
+    let leaf_phase = time * 8.0 + phase_offset * 25.13;
+    let leaf_disp = vec3<f32>(
+        sin(leaf_phase * 1.1 + pos.x * 2.0) * 0.3,
+        sin(leaf_phase * 1.7 + pos.y * 3.0) * 0.15,
+        cos(leaf_phase * 0.9 + pos.z * 2.5) * 0.3
+    ) * leaf_weight * effective_strength * turbulence * 0.3;
+
+    return trunk_sway + branch_osc + leaf_disp;
+}
 
 @vertex
 fn vs_shadow(in: VertexInput) -> @builtin(position) vec4<f32> {
@@ -292,6 +330,18 @@ fn vs_shadow(in: VertexInput) -> @builtin(position) vec4<f32> {
     } else {
         skinned_pos = vec4<f32>(in.position, 1.0);
     }
+
+    // Apply wind displacement (must match main shader for shadow consistency)
+    let wind_offset = compute_wind_displacement(
+        skinned_pos.xyz,
+        in.vertex_color,
+        light.wind_params.x,
+        light.wind_dir.xyz,
+        light.wind_params.y,
+        light.wind_params.z
+    );
+    skinned_pos = vec4<f32>(skinned_pos.xyz + wind_offset, skinned_pos.w);
+
     let world_pos = model_matrices[in.instance_id].model * skinned_pos;
     return light.light_view_proj * world_pos;
 }
@@ -315,10 +365,7 @@ pub struct ShadowSystem {
 
 #[cfg(target_arch = "wasm32")]
 impl ShadowSystem {
-    pub fn new(
-        device: &wgpu::Device,
-        model_bind_group_layout: &wgpu::BindGroupLayout,
-    ) -> Self {
+    pub fn new(device: &wgpu::Device, model_bind_group_layout: &wgpu::BindGroupLayout) -> Self {
         use std::borrow::Cow;
 
         // Create shadow atlas texture
@@ -333,8 +380,7 @@ impl ShadowSystem {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Depth32Float,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
 
@@ -397,10 +443,8 @@ impl ShadowSystem {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
                             min_binding_size: Some(
-                                std::num::NonZeroU64::new(
-                                    std::mem::size_of::<ShadowData>() as u64,
-                                )
-                                .expect("ShadowData has non-zero size"),
+                                std::num::NonZeroU64::new(std::mem::size_of::<ShadowData>() as u64)
+                                    .expect("ShadowData has non-zero size"),
                             ),
                         },
                         count: None,
@@ -427,10 +471,10 @@ impl ShadowSystem {
             ],
         });
 
-        // Light uniform buffer for shadow depth pass (one mat4 per draw)
+        // Light uniform buffer for shadow depth pass (mat4 + wind_params + wind_dir)
         let light_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("wrela-shadow-light-uniform"),
-            size: 64, // mat4x4<f32> = 64 bytes
+            size: SHADOW_LIGHT_UNIFORM_SIZE,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -445,7 +489,8 @@ impl ShadowSystem {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
                         min_binding_size: Some(
-                            std::num::NonZeroU64::new(64).expect("64 > 0"),
+                            std::num::NonZeroU64::new(SHADOW_LIGHT_UNIFORM_SIZE)
+                                .expect("SHADOW_LIGHT_UNIFORM_SIZE > 0"),
                         ),
                     },
                     count: None,
@@ -475,7 +520,7 @@ impl ShadowSystem {
         });
 
         let vertex_buffer_layout = wgpu::VertexBufferLayout {
-            array_stride: 56,
+            array_stride: 88,
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &[
                 wgpu::VertexAttribute {
@@ -501,6 +546,16 @@ impl ShadowSystem {
                 wgpu::VertexAttribute {
                     offset: 40,
                     shader_location: 4,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 56,
+                    shader_location: 5,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 72,
+                    shader_location: 6,
                     format: wgpu::VertexFormat::Float32x4,
                 },
             ],
@@ -578,6 +633,8 @@ impl ShadowSystem {
     /// `meshes` is the GPU mesh array.
     /// `model_uniform_buffer` is the storage buffer for model matrices.
     /// `model_bind_group` is the bind group for model storage (group 1).
+    /// `wind_params` = [time, strength, turbulence, 0.0].
+    /// `wind_dir` = [dir_x, dir_y, dir_z, 0.0].
     pub fn encode_shadow_passes(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -586,6 +643,8 @@ impl ShadowSystem {
         mesh_instances: &[(usize, [[f32; 4]; 4])],
         model_uniform_buffer: &wgpu::Buffer,
         model_bind_group: &wgpu::BindGroup,
+        wind_params: [f32; 4],
+        wind_dir: [f32; 4],
     ) {
         let total = mesh_instances.len().min(MAX_SHADOW_INSTANCES);
 
@@ -613,12 +672,24 @@ impl ShadowSystem {
         }
 
         for cascade in 0..CASCADE_COUNT {
-            // Upload the light view-proj for this cascade
+            // Upload the light view-proj + wind parameters for this cascade
             let light_vp = self.shadow_data.light_view_proj[cascade];
             queue.write_buffer(
                 &self.light_uniform_buffer,
                 0,
                 bytemuck::cast_slice(&light_vp),
+            );
+            // Upload wind_params at offset 64 (after mat4)
+            queue.write_buffer(
+                &self.light_uniform_buffer,
+                64,
+                bytemuck::cast_slice(&wind_params),
+            );
+            // Upload wind_dir at offset 80
+            queue.write_buffer(
+                &self.light_uniform_buffer,
+                80,
+                bytemuck::cast_slice(&wind_dir),
             );
 
             let viewport_x = (cascade as u32 * CASCADE_RESOLUTION) as f32;
@@ -673,7 +744,11 @@ impl ShadowSystem {
 
                     pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
                     pass.set_index_buffer(mesh.index_buffer.slice(..), mesh.index_format);
-                    pass.draw_indexed(0..mesh.index_count, 0, first_instance..first_instance + count);
+                    pass.draw_indexed(
+                        0..mesh.index_count,
+                        0,
+                        first_instance..first_instance + count,
+                    );
 
                     batch_start = batch_end;
                 }
@@ -731,7 +806,7 @@ mod tests {
 
     #[test]
     fn shadow_data_size_is_correct() {
-        // 2 * mat4 (64 bytes each) + vec4 (16 bytes) + vec4 (16 bytes) = 160 bytes
+        // CASCADE_COUNT * mat4 (64 bytes each) + vec4 (16 bytes) + vec4 (16 bytes)
         let expected = CASCADE_COUNT * 64 + 16 + 16;
         assert_eq!(std::mem::size_of::<ShadowData>(), expected);
     }
@@ -765,16 +840,29 @@ mod tests {
 
     #[test]
     fn update_shadow_data_fills_cascade_splits() {
-        let view = crate::camera_math::mat4_look_at([0.0, 5.0, 10.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
-        let proj = crate::camera_math::mat4_perspective(std::f32::consts::FRAC_PI_4, 16.0 / 9.0, 0.1, 500.0);
+        let view =
+            crate::camera_math::mat4_look_at([0.0, 5.0, 10.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+        let proj = crate::camera_math::mat4_perspective(
+            std::f32::consts::FRAC_PI_4,
+            16.0 / 9.0,
+            0.1,
+            500.0,
+        );
         let light_dir = [0.3, -0.8, 0.5];
 
         let data = update_shadow_data(view, proj, light_dir, 0.1, 500.0);
 
-        // Splits should be populated
+        // Splits should be populated and monotonically increasing
         assert!(data.cascade_splits[0] > 0.1);
         assert!(data.cascade_splits[0] < 500.0);
-        assert!(data.cascade_splits[1] > data.cascade_splits[0] || (data.cascade_splits[1] - 500.0).abs() < 1.0);
+        for i in 1..CASCADE_COUNT {
+            assert!(
+                data.cascade_splits[i] > data.cascade_splits[i - 1]
+                    || (data.cascade_splits[i] - 500.0).abs() < 1.0,
+                "cascade_splits[{i}] should be > cascade_splits[{}]",
+                i - 1
+            );
+        }
 
         // Light view proj matrices should be non-zero
         for cascade in 0..CASCADE_COUNT {
@@ -786,7 +874,10 @@ mod tests {
                     }
                 }
             }
-            assert!(nonzero, "cascade {cascade} light_view_proj should be non-zero");
+            assert!(
+                nonzero,
+                "cascade {cascade} light_view_proj should be non-zero"
+            );
         }
     }
 }

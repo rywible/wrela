@@ -16,6 +16,8 @@ pub enum Token {
     Resource,
     #[strum(serialize = "event")]
     Event,
+    #[strum(serialize = "asset")]
+    Asset,
     #[strum(serialize = "scene")]
     Scene,
     #[strum(serialize = "theme")]
@@ -278,6 +280,7 @@ impl Token {
                 | Token::Component
                 | Token::Resource
                 | Token::Event
+                | Token::Asset
                 | Token::Scene
                 | Token::Theme
                 | Token::Node

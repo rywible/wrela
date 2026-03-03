@@ -70,10 +70,7 @@ enum HeapData {
     String(String),
     List(Vec<i64>),
     Map(HashMap<i64, i64>),
-    ClassInstance {
-        type_id: i64,
-        fields: Vec<i64>,
-    },
+    ClassInstance { type_id: i64, fields: Vec<i64> },
     ResultOk(i64),
     ResultErr(i64),
     Range(i64, i64),
@@ -650,12 +647,7 @@ pub fn wr_class_new(type_id: i64, _names_ptr: i32, _names_len_ptr: i32, count: i
 }
 
 /// Get a field slot from a class instance.
-pub fn wr_class_get_slot(
-    instance: i64,
-    _name_ptr: i32,
-    _name_len: i32,
-    slot: i32,
-) -> i64 {
+pub fn wr_class_get_slot(instance: i64, _name_ptr: i32, _name_len: i32, slot: i32) -> i64 {
     let slot_idx = slot as usize;
     with_heap(|heap| match heap.get(instance) {
         Some(obj) => match &obj.data {
@@ -669,20 +661,11 @@ pub fn wr_class_get_slot(
 }
 
 /// Set a field slot on a class instance.
-pub fn wr_class_set_slot(
-    instance: i64,
-    _name_ptr: i32,
-    _name_len: i32,
-    slot: i32,
-    value: i64,
-) {
+pub fn wr_class_set_slot(instance: i64, _name_ptr: i32, _name_len: i32, slot: i32, value: i64) {
     let slot_idx = slot as usize;
     with_heap(|heap| {
         if let Some(obj) = heap.get_mut(instance) {
-            if let HeapData::ClassInstance {
-                ref mut fields, ..
-            } = obj.data
-            {
+            if let HeapData::ClassInstance { ref mut fields, .. } = obj.data {
                 if slot_idx < fields.len() {
                     fields[slot_idx] = value;
                 }
@@ -703,7 +686,7 @@ pub fn wr_type_id(value: i64) -> i64 {
         t if t == NANBOX_TAG_IMM => {
             let payload = v & NANBOX_PAYLOAD_MASK;
             match payload {
-                p if p == NANBOX_IMM_NIL => nanbox_int(0),   // Nil type
+                p if p == NANBOX_IMM_NIL => nanbox_int(0), // Nil type
                 p if p == NANBOX_IMM_TRUE || p == NANBOX_IMM_FALSE => nanbox_int(2), // Boolean type
                 _ => nanbox_int(0),
             }
@@ -755,13 +738,7 @@ pub fn wr_register_method(_class_id: i64, _method_id: i64, _func_ptr: i32) {}
 pub fn wr_register_class(_name_ptr: i32, _name_len: i32, _class_id: i64) {}
 
 /// Register a method name (stub).
-pub fn wr_register_method_name(
-    _name_ptr: i32,
-    _name_len: i32,
-    _class_id: i64,
-    _method_id: i64,
-) {
-}
+pub fn wr_register_method_name(_name_ptr: i32, _name_len: i32, _class_id: i64, _method_id: i64) {}
 
 /// Runtime configure (stub).
 pub fn wr_runtime_configure(_config: i64) -> i64 {
@@ -880,27 +857,12 @@ pub fn wr_actor_send(_actor: i64, _method_id: i64, _args_ptr: i32, _args_len: i3
 }
 
 /// Actor spawn (stub for WASM).
-pub fn wr_actor_spawn(
-    _a1: i64,
-    _a2: i64,
-    _a3: i64,
-    _a4: i64,
-    _a5: i64,
-    _a6: i64,
-    _a7: i64,
-) -> i64 {
+pub fn wr_actor_spawn(_a1: i64, _a2: i64, _a3: i64, _a4: i64, _a5: i64, _a6: i64, _a7: i64) -> i64 {
     nanbox_nil()
 }
 
 /// Pool new (stub for WASM).
-pub fn wr_pool_new(
-    _a1: i64,
-    _a2: i64,
-    _a3: i64,
-    _a4: i64,
-    _a5: i64,
-    _a6: i64,
-) -> i64 {
+pub fn wr_pool_new(_a1: i64, _a2: i64, _a3: i64, _a4: i64, _a5: i64, _a6: i64) -> i64 {
     nanbox_nil()
 }
 
@@ -910,7 +872,17 @@ mod tests {
 
     #[test]
     fn nanbox_int_roundtrip() {
-        for v in [0i64, 1, -1, 42, -42, 1000, -1000, NANBOX_INT_MAX, NANBOX_INT_MIN] {
+        for v in [
+            0i64,
+            1,
+            -1,
+            42,
+            -42,
+            1000,
+            -1000,
+            NANBOX_INT_MAX,
+            NANBOX_INT_MIN,
+        ] {
             let boxed = nanbox_int(v);
             let unboxed = unbox_int(boxed);
             assert_eq!(unboxed, v, "roundtrip failed for {v}");

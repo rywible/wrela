@@ -14,8 +14,8 @@
 
 use js_sys::{Array, Function, Object, Reflect, WebAssembly};
 use std::collections::HashMap;
-use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
 // ---------------------------------------------------------------------------
@@ -70,7 +70,11 @@ fn unbox_int(value: i64) -> i64 {
 fn nanbox_bool(value: bool) -> i64 {
     nanbox_const(
         NANBOX_TAG_IMM,
-        if value { NANBOX_IMM_TRUE } else { NANBOX_IMM_FALSE },
+        if value {
+            NANBOX_IMM_TRUE
+        } else {
+            NANBOX_IMM_FALSE
+        },
     )
 }
 
@@ -93,10 +97,7 @@ fn is_pointer(value: i64) -> bool {
 /// be done once we integrate the full `wasm_runtime` module.
 #[derive(Debug, Clone)]
 enum StubHeapValue {
-    ClassInstance {
-        type_id: i64,
-        fields: Vec<i64>,
-    },
+    ClassInstance { type_id: i64, fields: Vec<i64> },
     List(Vec<i64>),
 }
 
@@ -346,12 +347,7 @@ impl WrelaGameModule {
 
             // Direct integer fields (milli-scale -> f32)
             let milli = |idx: usize| -> f32 {
-                fields
-                    .get(idx)
-                    .copied()
-                    .map(unbox_int)
-                    .unwrap_or(0) as f32
-                    / 1000.0
+                fields.get(idx).copied().map(unbox_int).unwrap_or(0) as f32 / 1000.0
             };
 
             rs.player_x = milli(18);
@@ -507,9 +503,8 @@ fn build_import_object() -> Result<Object, String> {
     macro_rules! host_fn {
         // () -> i64
         ($name:expr, || -> $body:expr) => {
-            let closure = Closure::<dyn Fn() -> JsValue>::new(move || {
-                js_sys::BigInt::from($body).into()
-            });
+            let closure =
+                Closure::<dyn Fn() -> JsValue>::new(move || js_sys::BigInt::from($body).into());
             set_prop(&runtime_ns, $name, closure.as_ref().unchecked_ref())?;
             closure.forget();
         };
@@ -545,13 +540,12 @@ fn build_import_object() -> Result<Object, String> {
         };
         // (i64, i64) -> void
         ($name:expr, |$a:ident : i64, $b:ident : i64| $body:expr) => {
-            let closure = Closure::<dyn Fn(JsValue, JsValue)>::new(
-                move |$a: JsValue, $b: JsValue| {
+            let closure =
+                Closure::<dyn Fn(JsValue, JsValue)>::new(move |$a: JsValue, $b: JsValue| {
                     let $a = js_val_to_i64(&$a);
                     let $b = js_val_to_i64(&$b);
                     $body;
-                },
-            );
+                });
             set_prop(&runtime_ns, $name, closure.as_ref().unchecked_ref())?;
             closure.forget();
         };
@@ -622,14 +616,21 @@ fn build_import_object() -> Result<Object, String> {
                 js_sys::BigInt::from(ptr).into()
             },
         );
-        set_prop(&runtime_ns, "wr_alloc_object", closure.as_ref().unchecked_ref())?;
+        set_prop(
+            &runtime_ns,
+            "wr_alloc_object",
+            closure.as_ref().unchecked_ref(),
+        )?;
         closure.forget();
     }
 
     // wr_class_new(type_id: i64, _names_ptr: i32, _names_len_ptr: i32, count: i32) -> i64
     {
         let closure = Closure::<dyn Fn(JsValue, JsValue, JsValue, JsValue) -> JsValue>::new(
-            move |type_id: JsValue, _names_ptr: JsValue, _names_len_ptr: JsValue, count: JsValue| {
+            move |type_id: JsValue,
+                  _names_ptr: JsValue,
+                  _names_len_ptr: JsValue,
+                  count: JsValue| {
                 let tid = js_val_to_i64(&type_id);
                 let cnt = js_val_to_i32(&count);
                 let ptr = with_stub_heap(|heap| {
@@ -641,7 +642,11 @@ fn build_import_object() -> Result<Object, String> {
                 js_sys::BigInt::from(ptr).into()
             },
         );
-        set_prop(&runtime_ns, "wr_class_new", closure.as_ref().unchecked_ref())?;
+        set_prop(
+            &runtime_ns,
+            "wr_class_new",
+            closure.as_ref().unchecked_ref(),
+        )?;
         closure.forget();
     }
 
@@ -652,18 +657,20 @@ fn build_import_object() -> Result<Object, String> {
             move |obj: JsValue, field_idx: JsValue| {
                 let obj_v = js_val_to_i64(&obj);
                 let idx = js_val_to_i32(&field_idx) as usize;
-                let val = with_stub_heap(|heap| {
-                    match heap.get(obj_v) {
-                        Some(StubHeapValue::ClassInstance { fields, .. }) => {
-                            fields.get(idx).copied().unwrap_or_else(nanbox_nil)
-                        }
-                        _ => nanbox_nil(),
+                let val = with_stub_heap(|heap| match heap.get(obj_v) {
+                    Some(StubHeapValue::ClassInstance { fields, .. }) => {
+                        fields.get(idx).copied().unwrap_or_else(nanbox_nil)
                     }
+                    _ => nanbox_nil(),
                 });
                 js_sys::BigInt::from(val).into()
             },
         );
-        set_prop(&runtime_ns, "wr_object_get", closure.as_ref().unchecked_ref())?;
+        set_prop(
+            &runtime_ns,
+            "wr_object_get",
+            closure.as_ref().unchecked_ref(),
+        )?;
         closure.forget();
     }
 
@@ -673,18 +680,20 @@ fn build_import_object() -> Result<Object, String> {
             move |instance: JsValue, _name_ptr: JsValue, _name_len: JsValue, slot: JsValue| {
                 let obj_v = js_val_to_i64(&instance);
                 let idx = js_val_to_i32(&slot) as usize;
-                let val = with_stub_heap(|heap| {
-                    match heap.get(obj_v) {
-                        Some(StubHeapValue::ClassInstance { fields, .. }) => {
-                            fields.get(idx).copied().unwrap_or_else(nanbox_nil)
-                        }
-                        _ => nanbox_nil(),
+                let val = with_stub_heap(|heap| match heap.get(obj_v) {
+                    Some(StubHeapValue::ClassInstance { fields, .. }) => {
+                        fields.get(idx).copied().unwrap_or_else(nanbox_nil)
                     }
+                    _ => nanbox_nil(),
                 });
                 js_sys::BigInt::from(val).into()
             },
         );
-        set_prop(&runtime_ns, "wr_class_get_slot", closure.as_ref().unchecked_ref())?;
+        set_prop(
+            &runtime_ns,
+            "wr_class_get_slot",
+            closure.as_ref().unchecked_ref(),
+        )?;
         closure.forget();
     }
 
@@ -704,7 +713,11 @@ fn build_import_object() -> Result<Object, String> {
                 });
             },
         );
-        set_prop(&runtime_ns, "wr_object_set", closure.as_ref().unchecked_ref())?;
+        set_prop(
+            &runtime_ns,
+            "wr_object_set",
+            closure.as_ref().unchecked_ref(),
+        )?;
         closure.forget();
     }
 
@@ -728,7 +741,11 @@ fn build_import_object() -> Result<Object, String> {
                 });
             },
         );
-        set_prop(&runtime_ns, "wr_class_set_slot", closure.as_ref().unchecked_ref())?;
+        set_prop(
+            &runtime_ns,
+            "wr_class_set_slot",
+            closure.as_ref().unchecked_ref(),
+        )?;
         closure.forget();
     }
 
@@ -755,7 +772,11 @@ fn build_import_object() -> Result<Object, String> {
             });
             js_sys::BigInt::from(ptr).into()
         });
-        set_prop(&runtime_ns, "wr_list_new_local", closure.as_ref().unchecked_ref())?;
+        set_prop(
+            &runtime_ns,
+            "wr_list_new_local",
+            closure.as_ref().unchecked_ref(),
+        )?;
         closure.forget();
     }
 
@@ -835,7 +856,11 @@ fn build_import_object() -> Result<Object, String> {
                 js_sys::BigInt::from(list_v).into()
             },
         );
-        set_prop(&runtime_ns, "wr_list_set_val", closure.as_ref().unchecked_ref())?;
+        set_prop(
+            &runtime_ns,
+            "wr_list_set_val",
+            closure.as_ref().unchecked_ref(),
+        )?;
         closure.forget();
     }
 
@@ -863,21 +888,33 @@ fn build_import_object() -> Result<Object, String> {
         let closure = Closure::<dyn Fn(JsValue, JsValue) -> JsValue>::new(
             move |_ptr: JsValue, _len: JsValue| js_sys::BigInt::from(nanbox_nil()).into(),
         );
-        set_prop(&runtime_ns, "wr_str_intern_utf8", closure.as_ref().unchecked_ref())?;
+        set_prop(
+            &runtime_ns,
+            "wr_str_intern_utf8",
+            closure.as_ref().unchecked_ref(),
+        )?;
         closure.forget();
     }
     {
         let closure = Closure::<dyn Fn(JsValue, JsValue) -> JsValue>::new(
             move |_ptr: JsValue, _len: JsValue| js_sys::BigInt::from(nanbox_nil()).into(),
         );
-        set_prop(&runtime_ns, "wr_str_concat", closure.as_ref().unchecked_ref())?;
+        set_prop(
+            &runtime_ns,
+            "wr_str_concat",
+            closure.as_ref().unchecked_ref(),
+        )?;
         closure.forget();
     }
     {
         let closure = Closure::<dyn Fn(JsValue, JsValue) -> JsValue>::new(
             move |_ptr: JsValue, _len: JsValue| js_sys::BigInt::from(nanbox_nil()).into(),
         );
-        set_prop(&runtime_ns, "wr_str_concat_local", closure.as_ref().unchecked_ref())?;
+        set_prop(
+            &runtime_ns,
+            "wr_str_concat_local",
+            closure.as_ref().unchecked_ref(),
+        )?;
         closure.forget();
     }
     host_fn!("wr_str_len", |_v: i64| -> nanbox_int(0));
@@ -923,7 +960,11 @@ fn build_import_object() -> Result<Object, String> {
                 // Stub: mark as done immediately (no-op).
             },
         );
-        set_prop(&runtime_ns, "wr_iter_next", closure.as_ref().unchecked_ref())?;
+        set_prop(
+            &runtime_ns,
+            "wr_iter_next",
+            closure.as_ref().unchecked_ref(),
+        )?;
         closure.forget();
     }
 
@@ -932,27 +973,24 @@ fn build_import_object() -> Result<Object, String> {
 
     // wr_actor_send(actor: i64, method_id: i64, args_ptr: i32, args_len: i32) -> i64
     {
-        let closure =
-            Closure::<dyn Fn(JsValue, JsValue, JsValue, JsValue) -> JsValue>::new(
-                move |_a: JsValue, _b: JsValue, _c: JsValue, _d: JsValue| {
-                    js_sys::BigInt::from(nanbox_nil()).into()
-                },
-            );
-        set_prop(&runtime_ns, "wr_actor_send", closure.as_ref().unchecked_ref())?;
+        let closure = Closure::<dyn Fn(JsValue, JsValue, JsValue, JsValue) -> JsValue>::new(
+            move |_a: JsValue, _b: JsValue, _c: JsValue, _d: JsValue| {
+                js_sys::BigInt::from(nanbox_nil()).into()
+            },
+        );
+        set_prop(
+            &runtime_ns,
+            "wr_actor_send",
+            closure.as_ref().unchecked_ref(),
+        )?;
         closure.forget();
     }
 
     // wr_actor_spawn (7 args)
     {
-        let closure = Closure::<dyn Fn(
-            JsValue,
-            JsValue,
-            JsValue,
-            JsValue,
-            JsValue,
-            JsValue,
-            JsValue,
-        ) -> JsValue>::new(
+        let closure = Closure::<
+            dyn Fn(JsValue, JsValue, JsValue, JsValue, JsValue, JsValue, JsValue) -> JsValue,
+        >::new(
             move |_a: JsValue,
                   _b: JsValue,
                   _c: JsValue,
@@ -961,26 +999,22 @@ fn build_import_object() -> Result<Object, String> {
                   _f: JsValue,
                   _g: JsValue| { js_sys::BigInt::from(nanbox_nil()).into() },
         );
-        set_prop(&runtime_ns, "wr_actor_spawn", closure.as_ref().unchecked_ref())?;
+        set_prop(
+            &runtime_ns,
+            "wr_actor_spawn",
+            closure.as_ref().unchecked_ref(),
+        )?;
         closure.forget();
     }
 
     // wr_pool_new (6 args)
     {
-        let closure = Closure::<dyn Fn(
-            JsValue,
-            JsValue,
-            JsValue,
-            JsValue,
-            JsValue,
-            JsValue,
-        ) -> JsValue>::new(
-            move |_a: JsValue,
-                  _b: JsValue,
-                  _c: JsValue,
-                  _d: JsValue,
-                  _e: JsValue,
-                  _f: JsValue| { js_sys::BigInt::from(nanbox_nil()).into() },
+        let closure = Closure::<
+            dyn Fn(JsValue, JsValue, JsValue, JsValue, JsValue, JsValue) -> JsValue,
+        >::new(
+            move |_a: JsValue, _b: JsValue, _c: JsValue, _d: JsValue, _e: JsValue, _f: JsValue| {
+                js_sys::BigInt::from(nanbox_nil()).into()
+            },
         );
         set_prop(&runtime_ns, "wr_pool_new", closure.as_ref().unchecked_ref())?;
         closure.forget();
@@ -991,22 +1025,33 @@ fn build_import_object() -> Result<Object, String> {
         let closure = Closure::<dyn Fn(JsValue, JsValue, JsValue)>::new(
             move |_: JsValue, _: JsValue, _: JsValue| {},
         );
-        set_prop(&runtime_ns, "wr_register_method", closure.as_ref().unchecked_ref())?;
+        set_prop(
+            &runtime_ns,
+            "wr_register_method",
+            closure.as_ref().unchecked_ref(),
+        )?;
         closure.forget();
     }
     {
         let closure = Closure::<dyn Fn(JsValue, JsValue, JsValue)>::new(
             move |_: JsValue, _: JsValue, _: JsValue| {},
         );
-        set_prop(&runtime_ns, "wr_register_class", closure.as_ref().unchecked_ref())?;
+        set_prop(
+            &runtime_ns,
+            "wr_register_class",
+            closure.as_ref().unchecked_ref(),
+        )?;
         closure.forget();
     }
     {
-        let closure =
-            Closure::<dyn Fn(JsValue, JsValue, JsValue, JsValue)>::new(
-                move |_: JsValue, _: JsValue, _: JsValue, _: JsValue| {},
-            );
-        set_prop(&runtime_ns, "wr_register_method_name", closure.as_ref().unchecked_ref())?;
+        let closure = Closure::<dyn Fn(JsValue, JsValue, JsValue, JsValue)>::new(
+            move |_: JsValue, _: JsValue, _: JsValue, _: JsValue| {},
+        );
+        set_prop(
+            &runtime_ns,
+            "wr_register_method_name",
+            closure.as_ref().unchecked_ref(),
+        )?;
         closure.forget();
     }
 
@@ -1016,15 +1061,22 @@ fn build_import_object() -> Result<Object, String> {
         let closure = Closure::<dyn Fn(JsValue) -> JsValue>::new(move |_v: JsValue| {
             js_sys::BigInt::from(nanbox_nil()).into()
         });
-        set_prop(&runtime_ns, "wr_box_float", closure.as_ref().unchecked_ref())?;
+        set_prop(
+            &runtime_ns,
+            "wr_box_float",
+            closure.as_ref().unchecked_ref(),
+        )?;
         closure.forget();
     }
     // wr_unbox_float(i64) -> f64
     {
-        let closure = Closure::<dyn Fn(JsValue) -> JsValue>::new(move |_v: JsValue| {
-            JsValue::from_f64(0.0)
-        });
-        set_prop(&runtime_ns, "wr_unbox_float", closure.as_ref().unchecked_ref())?;
+        let closure =
+            Closure::<dyn Fn(JsValue) -> JsValue>::new(move |_v: JsValue| JsValue::from_f64(0.0));
+        set_prop(
+            &runtime_ns,
+            "wr_unbox_float",
+            closure.as_ref().unchecked_ref(),
+        )?;
         closure.forget();
     }
 
@@ -1183,11 +1235,11 @@ mod tests {
             let enemy = heap.alloc(StubHeapValue::ClassInstance {
                 type_id: 107,
                 fields: vec![
-                    nanbox_int(1),     // entity_id
-                    nanbox_int(5000),  // position_x
-                    nanbox_int(0),     // position_y
-                    nanbox_int(3000),  // position_z
-                    nanbox_int(0),     // current_move
+                    nanbox_int(1),    // entity_id
+                    nanbox_int(5000), // position_x
+                    nanbox_int(0),    // position_y
+                    nanbox_int(3000), // position_z
+                    nanbox_int(0),    // current_move
                 ],
             });
             let enemy_health = heap.alloc(StubHeapValue::ClassInstance {
@@ -1217,12 +1269,12 @@ mod tests {
             let spring_arm = heap.alloc(StubHeapValue::ClassInstance {
                 type_id: 111,
                 fields: vec![
-                    nanbox_nil(),      // target_x
-                    nanbox_nil(),      // target_y
-                    nanbox_nil(),      // target_z
-                    nanbox_int(1500),  // current_x
-                    nanbox_int(2000),  // current_y
-                    nanbox_int(1800),  // current_z
+                    nanbox_nil(),     // target_x
+                    nanbox_nil(),     // target_y
+                    nanbox_nil(),     // target_z
+                    nanbox_int(1500), // current_x
+                    nanbox_int(2000), // current_y
+                    nanbox_int(1800), // current_z
                 ],
             });
             let camera_jolt = heap.alloc(StubHeapValue::ClassInstance {
@@ -1259,9 +1311,9 @@ mod tests {
                     camera_jolt,
                     fov_shift,
                     combat_feel,
-                    nanbox_int(2000),  // player_x
-                    nanbox_int(0),     // player_y
-                    nanbox_int(3000),  // player_z
+                    nanbox_int(2000), // player_x
+                    nanbox_int(0),    // player_y
+                    nanbox_int(3000), // player_z
                 ],
             });
 

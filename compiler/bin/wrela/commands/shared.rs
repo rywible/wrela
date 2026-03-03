@@ -660,6 +660,11 @@ pub fn execute(spec: CommandSpec) {
     let workspace_diagnostics = parsed.workspace_diagnostics;
     let orchestration_identity = parsed.orchestration_identity;
     let agent_run_intent_v2 = parsed.agent_run_intent_v2;
+    let preview_port = parsed.preview_port;
+    let preview_open = parsed.preview_open;
+    let resolve_dry_run = parsed.resolve_dry_run;
+    let resolve_force = parsed.resolve_force;
+    let resolve_parallel = parsed.resolve_parallel;
 
     let command = command.as_str();
     let kpi_thresholds = KpiThresholds {
@@ -1681,6 +1686,29 @@ pub fn execute(spec: CommandSpec) {
                 force: deploy_force,
                 generate_only: deploy_generate_only,
             });
+            std::process::exit(exit);
+        }
+        "preview" => {
+            if trace {
+                eprintln!("build: command preview");
+            }
+            let exit = handle_preview_command(
+                path_arg.as_deref(),
+                preview_port,
+                preview_open,
+            );
+            std::process::exit(exit);
+        }
+        "resolve" => {
+            if trace {
+                eprintln!("build: command resolve");
+            }
+            let exit = handle_resolve_command(
+                path_arg.as_deref(),
+                resolve_dry_run,
+                resolve_force,
+                resolve_parallel,
+            );
             std::process::exit(exit);
         }
         _ => {

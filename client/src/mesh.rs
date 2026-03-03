@@ -9,10 +9,19 @@ pub struct Vertex3D {
     pub uv: [f32; 2],
     pub joint_indices: [u16; 4],
     pub joint_weights: [f32; 4],
+    /// Vertex color used for wind animation weights on environment meshes.
+    /// R = trunk sway weight (0.0 at root, 1.0 at top)
+    /// G = branch oscillation weight
+    /// B = leaf flutter weight
+    /// A = phase offset (randomised per-vertex for variation)
+    pub vertex_color: [f32; 4],
+    /// Tangent vector with handedness in w component (w = +1 or -1).
+    /// Used for tangent-space normal mapping via the TBN matrix.
+    pub tangent: [f32; 4],
 }
 
 impl Vertex3D {
-    pub const ATTRIBS: [VertexAttribute; 5] = [
+    pub const ATTRIBS: [VertexAttribute; 7] = [
         VertexAttribute {
             offset: 0,
             shader_location: 0,
@@ -36,6 +45,16 @@ impl Vertex3D {
         VertexAttribute {
             offset: 40,
             shader_location: 4,
+            format: VertexFormat::Float32x4,
+        },
+        VertexAttribute {
+            offset: 56,
+            shader_location: 5,
+            format: VertexFormat::Float32x4,
+        },
+        VertexAttribute {
+            offset: 72,
+            shader_location: 6,
             format: VertexFormat::Float32x4,
         },
     ];
@@ -105,6 +124,34 @@ pub struct GpuMesh {
     pub index_format: wgpu::IndexFormat,
 }
 
+/// Fetch a GLB file from a URL and return its raw bytes.
+///
+/// Uses the browser fetch API via wasm-bindgen. Only available on wasm32 target.
+#[cfg(target_arch = "wasm32")]
+pub async fn fetch_glb_bytes(url: &str) -> Result<Vec<u8>, String> {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_futures::JsFuture;
+
+    let window = web_sys::window().ok_or("no window")?;
+    let resp_value = JsFuture::from(window.fetch_with_str(url))
+        .await
+        .map_err(|e| format!("fetch failed: {e:?}"))?;
+    let resp: web_sys::Response = resp_value
+        .dyn_into()
+        .map_err(|_| "response is not a Response".to_string())?;
+    if !resp.ok() {
+        return Err(format!("HTTP {}: {}", resp.status(), resp.status_text()));
+    }
+    let ab = JsFuture::from(
+        resp.array_buffer()
+            .map_err(|e| format!("array_buffer failed: {e:?}"))?,
+    )
+    .await
+    .map_err(|e| format!("array_buffer await failed: {e:?}"))?;
+    let uint8 = js_sys::Uint8Array::new(&ab);
+    Ok(uint8.to_vec())
+}
+
 /// Build an ORM (Occlusion/Roughness/Metallic) packed texture from separate
 /// metallic-roughness and occlusion textures.
 ///
@@ -162,16 +209,150 @@ fn build_orm_texture(
     })
 }
 
+/// Compute wind animation weights from vertex position for non-skinned meshes.
+/// Uses Y height as a proxy: taller vertices sway more.
+/// R = trunk sway (height-based), G = branch oscillation, B = leaf flutter, A = phase offset.
+pub fn compute_wind_weights_from_height(position: &[f32; 3]) -> [f32; 4] {
+    let y = position[1];
+    if y < 0.05 {
+        // Ground-level vertices: no wind
+        return [0.0, 0.0, 0.0, 0.0];
+    }
+    // Normalize height assuming typical tree height of ~3.5 units
+    let normalized_height = (y / 3.5).clamp(0.0, 1.0);
+    let trunk_sway = normalized_height;
+    // Branch oscillation peaks in the mid-canopy
+    let branch_osc = (normalized_height * 2.0).min(1.0) * (1.0 - (normalized_height - 0.6).abs() * 1.5).max(0.0);
+    // Leaf flutter increases towards the top
+    let leaf_flutter = (normalized_height * 1.5 - 0.3).clamp(0.0, 1.0);
+    // Phase offset from position hash for variation
+    let phase = ((position[0] * 12.9898 + position[2] * 78.233).sin() * 43758.5453).fract().abs();
+    [trunk_sway, branch_osc, leaf_flutter, phase]
+}
+
 pub struct GlbData {
     pub meshes: Vec<MeshData>,
     pub skeleton: Option<crate::skeletal_animation::Skeleton>,
     pub animation_clips: Vec<crate::skeletal_animation::AnimationClip>,
 }
 
+/// Compute MikkTSpace-style tangent vectors from triangle geometry and UVs.
+/// This is a simplified implementation that accumulates per-triangle tangent
+/// contributions into per-vertex tangents and normalizes.
+pub fn compute_tangents(vertices: &mut [Vertex3D], indices: &[u32]) {
+    let vert_count = vertices.len();
+    let mut tan_accum = vec![[0.0f32; 3]; vert_count];
+    let mut bitan_accum = vec![[0.0f32; 3]; vert_count];
+
+    for tri in indices.chunks(3) {
+        if tri.len() < 3 {
+            continue;
+        }
+        let i0 = tri[0] as usize;
+        let i1 = tri[1] as usize;
+        let i2 = tri[2] as usize;
+        if i0 >= vert_count || i1 >= vert_count || i2 >= vert_count {
+            continue;
+        }
+
+        let p0 = vertices[i0].position;
+        let p1 = vertices[i1].position;
+        let p2 = vertices[i2].position;
+
+        let uv0 = vertices[i0].uv;
+        let uv1 = vertices[i1].uv;
+        let uv2 = vertices[i2].uv;
+
+        let edge1 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+        let edge2 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+
+        let duv1 = [uv1[0] - uv0[0], uv1[1] - uv0[1]];
+        let duv2 = [uv2[0] - uv0[0], uv2[1] - uv0[1]];
+
+        let det = duv1[0] * duv2[1] - duv1[1] * duv2[0];
+        let inv_det = if det.abs() < 1e-8 { 0.0 } else { 1.0 / det };
+
+        let tangent = [
+            (edge1[0] * duv2[1] - edge2[0] * duv1[1]) * inv_det,
+            (edge1[1] * duv2[1] - edge2[1] * duv1[1]) * inv_det,
+            (edge1[2] * duv2[1] - edge2[2] * duv1[1]) * inv_det,
+        ];
+        let bitangent = [
+            (edge2[0] * duv1[0] - edge1[0] * duv2[0]) * inv_det,
+            (edge2[1] * duv1[0] - edge1[1] * duv2[0]) * inv_det,
+            (edge2[2] * duv1[0] - edge1[2] * duv2[0]) * inv_det,
+        ];
+
+        for &idx in &[i0, i1, i2] {
+            tan_accum[idx][0] += tangent[0];
+            tan_accum[idx][1] += tangent[1];
+            tan_accum[idx][2] += tangent[2];
+            bitan_accum[idx][0] += bitangent[0];
+            bitan_accum[idx][1] += bitangent[1];
+            bitan_accum[idx][2] += bitangent[2];
+        }
+    }
+
+    for i in 0..vert_count {
+        let n = vertices[i].normal;
+        let t = tan_accum[i];
+
+        // Gram-Schmidt orthogonalize: T' = normalize(T - N * dot(N, T))
+        let n_dot_t = n[0] * t[0] + n[1] * t[1] + n[2] * t[2];
+        let ortho = [
+            t[0] - n[0] * n_dot_t,
+            t[1] - n[1] * n_dot_t,
+            t[2] - n[2] * n_dot_t,
+        ];
+        let len = (ortho[0] * ortho[0] + ortho[1] * ortho[1] + ortho[2] * ortho[2]).sqrt();
+        let tangent = if len > 1e-8 {
+            [ortho[0] / len, ortho[1] / len, ortho[2] / len]
+        } else {
+            // Fallback: pick an arbitrary tangent perpendicular to normal
+            if n[0].abs() < 0.9 {
+                let right = [1.0, 0.0, 0.0];
+                let d = n[0] * right[0] + n[1] * right[1] + n[2] * right[2];
+                let v = [right[0] - n[0] * d, right[1] - n[1] * d, right[2] - n[2] * d];
+                let vlen = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+                if vlen > 1e-8 {
+                    [v[0] / vlen, v[1] / vlen, v[2] / vlen]
+                } else {
+                    [1.0, 0.0, 0.0]
+                }
+            } else {
+                let up = [0.0, 1.0, 0.0];
+                let d = n[0] * up[0] + n[1] * up[1] + n[2] * up[2];
+                let v = [up[0] - n[0] * d, up[1] - n[1] * d, up[2] - n[2] * d];
+                let vlen = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+                if vlen > 1e-8 {
+                    [v[0] / vlen, v[1] / vlen, v[2] / vlen]
+                } else {
+                    [0.0, 1.0, 0.0]
+                }
+            }
+        };
+
+        // Compute handedness: sign(dot(cross(N, T), B))
+        let cross_nt = [
+            n[1] * tangent[2] - n[2] * tangent[1],
+            n[2] * tangent[0] - n[0] * tangent[2],
+            n[0] * tangent[1] - n[1] * tangent[0],
+        ];
+        let b = bitan_accum[i];
+        let handedness =
+            if cross_nt[0] * b[0] + cross_nt[1] * b[1] + cross_nt[2] * b[2] < 0.0 {
+                -1.0
+            } else {
+                1.0
+            };
+
+        vertices[i].tangent = [tangent[0], tangent[1], tangent[2], handedness];
+    }
+}
+
 pub fn load_glb_with_animations(data: &[u8]) -> Result<GlbData, String> {
     let meshes = load_glb(data)?;
-    let (skeleton, animation_clips) =
-        crate::skeletal_animation::load_animations_from_glb(data)?;
+    let (skeleton, animation_clips) = crate::skeletal_animation::load_animations_from_glb(data)?;
     Ok(GlbData {
         meshes,
         skeleton,
@@ -242,15 +423,44 @@ pub fn load_glb(data: &[u8]) -> Result<Vec<MeshData>, String> {
                 None => vec![[0.0, 0.0, 0.0, 0.0]; positions.len()],
             };
 
+            let colors: Vec<[f32; 4]> = match reader.read_colors(0) {
+                Some(colors) => colors.into_rgba_f32().collect(),
+                None => vec![[0.0, 0.0, 0.0, 0.0]; positions.len()],
+            };
+
+            let tangents: Vec<[f32; 4]> = match reader.read_tangents() {
+                Some(tangents) => tangents.collect(),
+                None => vec![[0.0, 0.0, 0.0, 1.0]; positions.len()],
+            };
+
+            // Determine if this mesh is skinned (has any non-zero joint weights)
+            let is_skinned = weights.iter().any(|w| w[0] + w[1] + w[2] + w[3] > 0.0);
+
             let vertices: Vec<Vertex3D> = positions
                 .iter()
                 .enumerate()
-                .map(|(i, pos)| Vertex3D {
-                    position: *pos,
-                    normal: normals.get(i).copied().unwrap_or([0.0, 1.0, 0.0]),
-                    uv: uvs.get(i).copied().unwrap_or([0.0, 0.0]),
-                    joint_indices: joints.get(i).copied().unwrap_or([0, 0, 0, 0]),
-                    joint_weights: weights.get(i).copied().unwrap_or([1.0, 0.0, 0.0, 0.0]),
+                .map(|(i, pos)| {
+                    let color = colors.get(i).copied().unwrap_or([0.0, 0.0, 0.0, 0.0]);
+                    // For non-skinned meshes without vertex colors, compute wind
+                    // weights from vertex height (useful for AI-generated GLB assets
+                    // that lack vertex color data).
+                    let vertex_color = if !is_skinned && color == [0.0, 0.0, 0.0, 0.0] {
+                        compute_wind_weights_from_height(pos)
+                    } else if is_skinned {
+                        // Skinned meshes never get wind
+                        [0.0, 0.0, 0.0, 0.0]
+                    } else {
+                        color
+                    };
+                    Vertex3D {
+                        position: *pos,
+                        normal: normals.get(i).copied().unwrap_or([0.0, 1.0, 0.0]),
+                        uv: uvs.get(i).copied().unwrap_or([0.0, 0.0]),
+                        joint_indices: joints.get(i).copied().unwrap_or([0, 0, 0, 0]),
+                        joint_weights: weights.get(i).copied().unwrap_or([0.0, 0.0, 0.0, 0.0]),
+                        vertex_color,
+                        tangent: tangents.get(i).copied().unwrap_or([0.0, 0.0, 0.0, 1.0]),
+                    }
                 })
                 .collect();
 
@@ -258,6 +468,13 @@ pub fn load_glb(data: &[u8]) -> Result<Vec<MeshData>, String> {
                 Some(idx) => idx.into_u32().collect(),
                 None => (0..vertices.len() as u32).collect(),
             };
+
+            // Compute tangents for vertices that don't have them from the glTF
+            let mut vertices = vertices;
+            let has_gltf_tangents = tangents.iter().any(|t| t[0] != 0.0 || t[1] != 0.0 || t[2] != 0.0);
+            if !has_gltf_tangents {
+                compute_tangents(&mut vertices, &indices);
+            }
 
             // Extract material data
             let material_data = extract_material_data(&primitive, &images);
@@ -337,22 +554,18 @@ fn extract_material_data(
         });
 
     // Extract metallic-roughness texture
-    let mr_image = pbr
-        .metallic_roughness_texture()
-        .and_then(|info| {
-            let tex = info.texture();
-            let img_index = tex.source().index();
-            images.get(img_index).and_then(|opt| opt.as_ref())
-        });
+    let mr_image = pbr.metallic_roughness_texture().and_then(|info| {
+        let tex = info.texture();
+        let img_index = tex.source().index();
+        images.get(img_index).and_then(|opt| opt.as_ref())
+    });
 
     // Extract occlusion texture
-    let occ_image = mat
-        .occlusion_texture()
-        .and_then(|info| {
-            let tex = info.texture();
-            let img_index = tex.source().index();
-            images.get(img_index).and_then(|opt| opt.as_ref())
-        });
+    let occ_image = mat.occlusion_texture().and_then(|info| {
+        let tex = info.texture();
+        let img_index = tex.source().index();
+        images.get(img_index).and_then(|opt| opt.as_ref())
+    });
 
     // Build ORM packed texture from metallic-roughness + occlusion
     let orm_image = build_orm_texture(mr_image, occ_image);
@@ -506,14 +719,14 @@ mod tests {
     }
 
     #[test]
-    fn vertex3d_layout_is_56_bytes() {
-        assert_eq!(std::mem::size_of::<Vertex3D>(), 56);
+    fn vertex3d_layout_is_88_bytes() {
+        assert_eq!(std::mem::size_of::<Vertex3D>(), 88);
     }
 
     #[test]
     fn skinned_vertex_layout_contract() {
-        assert_eq!(std::mem::size_of::<Vertex3D>(), 56);
-        assert_eq!(Vertex3D::ATTRIBS.len(), 5);
+        assert_eq!(std::mem::size_of::<Vertex3D>(), 88);
+        assert_eq!(Vertex3D::ATTRIBS.len(), 7);
         assert_eq!(Vertex3D::ATTRIBS[0].offset, 0);
         assert_eq!(Vertex3D::ATTRIBS[0].shader_location, 0);
         assert_eq!(Vertex3D::ATTRIBS[0].format, VertexFormat::Float32x3);
@@ -533,6 +746,16 @@ mod tests {
         assert_eq!(Vertex3D::ATTRIBS[4].offset, 40);
         assert_eq!(Vertex3D::ATTRIBS[4].shader_location, 4);
         assert_eq!(Vertex3D::ATTRIBS[4].format, VertexFormat::Float32x4);
+
+        // vertex_color (wind weights)
+        assert_eq!(Vertex3D::ATTRIBS[5].offset, 56);
+        assert_eq!(Vertex3D::ATTRIBS[5].shader_location, 5);
+        assert_eq!(Vertex3D::ATTRIBS[5].format, VertexFormat::Float32x4);
+
+        // tangent
+        assert_eq!(Vertex3D::ATTRIBS[6].offset, 72);
+        assert_eq!(Vertex3D::ATTRIBS[6].shader_location, 6);
+        assert_eq!(Vertex3D::ATTRIBS[6].format, VertexFormat::Float32x4);
     }
 
     #[test]
@@ -631,5 +854,68 @@ mod tests {
         let error = flatten_skinning_palette_for_upload(&joints, 1)
             .expect_err("joint overflow must fail upload validation");
         assert!(error.contains("exceeds max 1"));
+    }
+
+    #[test]
+    fn wind_weights_zero_at_ground_level() {
+        let pos = [5.0, 0.0, 3.0];
+        let weights = compute_wind_weights_from_height(&pos);
+        assert_eq!(weights, [0.0, 0.0, 0.0, 0.0], "ground-level vertices should have zero wind");
+    }
+
+    #[test]
+    fn wind_weights_increase_with_height() {
+        let low = compute_wind_weights_from_height(&[0.0, 0.5, 0.0]);
+        let mid = compute_wind_weights_from_height(&[0.0, 1.5, 0.0]);
+        let high = compute_wind_weights_from_height(&[0.0, 3.0, 0.0]);
+
+        // Trunk sway (R channel) should increase with height
+        assert!(low[0] < mid[0], "trunk sway should increase: low {} < mid {}", low[0], mid[0]);
+        assert!(mid[0] < high[0], "trunk sway should increase: mid {} < high {}", mid[0], high[0]);
+    }
+
+    #[test]
+    fn wind_weights_clamped_to_01() {
+        let weights = compute_wind_weights_from_height(&[0.0, 100.0, 0.0]);
+        for (i, &w) in weights.iter().enumerate() {
+            assert!(
+                w >= 0.0 && w <= 1.0,
+                "wind weight[{i}] = {w} should be in [0, 1]"
+            );
+        }
+    }
+
+    #[test]
+    fn wind_phase_varies_with_position() {
+        let a = compute_wind_weights_from_height(&[1.0, 2.0, 0.0]);
+        let b = compute_wind_weights_from_height(&[5.0, 2.0, 3.0]);
+        // Phase offsets (A channel) should differ between distinct positions
+        assert!(
+            (a[3] - b[3]).abs() > 0.001,
+            "phase offsets should differ between positions: {} vs {}",
+            a[3],
+            b[3]
+        );
+    }
+
+    #[test]
+    fn glb_loader_assigns_wind_weights_to_nonskinned_vertices() {
+        // A minimal GLB with vertices at varying heights should get wind weights
+        let glb = make_minimal_glb();
+        let meshes = load_glb(&glb).expect("should parse GLB");
+        // Vertex at (0, 1, 0) should have non-zero wind weights
+        let v_high = &meshes[0].vertices[2]; // position [0.0, 1.0, 0.0]
+        assert!(
+            v_high.vertex_color[0] > 0.0,
+            "non-skinned vertex at y=1 should have trunk sway weight, got {:?}",
+            v_high.vertex_color
+        );
+        // Vertex at (0, 0, 0) should have zero wind weights (ground level)
+        let v_ground = &meshes[0].vertices[0]; // position [0.0, 0.0, 0.0]
+        assert_eq!(
+            v_ground.vertex_color,
+            [0.0, 0.0, 0.0, 0.0],
+            "ground-level vertex should have zero wind weights"
+        );
     }
 }

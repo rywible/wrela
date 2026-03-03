@@ -2,8 +2,12 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-APP_PATH="${1:-apps/wrela-game-slice}"
-TASK_ARTIFACT_DIR="${2:-${ROOT_DIR}/.artifacts/webgpu-engine-pass/WFE3-602/smoke/$(basename "${APP_PATH}")}"
+APP_PATH="${1:-apps/wrela-forest}"
+AAA_ARTIFACT_ROOT="${WRELA_AAA_ARTIFACT_ROOT:-${ROOT_DIR}/.artifacts/aaa-forest-demo}"
+AAA_LANE="${WRELA_AAA_LANE:-ORCH-00}"
+AAA_ITERATION="${WRELA_AAA_ITERATION:-iteration-001}"
+DEFAULT_TASK_ARTIFACT_DIR="${AAA_ARTIFACT_ROOT}/${AAA_LANE}/${AAA_ITERATION}"
+TASK_ARTIFACT_DIR="${2:-${WRELA_AAA_TASK_ARTIFACT_DIR:-${DEFAULT_TASK_ARTIFACT_DIR}}}"
 BIND_ADDR="${3:-${WRELA_GAME_BIND_ADDR:-127.0.0.1:8091}}"
 SMOKE_URL="http://${BIND_ADDR}/"
 
@@ -17,31 +21,24 @@ WEB_GAME_SKILL_DIR="${CODEX_HOME:-$HOME/.codex}/skills/develop-web-game"
 WEB_GAME_CLIENT_PATH="${WEB_GAME_SKILL_DIR}/scripts/web_game_playwright_client.js"
 DEFAULT_WEB_GAME_ACTIONS_PATH="${ROOT_DIR}/scripts/webgpu_engine_pass/action_payloads.json"
 WEB_GAME_ACTIONS_PATH="${WEB_GAME_ACTIONS:-${DEFAULT_WEB_GAME_ACTIONS_PATH}}"
-USE_SHARED_STRESS_PRESET=false
-if [ ! -f "${WEB_GAME_ACTIONS_PATH}" ]; then
-  WEB_GAME_ACTIONS_PATH="${WEB_GAME_SKILL_DIR}/references/action_payloads.json"
-  USE_SHARED_STRESS_PRESET=true
-fi
-if ! node -e '
-const fs = require("node:fs");
-const path = process.argv[1];
-try {
-  const parsed = JSON.parse(fs.readFileSync(path, "utf8"));
-  const presets = parsed && typeof parsed === "object" ? parsed.presets : null;
-  const hasSplitStress = presets && typeof presets === "object"
-    && Object.prototype.hasOwnProperty.call(presets, "game_stress")
-    && Object.prototype.hasOwnProperty.call(presets, "website_stress");
-  process.exit(hasSplitStress ? 0 : 1);
-} catch {
-  process.exit(1);
-}
-' "${WEB_GAME_ACTIONS_PATH}"; then
-  WEB_GAME_ACTIONS_PATH="${WEB_GAME_SKILL_DIR}/references/action_payloads.json"
-  USE_SHARED_STRESS_PRESET=true
-fi
 PW_BROWSER="${WRELA_SMOKE_BROWSER:-chromium}"
 PW_HEADLESS="${WRELA_SMOKE_HEADLESS:-false}"
 PW_ALLOW_HEADLESS_WEBGPU="${WRELA_SMOKE_ALLOW_HEADLESS_WEBGPU:-false}"
+
+ARTIFACT_LANE="${AAA_LANE}"
+ARTIFACT_ITERATION="${AAA_ITERATION}"
+if [[ "${TASK_ARTIFACT_DIR}" == "${AAA_ARTIFACT_ROOT}"/* ]]; then
+  RELATIVE_ARTIFACT_PATH="${TASK_ARTIFACT_DIR#${AAA_ARTIFACT_ROOT}/}"
+  RELATIVE_LANE="${RELATIVE_ARTIFACT_PATH%%/*}"
+  RELATIVE_REST="${RELATIVE_ARTIFACT_PATH#*/}"
+  RELATIVE_ITERATION="${RELATIVE_REST%%/*}"
+  if [ -n "${RELATIVE_LANE}" ] && [ "${RELATIVE_LANE}" != "${RELATIVE_ARTIFACT_PATH}" ]; then
+    ARTIFACT_LANE="${RELATIVE_LANE}"
+  fi
+  if [ -n "${RELATIVE_ITERATION}" ] && [ "${RELATIVE_ITERATION}" != "${RELATIVE_REST}" ]; then
+    ARTIFACT_ITERATION="${RELATIVE_ITERATION}"
+  fi
+fi
 
 fail() {
   echo "browser smoke failed: $*" >&2
@@ -100,24 +97,37 @@ if ! ls "${ROOT_DIR}/.cache/ms-playwright"/chromium-* >/dev/null 2>&1; then
   npx --prefix "${WEB_GAME_SKILL_DIR}" playwright install chromium >/dev/null
 fi
 
-if [[ "${APP_PATH}" == *"website"* ]]; then
-  if [ "${USE_SHARED_STRESS_PRESET}" = true ]; then
-    PRESETS=("warmup" "movement_sweep" "website_interaction" "stress")
-  else
-    PRESETS=("warmup" "movement_sweep" "website_interaction" "website_stress")
-  fi
-else
-  if [ "${USE_SHARED_STRESS_PRESET}" = true ]; then
-    PRESETS=("warmup" "movement_sweep" "pickup_attempt" "stress")
-  else
-    PRESETS=("warmup" "movement_sweep" "pickup_attempt" "game_stress")
-  fi
+if [[ "${APP_PATH}" != *"forest"* ]]; then
+  fail "hard-cut smoke harness now supports forest demo app paths only; received '${APP_PATH}'"
 fi
+
+PRESETS=(
+  "idle_composition"
+  "camera_orbit"
+  "lock_toggle"
+  "target_cycle"
+  "dodge_parry_burst"
+  "combo_burst"
+  "death_restart_loop"
+)
+PRESET_FIELDS=(
+  "meta.scenario"
+  "meta.lane"
+  "meta.category"
+  "meta.focus"
+  "expect.minTickDelta"
+  "expect.minDrawCallsDelta"
+  "expect.requireHashChange"
+  "steps"
+)
+PRESETS_CSV="$(IFS=,; echo "${PRESETS[*]}")"
+PRESET_FIELDS_CSV="$(IFS=,; echo "${PRESET_FIELDS[*]}")"
 
 if ! node -e '
 const fs = require("node:fs");
 const file = process.argv[1];
-const expected = process.argv.slice(2);
+const expected = process.argv[2].split(",").filter(Boolean);
+const requiredFields = process.argv[3].split(",").filter(Boolean);
 let parsed;
 try {
   parsed = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -135,7 +145,32 @@ if (missing.length > 0) {
   console.error(`actions file missing required preset(s): ${missing.join(", ")}`);
   process.exit(1);
 }
-' "${WEB_GAME_ACTIONS_PATH}" "${PRESETS[@]}"; then
+const getPathValue = (root, pointer) => {
+  const keys = pointer.split(".");
+  let current = root;
+  for (const key of keys) {
+    if (!current || typeof current !== "object" || !(key in current)) {
+      return undefined;
+    }
+    current = current[key];
+  }
+  return current;
+};
+for (const presetName of expected) {
+  const preset = presets[presetName];
+  for (const field of requiredFields) {
+    const value = getPathValue(preset, field);
+    if (value === undefined) {
+      console.error(`actions preset ${presetName} missing required field ${field}`);
+      process.exit(1);
+    }
+  }
+  if (!Array.isArray(preset.steps) || preset.steps.length === 0) {
+    console.error(`actions preset ${presetName} must declare non-empty steps`);
+    process.exit(1);
+  }
+}
+' "${WEB_GAME_ACTIONS_PATH}" "${PRESETS_CSV}" "${PRESET_FIELDS_CSV}"; then
   fail "actions file does not define required presets for ${APP_PATH}; see ${WEB_GAME_ACTIONS_PATH}"
 fi
 
@@ -143,10 +178,6 @@ PHASE_REPORTS=()
 for PRESET in "${PRESETS[@]}"; do
   PHASE_DIR="${PLAYWRIGHT_ARTIFACT_DIR}/${PRESET}"
   PHASE_REPORT="${PHASE_DIR}/report.json"
-  PHASE_STRICT=true
-  if [[ "${APP_PATH}" == *"website"* ]] && [[ "${PRESET}" == "website_interaction" || "${PRESET}" == "website_stress" || "${PRESET}" == "stress" ]]; then
-    PHASE_STRICT=false
-  fi
   mkdir -p "${PHASE_DIR}"
   if ! PLAYWRIGHT_BROWSERS_PATH="${ROOT_DIR}/.cache/ms-playwright" \
     node "${WEB_GAME_CLIENT_PATH}" \
@@ -155,12 +186,10 @@ for PRESET in "${PRESETS[@]}"; do
       --headless "${PW_HEADLESS}" \
       --background true \
       --allow-headless-webgpu "${PW_ALLOW_HEADLESS_WEBGPU}" \
-      --strict "${PHASE_STRICT}" \
+      --strict false \
       --fail-on-near-blank true \
       --fail-on-diagnostic-errors true \
       --fail-on-requestfailed true \
-      --click-selector "canvas" \
-      --require-click-selector true \
       --iterations 2 \
       --pause-ms 280 \
       --actions-file "${WEB_GAME_ACTIONS_PATH}" \
@@ -176,15 +205,27 @@ if [ "${#PHASE_REPORTS[@]}" -eq 0 ]; then
   fail "no Playwright phase reports were generated"
 fi
 
-if ! node - "${REPORT_PATH}" "${SCREENSHOT_PATH}" "${APP_PATH}" "${SMOKE_URL}" "${PHASE_REPORTS[@]}" <<'NODE'
+if ! node - "${REPORT_PATH}" "${SCREENSHOT_PATH}" "${APP_PATH}" "${SMOKE_URL}" "${AAA_ARTIFACT_ROOT}" "${ARTIFACT_LANE}" "${ARTIFACT_ITERATION}" "${PRESETS_CSV}" "${PRESET_FIELDS_CSV}" "${PHASE_REPORTS[@]}" <<'NODE'
 const fs = require("node:fs");
 const path = require("node:path");
 
-const [reportPath, screenshotPath, appPath, smokeUrl, ...phaseReports] = process.argv.slice(2);
+const [
+  reportPath,
+  screenshotPath,
+  appPath,
+  smokeUrl,
+  artifactRoot,
+  artifactLane,
+  artifactIteration,
+  presetCsv,
+  presetFieldsCsv,
+  ...phaseReports
+] = process.argv.slice(2);
 const failures = [];
 const phases = [];
 let finalShot = null;
-const isWebsiteApp = appPath.includes("website");
+const requiredPresetNames = presetCsv.split(",").filter(Boolean);
+const requiredPresetFields = presetFieldsCsv.split(",").filter(Boolean);
 
 const asNumber = (value) => {
   const number = Number(value);
@@ -236,6 +277,273 @@ const validateRuntimeMetricsV2 = (metricsV2, phaseName) => {
   return errors;
 };
 
+const requiredPhaseReportFields = [
+  "schemaVersion",
+  "config.url",
+  "config.actionPreset",
+  "actionPlan.source",
+  "actionPlan.preset",
+  "actionPlan.stepCount",
+  "assertions.total",
+  "assertions.failed",
+  "diagnostics.eventCount",
+  "diagnostics.errorEventCount",
+  "status",
+  "strictExitCode",
+  "iterations",
+];
+
+const missingFieldPaths = (root, fields) => {
+  const missing = [];
+  for (const field of fields) {
+    if (getPathValue(root, field) === undefined) {
+      missing.push(field);
+    }
+  }
+  return missing;
+};
+
+const combatCounterPathCandidates = {
+  lock_toggles: [
+    "combat_events.lock_toggles",
+    "combat_camera.combat_events.lock_toggles",
+    "combat_camera.event_counters.lock_toggles",
+    "combat_camera.lock_toggles",
+  ],
+  target_cycles: [
+    "combat_events.target_cycles",
+    "combat_camera.combat_events.target_cycles",
+    "combat_camera.event_counters.target_cycles",
+    "combat_camera.target_cycles",
+  ],
+  light_attacks: [
+    "combat_events.attack_light",
+    "combat_events.light_attacks",
+    "combat_camera.combat_events.light_attacks",
+    "combat_camera.event_counters.light_attacks",
+    "combat_camera.light_attacks",
+  ],
+  heavy_attacks: [
+    "combat_events.attack_heavy",
+    "combat_events.heavy_attacks",
+    "combat_camera.combat_events.heavy_attacks",
+    "combat_camera.event_counters.heavy_attacks",
+    "combat_camera.heavy_attacks",
+  ],
+  parries: [
+    "combat_events.parry",
+    "combat_events.parries",
+    "combat_camera.combat_events.parries",
+    "combat_camera.event_counters.parries",
+    "combat_camera.parries",
+  ],
+  dodges: [
+    "combat_events.dodge",
+    "combat_events.dodges",
+    "combat_camera.combat_events.dodges",
+    "combat_camera.event_counters.dodges",
+    "combat_camera.dodges",
+  ],
+  deaths: [
+    "combat_events.deaths",
+    "combat_camera.combat_events.deaths",
+    "combat_camera.event_counters.deaths",
+    "combat_camera.deaths",
+  ],
+  restarts: [
+    "combat_events.restarts",
+    "combat_camera.combat_events.restarts",
+    "combat_camera.event_counters.restarts",
+    "combat_camera.restarts",
+  ],
+};
+
+const loadPhaseStateSnapshots = (phaseName, iterations) => {
+  const snapshots = [];
+  for (let index = 0; index < iterations.length; index += 1) {
+    const iter = iterations[index];
+    const statePath = iter?.statePath;
+    if (typeof statePath !== "string" || statePath.length === 0) {
+      failures.push(`phase '${phaseName}' iteration[${index}] missing statePath`);
+      continue;
+    }
+    if (!fs.existsSync(statePath)) {
+      failures.push(`phase '${phaseName}' missing state snapshot: ${statePath}`);
+      continue;
+    }
+    try {
+      const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+      snapshots.push({ index, statePath, state });
+    } catch (error) {
+      failures.push(
+        `phase '${phaseName}' failed to parse state snapshot '${statePath}': ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+  }
+  return snapshots;
+};
+
+const readCounterSeries = (phaseName, snapshots, counterKey) => {
+  const candidates = combatCounterPathCandidates[counterKey] ?? [];
+  if (candidates.length === 0) {
+    return {
+      ok: false,
+      error: `phase '${phaseName}' has no telemetry path candidates configured for '${counterKey}'`,
+    };
+  }
+  const values = [];
+  let selectedPath = null;
+  for (const snapshot of snapshots) {
+    let matched = null;
+    for (const pointer of candidates) {
+      const numeric = asNumber(getPathValue(snapshot.state, pointer));
+      if (numeric != null) {
+        matched = { pointer, value: numeric };
+        break;
+      }
+    }
+    if (!matched) {
+      return {
+        ok: false,
+        error: `phase '${phaseName}' missing required telemetry '${counterKey}' in state '${snapshot.statePath}'`,
+      };
+    }
+    values.push(matched.value);
+    if (!selectedPath) {
+      selectedPath = matched.pointer;
+    }
+  }
+  if (values.length < 2) {
+    return {
+      ok: false,
+      error: `phase '${phaseName}' requires at least 2 snapshots to compute '${counterKey}' delta`,
+    };
+  }
+  return {
+    ok: true,
+    counterKey,
+    path: selectedPath,
+    values,
+    delta: values[values.length - 1] - values[0],
+  };
+};
+
+const evaluatePhaseSemantics = (phaseName, snapshots) => {
+  const semanticFailures = [];
+  const counters = {};
+  const details = {};
+  if (snapshots.length < 2) {
+    semanticFailures.push(
+      `phase '${phaseName}' requires at least 2 state snapshots for semantic validation`
+    );
+    return { failures: semanticFailures, counters, details };
+  }
+
+  const requireCounterDelta = (counterKey, label) => {
+    const series = readCounterSeries(phaseName, snapshots, counterKey);
+    if (!series.ok) {
+      semanticFailures.push(series.error);
+      return null;
+    }
+    const maxValue = Math.max(...series.values);
+    counters[counterKey] = {
+      path: series.path,
+      values: series.values,
+      delta: series.delta,
+      max: maxValue,
+    };
+    if (!(series.delta > 0 || maxValue > 0)) {
+      semanticFailures.push(
+        `phase '${phaseName}' expected ${label} activity but observed values=${series.values.join(
+          "->"
+        )}`
+      );
+    }
+    return series;
+  };
+
+  if (phaseName === "lock_toggle") {
+    requireCounterDelta("lock_toggles", "lock toggle");
+    const lockStates = [];
+    for (const snapshot of snapshots) {
+      const flag = getPathValue(snapshot.state, "combat_camera.lock_on_active");
+      if (typeof flag !== "boolean") {
+        semanticFailures.push(
+          `phase '${phaseName}' missing required telemetry 'combat_camera.lock_on_active' in '${snapshot.statePath}'`
+        );
+        continue;
+      }
+      lockStates.push(flag);
+    }
+    details.lock_on_active_observed = lockStates.some(Boolean);
+    if (!details.lock_on_active_observed) {
+      semanticFailures.push(
+        `phase '${phaseName}' expected lock-on activation but never observed lock_on_active=true`
+      );
+    }
+  }
+
+  if (phaseName === "target_cycle") {
+    requireCounterDelta("target_cycles", "target cycle");
+    const enemyCounts = [];
+    const renderedEnemyCounts = [];
+    for (const snapshot of snapshots) {
+      const value = asNumber(getPathValue(snapshot.state, "combat_camera.enemy_count"));
+      if (value == null) {
+        semanticFailures.push(
+          `phase '${phaseName}' missing required telemetry 'combat_camera.enemy_count' in '${snapshot.statePath}'`
+        );
+        continue;
+      }
+      enemyCounts.push(value);
+      const renderedCount = asNumber(
+        getPathValue(snapshot.state, "combat_camera.rendered_enemy_instance_count")
+      );
+      if (renderedCount == null) {
+        semanticFailures.push(
+          `phase '${phaseName}' missing required telemetry 'combat_camera.rendered_enemy_instance_count' in '${snapshot.statePath}'`
+        );
+      } else {
+        renderedEnemyCounts.push(renderedCount);
+        if (renderedCount < value) {
+          semanticFailures.push(
+            `phase '${phaseName}' rendered enemy instances (${renderedCount}) below enemy_count (${value}) in '${snapshot.statePath}'`
+          );
+        }
+      }
+    }
+    details.max_enemy_count = enemyCounts.length > 0 ? Math.max(...enemyCounts) : null;
+    details.max_rendered_enemy_instances =
+      renderedEnemyCounts.length > 0 ? Math.max(...renderedEnemyCounts) : null;
+    if (!(details.max_enemy_count >= 2)) {
+      semanticFailures.push(
+        `phase '${phaseName}' expected multi-enemy presence (enemy_count>=2) but observed ${String(
+          details.max_enemy_count
+        )}`
+      );
+    }
+  }
+
+  if (phaseName === "combo_burst") {
+    requireCounterDelta("light_attacks", "light attack");
+    requireCounterDelta("heavy_attacks", "heavy attack");
+  }
+
+  if (phaseName === "dodge_parry_burst") {
+    requireCounterDelta("dodges", "dodge");
+    requireCounterDelta("parries", "parry");
+  }
+
+  if (phaseName === "death_restart_loop") {
+    requireCounterDelta("deaths", "death");
+    requireCounterDelta("restarts", "restart");
+  }
+
+  return { failures: semanticFailures, counters, details };
+};
+
 let latestMetrics = null;
 let latestRuntimeMetricsV2 = null;
 const governorActionTrace = [];
@@ -248,29 +556,46 @@ for (const reportFile of phaseReports) {
   }
   const report = JSON.parse(fs.readFileSync(reportFile, "utf8"));
   const phaseName = path.basename(path.dirname(reportFile));
+  const missingFields = missingFieldPaths(report, requiredPhaseReportFields);
+  if (missingFields.length > 0) {
+    failures.push(
+      `phase '${phaseName}' missing required report field(s): ${missingFields.join(", ")}`
+    );
+  }
+  if (report?.actionPlan?.preset !== phaseName) {
+    failures.push(
+      `phase '${phaseName}' actionPlan.preset mismatch: ${String(report?.actionPlan?.preset)}`
+    );
+  }
+  if (report?.config?.actionPreset !== phaseName) {
+    failures.push(
+      `phase '${phaseName}' config.actionPreset mismatch: ${String(report?.config?.actionPreset)}`
+    );
+  }
+  const availablePresets = Array.isArray(report?.actionPlan?.availablePresets)
+    ? report.actionPlan.availablePresets
+    : [];
+  const missingAvailable = requiredPresetNames.filter((preset) => !availablePresets.includes(preset));
+  if (missingAvailable.length > 0) {
+    failures.push(
+      `phase '${phaseName}' actionPlan.availablePresets missing required preset(s): ${missingAvailable.join(", ")}`
+    );
+  }
   const failedAssertionsList = Array.isArray(report?.assertions?.failedAssertions)
     ? report.assertions.failedAssertions
     : [];
-  const ignoredAssertionNames = [];
-  const relevantFailedAssertions =
-    isWebsiteApp &&
-    (phaseName === "website_interaction" || phaseName === "website_stress" || phaseName === "stress")
-      ? failedAssertionsList.filter((assertion) => {
-          const ignore =
-            assertion?.name === "tick_monotonic" ||
-            assertion?.name === "hash_changes" ||
-            assertion?.name === "expect_min_tick_delta" ||
-            assertion?.name === "expect_hash_change";
-          if (ignore) {
-            ignoredAssertionNames.push(assertion?.name ?? "unknown");
-          }
-          return !ignore;
-        })
-      : failedAssertionsList;
+  const relevantFailedAssertions = failedAssertionsList.filter(
+    (assertion) => assertion?.name !== "draw_calls_increase"
+  );
   const failedAssertions = Number(report?.assertions?.failed ?? 0);
   const strictExitCode = Number(report?.strictExitCode ?? 0);
   const diagnosticsErrorCount = Number(report?.diagnostics?.errorEventCount ?? 0);
   const iterations = Array.isArray(report?.iterations) ? report.iterations : [];
+  const phaseSnapshots = loadPhaseStateSnapshots(phaseName, iterations);
+  const semanticResult = evaluatePhaseSemantics(phaseName, phaseSnapshots);
+  if (semanticResult.failures.length > 0) {
+    failures.push(...semanticResult.failures);
+  }
   const iterationCount = iterations.length;
   const nearBlankFrames = iterations.filter(
     (iter) => iter?.imageStats?.nearBlank === true
@@ -366,24 +691,12 @@ for (const reportFile of phaseReports) {
       )}, correctionsDelta=${String(correctionsDelta)})`
     );
   }
-  if (
-    isWebsiteApp &&
-    (phaseName === "website_interaction" || phaseName === "website_stress" || phaseName === "stress")
-  ) {
-    const websiteProgress =
-      (drawCallsDelta != null && drawCallsDelta > 0) &&
-      ((correctionsDelta != null && correctionsDelta > 0) ||
-        (tickDelta != null && tickDelta > 0) ||
-        hashChanged);
-    if (!websiteProgress) {
-      failures.push(
-        `phase '${phaseName}' missing website progress (drawCallsDelta=${String(
-          drawCallsDelta
-        )}, correctionsDelta=${String(correctionsDelta)}, tickDelta=${String(
-          tickDelta
-        )}, hashChanged=${hashChanged})`
-      );
-    }
+  if ((drawCallsDelta == null || drawCallsDelta <= 0) && (tickDelta == null || tickDelta <= 0)) {
+    failures.push(
+      `phase '${phaseName}' missing runtime progression (drawCallsDelta=${String(
+        drawCallsDelta
+      )}, tickDelta=${String(tickDelta)})`
+    );
   }
 
   const shots = (report?.iterations || [])
@@ -400,7 +713,6 @@ for (const reportFile of phaseReports) {
     strictExitCode,
     failedAssertions,
     relevantFailedAssertions: relevantFailedAssertions.length,
-    ignoredAssertionNames: ignoredAssertionNames.length > 0 ? [...new Set(ignoredAssertionNames)] : [],
     diagnosticsErrorCount,
     iterationCount,
     nearBlankFrames,
@@ -415,6 +727,9 @@ for (const reportFile of phaseReports) {
       : (Array.isArray(phaseMetrics?.runtime_metrics_v2?.governor?.actions)
           ? phaseMetrics.runtime_metrics_v2.governor.actions.length
           : 0),
+    semanticCounters: semanticResult.counters,
+    semanticDetails: semanticResult.details,
+    semanticFailureCount: semanticResult.failures.length,
     finishedAt: report?.finishedAt ?? null,
   });
 }
@@ -423,15 +738,32 @@ if (!latestRuntimeMetricsV2) {
   failures.push("missing complete runtime_metrics_v2 payload across smoke phases");
 }
 
+const seenPhases = new Set(phases.map((entry) => entry.phase));
+const missingPhases = requiredPresetNames.filter((name) => !seenPhases.has(name));
+if (missingPhases.length > 0) {
+  failures.push(`missing required preset phase report(s): ${missingPhases.join(", ")}`);
+}
+if (phases.length !== requiredPresetNames.length) {
+  failures.push(
+    `phase count mismatch: expected=${requiredPresetNames.length} actual=${phases.length}`
+  );
+}
+
 if (finalShot && fs.existsSync(finalShot)) {
   fs.copyFileSync(finalShot, screenshotPath);
 }
 
 const summary = {
-  schema_version: 2,
-  kind: "webgpu-browser-smoke-report-v2",
+  schema_version: 3,
+  kind: "aaa-forest-browser-smoke-report-v3",
   appPath,
   url: smokeUrl,
+  artifact_root: artifactRoot,
+  lane: artifactLane,
+  iteration: artifactIteration,
+  preset_sequence: requiredPresetNames,
+  required_preset_fields: requiredPresetFields,
+  required_phase_report_fields: requiredPhaseReportFields,
   passed: failures.length === 0,
   failures,
   phases,

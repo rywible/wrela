@@ -1,56 +1,185 @@
 {
   "schema_version": 1,
   "kind": "asset-generation-spec-v1",
+  "style_profile": "anime-redwood",
+  "biome": "redwood-forest",
   "jobs": [
     {
-      "id": "forest_ground",
+      "id": "redwood_trunk_hero_a",
       "kind": "mesh",
-      "prompt": "Forest clearing ground base mesh with gentle undulation and traversal-friendly topology",
+      "prompt": "Massive old-growth redwood trunk, deeply furrowed bark with vertical grooves, thick buttress roots, anime-stylized proportions with slightly exaggerated scale, warm reddish-brown bark, no foliage on trunk section, game-ready topology",
+      "style": "hero",
+      "seed": 100001,
+      "constraints": ["no-floaters", "deterministic-topology", "atlas-friendly-uv", "max-tris-15000"],
+      "output_group": "environment",
+      "lod_policy": "near-mid-far",
+      "material_policy": "pbr-bark",
+      "reference_bindings": ["redwood-forest"],
+      "pbr_textures": {
+        "albedo": { "resolution": 1024, "format": "rgba8" },
+        "normal": { "resolution": 1024, "format": "rgba8" },
+        "orm": { "resolution": 1024, "format": "rgba8" }
+      }
+    },
+    {
+      "id": "redwood_trunk_hero_b",
+      "kind": "mesh",
+      "prompt": "Tall straight redwood trunk variant, smoother bark with subtle fiber texture, slight lean, anime-stylized with painterly surface detail, warm cinnamon-brown, no branches below canopy line, game-ready topology",
+      "style": "hero",
+      "seed": 100002,
+      "constraints": ["no-floaters", "deterministic-topology", "atlas-friendly-uv", "max-tris-15000"],
+      "output_group": "environment",
+      "lod_policy": "near-mid-far",
+      "material_policy": "pbr-bark",
+      "reference_bindings": ["redwood-forest"],
+      "pbr_textures": {
+        "albedo": { "resolution": 1024, "format": "rgba8" },
+        "normal": { "resolution": 1024, "format": "rgba8" },
+        "orm": { "resolution": 1024, "format": "rgba8" }
+      }
+    },
+    {
+      "id": "redwood_trunk_hero_c",
+      "kind": "mesh",
+      "prompt": "Ancient redwood trunk with fire scar hollow, charred interior visible, thick bark plates, anime-stylized with dramatic silhouette, dark umber base transitioning to red-brown, game-ready topology",
+      "style": "hero",
+      "seed": 100003,
+      "constraints": ["no-floaters", "deterministic-topology", "atlas-friendly-uv", "max-tris-18000"],
+      "output_group": "environment",
+      "lod_policy": "near-mid-far",
+      "material_policy": "pbr-bark",
+      "reference_bindings": ["redwood-forest"],
+      "pbr_textures": {
+        "albedo": { "resolution": 1024, "format": "rgba8" },
+        "normal": { "resolution": 1024, "format": "rgba8" },
+        "orm": { "resolution": 1024, "format": "rgba8" }
+      }
+    },
+    {
+      "id": "redwood_canopy",
+      "kind": "mesh",
+      "prompt": "Redwood canopy cluster, dense needle foliage in flat spray formations, anime-stylized with soft volumetric leaf cards, deep emerald green with lighter tips catching light, alpha-tested leaf planes, game-ready topology",
+      "style": "hero",
+      "seed": 100004,
+      "constraints": ["no-floaters", "alpha-test-friendly", "atlas-friendly-uv", "max-tris-12000"],
+      "output_group": "environment",
+      "lod_policy": "near-mid-far",
+      "material_policy": "pbr-foliage-alpha",
+      "reference_bindings": ["redwood-forest"],
+      "pbr_textures": {
+        "albedo": { "resolution": 1024, "format": "rgba8" },
+        "normal": { "resolution": 512, "format": "rgba8" },
+        "orm": { "resolution": 512, "format": "rgba8" }
+      }
+    },
+    {
+      "id": "forest_floor",
+      "kind": "mesh",
+      "prompt": "Redwood forest floor ground plane with gentle undulation, scattered needle litter and small debris, anime-stylized with soft organic shapes, traversal-friendly topology for character movement, warm brown earth tones",
       "style": "balanced",
-      "constraints": ["no-floaters", "deterministic-topology"],
+      "seed": 100005,
+      "constraints": ["no-floaters", "deterministic-topology", "walkable-surface", "max-tris-8000"],
       "output_group": "environment",
       "lod_policy": "near-mid-far",
       "material_policy": "pbr-ground",
-      "reference_bindings": ["forest"]
+      "reference_bindings": ["redwood-forest"],
+      "pbr_textures": {
+        "albedo": { "resolution": 1024, "format": "rgba8" },
+        "normal": { "resolution": 1024, "format": "rgba8" },
+        "orm": { "resolution": 1024, "format": "rgba8" }
+      }
     },
     {
-      "id": "forest_tree_cluster",
+      "id": "undergrowth_fern",
       "kind": "mesh",
-      "prompt": "Stylized conifer cluster mesh kit for forest edge silhouette",
+      "prompt": "Sword fern cluster for redwood forest undergrowth, anime-stylized with broad graceful fronds, bright green with subtle yellow-green highlights, alpha-tested frond planes arranged in rosette, game-ready topology",
       "style": "balanced",
-      "constraints": ["no-intersections", "atlas-friendly-uv"],
+      "seed": 100006,
+      "constraints": ["no-floaters", "alpha-test-friendly", "atlas-friendly-uv", "max-tris-4000"],
       "output_group": "environment",
       "lod_policy": "near-mid-far",
-      "material_policy": "pbr-foliage",
-      "reference_bindings": ["forest"]
+      "material_policy": "pbr-foliage-alpha",
+      "reference_bindings": ["redwood-forest"],
+      "pbr_textures": {
+        "albedo": { "resolution": 512, "format": "rgba8" },
+        "normal": { "resolution": 512, "format": "rgba8" },
+        "orm": { "resolution": 512, "format": "rgba8" }
+      }
     },
     {
-      "id": "ground_albedo",
-      "kind": "texture",
-      "prompt": "Forest floor albedo texture map with moss and soil breakup",
+      "id": "forest_rock_large",
+      "kind": "mesh",
+      "prompt": "Large mossy boulder for redwood forest, anime-stylized with smooth rounded forms and painted moss patches, grey granite base with green-yellow moss on top and north face, game-ready topology",
       "style": "balanced",
-      "constraints": ["tileable", "no-text"],
-      "output_group": "textures",
-      "lod_policy": "texture-mips",
-      "material_policy": "pbr-ground",
-      "reference_bindings": ["forest"]
+      "seed": 100007,
+      "constraints": ["no-floaters", "deterministic-topology", "atlas-friendly-uv", "max-tris-6000"],
+      "output_group": "environment",
+      "lod_policy": "near-mid-far",
+      "material_policy": "pbr-rock-moss",
+      "reference_bindings": ["redwood-forest"],
+      "pbr_textures": {
+        "albedo": { "resolution": 1024, "format": "rgba8" },
+        "normal": { "resolution": 1024, "format": "rgba8" },
+        "orm": { "resolution": 1024, "format": "rgba8" }
+      }
     },
     {
-      "id": "ground_normal",
-      "kind": "texture",
-      "prompt": "Forest floor normal texture map matching albedo breakup",
+      "id": "forest_rock_small",
+      "kind": "mesh",
+      "prompt": "Small scattered rocks for redwood forest floor, anime-stylized with simple rounded shapes, dark grey with lichen spots, cluster of 3-4 rocks on shared base, game-ready topology",
       "style": "balanced",
-      "constraints": ["tileable", "no-artifacts"],
-      "output_group": "textures",
-      "lod_policy": "texture-mips",
-      "material_policy": "pbr-ground",
-      "reference_bindings": ["forest"]
+      "seed": 100008,
+      "constraints": ["no-floaters", "deterministic-topology", "atlas-friendly-uv", "max-tris-2000"],
+      "output_group": "environment",
+      "lod_policy": "near-mid-far",
+      "material_policy": "pbr-rock",
+      "reference_bindings": ["redwood-forest"],
+      "pbr_textures": {
+        "albedo": { "resolution": 512, "format": "rgba8" },
+        "normal": { "resolution": 512, "format": "rgba8" },
+        "orm": { "resolution": 512, "format": "rgba8" }
+      }
+    },
+    {
+      "id": "fallen_log",
+      "kind": "mesh",
+      "prompt": "Fallen redwood log partially decomposed, anime-stylized with soft mossy growth on top, broken end revealing reddish heartwood, ferns growing from crevices, horizontal obstacle for gameplay traversal, game-ready topology",
+      "style": "hero",
+      "seed": 100009,
+      "constraints": ["no-floaters", "deterministic-topology", "atlas-friendly-uv", "max-tris-10000"],
+      "output_group": "environment",
+      "lod_policy": "near-mid-far",
+      "material_policy": "pbr-bark-moss",
+      "reference_bindings": ["redwood-forest"],
+      "pbr_textures": {
+        "albedo": { "resolution": 1024, "format": "rgba8" },
+        "normal": { "resolution": 1024, "format": "rgba8" },
+        "orm": { "resolution": 1024, "format": "rgba8" }
+      }
+    },
+    {
+      "id": "tree_stump",
+      "kind": "mesh",
+      "prompt": "Old redwood tree stump with visible growth rings, anime-stylized with exaggerated ring detail, moss and small ferns growing from bark, warm brown tones, flat top suitable as gameplay platform, game-ready topology",
+      "style": "balanced",
+      "seed": 100010,
+      "constraints": ["no-floaters", "deterministic-topology", "atlas-friendly-uv", "max-tris-5000"],
+      "output_group": "environment",
+      "lod_policy": "near-mid-far",
+      "material_policy": "pbr-bark-moss",
+      "reference_bindings": ["redwood-forest"],
+      "pbr_textures": {
+        "albedo": { "resolution": 512, "format": "rgba8" },
+        "normal": { "resolution": 512, "format": "rgba8" },
+        "orm": { "resolution": 512, "format": "rgba8" }
+      }
     },
     {
       "id": "hud_frame",
       "kind": "ui",
-      "prompt": "Forest combat HUD frame with readability-first bars and sockets",
+      "prompt": "Forest combat HUD frame with readability-first bars and sockets, redwood bark texture border accents",
       "style": "high",
+      "seed": 100011,
       "constraints": ["high-contrast", "safe-areas"],
       "output_group": "ui",
       "lod_policy": "ui-static",
@@ -60,13 +189,14 @@
     {
       "id": "resonance_slash_card",
       "kind": "vfx",
-      "prompt": "Resonance slash VFX card texture for sword trail and hit flash",
+      "prompt": "Resonance slash VFX card texture for sword trail and hit flash, warm amber energy with forest spirit motif",
       "style": "high",
+      "seed": 100012,
       "constraints": ["premultiplied-alpha-friendly", "no-text"],
       "output_group": "vfx",
       "lod_policy": "vfx-mips",
       "material_policy": "additive",
-      "reference_bindings": ["hero", "forest"]
+      "reference_bindings": ["hero", "redwood-forest"]
     }
   ]
 }

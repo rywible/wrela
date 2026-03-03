@@ -370,7 +370,8 @@ impl AudioEngine {
         let click = self.ctx.create_oscillator().ok()?;
         click.set_type(OscillatorType::Sawtooth);
         click.frequency().set_value(800.0);
-        click.frequency()
+        click
+            .frequency()
             .exponential_ramp_to_value_at_time(200.0, t + 0.03)
             .ok()?;
         click.connect_with_audio_node(&click_env).ok()?;
@@ -403,9 +404,7 @@ impl AudioEngine {
         env.gain()
             .linear_ramp_to_value_at_time(vol, t + 0.05)
             .ok()?;
-        env.gain()
-            .set_value_at_time(vol, t + duration * 0.6)
-            .ok()?;
+        env.gain().set_value_at_time(vol, t + duration * 0.6).ok()?;
         env.gain()
             .exponential_ramp_to_value_at_time(0.001, t + duration)
             .ok()?;
@@ -424,9 +423,7 @@ impl AudioEngine {
         let lfo_depth = self.ctx.create_gain().ok()?;
         lfo_depth.gain().set_value(0.3); // tremolo depth
         lfo.connect_with_audio_node(&lfo_depth).ok()?;
-        lfo_depth
-            .connect_with_audio_param(&trem_gain.gain())
-            .ok()?;
+        lfo_depth.connect_with_audio_param(&trem_gain.gain()).ok()?;
         lfo.start_with_when(t).ok()?;
         lfo.stop_with_when(t + duration + 0.01).ok()?;
 
@@ -482,9 +479,7 @@ impl AudioEngine {
         // --- Wind layer: detuned oscillators through bandpass ---
         let wind_gain = self.ctx.create_gain().ok()?;
         wind_gain.gain().set_value(0.04);
-        wind_gain
-            .connect_with_audio_node(&self.master_gain)
-            .ok()?;
+        wind_gain.connect_with_audio_node(&self.master_gain).ok()?;
 
         let wind_bp = self.ctx.create_biquad_filter().ok()?;
         wind_bp.set_type(BiquadFilterType::Bandpass);
@@ -532,9 +527,7 @@ impl AudioEngine {
         // --- Bird-like chirps: high-frequency sine with amplitude LFO ---
         let bird_gain = self.ctx.create_gain().ok()?;
         bird_gain.gain().set_value(0.0); // modulated by LFO
-        bird_gain
-            .connect_with_audio_node(&self.master_gain)
-            .ok()?;
+        bird_gain.connect_with_audio_node(&self.master_gain).ok()?;
 
         let bird_osc = self.ctx.create_oscillator().ok()?;
         bird_osc.set_type(OscillatorType::Sine);
@@ -560,7 +553,9 @@ impl AudioEngine {
         bird_freq_lfo.frequency().set_value(6.0);
         let bird_freq_depth = self.ctx.create_gain().ok()?;
         bird_freq_depth.gain().set_value(300.0);
-        bird_freq_lfo.connect_with_audio_node(&bird_freq_depth).ok()?;
+        bird_freq_lfo
+            .connect_with_audio_node(&bird_freq_depth)
+            .ok()?;
         bird_freq_depth
             .connect_with_audio_param(&bird_osc.frequency())
             .ok()?;

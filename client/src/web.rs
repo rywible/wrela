@@ -2,9 +2,11 @@ use crate::input::InputButtons;
 use crate::key_input_wiring::handle_key_input_state;
 use crate::manifest_validation::{
     AnimationContractLoadSummary, AssetFactoryManifestLoadSummary, AssetManifestLoadSummary,
+    SceneLayoutManifest, collect_unique_scene_assets,
     parse_and_validate_animation_manifests_from_json,
     parse_and_validate_asset_factory_manifests_from_json,
     parse_and_validate_asset_pack_manifests_from_json,
+    parse_and_validate_scene_layout_manifest, validate_glb_asset,
 };
 use crate::protocol::{Envelope, MessageTypeV5, PROTOCOL_V5, PROTOCOL_V5_SUB_VERSION};
 use crate::protocol_metadata::{ProtocolContract, parse_protocol_contract};
@@ -55,13 +57,15 @@ const ANIMATION_CLIP_BUNDLE_FILE: &str = "animation-clip-bundle-v2.json";
 const ANIMATION_GRAPH_CONTRACT_FILE: &str = "animation-graph-contract-v2.json";
 const FLORA_SIM_CONTRACT_FILE: &str = "flora-sim-contract-v1.json";
 const ANIMATION_QUALITY_REPORT_FILE: &str = "animation-quality-report-v2.json";
+const PLAYER_HERO_GLB_FILE: &str = "assets/generated/characters/player_character.glb";
+const SCENE_LAYOUT_MANIFEST_FILE: &str = "assets/generated/environment/forest-scene-layout-v1.json";
+const ENVIRONMENT_ASSET_DIR: &str = "assets/generated/environment";
 const MAX_COLLECTIBLES: usize = u32::BITS as usize;
 const MAX_3D_INSTANCES: usize = 1024;
 /// Size of one ModelEntry in the storage buffer: two mat4x4<f32> = 128 bytes.
 const MODEL_ENTRY_SIZE: u64 = 128;
 /// Size of the joint palette storage buffer: MAX_SKINNING_JOINTS * 64 bytes (one mat4x4<f32> per joint).
-const JOINT_PALETTE_BUFFER_SIZE: u64 =
-    crate::mesh::MAX_SKINNING_JOINTS as u64 * 64;
+const JOINT_PALETTE_BUFFER_SIZE: u64 = crate::mesh::MAX_SKINNING_JOINTS as u64 * 64;
 const DEFAULT_MMO_ROLE: &str = "world";
 const RUNTIME_METRICS_SCHEMA_VERSION: u32 = 2;
 const GOVERNOR_ACTION_TRACE_LIMIT: usize = 128;
@@ -71,6 +75,10 @@ const VOLUMETRIC_STEPS_DEFAULT: u32 = 64;
 const VOLUMETRIC_STEPS_MIN: u32 = 24;
 const VOLUMETRIC_STEPS_MAX: u32 = 96;
 const ANIMATION_PHASE_TICK_Q16: i32 = 4096;
+const DEFAULT_FOREST_ENEMY_INSTANCE_COUNT: usize = 2;
+const PLAYER_STATE_DODGE: i32 = 3;
+const PLAYER_STATE_ATTACK: i32 = 4;
+const PLAYER_STATE_PARRY_ACTIVE: i32 = 6;
 
 thread_local! {
     static APP_RUNTIME: RefCell<Option<Rc<RefCell<Runtime>>>> = const { RefCell::new(None) };
@@ -141,6 +149,18 @@ struct RuntimeTelemetry {
     budget_outcomes: Vec<RuntimeFrameBudgetOutcome>,
     budget_counters: RuntimeFrameBudgetCounters,
     last_budget_outcome: Option<RuntimeFrameBudgetOutcome>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct RuntimeCombatEventTelemetry {
+    lock_toggle_count: u64,
+    target_cycle_count: u64,
+    attack_light_count: u64,
+    attack_heavy_count: u64,
+    parry_count: u64,
+    dodge_count: u64,
+    death_count: u64,
+    restart_count: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -549,7 +569,11 @@ struct FrameUniform3D {
     ambient: [f32; 4],
     time: [f32; 4],
     fog_color_and_start: [f32; 4], // xyz = fog color (linear), w = fog start distance
-    fog_params: [f32; 4],         // x = fog end, y = fog density, z = fog height falloff, w = unused
+    fog_params: [f32; 4], // x = fog end, y = fog density, z = fog height falloff, w = unused
+    // Wind parameters: x = time, y = strength, z = turbulence, w = unused
+    wind_params: [f32; 4],
+    // Wind direction: xyz = normalized direction, w = unused
+    wind_dir: [f32; 4],
 }
 
 #[repr(C)]
@@ -657,6 +681,10 @@ struct CameraUniform {
     time: vec4<f32>,
     fog_color_and_start: vec4<f32>,  // xyz = fog color (linear), w = fog start distance
     fog_params: vec4<f32>,           // x = fog end, y = fog density, z = fog height falloff
+    // Wind parameters: x = time, y = strength, z = turbulence, w = unused
+    wind_params: vec4<f32>,
+    // Wind direction: xyz = direction, w = unused
+    wind_dir: vec4<f32>,
 };
 
 struct ModelEntry {
@@ -682,13 +710,14 @@ struct MaterialUniforms {
 @group(2) @binding(3) var material_sampler: sampler;
 @group(2) @binding(4) var<uniform> material: MaterialUniforms;
 
-const SHADOW_CASCADE_COUNT: u32 = 2u;
-const SHADOW_CASCADE_RESOLUTION: f32 = 1024.0;
-const SHADOW_ATLAS_WIDTH: f32 = 2048.0;
+const SHADOW_CASCADE_COUNT: u32 = 3u;
+const SHADOW_CASCADE_RESOLUTION: f32 = 2048.0;
+const SHADOW_ATLAS_WIDTH: f32 = 6144.0;
 
 struct ShadowData {
     light_view_proj_0: mat4x4<f32>,
     light_view_proj_1: mat4x4<f32>,
+    light_view_proj_2: mat4x4<f32>,
     cascade_splits: vec4<f32>,
     bias: vec4<f32>,
 };
@@ -703,6 +732,8 @@ struct VertexInput {
     @location(2) uv: vec2<f32>,
     @location(3) joint_indices: vec4<u32>,
     @location(4) joint_weights: vec4<f32>,
+    @location(5) vertex_color: vec4<f32>,
+    @location(6) tangent: vec4<f32>,
     @builtin(instance_index) instance_id: u32,
 };
 
@@ -711,7 +742,46 @@ struct VertexOutput {
     @location(0) world_position: vec3<f32>,
     @location(1) world_normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
+    @location(3) world_tangent: vec3<f32>,
+    @location(4) tangent_handedness: f32,
 };
+
+// Wind displacement function — shared with shadow shader for consistency
+fn compute_wind_displacement(pos: vec3<f32>, wind_color: vec4<f32>, time: f32, wind_direction: vec3<f32>, strength: f32, turbulence: f32) -> vec3<f32> {
+    let trunk_weight = wind_color.r;
+    let branch_weight = wind_color.g;
+    let leaf_weight = wind_color.b;
+    let phase_offset = wind_color.a;
+
+    // If no wind weights, skip entirely
+    let total_weight = trunk_weight + branch_weight + leaf_weight;
+    if (total_weight < 0.001) {
+        return vec3<f32>(0.0);
+    }
+
+    // Gust cycle: slow sine modulation (period ~8 seconds)
+    let gust = sin(time * 0.7854) * 0.5 + 0.5; // 2*PI/8 = 0.7854
+    let effective_strength = strength * (0.6 + 0.4 * gust);
+
+    // Trunk sway: slow, large displacement along wind direction
+    let trunk_phase = time * 1.2 + phase_offset * 6.283;
+    let trunk_sway = wind_direction * sin(trunk_phase) * trunk_weight * effective_strength;
+
+    // Branch oscillation: medium frequency, perpendicular-ish
+    let branch_phase = time * 3.5 + phase_offset * 12.566;
+    let branch_perp = normalize(vec3<f32>(-wind_direction.z, 0.0, wind_direction.x));
+    let branch_osc = (wind_direction * sin(branch_phase) * 0.5 + branch_perp * cos(branch_phase * 1.3) * 0.3) * branch_weight * effective_strength * 0.5;
+
+    // Leaf flutter: high frequency, small chaotic displacement
+    let leaf_phase = time * 8.0 + phase_offset * 25.13;
+    let leaf_disp = vec3<f32>(
+        sin(leaf_phase * 1.1 + pos.x * 2.0) * 0.3,
+        sin(leaf_phase * 1.7 + pos.y * 3.0) * 0.15,
+        cos(leaf_phase * 0.9 + pos.z * 2.5) * 0.3
+    ) * leaf_weight * effective_strength * turbulence * 0.3;
+
+    return trunk_sway + branch_osc + leaf_disp;
+}
 
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
@@ -723,6 +793,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
                    + in.joint_weights[2] + in.joint_weights[3];
     var skinned_pos: vec4<f32>;
     var skinned_normal: vec3<f32>;
+    var skinned_tangent: vec3<f32>;
     if (weight_sum > 0.0) {
         let skin_matrix = joint_palette[in.joint_indices[0]] * in.joint_weights[0]
                         + joint_palette[in.joint_indices[1]] * in.joint_weights[1]
@@ -730,15 +801,30 @@ fn vs_main(in: VertexInput) -> VertexOutput {
                         + joint_palette[in.joint_indices[3]] * in.joint_weights[3];
         skinned_pos = skin_matrix * vec4<f32>(in.position, 1.0);
         skinned_normal = (skin_matrix * vec4<f32>(in.normal, 0.0)).xyz;
+        skinned_tangent = (skin_matrix * vec4<f32>(in.tangent.xyz, 0.0)).xyz;
     } else {
         skinned_pos = vec4<f32>(in.position, 1.0);
         skinned_normal = in.normal;
+        skinned_tangent = in.tangent.xyz;
     }
+
+    // Apply wind displacement after skinning but before model transform
+    let wind_offset = compute_wind_displacement(
+        skinned_pos.xyz,
+        in.vertex_color,
+        camera.wind_params.x,   // time
+        camera.wind_dir.xyz,    // direction
+        camera.wind_params.y,   // strength
+        camera.wind_params.z    // turbulence
+    );
+    skinned_pos = vec4<f32>(skinned_pos.xyz + wind_offset, skinned_pos.w);
 
     let world_pos = entry.model * skinned_pos;
     out.world_position = world_pos.xyz;
     out.clip_position = camera.view_proj * world_pos;
     out.world_normal = normalize((entry.normal_model * vec4<f32>(skinned_normal, 0.0)).xyz);
+    out.world_tangent = normalize((entry.model * vec4<f32>(skinned_tangent, 0.0)).xyz);
+    out.tangent_handedness = in.tangent.w;
     out.uv = in.uv;
     return out;
 }
@@ -769,28 +855,44 @@ fn geometry_smith(normal: vec3<f32>, view: vec3<f32>, light: vec3<f32>, roughnes
     return geometry_schlick_ggx(n_dot_v, roughness) * geometry_schlick_ggx(n_dot_l, roughness);
 }
 
-// Compute a TBN matrix from screen-space derivatives for normal mapping.
-// This allows normal maps to work even without explicit tangent vertex attributes.
-fn compute_tbn(world_pos: vec3<f32>, world_normal: vec3<f32>, uv: vec2<f32>) -> mat3x3<f32> {
+// Compute a TBN matrix from vertex tangent attributes for accurate normal mapping.
+// Falls back to screen-space derivatives when the tangent vector is degenerate.
+fn compute_tbn(world_tangent: vec3<f32>, world_normal: vec3<f32>, handedness: f32, world_pos: vec3<f32>, uv: vec2<f32>) -> mat3x3<f32> {
+    let n = normalize(world_normal);
+    let tangent_len = length(world_tangent);
+
+    // dpdx/dpdy must be called outside of non-uniform branches (WGSL rule).
     let dp1 = dpdx(world_pos);
     let dp2 = dpdy(world_pos);
     let duv1 = dpdx(uv);
     let duv2 = dpdy(uv);
 
-    let n = normalize(world_normal);
-    let det = duv1.x * duv2.y - duv1.y * duv2.x;
-    let inv_det = select(1.0 / det, 0.0, abs(det) < 0.0001);
-    let tangent = normalize((dp1 * duv2.y - dp2 * duv1.y) * inv_det);
-    let bitangent = normalize((dp2 * duv1.x - dp1 * duv2.x) * inv_det);
+    var t: vec3<f32>;
+    var b: vec3<f32>;
+    if (tangent_len > 0.001) {
+        // Gram-Schmidt re-orthogonalize tangent against normal
+        let raw_t = normalize(world_tangent);
+        t = normalize(raw_t - n * dot(n, raw_t));
+        b = cross(n, t) * handedness;
+    } else {
+        // Fallback: screen-space derivative method
+        let det = duv1.x * duv2.y - duv1.y * duv2.x;
+        let inv_det = select(1.0 / det, 0.0, abs(det) < 0.0001);
+        t = normalize((dp1 * duv2.y - dp2 * duv1.y) * inv_det);
+        b = normalize((dp2 * duv1.x - dp1 * duv2.x) * inv_det);
+    }
 
-    return mat3x3<f32>(tangent, bitangent, n);
+    return mat3x3<f32>(t, b, n);
 }
 
 fn get_light_view_proj(cascade_index: u32) -> mat4x4<f32> {
     if cascade_index == 0u {
         return shadow_data.light_view_proj_0;
     }
-    return shadow_data.light_view_proj_1;
+    if cascade_index == 1u {
+        return shadow_data.light_view_proj_1;
+    }
+    return shadow_data.light_view_proj_2;
 }
 
 fn sample_shadow_pcf(world_pos: vec3<f32>, normal: vec3<f32>, cascade_index: u32) -> f32 {
@@ -824,21 +926,36 @@ fn sample_shadow_pcf(world_pos: vec3<f32>, normal: vec3<f32>, cascade_index: u32
         clamped_uv.y
     );
 
-    // 3x3 PCF kernel for soft shadow edges
+    // 5x5 Poisson disc PCF for softer shadow edges (25 samples)
     let texel_size = vec2<f32>(1.0 / SHADOW_ATLAS_WIDTH, 1.0 / SHADOW_CASCADE_RESOLUTION);
     var shadow_sum: f32 = 0.0;
-    for (var y: i32 = -1; y <= 1; y = y + 1) {
-        for (var x: i32 = -1; x <= 1; x = x + 1) {
-            let offset = vec2<f32>(f32(x), f32(y)) * texel_size;
-            shadow_sum += textureSampleCompare(
-                shadow_atlas,
-                shadow_sampler,
-                atlas_uv + offset,
-                clamped_depth
-            );
-        }
-    }
-    return mix(shadow_sum / 9.0, 1.0, out_of_bounds);
+    shadow_sum += textureSampleCompare(shadow_atlas, shadow_sampler, atlas_uv + vec2<f32>(-2.17, -1.35) * texel_size, clamped_depth);
+    shadow_sum += textureSampleCompare(shadow_atlas, shadow_sampler, atlas_uv + vec2<f32>(-0.63, -2.38) * texel_size, clamped_depth);
+    shadow_sum += textureSampleCompare(shadow_atlas, shadow_sampler, atlas_uv + vec2<f32>(1.12, -1.87) * texel_size, clamped_depth);
+    shadow_sum += textureSampleCompare(shadow_atlas, shadow_sampler, atlas_uv + vec2<f32>(2.34, -0.52) * texel_size, clamped_depth);
+    shadow_sum += textureSampleCompare(shadow_atlas, shadow_sampler, atlas_uv + vec2<f32>(0.54, -0.37) * texel_size, clamped_depth);
+    shadow_sum += textureSampleCompare(shadow_atlas, shadow_sampler, atlas_uv + vec2<f32>(-1.41, 0.25) * texel_size, clamped_depth);
+    shadow_sum += textureSampleCompare(shadow_atlas, shadow_sampler, atlas_uv + vec2<f32>(-0.08, 0.72) * texel_size, clamped_depth);
+    shadow_sum += textureSampleCompare(shadow_atlas, shadow_sampler, atlas_uv + vec2<f32>(1.67, 0.83) * texel_size, clamped_depth);
+    shadow_sum += textureSampleCompare(shadow_atlas, shadow_sampler, atlas_uv + vec2<f32>(-2.41, 0.93) * texel_size, clamped_depth);
+    shadow_sum += textureSampleCompare(shadow_atlas, shadow_sampler, atlas_uv + vec2<f32>(-0.92, -1.18) * texel_size, clamped_depth);
+    shadow_sum += textureSampleCompare(shadow_atlas, shadow_sampler, atlas_uv + vec2<f32>(0.21, 1.95) * texel_size, clamped_depth);
+    shadow_sum += textureSampleCompare(shadow_atlas, shadow_sampler, atlas_uv + vec2<f32>(-1.63, 1.87) * texel_size, clamped_depth);
+    shadow_sum += textureSampleCompare(shadow_atlas, shadow_sampler, atlas_uv + vec2<f32>(2.15, 1.78) * texel_size, clamped_depth);
+    shadow_sum += textureSampleCompare(shadow_atlas, shadow_sampler, atlas_uv + vec2<f32>(0.87, 2.41) * texel_size, clamped_depth);
+    shadow_sum += textureSampleCompare(shadow_atlas, shadow_sampler, atlas_uv + vec2<f32>(-0.38, -0.84) * texel_size, clamped_depth);
+    shadow_sum += textureSampleCompare(shadow_atlas, shadow_sampler, atlas_uv + vec2<f32>(1.53, -1.13) * texel_size, clamped_depth);
+    shadow_sum += textureSampleCompare(shadow_atlas, shadow_sampler, atlas_uv + vec2<f32>(-1.95, -0.63) * texel_size, clamped_depth);
+    shadow_sum += textureSampleCompare(shadow_atlas, shadow_sampler, atlas_uv + vec2<f32>(0.02, -1.52) * texel_size, clamped_depth);
+    shadow_sum += textureSampleCompare(shadow_atlas, shadow_sampler, atlas_uv + vec2<f32>(-0.71, 1.37) * texel_size, clamped_depth);
+    shadow_sum += textureSampleCompare(shadow_atlas, shadow_sampler, atlas_uv + vec2<f32>(1.28, 0.12) * texel_size, clamped_depth);
+    shadow_sum += textureSampleCompare(shadow_atlas, shadow_sampler, atlas_uv + vec2<f32>(-2.08, -1.92) * texel_size, clamped_depth);
+    shadow_sum += textureSampleCompare(shadow_atlas, shadow_sampler, atlas_uv + vec2<f32>(0.73, -2.31) * texel_size, clamped_depth);
+    shadow_sum += textureSampleCompare(shadow_atlas, shadow_sampler, atlas_uv + vec2<f32>(2.47, 0.41) * texel_size, clamped_depth);
+    shadow_sum += textureSampleCompare(shadow_atlas, shadow_sampler, atlas_uv + vec2<f32>(-1.17, 2.28) * texel_size, clamped_depth);
+    shadow_sum += textureSampleCompare(shadow_atlas, shadow_sampler, atlas_uv + vec2<f32>(0.0, 0.0) * texel_size, clamped_depth);
+
+    return mix(shadow_sum / 25.0, 1.0, out_of_bounds);
 }
 
 fn compute_shadow(world_pos: vec3<f32>, normal: vec3<f32>) -> f32 {
@@ -848,7 +965,9 @@ fn compute_shadow(world_pos: vec3<f32>, normal: vec3<f32>) -> f32 {
 
     // Select cascade based on view-space depth vs cascade splits
     var cascade_index: u32 = 0u;
-    if view_depth > shadow_data.cascade_splits.x {
+    if view_depth > shadow_data.cascade_splits.y {
+        cascade_index = 2u;
+    } else if view_depth > shadow_data.cascade_splits.x {
         cascade_index = 1u;
     }
 
@@ -857,21 +976,23 @@ fn compute_shadow(world_pos: vec3<f32>, normal: vec3<f32>) -> f32 {
 
 fn apply_fog(color: vec3<f32>, world_pos: vec3<f32>, cam_pos: vec3<f32>) -> vec3<f32> {
     let fog_color = camera.fog_color_and_start.xyz;
-    let fog_start = camera.fog_color_and_start.w;
-    let fog_end = camera.fog_params.x;
+    let fog_density = camera.fog_params.y;
     let fog_height_falloff = camera.fog_params.z;
 
     let dist = distance(world_pos, cam_pos);
+    let view_dir = normalize(world_pos - cam_pos);
 
-    // Linear distance fog factor
-    let linear_fog = clamp((dist - fog_start) / (fog_end - fog_start), 0.0, 1.0);
+    // Exponential height fog: thicker near ground, thins with altitude
+    // Based on: integral of density * exp(-height_falloff * y) along view ray
+    let height_factor = exp(-fog_height_falloff * max(world_pos.y, 0.0));
+    let fog_amount = clamp(1.0 - exp(-fog_density * dist * height_factor), 0.0, 1.0);
 
-    // Height-based falloff: fog is thicker near the ground, thins at altitude
-    let height_factor = exp(-max(world_pos.y, 0.0) * fog_height_falloff);
+    // In-scattering: forward-scatter glow when looking toward the sun
+    let sun_dir = normalize(-camera.light_dir.xyz);
+    let scatter_dot = max(dot(view_dir, sun_dir), 0.0);
+    let in_scatter = pow(scatter_dot, 8.0) * camera.light_color.xyz * 0.15;
 
-    let fog_amount = linear_fog * height_factor;
-
-    return mix(color, fog_color, fog_amount);
+    return mix(color, fog_color + in_scatter, fog_amount);
 }
 
 @fragment
@@ -890,7 +1011,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Sample normal map and compute perturbed normal via TBN
     let normal_sample = textureSample(normal_map, material_sampler, in.uv).rgb;
     let tangent_normal = normalize(normal_sample * 2.0 - vec3<f32>(1.0, 1.0, 1.0));
-    let tbn = compute_tbn(in.world_position, in.world_normal, in.uv);
+    let tbn = compute_tbn(in.world_tangent, in.world_normal, in.tangent_handedness, in.world_position, in.uv);
     let normal = normalize(tbn * tangent_normal);
 
     let view = normalize(camera.camera_pos.xyz - in.world_position);
@@ -1005,10 +1126,14 @@ fn generate_procedural_cube() -> crate::mesh::MeshData {
                 uv: uvs[i],
                 joint_indices: [0, 0, 0, 0],
                 joint_weights: [0.0, 0.0, 0.0, 0.0],
+                vertex_color: [0.0, 0.0, 0.0, 0.0],
+                tangent: [0.0, 0.0, 0.0, 1.0],
             });
         }
         indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     }
+
+    crate::mesh::compute_tangents(&mut vertices, &indices);
 
     MeshData {
         vertices,
@@ -1021,13 +1146,15 @@ fn generate_ground_plane() -> crate::mesh::MeshData {
     use crate::mesh::{MeshData, Vertex3D};
 
     let half = 20.0f32;
-    let vertices = vec![
+    let mut vertices = vec![
         Vertex3D {
             position: [-half, 0.0, -half],
             normal: [0.0, 1.0, 0.0],
             uv: [0.0, 0.0],
             joint_indices: [0, 0, 0, 0],
             joint_weights: [0.0, 0.0, 0.0, 0.0],
+            vertex_color: [0.0, 0.0, 0.0, 0.0],
+            tangent: [0.0, 0.0, 0.0, 1.0],
         },
         Vertex3D {
             position: [half, 0.0, -half],
@@ -1035,6 +1162,8 @@ fn generate_ground_plane() -> crate::mesh::MeshData {
             uv: [1.0, 0.0],
             joint_indices: [0, 0, 0, 0],
             joint_weights: [0.0, 0.0, 0.0, 0.0],
+            vertex_color: [0.0, 0.0, 0.0, 0.0],
+            tangent: [0.0, 0.0, 0.0, 1.0],
         },
         Vertex3D {
             position: [half, 0.0, half],
@@ -1042,6 +1171,8 @@ fn generate_ground_plane() -> crate::mesh::MeshData {
             uv: [1.0, 1.0],
             joint_indices: [0, 0, 0, 0],
             joint_weights: [0.0, 0.0, 0.0, 0.0],
+            vertex_color: [0.0, 0.0, 0.0, 0.0],
+            tangent: [0.0, 0.0, 0.0, 1.0],
         },
         Vertex3D {
             position: [-half, 0.0, half],
@@ -1049,13 +1180,99 @@ fn generate_ground_plane() -> crate::mesh::MeshData {
             uv: [0.0, 1.0],
             joint_indices: [0, 0, 0, 0],
             joint_weights: [0.0, 0.0, 0.0, 0.0],
+            vertex_color: [0.0, 0.0, 0.0, 0.0],
+            tangent: [0.0, 0.0, 0.0, 1.0],
         },
     ];
     let indices = vec![0, 1, 2, 0, 2, 3];
+    crate::mesh::compute_tangents(&mut vertices, &indices);
     MeshData {
         vertices,
         indices,
         material: crate::material::MaterialData::default(),
+    }
+}
+
+/// Generate a subdivided grid-floor quad for the preview mode.
+/// Spans from (-10, 0, -10) to (10, 0, 10) with a 20x20 grid subdivision.
+/// Uses a dark gray albedo with checkerboard pattern baked into the material.
+fn generate_preview_grid_plane() -> crate::mesh::MeshData {
+    use crate::mesh::Vertex3D;
+
+    let grid_cells = 20u32;
+    let half_extent = 10.0f32;
+    let cell_size = (2.0 * half_extent) / grid_cells as f32;
+    let vert_per_side = grid_cells + 1;
+
+    let mut vertices = Vec::with_capacity((vert_per_side * vert_per_side) as usize);
+    let mut indices = Vec::with_capacity((grid_cells * grid_cells * 6) as usize);
+
+    for iz in 0..vert_per_side {
+        for ix in 0..vert_per_side {
+            let x = -half_extent + ix as f32 * cell_size;
+            let z = -half_extent + iz as f32 * cell_size;
+            let u = ix as f32 / grid_cells as f32;
+            let v = iz as f32 / grid_cells as f32;
+            vertices.push(Vertex3D {
+                position: [x, 0.0, z],
+                normal: [0.0, 1.0, 0.0],
+                uv: [u, v],
+                joint_indices: [0, 0, 0, 0],
+                joint_weights: [0.0, 0.0, 0.0, 0.0],
+                vertex_color: [0.0, 0.0, 0.0, 0.0],
+                tangent: [0.0, 0.0, 0.0, 1.0],
+            });
+        }
+    }
+
+    for iz in 0..grid_cells {
+        for ix in 0..grid_cells {
+            let bl = iz * vert_per_side + ix;
+            let br = bl + 1;
+            let tl = bl + vert_per_side;
+            let tr = tl + 1;
+            indices.push(bl);
+            indices.push(br);
+            indices.push(tr);
+            indices.push(bl);
+            indices.push(tr);
+            indices.push(tl);
+        }
+    }
+
+    // Dark gray checkerboard albedo texture (8x8 pixels)
+    let tex_size = 8u32;
+    let mut albedo_data = Vec::with_capacity((tex_size * tex_size * 4) as usize);
+    for y in 0..tex_size {
+        for x in 0..tex_size {
+            let dark = (x + y) % 2 == 0;
+            let val = if dark { 60u8 } else { 80u8 };
+            albedo_data.extend_from_slice(&[val, val, val, 255]);
+        }
+    }
+
+    let albedo_image = crate::material::TextureImage {
+        width: tex_size,
+        height: tex_size,
+        rgba_data: albedo_data,
+    };
+
+    crate::mesh::compute_tangents(&mut vertices, &indices);
+
+    crate::mesh::MeshData {
+        vertices,
+        indices,
+        material: crate::material::MaterialData {
+            albedo_image: Some(albedo_image),
+            normal_image: None,
+            orm_image: None,
+            uniforms: crate::material::MaterialUniforms {
+                base_color_factor: [1.0, 1.0, 1.0, 1.0],
+                metallic_factor: 0.0,
+                roughness_factor: 0.95,
+                _padding: [0.0; 2],
+            },
+        },
     }
 }
 
@@ -1071,6 +1288,41 @@ struct ForestMeshBases {
     enemy: usize,
 }
 
+struct ForestSceneBuildResult {
+    instances: Vec<MeshInstance>,
+    player_instance_index: usize,
+    enemy_instance_indices: Vec<usize>,
+    camera_anchor_count: usize,
+    default_camera_anchor: RuntimeSceneCameraAnchor,
+    combat_arena_extents: RuntimeCombatArenaExtents,
+    fog_volume_count: usize,
+    lut_profile_id: String,
+}
+
+#[derive(Clone, Debug)]
+struct RuntimeSceneCameraAnchor {
+    id: String,
+    position: [f32; 3],
+    target: [f32; 3],
+    fov_y_radians: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RuntimeCombatArenaExtents {
+    min: [f32; 3],
+    max: [f32; 3],
+}
+
+impl RuntimeCombatArenaExtents {
+    fn center(self) -> [f32; 3] {
+        [
+            (self.min[0] + self.max[0]) * 0.5,
+            (self.min[1] + self.max[1]) * 0.5,
+            (self.min[2] + self.max[2]) * 0.5,
+        ]
+    }
+}
+
 /// Deterministic pseudo-random float in [0, 1) seeded from an integer index.
 /// Uses a simple hash to produce visual variety without runtime randomness.
 fn deterministic_hash_f32(seed: u32) -> f32 {
@@ -1083,10 +1335,14 @@ fn deterministic_hash_f32(seed: u32) -> f32 {
 }
 
 /// Build the forest clearing scene: ground, ring of trees, scattered rocks,
-/// player character, and rot stalker enemy. Returns a Vec of MeshInstance
-/// ready for the renderer's scene_3d_instances.
-fn build_forest_scene(bases: &ForestMeshBases) -> Vec<MeshInstance> {
-    use crate::camera_math::{mat4_identity, mat4_mul, mat4_rotation_y, mat4_scale, mat4_translation};
+/// player character, and rot stalker enemy.
+fn build_forest_scene(
+    bases: &ForestMeshBases,
+    enemy_instance_count: usize,
+) -> ForestSceneBuildResult {
+    use crate::camera_math::{
+        mat4_identity, mat4_mul, mat4_rotation_y, mat4_scale, mat4_translation,
+    };
 
     let mut instances = Vec::with_capacity(128);
 
@@ -1101,8 +1357,7 @@ fn build_forest_scene(bases: &ForestMeshBases) -> Vec<MeshInstance> {
     const TREE_COUNT: usize = 10;
     const TREE_RING_RADIUS: f32 = 9.0;
     for i in 0..TREE_COUNT {
-        let base_angle =
-            (i as f32) * (2.0 * std::f32::consts::PI / TREE_COUNT as f32);
+        let base_angle = (i as f32) * (2.0 * std::f32::consts::PI / TREE_COUNT as f32);
         let jitter = (deterministic_hash_f32(i as u32 * 7 + 100) - 0.5) * 0.3;
         let angle = base_angle + jitter;
 
@@ -1152,8 +1407,7 @@ fn build_forest_scene(bases: &ForestMeshBases) -> Vec<MeshInstance> {
     // 15 trees at radius 12-15 forming a dense backdrop
     const OUTER_TREE_COUNT: usize = 15;
     for i in 0..OUTER_TREE_COUNT {
-        let base_angle =
-            (i as f32) * (2.0 * std::f32::consts::PI / OUTER_TREE_COUNT as f32);
+        let base_angle = (i as f32) * (2.0 * std::f32::consts::PI / OUTER_TREE_COUNT as f32);
         let jitter = (deterministic_hash_f32(i as u32 * 7 + 600) - 0.5) * 0.35;
         let angle = base_angle + jitter;
         let radius = 12.0 + deterministic_hash_f32(i as u32 * 11 + 610) * 3.0;
@@ -1183,8 +1437,7 @@ fn build_forest_scene(bases: &ForestMeshBases) -> Vec<MeshInstance> {
     // 5 rocks at varying distances between 5.0 and 8.0
     const ROCK_COUNT: usize = 5;
     for i in 0..ROCK_COUNT {
-        let base_angle = (i as f32) * (2.0 * std::f32::consts::PI / ROCK_COUNT as f32)
-            + 0.4; // offset so rocks don't overlap tree positions
+        let base_angle = (i as f32) * (2.0 * std::f32::consts::PI / ROCK_COUNT as f32) + 0.4; // offset so rocks don't overlap tree positions
         let radius = 5.0 + deterministic_hash_f32(i as u32 * 17 + 300) * 3.0;
         let x = radius * base_angle.cos();
         let z = radius * base_angle.sin();
@@ -1220,25 +1473,75 @@ fn build_forest_scene(bases: &ForestMeshBases) -> Vec<MeshInstance> {
         });
     }
 
-    // ── Player character at origin (MUST be second-to-last) ──────────
+    // ── Player character at origin ────────────────────────────────────
+    let player_instance_index = instances.len();
     instances.push(MeshInstance {
         mesh_index: bases.player,
         model_matrix: mat4_identity(),
     });
 
-    // ── Rot Stalker enemy at (3.0, 0, 3.0) (MUST be last) ───────────
-    // Face the stalker toward the player (rotate ~225 degrees = 5*PI/4)
-    let stalker_facing = std::f32::consts::PI + std::f32::consts::FRAC_PI_4;
-    let stalker_model = mat4_mul(
-        mat4_translation(3.0, 0.0, 3.0),
-        mat4_rotation_y(stalker_facing),
-    );
-    instances.push(MeshInstance {
-        mesh_index: bases.enemy,
-        model_matrix: stalker_model,
-    });
+    // ── Enemy lane (multi-target hard cut) ─────────────────────────────
+    let spawn_count = enemy_instance_count.max(1);
+    let mut enemy_instance_indices = Vec::with_capacity(spawn_count);
+    let spawn_offsets = [
+        (3.0_f32, 3.0_f32),
+        (-2.8_f32, 2.6_f32),
+        (3.4_f32, -2.6_f32),
+        (-3.4_f32, -2.8_f32),
+    ];
+    for i in 0..spawn_count {
+        let (x, z) = spawn_offsets
+            .get(i)
+            .copied()
+            .unwrap_or_else(|| {
+                let angle = (i as f32) * std::f32::consts::TAU / spawn_count as f32;
+                (3.0 * angle.cos(), 3.0 * angle.sin())
+            });
+        let facing = x.atan2(z) + std::f32::consts::PI;
+        let model = mat4_mul(mat4_translation(x, 0.0, z), mat4_rotation_y(facing));
+        enemy_instance_indices.push(instances.len());
+        instances.push(MeshInstance {
+            mesh_index: bases.enemy,
+            model_matrix: model,
+        });
+    }
 
-    instances
+    ForestSceneBuildResult {
+        instances,
+        player_instance_index,
+        enemy_instance_indices,
+        camera_anchor_count: 1,
+        default_camera_anchor: RuntimeSceneCameraAnchor {
+            id: "legacy_default".to_string(),
+            position: [4.0, 3.0, 7.0],
+            target: [0.0, 1.0, 0.0],
+            fov_y_radians: std::f32::consts::FRAC_PI_4,
+        },
+        combat_arena_extents: RuntimeCombatArenaExtents {
+            min: [-10.0, -0.5, -10.0],
+            max: [10.0, 6.0, 10.0],
+        },
+        fog_volume_count: 0,
+        lut_profile_id: "legacy_default".to_string(),
+    }
+}
+
+fn configure_player_blend_state_mappings(
+    blender: &mut crate::animation_graph::AnimationBlender,
+    mapping: &crate::hero_clip_mapping::HeroRuntimeClipMapping,
+) {
+    let idle = mapping.idle_clip_index;
+    let walk = mapping.walk_clip_index;
+    let run = mapping.run_clip_index_or_walk();
+
+    blender.set_state_mapping(0, idle);
+    blender.set_state_mapping(1, walk);
+    blender.set_state_mapping(2, run);
+    blender.set_state_mapping(3, idle);
+    blender.set_state_mapping(4, idle);
+    blender.set_state_mapping(5, idle);
+    blender.set_state_mapping(6, idle);
+    blender.set_state_mapping(7, idle);
 }
 
 /// Upload a slice of procedural `MeshData` into the renderer, returning the
@@ -1266,9 +1569,10 @@ fn upload_procedural_meshes(
 
 /// Load all forest assets via procedural mesh generation and return the base
 /// mesh indices for each asset type. Clears any existing meshes so that
-/// indices start from 0. Fully synchronous — no async fetches needed.
-fn load_forest_procedural_assets(
+/// indices start from 0.
+async fn load_forest_procedural_assets(
     renderer: &mut WebGpuRenderer,
+    dist_root: &str,
 ) -> Result<ForestMeshBases, String> {
     renderer.meshes.clear();
     renderer.materials.clear();
@@ -1300,8 +1604,14 @@ fn load_forest_procedural_assets(
     // --- Tree: trunk = bark, foliage = leaf ------------------------------
     let mut tree_meshes = crate::procedural_meshes::generate_tree();
     if tree_meshes.len() >= 2 {
-        apply_texture(&mut tree_meshes[0].material, crate::procedural_textures::generate_bark_textures());
-        apply_texture(&mut tree_meshes[1].material, crate::procedural_textures::generate_leaf_textures());
+        apply_texture(
+            &mut tree_meshes[0].material,
+            crate::procedural_textures::generate_bark_textures(),
+        );
+        apply_texture(
+            &mut tree_meshes[1].material,
+            crate::procedural_textures::generate_leaf_textures(),
+        );
     }
     let tree_base = upload_procedural_meshes(renderer, &tree_meshes);
 
@@ -1313,13 +1623,61 @@ fn load_forest_procedural_assets(
     }
     let rock_base = upload_procedural_meshes(renderer, &rock_meshes);
 
-    // --- Player: skin textures (generated once, shared across parts) -----
-    let player_tex = crate::procedural_textures::generate_player_skin_textures();
-    let mut player_meshes = crate::procedural_meshes::generate_player_character();
-    for mesh in player_meshes.iter_mut() {
-        apply_texture(&mut mesh.material, player_tex.clone());
+    // --- Player: required hero GLB (hard cutover) ------------------------
+    let player_glb_url = resolve_dist_asset_url(dist_root, PLAYER_HERO_GLB_FILE);
+    let player_glb_bytes = crate::mesh::fetch_glb_bytes(player_glb_url.as_str())
+        .await
+        .map_err(|error| {
+            format!(
+                "hero GLB boot failure: required player asset was not fetchable at '{}': {}",
+                player_glb_url, error
+            )
+        })?;
+    let crate::mesh::GlbData {
+        meshes: player_meshes,
+        skeleton: player_skeleton,
+        animation_clips: player_clips,
+    } = crate::mesh::load_glb_with_animations(&player_glb_bytes).map_err(|error| {
+        format!(
+            "hero GLB boot failure: could not parse '{}' with mesh+skeleton+animation data: {}",
+            player_glb_url, error
+        )
+    })?;
+    if player_meshes.is_empty() {
+        return Err(format!(
+            "hero GLB boot failure: '{}' contains no meshes for player rendering",
+            player_glb_url
+        ));
     }
+    if player_clips.is_empty() {
+        return Err(format!(
+            "hero GLB boot failure: '{}' contains no animation clips; walking pipeline requires animated hero clips",
+            player_glb_url
+        ));
+    }
+    let player_skeleton = player_skeleton.ok_or_else(|| {
+        format!(
+            "hero GLB boot failure: '{}' contains no skeleton; walking pipeline requires a rigged hero skeleton",
+            player_glb_url
+        )
+    })?;
+    if player_skeleton.joints.is_empty() {
+        return Err(format!(
+            "hero GLB boot failure: '{}' contains an empty skeleton; walking pipeline requires at least one joint",
+            player_glb_url
+        ));
+    }
+    let player_clip_names = player_clips
+        .iter()
+        .map(|clip| clip.name.as_str())
+        .collect::<Vec<_>>();
+    let clip_bindings =
+        crate::hero_clip_mapping::resolve_hero_runtime_clip_mapping(&player_clip_names)
+            .map_err(|error| format!("hero GLB boot failure at '{}': {}", player_glb_url, error))?;
     let player_base = upload_procedural_meshes(renderer, &player_meshes);
+    configure_player_blend_state_mappings(&mut renderer.animation_blender, &clip_bindings);
+    renderer.skeletons.push((player_base, player_skeleton));
+    renderer.animation_clips.push((player_base, player_clips));
 
     // --- Enemy: enemy skin textures (generated once, shared across parts)
     let enemy_tex = crate::procedural_textures::generate_enemy_skin_textures();
@@ -1328,18 +1686,6 @@ fn load_forest_procedural_assets(
         apply_texture(&mut mesh.material, enemy_tex.clone());
     }
     let enemy_base = upload_procedural_meshes(renderer, &enemy_meshes);
-
-    // Register player skeleton and animation clips
-    let player_skeleton = crate::procedural_animation::generate_humanoid_skeleton(false);
-    let player_clips = crate::procedural_animation::generate_all_clips(player_skeleton.joints.len());
-    renderer.skeletons.push((player_base, player_skeleton));
-    renderer.animation_clips.push((player_base, player_clips));
-
-    // Register enemy skeleton and animation clips
-    let enemy_skeleton = crate::procedural_animation::generate_humanoid_skeleton(true);
-    let enemy_clips = crate::procedural_animation::generate_all_clips(enemy_skeleton.joints.len());
-    renderer.skeletons.push((enemy_base, enemy_skeleton));
-    renderer.animation_clips.push((enemy_base, enemy_clips));
 
     Ok(ForestMeshBases {
         ground: ground_base,
@@ -1350,6 +1696,283 @@ fn load_forest_procedural_assets(
         enemy: enemy_base,
     })
 }
+
+/// Mapping from asset filename to the base mesh index and number of primitives
+/// loaded from the corresponding GLB file.
+struct SceneAssetMeshEntry {
+    /// First mesh index in the renderer's mesh array for this asset.
+    base_index: usize,
+    /// Number of GPU mesh primitives produced by the GLB.
+    primitive_count: usize,
+}
+
+/// Load the scene layout manifest and all referenced environment GLBs, then
+/// build the scene instances. Also loads the player character and enemy meshes
+/// (unchanged from before). Returns the same `ForestSceneBuildResult` consumed
+/// by the rest of the init path.
+async fn load_scene_from_manifest(
+    renderer: &mut WebGpuRenderer,
+    dist_root: &str,
+    enemy_instance_count: usize,
+) -> Result<ForestSceneBuildResult, String> {
+    renderer.meshes.clear();
+    renderer.materials.clear();
+    renderer.skeletons.clear();
+    renderer.animation_clips.clear();
+
+    // ── 1. Fetch and parse the manifest ────────────────────────────────
+    let manifest_url =
+        resolve_dist_asset_url(dist_root, SCENE_LAYOUT_MANIFEST_FILE);
+    let manifest_text = fetch_text_asset(&manifest_url, "scene layout manifest").await.map_err(|error| {
+        format!(
+            "Forest scene boot failed: could not fetch scene layout manifest at '{}': {}",
+            manifest_url, error
+        )
+    })?;
+    let manifest = parse_and_validate_scene_layout_manifest(&manifest_text)?;
+
+    // ── 2. Collect unique assets and load each GLB once ────────────────
+    let unique_assets = collect_unique_scene_assets(&manifest);
+    let mut asset_map: HashMap<String, SceneAssetMeshEntry> = HashMap::new();
+
+    for asset_name in &unique_assets {
+        let asset_url = resolve_dist_asset_url(
+            dist_root,
+            &format!("{}/{}", ENVIRONMENT_ASSET_DIR, asset_name),
+        );
+        let glb_bytes = crate::mesh::fetch_glb_bytes(&asset_url)
+            .await
+            .map_err(|error| {
+                format!(
+                    "Forest scene boot failed: could not fetch asset '{}' at '{}': {}",
+                    asset_name, asset_url, error
+                )
+            })?;
+        // Validate GLB structure before uploading
+        validate_glb_asset(asset_name, &glb_bytes)?;
+        let meshes = crate::mesh::load_glb(&glb_bytes).map_err(|error| {
+            format!(
+                "Forest scene boot failed: asset '{}' GLB parse error: {}",
+                asset_name, error
+            )
+        })?;
+        let base = upload_procedural_meshes(renderer, &meshes);
+        asset_map.insert(
+            asset_name.clone(),
+            SceneAssetMeshEntry {
+                base_index: base,
+                primitive_count: meshes.len(),
+            },
+        );
+    }
+    if !asset_map.contains_key(&manifest.ground.asset) {
+        return Err(format!(
+            "Forest scene boot failed: manifest ground asset '{}' was not loaded from '{}'",
+            manifest.ground.asset, ENVIRONMENT_ASSET_DIR
+        ));
+    }
+
+    // ── 3. Load the player hero GLB (unchanged from procedural path) ───
+    let player_glb_url = resolve_dist_asset_url(dist_root, PLAYER_HERO_GLB_FILE);
+    let player_glb_bytes = crate::mesh::fetch_glb_bytes(player_glb_url.as_str())
+        .await
+        .map_err(|error| {
+            format!(
+                "hero GLB boot failure: required player asset was not fetchable at '{}': {}",
+                player_glb_url, error
+            )
+        })?;
+    let crate::mesh::GlbData {
+        meshes: player_meshes,
+        skeleton: player_skeleton,
+        animation_clips: player_clips,
+    } = crate::mesh::load_glb_with_animations(&player_glb_bytes).map_err(|error| {
+        format!(
+            "hero GLB boot failure: could not parse '{}' with mesh+skeleton+animation data: {}",
+            player_glb_url, error
+        )
+    })?;
+    if player_meshes.is_empty() {
+        return Err(format!(
+            "hero GLB boot failure: '{}' contains no meshes for player rendering",
+            player_glb_url
+        ));
+    }
+    if player_clips.is_empty() {
+        return Err(format!(
+            "hero GLB boot failure: '{}' contains no animation clips; walking pipeline requires animated hero clips",
+            player_glb_url
+        ));
+    }
+    let player_skeleton = player_skeleton.ok_or_else(|| {
+        format!(
+            "hero GLB boot failure: '{}' contains no skeleton; walking pipeline requires a rigged hero skeleton",
+            player_glb_url
+        )
+    })?;
+    if player_skeleton.joints.is_empty() {
+        return Err(format!(
+            "hero GLB boot failure: '{}' contains an empty skeleton; walking pipeline requires at least one joint",
+            player_glb_url
+        ));
+    }
+    let player_clip_names = player_clips
+        .iter()
+        .map(|clip| clip.name.as_str())
+        .collect::<Vec<_>>();
+    let clip_bindings =
+        crate::hero_clip_mapping::resolve_hero_runtime_clip_mapping(&player_clip_names)
+            .map_err(|error| format!("hero GLB boot failure at '{}': {}", player_glb_url, error))?;
+    let player_base = upload_procedural_meshes(renderer, &player_meshes);
+    configure_player_blend_state_mappings(&mut renderer.animation_blender, &clip_bindings);
+    renderer.skeletons.push((player_base, player_skeleton));
+    renderer
+        .animation_clips
+        .push((player_base, player_clips));
+
+    // ── 4. Load the enemy (procedural, same as before) ─────────────────
+    let enemy_tex = crate::procedural_textures::generate_enemy_skin_textures();
+    let mut enemy_meshes = crate::procedural_meshes::generate_enemy_character();
+    for mesh in enemy_meshes.iter_mut() {
+        fn apply_texture(
+            mat: &mut crate::material::MaterialData,
+            tex: crate::procedural_textures::ProceduralTexture,
+        ) {
+            mat.albedo_image = Some(tex.albedo);
+            mat.normal_image = Some(tex.normal);
+            mat.orm_image = Some(tex.orm);
+            mat.uniforms.base_color_factor = [1.0, 1.0, 1.0, 1.0];
+            mat.uniforms.metallic_factor = 1.0;
+            mat.uniforms.roughness_factor = 1.0;
+        }
+        apply_texture(&mut mesh.material, enemy_tex.clone());
+    }
+    let enemy_base = upload_procedural_meshes(renderer, &enemy_meshes);
+
+    // ── 5. Build scene instances from the manifest ─────────────────────
+    let scene = build_forest_scene_from_manifest(
+        &manifest,
+        &asset_map,
+        player_base,
+        enemy_base,
+        enemy_instance_count,
+    );
+    Ok(scene)
+}
+
+/// Build the scene instances from the parsed manifest and loaded asset map.
+/// Includes all environment instances (ground + placed objects) plus the
+/// player character and enemy character.
+fn build_forest_scene_from_manifest(
+    manifest: &SceneLayoutManifest,
+    asset_map: &HashMap<String, SceneAssetMeshEntry>,
+    player_base: usize,
+    enemy_base: usize,
+    enemy_instance_count: usize,
+) -> ForestSceneBuildResult {
+    use crate::camera_math::{
+        mat4_identity, mat4_mul, mat4_rotation_y, mat4_scale, mat4_translation,
+    };
+
+    let selected_anchor = manifest
+        .camera_anchors
+        .iter()
+        .find(|anchor| anchor.id == "combat_default")
+        .unwrap_or(&manifest.camera_anchors[0]);
+    let default_camera_anchor = RuntimeSceneCameraAnchor {
+        id: selected_anchor.id.clone(),
+        position: selected_anchor.position,
+        target: selected_anchor.target,
+        fov_y_radians: selected_anchor.fov_y_degrees.to_radians(),
+    };
+    let combat_arena_extents = RuntimeCombatArenaExtents {
+        min: manifest.combat_arena_extents.min,
+        max: manifest.combat_arena_extents.max,
+    };
+
+    let mut instances = Vec::with_capacity(manifest.instances.len() + 16);
+
+    // ── Ground plane ───────────────────────────────────────────────────
+    if let Some(ground_entry) = asset_map.get(&manifest.ground.asset) {
+        let ground_model = mat4_scale(
+            manifest.ground.scale[0],
+            manifest.ground.scale[1],
+            manifest.ground.scale[2],
+        );
+        for prim in 0..ground_entry.primitive_count {
+            instances.push(MeshInstance {
+                mesh_index: ground_entry.base_index + prim,
+                model_matrix: ground_model,
+            });
+        }
+    }
+
+    // ── Environment instances from manifest ────────────────────────────
+    for inst in &manifest.instances {
+        if let Some(entry) = asset_map.get(&inst.asset) {
+            let rotation_rad = inst.rotation_y * std::f32::consts::PI / 180.0;
+            let model = mat4_mul(
+                mat4_mul(
+                    mat4_translation(inst.position[0], inst.position[1], inst.position[2]),
+                    mat4_rotation_y(rotation_rad),
+                ),
+                mat4_scale(inst.scale[0], inst.scale[1], inst.scale[2]),
+            );
+            for prim in 0..entry.primitive_count {
+                instances.push(MeshInstance {
+                    mesh_index: entry.base_index + prim,
+                    model_matrix: model,
+                });
+            }
+        }
+    }
+
+    // ── Player character at origin ────────────────────────────────────
+    let player_instance_index = instances.len();
+    instances.push(MeshInstance {
+        mesh_index: player_base,
+        model_matrix: mat4_identity(),
+    });
+
+    // ── Enemy lane (multi-target hard cut) ─────────────────────────────
+    let spawn_count = enemy_instance_count.max(1);
+    let mut enemy_instance_indices = Vec::with_capacity(spawn_count);
+    let spawn_offsets = [
+        (3.0_f32, 3.0_f32),
+        (-2.8_f32, 2.6_f32),
+        (3.4_f32, -2.6_f32),
+        (-3.4_f32, -2.8_f32),
+    ];
+    for i in 0..spawn_count {
+        let (x, z) = spawn_offsets
+            .get(i)
+            .copied()
+            .unwrap_or_else(|| {
+                let angle = (i as f32) * std::f32::consts::TAU / spawn_count as f32;
+                (3.0 * angle.cos(), 3.0 * angle.sin())
+            });
+        let facing = x.atan2(z) + std::f32::consts::PI;
+        let model = mat4_mul(mat4_translation(x, 0.0, z), mat4_rotation_y(facing));
+        enemy_instance_indices.push(instances.len());
+        instances.push(MeshInstance {
+            mesh_index: enemy_base,
+            model_matrix: model,
+        });
+    }
+
+    ForestSceneBuildResult {
+        instances,
+        player_instance_index,
+        enemy_instance_indices,
+        camera_anchor_count: manifest.camera_anchors.len(),
+        default_camera_anchor,
+        combat_arena_extents,
+        fog_volume_count: manifest.fog_volumes.len(),
+        lut_profile_id: manifest.lut_profile_id.clone(),
+    }
+}
+
+// fetch_text_asset definition lives below (2-param version with label for diagnostics)
 
 struct RuntimeShaderAssets {
     render_schema_version: String,
@@ -1968,8 +2591,7 @@ impl WebGpuRenderer {
                             ty: wgpu::BufferBindingType::Storage { read_only: true },
                             has_dynamic_offset: false,
                             min_binding_size: Some(
-                                std::num::NonZeroU64::new(64)
-                                    .expect("mat4x4 is 64 bytes"),
+                                std::num::NonZeroU64::new(64).expect("mat4x4 is 64 bytes"),
                             ),
                         },
                         count: None,
@@ -2047,10 +2669,7 @@ impl WebGpuRenderer {
         let depth_texture = Self::create_depth_texture_static(&device, width, height);
         let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let shadow_system = crate::shadows::ShadowSystem::new(
-            &device,
-            &bind_group_layout_3d_model,
-        );
+        let shadow_system = crate::shadows::ShadowSystem::new(&device, &bind_group_layout_3d_model);
 
         let pipeline_layout_3d = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("wrela-3d-pipeline-layout"),
@@ -2069,7 +2688,7 @@ impl WebGpuRenderer {
         });
 
         let vertex_buffer_layout = wgpu::VertexBufferLayout {
-            array_stride: 56,
+            array_stride: 88,
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &[
                 wgpu::VertexAttribute {
@@ -2097,6 +2716,18 @@ impl WebGpuRenderer {
                     shader_location: 4,
                     format: wgpu::VertexFormat::Float32x4,
                 },
+                // vertex_color (wind weights)
+                wgpu::VertexAttribute {
+                    offset: 56,
+                    shader_location: 5,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                // tangent
+                wgpu::VertexAttribute {
+                    offset: 72,
+                    shader_location: 6,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
             ],
         };
 
@@ -2117,7 +2748,7 @@ impl WebGpuRenderer {
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
                 depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
+                depth_compare: wgpu::CompareFunction::Greater,
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
@@ -2163,18 +2794,17 @@ impl WebGpuRenderer {
             &depth_view,
             wgpu::TextureFormat::Rgba16Float,
         );
-        ssao_system.set_radius(0.8);
-        ssao_system.set_intensity(0.5);
+        ssao_system.set_radius(1.0);
+        ssao_system.set_intensity(0.68);
 
-        let mut post_process = crate::postprocess::PostProcessStack::new(
-            &device,
-            width,
-            height,
-            format,
-        );
-        post_process.set_exposure(1.4);
-        post_process.set_bloom_intensity(0.25);
-        post_process.set_bloom_threshold(0.8);
+        let mut post_process =
+            crate::postprocess::PostProcessStack::new(&device, width, height, format, &depth_view);
+        // Stylized gothic anime calibration: deeper contrast, tighter highlights,
+        // and controlled shafts so sky values stay unclipped in combat framing.
+        post_process.set_exposure(0.78);
+        post_process.set_bloom_intensity(0.18);
+        post_process.set_bloom_threshold(1.05);
+        post_process.set_god_rays_intensity(0.2);
 
         let sky_pass = crate::sky::SkyPass::new(&device, wgpu::TextureFormat::Rgba16Float);
 
@@ -2229,7 +2859,11 @@ impl WebGpuRenderer {
 
         let combat_fx_copy_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("combat_fx_scene_copy"),
-            size: wgpu::Extent3d { width: width.max(1), height: height.max(1), depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: width.max(1),
+                height: height.max(1),
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -2237,15 +2871,25 @@ impl WebGpuRenderer {
             usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
-        let combat_fx_copy_view = combat_fx_copy_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let combat_fx_copy_view =
+            combat_fx_copy_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let combat_fx_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("combat_fx_bind_group"),
             layout: &combat_fx_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&combat_fx_copy_view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&combat_fx_sampler) },
-                wgpu::BindGroupEntry { binding: 2, resource: combat_fx_uniform_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&combat_fx_copy_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&combat_fx_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: combat_fx_uniform_buffer.as_entire_binding(),
+                },
             ],
         });
 
@@ -2253,11 +2897,12 @@ impl WebGpuRenderer {
             label: Some("combat_fx_shader"),
             source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(COMBAT_FX_SHADER)),
         });
-        let combat_fx_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("combat_fx_pipeline_layout"),
-            bind_group_layouts: &[&combat_fx_bgl],
-            push_constant_ranges: &[],
-        });
+        let combat_fx_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("combat_fx_pipeline_layout"),
+                bind_group_layouts: &[&combat_fx_bgl],
+                push_constant_ranges: &[],
+            });
         let combat_fx_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("combat_fx_pipeline"),
             layout: Some(&combat_fx_pipeline_layout),
@@ -2327,13 +2972,11 @@ impl WebGpuRenderer {
             anim_elapsed_secs: 0.0,
             animation_blender: {
                 let mut blender = crate::animation_graph::AnimationBlender::new();
-                // Player state mappings: state integer -> clip index
+                // Default state mappings. Normal runtime bootstrap rewires these
+                // from hero GLB clip names after clips are loaded.
                 // 0=idle, 1=walk, 2=run, 3=dodge, 4=attack, 5=stagger, 6=parry, 7=recovery
-                // Map each state to a clip index. If fewer clips exist the
-                // blender silently ignores unmapped states and falls back to
-                // whatever clip is currently playing.
-                // Procedural clips: [0]=idle, [1]=walk, [2]=attack_light,
-                // [3]=attack_heavy, [4]=dodge, [5]=parry, [6]=hit_stagger
+                // If fewer clips exist, out-of-range targets are ignored by the
+                // blender and it continues the current clip.
                 blender.set_state_mapping(0, 0); // idle      -> clip 0 (idle)
                 blender.set_state_mapping(1, 1); // walk      -> clip 1 (walk)
                 blender.set_state_mapping(2, 1); // run       -> clip 1 (walk, reuse)
@@ -2381,8 +3024,7 @@ impl WebGpuRenderer {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Depth32Float,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         })
     }
@@ -2403,12 +3045,16 @@ impl WebGpuRenderer {
         self.ssao_system
             .resize(&self.device, width, height, &self.depth_view);
         self.post_process
-            .resize(&self.device, width, height, self.surface_format);
+            .resize(&self.device, width, height, self.surface_format, &self.depth_view);
 
         // Rebuild combat effects copy texture on resize
         self.combat_fx_copy_texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("combat_fx_scene_copy"),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -2416,14 +3062,25 @@ impl WebGpuRenderer {
             usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
-        self.combat_fx_copy_view = self.combat_fx_copy_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.combat_fx_copy_view = self
+            .combat_fx_copy_texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
         self.combat_fx_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("combat_fx_bind_group"),
             layout: &self.combat_fx_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.combat_fx_copy_view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.combat_fx_sampler) },
-                wgpu::BindGroupEntry { binding: 2, resource: self.combat_fx_uniform_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&self.combat_fx_copy_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.combat_fx_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.combat_fx_uniform_buffer.as_entire_binding(),
+                },
             ],
         });
     }
@@ -2443,9 +3100,25 @@ impl WebGpuRenderer {
             return Err("3D pipeline not initialized".to_string());
         }
 
+        // Unjittered view-proj for reprojection (TAA + shadows)
         let view_proj = mat4_mul(scene.camera_proj, scene.camera_view);
+
+        // Apply TAA sub-pixel jitter directly to the existing projection matrix.
+        // This preserves the reverse-Z depth convention and avoids reconstructing FOV/aspect.
+        let jittered_view_proj = if self.post_process.taa_enabled() {
+            let (jx, jy) = crate::camera_math::taa_jitter(self.post_process.taa_frame_index());
+            let jitter_x = jx / canvas_width.max(1) as f32;
+            let jitter_y = jy / canvas_height.max(1) as f32;
+            let mut jittered_proj = scene.camera_proj;
+            jittered_proj[2][0] += jitter_x * 2.0;
+            jittered_proj[2][1] += jitter_y * 2.0;
+            mat4_mul(jittered_proj, scene.camera_view)
+        } else {
+            view_proj
+        };
+
         let frame_uniform = FrameUniform3D {
-            view_proj,
+            view_proj: jittered_view_proj,
             camera_pos: [
                 scene.camera_position[0],
                 scene.camera_position[1],
@@ -2470,9 +3143,13 @@ impl WebGpuRenderer {
                 scene.ambient_color[2],
                 1.0,
             ],
-            time: [0.0; 4],
-            fog_color_and_start: [0.7, 0.75, 0.85, 20.0], // xyz = sky-horizon blue-grey, w = fog start
-            fog_params: [60.0, 0.02, 0.5, 0.0],           // x = fog end, y = density, z = height falloff
+            time: [self.anim_elapsed_secs, scene.delta_time_secs, 0.0, 0.0],
+            // Gothic dusk fog tuned for depth separation and silhouette readability.
+            fog_color_and_start: [0.2, 0.23, 0.26, 8.0], // xyz = cool dusk fog, w = fog start
+            fog_params: [48.0, 0.055, 1.35, 0.0], // x = fog end, y = density, z = height falloff
+            // Wind system parameters
+            wind_params: [self.anim_elapsed_secs, 0.15, 1.0, 0.0], // x=time, y=strength, z=turbulence
+            wind_dir: [-0.7071, 0.0, -0.7071, 0.0], // normalized [-0.7, 0, -0.7]
         };
         self.queue.write_buffer(
             &self.uniform_buffer_3d,
@@ -2485,7 +3162,8 @@ impl WebGpuRenderer {
         {
             // Drive the animation blender with the current player state so it
             // crossfades between clips when the game state changes.
-            self.animation_blender.transition_to_state(scene.player_state);
+            self.animation_blender
+                .transition_to_state(scene.player_state);
 
             let mut palette_uploaded = false;
             for (skel_base, skel) in &self.skeletons {
@@ -2531,7 +3209,7 @@ impl WebGpuRenderer {
             scene.camera_proj,
             scene.light_direction,
             0.1,   // near plane (matches OrbitCamera)
-            500.0,  // far plane (matches OrbitCamera)
+            500.0, // far plane (matches OrbitCamera)
         );
 
         let Some(frame) = self.acquire_frame_with_retry()? else {
@@ -2545,9 +3223,13 @@ impl WebGpuRenderer {
         let frame_h = frame.texture.height();
         if self.depth_texture.width() != frame_w || self.depth_texture.height() != frame_h {
             self.depth_texture = Self::create_depth_texture_static(&self.device, frame_w, frame_h);
-            self.depth_view = self.depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
-            self.ssao_system.resize(&self.device, frame_w, frame_h, &self.depth_view);
-            self.post_process.resize(&self.device, frame_w, frame_h, self.surface_format);
+            self.depth_view = self
+                .depth_texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
+            self.ssao_system
+                .resize(&self.device, frame_w, frame_h, &self.depth_view);
+            self.post_process
+                .resize(&self.device, frame_w, frame_h, self.surface_format, &self.depth_view);
         }
 
         let view = frame
@@ -2574,24 +3256,35 @@ impl WebGpuRenderer {
                 &shadow_instances,
                 &self.model_uniform_buffer,
                 &self.model_bind_group,
+                [self.anim_elapsed_secs, 0.15, 1.0, 0.0], // wind_params: time, strength, turbulence
+                [-0.7071, 0.0, -0.7071, 0.0],              // wind_dir: normalized [-0.7, 0, -0.7]
             );
         }
 
         // ── Sky pass ─────────────────────────────────────────────────
         {
             let inv_vp = crate::camera_math::mat4_inverse(view_proj);
+            // Note: sun_direction in sky shader points TOWARD the sun (negate light_direction)
             let sky_uniforms = crate::sky::SkyUniforms {
                 inv_view_proj: inv_vp,
                 sun_direction: [
-                    scene.light_direction[0],
-                    scene.light_direction[1],
-                    scene.light_direction[2],
+                    -scene.light_direction[0],
+                    -scene.light_direction[1],
+                    -scene.light_direction[2],
                     0.0,
                 ],
-                sun_color: [3.0, 2.8, 2.2, 1.0],
-                sky_zenith: [0.15, 0.3, 0.65, 1.0],
-                sky_horizon: [0.7, 0.75, 0.85, 1.0],
-                sky_ground: [0.25, 0.22, 0.18, 1.0],
+                // Cooler dusk sun with lower shaft intensity.
+                sun_color: [1.8, 1.35, 0.9, 16.0],
+                // Desaturated dusk zenith.
+                sky_zenith: [0.025, 0.04, 0.075, 1.0],
+                // Neutral horizon keeps contrast against trunks and characters.
+                sky_horizon: [0.11, 0.12, 0.14, 1.0],
+                // Dark forest floor bounce.
+                sky_ground: [0.055, 0.05, 0.045, 1.0],
+                // Standard Rayleigh scattering coefficients
+                rayleigh_coeffs: [5.5e-6, 13.0e-6, 22.4e-6, 6360.0e3],
+                // Mie: coefficient, anisotropy, atmosphere radius, sample count
+                mie_params: [21.0e-6, 0.758, 6420.0e3, 16.0],
             };
             self.sky_pass.render(
                 &mut encoder,
@@ -2615,7 +3308,7 @@ impl WebGpuRenderer {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.depth_view,
                     depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
+                        load: wgpu::LoadOp::Clear(0.0),
                         store: wgpu::StoreOp::Store,
                     }),
                     stencil_ops: None,
@@ -2684,7 +3377,11 @@ impl WebGpuRenderer {
 
                 pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
                 pass.set_index_buffer(mesh.index_buffer.slice(..), mesh.index_format);
-                pass.draw_indexed(0..mesh.index_count, 0, first_instance..first_instance + instance_count);
+                pass.draw_indexed(
+                    0..mesh.index_count,
+                    0,
+                    first_instance..first_instance + instance_count,
+                );
 
                 batch_start = batch_end;
             }
@@ -2702,13 +3399,42 @@ impl WebGpuRenderer {
                 self.post_process.hdr_target_view(),
                 scene.camera_proj,
                 inv_proj,
+                scene.ambient_color,
             );
         }
 
-        // ── Post-process: bloom + ACES tonemap + FXAA ────────────────
+        // ── Post-process: god rays + bloom + ACES tonemap + FXAA ──────
+        // Compute sun screen position for god rays. The sun is at "infinity"
+        // in the negative light direction, so we project a distant point.
+        let sun_screen_pos = {
+            let sun_dir = [
+                -scene.light_direction[0],
+                -scene.light_direction[1],
+                -scene.light_direction[2],
+            ];
+            // Project a point far along the sun direction
+            let sun_world = [
+                scene.camera_position[0] + sun_dir[0] * 1000.0,
+                scene.camera_position[1] + sun_dir[1] * 1000.0,
+                scene.camera_position[2] + sun_dir[2] * 1000.0,
+            ];
+            let clip = crate::camera_math::mat4_transform_point(view_proj, sun_world);
+            // clip.w > 0 means in front of camera
+            if clip[3] > 0.0 {
+                let ndc_x = clip[0] / clip[3];
+                let ndc_y = clip[1] / clip[3];
+                // Convert NDC [-1,1] to UV [0,1]
+                let uv_x = ndc_x * 0.5 + 0.5;
+                let uv_y = 1.0 - (ndc_y * 0.5 + 0.5); // flip Y for UV space
+                Some([uv_x, uv_y])
+            } else {
+                None // sun behind camera
+            }
+        };
         // Reads from HDR render target, writes final tonemapped + AA'd
         // result to the sRGB surface view.
-        self.post_process.render(&mut encoder, &self.queue, &view);
+        self.post_process
+            .render(&mut encoder, &self.queue, &view, sun_screen_pos, view_proj);
 
         // ── Combat effects pass ─────────────────────────────────────────
         let combat_fx_active = scene.hit_stop_active
@@ -2774,8 +3500,12 @@ impl WebGpuRenderer {
         let combat_fx_passes: u32 = if combat_fx_active { 1 } else { 0 };
         let ssao_passes: u32 = if self.ssao_system.enabled() { 4 } else { 0 };
         let shadow_passes: u32 = crate::shadows::CASCADE_COUNT as u32;
-        // Post-process: 6 bloom downsample + 5 bloom upsample + 1 tonemap + 1 FXAA = 13
-        let postprocess_passes: u32 = (crate::postprocess::BLOOM_MIP_COUNT as u32)
+        // Post-process: 2 god rays + 6 bloom downsample + 5 bloom upsample + 1 tonemap + 1 FXAA = 15
+        let god_ray_passes: u32 = if sun_screen_pos.is_some() { 2 } else { 0 };
+        let taa_passes: u32 = if self.post_process.taa_enabled() { 1 } else { 0 };
+        let postprocess_passes: u32 = god_ray_passes
+            + taa_passes
+            + (crate::postprocess::BLOOM_MIP_COUNT as u32)
             + (crate::postprocess::BLOOM_MIP_COUNT as u32 - 1)
             + 2; // tonemap + fxaa
         Ok(RenderFrameResult::Rendered(RenderExecutionStats {
@@ -3219,6 +3949,9 @@ struct Runtime {
     ack: u64,
     pending_inputs: Vec<PendingInput>,
     local_tick: u64,
+    runtime_tick_epoch_offset: u64,
+    runtime_tick_monotonic: u64,
+    runtime_tick_last_source: u64,
     correction_count: u64,
     last_forced_drift_tick: Option<u64>,
     last_sent_at_ms: f64,
@@ -3252,8 +3985,16 @@ struct Runtime {
     orbit_camera: crate::camera_math::OrbitCamera,
     orbit_auto_rotate: bool,
     scene_3d_instances: Vec<MeshInstance>,
+    player_instance_index: Option<usize>,
+    enemy_instance_indices: Vec<usize>,
+    scene_camera_anchor_count: usize,
+    scene_default_camera_anchor_id: Option<String>,
+    scene_combat_arena_extents: Option<RuntimeCombatArenaExtents>,
+    scene_fog_volume_count: usize,
+    scene_lut_profile_id: Option<String>,
     game_state: Option<crate::game_logic::GameState>,
     game_input: crate::game_logic::GameInput,
+    combat_events: RuntimeCombatEventTelemetry,
     // Combat visual effect state (renderer-side tracking)
     parry_flash_alpha: f32,
     base_fov_y: f32,
@@ -3272,6 +4013,12 @@ struct Runtime {
     on_render_game_to_text: Option<Closure<dyn FnMut() -> JsValue>>,
     on_advance_time: Option<Closure<dyn FnMut(f64)>>,
     raf_loop: Option<Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>>>,
+    // Preview mode state
+    preview_state: Option<crate::preview_mode::PreviewState>,
+    on_preview_mousedown: Option<Closure<dyn FnMut(web_sys::MouseEvent)>>,
+    on_preview_mouseup: Option<Closure<dyn FnMut(web_sys::MouseEvent)>>,
+    on_preview_mousemove: Option<Closure<dyn FnMut(web_sys::MouseEvent)>>,
+    on_preview_wheel: Option<Closure<dyn FnMut(web_sys::WheelEvent)>>,
 }
 
 fn apply_predicted_state_delta(state: &mut PredictedState, delta: &StateDeltaPayload) {
@@ -3315,6 +4062,9 @@ impl Runtime {
             ack: 0,
             pending_inputs: Vec::new(),
             local_tick: 0,
+            runtime_tick_epoch_offset: 0,
+            runtime_tick_monotonic: 0,
+            runtime_tick_last_source: 0,
             correction_count: 0,
             last_forced_drift_tick: None,
             last_sent_at_ms: 0.0,
@@ -3345,22 +4095,29 @@ impl Runtime {
             animation_event_lookup: HashMap::new(),
             hiz_occlusion_tier_override,
             render_mode_3d: true,
-            // Third-person spring arm camera: ~5 units behind and ~3 units above
-            // player, initial yaw facing toward the rot stalker at (3, 0, 3).
-            // Stalker direction is PI/4 from +X; camera sits opposite (5*PI/4 azimuth).
-            orbit_camera: crate::camera_math::OrbitCamera {
-                azimuth: std::f32::consts::PI + std::f32::consts::FRAC_PI_4,
-                elevation: 0.54, // ~31 degrees => ~3 units up at distance 5.83
-                distance: 5.83,  // sqrt(5^2 + 3^2) to get ~5 back + ~3 up
-                target: [0.0, 1.0, 0.0], // slightly above ground for character center
-                fov_y: std::f32::consts::FRAC_PI_4,
+            // Cinematic third-person camera: lower angle, closer follow for
+            // cathedral forest feel. Default mode is Exploration (distance=8, elev=0.25).
+            // Initial azimuth faces toward the rot stalker at (3, 0, 3).
+            orbit_camera: {
+                let mut cam = crate::camera_math::OrbitCamera::default();
+                cam.azimuth = std::f32::consts::PI + std::f32::consts::FRAC_PI_4;
+                cam.target = [0.0, 1.0, 0.0]; // slightly above ground for character center
+                cam
             },
             orbit_auto_rotate: false,
             // Start with an empty scene; forest instances are populated in
             // bootstrap after GLB assets are loaded.
             scene_3d_instances: Vec::new(),
+            player_instance_index: None,
+            enemy_instance_indices: Vec::new(),
+            scene_camera_anchor_count: 0,
+            scene_default_camera_anchor_id: None,
+            scene_combat_arena_extents: None,
+            scene_fog_volume_count: 0,
+            scene_lut_profile_id: None,
             game_state: Some(crate::game_logic::GameState::new()),
             game_input: crate::game_logic::GameInput::default(),
+            combat_events: RuntimeCombatEventTelemetry::default(),
             parry_flash_alpha: 0.0,
             base_fov_y: std::f32::consts::FRAC_PI_4,
             hud: None,
@@ -3378,6 +4135,11 @@ impl Runtime {
             on_render_game_to_text: None,
             on_advance_time: None,
             raf_loop: None,
+            preview_state: None,
+            on_preview_mousedown: None,
+            on_preview_mouseup: None,
+            on_preview_mousemove: None,
+            on_preview_wheel: None,
         }
     }
 
@@ -3853,7 +4615,19 @@ impl Runtime {
         resized
     }
 
-    fn publish_runtime_state(&self) {
+    fn update_runtime_tick_monotonic(&mut self) {
+        if self.state.tick < self.runtime_tick_last_source {
+            let next_monotonic = self.runtime_tick_monotonic.saturating_add(1);
+            self.runtime_tick_epoch_offset = next_monotonic.saturating_sub(self.state.tick);
+        }
+        self.runtime_tick_last_source = self.state.tick;
+        self.runtime_tick_monotonic = self
+            .runtime_tick_epoch_offset
+            .saturating_add(self.state.tick);
+    }
+
+    fn publish_runtime_state(&mut self) {
+        self.update_runtime_tick_monotonic();
         let runtime = Object::new();
         object_set(
             &runtime,
@@ -3877,7 +4651,16 @@ impl Runtime {
             "corrections",
             JsValue::from_f64(self.correction_count as f64),
         );
-        object_set(&runtime, "tick", JsValue::from_f64(self.state.tick as f64));
+        object_set(
+            &runtime,
+            "tick",
+            JsValue::from_f64(self.runtime_tick_monotonic as f64),
+        );
+        object_set(
+            &runtime,
+            "state_tick",
+            JsValue::from_f64(self.state.tick as f64),
+        );
         object_set(
             &runtime,
             "pending",
@@ -5137,6 +5920,146 @@ impl Runtime {
             return;
         };
 
+        // ── Preview mode rendering ──────────────────────────────────
+        if self.preview_state.is_some() {
+            // Process any pending mesh load requests
+            let requests: Vec<crate::preview_mode::MeshLoadRequest> =
+                if let Some(ref mut ps) = self.preview_state {
+                    ps.needs_mesh_load.drain(..).collect()
+                } else {
+                    Vec::new()
+                };
+            for req in requests {
+                // Spawn async fetch for each GLB mesh
+                APP_RUNTIME.with(|state| {
+                    if let Some(runtime_rc) = state.borrow().as_ref() {
+                        let runtime_for_load = runtime_rc.clone();
+                        let entity_name = req.entity_name.clone();
+                        let url = req.url.clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            match crate::mesh::fetch_glb_bytes(&url).await {
+                                Ok(bytes) => {
+                                    match crate::mesh::load_glb(&bytes) {
+                                        Ok(mesh_data_vec) => {
+                                            if let Ok(mut rt) = runtime_for_load.try_borrow_mut() {
+                                                if let Some(ref mut renderer) = rt.renderer {
+                                                    let base_idx = upload_procedural_meshes(
+                                                        renderer,
+                                                        &mesh_data_vec,
+                                                    );
+                                                    if let Some(ref mut ps) = rt.preview_state {
+                                                        ps.set_entity_mesh(&entity_name, base_idx);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            web_sys::console::warn_1(
+                                                &format!("Preview: GLB parse error for {entity_name}: {e}").into(),
+                                            );
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    web_sys::console::warn_1(
+                                        &format!("Preview: fetch error for {entity_name}: {e}").into(),
+                                    );
+                                }
+                            }
+                        });
+                    }
+                });
+            }
+
+            // Rebuild scene instances from preview entities + grid floor
+            let mut instances = Vec::new();
+
+            // Grid floor
+            if let Some(ref ps) = self.preview_state {
+                if let Some(grid_idx) = ps.grid_mesh_index {
+                    instances.push(MeshInstance {
+                        mesh_index: grid_idx,
+                        model_matrix: crate::camera_math::mat4_identity(),
+                    });
+                }
+            }
+
+            // Scene entities with loaded meshes
+            if let Some(ref ps) = self.preview_state {
+                for entity in &ps.entities {
+                    if let Some(mesh_idx) = entity.mesh_index {
+                        instances.push(MeshInstance {
+                            mesh_index: mesh_idx,
+                            model_matrix: entity.model_matrix,
+                        });
+                    }
+                }
+            }
+
+            self.scene_3d_instances = instances;
+
+            // Use preview camera
+            let (cam_view, cam_proj, cam_pos, light_dir, light_col, ambient) =
+                if let Some(ref ps) = self.preview_state {
+                    let aspect = canvas_width.max(1) as f32 / canvas_height.max(1) as f32;
+                    (
+                        ps.camera.view_matrix(),
+                        ps.camera.projection_matrix(aspect),
+                        ps.camera.eye_position(),
+                        ps.sun_direction(),
+                        ps.sun_color(),
+                        ps.ambient_color(),
+                    )
+                } else {
+                    // fallback (should never reach here)
+                    let aspect = canvas_width.max(1) as f32 / canvas_height.max(1) as f32;
+                    let cam = crate::camera_math::OrbitCamera::default();
+                    (
+                        cam.view_matrix(),
+                        cam.projection_matrix(aspect),
+                        cam.eye_position(),
+                        [-0.5, -0.5, -0.3],
+                        [2.5, 2.0, 1.2],
+                        [0.2, 0.25, 0.35],
+                    )
+                };
+
+            let scene_3d = RenderSceneSnapshot3D {
+                camera_view: cam_view,
+                camera_proj: cam_proj,
+                camera_position: cam_pos,
+                mesh_instances: &self.scene_3d_instances,
+                light_direction: light_dir,
+                light_color: light_col,
+                ambient_color: ambient,
+                hit_stop_active: false,
+                hit_stop_intensity: 0.0,
+                camera_shake: 0.0,
+                parry_flash_alpha: 0.0,
+                chromatic_aberration: 0.0,
+                delta_time_secs: observed_frame_ms.unwrap_or(16.0) as f32 / 1000.0,
+                player_state: 0,
+            };
+
+            match renderer.render_3d(&scene_3d, canvas_width, canvas_height) {
+                Ok(RenderFrameResult::Rendered(stats)) => {
+                    self.telemetry.draw_calls = self
+                        .telemetry
+                        .draw_calls
+                        .saturating_add(stats.render_passes as u64);
+                    self.telemetry.gpu_upload_bytes = self
+                        .telemetry
+                        .gpu_upload_bytes
+                        .saturating_add(stats.upload_bytes);
+                    self.frame_graph = renderer.runtime_evidence();
+                }
+                Ok(RenderFrameResult::SurfaceTimeout) => {}
+                Ok(RenderFrameResult::BlockedOnPrewarm) => {}
+                Err(error) => self.set_status(format!("Preview render error: {error}")),
+            }
+            return;
+        }
+
         if self.render_mode_3d {
             // ── Game tick ──────────────────────────────────────────────────
             // Convert WASD movement buttons into milli-scaled move vector
@@ -5147,65 +6070,166 @@ impl Runtime {
             self.game_input.move_x = move_x;
             self.game_input.move_z = move_z;
 
+            // Deterministic test-only kill chord (A+B) for restart-loop validation.
+            // This is gated behind the deterministic time driver so normal gameplay
+            // controls are unaffected.
+            if self.deterministic_time_driver_enabled
+                && self.game_input.attack_light
+                && self.game_input.parry
+            {
+                if let Some(ref mut game_state) = self.game_state {
+                    if game_state.player_health > 0 {
+                        game_state.player_health = 0;
+                        self.combat_events.death_count =
+                            self.combat_events.death_count.saturating_add(1);
+                    }
+                }
+            }
+
             // ── Restart on death ──────────────────────────────────────
             if self.hud_restart_pressed {
                 self.hud_restart_pressed = false;
                 if let Some(ref gs) = self.game_state {
                     if gs.player_health <= 0 {
                         self.game_state = Some(crate::game_logic::GameState::new());
+                        self.combat_events.restart_count =
+                            self.combat_events.restart_count.saturating_add(1);
                     }
                 }
             }
 
             if let Some(ref game_state) = self.game_state {
+                let previous_state = game_state.clone();
                 let new_state = crate::game_logic::tick_game(game_state, &self.game_input);
                 let rd = new_state.render_data();
 
-                // Update dynamic mesh instance transforms (player=mesh 3, enemy=mesh 4)
-                // Static scene instances (ground, trees, rocks) stay at indices 0..N
-                // Player and enemy are the last 2 instances placed by build_forest_scene
-                let instance_count = self.scene_3d_instances.len();
-                if instance_count >= 2 {
-                    // Player instance (second to last)
-                    let player_idx = instance_count - 2;
+                if previous_state.lock_on_target != new_state.lock_on_target {
+                    if previous_state.lock_on_target < 0 || new_state.lock_on_target < 0 {
+                        self.combat_events.lock_toggle_count =
+                            self.combat_events.lock_toggle_count.saturating_add(1);
+                    } else {
+                        self.combat_events.target_cycle_count =
+                            self.combat_events.target_cycle_count.saturating_add(1);
+                    }
+                }
+                if previous_state.player_state != new_state.player_state {
+                    match new_state.player_state {
+                        PLAYER_STATE_ATTACK => {
+                            if new_state.player_attack_heavy {
+                                self.combat_events.attack_heavy_count =
+                                    self.combat_events.attack_heavy_count.saturating_add(1);
+                            } else {
+                                self.combat_events.attack_light_count =
+                                    self.combat_events.attack_light_count.saturating_add(1);
+                            }
+                        }
+                        PLAYER_STATE_PARRY_ACTIVE => {
+                            self.combat_events.parry_count =
+                                self.combat_events.parry_count.saturating_add(1);
+                        }
+                        PLAYER_STATE_DODGE => {
+                            self.combat_events.dodge_count =
+                                self.combat_events.dodge_count.saturating_add(1);
+                        }
+                        _ => {}
+                    }
+                }
+                if previous_state.player_health > 0 && new_state.player_health <= 0 {
+                    self.combat_events.death_count =
+                        self.combat_events.death_count.saturating_add(1);
+                }
+
+                // Update dynamic mesh instance transforms using tracked scene indices.
+                if let Some(player_idx) = self
+                    .player_instance_index
+                    .filter(|&idx| idx < self.scene_3d_instances.len())
+                {
                     self.scene_3d_instances[player_idx].model_matrix =
-                        crate::camera_math::mat4_translation(rd.player_pos[0], rd.player_pos[1], rd.player_pos[2]);
+                        crate::camera_math::mat4_translation(
+                            rd.player_pos[0],
+                            rd.player_pos[1],
+                            rd.player_pos[2],
+                        );
                     // Rotate player to face direction
                     if rd.player_facing[0].abs() > 0.01 || rd.player_facing[1].abs() > 0.01 {
                         let angle = rd.player_facing[0].atan2(rd.player_facing[1]);
                         let rot = crate::camera_math::mat4_rotation_y(angle);
                         let trans = self.scene_3d_instances[player_idx].model_matrix;
-                        self.scene_3d_instances[player_idx].model_matrix = crate::camera_math::mat4_mul(trans, rot);
+                        self.scene_3d_instances[player_idx].model_matrix =
+                            crate::camera_math::mat4_mul(trans, rot);
                     }
+                }
 
-                    // Enemy instance (last)
-                    let enemy_idx = instance_count - 1;
-                    if rd.enemy_alive {
-                        self.scene_3d_instances[enemy_idx].model_matrix =
-                            crate::camera_math::mat4_translation(rd.enemy_pos[0], rd.enemy_pos[1], rd.enemy_pos[2]);
-                        if rd.enemy_facing[0].abs() > 0.01 || rd.enemy_facing[1].abs() > 0.01 {
-                            let angle = rd.enemy_facing[0].atan2(rd.enemy_facing[1]);
+                for (enemy_lane_idx, instance_idx) in self.enemy_instance_indices.iter().enumerate() {
+                    if *instance_idx >= self.scene_3d_instances.len() {
+                        continue;
+                    }
+                    let maybe_enemy = if enemy_lane_idx < new_state.enemy_count {
+                        Some(new_state.enemies[enemy_lane_idx])
+                    } else {
+                        None
+                    };
+                    if let Some(enemy) = maybe_enemy.filter(|enemy| enemy.alive) {
+                        let enemy_pos = [
+                            enemy.x as f32 / 1000.0,
+                            enemy.y as f32 / 1000.0,
+                            enemy.z as f32 / 1000.0,
+                        ];
+                        let enemy_facing = [
+                            enemy.facing_x as f32 / 1000.0,
+                            enemy.facing_z as f32 / 1000.0,
+                        ];
+                        self.scene_3d_instances[*instance_idx].model_matrix =
+                            crate::camera_math::mat4_translation(
+                                enemy_pos[0],
+                                enemy_pos[1],
+                                enemy_pos[2],
+                            );
+                        if enemy_facing[0].abs() > 0.01 || enemy_facing[1].abs() > 0.01 {
+                            let angle = enemy_facing[0].atan2(enemy_facing[1]);
                             let rot = crate::camera_math::mat4_rotation_y(angle);
-                            let trans = self.scene_3d_instances[enemy_idx].model_matrix;
-                            self.scene_3d_instances[enemy_idx].model_matrix = crate::camera_math::mat4_mul(trans, rot);
+                            let trans = self.scene_3d_instances[*instance_idx].model_matrix;
+                            self.scene_3d_instances[*instance_idx].model_matrix =
+                                crate::camera_math::mat4_mul(trans, rot);
                         }
                     } else {
-                        // Move dead enemy off screen
-                        self.scene_3d_instances[enemy_idx].model_matrix =
+                        // Move dead/unused enemy lanes off screen.
+                        self.scene_3d_instances[*instance_idx].model_matrix =
                             crate::camera_math::mat4_translation(0.0, -100.0, 0.0);
                     }
                 }
 
-                // Update camera to follow player
-                self.orbit_camera.target = [rd.player_pos[0], rd.player_pos[1] + 1.0, rd.player_pos[2]];
+                // Update camera to follow lock-on focus or player with smooth damping
+                let frame_dt = observed_frame_ms.unwrap_or(16.0) as f32 / 1000.0;
+                let desired_target = if rd.lock_on_active && rd.lock_on_target_index >= 0 {
+                    let enemy_y = rd.lock_on_target_pos[1] + 1.2;
+                    [
+                        (rd.player_pos[0] + rd.lock_on_target_pos[0]) * 0.5,
+                        ((rd.player_pos[1] + 1.0) + enemy_y) * 0.5,
+                        (rd.player_pos[2] + rd.lock_on_target_pos[2]) * 0.5,
+                    ]
+                } else {
+                    [rd.player_pos[0], rd.player_pos[1] + 1.0, rd.player_pos[2]]
+                };
+                self.orbit_camera.smooth_follow(desired_target, frame_dt, 5.0);
 
-                // Camera shake offset
+                // Camera shake offset (applied after smooth follow)
                 let shake = rd.camera_shake;
                 if shake > 0.001 {
                     let phase = (new_state.tick_count as f32) * 17.3;
                     self.orbit_camera.target[0] += phase.sin() * shake * 0.3;
                     self.orbit_camera.target[1] += phase.cos() * shake * 0.2;
                 }
+
+                // Camera mode is lock-on first to avoid distance-heuristic pops.
+                if rd.lock_on_active {
+                    self.orbit_camera
+                        .set_mode(crate::camera_math::CameraMode::Combat);
+                } else {
+                    self.orbit_camera
+                        .set_mode(crate::camera_math::CameraMode::Exploration);
+                }
+                self.orbit_camera.update_mode_blend(frame_dt, 3.0);
 
                 // Parry flash: trigger on parry, decay over ~3 frames
                 if rd.parry_flash {
@@ -5268,9 +6292,12 @@ impl Runtime {
                 camera_proj: self.orbit_camera.projection_matrix(aspect),
                 camera_position: self.orbit_camera.eye_position(),
                 mesh_instances: &self.scene_3d_instances,
-                light_direction: [-0.432, -0.864, -0.259],
-                light_color: [2.0, 1.9, 1.7],
-                ambient_color: [0.35, 0.38, 0.42],
+                // Gothic forest key light: cool directional key with stronger downward bias.
+                light_direction: [-0.35, -0.72, -0.25],
+                // Slightly cool key preserves stylized highlights without white clipping.
+                light_color: [1.45, 1.4, 1.95],
+                // Dark ambient floor keeps silhouettes readable in combat framing.
+                ambient_color: [0.07, 0.1, 0.16],
                 hit_stop_active,
                 hit_stop_intensity,
                 camera_shake: cam_shake,
@@ -5440,11 +6467,65 @@ impl Runtime {
             })
             .collect::<Vec<_>>();
         let win_target_score = self.win_target_score();
+        let player_state = self
+            .game_state
+            .as_ref()
+            .map_or(0, |state| state.player_state);
+        let combat_camera = self
+            .game_state
+            .as_ref()
+            .map(|state| {
+                let rd = state.render_data();
+                let dx = rd.player_pos[0] - rd.lock_on_target_pos[0];
+                let dz = rd.player_pos[2] - rd.lock_on_target_pos[2];
+                let lock_on_target_distance = (dx * dx + dz * dz).sqrt();
+                serde_json::json!({
+                    "enemy_count": rd.enemy_count,
+                    "rendered_enemy_instance_count": self.enemy_instance_indices.len(),
+                    "lock_on_active": rd.lock_on_active,
+                    "lock_on_target_index": rd.lock_on_target_index,
+                    "lock_on_target_distance": round3(lock_on_target_distance as f64),
+                    "boss_phase": rd.boss_phase,
+                    "readability_state": rd.readability_state,
+                    "camera_eye": {
+                        "x": round3(rd.camera_eye[0] as f64),
+                        "y": round3(rd.camera_eye[1] as f64),
+                        "z": round3(rd.camera_eye[2] as f64),
+                    },
+                    "camera_target": {
+                        "x": round3(rd.camera_target[0] as f64),
+                        "y": round3(rd.camera_target[1] as f64),
+                        "z": round3(rd.camera_target[2] as f64),
+                    },
+                    "lock_on_target_pos": {
+                        "x": round3(rd.lock_on_target_pos[0] as f64),
+                        "y": round3(rd.lock_on_target_pos[1] as f64),
+                        "z": round3(rd.lock_on_target_pos[2] as f64),
+                    }
+                })
+            })
+            .unwrap_or_else(|| {
+                serde_json::json!({
+                    "enemy_count": 0,
+                    "rendered_enemy_instance_count": self.enemy_instance_indices.len(),
+                    "lock_on_active": false,
+                    "lock_on_target_index": -1,
+                })
+            });
+        let scene_combat_arena = self.scene_combat_arena_extents.map(|extents| {
+            let center = extents.center();
+            serde_json::json!({
+                "min": extents.min,
+                "max": extents.max,
+                "center": center,
+            })
+        });
         let payload = serde_json::json!({
             "coordinate_system": "origin=(0,0) top-left; +x right; +y down",
             "role": self.mmo_role.as_str(),
             "status": self.status,
             "tick": self.state.tick,
+            "player_state": player_state,
             "player": {
                 "x": round3(self.state.player_x as f64),
                 "y": round3(self.state.player_y as f64),
@@ -5461,6 +6542,24 @@ impl Runtime {
             "collected_mask": format!("0x{:08x}", self.state.collected_mask),
             "collectibles": collectibles,
             "won": self.game_won,
+            "combat_camera": combat_camera,
+            "combat_events": {
+                "lock_toggles": self.combat_events.lock_toggle_count,
+                "target_cycles": self.combat_events.target_cycle_count,
+                "attack_light": self.combat_events.attack_light_count,
+                "attack_heavy": self.combat_events.attack_heavy_count,
+                "parry": self.combat_events.parry_count,
+                "dodge": self.combat_events.dodge_count,
+                "deaths": self.combat_events.death_count,
+                "restarts": self.combat_events.restart_count,
+            },
+            "scene_layout": {
+                "camera_anchor_count": self.scene_camera_anchor_count,
+                "default_camera_anchor_id": self.scene_default_camera_anchor_id.clone(),
+                "combat_arena_extents": scene_combat_arena,
+                "fog_volume_count": self.scene_fog_volume_count,
+                "lut_profile_id": self.scene_lut_profile_id.clone(),
+            },
             "frame_graph": {
                 "path_used": self.frame_graph.frame_graph_path_used,
                 "declared_passes": self.frame_graph.frame_graph_declared_passes,
@@ -5861,6 +6960,74 @@ fn map_prewarm_group_asset(group: &RuntimePrewarmGroupSelection) -> RuntimePrewa
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct CombatKeyMapping {
+    attack_light: bool,
+    attack_heavy: bool,
+    dodge: bool,
+    parry: bool,
+    lock_on_toggle: bool,
+    target_cycle_left: bool,
+    target_cycle_right: bool,
+    restart: bool,
+}
+
+fn map_combat_key_mapping(key: &str, lock_on_active: bool) -> Option<CombatKeyMapping> {
+    let mapping = match key {
+        "j" | "J" => CombatKeyMapping {
+            attack_light: true,
+            ..CombatKeyMapping::default()
+        },
+        "k" | "K" => CombatKeyMapping {
+            attack_heavy: true,
+            ..CombatKeyMapping::default()
+        },
+        " " => CombatKeyMapping {
+            dodge: true,
+            ..CombatKeyMapping::default()
+        },
+        "l" | "L" | "Shift" => CombatKeyMapping {
+            parry: true,
+            ..CombatKeyMapping::default()
+        },
+        "Tab" => CombatKeyMapping {
+            lock_on_toggle: true,
+            ..CombatKeyMapping::default()
+        },
+        "q" | "Q" => CombatKeyMapping {
+            target_cycle_left: true,
+            ..CombatKeyMapping::default()
+        },
+        "e" | "E" => CombatKeyMapping {
+            target_cycle_right: true,
+            ..CombatKeyMapping::default()
+        },
+        "r" | "R" => CombatKeyMapping {
+            restart: true,
+            ..CombatKeyMapping::default()
+        },
+        // Playwright skill aliases
+        "Enter" => CombatKeyMapping {
+            lock_on_toggle: true,
+            attack_heavy: true,
+            restart: true,
+            ..CombatKeyMapping::default()
+        },
+        "a" | "A" => CombatKeyMapping {
+            attack_light: true,
+            target_cycle_left: lock_on_active,
+            ..CombatKeyMapping::default()
+        },
+        "b" | "B" => CombatKeyMapping {
+            parry: true,
+            target_cycle_right: lock_on_active,
+            ..CombatKeyMapping::default()
+        },
+        _ => return None,
+    };
+    Some(mapping)
+}
+
 fn install_input_handlers(runtime: Rc<RefCell<Runtime>>) -> Result<(), JsValue> {
     let window = window_required()?;
     let canvas = runtime.borrow().canvas.clone();
@@ -5878,22 +7045,48 @@ fn install_input_handlers(runtime: Rc<RefCell<Runtime>>) -> Result<(), JsValue> 
                     true,
                 );
                 runtime.collect_pressed = collect_pressed;
-                // Combat input mapping for 3D game mode
-                match key.as_str() {
-                    "j" | "J" => runtime.game_input.attack_light = true,
-                    "k" | "K" => runtime.game_input.attack_heavy = true,
-                    " " => runtime.game_input.dodge = true,
-                    "l" | "L" | "Shift" => runtime.game_input.parry = true,
-                    "r" | "R" => runtime.hud_restart_pressed = true,
-                    "F1" => {
-                        if let Some(ref mut renderer) = runtime.renderer {
-                            let new_state = !renderer.ssao_system.enabled();
-                            renderer.ssao_system.set_enabled(new_state);
-                        }
+                let lock_on_active = runtime
+                    .game_state
+                    .as_ref()
+                    .map(|state| state.lock_on_target >= 0)
+                    .unwrap_or(false);
+                let combat_mapping = map_combat_key_mapping(key.as_str(), lock_on_active);
+                if let Some(mapping) = combat_mapping {
+                    if mapping.attack_light {
+                        runtime.game_input.attack_light = true;
                     }
-                    _ => {}
+                    if mapping.attack_heavy {
+                        runtime.game_input.attack_heavy = true;
+                    }
+                    if mapping.dodge {
+                        runtime.game_input.dodge = true;
+                    }
+                    if mapping.parry {
+                        runtime.game_input.parry = true;
+                    }
+                    if mapping.lock_on_toggle {
+                        runtime.game_input.lock_on_toggle = true;
+                    }
+                    if mapping.target_cycle_left {
+                        runtime.game_input.target_cycle_left = true;
+                    }
+                    if mapping.target_cycle_right {
+                        runtime.game_input.target_cycle_right = true;
+                    }
+                    if mapping.restart {
+                        runtime.hud_restart_pressed = true;
+                    }
                 }
-                handled || matches!(key.as_str(), "j" | "J" | "k" | "K" | " " | "l" | "L" | "Shift" | "r" | "R" | "F1")
+                let debug_toggle = if key.as_str() == "F1" {
+                    if let Some(ref mut renderer) = runtime.renderer {
+                        let new_state = !renderer.ssao_system.enabled();
+                        renderer.ssao_system.set_enabled(new_state);
+                    }
+                    true
+                } else {
+                    false
+                };
+                handled || combat_mapping.is_some() || debug_toggle
             } else {
                 false
             }
@@ -5918,14 +7111,55 @@ fn install_input_handlers(runtime: Rc<RefCell<Runtime>>) -> Result<(), JsValue> 
                 );
                 runtime.collect_pressed = collect_pressed;
                 // Combat input release for 3D game mode
-                match key.as_str() {
-                    "j" | "J" => runtime.game_input.attack_light = false,
-                    "k" | "K" => runtime.game_input.attack_heavy = false,
-                    " " => runtime.game_input.dodge = false,
-                    "l" | "L" | "Shift" => runtime.game_input.parry = false,
-                    _ => {}
-                }
-                handled || matches!(key.as_str(), "j" | "J" | "k" | "K" | " " | "l" | "L" | "Shift")
+                let combat_handled = match key.as_str() {
+                    "j" | "J" => {
+                        runtime.game_input.attack_light = false;
+                        true
+                    }
+                    "k" | "K" => {
+                        runtime.game_input.attack_heavy = false;
+                        true
+                    }
+                    "a" | "A" => {
+                        // Release both contextual aliases so lock-state changes mid-press
+                        // cannot leave either action stuck.
+                        runtime.game_input.attack_light = false;
+                        runtime.game_input.target_cycle_left = false;
+                        true
+                    }
+                    "b" | "B" => {
+                        runtime.game_input.parry = false;
+                        runtime.game_input.target_cycle_right = false;
+                        true
+                    }
+                    " " => {
+                        runtime.game_input.dodge = false;
+                        true
+                    }
+                    "l" | "L" | "Shift" => {
+                        runtime.game_input.parry = false;
+                        true
+                    }
+                    "Tab" => {
+                        runtime.game_input.lock_on_toggle = false;
+                        true
+                    }
+                    "Enter" => {
+                        runtime.game_input.lock_on_toggle = false;
+                        runtime.game_input.attack_heavy = false;
+                        true
+                    }
+                    "q" | "Q" => {
+                        runtime.game_input.target_cycle_left = false;
+                        true
+                    }
+                    "e" | "E" => {
+                        runtime.game_input.target_cycle_right = false;
+                        true
+                    }
+                    _ => false,
+                };
+                handled || combat_handled
             } else {
                 false
             }
@@ -5958,6 +7192,131 @@ fn install_input_handlers(runtime: Rc<RefCell<Runtime>>) -> Result<(), JsValue> 
     runtime_mut.on_keyup = Some(on_keyup);
     runtime_mut.on_pointerdown = Some(on_pointerdown);
     runtime_mut.on_pointerup = Some(on_pointerup);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Preview mode: mouse input and WebSocket
+// ---------------------------------------------------------------------------
+
+fn install_preview_input_handlers(runtime: Rc<RefCell<Runtime>>) -> Result<(), JsValue> {
+    let canvas = runtime.borrow().canvas.clone();
+
+    let md_runtime = runtime.clone();
+    let on_mousedown = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
+        if let Ok(mut rt) = md_runtime.try_borrow_mut() {
+            if let Some(ref mut ps) = rt.preview_state {
+                ps.on_mouse_down(event.client_x() as f32, event.client_y() as f32);
+            }
+        }
+    }) as Box<dyn FnMut(web_sys::MouseEvent)>);
+    canvas.add_event_listener_with_callback("mousedown", on_mousedown.as_ref().unchecked_ref())?;
+
+    let mu_runtime = runtime.clone();
+    let on_mouseup = Closure::wrap(Box::new(move |_event: web_sys::MouseEvent| {
+        if let Ok(mut rt) = mu_runtime.try_borrow_mut() {
+            if let Some(ref mut ps) = rt.preview_state {
+                ps.on_mouse_up();
+            }
+        }
+    }) as Box<dyn FnMut(web_sys::MouseEvent)>);
+    canvas.add_event_listener_with_callback("mouseup", on_mouseup.as_ref().unchecked_ref())?;
+
+    let mm_runtime = runtime.clone();
+    let on_mousemove = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
+        if let Ok(mut rt) = mm_runtime.try_borrow_mut() {
+            if let Some(ref mut ps) = rt.preview_state {
+                ps.on_mouse_move(event.client_x() as f32, event.client_y() as f32);
+            }
+        }
+    }) as Box<dyn FnMut(web_sys::MouseEvent)>);
+    canvas.add_event_listener_with_callback("mousemove", on_mousemove.as_ref().unchecked_ref())?;
+
+    let wh_runtime = runtime.clone();
+    let on_wheel = Closure::wrap(Box::new(move |event: web_sys::WheelEvent| {
+        event.prevent_default();
+        if let Ok(mut rt) = wh_runtime.try_borrow_mut() {
+            if let Some(ref mut ps) = rt.preview_state {
+                ps.on_wheel(event.delta_y() as f32);
+            }
+        }
+    }) as Box<dyn FnMut(web_sys::WheelEvent)>);
+    {
+        let wheel_opts = web_sys::AddEventListenerOptions::new();
+        wheel_opts.set_passive(false);
+        canvas.add_event_listener_with_callback_and_add_event_listener_options(
+            "wheel",
+            on_wheel.as_ref().unchecked_ref(),
+            &wheel_opts,
+        )?;
+    }
+
+    let mut runtime_mut = runtime.borrow_mut();
+    runtime_mut.on_preview_mousedown = Some(on_mousedown);
+    runtime_mut.on_preview_mouseup = Some(on_mouseup);
+    runtime_mut.on_preview_mousemove = Some(on_mousemove);
+    runtime_mut.on_preview_wheel = Some(on_wheel);
+    Ok(())
+}
+
+fn connect_preview_socket(runtime: Rc<RefCell<Runtime>>) -> Result<(), JsValue> {
+    let window = window_required()?;
+    let location = window.location();
+    let scheme = if location.protocol()?.eq_ignore_ascii_case("https:") {
+        "wss"
+    } else {
+        "ws"
+    };
+    let ws_url = format!("{scheme}://{}/preview", location.host()?);
+    let ws = WebSocket::new(ws_url.as_str())?;
+    // Preview uses TEXT messages (JSON), not binary
+    ws.set_binary_type(BinaryType::Arraybuffer);
+
+    let open_runtime = runtime.clone();
+    let on_ws_open = Closure::wrap(Box::new(move |_event: Event| {
+        if let Ok(mut rt) = open_runtime.try_borrow_mut() {
+            rt.set_status("Preview WebSocket connected.");
+        }
+    }) as Box<dyn FnMut(Event)>);
+    ws.set_onopen(Some(on_ws_open.as_ref().unchecked_ref()));
+
+    let close_runtime = runtime.clone();
+    let on_ws_close = Closure::wrap(Box::new(move |_event: Event| {
+        if let Ok(mut rt) = close_runtime.try_borrow_mut() {
+            rt.set_status("Preview WebSocket disconnected.");
+        }
+    }) as Box<dyn FnMut(Event)>);
+    ws.set_onclose(Some(on_ws_close.as_ref().unchecked_ref()));
+
+    let error_runtime = runtime.clone();
+    let on_ws_error = Closure::wrap(Box::new(move |_event: Event| {
+        if let Ok(mut rt) = error_runtime.try_borrow_mut() {
+            rt.set_status("Preview WebSocket error.");
+        }
+    }) as Box<dyn FnMut(Event)>);
+    ws.set_onerror(Some(on_ws_error.as_ref().unchecked_ref()));
+
+    let message_runtime = runtime.clone();
+    let on_ws_message = Closure::wrap(Box::new(move |event: MessageEvent| {
+        // Preview uses text messages (JSON)
+        let text = match event.data().as_string() {
+            Some(s) => s,
+            None => return,
+        };
+        if let Ok(mut rt) = message_runtime.try_borrow_mut() {
+            if let Some(ref mut ps) = rt.preview_state {
+                ps.handle_message(&text);
+            }
+        }
+    }) as Box<dyn FnMut(MessageEvent)>);
+    ws.set_onmessage(Some(on_ws_message.as_ref().unchecked_ref()));
+
+    let mut runtime_mut = runtime.borrow_mut();
+    runtime_mut.ws = Some(ws);
+    runtime_mut.on_ws_open = Some(on_ws_open);
+    runtime_mut.on_ws_close = Some(on_ws_close);
+    runtime_mut.on_ws_error = Some(on_ws_error);
+    runtime_mut.on_ws_message = Some(on_ws_message);
     Ok(())
 }
 
@@ -6155,14 +7514,66 @@ fn install_deterministic_hooks(runtime: Rc<RefCell<Runtime>>) -> Result<(), JsVa
 }
 
 async fn bootstrap_webgpu_runtime(runtime: Rc<RefCell<Runtime>>) -> Result<(), String> {
-    let (canvas, dist_root, hiz_occlusion_tier_override) = {
+    let (canvas, dist_root, hiz_occlusion_tier_override, is_preview) = {
         let runtime_ref = runtime.borrow();
         (
             runtime_ref.canvas.clone(),
             runtime_ref.dist_root.clone(),
             runtime_ref.hiz_occlusion_tier_override,
+            runtime_ref.app_mode == "preview",
         )
     };
+
+    // ── Preview mode: lightweight bootstrap ──────────────────────────
+    if is_preview {
+        if let Ok(mut runtime_mut) = runtime.try_borrow_mut() {
+            runtime_mut.set_status("Booting preview mode WebGPU renderer.");
+        }
+
+        let shader_assets = load_runtime_shader_assets(dist_root.as_str()).await?;
+        let mut renderer = WebGpuRenderer::new(canvas, shader_assets).await?;
+        if let Some(enabled) = hiz_occlusion_tier_override {
+            renderer.hiz_occlusion_tier_enabled = enabled;
+        }
+
+        // Upload the grid floor mesh
+        let grid_mesh_data = generate_preview_grid_plane();
+        let grid_base = upload_procedural_meshes(&mut renderer, &[grid_mesh_data]);
+
+        {
+            let mut runtime_mut = runtime.borrow_mut();
+            let mut preview_state = crate::preview_mode::PreviewState::new();
+            preview_state.grid_mesh_index = Some(grid_base);
+            runtime_mut.preview_state = Some(preview_state);
+            runtime_mut.render_mode_3d = true;
+            // Place grid floor as the only initial scene instance
+            runtime_mut.scene_3d_instances = vec![MeshInstance {
+                mesh_index: grid_base,
+                model_matrix: crate::camera_math::mat4_identity(),
+            }];
+            runtime_mut.player_instance_index = None;
+            runtime_mut.enemy_instance_indices.clear();
+            runtime_mut.scene_camera_anchor_count = 0;
+            runtime_mut.scene_default_camera_anchor_id = None;
+            runtime_mut.scene_combat_arena_extents = None;
+            runtime_mut.scene_fog_volume_count = 0;
+            runtime_mut.scene_lut_profile_id = None;
+            runtime_mut.frame_graph = renderer.runtime_evidence();
+            runtime_mut.renderer = Some(renderer);
+            runtime_mut.sync_canvas_size();
+        }
+
+        install_preview_input_handlers(runtime.clone()).map_err(js_error_to_string)?;
+        connect_preview_socket(runtime.clone()).map_err(js_error_to_string)?;
+        start_frame_loop(runtime.clone()).map_err(js_error_to_string)?;
+
+        if let Ok(mut runtime_mut) = runtime.try_borrow_mut() {
+            runtime_mut.set_status("Preview mode ready. Waiting for scene updates.");
+        }
+        return Ok(());
+    }
+
+    // ── Normal mode bootstrap ────────────────────────────────────────
     if let Ok(mut runtime_mut) = runtime.try_borrow_mut() {
         runtime_mut.set_status(format!("{PROTOCOL_BOOT_STATUS} root='{dist_root}'"));
     }
@@ -6189,13 +7600,64 @@ async fn bootstrap_webgpu_runtime(runtime: Rc<RefCell<Runtime>>) -> Result<(), S
         renderer.hiz_occlusion_tier_enabled = enabled;
     }
 
-    // Generate procedural meshes and build the scene
-    let mesh_bases = load_forest_procedural_assets(&mut renderer)?;
+    let enemy_instance_count = runtime
+        .borrow()
+        .game_state
+        .as_ref()
+        .map(|state| state.enemy_count.max(1))
+        .unwrap_or(DEFAULT_FOREST_ENEMY_INSTANCE_COUNT);
+
+    // Load scene from manifest (environment GLBs + hero GLB + enemy) and build scene instances.
+    let scene = load_scene_from_manifest(&mut renderer, dist_root.as_str(), enemy_instance_count)
+        .await
+        .map_err(|error| format!("Forest scene boot failed: {error}"))?;
+    let ForestSceneBuildResult {
+        instances,
+        player_instance_index,
+        enemy_instance_indices,
+        camera_anchor_count,
+        default_camera_anchor,
+        combat_arena_extents,
+        fog_volume_count,
+        lut_profile_id,
+    } = scene;
 
     {
         let mut runtime_mut = runtime.borrow_mut();
+        let cam_offset = [
+            default_camera_anchor.position[0] - default_camera_anchor.target[0],
+            default_camera_anchor.position[1] - default_camera_anchor.target[1],
+            default_camera_anchor.position[2] - default_camera_anchor.target[2],
+        ];
+        let cam_distance =
+            (cam_offset[0] * cam_offset[0] + cam_offset[1] * cam_offset[1] + cam_offset[2] * cam_offset[2])
+                .sqrt()
+                .clamp(2.5, 40.0);
+        let cam_azimuth = cam_offset[0].atan2(cam_offset[2]);
+        let cam_elevation = (cam_offset[1] / cam_distance)
+            .asin()
+            .clamp(
+                crate::camera_math::MIN_ELEVATION,
+                crate::camera_math::MAX_ELEVATION,
+            );
+
         // Populate the scene with positioned instances now that meshes are loaded
-        runtime_mut.scene_3d_instances = build_forest_scene(&mesh_bases);
+        runtime_mut.scene_3d_instances = instances;
+        runtime_mut.player_instance_index = Some(player_instance_index);
+        runtime_mut.enemy_instance_indices = enemy_instance_indices;
+        runtime_mut.scene_camera_anchor_count = camera_anchor_count;
+        runtime_mut.scene_default_camera_anchor_id = Some(default_camera_anchor.id);
+        runtime_mut.scene_combat_arena_extents = Some(combat_arena_extents);
+        runtime_mut.scene_fog_volume_count = fog_volume_count;
+        runtime_mut.scene_lut_profile_id = Some(lut_profile_id);
+
+        runtime_mut.orbit_camera.target = default_camera_anchor.target;
+        runtime_mut.orbit_camera.azimuth = cam_azimuth;
+        runtime_mut.orbit_camera.elevation = cam_elevation;
+        runtime_mut.orbit_camera.distance = cam_distance;
+        runtime_mut.orbit_camera.fov_y = default_camera_anchor.fov_y_radians;
+        runtime_mut.base_fov_y = default_camera_anchor.fov_y_radians;
+
         runtime_mut.streaming.loaded_chunk_count = asset_manifest_summary.loaded_chunk_count;
         runtime_mut.streaming.loaded_bytes = asset_manifest_summary.loaded_bytes;
         runtime_mut.streaming.residency_pressure =
@@ -6292,9 +7754,9 @@ pub fn start_client(config: JsValue) -> Result<(), JsValue> {
             match crate::hud::Hud::create(&document) {
                 Ok(hud) => runtime_mut.hud = Some(hud),
                 Err(err) => {
-                    web_sys::console::warn_1(
-                        &JsValue::from_str(&format!("[wrela] HUD creation failed: {err}")),
-                    );
+                    web_sys::console::warn_1(&JsValue::from_str(&format!(
+                        "[wrela] HUD creation failed: {err}"
+                    )));
                 }
             }
             runtime_mut.publish_runtime_state();
@@ -6323,7 +7785,8 @@ mod tests {
     use super::{
         FrameGraphRuntimeEvidence, HelloPayload, PredictedState, RuntimeConvergenceStage,
         RuntimeResidencyClass, ServerStatePayload, StateDeltaPayload, apply_predicted_state_delta,
-        infer_target_convergence_stage, infer_target_residency_class, normalize_mmo_role,
+        build_forest_scene, infer_target_convergence_stage, infer_target_residency_class,
+        map_combat_key_mapping, normalize_mmo_role, ForestMeshBases,
     };
 
     #[test]
@@ -6391,6 +7854,7 @@ mod tests {
             player_y: None,
             score: Some(4),
             collected_mask: None,
+            ..Default::default()
         };
 
         apply_predicted_state_delta(&mut state, &delta);
@@ -6447,5 +7911,45 @@ mod tests {
             infer_target_residency_class(RuntimeConvergenceStage::Bootstrap, 0.2),
             RuntimeResidencyClass::Cold
         );
+    }
+
+    #[test]
+    fn combat_key_mapping_supports_playwright_aliases() {
+        let enter_mapping =
+            map_combat_key_mapping("Enter", false).expect("enter alias should map");
+        assert!(enter_mapping.lock_on_toggle);
+        assert!(enter_mapping.attack_heavy);
+        assert!(enter_mapping.restart);
+
+        let a_explore = map_combat_key_mapping("a", false).expect("a alias should map");
+        assert!(a_explore.attack_light);
+        assert!(!a_explore.target_cycle_left);
+
+        let a_locked = map_combat_key_mapping("a", true).expect("a alias should map");
+        assert!(a_locked.attack_light);
+        assert!(a_locked.target_cycle_left);
+
+        let b_explore = map_combat_key_mapping("b", false).expect("b alias should map");
+        assert!(b_explore.parry);
+        assert!(!b_explore.target_cycle_right);
+
+        let b_locked = map_combat_key_mapping("b", true).expect("b alias should map");
+        assert!(b_locked.parry);
+        assert!(b_locked.target_cycle_right);
+    }
+
+    #[test]
+    fn forest_scene_build_spawns_requested_enemy_lane_count() {
+        let bases = ForestMeshBases {
+            ground: 0,
+            tree_trunk: 1,
+            tree_foliage: 2,
+            rock: 3,
+            player: 4,
+            enemy: 5,
+        };
+        let scene = build_forest_scene(&bases, 3);
+        assert_eq!(scene.enemy_instance_indices.len(), 3);
+        assert!(scene.enemy_instance_indices.iter().all(|idx| *idx > scene.player_instance_index));
     }
 }

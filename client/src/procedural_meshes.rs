@@ -72,7 +72,9 @@ fn default_vertex() -> Vertex3D {
         normal: [0.0, 1.0, 0.0],
         uv: [0.0; 2],
         joint_indices: [0; 4],
-        joint_weights: [1.0, 0.0, 0.0, 0.0],
+        joint_weights: [0.0, 0.0, 0.0, 0.0],
+        vertex_color: [0.0, 0.0, 0.0, 0.0],
+        tangent: [0.0, 0.0, 0.0, 1.0],
     }
 }
 
@@ -120,15 +122,25 @@ pub fn generate_ground_plane() -> Vec<MeshData> {
             let v_clamped = v.fract();
             // For tiling UVs we keep the fractional part, but at boundaries (fract=0 for
             // non-zero input), use 1.0 so the last vertex in each tile gets UV=1.
-            let u_final = if ix > 0 && u_clamped < 1e-6 { 1.0 } else { u_clamped };
-            let v_final = if iz > 0 && v_clamped < 1e-6 { 1.0 } else { v_clamped };
+            let u_final = if ix > 0 && u_clamped < 1e-6 {
+                1.0
+            } else {
+                u_clamped
+            };
+            let v_final = if iz > 0 && v_clamped < 1e-6 {
+                1.0
+            } else {
+                v_clamped
+            };
 
             vertices.push(Vertex3D {
                 position: [x, y, z],
                 normal: [0.0, 1.0, 0.0], // placeholder, will compute below
                 uv: [u_final, v_final],
                 joint_indices: [0; 4],
-                joint_weights: [1.0, 0.0, 0.0, 0.0],
+                joint_weights: [0.0, 0.0, 0.0, 0.0],
+                vertex_color: [0.0, 0.0, 0.0, 0.0], // ground: no wind
+                tangent: [0.0, 0.0, 0.0, 1.0],
             });
         }
     }
@@ -176,6 +188,8 @@ pub fn generate_ground_plane() -> Vec<MeshData> {
         v.normal = normalize(normal_accum[i]);
     }
 
+    crate::mesh::compute_tangents(&mut vertices, &indices);
+
     vec![MeshData {
         vertices,
         indices,
@@ -219,8 +233,8 @@ fn generate_cylinder(params: &CylinderParams) -> (Vec<Vertex3D>, Vec<u32>) {
         let v_coord = t;
 
         for seg in 0..=radial_segments {
-            let theta = (seg % radial_segments) as f32 / radial_segments as f32
-                * std::f32::consts::TAU;
+            let theta =
+                (seg % radial_segments) as f32 / radial_segments as f32 * std::f32::consts::TAU;
             let cos_t = theta.cos();
             let sin_t = theta.sin();
 
@@ -243,7 +257,9 @@ fn generate_cylinder(params: &CylinderParams) -> (Vec<Vertex3D>, Vec<u32>) {
                 normal,
                 uv: [u_coord, v_coord],
                 joint_indices: [0; 4],
-                joint_weights: [1.0, 0.0, 0.0, 0.0],
+                joint_weights: [0.0, 0.0, 0.0, 0.0],
+                vertex_color: [0.0, 0.0, 0.0, 0.0], // set later by caller
+                tangent: [0.0, 0.0, 0.0, 1.0],
             });
         }
     }
@@ -274,29 +290,50 @@ fn generate_cylinder(params: &CylinderParams) -> (Vec<Vertex3D>, Vec<u32>) {
 // Icosphere helper (used for foliage, rocks, head)
 // ---------------------------------------------------------------------------
 
-fn generate_icosphere(subdivisions: u32, radius: f32, offset: [f32; 3], noise_amp: f32) -> (Vec<Vertex3D>, Vec<u32>) {
+fn generate_icosphere(
+    subdivisions: u32,
+    radius: f32,
+    offset: [f32; 3],
+    noise_amp: f32,
+) -> (Vec<Vertex3D>, Vec<u32>) {
     // Base icosahedron
     let phi = (1.0 + 5.0_f32.sqrt()) / 2.0;
     let base_verts: Vec<[f32; 3]> = vec![
-        [-1.0,  phi, 0.0],
-        [ 1.0,  phi, 0.0],
+        [-1.0, phi, 0.0],
+        [1.0, phi, 0.0],
         [-1.0, -phi, 0.0],
-        [ 1.0, -phi, 0.0],
-        [0.0, -1.0,  phi],
-        [0.0,  1.0,  phi],
+        [1.0, -phi, 0.0],
+        [0.0, -1.0, phi],
+        [0.0, 1.0, phi],
         [0.0, -1.0, -phi],
-        [0.0,  1.0, -phi],
-        [ phi, 0.0, -1.0],
-        [ phi, 0.0,  1.0],
+        [0.0, 1.0, -phi],
+        [phi, 0.0, -1.0],
+        [phi, 0.0, 1.0],
         [-phi, 0.0, -1.0],
-        [-phi, 0.0,  1.0],
+        [-phi, 0.0, 1.0],
     ];
 
     let base_tris: Vec<[u32; 3]> = vec![
-        [0,11,5], [0,5,1], [0,1,7], [0,7,10], [0,10,11],
-        [1,5,9], [5,11,4], [11,10,2], [10,7,6], [7,1,8],
-        [3,9,4], [3,4,2], [3,2,6], [3,6,8], [3,8,9],
-        [4,9,5], [2,4,11], [6,2,10], [8,6,7], [9,8,1],
+        [0, 11, 5],
+        [0, 5, 1],
+        [0, 1, 7],
+        [0, 7, 10],
+        [0, 10, 11],
+        [1, 5, 9],
+        [5, 11, 4],
+        [11, 10, 2],
+        [10, 7, 6],
+        [7, 1, 8],
+        [3, 9, 4],
+        [3, 4, 2],
+        [3, 2, 6],
+        [3, 6, 8],
+        [3, 8, 9],
+        [4, 9, 5],
+        [2, 4, 11],
+        [6, 2, 10],
+        [8, 6, 7],
+        [9, 8, 1],
     ];
 
     // Normalize base vertices to unit sphere
@@ -352,7 +389,9 @@ fn generate_icosphere(subdivisions: u32, radius: f32, offset: [f32; 3], noise_am
             normal: normalize(*p), // will recompute below for displaced
             uv: [u.clamp(0.0, 1.0), v.clamp(0.0, 1.0)],
             joint_indices: [0; 4],
-            joint_weights: [1.0, 0.0, 0.0, 0.0],
+            joint_weights: [0.0, 0.0, 0.0, 0.0],
+            vertex_color: [0.0, 0.0, 0.0, 0.0], // set later by caller
+            tangent: [0.0, 0.0, 0.0, 1.0],
         });
     }
 
@@ -424,47 +463,71 @@ fn generate_box(half_extents: [f32; 3], offset: [f32; 3]) -> (Vec<Vertex3D>, Vec
     // 6 faces, 4 vertices each = 24 vertices, 36 indices
     let face_data: [([f32; 3], [[f32; 3]; 4], [[f32; 2]; 4]); 6] = [
         // +Y (top)
-        ([0.0, 1.0, 0.0], [
-            [-hx + ox, hy + oy, -hz + oz],
-            [-hx + ox, hy + oy,  hz + oz],
-            [ hx + ox, hy + oy,  hz + oz],
-            [ hx + ox, hy + oy, -hz + oz],
-        ], [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]]),
+        (
+            [0.0, 1.0, 0.0],
+            [
+                [-hx + ox, hy + oy, -hz + oz],
+                [-hx + ox, hy + oy, hz + oz],
+                [hx + ox, hy + oy, hz + oz],
+                [hx + ox, hy + oy, -hz + oz],
+            ],
+            [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]],
+        ),
         // -Y (bottom)
-        ([0.0, -1.0, 0.0], [
-            [-hx + ox, -hy + oy,  hz + oz],
-            [-hx + ox, -hy + oy, -hz + oz],
-            [ hx + ox, -hy + oy, -hz + oz],
-            [ hx + ox, -hy + oy,  hz + oz],
-        ], [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]]),
+        (
+            [0.0, -1.0, 0.0],
+            [
+                [-hx + ox, -hy + oy, hz + oz],
+                [-hx + ox, -hy + oy, -hz + oz],
+                [hx + ox, -hy + oy, -hz + oz],
+                [hx + ox, -hy + oy, hz + oz],
+            ],
+            [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]],
+        ),
         // +Z (front)
-        ([0.0, 0.0, 1.0], [
-            [-hx + ox, -hy + oy, hz + oz],
-            [ hx + ox, -hy + oy, hz + oz],
-            [ hx + ox,  hy + oy, hz + oz],
-            [-hx + ox,  hy + oy, hz + oz],
-        ], [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]),
+        (
+            [0.0, 0.0, 1.0],
+            [
+                [-hx + ox, -hy + oy, hz + oz],
+                [hx + ox, -hy + oy, hz + oz],
+                [hx + ox, hy + oy, hz + oz],
+                [-hx + ox, hy + oy, hz + oz],
+            ],
+            [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+        ),
         // -Z (back)
-        ([0.0, 0.0, -1.0], [
-            [ hx + ox, -hy + oy, -hz + oz],
-            [-hx + ox, -hy + oy, -hz + oz],
-            [-hx + ox,  hy + oy, -hz + oz],
-            [ hx + ox,  hy + oy, -hz + oz],
-        ], [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]),
+        (
+            [0.0, 0.0, -1.0],
+            [
+                [hx + ox, -hy + oy, -hz + oz],
+                [-hx + ox, -hy + oy, -hz + oz],
+                [-hx + ox, hy + oy, -hz + oz],
+                [hx + ox, hy + oy, -hz + oz],
+            ],
+            [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+        ),
         // +X (right)
-        ([1.0, 0.0, 0.0], [
-            [hx + ox, -hy + oy,  hz + oz],
-            [hx + ox, -hy + oy, -hz + oz],
-            [hx + ox,  hy + oy, -hz + oz],
-            [hx + ox,  hy + oy,  hz + oz],
-        ], [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]),
+        (
+            [1.0, 0.0, 0.0],
+            [
+                [hx + ox, -hy + oy, hz + oz],
+                [hx + ox, -hy + oy, -hz + oz],
+                [hx + ox, hy + oy, -hz + oz],
+                [hx + ox, hy + oy, hz + oz],
+            ],
+            [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+        ),
         // -X (left)
-        ([-1.0, 0.0, 0.0], [
-            [-hx + ox, -hy + oy, -hz + oz],
-            [-hx + ox, -hy + oy,  hz + oz],
-            [-hx + ox,  hy + oy,  hz + oz],
-            [-hx + ox,  hy + oy, -hz + oz],
-        ], [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]),
+        (
+            [-1.0, 0.0, 0.0],
+            [
+                [-hx + ox, -hy + oy, -hz + oz],
+                [-hx + ox, -hy + oy, hz + oz],
+                [-hx + ox, hy + oy, hz + oz],
+                [-hx + ox, hy + oy, -hz + oz],
+            ],
+            [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+        ),
     ];
 
     let mut vertices = Vec::with_capacity(24);
@@ -478,7 +541,9 @@ fn generate_box(half_extents: [f32; 3], offset: [f32; 3]) -> (Vec<Vertex3D>, Vec
                 normal: *normal,
                 uv: uvs[i],
                 joint_indices: [0; 4],
-                joint_weights: [1.0, 0.0, 0.0, 0.0],
+                joint_weights: [0.0, 0.0, 0.0, 0.0],
+                vertex_color: [0.0, 0.0, 0.0, 0.0], // set later by caller
+                tangent: [0.0, 0.0, 0.0, 1.0],
             });
         }
         // Two triangles per face, CCW
@@ -503,7 +568,7 @@ fn generate_box(half_extents: [f32; 3], offset: [f32; 3]) -> (Vec<Vertex3D>, Vec
 /// Foliage: icosphere with 2 subdivisions, displaced = ~320 tris.
 pub fn generate_tree() -> Vec<MeshData> {
     // Trunk
-    let (trunk_verts, trunk_indices) = generate_cylinder(&CylinderParams {
+    let (mut trunk_verts, trunk_indices) = generate_cylinder(&CylinderParams {
         radial_segments: 12,
         height_segments: 6,
         bottom_radius: 0.15,
@@ -513,6 +578,23 @@ pub fn generate_tree() -> Vec<MeshData> {
         noise_amplitude: 0.02,
     });
 
+    // Assign wind weights to trunk: sway increases with height, minimal flutter
+    let trunk_height = 2.0_f32;
+    for v in trunk_verts.iter_mut() {
+        let t = (v.position[1] / trunk_height).clamp(0.0, 1.0);
+        let phase = ((v.position[0] * 12.9898 + v.position[2] * 78.233).sin() * 43758.5453)
+            .fract()
+            .abs();
+        v.vertex_color = [
+            t,                              // R: trunk sway (0 at base, 1 at top)
+            t * 0.3,                        // G: slight branch oscillation
+            0.0,                            // B: no leaf flutter on trunk
+            phase,                          // A: phase offset for variation
+        ];
+    }
+
+    crate::mesh::compute_tangents(&mut trunk_verts, &trunk_indices);
+
     let trunk_mesh = MeshData {
         vertices: trunk_verts,
         indices: trunk_indices,
@@ -520,12 +602,29 @@ pub fn generate_tree() -> Vec<MeshData> {
     };
 
     // Foliage: displaced icosphere centered above trunk
-    let (foliage_verts, foliage_indices) = generate_icosphere(
-        2,     // subdivisions
-        0.9,   // radius
+    let (mut foliage_verts, foliage_indices) = generate_icosphere(
+        2,               // subdivisions
+        0.9,             // radius
         [0.0, 2.5, 0.0], // offset: above trunk top
-        0.15,  // noise displacement
+        0.15,            // noise displacement
     );
+
+    // Assign wind weights to foliage: high sway + branch oscillation + leaf flutter
+    for v in foliage_verts.iter_mut() {
+        // Foliage sits at y~1.6..3.4, normalize relative to canopy center
+        let canopy_t = ((v.position[1] - 1.6) / 1.8).clamp(0.0, 1.0);
+        let phase = ((v.position[0] * 12.9898 + v.position[2] * 78.233).sin() * 43758.5453)
+            .fract()
+            .abs();
+        v.vertex_color = [
+            0.7 + canopy_t * 0.3,           // R: high trunk sway (0.7-1.0)
+            0.5 + canopy_t * 0.5,            // G: branch oscillation (0.5-1.0)
+            0.6 + canopy_t * 0.4,            // B: leaf flutter (0.6-1.0)
+            phase,                            // A: phase offset
+        ];
+    }
+
+    crate::mesh::compute_tangents(&mut foliage_verts, &foliage_indices);
 
     let foliage_mesh = MeshData {
         vertices: foliage_verts,
@@ -543,12 +642,14 @@ pub fn generate_tree() -> Vec<MeshData> {
 /// Generate a rock mesh from a displaced icosphere with 2 subdivisions.
 /// ~320 tris.
 pub fn generate_rock() -> Vec<MeshData> {
-    let (verts, indices) = generate_icosphere(
-        2,    // subdivisions
-        0.5,  // radius
+    let (mut verts, indices) = generate_icosphere(
+        2,                // subdivisions
+        0.5,              // radius
         [0.0, 0.25, 0.0], // slightly above ground
-        0.1,  // noise
+        0.1,              // noise
     );
+
+    crate::mesh::compute_tangents(&mut verts, &indices);
 
     vec![MeshData {
         vertices: verts,
@@ -795,6 +896,8 @@ pub fn generate_player_character() -> Vec<MeshData> {
     // Apply skinning
     apply_skinning(&mut vertices, &JOINT_POSITIONS);
 
+    crate::mesh::compute_tangents(&mut vertices, &indices);
+
     vec![MeshData {
         vertices,
         indices,
@@ -967,6 +1070,8 @@ pub fn generate_enemy_character() -> Vec<MeshData> {
     // Apply skinning with same skeleton
     apply_skinning(&mut vertices, &JOINT_POSITIONS);
 
+    crate::mesh::compute_tangents(&mut vertices, &indices);
+
     vec![MeshData {
         vertices,
         indices,
@@ -987,10 +1092,9 @@ mod tests {
     /// Verify all normals are unit-length.
     fn assert_normals_unit_length(vertices: &[Vertex3D], label: &str) {
         for (i, v) in vertices.iter().enumerate() {
-            let len = (v.normal[0] * v.normal[0]
-                + v.normal[1] * v.normal[1]
-                + v.normal[2] * v.normal[2])
-                .sqrt();
+            let len =
+                (v.normal[0] * v.normal[0] + v.normal[1] * v.normal[1] + v.normal[2] * v.normal[2])
+                    .sqrt();
             assert!(
                 (len - 1.0).abs() < EPSILON,
                 "{label}: vertex {i} normal length = {len}, expected 1.0"
@@ -1108,7 +1212,10 @@ mod tests {
     fn ground_plane_triangle_count() {
         let meshes = generate_ground_plane();
         let tris = triangle_count(&meshes[0].indices);
-        assert_eq!(tris, 800, "ground plane should have 800 triangles (20x20x2)");
+        assert_eq!(
+            tris, 800,
+            "ground plane should have 800 triangles (20x20x2)"
+        );
     }
 
     #[test]
@@ -1167,9 +1274,8 @@ mod tests {
     fn tree_foliage_above_trunk() {
         let meshes = generate_tree();
         let foliage = &meshes[1];
-        let avg_y: f32 =
-            foliage.vertices.iter().map(|v| v.position[1]).sum::<f32>()
-                / foliage.vertices.len() as f32;
+        let avg_y: f32 = foliage.vertices.iter().map(|v| v.position[1]).sum::<f32>()
+            / foliage.vertices.len() as f32;
         assert!(
             avg_y > 1.5,
             "foliage center should be above trunk, avg_y = {avg_y}"
@@ -1229,16 +1335,25 @@ mod tests {
         let meshes = generate_player_character();
         let verts = &meshes[0].vertices;
         // Should span vertically from near 0 to about 1.8
-        let min_y = verts.iter().map(|v| v.position[1]).fold(f32::INFINITY, f32::min);
+        let min_y = verts
+            .iter()
+            .map(|v| v.position[1])
+            .fold(f32::INFINITY, f32::min);
         let max_y = verts
             .iter()
             .map(|v| v.position[1])
             .fold(f32::NEG_INFINITY, f32::max);
-        assert!(min_y < 0.1, "player should reach near ground, min_y = {min_y}");
+        assert!(
+            min_y < 0.1,
+            "player should reach near ground, min_y = {min_y}"
+        );
         assert!(max_y > 1.5, "player should be tall, max_y = {max_y}");
 
         // Should have some width (arms)
-        let min_x = verts.iter().map(|v| v.position[0]).fold(f32::INFINITY, f32::min);
+        let min_x = verts
+            .iter()
+            .map(|v| v.position[0])
+            .fold(f32::INFINITY, f32::min);
         let max_x = verts
             .iter()
             .map(|v| v.position[0])
@@ -1292,7 +1407,10 @@ mod tests {
             if torso_verts.is_empty() {
                 0.0
             } else {
-                let min_x = torso_verts.iter().map(|v| v.position[0]).fold(f32::INFINITY, f32::min);
+                let min_x = torso_verts
+                    .iter()
+                    .map(|v| v.position[0])
+                    .fold(f32::INFINITY, f32::min);
                 let max_x = torso_verts
                     .iter()
                     .map(|v| v.position[0])
@@ -1310,7 +1428,10 @@ mod tests {
             if torso_verts.is_empty() {
                 0.0
             } else {
-                let min_x = torso_verts.iter().map(|v| v.position[0]).fold(f32::INFINITY, f32::min);
+                let min_x = torso_verts
+                    .iter()
+                    .map(|v| v.position[0])
+                    .fold(f32::INFINITY, f32::min);
                 let max_x = torso_verts
                     .iter()
                     .map(|v| v.position[0])
@@ -1337,11 +1458,26 @@ mod tests {
         let player = generate_player_character();
         let enemy = generate_enemy_character();
 
-        let total: usize = ground.iter().map(|m| triangle_count(&m.indices)).sum::<usize>()
-            + tree.iter().map(|m| triangle_count(&m.indices)).sum::<usize>()
-            + rock.iter().map(|m| triangle_count(&m.indices)).sum::<usize>()
-            + player.iter().map(|m| triangle_count(&m.indices)).sum::<usize>()
-            + enemy.iter().map(|m| triangle_count(&m.indices)).sum::<usize>();
+        let total: usize = ground
+            .iter()
+            .map(|m| triangle_count(&m.indices))
+            .sum::<usize>()
+            + tree
+                .iter()
+                .map(|m| triangle_count(&m.indices))
+                .sum::<usize>()
+            + rock
+                .iter()
+                .map(|m| triangle_count(&m.indices))
+                .sum::<usize>()
+            + player
+                .iter()
+                .map(|m| triangle_count(&m.indices))
+                .sum::<usize>()
+            + enemy
+                .iter()
+                .map(|m| triangle_count(&m.indices))
+                .sum::<usize>();
 
         assert!(
             total < 10_000,
@@ -1387,11 +1523,11 @@ mod tests {
     #[test]
     fn compute_skin_weights_sum_to_one() {
         let test_positions = [
-            [0.0, 0.9, 0.0],   // at root
-            [0.0, 1.65, 0.0],  // at head
+            [0.0, 0.9, 0.0],    // at root
+            [0.0, 1.65, 0.0],   // at head
             [-0.65, 1.35, 0.0], // at left hand
-            [0.0, 0.0, 0.0],   // at ground (between feet)
-            [0.5, 1.0, 0.5],   // arbitrary position
+            [0.0, 0.0, 0.0],    // at ground (between feet)
+            [0.5, 1.0, 0.5],    // arbitrary position
         ];
 
         for pos in &test_positions {
@@ -1467,17 +1603,35 @@ mod tests {
     fn merge_mesh_parts_preserves_geometry() {
         let part1 = (
             vec![
-                Vertex3D { position: [0.0, 0.0, 0.0], ..default_vertex() },
-                Vertex3D { position: [1.0, 0.0, 0.0], ..default_vertex() },
-                Vertex3D { position: [0.0, 1.0, 0.0], ..default_vertex() },
+                Vertex3D {
+                    position: [0.0, 0.0, 0.0],
+                    ..default_vertex()
+                },
+                Vertex3D {
+                    position: [1.0, 0.0, 0.0],
+                    ..default_vertex()
+                },
+                Vertex3D {
+                    position: [0.0, 1.0, 0.0],
+                    ..default_vertex()
+                },
             ],
             vec![0, 1, 2],
         );
         let part2 = (
             vec![
-                Vertex3D { position: [2.0, 0.0, 0.0], ..default_vertex() },
-                Vertex3D { position: [3.0, 0.0, 0.0], ..default_vertex() },
-                Vertex3D { position: [2.0, 1.0, 0.0], ..default_vertex() },
+                Vertex3D {
+                    position: [2.0, 0.0, 0.0],
+                    ..default_vertex()
+                },
+                Vertex3D {
+                    position: [3.0, 0.0, 0.0],
+                    ..default_vertex()
+                },
+                Vertex3D {
+                    position: [2.0, 1.0, 0.0],
+                    ..default_vertex()
+                },
             ],
             vec![0, 1, 2],
         );
@@ -1553,5 +1707,120 @@ mod tests {
             agreement_ratio > 0.95,
             "CCW winding agreement ratio = {agreement_ratio}, expected > 0.95"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Wind weight tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn ground_plane_has_zero_wind_weights() {
+        let meshes = generate_ground_plane();
+        for v in &meshes[0].vertices {
+            assert_eq!(
+                v.vertex_color,
+                [0.0, 0.0, 0.0, 0.0],
+                "ground plane vertices should have zero wind weights"
+            );
+        }
+    }
+
+    #[test]
+    fn tree_trunk_base_has_low_wind_weight() {
+        let meshes = generate_tree();
+        let trunk = &meshes[0];
+        // Bottom vertices (y near 0) should have low trunk sway
+        let base_verts: Vec<&Vertex3D> = trunk
+            .vertices
+            .iter()
+            .filter(|v| v.position[1] < 0.1)
+            .collect();
+        assert!(!base_verts.is_empty(), "trunk should have base vertices");
+        for v in &base_verts {
+            assert!(
+                v.vertex_color[0] < 0.1,
+                "trunk base sway weight should be near 0, got {}",
+                v.vertex_color[0]
+            );
+        }
+    }
+
+    #[test]
+    fn tree_trunk_top_has_high_wind_weight() {
+        let meshes = generate_tree();
+        let trunk = &meshes[0];
+        // Top vertices (y near 2.0) should have high trunk sway
+        let top_verts: Vec<&Vertex3D> = trunk
+            .vertices
+            .iter()
+            .filter(|v| v.position[1] > 1.8)
+            .collect();
+        assert!(!top_verts.is_empty(), "trunk should have top vertices");
+        for v in &top_verts {
+            assert!(
+                v.vertex_color[0] > 0.5,
+                "trunk top sway weight should be > 0.5, got {}",
+                v.vertex_color[0]
+            );
+        }
+    }
+
+    #[test]
+    fn tree_foliage_has_nonzero_leaf_flutter() {
+        let meshes = generate_tree();
+        let foliage = &meshes[1];
+        // All foliage vertices should have non-zero leaf flutter (B channel)
+        let has_flutter = foliage
+            .vertices
+            .iter()
+            .any(|v| v.vertex_color[2] > 0.0);
+        assert!(has_flutter, "foliage should have leaf flutter weights");
+    }
+
+    #[test]
+    fn tree_wind_weights_have_varied_phase() {
+        let meshes = generate_tree();
+        let foliage = &meshes[1];
+        // Phase offsets (A channel) should not all be identical
+        let phases: Vec<f32> = foliage.vertices.iter().map(|v| v.vertex_color[3]).collect();
+        let first = phases[0];
+        let has_variation = phases.iter().any(|&p| (p - first).abs() > 0.01);
+        assert!(has_variation, "foliage phase offsets should vary across vertices");
+    }
+
+    #[test]
+    fn rock_has_zero_wind_weights() {
+        let meshes = generate_rock();
+        for v in &meshes[0].vertices {
+            assert_eq!(
+                v.vertex_color,
+                [0.0, 0.0, 0.0, 0.0],
+                "rock vertices should have zero wind weights"
+            );
+        }
+    }
+
+    #[test]
+    fn player_character_has_zero_wind_weights() {
+        let meshes = generate_player_character();
+        for v in &meshes[0].vertices {
+            assert_eq!(
+                v.vertex_color,
+                [0.0, 0.0, 0.0, 0.0],
+                "player character vertices should have zero wind weights"
+            );
+        }
+    }
+
+    #[test]
+    fn enemy_character_has_zero_wind_weights() {
+        let meshes = generate_enemy_character();
+        for v in &meshes[0].vertices {
+            assert_eq!(
+                v.vertex_color,
+                [0.0, 0.0, 0.0, 0.0],
+                "enemy character vertices should have zero wind weights"
+            );
+        }
     }
 }

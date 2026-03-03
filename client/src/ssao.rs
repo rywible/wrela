@@ -265,8 +265,12 @@ struct BlurParams {
     const COMPOSITE_SHADER: &str = r#"
 struct CompositeParams {
     screen_dims: vec2<f32>,
+    ambient_r: f32,
+    ambient_g: f32,
+    ambient_b: f32,
     _pad0: f32,
     _pad1: f32,
+    _pad2: f32,
 };
 
 @group(0) @binding(0) var scene_tex: texture_2d<f32>;
@@ -283,7 +287,27 @@ struct CompositeParams {
     let uv = frag_coord.xy / params.screen_dims;
     let scene_color = textureSample(scene_tex, tex_sampler, uv);
     let ao = textureSample(ao_tex, tex_sampler, uv).r;
-    return vec4(scene_color.rgb * ao, scene_color.a);
+
+    // Estimate the ambient contribution in the scene so we can apply AO only to
+    // the ambient term, not to direct lighting.  The PBR shader computes:
+    //   final = direct_lighting * shadow + ambient_color * base_color * material_ao
+    // We approximate the ambient fraction by comparing the ambient intensity to
+    // the total scene luminance.  For dark areas (mostly ambient) AO has full
+    // effect; for bright directly-lit areas the effect is minimal.
+    let ambient = vec3<f32>(params.ambient_r, params.ambient_g, params.ambient_b);
+    let ambient_luma = dot(ambient, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let scene_luma = max(dot(scene_color.rgb, vec3<f32>(0.2126, 0.7152, 0.0722)), 0.001);
+
+    // Ratio of ambient to total scene luminance (clamped to [0,1]).
+    // When ambient_ratio is high, this pixel is mostly ambient-lit and AO
+    // should attenuate strongly. When low, direct light dominates and AO
+    // should have minimal effect.
+    let ambient_ratio = clamp(ambient_luma / scene_luma, 0.0, 1.0);
+
+    // Blend between full scene color (no AO) and AO-attenuated color based on
+    // how much of the pixel is ambient-lit.
+    let ao_factor = mix(1.0, ao, ambient_ratio);
+    return vec4(scene_color.rgb * ao_factor, scene_color.a);
 }
 "#;
 
@@ -320,8 +344,12 @@ struct CompositeParams {
     #[derive(Clone, Copy, Pod, Zeroable)]
     struct CompositeParams {
         screen_dims: [f32; 2],
+        ambient_r: f32,
+        ambient_g: f32,
+        ambient_b: f32,
         _pad0: f32,
         _pad1: f32,
+        _pad2: f32,
     }
 
     // ── Kernel generation ────────────────────────────────────────────────
@@ -717,52 +745,51 @@ struct CompositeParams {
                 ],
             });
 
-            let composite_bgl =
-                device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("ssao_composite_bind_group_layout"),
-                    entries: &[
-                        // scene color texture
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 0,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Texture {
-                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                                view_dimension: wgpu::TextureViewDimension::D2,
-                                multisampled: false,
-                            },
-                            count: None,
+            let composite_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("ssao_composite_bind_group_layout"),
+                entries: &[
+                    // scene color texture
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
                         },
-                        // blurred AO texture
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 1,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Texture {
-                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                                view_dimension: wgpu::TextureViewDimension::D2,
-                                multisampled: false,
-                            },
-                            count: None,
+                        count: None,
+                    },
+                    // blurred AO texture
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
                         },
-                        // sampler
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 2,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                            count: None,
+                        count: None,
+                    },
+                    // sampler
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    // params uniform
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
                         },
-                        // params uniform
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 3,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Uniform,
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
-                            },
-                            count: None,
-                        },
-                    ],
-                });
+                        count: None,
+                    },
+                ],
+            });
 
             // ── Pipelines ────────────────────────────────────────────────
 
@@ -1139,6 +1166,7 @@ struct CompositeParams {
             output_view: &wgpu::TextureView,
             projection: [[f32; 4]; 4],
             inv_projection: [[f32; 4]; 4],
+            ambient_color: [f32; 3],
         ) {
             if !self.enabled {
                 return;
@@ -1170,11 +1198,15 @@ struct CompositeParams {
             queue.write_buffer(&self.blur_h_params_buffer, 0, bytemuck::bytes_of(&blur_h));
             queue.write_buffer(&self.blur_v_params_buffer, 0, bytemuck::bytes_of(&blur_v));
 
-            // Upload composite params
+            // Upload composite params with ambient color for ambient-only AO application
             let composite_params = CompositeParams {
                 screen_dims: [self.width as f32, self.height as f32],
+                ambient_r: ambient_color[0],
+                ambient_g: ambient_color[1],
+                ambient_b: ambient_color[2],
                 _pad0: 0.0,
                 _pad1: 0.0,
+                _pad2: 0.0,
             };
             queue.write_buffer(
                 &self.composite_params_buffer,
@@ -1449,9 +1481,13 @@ mod tests {
         #[derive(Clone, Copy)]
         struct CompositeParamsLayout {
             screen_dims: [f32; 2],
+            ambient_r: f32,
+            ambient_g: f32,
+            ambient_b: f32,
             _pad0: f32,
             _pad1: f32,
+            _pad2: f32,
         }
-        assert_eq!(std::mem::size_of::<CompositeParamsLayout>(), 16);
+        assert_eq!(std::mem::size_of::<CompositeParamsLayout>(), 32);
     }
 }

@@ -1,9 +1,9 @@
 #![cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 
-use crate::skeletal_animation::{
-    AnimationClip, AnimationChannel, ChannelProperty, Joint, Keyframe, KeyframeValue, Skeleton,
-};
 use crate::mesh::JointMatrix;
+use crate::skeletal_animation::{
+    AnimationChannel, AnimationClip, ChannelProperty, Joint, Keyframe, KeyframeValue, Skeleton,
+};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -245,10 +245,8 @@ pub fn generate_humanoid_skeleton(is_enemy: bool) -> Skeleton {
         };
     }
 
-    let inverse_bind_matrices: Vec<JointMatrix> = world_matrices
-        .iter()
-        .map(|wm| mat4_inverse(wm))
-        .collect();
+    let inverse_bind_matrices: Vec<JointMatrix> =
+        world_matrices.iter().map(|wm| mat4_inverse(wm)).collect();
 
     Skeleton {
         joints,
@@ -547,10 +545,10 @@ fn generate_attack_heavy(_joint_count: usize) -> AnimationClip {
             shoulder,
             vec![
                 kf_quat_raw(0.0, QUAT_IDENTITY),
-                kf_quat(0.2, quat_from_axis_angle_x(deg_overhead)),  // overhead
-                kf_quat(0.35, quat_from_axis_angle_x(deg_slam)),     // slam down
-                kf_quat(0.5, quat_from_axis_angle_x(deg_slam)),      // hold
-                kf_quat_raw(0.7, QUAT_IDENTITY),                     // recover
+                kf_quat(0.2, quat_from_axis_angle_x(deg_overhead)), // overhead
+                kf_quat(0.35, quat_from_axis_angle_x(deg_slam)),    // slam down
+                kf_quat(0.5, quat_from_axis_angle_x(deg_slam)),     // hold
+                kf_quat_raw(0.7, QUAT_IDENTITY),                    // recover
             ],
         ));
     }
@@ -574,8 +572,8 @@ fn generate_attack_heavy(_joint_count: usize) -> AnimationClip {
         SPINE,
         vec![
             kf_quat_raw(0.0, QUAT_IDENTITY),
-            kf_quat(0.2, quat_from_axis_angle_x(0.15)),   // lean back
-            kf_quat(0.35, quat_from_axis_angle_x(-0.2)),  // lean forward on slam
+            kf_quat(0.2, quat_from_axis_angle_x(0.15)), // lean back
+            kf_quat(0.35, quat_from_axis_angle_x(-0.2)), // lean forward on slam
             kf_quat(0.5, quat_from_axis_angle_x(-0.15)),
             kf_quat_raw(0.7, QUAT_IDENTITY),
         ],
@@ -707,8 +705,14 @@ fn generate_parry(_joint_count: usize) -> AnimationClip {
         ROOT,
         vec![
             kf_vec3(0.0, root_rest),
-            kf_vec3(0.08, [root_rest[0], root_rest[1] - 0.03, root_rest[2] + 0.05]),
-            kf_vec3(0.2, [root_rest[0], root_rest[1] - 0.02, root_rest[2] + 0.03]),
+            kf_vec3(
+                0.08,
+                [root_rest[0], root_rest[1] - 0.03, root_rest[2] + 0.05],
+            ),
+            kf_vec3(
+                0.2,
+                [root_rest[0], root_rest[1] - 0.02, root_rest[2] + 0.03],
+            ),
             kf_vec3(0.3, root_rest),
         ],
     ));
@@ -731,7 +735,10 @@ fn generate_hit_stagger(_joint_count: usize) -> AnimationClip {
         vec![
             kf_vec3(0.0, root_rest),
             kf_vec3(0.05, [root_rest[0], root_rest[1], root_rest[2] + 0.15]),
-            kf_vec3(0.15, [root_rest[0], root_rest[1] - 0.05, root_rest[2] + 0.25]),
+            kf_vec3(
+                0.15,
+                [root_rest[0], root_rest[1] - 0.05, root_rest[2] + 0.25],
+            ),
             kf_vec3(0.3, [root_rest[0], root_rest[1] - 0.02, root_rest[2] + 0.1]),
             kf_vec3(0.4, root_rest),
         ],
@@ -874,9 +881,10 @@ fn compute_world_positions(skeleton: &Skeleton) -> Vec<[f32; 3]> {
 
     for i in 0..joint_count {
         world_matrices[i] = match skeleton.joints[i].parent_index {
-            Some(parent_idx) => {
-                mat4_mul(&world_matrices[parent_idx], &skeleton.joints[i].local_transform)
-            }
+            Some(parent_idx) => mat4_mul(
+                &world_matrices[parent_idx],
+                &skeleton.joints[i].local_transform,
+            ),
             None => skeleton.joints[i].local_transform,
         };
     }
@@ -982,8 +990,7 @@ mod tests {
                 assert!(
                     !visited[idx],
                     "Cycle detected at joint {} while tracing from joint {}",
-                    idx,
-                    i
+                    idx, i
                 );
                 visited[idx] = true;
                 current = skel.joints[idx].parent_index;
@@ -995,10 +1002,21 @@ mod tests {
     fn skeleton_joint_names_correct() {
         let skel = generate_humanoid_skeleton(false);
         let expected_names = [
-            "root", "spine", "chest", "neck", "head",
-            "L_shoulder", "L_elbow", "L_hand",
-            "R_shoulder", "R_elbow", "R_hand",
-            "L_hip", "L_knee", "R_hip", "R_knee",
+            "root",
+            "spine",
+            "chest",
+            "neck",
+            "head",
+            "L_shoulder",
+            "L_elbow",
+            "L_hand",
+            "R_shoulder",
+            "R_elbow",
+            "R_hand",
+            "L_hip",
+            "L_knee",
+            "R_hip",
+            "R_knee",
         ];
         for (i, name) in expected_names.iter().enumerate() {
             assert_eq!(skel.joints[i].name, *name, "Joint {} name mismatch", i);
@@ -1083,17 +1101,23 @@ mod tests {
             assert!(
                 approx_eq(positions[i][0], REST_POSITIONS[i][0]),
                 "Joint {} X: expected {}, got {}",
-                i, REST_POSITIONS[i][0], positions[i][0]
+                i,
+                REST_POSITIONS[i][0],
+                positions[i][0]
             );
             assert!(
                 approx_eq(positions[i][1], REST_POSITIONS[i][1]),
                 "Joint {} Y: expected {}, got {}",
-                i, REST_POSITIONS[i][1], positions[i][1]
+                i,
+                REST_POSITIONS[i][1],
+                positions[i][1]
             );
             assert!(
                 approx_eq(positions[i][2], REST_POSITIONS[i][2]),
                 "Joint {} Z: expected {}, got {}",
-                i, REST_POSITIONS[i][2], positions[i][2]
+                i,
+                REST_POSITIONS[i][2],
+                positions[i][2]
             );
         }
     }
@@ -1324,8 +1348,14 @@ mod tests {
             .iter()
             .any(|c| c.joint_index == HEAD && c.property == ChannelProperty::Rotation);
 
-        assert!(has_spine_translation, "Idle should animate spine translation");
-        assert!(has_chest_translation, "Idle should animate chest translation");
+        assert!(
+            has_spine_translation,
+            "Idle should animate spine translation"
+        );
+        assert!(
+            has_chest_translation,
+            "Idle should animate chest translation"
+        );
         assert!(has_head_rotation, "Idle should animate head rotation");
     }
 
@@ -1336,10 +1366,22 @@ mod tests {
         assert_eq!(walk.name, "walk");
 
         let joints_animated: Vec<usize> = walk.channels.iter().map(|c| c.joint_index).collect();
-        assert!(joints_animated.contains(&L_HIP), "Walk should animate L_hip");
-        assert!(joints_animated.contains(&R_HIP), "Walk should animate R_hip");
-        assert!(joints_animated.contains(&L_SHOULDER), "Walk should animate L_shoulder");
-        assert!(joints_animated.contains(&R_SHOULDER), "Walk should animate R_shoulder");
+        assert!(
+            joints_animated.contains(&L_HIP),
+            "Walk should animate L_hip"
+        );
+        assert!(
+            joints_animated.contains(&R_HIP),
+            "Walk should animate R_hip"
+        );
+        assert!(
+            joints_animated.contains(&L_SHOULDER),
+            "Walk should animate L_shoulder"
+        );
+        assert!(
+            joints_animated.contains(&R_SHOULDER),
+            "Walk should animate R_shoulder"
+        );
     }
 
     #[test]
@@ -1352,7 +1394,10 @@ mod tests {
             .channels
             .iter()
             .find(|c| c.joint_index == R_SHOULDER && c.property == ChannelProperty::Rotation);
-        assert!(r_shoulder_rot.is_some(), "attack_light should rotate R_shoulder");
+        assert!(
+            r_shoulder_rot.is_some(),
+            "attack_light should rotate R_shoulder"
+        );
     }
 
     #[test]
@@ -1394,7 +1439,11 @@ mod tests {
                 }
             }
         }
-        assert!(max_z >= 1.0, "Dodge should move root at least 1.0 units backward, got {}", max_z);
+        assert!(
+            max_z >= 1.0,
+            "Dodge should move root at least 1.0 units backward, got {}",
+            max_z
+        );
     }
 
     #[test]
@@ -1417,9 +1466,18 @@ mod tests {
         assert_eq!(stagger.name, "hit_stagger");
 
         let joints_animated: Vec<usize> = stagger.channels.iter().map(|c| c.joint_index).collect();
-        assert!(joints_animated.contains(&ROOT), "hit_stagger should animate root");
-        assert!(joints_animated.contains(&SPINE), "hit_stagger should animate spine");
-        assert!(joints_animated.contains(&HEAD), "hit_stagger should animate head");
+        assert!(
+            joints_animated.contains(&ROOT),
+            "hit_stagger should animate root"
+        );
+        assert!(
+            joints_animated.contains(&SPINE),
+            "hit_stagger should animate spine"
+        );
+        assert!(
+            joints_animated.contains(&HEAD),
+            "hit_stagger should animate head"
+        );
     }
 
     // ---- Vertex weight tests ----
@@ -1494,7 +1552,10 @@ mod tests {
             indices[0], HEAD as u16,
             "Vertex at head position should have head as primary joint"
         );
-        assert!(weights[0] > 0.5, "Head weight should dominate at head position");
+        assert!(
+            weights[0] > 0.5,
+            "Head weight should dominate at head position"
+        );
     }
 
     #[test]
@@ -1598,7 +1659,10 @@ mod tests {
     fn quat_from_axis_angle_x_90deg_unit_length() {
         let q = quat_from_axis_angle_x(std::f32::consts::FRAC_PI_2);
         assert!(approx_eq(quat_length(&q), 1.0));
-        assert!(q[0] > 0.0, "X component should be positive for +90 deg X rotation");
+        assert!(
+            q[0] > 0.0,
+            "X component should be positive for +90 deg X rotation"
+        );
     }
 
     #[test]
@@ -1624,7 +1688,12 @@ mod tests {
 
         for clip in &clips {
             // Evaluate at several time points.
-            for &t in &[0.0, clip.duration_secs * 0.25, clip.duration_secs * 0.5, clip.duration_secs] {
+            for &t in &[
+                0.0,
+                clip.duration_secs * 0.25,
+                clip.duration_secs * 0.5,
+                clip.duration_secs,
+            ] {
                 let poses = crate::skeletal_animation::evaluate_clip(clip, t, skel.joints.len());
                 assert_eq!(
                     poses.len(),
@@ -1656,7 +1725,11 @@ mod tests {
         let clips = generate_all_clips(skel.joints.len());
 
         for clip in &clips {
-            let poses = crate::skeletal_animation::evaluate_clip(clip, clip.duration_secs * 0.5, skel.joints.len());
+            let poses = crate::skeletal_animation::evaluate_clip(
+                clip,
+                clip.duration_secs * 0.5,
+                skel.joints.len(),
+            );
             let matrices = crate::skeletal_animation::compute_skinning_matrices(&skel, &poses);
             assert_eq!(
                 matrices.len(),

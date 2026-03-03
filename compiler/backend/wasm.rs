@@ -748,7 +748,10 @@ impl<'a> WasmFuncCtx<'a> {
                 self.emit_call(func_idx);
             }
             Rvalue::GetField {
-                base, field: _, slot, ..
+                base,
+                field: _,
+                slot,
+                ..
             } => {
                 self.emit_value(base);
                 self.emit_nanbox_nil(); // name placeholder
@@ -1227,9 +1230,7 @@ impl<'a> WasmFuncCtx<'a> {
                 }
                 import_list_len(self.imports)
             }
-            "__wr_map_new" => {
-                import_map_new(self.imports)
-            }
+            "__wr_map_new" => import_map_new(self.imports),
             "__wr_map_get" => {
                 for arg in args {
                     self.emit_value(arg);
@@ -1597,7 +1598,12 @@ pub fn emit_wasm_module(mir: &MirModule) -> Result<Vec<u8>, CodegenError> {
         ctx.emit_blocks();
 
         let extra_locals = ctx.next_local - func.params.len() as u32;
-        func_bodies.push((func.name.clone(), ctx.code, func.params.len() as u32, extra_locals));
+        func_bodies.push((
+            func.name.clone(),
+            ctx.code,
+            func.params.len() as u32,
+            extra_locals,
+        ));
     }
 
     // Verify import count matches
@@ -1643,7 +1649,12 @@ pub fn emit_wasm_module(mir: &MirModule) -> Result<Vec<u8>, CodegenError> {
             ctx.emit_blocks();
 
             let extra_locals = ctx.next_local - func.params.len() as u32;
-            func_bodies.push((func.name.clone(), ctx.code, func.params.len() as u32, extra_locals));
+            func_bodies.push((
+                func.name.clone(),
+                ctx.code,
+                func.params.len() as u32,
+                extra_locals,
+            ));
         }
     }
 
@@ -1753,10 +1764,7 @@ pub fn emit_wasm_module(mir: &MirModule) -> Result<Vec<u8>, CodegenError> {
             if has_main {
                 encode_string(&mut export_sec, "init");
                 export_sec.push(0x00); // export kind: func
-                let main_idx = func_name_order
-                    .iter()
-                    .position(|n| n == "main")
-                    .unwrap() as u32;
+                let main_idx = func_name_order.iter().position(|n| n == "main").unwrap() as u32;
                 encode_unsigned_leb128(
                     &mut export_sec,
                     (imports.imports.len() as u32 + main_idx) as u64,
@@ -1766,10 +1774,7 @@ pub fn emit_wasm_module(mir: &MirModule) -> Result<Vec<u8>, CodegenError> {
             if has_tick {
                 encode_string(&mut export_sec, "tick");
                 export_sec.push(0x00); // export kind: func
-                let tick_idx = func_name_order
-                    .iter()
-                    .position(|n| n == "tick")
-                    .unwrap() as u32;
+                let tick_idx = func_name_order.iter().position(|n| n == "tick").unwrap() as u32;
                 encode_unsigned_leb128(
                     &mut export_sec,
                     (imports.imports.len() as u32 + tick_idx) as u64,

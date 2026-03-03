@@ -1,3 +1,6 @@
+pub mod texture_gen;
+pub mod tripo;
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -38,6 +41,8 @@ pub struct AssetGenerationArtifact {
     pub bytes_len: u64,
     pub fingerprint: String,
     pub metadata: BTreeMap<String, String>,
+    #[serde(default)]
+    pub local_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,6 +56,16 @@ pub trait DeterministicAssetAdapter {
     fn kind(&self) -> AssetAdapterKind;
     fn provider(&self) -> &str;
     fn generate(&self, request: &AssetGenerationRequest) -> Result<AssetGenerationResult, String>;
+}
+
+#[async_trait::async_trait]
+pub trait AsyncAssetAdapter: Send + Sync {
+    fn kind(&self) -> AssetAdapterKind;
+    fn provider(&self) -> &str;
+    async fn generate(
+        &self,
+        request: &AssetGenerationRequest,
+    ) -> Result<AssetGenerationResult, String>;
 }
 
 #[derive(Debug, Clone)]
@@ -222,6 +237,22 @@ impl AssetArtifactCache {
         Ok(manifest_path)
     }
 
+    pub fn put_bytes(
+        &self,
+        envelope: &CanonicalJobEnvelope,
+        filename: &str,
+        bytes: &[u8],
+    ) -> Result<PathBuf, String> {
+        let key = Self::cache_key(envelope);
+        let key_dir = self.root.join(key.as_str());
+        fs::create_dir_all(key_dir.as_path())
+            .map_err(|error| format!("failed to create cache directory: {error}"))?;
+        let file_path = key_dir.join(filename);
+        fs::write(file_path.as_path(), bytes)
+            .map_err(|error| format!("failed to write asset bytes: {error}"))?;
+        Ok(file_path)
+    }
+
     pub fn get(
         &self,
         envelope: &CanonicalJobEnvelope,
@@ -235,11 +266,21 @@ impl AssetArtifactCache {
             .map_err(|error| format!("failed to read cache result: {error}"))?;
         let parsed: AssetGenerationResult = serde_json::from_slice(bytes.as_slice())
             .map_err(|error| format!("failed to decode cache result: {error}"))?;
+
+        // Validate that all referenced local_path files still exist on disk.
+        for artifact in &parsed.artifacts {
+            if let Some(ref local_path) = artifact.local_path {
+                if !local_path.exists() {
+                    return Ok(None);
+                }
+            }
+        }
+
         Ok(Some(parsed))
     }
 }
 
-fn generate_deterministic_result(
+pub fn generate_deterministic_result(
     kind: AssetAdapterKind,
     provider: &str,
     request: &AssetGenerationRequest,
@@ -248,10 +289,10 @@ fn generate_deterministic_result(
     if request.asset_id.trim().is_empty() {
         return Err("asset generation request requires non-empty asset_id".to_string());
     }
-    let canonical_prompt = canonical_prompt(request);
-    let replay_hash = replay_hash(kind, provider, canonical_prompt.as_str(), request.seed);
-    let job_id = format!("job-{}", &replay_hash[..16]);
-    let artifact_id = format!("asset-{}", &replay_hash[16..32]);
+    let canonical = canonical_prompt(request);
+    let hash = replay_hash(kind, provider, canonical.as_str(), request.seed);
+    let job_id = format!("job-{}", &hash[..16]);
+    let artifact_id = format!("asset-{}", &hash[16..32]);
     let logical_path = format!(
         "generated/{}/{}.{}",
         request.asset_id, artifact_id, extension
@@ -266,24 +307,25 @@ fn generate_deterministic_result(
         adapter_kind: kind,
         provider: provider.to_string(),
         seed: request.seed,
-        canonical_prompt,
-        replay_hash: replay_hash.clone(),
+        canonical_prompt: canonical,
+        replay_hash: hash.clone(),
     };
     let artifact = AssetGenerationArtifact {
         artifact_id,
         logical_path,
         bytes_len: 1024,
-        fingerprint: replay_hash.clone(),
+        fingerprint: hash.clone(),
         metadata,
+        local_path: None,
     };
     Ok(AssetGenerationResult {
         envelope,
-        provider_response_hash: replay_hash,
+        provider_response_hash: hash,
         artifacts: vec![artifact],
     })
 }
 
-fn canonical_prompt(request: &AssetGenerationRequest) -> String {
+pub fn canonical_prompt(request: &AssetGenerationRequest) -> String {
     let mut constraints = request.negative_constraints.clone();
     constraints.sort();
     format!(
@@ -295,7 +337,7 @@ fn canonical_prompt(request: &AssetGenerationRequest) -> String {
     )
 }
 
-fn replay_hash(
+pub fn replay_hash(
     kind: AssetAdapterKind,
     provider: &str,
     canonical_prompt: &str,
@@ -367,5 +409,58 @@ mod tests {
             .expect("cache get")
             .expect("cached value");
         assert_eq!(cached, result);
+    }
+
+    #[test]
+    fn test_put_bytes_roundtrip() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let cache = AssetArtifactCache::new(temp.path());
+        let adapter = MeshGenerationAdapter::new("mesh-default");
+        let request = sample_request();
+        let result = adapter.generate(&request).expect("generate");
+
+        let test_data = b"hello world asset bytes";
+        let path = cache
+            .put_bytes(&result.envelope, "model.glb", test_data)
+            .expect("put_bytes");
+
+        assert!(path.exists(), "put_bytes file must exist on disk");
+        let read_back = fs::read(&path).expect("read file");
+        assert_eq!(
+            read_back.as_slice(),
+            test_data,
+            "file content must match what was written"
+        );
+    }
+
+    #[test]
+    fn test_cache_validates_files_exist() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let cache = AssetArtifactCache::new(temp.path());
+        let adapter = MeshGenerationAdapter::new("mesh-default");
+        let request = sample_request();
+        let mut result = adapter.generate(&request).expect("generate");
+
+        // Create a file in the cache directory and reference it via local_path.
+        let fake_file = temp.path().join("ephemeral.glb");
+        fs::write(&fake_file, b"glb-contents").expect("write fake file");
+        result.artifacts[0].local_path = Some(fake_file.clone());
+
+        cache.put(&result).expect("cache put");
+
+        // Should be found while the file exists.
+        let cached = cache
+            .get(&result.envelope)
+            .expect("cache get")
+            .expect("cached value present");
+        assert_eq!(cached, result);
+
+        // Delete the referenced file, cache should return None.
+        fs::remove_file(&fake_file).expect("remove file");
+        let missing = cache.get(&result.envelope).expect("cache get");
+        assert!(
+            missing.is_none(),
+            "cache must return None when a referenced local_path file is missing"
+        );
     }
 }

@@ -1681,9 +1681,10 @@ derives next_age() -> Integer {
 
     #[test]
     fn test_removed_component_scene_widget_heads_are_rejected() {
+        // `scene` is no longer a removed keyword — it's used for scene declarations.
+        // `component` and `widget` remain removed.
         let text = "\
 component Position { x: Integer }
-scene MainScene { enabled: Boolean }
 widget button() -> Nothing { return }
 ";
         let (_node, errors) = parse_with_errors(text);
@@ -1691,12 +1692,6 @@ widget button() -> Nothing { return }
             errors
                 .iter()
                 .any(|e| e.message.contains("removed keyword `component`")),
-            "{errors:?}"
-        );
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("removed keyword `scene`")),
             "{errors:?}"
         );
         assert!(
@@ -1873,5 +1868,170 @@ material TreeBark {
             semantics[1].value().map(|tok| tok.text().to_string()),
             Some("0.7".to_string())
         );
+    }
+
+    #[test]
+    fn test_parse_asset_decl_all_fields() {
+        use ast::AstNode;
+        let text = r#"asset keyblade_crystal {
+    kind: mesh
+    prompt: "crystalline keyblade with blue energy veins"
+    style: "anime_fantasy"
+    lod_budget: 10000
+    negative: "blurry, low-poly"
+}"#;
+        let (node, errors) = parse_with_errors(text);
+        assert!(errors.is_empty(), "Parse errors: {:?}", errors);
+        let root = ast::Root::cast(node).unwrap();
+        let asset = match root.statements().next().unwrap() {
+            ast::Stmt::AssetDecl(a) => a,
+            other => panic!("Expected AssetDecl, got {:?}", other.syntax().kind()),
+        };
+        assert_eq!(asset.name().unwrap().text(), "keyblade_crystal");
+        assert_eq!(asset.kind_clause().unwrap().value().unwrap().text(), "mesh");
+        assert_eq!(
+            asset.prompt_clause().unwrap().value().unwrap().text(),
+            "crystalline keyblade with blue energy veins"
+        );
+        assert_eq!(
+            asset.style_clause().unwrap().value().unwrap().text(),
+            "anime_fantasy"
+        );
+        assert_eq!(
+            asset.lod_budget_clause().unwrap().value().unwrap().text(),
+            "10000"
+        );
+        assert_eq!(
+            asset.negative_clause().unwrap().value().unwrap().text(),
+            "blurry, low-poly"
+        );
+    }
+
+    #[test]
+    fn test_parse_asset_decl_required_only() {
+        use ast::AstNode;
+        let text = r#"asset simple_mesh {
+    kind: mesh
+    prompt: "a simple mesh"
+}"#;
+        let (node, errors) = parse_with_errors(text);
+        assert!(errors.is_empty(), "Parse errors: {:?}", errors);
+        let root = ast::Root::cast(node).unwrap();
+        let asset = match root.statements().next().unwrap() {
+            ast::Stmt::AssetDecl(a) => a,
+            other => panic!("Expected AssetDecl, got {:?}", other.syntax().kind()),
+        };
+        assert_eq!(asset.name().unwrap().text(), "simple_mesh");
+        assert_eq!(asset.kind_clause().unwrap().value().unwrap().text(), "mesh");
+        assert!(asset.style_clause().is_none());
+        assert!(asset.negative_clause().is_none());
+        assert!(asset.lod_budget_clause().is_none());
+    }
+
+    #[test]
+    fn test_parse_scene_decl_full() {
+        use ast::AstNode;
+        let text = r#"scene preview_arena {
+    entity player_weapon {
+        mesh: keyblade_crystal
+        position: vec3(0, 0, 0)
+        rotation: vec3(0, 1000, 0)
+        scale: vec3(1000, 1000, 1000)
+    }
+
+    lighting {
+        sun_direction: vec3(500, -800, 300)
+        sun_color: rgb(255, 240, 220)
+        sun_intensity: 2000
+        ambient_color: rgb(40, 35, 50)
+        ambient_intensity: 500
+    }
+
+    camera {
+        mode: orbit
+        target: player_weapon
+        distance: 5000
+        pitch: -300
+    }
+}"#;
+        let (node, errors) = parse_with_errors(text);
+        assert!(errors.is_empty(), "Parse errors: {:?}", errors);
+        let root = ast::Root::cast(node).unwrap();
+        let scene = match root.statements().next().unwrap() {
+            ast::Stmt::SceneDecl(s) => s,
+            other => panic!("Expected SceneDecl, got {:?}", other.syntax().kind()),
+        };
+        assert_eq!(scene.name().unwrap().text(), "preview_arena");
+
+        let entities: Vec<_> = scene.entity_blocks().collect();
+        assert_eq!(entities.len(), 1);
+        assert_eq!(entities[0].name().unwrap().text(), "player_weapon");
+        assert_eq!(
+            entities[0].mesh_clause().unwrap().value().unwrap().text(),
+            "keyblade_crystal"
+        );
+        assert_eq!(entities[0].position_clause().unwrap().values(), [0, 0, 0]);
+        assert_eq!(
+            entities[0].rotation_clause().unwrap().values(),
+            [0, 1000, 0]
+        );
+        assert_eq!(
+            entities[0].scale_clause().unwrap().values(),
+            [1000, 1000, 1000]
+        );
+
+        let lighting = scene.lighting_block().unwrap();
+        assert_eq!(
+            lighting.sun_direction_clause().unwrap().values(),
+            [500, -800, 300]
+        );
+        assert_eq!(
+            lighting.sun_color_clause().unwrap().values(),
+            [255, 240, 220]
+        );
+        assert_eq!(lighting.sun_intensity_clause().unwrap().value(), Some(2000));
+        assert_eq!(
+            lighting.ambient_color_clause().unwrap().values(),
+            [40, 35, 50]
+        );
+        assert_eq!(
+            lighting.ambient_intensity_clause().unwrap().value(),
+            Some(500)
+        );
+
+        let camera = scene.camera_block().unwrap();
+        assert_eq!(
+            camera.mode_clause().unwrap().value().unwrap().text(),
+            "orbit"
+        );
+        assert_eq!(
+            camera.target_clause().unwrap().value().unwrap().text(),
+            "player_weapon"
+        );
+        assert_eq!(camera.distance_clause().unwrap().value(), Some(5000));
+        assert_eq!(camera.pitch_clause().unwrap().value(), Some(-300));
+    }
+
+    #[test]
+    fn test_parse_scene_entity_only() {
+        use ast::AstNode;
+        let text = r#"scene minimal {
+    entity item {
+        mesh: my_mesh
+        position: vec3(100, 200, 300)
+    }
+}"#;
+        let (node, errors) = parse_with_errors(text);
+        assert!(errors.is_empty(), "Parse errors: {:?}", errors);
+        let root = ast::Root::cast(node).unwrap();
+        let scene = match root.statements().next().unwrap() {
+            ast::Stmt::SceneDecl(s) => s,
+            other => panic!("Expected SceneDecl, got {:?}", other.syntax().kind()),
+        };
+        assert_eq!(scene.name().unwrap().text(), "minimal");
+        let entities: Vec<_> = scene.entity_blocks().collect();
+        assert_eq!(entities.len(), 1);
+        assert!(scene.lighting_block().is_none());
+        assert!(scene.camera_block().is_none());
     }
 }

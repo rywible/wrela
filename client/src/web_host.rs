@@ -4,9 +4,7 @@ use crate::animation_graph::AnimationAdvanceResult;
 use crate::animation_graph::{
     AnimationGraphDefinition, AnimationGraphState, AnimationStateDefinition, AnimationTransition,
 };
-use crate::mesh::{
-    MAX_SKINNING_JOINTS, Vertex3D, VertexFormat, flatten_skinning_palette_for_upload,
-};
+use crate::mesh::MAX_SKINNING_JOINTS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SkinningPoseUploadBounds {
@@ -219,7 +217,7 @@ mod tests {
 
     #[test]
     fn skinned_render_path_uses_joint_weights() {
-        assert_eq!(std::mem::size_of::<Vertex3D>(), 56);
+        assert_eq!(std::mem::size_of::<Vertex3D>(), 88);
         assert_eq!(Vertex3D::ATTRIBS[3].shader_location, 3);
         assert_eq!(Vertex3D::ATTRIBS[3].format, VertexFormat::Uint16x4);
         assert_eq!(Vertex3D::ATTRIBS[4].shader_location, 4);

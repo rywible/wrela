@@ -50,6 +50,14 @@ pub(crate) fn parse_statement(p: &mut Parser) {
         class::theme_def(p);
         return;
     }
+    if p.at(SyntaxKind::AssetKw) {
+        class::asset_decl(p);
+        return;
+    }
+    if p.at(SyntaxKind::SceneKw) {
+        class::scene_decl(p);
+        return;
+    }
     if is_class_start(p) {
         class::class_def(p);
         return;
@@ -1547,17 +1555,7 @@ fn reject_removed_keyword_statement_head(p: &mut Parser) -> bool {
         }
         return true;
     }
-    if p.at(SyntaxKind::SceneKw) {
-        p.error_with_message_no_bump(
-            "removed keyword `scene`; use `node <Name> profile ui|world|canvas { ... }`",
-        );
-        p.bump();
-        p.recover_until(&[SyntaxKind::Newline, SyntaxKind::Eof]);
-        if p.at(SyntaxKind::Newline) {
-            p.bump();
-        }
-        return true;
-    }
+    // Note: SceneKw is no longer rejected — it's now dispatched to scene_decl() in parse_statement()
     if p.at(SyntaxKind::WidgetKw) {
         p.error_with_message_no_bump(
             "removed keyword `widget`; use `material <Name> { ... }` or `view`",

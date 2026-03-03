@@ -78,7 +78,9 @@ impl Default for JointPose {
 ///
 /// Returns `(skeleton, clips)` where `skeleton` is `None` when the GLB has no
 /// skin definition.
-pub fn load_animations_from_glb(data: &[u8]) -> Result<(Option<Skeleton>, Vec<AnimationClip>), String> {
+pub fn load_animations_from_glb(
+    data: &[u8],
+) -> Result<(Option<Skeleton>, Vec<AnimationClip>), String> {
     let glb = gltf::Glb::from_slice(data).map_err(|e| format!("GLB parse error: {e}"))?;
     let doc = gltf::Gltf::from_slice(&glb.json).map_err(|e| format!("glTF JSON error: {e}"))?;
     let bin: &[u8] = glb.bin.as_deref().ok_or("No binary blob in GLB")?;
@@ -90,10 +92,7 @@ pub fn load_animations_from_glb(data: &[u8]) -> Result<(Option<Skeleton>, Vec<An
 }
 
 /// Read `count` items of type `T` from a buffer view, interpreting raw bytes.
-fn read_accessor_data<T: Copy>(
-    accessor: &gltf::Accessor<'_>,
-    bin: &[u8],
-) -> Vec<T> {
+fn read_accessor_data<T: Copy>(accessor: &gltf::Accessor<'_>, bin: &[u8]) -> Vec<T> {
     let view = match accessor.view() {
         Some(v) => v,
         None => return Vec::new(),
@@ -205,9 +204,7 @@ fn extract_animation_clips(
         None => {
             // No skeleton; use node index directly as joint index so that
             // clips are still loadable for non-skinned animations.
-            doc.nodes()
-                .map(|n| (n.index(), n.index()))
-                .collect()
+            doc.nodes().map(|n| (n.index(), n.index())).collect()
         }
     };
 
@@ -341,7 +338,11 @@ fn sample_channel(keyframes: &[Keyframe], time: f32) -> KeyframeValue {
     }
 
     // Binary search for the bracket
-    let idx = match keyframes.binary_search_by(|kf| kf.time.partial_cmp(&time).unwrap_or(std::cmp::Ordering::Equal)) {
+    let idx = match keyframes.binary_search_by(|kf| {
+        kf.time
+            .partial_cmp(&time)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    }) {
         Ok(exact) => return keyframes[exact].value,
         Err(insert_pos) => insert_pos,
     };
@@ -359,9 +360,7 @@ fn sample_channel(keyframes: &[Keyframe], time: f32) -> KeyframeValue {
         (KeyframeValue::Vec3(va), KeyframeValue::Vec3(vb)) => {
             KeyframeValue::Vec3(lerp_vec3(va, vb, t))
         }
-        (KeyframeValue::Quat(qa), KeyframeValue::Quat(qb)) => {
-            KeyframeValue::Quat(slerp(qa, qb, t))
-        }
+        (KeyframeValue::Quat(qa), KeyframeValue::Quat(qb)) => KeyframeValue::Quat(slerp(qa, qb, t)),
         // Mismatched types shouldn't happen with well-formed data; clamp to a.
         _ => a.value,
     }
@@ -426,10 +425,7 @@ fn normalize_quat(q: &[f32; 4]) -> [f32; 4] {
 /// Compute the final skinning matrices (joint palette) from a skeleton and a
 /// sampled pose. The returned matrices are in model-space, pre-multiplied by
 /// the inverse bind matrices, ready for GPU upload.
-pub fn compute_skinning_matrices(
-    skeleton: &Skeleton,
-    pose: &[JointPose],
-) -> Vec<JointMatrix> {
+pub fn compute_skinning_matrices(skeleton: &Skeleton, pose: &[JointPose]) -> Vec<JointMatrix> {
     let joint_count = skeleton.joints.len();
     let mut world_transforms = vec![identity_matrix(); joint_count];
 
@@ -484,10 +480,10 @@ fn compose_trs(pose: &JointPose) -> JointMatrix {
     let wz = qw * z2;
 
     [
-        [(1.0 - (yy + zz)) * sx, (xy + wz) * sx,         (xz - wy) * sx,         0.0],
-        [(xy - wz) * sy,         (1.0 - (xx + zz)) * sy,  (yz + wx) * sy,         0.0],
-        [(xz + wy) * sz,         (yz - wx) * sz,          (1.0 - (xx + yy)) * sz, 0.0],
-        [tx,                     ty,                       tz,                     1.0],
+        [(1.0 - (yy + zz)) * sx, (xy + wz) * sx, (xz - wy) * sx, 0.0],
+        [(xy - wz) * sy, (1.0 - (xx + zz)) * sy, (yz + wx) * sy, 0.0],
+        [(xz + wy) * sz, (yz - wx) * sz, (1.0 - (xx + yy)) * sz, 0.0],
+        [tx, ty, tz, 1.0],
     ]
 }
 
@@ -795,7 +791,11 @@ mod tests {
 
         let poses = evaluate_clip(&clip, 0.5, 2);
         assert_eq!(poses.len(), 2);
-        assert!(approx_eq_vec3(&poses[0].translation, &[5.0, 0.0, 0.0], 1e-5));
+        assert!(approx_eq_vec3(
+            &poses[0].translation,
+            &[5.0, 0.0, 0.0],
+            1e-5
+        ));
         assert!(approx_eq_vec3(&poses[1].scale, &[1.5, 1.5, 1.5], 1e-5));
     }
 
@@ -1171,11 +1171,17 @@ mod tests {
         let result = sample_channel(&kfs, 0.5);
         if let KeyframeValue::Quat(q) = result {
             let len = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
-            assert!(approx_eq_f32(len, 1.0, 1e-4), "slerp result should be unit length");
+            assert!(
+                approx_eq_f32(len, 1.0, 1e-4),
+                "slerp result should be unit length"
+            );
             // y component should be positive
             assert!(q[1] > 0.0, "should have positive Y rotation component");
             // w component should be positive (< 90 degrees)
-            assert!(q[3] > 0.0, "w should be positive for rotation < 180 degrees");
+            assert!(
+                q[3] > 0.0,
+                "w should be positive for rotation < 180 degrees"
+            );
         } else {
             panic!("expected Quat");
         }

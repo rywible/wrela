@@ -179,10 +179,17 @@ impl<'a> Lexer<'a> {
         match segment {
             StringSegment::End(content) => {
                 self.mode_stack.pop();
-                if interpolated {
-                    Ok(Some((Token::StringEnd(content), span)))
+                // Exclude the closing quote from the span so that token.text()
+                // returns only the string content (without surrounding quotes).
+                let content_span = if end_pos > start_pos {
+                    SourceSpan::new(start_pos.into(), (end_pos - start_pos).saturating_sub(1))
                 } else {
-                    Ok(Some((Token::StringLiteral(content), span)))
+                    span
+                };
+                if interpolated {
+                    Ok(Some((Token::StringEnd(content), content_span)))
+                } else {
+                    Ok(Some((Token::StringLiteral(content), content_span)))
                 }
             }
             StringSegment::Interpolate(content) => {

@@ -350,6 +350,8 @@ pub fn load_project_with_roots(
         provenance_ledgers: Vec::new(),
         quality_gates: Vec::new(),
         shader_functions: Vec::new(),
+        asset_declarations: Vec::new(),
+        scene_declarations: Vec::new(),
     };
 
     let mut function_origins: HashMap<SmolStr, (SmolStr, Option<TextRange>, PathBuf, String)> =

@@ -1,140 +1,182 @@
 {
+  "schema_version": 2,
+  "kind": "aaa-forest-action-payloads-v1",
   "steps": [
-    { "buttons": [], "frames": 10 },
-    { "buttons": ["left"], "frames": 8 },
-    { "buttons": [], "frames": 4 },
-    { "buttons": ["right"], "frames": 8 },
-    { "buttons": [], "frames": 4 },
-    { "buttons": ["space"], "frames": 2 },
-    { "buttons": [], "frames": 6 }
+    { "buttons": [], "frames": 18 },
+    { "buttons": ["left"], "frames": 10 },
+    { "buttons": [], "frames": 6 },
+    { "buttons": ["right"], "frames": 10 },
+    { "buttons": [], "frames": 8 }
   ],
   "presets": {
-    "warmup": {
-      "expect": {
-        "minAckDelta": 0,
-        "minTickDelta": 20,
-        "minDrawCallsDelta": 20,
-        "requireHashChange": true
+    "idle_composition": {
+      "meta": {
+        "scenario": "idle_composition",
+        "lane": "ORCH-00",
+        "category": "visual",
+        "focus": "establish composition and atmospheric stability"
       },
-      "steps": [
-        { "buttons": [], "frames": 10 },
-        { "buttons": ["left"], "frames": 8 },
-        { "buttons": [], "frames": 4 },
-        { "buttons": ["right"], "frames": 8 },
-        { "buttons": [], "frames": 4 },
-        { "buttons": ["space"], "frames": 2 },
-        { "buttons": [], "frames": 6 }
-      ]
-    },
-    "movement_sweep": {
-      "expect": {
-        "minAckDelta": 0,
-        "minTickDelta": 24,
-        "minDrawCallsDelta": 24,
-        "requireHashChange": true
-      },
-      "steps": [
-        { "buttons": ["left"], "frames": 12 },
-        { "buttons": [], "frames": 3 },
-        { "buttons": ["right"], "frames": 12 },
-        { "buttons": [], "frames": 3 },
-        { "buttons": ["up"], "frames": 10 },
-        { "buttons": [], "frames": 3 },
-        { "buttons": ["down"], "frames": 10 },
-        { "buttons": [], "frames": 3 },
-        { "buttons": ["left", "up"], "frames": 8 },
-        { "buttons": [], "frames": 4 }
-      ]
-    },
-    "pickup_attempt": {
-      "expect": {
-        "minAckDelta": 0,
-        "minTickDelta": 20,
-        "minDrawCallsDelta": 24,
-        "requireHashChange": true
-      },
-      "steps": [
-        { "buttons": [], "frames": 6 },
-        { "buttons": ["up"], "frames": 18 },
-        { "buttons": [], "frames": 2 },
-        { "buttons": ["left"], "frames": 10 },
-        { "buttons": [], "frames": 2 },
-        { "buttons": ["down"], "frames": 8 },
-        { "buttons": [], "frames": 2 },
-        { "buttons": ["right"], "frames": 14 },
-        { "buttons": [], "frames": 4 },
-        { "buttons": ["left", "up"], "frames": 8 },
-        { "buttons": [], "frames": 4 }
-      ]
-    },
-    "website_interaction": {
       "expect": {
         "minAckDelta": 0,
         "minTickDelta": 18,
         "minDrawCallsDelta": 18,
-        "requireHashChange": true,
-        "statusIncludes": "website slice"
-      },
-      "steps": [
-        { "buttons": [], "frames": 12 },
-        { "buttons": ["left_mouse_button"], "frames": 2, "mouse_x": 120, "mouse_y": 80 },
-        { "buttons": [], "frames": 6 },
-        { "buttons": ["down"], "frames": 2 },
-        { "buttons": [], "frames": 2 },
-        { "buttons": ["up"], "frames": 2 },
-        { "buttons": [], "frames": 10 },
-        { "buttons": ["left_mouse_button"], "frames": 2, "mouse_x": 200, "mouse_y": 140 },
-        { "buttons": [], "frames": 6 }
-      ]
-    },
-    "game_stress": {
-      "expect": {
-        "minAckDelta": 0,
-        "minTickDelta": 20,
-        "minDrawCallsDelta": 30,
         "requireHashChange": true
       },
       "steps": [
-        { "buttons": ["left", "up"], "frames": 10 },
-        { "buttons": ["right", "up"], "frames": 10 },
-        { "buttons": ["right", "down"], "frames": 10 },
-        { "buttons": ["left", "down"], "frames": 10 },
-        { "buttons": [], "frames": 4 },
-        { "buttons": ["left"], "frames": 8 },
-        { "buttons": [], "frames": 2 },
-        { "buttons": ["right"], "frames": 8 },
-        { "buttons": [], "frames": 2 },
-        { "buttons": ["up"], "frames": 8 },
-        { "buttons": [], "frames": 2 },
-        { "buttons": ["down"], "frames": 8 },
+        { "buttons": [], "frames": 28 },
+        { "buttons": ["left"], "frames": 4 },
+        { "buttons": [], "frames": 20 },
+        { "buttons": ["right"], "frames": 4 },
+        { "buttons": [], "frames": 24 }
+      ]
+    },
+    "camera_orbit": {
+      "meta": {
+        "scenario": "camera_orbit",
+        "lane": "ORCH-00",
+        "category": "camera",
+        "focus": "orbit framing and silhouette readability"
+      },
+      "expect": {
+        "minAckDelta": 0,
+        "minTickDelta": 28,
+        "minDrawCallsDelta": 28,
+        "requireHashChange": true
+      },
+      "steps": [
+        { "buttons": ["left"], "frames": 18 },
+        { "buttons": [], "frames": 3 },
+        { "buttons": ["right"], "frames": 18 },
+        { "buttons": [], "frames": 3 },
+        { "buttons": ["up"], "frames": 10 },
+        { "buttons": [], "frames": 3 },
+        { "buttons": ["down"], "frames": 10 },
         { "buttons": [], "frames": 8 }
       ]
     },
-    "website_stress": {
+    "lock_toggle": {
+      "meta": {
+        "scenario": "lock_toggle",
+        "lane": "ORCH-00",
+        "category": "camera",
+        "focus": "lock-on acquire and release"
+      },
       "expect": {
         "minAckDelta": 0,
-        "minTickDelta": 0,
-        "minDrawCallsDelta": 30,
-        "requireHashChange": false
+        "minTickDelta": 30,
+        "minDrawCallsDelta": 20,
+        "requireHashChange": true
       },
       "steps": [
-        { "buttons": ["left", "up"], "frames": 10 },
-        { "buttons": ["right", "up"], "frames": 10 },
-        { "buttons": ["right", "down"], "frames": 10 },
-        { "buttons": ["left", "down"], "frames": 10 },
-        { "buttons": [], "frames": 4 },
-        { "buttons": ["left"], "frames": 8 },
-        { "buttons": [], "frames": 2 },
-        { "buttons": ["right"], "frames": 8 },
-        { "buttons": [], "frames": 2 },
-        { "buttons": ["up"], "frames": 8 },
-        { "buttons": [], "frames": 2 },
-        { "buttons": ["down"], "frames": 8 },
-        { "buttons": [], "frames": 2 },
-        { "buttons": ["left_mouse_button"], "frames": 2, "mouse_x": 120, "mouse_y": 80 },
-        { "buttons": [], "frames": 4 },
-        { "buttons": ["left_mouse_button"], "frames": 2, "mouse_x": 200, "mouse_y": 140 },
+        { "buttons": [], "frames": 8 },
+        { "buttons": ["enter"], "frames": 2 },
+        { "buttons": [], "frames": 8 },
+        { "buttons": ["enter"], "frames": 2 },
+        { "buttons": [], "frames": 8 },
+        { "buttons": ["enter"], "frames": 2 },
         { "buttons": [], "frames": 8 }
+      ]
+    },
+    "target_cycle": {
+      "meta": {
+        "scenario": "target_cycle",
+        "lane": "ORCH-00",
+        "category": "camera",
+        "focus": "cycle lock-on target left and right"
+      },
+      "expect": {
+        "minAckDelta": 0,
+        "minTickDelta": 30,
+        "minDrawCallsDelta": 24,
+        "requireHashChange": true
+      },
+      "steps": [
+        { "buttons": [], "frames": 6 },
+        { "buttons": ["enter"], "frames": 2 },
+        { "buttons": [], "frames": 6 },
+        { "buttons": ["a"], "frames": 2 },
+        { "buttons": [], "frames": 6 },
+        { "buttons": ["b"], "frames": 2 },
+        { "buttons": [], "frames": 6 },
+        { "buttons": ["a"], "frames": 2 },
+        { "buttons": [], "frames": 6 },
+        { "buttons": ["b"], "frames": 2 },
+        { "buttons": [], "frames": 8 }
+      ]
+    },
+    "dodge_parry_burst": {
+      "meta": {
+        "scenario": "dodge_parry_burst",
+        "lane": "ORCH-00",
+        "category": "combat",
+        "focus": "dodge/parry cadence under lock pressure"
+      },
+      "expect": {
+        "minAckDelta": 0,
+        "minTickDelta": 32,
+        "minDrawCallsDelta": 26,
+        "requireHashChange": true
+      },
+      "steps": [
+        { "buttons": [], "frames": 4 },
+        { "buttons": ["space"], "frames": 3 },
+        { "buttons": [], "frames": 6 },
+        { "buttons": ["b"], "frames": 3 },
+        { "buttons": [], "frames": 6 },
+        { "buttons": ["space"], "frames": 3 },
+        { "buttons": [], "frames": 6 },
+        { "buttons": ["b"], "frames": 3 },
+        { "buttons": [], "frames": 10 }
+      ]
+    },
+    "combo_burst": {
+      "meta": {
+        "scenario": "combo_burst",
+        "lane": "ORCH-00",
+        "category": "combat",
+        "focus": "light/heavy chain and confirm pacing"
+      },
+      "expect": {
+        "minAckDelta": 0,
+        "minTickDelta": 120,
+        "minDrawCallsDelta": 120,
+        "requireHashChange": true
+      },
+      "steps": [
+        { "buttons": [], "frames": 10 },
+        { "buttons": ["a"], "frames": 2 },
+        { "buttons": [], "frames": 26 },
+        { "buttons": ["a"], "frames": 2 },
+        { "buttons": [], "frames": 26 },
+        { "buttons": ["enter"], "frames": 2 },
+        { "buttons": [], "frames": 30 },
+        { "buttons": ["enter"], "frames": 2 },
+        { "buttons": [], "frames": 30 }
+      ]
+    },
+    "death_restart_loop": {
+      "meta": {
+        "scenario": "death_restart_loop",
+        "lane": "ORCH-00",
+        "category": "combat",
+        "focus": "death and recovery loop readability"
+      },
+      "expect": {
+        "minAckDelta": 0,
+        "minTickDelta": 220,
+        "minDrawCallsDelta": 220,
+        "requireHashChange": true
+      },
+      "steps": [
+        { "buttons": [], "frames": 12 },
+        { "buttons": ["right", "up"], "frames": 24 },
+        { "buttons": [], "frames": 24 },
+        { "buttons": ["a", "b"], "frames": 2 },
+        { "buttons": [], "frames": 20 },
+        { "buttons": ["enter"], "frames": 2 },
+        { "buttons": [], "frames": 36 },
+        { "buttons": ["enter"], "frames": 2 },
+        { "buttons": [], "frames": 60 }
       ]
     }
   }

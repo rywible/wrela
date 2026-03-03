@@ -8,6 +8,7 @@ pub enum SyntaxKind {
     ComponentKw,        // component
     ResourceKw,         // resource
     EventKw,            // event
+    AssetKw,            // asset
     SceneKw,            // scene
     ThemeKw,            // theme
     NodeKw,             // node
@@ -226,6 +227,28 @@ pub enum SyntaxKind {
     WorldRecipeIdClause,
     WorldRecipeProfileClause,
     ShaderDef,
+    AssetDecl,
+    AssetKindClause,
+    AssetPromptClause,
+    AssetStyleClause,
+    AssetNegativeClause,
+    AssetLodBudgetClause,
+    SceneEntityBlock,
+    SceneLightingBlock,
+    SceneCameraBlock,
+    SceneEntityMeshClause,
+    SceneEntityPositionClause,
+    SceneEntityRotationClause,
+    SceneEntityScaleClause,
+    SceneLightingSunDirectionClause,
+    SceneLightingSunColorClause,
+    SceneLightingSunIntensityClause,
+    SceneLightingAmbientColorClause,
+    SceneLightingAmbientIntensityClause,
+    SceneCameraModeClause,
+    SceneCameraTargetClause,
+    SceneCameraDistanceClause,
+    SceneCameraPitchClause,
     MethodDef,
     MustMethodDef,
     FieldDef,
@@ -289,6 +312,7 @@ impl From<Token> for SyntaxKind {
             Token::Component => SyntaxKind::ComponentKw,
             Token::Resource => SyntaxKind::ResourceKw,
             Token::Event => SyntaxKind::EventKw,
+            Token::Asset => SyntaxKind::AssetKw,
             Token::Scene => SyntaxKind::SceneKw,
             Token::Theme => SyntaxKind::ThemeKw,
             Token::Node => SyntaxKind::NodeKw,

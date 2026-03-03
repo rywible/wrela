@@ -218,13 +218,16 @@ impl ResonanceVfx {
         // Tier 4: Max bloom, chromatic aberration, intense grading, vignette
 
         // -- bloom_threshold_offset (more negative = more bloom) --
-        let bloom_threshold_offset = lerp_keyframes(t, &[
-            0.0,    // tier 0
-            -0.10,  // tier 1
-            -0.25,  // tier 2
-            -0.45,  // tier 3
-            -0.65,  // tier 4
-        ]);
+        let bloom_threshold_offset = lerp_keyframes(
+            t,
+            &[
+                0.0,   // tier 0
+                -0.10, // tier 1
+                -0.25, // tier 2
+                -0.45, // tier 3
+                -0.65, // tier 4
+            ],
+        );
 
         // -- bloom_color_tint (R, G, B additive) --
         // Blue channel ramps up; slight green at high tiers for cyan accent.
@@ -233,49 +236,64 @@ impl ResonanceVfx {
         let bloom_tint_b = lerp_keyframes(t, &[0.0, 0.04, 0.10, 0.18, 0.28]);
 
         // -- chromatic_aberration --
-        let chromatic_aberration = lerp_keyframes(t, &[
-            0.0,   // tier 0
-            0.0,   // tier 1
-            0.0,   // tier 2
-            0.02,  // tier 3 — barely perceptible
-            0.25,  // tier 4 — strong
-        ]);
+        let chromatic_aberration = lerp_keyframes(
+            t,
+            &[
+                0.0,  // tier 0
+                0.0,  // tier 1
+                0.0,  // tier 2
+                0.02, // tier 3 — barely perceptible
+                0.25, // tier 4 — strong
+            ],
+        );
 
         // -- color_grade_intensity (cool shift) --
-        let color_grade_intensity = lerp_keyframes(t, &[
-            0.0,   // tier 0
-            0.0,   // tier 1
-            0.05,  // tier 2
-            0.25,  // tier 3
-            0.55,  // tier 4
-        ]);
+        let color_grade_intensity = lerp_keyframes(
+            t,
+            &[
+                0.0,  // tier 0
+                0.0,  // tier 1
+                0.05, // tier 2
+                0.25, // tier 3
+                0.55, // tier 4
+            ],
+        );
 
         // -- particle_intensity_multiplier --
-        let particle_intensity_multiplier = lerp_keyframes(t, &[
-            1.0,   // tier 0
-            1.0,   // tier 1
-            1.5,   // tier 2 — faint aura
-            2.5,   // tier 3
-            4.0,   // tier 4
-        ]);
+        let particle_intensity_multiplier = lerp_keyframes(
+            t,
+            &[
+                1.0, // tier 0
+                1.0, // tier 1
+                1.5, // tier 2 — faint aura
+                2.5, // tier 3
+                4.0, // tier 4
+            ],
+        );
 
         // -- vignette_intensity --
-        let vignette_intensity = lerp_keyframes(t, &[
-            0.0,   // tier 0
-            0.0,   // tier 1
-            0.0,   // tier 2
-            0.08,  // tier 3 — subtle
-            0.20,  // tier 4
-        ]);
+        let vignette_intensity = lerp_keyframes(
+            t,
+            &[
+                0.0,  // tier 0
+                0.0,  // tier 1
+                0.0,  // tier 2
+                0.08, // tier 3 — subtle
+                0.20, // tier 4
+            ],
+        );
 
         // -- motion_blur_intensity --
-        let motion_blur_intensity = lerp_keyframes(t, &[
-            0.0,   // tier 0
-            0.0,   // tier 1
-            0.0,   // tier 2
-            0.15,  // tier 3
-            0.30,  // tier 4
-        ]);
+        let motion_blur_intensity = lerp_keyframes(
+            t,
+            &[
+                0.0,  // tier 0
+                0.0,  // tier 1
+                0.0,  // tier 2
+                0.15, // tier 3
+                0.30, // tier 4
+            ],
+        );
 
         // -- hit_desaturation (only meaningful at tier 4, but we expose whatever
         //    was triggered so the renderer can decide) --
@@ -674,17 +692,26 @@ mod tests {
             assert!(
                 curr.bloom_threshold_offset <= prev.bloom_threshold_offset,
                 "tier {} bloom_threshold_offset ({}) should be <= tier {} ({})",
-                i, curr.bloom_threshold_offset, i - 1, prev.bloom_threshold_offset
+                i,
+                curr.bloom_threshold_offset,
+                i - 1,
+                prev.bloom_threshold_offset
             );
             assert!(
                 curr.bloom_color_tint[2] >= prev.bloom_color_tint[2],
                 "tier {} bloom blue tint ({}) should be >= tier {} ({})",
-                i, curr.bloom_color_tint[2], i - 1, prev.bloom_color_tint[2]
+                i,
+                curr.bloom_color_tint[2],
+                i - 1,
+                prev.bloom_color_tint[2]
             );
             assert!(
                 curr.particle_intensity_multiplier >= prev.particle_intensity_multiplier,
                 "tier {} particle mult ({}) should be >= tier {} ({})",
-                i, curr.particle_intensity_multiplier, i - 1, prev.particle_intensity_multiplier
+                i,
+                curr.particle_intensity_multiplier,
+                i - 1,
+                prev.particle_intensity_multiplier
             );
         }
     }

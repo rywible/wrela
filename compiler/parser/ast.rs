@@ -78,6 +78,8 @@ pub enum Stmt {
     RequireStmt(RequireStmt),
     PrivateBlock(PrivateBlock),
     ShaderDef(ShaderDef),
+    AssetDecl(AssetDecl),
+    SceneDecl(SceneDecl),
 }
 
 impl AstNode for Stmt {
@@ -128,6 +130,8 @@ impl AstNode for Stmt {
                 | SyntaxKind::RequireStmt
                 | SyntaxKind::PrivateBlock
                 | SyntaxKind::ShaderDef
+                | SyntaxKind::AssetDecl
+                | SyntaxKind::SceneDef
         )
     }
     fn cast(node: SyntaxNode) -> Option<Self> {
@@ -186,6 +190,8 @@ impl AstNode for Stmt {
             SyntaxKind::RequireStmt => RequireStmt::cast(node).map(Stmt::RequireStmt),
             SyntaxKind::PrivateBlock => PrivateBlock::cast(node).map(Stmt::PrivateBlock),
             SyntaxKind::ShaderDef => ShaderDef::cast(node).map(Stmt::ShaderDef),
+            SyntaxKind::AssetDecl => AssetDecl::cast(node).map(Stmt::AssetDecl),
+            SyntaxKind::SceneDef => SceneDecl::cast(node).map(Stmt::SceneDecl),
             _ => None,
         }
     }
@@ -235,6 +241,8 @@ impl AstNode for Stmt {
             Stmt::RequireStmt(it) => it.syntax(),
             Stmt::PrivateBlock(it) => it.syntax(),
             Stmt::ShaderDef(it) => it.syntax(),
+            Stmt::AssetDecl(it) => it.syntax(),
+            Stmt::SceneDecl(it) => it.syntax(),
         }
     }
 }
@@ -3347,5 +3355,583 @@ impl ShaderDef {
                     .collect::<Vec<_>>()
                     .into_iter()
             })
+    }
+}
+
+// --- Asset Declaration ---
+
+pub struct AssetDecl(SyntaxNode);
+impl AstNode for AssetDecl {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::AssetDecl
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(AssetDecl(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl AssetDecl {
+    pub fn name(&self) -> Option<SyntaxToken> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .find(|it| it.kind() == SyntaxKind::Ident)
+    }
+
+    pub fn kind_clause(&self) -> Option<AssetKindClause> {
+        self.0.children().filter_map(AssetKindClause::cast).next()
+    }
+
+    pub fn prompt_clause(&self) -> Option<AssetPromptClause> {
+        self.0.children().filter_map(AssetPromptClause::cast).next()
+    }
+
+    pub fn style_clause(&self) -> Option<AssetStyleClause> {
+        self.0.children().filter_map(AssetStyleClause::cast).next()
+    }
+
+    pub fn negative_clause(&self) -> Option<AssetNegativeClause> {
+        self.0
+            .children()
+            .filter_map(AssetNegativeClause::cast)
+            .next()
+    }
+
+    pub fn lod_budget_clause(&self) -> Option<AssetLodBudgetClause> {
+        self.0
+            .children()
+            .filter_map(AssetLodBudgetClause::cast)
+            .next()
+    }
+}
+
+pub struct AssetKindClause(SyntaxNode);
+impl AstNode for AssetKindClause {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::AssetKindClause
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(AssetKindClause(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl AssetKindClause {
+    pub fn value(&self) -> Option<SyntaxToken> {
+        declaration_clause_value_token(&self.0)
+    }
+}
+
+pub struct AssetPromptClause(SyntaxNode);
+impl AstNode for AssetPromptClause {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::AssetPromptClause
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(AssetPromptClause(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl AssetPromptClause {
+    pub fn value(&self) -> Option<SyntaxToken> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .find(|t| t.kind() == SyntaxKind::StringLiteral)
+    }
+}
+
+pub struct AssetStyleClause(SyntaxNode);
+impl AstNode for AssetStyleClause {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::AssetStyleClause
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(AssetStyleClause(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl AssetStyleClause {
+    pub fn value(&self) -> Option<SyntaxToken> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .find(|t| t.kind() == SyntaxKind::StringLiteral)
+    }
+}
+
+pub struct AssetNegativeClause(SyntaxNode);
+impl AstNode for AssetNegativeClause {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::AssetNegativeClause
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(AssetNegativeClause(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl AssetNegativeClause {
+    pub fn value(&self) -> Option<SyntaxToken> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .find(|t| t.kind() == SyntaxKind::StringLiteral)
+    }
+}
+
+pub struct AssetLodBudgetClause(SyntaxNode);
+impl AstNode for AssetLodBudgetClause {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::AssetLodBudgetClause
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(AssetLodBudgetClause(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl AssetLodBudgetClause {
+    pub fn value(&self) -> Option<SyntaxToken> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .find(|t| t.kind() == SyntaxKind::IntNumber)
+    }
+}
+
+// --- Scene Declaration ---
+
+pub struct SceneDecl(SyntaxNode);
+impl AstNode for SceneDecl {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::SceneDef
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(SceneDecl(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl SceneDecl {
+    pub fn name(&self) -> Option<SyntaxToken> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .find(|it| it.kind() == SyntaxKind::Ident)
+    }
+
+    pub fn entity_blocks(&self) -> impl Iterator<Item = SceneEntityBlock> {
+        self.0.children().filter_map(SceneEntityBlock::cast)
+    }
+
+    pub fn lighting_block(&self) -> Option<SceneLightingBlock> {
+        self.0
+            .children()
+            .filter_map(SceneLightingBlock::cast)
+            .next()
+    }
+
+    pub fn camera_block(&self) -> Option<SceneCameraBlock> {
+        self.0.children().filter_map(SceneCameraBlock::cast).next()
+    }
+}
+
+pub struct SceneEntityBlock(SyntaxNode);
+impl AstNode for SceneEntityBlock {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::SceneEntityBlock
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(SceneEntityBlock(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl SceneEntityBlock {
+    /// Returns the entity name (the second Ident token, since the first is the contextual
+    /// keyword "entity").
+    pub fn name(&self) -> Option<SyntaxToken> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .filter(|it| it.kind() == SyntaxKind::Ident)
+            .nth(1)
+    }
+
+    pub fn mesh_clause(&self) -> Option<SceneEntityMeshClause> {
+        self.0
+            .children()
+            .filter_map(SceneEntityMeshClause::cast)
+            .next()
+    }
+
+    pub fn position_clause(&self) -> Option<SceneEntityPositionClause> {
+        self.0
+            .children()
+            .filter_map(SceneEntityPositionClause::cast)
+            .next()
+    }
+
+    pub fn rotation_clause(&self) -> Option<SceneEntityRotationClause> {
+        self.0
+            .children()
+            .filter_map(SceneEntityRotationClause::cast)
+            .next()
+    }
+
+    pub fn scale_clause(&self) -> Option<SceneEntityScaleClause> {
+        self.0
+            .children()
+            .filter_map(SceneEntityScaleClause::cast)
+            .next()
+    }
+}
+
+macro_rules! impl_scene_clause {
+    ($name:ident, $kind:expr) => {
+        pub struct $name(SyntaxNode);
+        impl AstNode for $name {
+            fn can_cast(kind: SyntaxKind) -> bool {
+                kind == $kind
+            }
+            fn cast(node: SyntaxNode) -> Option<Self> {
+                if Self::can_cast(node.kind()) {
+                    Some($name(node))
+                } else {
+                    None
+                }
+            }
+            fn syntax(&self) -> &SyntaxNode {
+                &self.0
+            }
+        }
+    };
+}
+
+impl_scene_clause!(SceneEntityMeshClause, SyntaxKind::SceneEntityMeshClause);
+impl_scene_clause!(
+    SceneEntityPositionClause,
+    SyntaxKind::SceneEntityPositionClause
+);
+impl_scene_clause!(
+    SceneEntityRotationClause,
+    SyntaxKind::SceneEntityRotationClause
+);
+impl_scene_clause!(SceneEntityScaleClause, SyntaxKind::SceneEntityScaleClause);
+
+impl SceneEntityMeshClause {
+    pub fn value(&self) -> Option<SyntaxToken> {
+        declaration_clause_value_token(&self.0)
+    }
+}
+
+fn extract_vec3_values(node: &SyntaxNode) -> [i64; 3] {
+    let ints: Vec<i64> = node
+        .children_with_tokens()
+        .filter_map(|it| it.into_token())
+        .filter(|t| !t.kind().is_trivia())
+        .scan(false, |negate, token| {
+            if token.kind() == SyntaxKind::Minus {
+                *negate = true;
+                Some(None)
+            } else if token.kind() == SyntaxKind::IntNumber {
+                let val: i64 = token.text().parse().unwrap_or(0);
+                let result = if *negate { -val } else { val };
+                *negate = false;
+                Some(Some(result))
+            } else {
+                *negate = false;
+                Some(None)
+            }
+        })
+        .flatten()
+        .collect();
+    [
+        ints.first().copied().unwrap_or(0),
+        ints.get(1).copied().unwrap_or(0),
+        ints.get(2).copied().unwrap_or(0),
+    ]
+}
+
+impl SceneEntityPositionClause {
+    pub fn values(&self) -> [i64; 3] {
+        extract_vec3_values(&self.0)
+    }
+}
+
+impl SceneEntityRotationClause {
+    pub fn values(&self) -> [i64; 3] {
+        extract_vec3_values(&self.0)
+    }
+}
+
+impl SceneEntityScaleClause {
+    pub fn values(&self) -> [i64; 3] {
+        extract_vec3_values(&self.0)
+    }
+}
+
+pub struct SceneLightingBlock(SyntaxNode);
+impl AstNode for SceneLightingBlock {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::SceneLightingBlock
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(SceneLightingBlock(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl_scene_clause!(
+    SceneLightingSunDirectionClause,
+    SyntaxKind::SceneLightingSunDirectionClause
+);
+impl_scene_clause!(
+    SceneLightingSunColorClause,
+    SyntaxKind::SceneLightingSunColorClause
+);
+impl_scene_clause!(
+    SceneLightingSunIntensityClause,
+    SyntaxKind::SceneLightingSunIntensityClause
+);
+impl_scene_clause!(
+    SceneLightingAmbientColorClause,
+    SyntaxKind::SceneLightingAmbientColorClause
+);
+impl_scene_clause!(
+    SceneLightingAmbientIntensityClause,
+    SyntaxKind::SceneLightingAmbientIntensityClause
+);
+
+impl SceneLightingBlock {
+    pub fn sun_direction_clause(&self) -> Option<SceneLightingSunDirectionClause> {
+        self.0
+            .children()
+            .filter_map(SceneLightingSunDirectionClause::cast)
+            .next()
+    }
+    pub fn sun_color_clause(&self) -> Option<SceneLightingSunColorClause> {
+        self.0
+            .children()
+            .filter_map(SceneLightingSunColorClause::cast)
+            .next()
+    }
+    pub fn sun_intensity_clause(&self) -> Option<SceneLightingSunIntensityClause> {
+        self.0
+            .children()
+            .filter_map(SceneLightingSunIntensityClause::cast)
+            .next()
+    }
+    pub fn ambient_color_clause(&self) -> Option<SceneLightingAmbientColorClause> {
+        self.0
+            .children()
+            .filter_map(SceneLightingAmbientColorClause::cast)
+            .next()
+    }
+    pub fn ambient_intensity_clause(&self) -> Option<SceneLightingAmbientIntensityClause> {
+        self.0
+            .children()
+            .filter_map(SceneLightingAmbientIntensityClause::cast)
+            .next()
+    }
+}
+
+impl SceneLightingSunDirectionClause {
+    pub fn values(&self) -> [i64; 3] {
+        extract_vec3_values(&self.0)
+    }
+}
+
+impl SceneLightingSunColorClause {
+    pub fn values(&self) -> [u8; 3] {
+        let ints = extract_vec3_values(&self.0);
+        [
+            ints[0].clamp(0, 255) as u8,
+            ints[1].clamp(0, 255) as u8,
+            ints[2].clamp(0, 255) as u8,
+        ]
+    }
+}
+
+impl SceneLightingSunIntensityClause {
+    pub fn value(&self) -> Option<i64> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .find(|t| t.kind() == SyntaxKind::IntNumber)
+            .and_then(|t| t.text().parse().ok())
+    }
+}
+
+impl SceneLightingAmbientColorClause {
+    pub fn values(&self) -> [u8; 3] {
+        let ints = extract_vec3_values(&self.0);
+        [
+            ints[0].clamp(0, 255) as u8,
+            ints[1].clamp(0, 255) as u8,
+            ints[2].clamp(0, 255) as u8,
+        ]
+    }
+}
+
+impl SceneLightingAmbientIntensityClause {
+    pub fn value(&self) -> Option<i64> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .find(|t| t.kind() == SyntaxKind::IntNumber)
+            .and_then(|t| t.text().parse().ok())
+    }
+}
+
+pub struct SceneCameraBlock(SyntaxNode);
+impl AstNode for SceneCameraBlock {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::SceneCameraBlock
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(SceneCameraBlock(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl_scene_clause!(SceneCameraModeClause, SyntaxKind::SceneCameraModeClause);
+impl_scene_clause!(SceneCameraTargetClause, SyntaxKind::SceneCameraTargetClause);
+impl_scene_clause!(
+    SceneCameraDistanceClause,
+    SyntaxKind::SceneCameraDistanceClause
+);
+impl_scene_clause!(SceneCameraPitchClause, SyntaxKind::SceneCameraPitchClause);
+
+impl SceneCameraBlock {
+    pub fn mode_clause(&self) -> Option<SceneCameraModeClause> {
+        self.0
+            .children()
+            .filter_map(SceneCameraModeClause::cast)
+            .next()
+    }
+    pub fn target_clause(&self) -> Option<SceneCameraTargetClause> {
+        self.0
+            .children()
+            .filter_map(SceneCameraTargetClause::cast)
+            .next()
+    }
+    pub fn distance_clause(&self) -> Option<SceneCameraDistanceClause> {
+        self.0
+            .children()
+            .filter_map(SceneCameraDistanceClause::cast)
+            .next()
+    }
+    pub fn pitch_clause(&self) -> Option<SceneCameraPitchClause> {
+        self.0
+            .children()
+            .filter_map(SceneCameraPitchClause::cast)
+            .next()
+    }
+}
+
+impl SceneCameraModeClause {
+    pub fn value(&self) -> Option<SyntaxToken> {
+        declaration_clause_value_token(&self.0)
+    }
+}
+
+impl SceneCameraTargetClause {
+    pub fn value(&self) -> Option<SyntaxToken> {
+        declaration_clause_value_token(&self.0)
+    }
+}
+
+fn extract_possibly_negative_int(node: &SyntaxNode) -> Option<i64> {
+    let tokens: Vec<_> = node
+        .children_with_tokens()
+        .filter_map(|it| it.into_token())
+        .filter(|t| !t.kind().is_trivia())
+        .collect();
+    let mut negate = false;
+    for token in tokens.iter().skip(2) {
+        if token.kind() == SyntaxKind::Minus {
+            negate = true;
+        } else if token.kind() == SyntaxKind::IntNumber {
+            let val: i64 = token.text().parse().unwrap_or(0);
+            return Some(if negate { -val } else { val });
+        }
+    }
+    None
+}
+
+impl SceneCameraDistanceClause {
+    pub fn value(&self) -> Option<i64> {
+        extract_possibly_negative_int(&self.0)
+    }
+}
+
+impl SceneCameraPitchClause {
+    pub fn value(&self) -> Option<i64> {
+        extract_possibly_negative_int(&self.0)
     }
 }

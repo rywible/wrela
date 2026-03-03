@@ -94,6 +94,11 @@ pub struct ParsedArgs {
     pub output_format_human: bool,
     pub output_format_json: bool,
     pub output_format_sarif: bool,
+    pub preview_port: u16,
+    pub preview_open: bool,
+    pub resolve_dry_run: bool,
+    pub resolve_force: bool,
+    pub resolve_parallel: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -252,6 +257,11 @@ pub fn parse(raw_args: Vec<String>) -> CommandSpec {
     let mut orchestration_mode: Option<OrchestrationMode> = None;
     let mut pending_game_anim_subcommand = false;
     let mut seen_double_dash = false;
+    let mut preview_port: u16 = 3030;
+    let mut preview_open = false;
+    let mut resolve_dry_run = false;
+    let mut resolve_force = false;
+    let mut resolve_parallel: usize = 4;
 
     let mut iter = raw_args.into_iter();
     while let Some(arg) = iter.next() {
@@ -886,11 +896,88 @@ pub fn parse(raw_args: Vec<String>) -> CommandSpec {
         }
         if arg == "--force" {
             deploy_force = true;
+            resolve_force = true;
             continue;
         }
         if arg == "--generate-only" {
             deploy_generate_only = true;
             continue;
+        }
+        if arg == "--open" {
+            preview_open = true;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--port=") {
+            match value.parse::<u16>() {
+                Ok(parsed) => preview_port = parsed,
+                Err(_) => {
+                    return CommandSpec {
+                        trace_enabled,
+                        parsed: ParsedCommandSpec::Error(format!(
+                            "error: invalid --port value `{value}`"
+                        )),
+                    };
+                }
+            }
+            continue;
+        }
+        if arg == "--port" {
+            if let Some(value) = iter.next() {
+                match value.parse::<u16>() {
+                    Ok(parsed) => preview_port = parsed,
+                    Err(_) => {
+                        return CommandSpec {
+                            trace_enabled,
+                            parsed: ParsedCommandSpec::Error(format!(
+                                "error: invalid --port value `{value}`"
+                            )),
+                        };
+                    }
+                }
+                continue;
+            }
+            return CommandSpec {
+                trace_enabled,
+                parsed: ParsedCommandSpec::Error("error: missing value for --port".to_string()),
+            };
+        }
+        if arg == "--dry-run" {
+            resolve_dry_run = true;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--parallel=") {
+            match value.parse::<usize>() {
+                Ok(parsed) => resolve_parallel = parsed,
+                Err(_) => {
+                    return CommandSpec {
+                        trace_enabled,
+                        parsed: ParsedCommandSpec::Error(format!(
+                            "error: invalid --parallel value `{value}`"
+                        )),
+                    };
+                }
+            }
+            continue;
+        }
+        if arg == "--parallel" {
+            if let Some(value) = iter.next() {
+                match value.parse::<usize>() {
+                    Ok(parsed) => resolve_parallel = parsed,
+                    Err(_) => {
+                        return CommandSpec {
+                            trace_enabled,
+                            parsed: ParsedCommandSpec::Error(format!(
+                                "error: invalid --parallel value `{value}`"
+                            )),
+                        };
+                    }
+                }
+                continue;
+            }
+            return CommandSpec {
+                trace_enabled,
+                parsed: ParsedCommandSpec::Error("error: missing value for --parallel".to_string()),
+            };
         }
         if arg == "--prefix" {
             if let Some(path) = iter.next() {
@@ -1250,6 +1337,11 @@ pub fn parse(raw_args: Vec<String>) -> CommandSpec {
             output_format_human,
             output_format_json,
             output_format_sarif,
+            preview_port,
+            preview_open,
+            resolve_dry_run,
+            resolve_force,
+            resolve_parallel,
         }),
     }
 }
@@ -1280,6 +1372,8 @@ fn is_command(arg: &str) -> bool {
             | "perfcmp"
             | "matrix"
             | "deploy"
+            | "preview"
+            | "resolve"
     )
 }
 
@@ -2774,6 +2868,8 @@ mod tests {
             "perfcmp",
             "matrix",
             "deploy",
+            "preview",
+            "resolve",
         ] {
             let spec = parse(vec![command.to_string()]);
             match spec.parsed {
@@ -2838,6 +2934,152 @@ mod tests {
                     parsed.path_arg.as_deref(),
                     Some("src/application/composition/main.wr")
                 );
+            }
+            other => panic!("unexpected parse result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_preview_command() {
+        let spec = parse(vec![
+            "preview".to_string(),
+            "apps/demo/".to_string(),
+            "--port".to_string(),
+            "4000".to_string(),
+            "--open".to_string(),
+        ]);
+        match spec.parsed {
+            ParsedCommandSpec::Ready(parsed) => {
+                assert_eq!(parsed.command, "preview");
+                assert_eq!(parsed.path_arg.as_deref(), Some("apps/demo/"));
+                assert_eq!(parsed.preview_port, 4000);
+                assert!(parsed.preview_open);
+            }
+            other => panic!("unexpected parse result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_preview_defaults() {
+        let spec = parse(vec!["preview".to_string(), "apps/demo/".to_string()]);
+        match spec.parsed {
+            ParsedCommandSpec::Ready(parsed) => {
+                assert_eq!(parsed.command, "preview");
+                assert_eq!(parsed.path_arg.as_deref(), Some("apps/demo/"));
+                assert_eq!(parsed.preview_port, 3030);
+                assert!(!parsed.preview_open);
+            }
+            other => panic!("unexpected parse result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_preview_port_equals_syntax() {
+        let spec = parse(vec![
+            "preview".to_string(),
+            "apps/demo/".to_string(),
+            "--port=8080".to_string(),
+        ]);
+        match spec.parsed {
+            ParsedCommandSpec::Ready(parsed) => {
+                assert_eq!(parsed.command, "preview");
+                assert_eq!(parsed.preview_port, 8080);
+            }
+            other => panic!("unexpected parse result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_preview_invalid_port() {
+        let spec = parse(vec!["preview".to_string(), "--port=abc".to_string()]);
+        match spec.parsed {
+            ParsedCommandSpec::Error(err) => {
+                assert!(err.contains("invalid --port value"));
+            }
+            other => panic!("unexpected parse result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_preview_port_missing_value() {
+        let spec = parse(vec!["preview".to_string(), "--port".to_string()]);
+        match spec.parsed {
+            ParsedCommandSpec::Error(err) => {
+                assert!(err.contains("missing value for --port"));
+            }
+            other => panic!("unexpected parse result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_resolve_command() {
+        let spec = parse(vec![
+            "resolve".to_string(),
+            "apps/demo/".to_string(),
+            "--dry-run".to_string(),
+            "--force".to_string(),
+            "--parallel=8".to_string(),
+        ]);
+        match spec.parsed {
+            ParsedCommandSpec::Ready(parsed) => {
+                assert_eq!(parsed.command, "resolve");
+                assert_eq!(parsed.path_arg.as_deref(), Some("apps/demo/"));
+                assert!(parsed.resolve_dry_run);
+                assert!(parsed.resolve_force);
+                assert_eq!(parsed.resolve_parallel, 8);
+            }
+            other => panic!("unexpected parse result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_resolve_defaults() {
+        let spec = parse(vec!["resolve".to_string(), "apps/demo/".to_string()]);
+        match spec.parsed {
+            ParsedCommandSpec::Ready(parsed) => {
+                assert_eq!(parsed.command, "resolve");
+                assert_eq!(parsed.path_arg.as_deref(), Some("apps/demo/"));
+                assert!(!parsed.resolve_dry_run);
+                assert!(!parsed.resolve_force);
+                assert_eq!(parsed.resolve_parallel, 4);
+            }
+            other => panic!("unexpected parse result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_resolve_parallel_separate_value() {
+        let spec = parse(vec![
+            "resolve".to_string(),
+            "apps/demo/".to_string(),
+            "--parallel".to_string(),
+            "16".to_string(),
+        ]);
+        match spec.parsed {
+            ParsedCommandSpec::Ready(parsed) => {
+                assert_eq!(parsed.resolve_parallel, 16);
+            }
+            other => panic!("unexpected parse result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_resolve_invalid_parallel() {
+        let spec = parse(vec!["resolve".to_string(), "--parallel=xyz".to_string()]);
+        match spec.parsed {
+            ParsedCommandSpec::Error(err) => {
+                assert!(err.contains("invalid --parallel value"));
+            }
+            other => panic!("unexpected parse result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_resolve_parallel_missing_value() {
+        let spec = parse(vec!["resolve".to_string(), "--parallel".to_string()]);
+        match spec.parsed {
+            ParsedCommandSpec::Error(err) => {
+                assert!(err.contains("missing value for --parallel"));
             }
             other => panic!("unexpected parse result: {other:?}"),
         }
