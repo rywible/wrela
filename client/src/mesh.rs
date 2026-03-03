@@ -515,8 +515,11 @@ fn extract_material_data(
     let pbr = mat.pbr_metallic_roughness();
 
     let base_color_factor = pbr.base_color_factor();
-    let metallic_factor = pbr.metallic_factor();
-    let roughness_factor = pbr.roughness_factor();
+    // Clamp metallic for natural/organic assets — AI-generated GLBs often
+    // default to metallic=1.0 which zeros out diffuse in Cook-Torrance PBR.
+    let metallic_factor = pbr.metallic_factor().min(0.1);
+    // Enforce minimum roughness to prevent mirror-like surfaces on organic materials.
+    let roughness_factor = pbr.roughness_factor().max(0.3);
 
     let uniforms = MaterialUniforms {
         base_color_factor,

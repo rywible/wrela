@@ -292,8 +292,9 @@ impl CameraModeParams {
 }
 
 /// Elevation clamp bounds to keep the hero readable on screen.
-pub const MIN_ELEVATION: f32 = 0.1;
-pub const MAX_ELEVATION: f32 = 0.6;
+/// Range: ~5 degrees to ~70 degrees above horizontal.
+pub const MIN_ELEVATION: f32 = 0.087;
+pub const MAX_ELEVATION: f32 = 1.22;
 
 pub struct OrbitCamera {
     pub azimuth: f32,

@@ -172,3 +172,49 @@ TODO next:
   - `.artifacts/aaa-forest-demo/ENV-03/iter-007/playwright/idle_composition/shot-1.png`
 - Full strict matrix rerun after latest environment/camera changes:
   - `WRELA_AAA_LANE=ORCH-00 WRELA_AAA_ITERATION=iter-005 scripts/webgpu_engine_pass/browser_smoke.sh apps/wrela-forest` (pass).
+
+Update: March 3, 2026 (BLACKFIX-00 startup black-screen iteration)
+
+- Root cause found via focused Playwright loop: startup shell hid boot overlay too early (fixed 400ms timeout) while runtime still reported `status: Loading render/shader artifacts...` and `combat_camera.rendered_enemy_instance_count: 0`, producing a dark/black-looking screen.
+- Hard-cut startup UX fix in compiler game shell templates:
+  - `compiler/bin/wrela/game_assets/index.html`
+    - added full-screen boot overlay (`#boot-overlay`) with `#boot-status` + `#boot-detail` labels.
+    - switched body background from near-black to readable blue-black gradient base.
+  - `compiler/bin/wrela/game_assets/loader.js`
+    - added explicit boot status helpers and error UI path.
+    - removed fixed `setTimeout(... hide overlay ...)` behavior.
+    - added runtime readiness watcher that polls `window.render_game_to_text()`, updates overlay detail from runtime `status`, and hides overlay only when runtime is non-loading and scene instances are rendering.
+- Focused Playwright artifacts:
+  - Repro baseline (dark frame while loading): `.artifacts/aaa-forest-demo/BLACKFIX-00/iter-003/playwright/shot-0.png`
+    - state showed `status="Loading render/shader artifacts. root='.'"` and `rendered_enemy_instance_count=0`.
+  - Post-fix startup proof (overlay visible with loading text): `.artifacts/aaa-forest-demo/BLACKFIX-00/iter-004/playwright/shot-0.png`
+  - Post-fix gameplay proof (overlay cleared, scene rendering): `.artifacts/aaa-forest-demo/BLACKFIX-00/iter-005/playwright/shot-1.png`
+  - Iteration report pass: `.artifacts/aaa-forest-demo/BLACKFIX-00/iter-005/playwright/report.json` (`status=ok`, `strictExitCode=0`, failed assertions=0).
+
+TODO next:
+- If users still report black screen on specific machines, add explicit WebGPU capability check in loader and display a non-WebGPU fallback/error panel with browser/GPU guidance.
+
+Update: March 3, 2026 (BLACKFIX-01 wiring cutover: camera + scene profile)
+
+- Camera wiring fixes in `client/src/web.rs`:
+  - Added runtime mouse orbit controls in game mode (`mousedown`/`mousemove`/`mouseup` + wheel zoom) in `install_input_handlers`.
+  - Added runtime drag state fields (`camera_orbit_dragging`, `camera_last_pointer_pos`) and stored handler closures (`on_pointermove`, `on_wheel`) to prevent drop.
+- Telemetry wiring fix:
+  - `render_game_to_text().combat_camera.camera_*` now reports the live renderer orbit camera (`self.orbit_camera`) instead of stale game-logic camera fields.
+  - Added `camera_azimuth`, `camera_elevation`, `camera_distance`, and `camera_fov_y` to combat camera payload.
+- Scene profile wiring fix:
+  - Added `SceneVisualProfile` + `resolve_scene_visual_profile()` and routed fog/light profile through scene runtime state (`scene_lut_profile_id`, `scene_fog_volume_count`).
+  - `RenderSceneSnapshot3D` now carries fog parameters (`fog_color/start/end/density/height_falloff`) and `render_3d` frame uniform now consumes scene-provided fog values instead of hardcoded constants.
+
+Focused Playwright/Chromium evidence:
+- Camera drag proof (before/after state delta):
+  - `.artifacts/aaa-forest-demo/BLACKFIX-00/iter-009/camera-delta.json`
+  - camera changed from eye `(5.5, 3.4, 8.6)` to `(-8.659, 5.475, -3.869)`.
+- Additional camera state check after telemetry fix:
+  - direct run output showed azimuth changing `0.569 -> -2.335` with eye change.
+- Latest visual smoke snapshot after profile wiring:
+  - `.artifacts/aaa-forest-demo/BLACKFIX-00/iter-011/playwright/shot-1.png`
+
+Open issues still visible:
+- Scene remains visually low-fidelity/flat due authored asset/content constraints (ground + sparse composition + weak material response), not because camera input/telemetry are disconnected anymore.
+- Next hard fix should be authored ground/terrain contract and richer environment composition, not more camera plumbing.

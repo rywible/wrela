@@ -93,18 +93,18 @@ fn make_material(base_color: [f32; 4], metallic: f32, roughness: f32) -> Materia
 }
 
 // ---------------------------------------------------------------------------
-// Ground plane: 20x20 subdivided grid
+// Ground plane: 30x30 subdivided grid
 // ---------------------------------------------------------------------------
 
-/// Generate a ground plane mesh: 20x20 subdivided grid with gentle height noise.
-/// UVs tile 4x across the surface. The plane spans [-10, 10] on X and Z.
-/// Produces 800 triangles (20*20*2).
+/// Generate a ground plane mesh: 30x30 subdivided grid with gentle height noise.
+/// UVs tile 6x across the surface. The plane spans [-15, 15] on X and Z.
+/// Produces 1800 triangles (30*30*2).
 pub fn generate_ground_plane() -> Vec<MeshData> {
-    let subdivs = 20_u32;
-    let size = 20.0_f32; // total extent: -10 to +10
+    let subdivs = 30_u32;
+    let size = 30.0_f32; // total extent: -15 to +15
     let half = size / 2.0;
     let step = size / subdivs as f32;
-    let uv_tiles = 4.0_f32;
+    let uv_tiles = 6.0_f32;
 
     let vert_count = ((subdivs + 1) * (subdivs + 1)) as usize;
     let mut vertices = Vec::with_capacity(vert_count);
@@ -1213,8 +1213,8 @@ mod tests {
         let meshes = generate_ground_plane();
         let tris = triangle_count(&meshes[0].indices);
         assert_eq!(
-            tris, 800,
-            "ground plane should have 800 triangles (20x20x2)"
+            tris, 1800,
+            "ground plane should have 1800 triangles (30x30x2)"
         );
     }
 

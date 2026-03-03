@@ -775,7 +775,7 @@ pub fn generate_enemy_skin_textures() -> ProceduralTexture {
         }
     }
 
-    // ORM: AO varies, Roughness 0.5-0.7, Metallic 0.1
+    // ORM: AO varies, Roughness 0.5-0.7, Metallic 0.0
     let mut orm = vec![0u8; TEX_BYTES];
     for y in 0..h {
         for x in 0..w {
@@ -784,7 +784,7 @@ pub fn generate_enemy_skin_textures() -> ProceduralTexture {
             let p = idx * 4;
             orm[p] = map_range_u8(v, 190, 255); // AO: ~0.75-1.0
             orm[p + 1] = map_range_u8(v, 128, 179); // R: 0.5-0.7
-            orm[p + 2] = 26; // M: ~0.1
+            orm[p + 2] = 0; // M: 0.0 (organic, non-metallic)
             orm[p + 3] = 255;
         }
     }
@@ -1159,7 +1159,7 @@ mod tests {
     #[test]
     fn test_enemy_skin_dimensions_and_normals() {
         let tex = generate_enemy_skin_textures();
-        full_check(&tex, 190, 255, 128, 179, 26, 26, 50);
+        full_check(&tex, 190, 255, 128, 179, 0, 0, 50);
     }
 
     #[test]

@@ -596,6 +596,11 @@ struct RenderSceneSnapshot3D<'a> {
     light_direction: [f32; 3],
     light_color: [f32; 3],
     ambient_color: [f32; 3],
+    fog_color: [f32; 3],
+    fog_start: f32,
+    fog_end: f32,
+    fog_density: f32,
+    fog_height_falloff: f32,
     // Combat visual effects
     hit_stop_active: bool,
     hit_stop_intensity: f32,
@@ -606,6 +611,17 @@ struct RenderSceneSnapshot3D<'a> {
     /// Current player game state integer (0=idle, 1=walk, ...) used to drive
     /// animation state machine clip selection.
     player_state: i32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SceneVisualProfile {
+    light_color: [f32; 3],
+    ambient_color: [f32; 3],
+    fog_color: [f32; 3],
+    fog_start: f32,
+    fog_end: f32,
+    fog_density: f32,
+    fog_height_falloff: f32,
 }
 
 // ---------------------------------------------------------------------------
@@ -1567,6 +1583,23 @@ fn upload_procedural_meshes(
     base
 }
 
+/// Apply a ProceduralTexture to a MaterialData, setting the texture
+/// images and resetting uniforms. The metallic/roughness factors act as
+/// multipliers on the ORM texture channels (B=metallic, G=roughness).
+fn apply_texture(
+    mat: &mut crate::material::MaterialData,
+    tex: crate::procedural_textures::ProceduralTexture,
+    metallic_factor: f32,
+    roughness_factor: f32,
+) {
+    mat.albedo_image = Some(tex.albedo);
+    mat.normal_image = Some(tex.normal);
+    mat.orm_image = Some(tex.orm);
+    mat.uniforms.base_color_factor = [1.0, 1.0, 1.0, 1.0];
+    mat.uniforms.metallic_factor = metallic_factor;
+    mat.uniforms.roughness_factor = roughness_factor;
+}
+
 /// Load all forest assets via procedural mesh generation and return the base
 /// mesh indices for each asset type. Clears any existing meshes so that
 /// indices start from 0.
@@ -1579,47 +1612,41 @@ async fn load_forest_procedural_assets(
     renderer.skeletons.clear();
     renderer.animation_clips.clear();
 
-    // Helper: apply a ProceduralTexture to a MaterialData, setting the texture
-    // images and resetting uniforms so the ORM map drives metallic/roughness.
-    fn apply_texture(
-        mat: &mut crate::material::MaterialData,
-        tex: crate::procedural_textures::ProceduralTexture,
-    ) {
-        mat.albedo_image = Some(tex.albedo);
-        mat.normal_image = Some(tex.normal);
-        mat.orm_image = Some(tex.orm);
-        mat.uniforms.base_color_factor = [1.0, 1.0, 1.0, 1.0];
-        mat.uniforms.metallic_factor = 1.0;
-        mat.uniforms.roughness_factor = 1.0;
-    }
-
     // --- Ground: grass textures ------------------------------------------
+    // Grass/ground: non-metallic natural surface (metallic 0.0, roughness 0.7)
     let grass_tex = crate::procedural_textures::generate_grass_textures();
     let mut ground_meshes = crate::procedural_meshes::generate_ground_plane();
     for mesh in ground_meshes.iter_mut() {
-        apply_texture(&mut mesh.material, grass_tex.clone());
+        apply_texture(&mut mesh.material, grass_tex.clone(), 0.0, 0.7);
     }
     let ground_base = upload_procedural_meshes(renderer, &ground_meshes);
 
     // --- Tree: trunk = bark, foliage = leaf ------------------------------
+    // Bark/trunk: rough wood (metallic 0.0, roughness 0.85)
+    // Leaf/foliage: semi-smooth organic (metallic 0.0, roughness 0.6)
     let mut tree_meshes = crate::procedural_meshes::generate_tree();
     if tree_meshes.len() >= 2 {
         apply_texture(
             &mut tree_meshes[0].material,
             crate::procedural_textures::generate_bark_textures(),
+            0.0,
+            0.85,
         );
         apply_texture(
             &mut tree_meshes[1].material,
             crate::procedural_textures::generate_leaf_textures(),
+            0.0,
+            0.6,
         );
     }
     let tree_base = upload_procedural_meshes(renderer, &tree_meshes);
 
     // --- Rock: rock textures ---------------------------------------------
+    // Rock: rough stone (metallic 0.0, roughness 0.8)
     let rock_tex = crate::procedural_textures::generate_rock_textures();
     let mut rock_meshes = crate::procedural_meshes::generate_rock();
     for mesh in rock_meshes.iter_mut() {
-        apply_texture(&mut mesh.material, rock_tex.clone());
+        apply_texture(&mut mesh.material, rock_tex.clone(), 0.0, 0.8);
     }
     let rock_base = upload_procedural_meshes(renderer, &rock_meshes);
 
@@ -1680,10 +1707,11 @@ async fn load_forest_procedural_assets(
     renderer.animation_clips.push((player_base, player_clips));
 
     // --- Enemy: enemy skin textures (generated once, shared across parts)
+    // Enemy skin: organic surface (metallic 0.0, roughness 0.5)
     let enemy_tex = crate::procedural_textures::generate_enemy_skin_textures();
     let mut enemy_meshes = crate::procedural_meshes::generate_enemy_character();
     for mesh in enemy_meshes.iter_mut() {
-        apply_texture(&mut mesh.material, enemy_tex.clone());
+        apply_texture(&mut mesh.material, enemy_tex.clone(), 0.0, 0.5);
     }
     let enemy_base = upload_procedural_meshes(renderer, &enemy_meshes);
 
@@ -1831,21 +1859,11 @@ async fn load_scene_from_manifest(
         .push((player_base, player_clips));
 
     // ── 4. Load the enemy (procedural, same as before) ─────────────────
+    // Enemy skin: organic surface (metallic 0.0, roughness 0.5)
     let enemy_tex = crate::procedural_textures::generate_enemy_skin_textures();
     let mut enemy_meshes = crate::procedural_meshes::generate_enemy_character();
     for mesh in enemy_meshes.iter_mut() {
-        fn apply_texture(
-            mat: &mut crate::material::MaterialData,
-            tex: crate::procedural_textures::ProceduralTexture,
-        ) {
-            mat.albedo_image = Some(tex.albedo);
-            mat.normal_image = Some(tex.normal);
-            mat.orm_image = Some(tex.orm);
-            mat.uniforms.base_color_factor = [1.0, 1.0, 1.0, 1.0];
-            mat.uniforms.metallic_factor = 1.0;
-            mat.uniforms.roughness_factor = 1.0;
-        }
-        apply_texture(&mut mesh.material, enemy_tex.clone());
+        apply_texture(&mut mesh.material, enemy_tex.clone(), 0.0, 0.5);
     }
     let enemy_base = upload_procedural_meshes(renderer, &enemy_meshes);
 
@@ -2801,10 +2819,10 @@ impl WebGpuRenderer {
             crate::postprocess::PostProcessStack::new(&device, width, height, format, &depth_view);
         // Stylized gothic anime calibration: deeper contrast, tighter highlights,
         // and controlled shafts so sky values stay unclipped in combat framing.
-        post_process.set_exposure(0.78);
-        post_process.set_bloom_intensity(0.18);
-        post_process.set_bloom_threshold(1.05);
-        post_process.set_god_rays_intensity(0.2);
+        post_process.set_exposure(1.1);
+        post_process.set_bloom_intensity(0.06);
+        post_process.set_bloom_threshold(1.2);
+        post_process.set_god_rays_intensity(0.18);
 
         let sky_pass = crate::sky::SkyPass::new(&device, wgpu::TextureFormat::Rgba16Float);
 
@@ -3144,9 +3162,13 @@ impl WebGpuRenderer {
                 1.0,
             ],
             time: [self.anim_elapsed_secs, scene.delta_time_secs, 0.0, 0.0],
-            // Gothic dusk fog tuned for depth separation and silhouette readability.
-            fog_color_and_start: [0.2, 0.23, 0.26, 8.0], // xyz = cool dusk fog, w = fog start
-            fog_params: [48.0, 0.055, 1.35, 0.0], // x = fog end, y = density, z = height falloff
+            fog_color_and_start: [
+                scene.fog_color[0],
+                scene.fog_color[1],
+                scene.fog_color[2],
+                scene.fog_start,
+            ],
+            fog_params: [scene.fog_end, scene.fog_density, scene.fog_height_falloff, 0.0],
             // Wind system parameters
             wind_params: [self.anim_elapsed_secs, 0.15, 1.0, 0.0], // x=time, y=strength, z=turbulence
             wind_dir: [-0.7071, 0.0, -0.7071, 0.0], // normalized [-0.7, 0, -0.7]
@@ -3274,13 +3296,13 @@ impl WebGpuRenderer {
                     0.0,
                 ],
                 // Cooler dusk sun with lower shaft intensity.
-                sun_color: [1.8, 1.35, 0.9, 16.0],
+                sun_color: [3.5, 2.8, 1.8, 24.0],
                 // Desaturated dusk zenith.
-                sky_zenith: [0.025, 0.04, 0.075, 1.0],
+                sky_zenith: [0.06, 0.1, 0.2, 1.0],
                 // Neutral horizon keeps contrast against trunks and characters.
-                sky_horizon: [0.11, 0.12, 0.14, 1.0],
+                sky_horizon: [0.25, 0.22, 0.18, 1.0],
                 // Dark forest floor bounce.
-                sky_ground: [0.055, 0.05, 0.045, 1.0],
+                sky_ground: [0.08, 0.07, 0.06, 1.0],
                 // Standard Rayleigh scattering coefficients
                 rayleigh_coeffs: [5.5e-6, 13.0e-6, 22.4e-6, 6360.0e3],
                 // Mie: coefficient, anisotropy, atmosphere radius, sample count
@@ -4002,10 +4024,14 @@ struct Runtime {
     hud_restart_pressed: bool,
     deterministic_time_driver_enabled: bool,
     deterministic_now_ms: f64,
+    camera_orbit_dragging: bool,
+    camera_last_pointer_pos: Option<[f32; 2]>,
     on_keydown: Option<Closure<dyn FnMut(KeyboardEvent)>>,
     on_keyup: Option<Closure<dyn FnMut(KeyboardEvent)>>,
-    on_pointerdown: Option<Closure<dyn FnMut(Event)>>,
-    on_pointerup: Option<Closure<dyn FnMut(Event)>>,
+    on_pointerdown: Option<Closure<dyn FnMut(web_sys::MouseEvent)>>,
+    on_pointerup: Option<Closure<dyn FnMut(web_sys::MouseEvent)>>,
+    on_pointermove: Option<Closure<dyn FnMut(web_sys::MouseEvent)>>,
+    on_wheel: Option<Closure<dyn FnMut(web_sys::WheelEvent)>>,
     on_ws_open: Option<Closure<dyn FnMut(Event)>>,
     on_ws_close: Option<Closure<dyn FnMut(Event)>>,
     on_ws_error: Option<Closure<dyn FnMut(Event)>>,
@@ -4119,15 +4145,19 @@ impl Runtime {
             game_input: crate::game_logic::GameInput::default(),
             combat_events: RuntimeCombatEventTelemetry::default(),
             parry_flash_alpha: 0.0,
-            base_fov_y: std::f32::consts::FRAC_PI_4,
+            base_fov_y: 0.9599, // 55 degrees — matches scene camera anchor
             hud: None,
             hud_restart_pressed: false,
             deterministic_time_driver_enabled: false,
             deterministic_now_ms: 0.0,
+            camera_orbit_dragging: false,
+            camera_last_pointer_pos: None,
             on_keydown: None,
             on_keyup: None,
             on_pointerdown: None,
             on_pointerup: None,
+            on_pointermove: None,
+            on_wheel: None,
             on_ws_open: None,
             on_ws_close: None,
             on_ws_error: None,
@@ -4147,6 +4177,37 @@ impl Runtime {
         self.status = message.into();
         web_sys::console::log_1(&JsValue::from_str(&format!("[wrela] {}", self.status)));
         self.publish_runtime_state();
+    }
+
+    fn resolve_scene_visual_profile(&self) -> SceneVisualProfile {
+        let lut_id = self
+            .scene_lut_profile_id
+            .as_deref()
+            .unwrap_or("legacy_default");
+        let mut profile = match lut_id {
+            "forest_gothic_anime_v1" => SceneVisualProfile {
+                light_color: [3.5, 3.2, 2.8],
+                ambient_color: [0.15, 0.18, 0.25],
+                fog_color: [0.12, 0.13, 0.16],
+                fog_start: 14.0,
+                fog_end: 92.0,
+                fog_density: 0.035,
+                fog_height_falloff: 0.62,
+            },
+            _ => SceneVisualProfile {
+                light_color: [3.8, 3.5, 3.0],
+                ambient_color: [0.18, 0.2, 0.28],
+                fog_color: [0.13, 0.14, 0.18],
+                fog_start: 12.0,
+                fog_end: 80.0,
+                fog_density: 0.038,
+                fog_height_falloff: 0.68,
+            },
+        };
+        // Fog volume count modulates intensity so scene authoring has runtime impact.
+        let fog_scale = ((self.scene_fog_volume_count.max(1) as f32) / 2.0).clamp(0.65, 1.35);
+        profile.fog_density *= fog_scale;
+        profile
     }
 
     fn emit_residency_adaptation_event(
@@ -5915,6 +5976,7 @@ impl Runtime {
         );
         let render_width = ((canvas_width as f64) * dynamic_scale).round().max(1.0) as u32;
         let render_height = ((canvas_height as f64) * dynamic_scale).round().max(1.0) as u32;
+        let visual_profile = self.resolve_scene_visual_profile();
 
         let Some(renderer) = self.renderer.as_mut() else {
             return;
@@ -6032,6 +6094,11 @@ impl Runtime {
                 light_direction: light_dir,
                 light_color: light_col,
                 ambient_color: ambient,
+                fog_color: visual_profile.fog_color,
+                fog_start: visual_profile.fog_start,
+                fog_end: visual_profile.fog_end,
+                fog_density: visual_profile.fog_density,
+                fog_height_falloff: visual_profile.fog_height_falloff,
                 hit_stop_active: false,
                 hit_stop_intensity: 0.0,
                 camera_shake: 0.0,
@@ -6293,11 +6360,15 @@ impl Runtime {
                 camera_position: self.orbit_camera.eye_position(),
                 mesh_instances: &self.scene_3d_instances,
                 // Gothic forest key light: cool directional key with stronger downward bias.
-                light_direction: [-0.35, -0.72, -0.25],
-                // Slightly cool key preserves stylized highlights without white clipping.
-                light_color: [1.45, 1.4, 1.95],
-                // Dark ambient floor keeps silhouettes readable in combat framing.
-                ambient_color: [0.07, 0.1, 0.16],
+                // Normalized: magnitude = 1.0
+                light_direction: [-0.42, -0.86, -0.30],
+                light_color: visual_profile.light_color,
+                ambient_color: visual_profile.ambient_color,
+                fog_color: visual_profile.fog_color,
+                fog_start: visual_profile.fog_start,
+                fog_end: visual_profile.fog_end,
+                fog_density: visual_profile.fog_density,
+                fog_height_falloff: visual_profile.fog_height_falloff,
                 hit_stop_active,
                 hit_stop_intensity,
                 camera_shake: cam_shake,
@@ -6471,6 +6542,8 @@ impl Runtime {
             .game_state
             .as_ref()
             .map_or(0, |state| state.player_state);
+        let live_camera_eye = self.orbit_camera.eye_position();
+        let live_camera_target = self.orbit_camera.target;
         let combat_camera = self
             .game_state
             .as_ref()
@@ -6488,15 +6561,19 @@ impl Runtime {
                     "boss_phase": rd.boss_phase,
                     "readability_state": rd.readability_state,
                     "camera_eye": {
-                        "x": round3(rd.camera_eye[0] as f64),
-                        "y": round3(rd.camera_eye[1] as f64),
-                        "z": round3(rd.camera_eye[2] as f64),
+                        "x": round3(live_camera_eye[0] as f64),
+                        "y": round3(live_camera_eye[1] as f64),
+                        "z": round3(live_camera_eye[2] as f64),
                     },
                     "camera_target": {
-                        "x": round3(rd.camera_target[0] as f64),
-                        "y": round3(rd.camera_target[1] as f64),
-                        "z": round3(rd.camera_target[2] as f64),
+                        "x": round3(live_camera_target[0] as f64),
+                        "y": round3(live_camera_target[1] as f64),
+                        "z": round3(live_camera_target[2] as f64),
                     },
+                    "camera_azimuth": round3(self.orbit_camera.azimuth as f64),
+                    "camera_elevation": round3(self.orbit_camera.elevation as f64),
+                    "camera_distance": round3(self.orbit_camera.distance as f64),
+                    "camera_fov_y": round3(self.orbit_camera.fov_y as f64),
                     "lock_on_target_pos": {
                         "x": round3(rd.lock_on_target_pos[0] as f64),
                         "y": round3(rd.lock_on_target_pos[1] as f64),
@@ -6510,6 +6587,20 @@ impl Runtime {
                     "rendered_enemy_instance_count": self.enemy_instance_indices.len(),
                     "lock_on_active": false,
                     "lock_on_target_index": -1,
+                    "camera_eye": {
+                        "x": round3(live_camera_eye[0] as f64),
+                        "y": round3(live_camera_eye[1] as f64),
+                        "z": round3(live_camera_eye[2] as f64),
+                    },
+                    "camera_target": {
+                        "x": round3(live_camera_target[0] as f64),
+                        "y": round3(live_camera_target[1] as f64),
+                        "z": round3(live_camera_target[2] as f64),
+                    },
+                    "camera_azimuth": round3(self.orbit_camera.azimuth as f64),
+                    "camera_elevation": round3(self.orbit_camera.elevation as f64),
+                    "camera_distance": round3(self.orbit_camera.distance as f64),
+                    "camera_fov_y": round3(self.orbit_camera.fov_y as f64),
                 })
             });
         let scene_combat_arena = self.scene_combat_arena_extents.map(|extents| {
@@ -7171,27 +7262,77 @@ fn install_input_handlers(runtime: Rc<RefCell<Runtime>>) -> Result<(), JsValue> 
     window.add_event_listener_with_callback("keyup", on_keyup.as_ref().unchecked_ref())?;
 
     let pointerdown_runtime = runtime.clone();
-    let on_pointerdown = Closure::wrap(Box::new(move |_event: Event| {
+    let on_pointerdown = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
         if let Ok(mut runtime) = pointerdown_runtime.try_borrow_mut() {
-            runtime.collect_pressed = true;
+            if event.button() == 0 {
+                runtime.collect_pressed = true;
+            }
+            runtime.camera_orbit_dragging = true;
+            runtime.camera_last_pointer_pos = Some([event.client_x() as f32, event.client_y() as f32]);
         }
-    }) as Box<dyn FnMut(Event)>);
-    canvas
-        .add_event_listener_with_callback("pointerdown", on_pointerdown.as_ref().unchecked_ref())?;
+        event.prevent_default();
+    }) as Box<dyn FnMut(web_sys::MouseEvent)>);
+    canvas.add_event_listener_with_callback("mousedown", on_pointerdown.as_ref().unchecked_ref())?;
 
     let pointerup_runtime = runtime.clone();
-    let on_pointerup = Closure::wrap(Box::new(move |_event: Event| {
+    let on_pointerup = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
         if let Ok(mut runtime) = pointerup_runtime.try_borrow_mut() {
-            runtime.collect_pressed = false;
+            if event.button() == 0 {
+                runtime.collect_pressed = false;
+            }
+            runtime.camera_orbit_dragging = false;
+            runtime.camera_last_pointer_pos = None;
         }
-    }) as Box<dyn FnMut(Event)>);
-    canvas.add_event_listener_with_callback("pointerup", on_pointerup.as_ref().unchecked_ref())?;
+        event.prevent_default();
+    }) as Box<dyn FnMut(web_sys::MouseEvent)>);
+    canvas.add_event_listener_with_callback("mouseup", on_pointerup.as_ref().unchecked_ref())?;
+    canvas.add_event_listener_with_callback("mouseleave", on_pointerup.as_ref().unchecked_ref())?;
+
+    let pointermove_runtime = runtime.clone();
+    let on_pointermove = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
+        if let Ok(mut runtime) = pointermove_runtime.try_borrow_mut() {
+            if runtime.render_mode_3d && runtime.camera_orbit_dragging {
+                let current = [event.client_x() as f32, event.client_y() as f32];
+                let (dx, dy) = match runtime.camera_last_pointer_pos {
+                    Some(prev) => (current[0] - prev[0], current[1] - prev[1]),
+                    None => (event.movement_x() as f32, event.movement_y() as f32),
+                };
+                runtime.camera_last_pointer_pos = Some(current);
+                // Drag-to-orbit: horizontal moves azimuth, vertical moves elevation.
+                runtime.orbit_camera.rotate(-dx * 0.008, -dy * 0.006);
+                event.prevent_default();
+            }
+        }
+    }) as Box<dyn FnMut(web_sys::MouseEvent)>);
+    canvas.add_event_listener_with_callback("mousemove", on_pointermove.as_ref().unchecked_ref())?;
+
+    let wheel_runtime = runtime.clone();
+    let on_wheel = Closure::wrap(Box::new(move |event: web_sys::WheelEvent| {
+        if let Ok(mut runtime) = wheel_runtime.try_borrow_mut() {
+            if runtime.render_mode_3d {
+                let delta = event.delta_y() as f32 * 0.02;
+                runtime.orbit_camera.zoom(delta);
+                event.prevent_default();
+            }
+        }
+    }) as Box<dyn FnMut(web_sys::WheelEvent)>);
+    {
+        let wheel_opts = web_sys::AddEventListenerOptions::new();
+        wheel_opts.set_passive(false);
+        canvas.add_event_listener_with_callback_and_add_event_listener_options(
+            "wheel",
+            on_wheel.as_ref().unchecked_ref(),
+            &wheel_opts,
+        )?;
+    }
 
     let mut runtime_mut = runtime.borrow_mut();
     runtime_mut.on_keydown = Some(on_keydown);
     runtime_mut.on_keyup = Some(on_keyup);
     runtime_mut.on_pointerdown = Some(on_pointerdown);
     runtime_mut.on_pointerup = Some(on_pointerup);
+    runtime_mut.on_pointermove = Some(on_pointermove);
+    runtime_mut.on_wheel = Some(on_wheel);
     Ok(())
 }
 

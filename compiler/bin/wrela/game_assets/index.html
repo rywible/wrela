@@ -1,7 +1,14 @@
 <!doctype html>
 <html lang="en">
-<body style="margin:0; overflow:hidden; background:#05080f;">
+<body style="margin:0; overflow:hidden; background:#0b1f2a; font-family:ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;">
   <canvas id="game-canvas" style="display:block; width:100vw; height:100vh;"></canvas>
+  <div id="boot-overlay" style="position:fixed; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none; color:#d9f2ff; background:linear-gradient(180deg,#0b1f2a 0%,#132a39 100%);">
+    <div style="text-align:center; max-width:640px; padding:24px;">
+      <div style="font-size:16px; letter-spacing:0.06em; text-transform:uppercase; opacity:0.9;">Wrela Forest Demo</div>
+      <div id="boot-status" style="margin-top:12px; font-size:18px; font-weight:700;">Loading WebGPU runtime...</div>
+      <div id="boot-detail" style="margin-top:8px; font-size:13px; opacity:0.85;">Preparing assets and shaders. This can take a few seconds on first load.</div>
+    </div>
+  </div>
   <script type="module" src="./loader.js"></script>
 </body>
 </html>
