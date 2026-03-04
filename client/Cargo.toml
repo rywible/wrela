@@ -16,6 +16,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 wrla_asset_pack = { package = "wrela_asset_pack", path = "../asset_pack" }
 wrela_material_graph = { path = "../material_graph" }
+wrela_field_engine = { path = "../field_engine" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 bytemuck = { version = "1", features = ["derive"] }

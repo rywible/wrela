@@ -1,4 +1,7 @@
 pub mod animation_graph;
+pub mod anime_palette;
+pub mod cel_shader;
+pub mod debug_views;
 pub mod audio;
 pub mod blade_trail;
 pub mod camera_math;
@@ -12,6 +15,7 @@ mod key_input_wiring;
 mod manifest_validation;
 pub mod material;
 pub mod mesh;
+pub mod outline;
 pub mod particles;
 pub mod postprocess;
 pub mod preview_mode;

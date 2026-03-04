@@ -114,6 +114,14 @@ pub struct ResonanceRenderParams {
     /// Desaturation on hit (0 = none, 1 = fully desaturated). Caller triggers
     /// this via [`ResonanceVfx::trigger_hit_desaturation`] and it decays over time.
     pub hit_desaturation: f32,
+
+    // ── Anime-specific VFX fields ──────────────────────────────────────
+    /// Outline glow emission intensity (0 = none, drives outline pass emission).
+    pub outline_glow_intensity: f32,
+    /// Hue rotation applied to the anime palette (radians, 0 = no shift).
+    pub palette_shift_hue: f32,
+    /// Multiplier on toon ramp softness (1.0 = default, >1 = painterly at high resonance).
+    pub toon_ramp_softness_multiplier: f32,
 }
 
 impl Default for ResonanceRenderParams {
@@ -127,6 +135,9 @@ impl Default for ResonanceRenderParams {
             vignette_intensity: 0.0,
             motion_blur_intensity: 0.0,
             hit_desaturation: 0.0,
+            outline_glow_intensity: 0.0,
+            palette_shift_hue: 0.0,
+            toon_ramp_softness_multiplier: 1.0,
         }
     }
 }
@@ -299,6 +310,42 @@ impl ResonanceVfx {
         //    was triggered so the renderer can decide) --
         let hit_desaturation = self.hit_desaturation;
 
+        // -- outline_glow_intensity (anime outline emission) --
+        let outline_glow_intensity = lerp_keyframes(
+            t,
+            &[
+                0.0,  // tier 0
+                0.0,  // tier 1
+                0.05, // tier 2
+                0.15, // tier 3
+                0.35, // tier 4
+            ],
+        );
+
+        // -- palette_shift_hue (radians) --
+        let palette_shift_hue = lerp_keyframes(
+            t,
+            &[
+                0.0,   // tier 0
+                0.0,   // tier 1
+                0.0,   // tier 2
+                0.05,  // tier 3
+                0.15,  // tier 4
+            ],
+        );
+
+        // -- toon_ramp_softness_multiplier (painterly at high resonance) --
+        let toon_ramp_softness_multiplier = lerp_keyframes(
+            t,
+            &[
+                1.0,  // tier 0
+                1.0,  // tier 1
+                1.1,  // tier 2
+                1.3,  // tier 3
+                2.0,  // tier 4 — painterly
+            ],
+        );
+
         ResonanceRenderParams {
             bloom_threshold_offset,
             bloom_color_tint: [bloom_tint_r, bloom_tint_g, bloom_tint_b],
@@ -308,6 +355,9 @@ impl ResonanceVfx {
             vignette_intensity,
             motion_blur_intensity,
             hit_desaturation,
+            outline_glow_intensity,
+            palette_shift_hue,
+            toon_ramp_softness_multiplier,
         }
     }
 }
@@ -621,6 +671,10 @@ mod tests {
         assert_eq!(p.vignette_intensity, 0.0);
         assert_eq!(p.motion_blur_intensity, 0.0);
         assert_eq!(p.hit_desaturation, 0.0);
+        // Anime fields at neutral
+        assert_eq!(p.outline_glow_intensity, 0.0);
+        assert_eq!(p.palette_shift_hue, 0.0);
+        assert!((p.toon_ramp_softness_multiplier - 1.0).abs() < 1e-6);
     }
 
     #[test]
@@ -676,6 +730,30 @@ mod tests {
     }
 
     #[test]
+    fn resonance_vfx_tier_0_anime_params_neutral() {
+        let mut vfx = ResonanceVfx::new();
+        for _ in 0..60 {
+            vfx.update(0, 0.016);
+        }
+        let p = vfx.render_params();
+        assert_eq!(p.outline_glow_intensity, 0.0);
+        assert_eq!(p.palette_shift_hue, 0.0);
+        assert!((p.toon_ramp_softness_multiplier - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn resonance_vfx_tier_4_anime_params_at_max() {
+        let mut vfx = ResonanceVfx::new();
+        for _ in 0..300 {
+            vfx.update(4, 0.016);
+        }
+        let p = vfx.render_params();
+        assert!((p.outline_glow_intensity - 0.35).abs() < 1e-3);
+        assert!((p.palette_shift_hue - 0.15).abs() < 1e-3);
+        assert!((p.toon_ramp_softness_multiplier - 2.0).abs() < 1e-3);
+    }
+
+    #[test]
     fn resonance_vfx_monotonic_escalation() {
         // Every tier should have effects >= the previous tier.
         let mut params_per_tier = Vec::new();
@@ -712,6 +790,22 @@ mod tests {
                 curr.particle_intensity_multiplier,
                 i - 1,
                 prev.particle_intensity_multiplier
+            );
+            // Anime fields also escalate monotonically
+            assert!(
+                curr.outline_glow_intensity >= prev.outline_glow_intensity - 1e-6,
+                "tier {} outline_glow ({}) should be >= tier {} ({})",
+                i, curr.outline_glow_intensity, i - 1, prev.outline_glow_intensity
+            );
+            assert!(
+                curr.palette_shift_hue >= prev.palette_shift_hue - 1e-6,
+                "tier {} palette_shift ({}) should be >= tier {} ({})",
+                i, curr.palette_shift_hue, i - 1, prev.palette_shift_hue
+            );
+            assert!(
+                curr.toon_ramp_softness_multiplier >= prev.toon_ramp_softness_multiplier - 1e-6,
+                "tier {} softness_mult ({}) should be >= tier {} ({})",
+                i, curr.toon_ramp_softness_multiplier, i - 1, prev.toon_ramp_softness_multiplier
             );
         }
     }

@@ -56,6 +56,20 @@ pub struct ShadowData {
     pub bias: [f32; 4],
 }
 
+/// Phase 2a interface: when set, the outline/cel passes use this depth
+/// instead of the rasterized shadow depth. Phase 1 leaves this as `None`.
+/// Phase 2a (field-based ray march) will set this to the ray-marched depth.
+pub struct ShadowDepthOverride {
+    _private: (), // placeholder, Phase 2a will add TextureView field
+}
+
+impl ShadowDepthOverride {
+    /// Phase 1 stub: no override available.
+    pub fn none() -> Option<Self> {
+        None
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 unsafe impl bytemuck::Pod for ShadowData {}
 #[cfg(target_arch = "wasm32")]
@@ -879,5 +893,17 @@ mod tests {
                 "cascade {cascade} light_view_proj should be non-zero"
             );
         }
+    }
+
+    #[test]
+    fn shadow_depth_override_none_returns_none() {
+        let result = ShadowDepthOverride::none();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn shadow_depth_override_is_zero_sized() {
+        // The stub should be minimal — just a unit struct placeholder
+        assert_eq!(std::mem::size_of::<ShadowDepthOverride>(), 0);
     }
 }

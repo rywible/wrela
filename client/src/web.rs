@@ -77,6 +77,43 @@ const VOLUMETRIC_STEPS_MAX: u32 = 96;
 const ANIMATION_PHASE_TICK_Q16: i32 = 4096;
 const DEFAULT_FOREST_ENEMY_INSTANCE_COUNT: usize = 2;
 const PLAYER_STATE_DODGE: i32 = 3;
+
+/// Selects between PBR (photorealistic) and Cel (anime) render pipelines.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RenderStyle {
+    Pbr,
+    Cel,
+}
+
+/// Sky parameter preset for a given render style.
+struct SkyPreset {
+    sun_color: [f32; 4],
+    sky_zenith: [f32; 4],
+    sky_horizon: [f32; 4],
+    sky_ground: [f32; 4],
+    rayleigh_coeffs: [f32; 4],
+    mie_params: [f32; 4],
+}
+
+/// PBR sky: realistic atmospheric scattering.
+const SKY_PRESET_PBR: SkyPreset = SkyPreset {
+    sun_color: [3.5, 2.8, 1.8, 24.0],
+    sky_zenith: [0.06, 0.1, 0.2, 1.0],
+    sky_horizon: [0.25, 0.22, 0.18, 1.0],
+    sky_ground: [0.08, 0.07, 0.06, 1.0],
+    rayleigh_coeffs: [5.5e-6, 13.0e-6, 22.4e-6, 6360.0e3],
+    mie_params: [21.0e-6, 0.758, 6420.0e3, 16.0],
+};
+
+/// Anime sky: flatter gradient, warmer sun, more saturated colors, fewer Mie samples.
+const SKY_PRESET_ANIME: SkyPreset = SkyPreset {
+    sun_color: [4.0, 3.2, 2.2, 20.0],
+    sky_zenith: [0.08, 0.12, 0.28, 1.0],
+    sky_horizon: [0.35, 0.28, 0.22, 1.0],
+    sky_ground: [0.10, 0.09, 0.07, 1.0],
+    rayleigh_coeffs: [5.5e-6, 13.0e-6, 22.4e-6, 6360.0e3],
+    mie_params: [21.0e-6, 0.758, 6420.0e3, 8.0],
+};
 const PLAYER_STATE_ATTACK: i32 = 4;
 const PLAYER_STATE_PARRY_ACTIVE: i32 = 6;
 
@@ -611,6 +648,8 @@ struct RenderSceneSnapshot3D<'a> {
     /// Current player game state integer (0=idle, 1=walk, ...) used to drive
     /// animation state machine clip selection.
     player_state: i32,
+    /// Resonance tier (0-4) from game logic, drives visual escalation.
+    resonance_tier: i32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2337,6 +2376,14 @@ struct WebGpuRenderer {
     shadow_system: crate::shadows::ShadowSystem,
     post_process: crate::postprocess::PostProcessStack,
     sky_pass: crate::sky::SkyPass,
+    // Anime cel rendering resources
+    render_style: RenderStyle,
+    resonance_vfx: crate::vfx::ResonanceVfx,
+    pipeline_3d_cel: Option<wgpu::RenderPipeline>,
+    normal_texture: wgpu::Texture,
+    normal_view: wgpu::TextureView,
+    cel_shader_system: crate::cel_shader::CelShaderSystem,
+    outline_pass: crate::outline::OutlinePass,
     // Combat effects pass resources
     combat_fx_pipeline: wgpu::RenderPipeline,
     combat_fx_uniform_buffer: wgpu::Buffer,
@@ -2826,6 +2873,100 @@ impl WebGpuRenderer {
 
         let sky_pass = crate::sky::SkyPass::new(&device, wgpu::TextureFormat::Rgba16Float);
 
+        // ── Cel shading pipeline + outline pass ──────────────────────────
+        let cel_shader_system = crate::cel_shader::CelShaderSystem::new(&device);
+
+        let normal_texture = Self::create_normal_texture_static(&device, width, height);
+        let normal_view = normal_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // Cel pipeline: same vertex layout as PBR but cel fragment shader,
+        // 5 bind groups (camera, model, material, shadow, cel), 2 color attachments.
+        let pipeline_layout_3d_cel =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("wrela-3d-cel-pipeline-layout"),
+                bind_group_layouts: &[
+                    &bind_group_layout_3d_camera,
+                    &bind_group_layout_3d_model,
+                    &bind_group_layout_3d_material,
+                    &shadow_system.shadow_bind_group_layout,
+                    &cel_shader_system.cel_bind_group_layout,
+                ],
+                push_constant_ranges: &[],
+            });
+
+        let cel_shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("wrela-3d-cel-shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(crate::cel_shader::CEL_SHADER_3D)),
+        });
+
+        let cel_vertex_buffer_layout = wgpu::VertexBufferLayout {
+            array_stride: 88,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[
+                wgpu::VertexAttribute { offset: 0, shader_location: 0, format: wgpu::VertexFormat::Float32x3 },
+                wgpu::VertexAttribute { offset: 12, shader_location: 1, format: wgpu::VertexFormat::Float32x3 },
+                wgpu::VertexAttribute { offset: 24, shader_location: 2, format: wgpu::VertexFormat::Float32x2 },
+                wgpu::VertexAttribute { offset: 32, shader_location: 3, format: wgpu::VertexFormat::Uint16x4 },
+                wgpu::VertexAttribute { offset: 40, shader_location: 4, format: wgpu::VertexFormat::Float32x4 },
+                wgpu::VertexAttribute { offset: 56, shader_location: 5, format: wgpu::VertexFormat::Float32x4 },
+                wgpu::VertexAttribute { offset: 72, shader_location: 6, format: wgpu::VertexFormat::Float32x4 },
+            ],
+        };
+
+        let pipeline_3d_cel = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("wrela-3d-cel-pipeline"),
+            layout: Some(&pipeline_layout_3d_cel),
+            vertex: wgpu::VertexState {
+                module: &cel_shader_module,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[cel_vertex_buffer_layout],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: Some(wgpu::Face::Back),
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Greater,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &cel_shader_module,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[
+                    // @location(0): HDR color
+                    Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba16Float,
+                        blend: Some(wgpu::BlendState::REPLACE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                    // @location(1): Normal G-buffer
+                    Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba16Float,
+                        blend: Some(wgpu::BlendState::REPLACE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                ],
+            }),
+            multiview: None,
+            cache: None,
+        });
+
+        let outline_pass = crate::outline::OutlinePass::new(
+            &device,
+            width,
+            height,
+            &depth_view,
+            &normal_view,
+            wgpu::TextureFormat::Rgba16Float,
+        );
+
         // ── Combat effects pass ──────────────────────────────────────────
         let combat_fx_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("combat_fx_bgl"),
@@ -3016,6 +3157,13 @@ impl WebGpuRenderer {
             ssao_system,
             post_process,
             sky_pass,
+            render_style: RenderStyle::Cel,
+            resonance_vfx: crate::vfx::ResonanceVfx::new(),
+            pipeline_3d_cel: Some(pipeline_3d_cel),
+            normal_texture,
+            normal_view,
+            cel_shader_system,
+            outline_pass,
             combat_fx_pipeline,
             combat_fx_uniform_buffer,
             combat_fx_sampler,
@@ -3047,6 +3195,66 @@ impl WebGpuRenderer {
         })
     }
 
+    fn create_normal_texture_static(
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+    ) -> wgpu::Texture {
+        device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("wrela-3d-normal-gbuffer"),
+            size: wgpu::Extent3d {
+                width: width.max(1),
+                height: height.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        })
+    }
+
+    /// Issue one instanced draw call per unique mesh batch. Shared by
+    /// both PBR and cel render passes.
+    fn draw_instanced_batches<'a>(
+        pass: &mut wgpu::RenderPass<'a>,
+        scene: &RenderSceneSnapshot3D<'_>,
+        sorted_indices: &[usize],
+        meshes: &'a [crate::mesh::GpuMesh],
+        materials: &'a [crate::material::GpuMaterial],
+        default_material_index: usize,
+    ) {
+        let mut batch_start: usize = 0;
+        while batch_start < sorted_indices.len() {
+            let mesh_index = scene.mesh_instances[sorted_indices[batch_start]].mesh_index;
+            let mut batch_end = batch_start + 1;
+            while batch_end < sorted_indices.len()
+                && scene.mesh_instances[sorted_indices[batch_end]].mesh_index == mesh_index
+            {
+                batch_end += 1;
+            }
+            let mesh = &meshes[mesh_index];
+            let first_instance = batch_start as u32;
+            let instance_count = (batch_end - batch_start) as u32;
+            let mat_index = if mesh_index < materials.len() {
+                mesh_index
+            } else {
+                default_material_index
+            };
+            pass.set_bind_group(2, &materials[mat_index].bind_group, &[]);
+            pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+            pass.set_index_buffer(mesh.index_buffer.slice(..), mesh.index_format);
+            pass.draw_indexed(
+                0..mesh.index_count,
+                0,
+                first_instance..first_instance + instance_count,
+            );
+            batch_start = batch_end;
+        }
+    }
+
     fn resize(&mut self, width: u32, height: u32) {
         let width = width.max(1);
         let height = height.max(1);
@@ -3060,10 +3268,22 @@ impl WebGpuRenderer {
         self.depth_view = self
             .depth_texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+        self.normal_texture = Self::create_normal_texture_static(&self.device, width, height);
+        self.normal_view = self
+            .normal_texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
         self.ssao_system
             .resize(&self.device, width, height, &self.depth_view);
         self.post_process
             .resize(&self.device, width, height, self.surface_format, &self.depth_view);
+        self.outline_pass.resize(
+            &self.device,
+            width,
+            height,
+            &self.depth_view,
+            &self.normal_view,
+            wgpu::TextureFormat::Rgba16Float,
+        );
 
         // Rebuild combat effects copy texture on resize
         self.combat_fx_copy_texture = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -3101,6 +3321,10 @@ impl WebGpuRenderer {
                 },
             ],
         });
+    }
+
+    fn set_render_style(&mut self, style: RenderStyle) {
+        self.render_style = style;
     }
 
     fn render_3d(
@@ -3248,10 +3472,23 @@ impl WebGpuRenderer {
             self.depth_view = self
                 .depth_texture
                 .create_view(&wgpu::TextureViewDescriptor::default());
+            self.normal_texture =
+                Self::create_normal_texture_static(&self.device, frame_w, frame_h);
+            self.normal_view = self
+                .normal_texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
             self.ssao_system
                 .resize(&self.device, frame_w, frame_h, &self.depth_view);
             self.post_process
                 .resize(&self.device, frame_w, frame_h, self.surface_format, &self.depth_view);
+            self.outline_pass.resize(
+                &self.device,
+                frame_w,
+                frame_h,
+                &self.depth_view,
+                &self.normal_view,
+                wgpu::TextureFormat::Rgba16Float,
+            );
         }
 
         let view = frame
@@ -3284,9 +3521,10 @@ impl WebGpuRenderer {
         }
 
         // ── Sky pass ─────────────────────────────────────────────────
+        let cel_mode = self.render_style == RenderStyle::Cel;
         {
             let inv_vp = crate::camera_math::mat4_inverse(view_proj);
-            // Note: sun_direction in sky shader points TOWARD the sun (negate light_direction)
+            let sky = if cel_mode { &SKY_PRESET_ANIME } else { &SKY_PRESET_PBR };
             let sky_uniforms = crate::sky::SkyUniforms {
                 inv_view_proj: inv_vp,
                 sun_direction: [
@@ -3295,18 +3533,12 @@ impl WebGpuRenderer {
                     -scene.light_direction[2],
                     0.0,
                 ],
-                // Cooler dusk sun with lower shaft intensity.
-                sun_color: [3.5, 2.8, 1.8, 24.0],
-                // Desaturated dusk zenith.
-                sky_zenith: [0.06, 0.1, 0.2, 1.0],
-                // Neutral horizon keeps contrast against trunks and characters.
-                sky_horizon: [0.25, 0.22, 0.18, 1.0],
-                // Dark forest floor bounce.
-                sky_ground: [0.08, 0.07, 0.06, 1.0],
-                // Standard Rayleigh scattering coefficients
-                rayleigh_coeffs: [5.5e-6, 13.0e-6, 22.4e-6, 6360.0e3],
-                // Mie: coefficient, anisotropy, atmosphere radius, sample count
-                mie_params: [21.0e-6, 0.758, 6420.0e3, 16.0],
+                sun_color: sky.sun_color,
+                sky_zenith: sky.sky_zenith,
+                sky_horizon: sky.sky_horizon,
+                sky_ground: sky.sky_ground,
+                rayleigh_coeffs: sky.rayleigh_coeffs,
+                mie_params: sky.mie_params,
             };
             self.sky_pass.render(
                 &mut encoder,
@@ -3316,7 +3548,101 @@ impl WebGpuRenderer {
             );
         }
 
-        {
+        // Update resonance VFX each frame
+        self.resonance_vfx
+            .update(scene.resonance_tier, scene.delta_time_secs);
+        let resonance_params = self.resonance_vfx.render_params();
+
+        // Upload cel uniforms if in cel mode
+        if cel_mode {
+            // Apply resonance-driven softness multiplier
+            let base_softness = self.cel_shader_system.shadow_softness;
+            self.cel_shader_system.shadow_softness =
+                base_softness * resonance_params.toon_ramp_softness_multiplier;
+            self.cel_shader_system.update_uniforms(&self.queue);
+            // Restore base softness so the multiplier doesn't compound each frame
+            self.cel_shader_system.shadow_softness = base_softness;
+
+            self.post_process.set_anime_mode(true);
+        } else {
+            self.post_process.set_anime_mode(false);
+        }
+
+        // ── Main geometry pass ──────────────────────────────────────────
+        // Build sorted instance list and upload storage buffer (shared by both PBR and cel).
+        let total_instances = scene.mesh_instances.len().min(MAX_3D_INSTANCES);
+        let mut sorted_indices: Vec<usize> = (0..total_instances)
+            .filter(|&i| scene.mesh_instances[i].mesh_index < self.meshes.len())
+            .collect();
+        sorted_indices.sort_by_key(|&i| scene.mesh_instances[i].mesh_index);
+
+        for (storage_slot, &orig_idx) in sorted_indices.iter().enumerate() {
+            let instance = &scene.mesh_instances[orig_idx];
+            let normal_model = mat4_inverse_transpose(instance.model_matrix);
+            let model_entry = ModelUniform {
+                model: instance.model_matrix,
+                normal_model,
+            };
+            let offset = storage_slot as u64 * MODEL_ENTRY_SIZE;
+            self.queue.write_buffer(
+                &self.model_uniform_buffer,
+                offset,
+                bytemuck::bytes_of(&model_entry),
+            );
+        }
+
+        if cel_mode && self.pipeline_3d_cel.is_some() {
+            // Cel render pass: 2 color attachments (HDR + normal G-buffer)
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("wrela-3d-cel-render-pass"),
+                color_attachments: &[
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: self.post_process.hdr_target_view(),
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    }),
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: &self.normal_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: 0.5, g: 0.5, b: 1.0, a: 1.0,
+                            }),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    }),
+                ],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                occlusion_query_set: None,
+                timestamp_writes: None,
+            });
+
+            pass.set_pipeline(self.pipeline_3d_cel.as_ref().unwrap());
+            pass.set_bind_group(0, &self.bind_group_3d, &[]);
+            pass.set_bind_group(1, &self.model_bind_group, &[]);
+            pass.set_bind_group(3, &self.shadow_system.shadow_bind_group, &[]);
+            pass.set_bind_group(4, &self.cel_shader_system.cel_bind_group, &[]);
+
+            Self::draw_instanced_batches(
+                &mut pass,
+                scene,
+                &sorted_indices,
+                &self.meshes,
+                &self.materials,
+                self.default_material_index,
+            );
+        } else {
+            // PBR render pass: 1 color attachment (HDR only)
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("wrela-3d-render-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -3339,80 +3665,50 @@ impl WebGpuRenderer {
                 timestamp_writes: None,
             });
 
-            // ── Build sorted instance list and upload storage buffer ────
-            // Group instances by mesh_index so we can issue one instanced
-            // draw call per unique mesh.  The storage buffer is written in
-            // the order that matches the final instance_index seen by the
-            // shader.
-            let total_instances = scene.mesh_instances.len().min(MAX_3D_INSTANCES);
-
-            // Collect valid instances, sorted by mesh_index for batching.
-            let mut sorted_indices: Vec<usize> = (0..total_instances)
-                .filter(|&i| scene.mesh_instances[i].mesh_index < self.meshes.len())
-                .collect();
-            sorted_indices.sort_by_key(|&i| scene.mesh_instances[i].mesh_index);
-
-            // Upload model matrices into the storage buffer in sorted order.
-            for (storage_slot, &orig_idx) in sorted_indices.iter().enumerate() {
-                let instance = &scene.mesh_instances[orig_idx];
-                let normal_model = mat4_inverse_transpose(instance.model_matrix);
-                let model_entry = ModelUniform {
-                    model: instance.model_matrix,
-                    normal_model,
-                };
-                let offset = storage_slot as u64 * MODEL_ENTRY_SIZE;
-                self.queue.write_buffer(
-                    &self.model_uniform_buffer,
-                    offset,
-                    bytemuck::bytes_of(&model_entry),
-                );
-            }
-
             pass.set_pipeline(self.pipeline_3d.as_ref().unwrap());
             pass.set_bind_group(0, &self.bind_group_3d, &[]);
             pass.set_bind_group(1, &self.model_bind_group, &[]);
             pass.set_bind_group(3, &self.shadow_system.shadow_bind_group, &[]);
 
-            // Issue one instanced draw call per unique mesh batch.
-            let mut batch_start: usize = 0;
-            while batch_start < sorted_indices.len() {
-                let mesh_index = scene.mesh_instances[sorted_indices[batch_start]].mesh_index;
-                let mut batch_end = batch_start + 1;
-                while batch_end < sorted_indices.len()
-                    && scene.mesh_instances[sorted_indices[batch_end]].mesh_index == mesh_index
-                {
-                    batch_end += 1;
-                }
-
-                let mesh = &self.meshes[mesh_index];
-                let first_instance = batch_start as u32;
-                let instance_count = (batch_end - batch_start) as u32;
-
-                // Bind material group 2: use per-mesh material if available,
-                // otherwise fall back to default material.
-                let mat_index = if mesh_index < self.materials.len() {
-                    mesh_index
-                } else {
-                    self.default_material_index
-                };
-                pass.set_bind_group(2, &self.materials[mat_index].bind_group, &[]);
-
-                pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-                pass.set_index_buffer(mesh.index_buffer.slice(..), mesh.index_format);
-                pass.draw_indexed(
-                    0..mesh.index_count,
-                    0,
-                    first_instance..first_instance + instance_count,
-                );
-
-                batch_start = batch_end;
-            }
+            Self::draw_instanced_batches(
+                &mut pass,
+                scene,
+                &sorted_indices,
+                &self.meshes,
+                &self.materials,
+                self.default_material_index,
+            );
         }
 
-        // ── SSAO pass ────────────────────────────────────────────────
-        // SSAO composites onto the HDR texture so AO is included before
-        // the bloom/tonemap chain runs.
-        if self.ssao_system.enabled() {
+        // ── Outline pass (cel mode only) ────────────────────────────────
+        if cel_mode {
+            // Combat FX adaptation: parry flash → white outlines, hitstop → thicker outlines
+            if scene.parry_flash_alpha > 0.1 {
+                self.outline_pass.color = [1.0, 1.0, 1.0];
+            } else {
+                // Resonance glow: lighten outline color toward white as glow increases
+                let glow = resonance_params.outline_glow_intensity;
+                self.outline_pass.color = [
+                    0.05 + glow * 0.95,
+                    0.03 + glow * 0.97,
+                    0.02 + glow * 0.98,
+                ];
+            }
+            if scene.hit_stop_active {
+                self.outline_pass.thickness = 1.5;
+            } else {
+                self.outline_pass.thickness = 1.0;
+            }
+            self.outline_pass.render(
+                &mut encoder,
+                &self.queue,
+                self.post_process.hdr_texture(),
+                self.post_process.hdr_target_view(),
+            );
+        }
+
+        // ── SSAO pass (PBR mode only — flat toon shading doesn't benefit) ──
+        if !cel_mode && self.ssao_system.enabled() {
             let inv_proj = crate::camera_math::mat4_inverse(scene.camera_proj);
             self.ssao_system.render(
                 &mut encoder,
@@ -3520,9 +3816,9 @@ impl WebGpuRenderer {
         let frame_cpu_ms = (performance_now_ms() - frame_cpu_start_ms).max(0.0);
 
         let combat_fx_passes: u32 = if combat_fx_active { 1 } else { 0 };
-        let ssao_passes: u32 = if self.ssao_system.enabled() { 4 } else { 0 };
+        let ssao_passes: u32 = if !cel_mode && self.ssao_system.enabled() { 4 } else { 0 };
+        let outline_passes: u32 = if cel_mode { 1 } else { 0 };
         let shadow_passes: u32 = crate::shadows::CASCADE_COUNT as u32;
-        // Post-process: 2 god rays + 6 bloom downsample + 5 bloom upsample + 1 tonemap + 1 FXAA = 15
         let god_ray_passes: u32 = if sun_screen_pos.is_some() { 2 } else { 0 };
         let taa_passes: u32 = if self.post_process.taa_enabled() { 1 } else { 0 };
         let postprocess_passes: u32 = god_ray_passes
@@ -3530,9 +3826,10 @@ impl WebGpuRenderer {
             + (crate::postprocess::BLOOM_MIP_COUNT as u32)
             + (crate::postprocess::BLOOM_MIP_COUNT as u32 - 1)
             + 2; // tonemap + fxaa
+        let pass_name = if cel_mode { "3d_cel" } else { "3d_pbr" };
         Ok(RenderFrameResult::Rendered(RenderExecutionStats {
             upload_bytes: std::mem::size_of::<FrameUniform3D>() as u64,
-            render_passes: 1 + ssao_passes + shadow_passes + postprocess_passes + combat_fx_passes,
+            render_passes: 1 + ssao_passes + outline_passes + shadow_passes + postprocess_passes + combat_fx_passes,
             compute_passes: 0,
             visibility: VisibilityStageTelemetry {
                 candidate_draws: scene.mesh_instances.len() as u32,
@@ -3548,7 +3845,7 @@ impl WebGpuRenderer {
             pass_timing_supported: false,
             pass_timing_fallback_used: true,
             pass_timings: vec![RuntimePassTimingSample {
-                pass_name: "3d_pbr".to_string(),
+                pass_name: pass_name.to_string(),
                 pass_kind: "render".to_string(),
                 duration_ms: frame_cpu_ms,
                 fallback_estimate: true,
@@ -6106,6 +6403,7 @@ impl Runtime {
                 chromatic_aberration: 0.0,
                 delta_time_secs: observed_frame_ms.unwrap_or(16.0) as f32 / 1000.0,
                 player_state: 0,
+                resonance_tier: 0,
             };
 
             match renderer.render_3d(&scene_3d, canvas_width, canvas_height) {
@@ -6376,6 +6674,7 @@ impl Runtime {
                 chromatic_aberration: chromatic_ab,
                 delta_time_secs: observed_frame_ms.unwrap_or(16.0) as f32 / 1000.0,
                 player_state: self.game_state.as_ref().map_or(0, |gs| gs.player_state),
+                resonance_tier: self.game_state.as_ref().map_or(0, |gs| gs.resonance_tier()),
             };
 
             // Pass full canvas dimensions (not dynamic-scaled) because in WebGPU

@@ -5675,7 +5675,15 @@ dependencies = [
  "web-sys",
  "wgpu",
  "wrela_asset_pack",
+ "wrela_field_engine",
  "wrela_material_graph",
+]
+
+[[package]]
+name = "wrela_field_engine"
+version = "0.1.0"
+dependencies = [
+ "proptest",
 ]
 
 [[package]]

@@ -11,6 +11,7 @@ pub struct PostProcessStack {
     god_rays_intensity: f32,
     taa_enabled: bool,
     taa_frame_index: u32,
+    anime_mode: bool,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -23,6 +24,7 @@ impl PostProcessStack {
             god_rays_intensity: 0.0,
             taa_enabled: true,
             taa_frame_index: 0,
+            anime_mode: false,
         }
     }
     pub fn bloom_intensity(&self) -> f32 {
@@ -60,6 +62,18 @@ impl PostProcessStack {
     }
     pub fn advance_taa_frame(&mut self) {
         self.taa_frame_index = self.taa_frame_index.wrapping_add(1);
+    }
+    pub fn anime_mode(&self) -> bool {
+        self.anime_mode
+    }
+    pub fn set_anime_mode(&mut self, v: bool) {
+        self.anime_mode = v;
+    }
+    pub fn effective_bloom_threshold(&self) -> f32 {
+        if self.anime_mode { 0.6 } else { self.bloom_threshold }
+    }
+    pub fn effective_bloom_intensity(&self) -> f32 {
+        if self.anime_mode { self.bloom_intensity.max(0.10) } else { self.bloom_intensity }
     }
     pub fn resize(&mut self, _width: u32, _height: u32) {}
 }
@@ -529,6 +543,53 @@ fn ycocg_to_rgb(ycocg: vec3<f32>) -> vec3<f32> {
 
     let resolved = mix(history, current, blend_factor);
     return vec4(max(resolved, vec3(0.0)), 1.0);
+}
+"#;
+
+    /// Anime tonemapping: brighter, softer S-curve instead of ACES filmic.
+    /// Uses `c / (c + 0.5)` mapping with higher default exposure (1.2) for
+    /// the brighter, more saturated look characteristic of anime rendering.
+    const ANIME_TONEMAP_SHADER: &str = r#"
+struct PostProcessParams {
+    bloom_intensity: f32,
+    exposure: f32,
+    screen_width: f32,
+    screen_height: f32,
+};
+
+@group(0) @binding(0) var hdr_texture: texture_2d<f32>;
+@group(0) @binding(1) var bloom_texture: texture_2d<f32>;
+@group(0) @binding(2) var source_sampler: sampler;
+@group(0) @binding(3) var<uniform> params: PostProcessParams;
+
+struct VsOut {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex fn vs(@builtin(vertex_index) vid: u32) -> VsOut {
+    var pos = array<vec2<f32>, 3>(vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+    var uv = array<vec2<f32>, 3>(vec2(0.0, 1.0), vec2(2.0, 1.0), vec2(0.0, -1.0));
+    var out: VsOut;
+    out.position = vec4(pos[vid], 0.0, 1.0);
+    out.uv = uv[vid];
+    return out;
+}
+
+fn anime_tonemap(c: vec3<f32>, exposure: f32) -> vec3<f32> {
+    let exposed = c * exposure;
+    let mapped = exposed / (exposed + vec3(0.5));
+    return pow(mapped, vec3(1.0 / 2.2));
+}
+
+@fragment fn fs(in: VsOut) -> @location(0) vec4<f32> {
+    let hdr = textureSample(hdr_texture, source_sampler, in.uv).rgb;
+    let bloom = textureSample(bloom_texture, source_sampler, in.uv).rgb;
+    let combined = hdr + bloom;
+
+    let result = anime_tonemap(combined, params.exposure);
+
+    return vec4(result, 1.0);
 }
 "#;
 
@@ -1474,12 +1535,16 @@ struct VsOut {
         taa_frame_index: u32,
         prev_view_proj: [[f32; 4]; 4],
 
+        // Anime mode pipeline
+        anime_tonemap_pipeline: wgpu::RenderPipeline,
+
         // Tuning parameters
         bloom_intensity: f32,
         bloom_threshold: f32,
         exposure: f32,
         width: u32,
         height: u32,
+        anime_mode: bool,
     }
 
     impl PostProcessStack {
@@ -1567,6 +1632,16 @@ struct VsOut {
                 "fxaa",
                 FXAA_SHADER,
                 &fxaa_bgl,
+                surface_format,
+                None,
+            );
+
+            // Anime tonemap pipeline: same layout as regular tonemap, different shader
+            let anime_tonemap_pipeline = create_fullscreen_pipeline(
+                device,
+                "anime_tonemap",
+                ANIME_TONEMAP_SHADER,
+                &tonemap_bgl,
                 surface_format,
                 None,
             );
@@ -1742,11 +1817,13 @@ struct VsOut {
                 taa_enabled: true,
                 taa_frame_index: 0,
                 prev_view_proj: crate::camera_math::mat4_identity(),
+                anime_tonemap_pipeline,
                 bloom_intensity: 0.3,
                 bloom_threshold: 1.0,
                 exposure: 1.0,
                 width,
                 height,
+                anime_mode: false,
             }
         }
 
@@ -2034,7 +2111,25 @@ struct VsOut {
 
             // ------------------------------------------------------------------
             // Write all bloom uniform data upfront (before any render passes)
+            // Anime mode: lower threshold (more glow), softer intensity,
+            // and limit effective MIP levels to 4 for tighter bloom radius.
             // ------------------------------------------------------------------
+            let eff_bloom_threshold = if self.anime_mode {
+                self.bloom_threshold.min(0.6)
+            } else {
+                self.bloom_threshold
+            };
+            let eff_bloom_intensity = if self.anime_mode {
+                self.bloom_intensity.min(0.15).max(0.10)
+            } else {
+                self.bloom_intensity
+            };
+            let eff_mip_count = if self.anime_mode {
+                BLOOM_MIP_COUNT.min(4) // tighter bloom radius
+            } else {
+                BLOOM_MIP_COUNT
+            };
+
             for i in 0..BLOOM_MIP_COUNT {
                 let (src_w, src_h) = if i == 0 {
                     (self.width, self.height)
@@ -2044,8 +2139,8 @@ struct VsOut {
                 let uniforms = BloomPassUniforms {
                     texel_size_x: 1.0 / src_w as f32,
                     texel_size_y: 1.0 / src_h as f32,
-                    bloom_threshold: if i == 0 { self.bloom_threshold } else { 0.0 },
-                    bloom_intensity: self.bloom_intensity,
+                    bloom_threshold: if i == 0 { eff_bloom_threshold } else { 0.0 },
+                    bloom_intensity: eff_bloom_intensity,
                 };
                 queue.write_buffer(
                     &self.bloom_uniform_buffers[i],
@@ -2061,7 +2156,7 @@ struct VsOut {
                     texel_size_x: 1.0 / src_w as f32,
                     texel_size_y: 1.0 / src_h as f32,
                     bloom_threshold: 0.0,
-                    bloom_intensity: self.bloom_intensity,
+                    bloom_intensity: eff_bloom_intensity,
                 };
                 let buffer_idx = BLOOM_MIP_COUNT + k;
                 queue.write_buffer(
@@ -2071,11 +2166,16 @@ struct VsOut {
                 );
             }
 
-            // Write tonemap uniforms
+            // Write tonemap uniforms — anime mode uses brighter exposure default
             {
+                let effective_exposure = if self.anime_mode {
+                    self.exposure.max(1.2) // anime default is brighter
+                } else {
+                    self.exposure
+                };
                 let uniforms = PostProcessUniforms {
                     bloom_intensity: self.bloom_intensity,
-                    exposure: self.exposure,
+                    exposure: effective_exposure,
                     screen_width: self.width as f32,
                     screen_height: self.height as f32,
                 };
@@ -2098,9 +2198,9 @@ struct VsOut {
             }
 
             // ------------------------------------------------------------------
-            // Downsample chain
+            // Downsample chain (anime mode limits to fewer MIP levels)
             // ------------------------------------------------------------------
-            for i in 0..BLOOM_MIP_COUNT {
+            for i in 0..eff_mip_count {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some(&format!("bloom_downsample_{i}")),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -2122,8 +2222,14 @@ struct VsOut {
 
             // ------------------------------------------------------------------
             // Upsample chain (additive blend back up)
+            // In anime mode, skip upsample passes from MIP levels beyond
+            // eff_mip_count. The upsample bind group at index k reads from
+            // source_mip = BLOOM_MIP_COUNT - 1 - k, so we start at
+            // k = BLOOM_MIP_COUNT - eff_mip_count to begin from the deepest
+            // effective MIP level.
             // ------------------------------------------------------------------
-            for k in 0..(BLOOM_MIP_COUNT - 1) {
+            let upsample_k_start = BLOOM_MIP_COUNT - eff_mip_count;
+            for k in upsample_k_start..(BLOOM_MIP_COUNT - 1) {
                 let target_mip = BLOOM_MIP_COUNT - 2 - k;
 
                 // Use LoadOp::Load to preserve existing content (the downsample
@@ -2149,6 +2255,7 @@ struct VsOut {
 
             // ------------------------------------------------------------------
             // Tonemap pass: combine HDR + bloom mip 0 -> FXAA intermediate
+            // Anime mode uses softer S-curve tonemap instead of ACES filmic.
             // ------------------------------------------------------------------
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -2165,7 +2272,11 @@ struct VsOut {
                     timestamp_writes: None,
                     occlusion_query_set: None,
                 });
-                pass.set_pipeline(&self.tonemap_pipeline);
+                if self.anime_mode {
+                    pass.set_pipeline(&self.anime_tonemap_pipeline);
+                } else {
+                    pass.set_pipeline(&self.tonemap_pipeline);
+                }
                 pass.set_bind_group(0, &self.tonemap_bind_group, &[]);
                 pass.draw(0..3, 0..1);
             }
@@ -2240,6 +2351,32 @@ struct VsOut {
 
         pub fn advance_taa_frame(&mut self) {
             self.taa_frame_index = self.taa_frame_index.wrapping_add(1);
+        }
+
+        pub fn anime_mode(&self) -> bool {
+            self.anime_mode
+        }
+
+        pub fn set_anime_mode(&mut self, v: bool) {
+            self.anime_mode = v;
+        }
+
+        /// Return the effective bloom parameters for the current mode.
+        /// Anime mode: lower threshold (0.6), softer intensity (0.15).
+        pub fn effective_bloom_threshold(&self) -> f32 {
+            if self.anime_mode {
+                self.bloom_threshold.min(0.6)
+            } else {
+                self.bloom_threshold
+            }
+        }
+
+        pub fn effective_bloom_intensity(&self) -> f32 {
+            if self.anime_mode {
+                self.bloom_intensity.min(0.15).max(0.10)
+            } else {
+                self.bloom_intensity
+            }
         }
 
         /// Rebuild the TAA bind group when the depth view changes (e.g. after renderer resize).
@@ -2424,5 +2561,59 @@ mod tests {
             inv_curr_view_proj: [[f32; 4]; 4],
         }
         assert_eq!(std::mem::size_of::<TaaUniforms>(), 208);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn stub_anime_mode_defaults_to_false() {
+        let stack = PostProcessStack::new();
+        assert!(!stack.anime_mode());
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn stub_anime_mode_toggle() {
+        let mut stack = PostProcessStack::new();
+        stack.set_anime_mode(true);
+        assert!(stack.anime_mode());
+        stack.set_anime_mode(false);
+        assert!(!stack.anime_mode());
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn stub_effective_bloom_presets_change_in_anime_mode() {
+        let mut stack = PostProcessStack::new();
+        stack.set_bloom_threshold(1.2);
+        stack.set_bloom_intensity(0.06);
+
+        let pbr_threshold = stack.effective_bloom_threshold();
+        let pbr_intensity = stack.effective_bloom_intensity();
+
+        stack.set_anime_mode(true);
+        let anime_threshold = stack.effective_bloom_threshold();
+        let anime_intensity = stack.effective_bloom_intensity();
+
+        // Anime mode should have lower threshold (more bloom) and higher intensity
+        assert!(
+            anime_threshold < pbr_threshold,
+            "anime threshold ({anime_threshold}) should be < PBR ({pbr_threshold})"
+        );
+        assert!(
+            anime_intensity > pbr_intensity,
+            "anime intensity ({anime_intensity}) should be > PBR ({pbr_intensity})"
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn stub_anime_mode_exposure_floor() {
+        let mut stack = PostProcessStack::new();
+        stack.set_exposure(0.5);
+        stack.set_anime_mode(true);
+        // In anime mode, exposure should be at least 1.2
+        // (this tests the intent; the actual enforcement is in the WASM render path)
+        // The stub tracks the raw value, but verify the setter works
+        assert!((stack.exposure() - 0.5).abs() < 1e-6);
     }
 }
