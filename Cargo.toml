@@ -1,15 +1,8 @@
 [workspace]
 resolver = "3"
 members = [
-    "agent_control",
-    "asset_pack",
     "compiler",
     "runtime",
-    "material_graph",
-    "mesh_tooling",
-    "texture_tooling",
-    "client",
-    "field_engine",
 ]
 
 [profile.release]

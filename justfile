@@ -40,25 +40,6 @@ test-cluster:
 test-cluster-smoke:
     cargo test -p wrela_runtime --test db_local_cluster_smoke -- --ignored --nocapture
 
-# --- Tier 3: fly (requires FLY_API_TOKEN) ---
-fly-smoke:
-    scripts/fly/wrela_deploy_smoke.sh
-
-fly-load:
-    scripts/fly/wrela_write_load_test.sh
-
-fly-chaos:
-    scripts/fly/wreladb_chaos_loop.sh
-
-fly-drill:
-    scripts/fly/wreladb_cluster_drill.sh
-
-fly-perf sha:
-    scripts/perf/fly_pr_perf_gate.sh --sha {{sha}}
-
-fly-baseline sha:
-    scripts/perf/fly_refresh_main_baseline.sh --sha {{sha}}
-
 # --- Cross-tier ---
 test-all: test-fast test-perf test-cluster
 

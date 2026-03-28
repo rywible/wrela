@@ -10,16 +10,11 @@
 #![allow(clippy::type_complexity)]
 #![allow(clippy::vec_init_then_push)]
 
-pub mod animation;
-pub mod asset_factory;
 pub mod backend;
 pub mod diag;
 pub mod hir;
 pub mod lexer;
 pub mod mir;
 pub mod parser;
-pub mod preview_server;
 pub mod render_ir;
-pub mod resolve;
-pub mod scene_ir;
 pub mod shader_compiler;

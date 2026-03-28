@@ -1,5 +1,0 @@
-use compute_projected_balance from application/service
-
-fn run() -> Integer {
-    return compute_projected_balance(current_balance=40, incoming_credit=2)
-}
