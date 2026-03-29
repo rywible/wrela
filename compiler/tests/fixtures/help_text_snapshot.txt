@@ -2,12 +2,6 @@ usage: wrela <command> [options] <path> [-- args]
 
 commands:
 init [path]           initialize a new project
-game <subcommand> <path>  game vertical slice commands (init|build|run|dev|check|profile)
-realtime <subcommand> <path>  hard alias for game runtime commands (init|build|run|dev|check|profile)
-mmo <subcommand> <path>  hard alias for realtime runtime commands (init|build|run|dev|check|profile|gateway|zone|world|loadtest|ops)
-frontend <subcommand> <path>  frontend app commands (init|build|check|run|preview|explain|fix)
-studio <subcommand> <path>  frontend app + orchestration commands (init|build|check|run|preview|explain|fix|synth|bake|pack|gate|ship|synth-assets|bake-assets|validate-assets|package-assets|promote-assets|full-factory)
-agent-run <path>      prompt-driven orchestration for game app path
 update                update the installed toolchain
 check <path>          parse and typecheck (no codegen)
 analyze <path>        alias for check (parse and typecheck; no codegen)
@@ -27,12 +21,7 @@ matrix [path]         run workspace test/spec/perf matrix and write evidence bun
 
 options:
 --prefix PATH         install/update prefix (default: $PREFIX or ~/.local/wrela)
---target=NAME         deploy target (`fly`) or game/realtime build target (`native|wasm|dual`)
---render=NAME         game/realtime render backend (`webgpu`)
---host=NAME           game/realtime host mode (`pure-wasm`)
---client-runtime=MODE game/realtime build/check strict gate: client runtime mode (`compiled`)
---shader-provenance   game/realtime build/check strict gate: require shader provenance manifests
---no-shortcuts        game/realtime build/check strict gate: require no-shortcuts manifest gate
+--target=NAME         deploy target (`fly`)
 --app=NAME            deploy app name (required for `wrela deploy --target=fly`)
 --region=REGION       deploy primary region (default: $PRIMARY_REGION or ord)
 --machines=N          desired machine count for deploy (default: 3)
@@ -80,7 +69,6 @@ env: WRELA_BUDGET_*   Budget Policy v1 overrides (autogen/sim/fuzz/mutation + ti
 --kpi-scheduler-throughput-improve-min-pct=N  min scheduler throughput improvement vs baseline
 --kpi-scheduler-loop-p99-max-regress-pct=N  max scheduler loop p99 regression percentage
 --kpi-scheduler-local-hit-min=N  minimum local dispatch hit ratio
---intent-v2           required hard-cut intent schema selector for `wrela agent-run` (implied by `wrela studio synth`/`wrela studio synth-assets`/`wrela studio full-factory`)
 --baseline-ref=REF    perfcmp baseline git ref (default: origin/main)
 --candidate-ref=REF   perfcmp candidate git ref (default: HEAD)
 --warmup-pairs=N      perfcmp warmup pair count override
@@ -88,12 +76,6 @@ env: WRELA_BUDGET_*   Budget Policy v1 overrides (autogen/sim/fuzz/mutation + ti
 --min-effect-pct=N    perfcmp practical effect threshold (default: 2.0)
 --confidence=N        perfcmp bootstrap CI confidence percent (default: 95)
 --json                shorthand for --error-format=json
---determinism         game/realtime check mode: enforce native-vs-wasm domain hash parity
---rollback            game/realtime check mode: enforce rollback convergence simulation
---render-lane         game/realtime check mode: enforce render-lane manifest contracts
---asset-streaming     game/realtime check mode: enforce asset-streaming manifest contracts
---gpu-metrics         game/realtime profile mode: emit GPU metrics only
---streaming-metrics   game/realtime profile mode: emit streaming metrics only
 --holes-only          check/analyze mode: emit typed-hole diagnostics only
 --allow-review-fixes  fix/fmt mode: also apply review-tier fixes
 --workspace-diagnostics  fix/fmt: include diagnostics/fixes from imported modules (default: target file only)
@@ -101,3 +83,4 @@ env: WRELA_BUDGET_*   Budget Policy v1 overrides (autogen/sim/fuzz/mutation + ti
 --error-format=human|json|sarif  set diagnostic output format (default: human)
 -h, --help            show this help
 -V, --version         show version
+

@@ -169,12 +169,6 @@ pub fn help_text() -> &'static str {
 \n\
 commands:\n\
   init [path]           initialize a new project\n\
-  game <subcommand> <path>  game vertical slice commands (init|build|run|dev|check|profile|anim synth|anim mutate|anim gate)\n\
-  realtime <subcommand> <path>  hard alias for game runtime commands (init|build|run|dev|check|profile)\n\
-  mmo <subcommand> <path>  hard alias for realtime runtime commands (init|build|run|dev|check|profile|gateway|zone|world|loadtest|ops)\n\
-  frontend <subcommand> <path>  frontend app commands (init|build|check|run|preview|explain|fix)\n\
-  studio <subcommand> <path>  frontend app + orchestration commands (init|build|check|run|preview|explain|fix|synth|bake|pack|gate|ship|synth-assets|bake-assets|validate-assets|package-assets|promote-assets|full-factory)\n\
-  agent-run <path>      prompt-driven orchestration for game app path\n\
   update                update the installed toolchain\n\
   check <path>          parse and typecheck (no codegen)\n\
   analyze <path>        alias for check (parse and typecheck; no codegen)\n\
@@ -194,12 +188,7 @@ commands:\n\
 \n\
 options:\n\
   --prefix PATH         install/update prefix (default: $PREFIX or ~/.local/wrela)\n\
-  --target=NAME         deploy target (`fly`) or game/realtime build target (`native|wasm|dual`)\n\
-  --render=NAME         game/realtime render backend (`webgpu`)\n\
-  --host=NAME           game/realtime host mode (`pure-wasm`)\n\
-  --client-runtime=MODE game/realtime build/check strict gate: client runtime mode (`compiled`)\n\
-  --shader-provenance   game/realtime build/check strict gate: require shader provenance manifests\n\
-  --no-shortcuts        game/realtime build/check strict gate: require no-shortcuts manifest gate\n\
+  --target=NAME         deploy target (`fly`)\n\
   --app=NAME            deploy app name (required for `wrela deploy --target=fly`)\n\
   --region=REGION       deploy primary region (default: $PRIMARY_REGION or ord)\n\
   --machines=N          desired machine count for deploy (default: 3)\n\
@@ -247,7 +236,6 @@ options:\n\
   --kpi-scheduler-throughput-improve-min-pct=N  min scheduler throughput improvement vs baseline\n\
   --kpi-scheduler-loop-p99-max-regress-pct=N  max scheduler loop p99 regression percentage\n\
   --kpi-scheduler-local-hit-min=N  minimum local dispatch hit ratio\n\
-  --intent-v2           required hard-cut intent schema selector for `wrela agent-run` (implied by `wrela studio synth`/`wrela studio synth-assets`/`wrela studio full-factory`)\n\
   --baseline-ref=REF    perfcmp baseline git ref (default: origin/main)\n\
   --candidate-ref=REF   perfcmp candidate git ref (default: HEAD)\n\
   --warmup-pairs=N      perfcmp warmup pair count override\n\
@@ -255,12 +243,6 @@ options:\n\
   --min-effect-pct=N    perfcmp practical effect threshold (default: 2.0)\n\
   --confidence=N        perfcmp bootstrap CI confidence percent (default: 95)\n\
   --json                shorthand for --error-format=json\n\
-  --determinism         game/realtime check mode: enforce native-vs-wasm domain hash parity\n\
-  --rollback            game/realtime check mode: enforce rollback convergence simulation\n\
-  --render-lane         game/realtime check mode: enforce render-lane manifest contracts\n\
-  --asset-streaming     game/realtime check mode: enforce asset-streaming manifest contracts\n\
-  --gpu-metrics         game/realtime profile mode: emit GPU metrics only\n\
-  --streaming-metrics   game/realtime profile mode: emit streaming metrics only\n\
   --holes-only          check/analyze mode: emit typed-hole diagnostics only\n\
   --allow-review-fixes  fix/fmt mode: also apply review-tier fixes\n\
   --workspace-diagnostics  fix/fmt: include diagnostics/fixes from imported modules (default: target file only)\n\
@@ -692,24 +674,43 @@ mod tests {
     }
 
     #[test]
-    fn help_text_mentions_realtime_family() {
+    fn help_text_excludes_removed_game_surface() {
         let help = help_text();
-        assert!(help.contains(
-            "realtime <subcommand> <path>  hard alias for game runtime commands (init|build|run|dev|check|profile)"
-        ));
+        for removed in [
+            "game <subcommand> <path>",
+            "realtime <subcommand> <path>",
+            "mmo <subcommand> <path>",
+            "frontend <subcommand> <path>",
+            "studio <subcommand> <path>",
+            "agent-run <path>",
+            "--render=NAME",
+            "--host=NAME",
+            "--client-runtime=MODE",
+            "--shader-provenance",
+            "--no-shortcuts",
+            "--intent-v2",
+            "--determinism",
+            "--rollback",
+            "--render-lane",
+            "--asset-streaming",
+            "--gpu-metrics",
+            "--streaming-metrics",
+        ] {
+            assert!(
+                !help.contains(removed),
+                "removed help text leaked back into the CLI surface: {removed}"
+            );
+        }
     }
 
     #[test]
-    fn help_text_mentions_studio_and_mmo_families() {
+    fn help_text_mentions_surviving_surface() {
         let help = help_text();
-        assert!(help.contains(
-            "mmo <subcommand> <path>  hard alias for realtime runtime commands (init|build|run|dev|check|profile|gateway|zone|world|loadtest|ops)"
-        ));
-        assert!(help.contains(
-            "studio <subcommand> <path>  frontend app + orchestration commands (init|build|check|run|preview|explain|fix|synth|bake|pack|gate|ship|synth-assets|bake-assets|validate-assets|package-assets|promote-assets|full-factory)"
-        ));
-        assert!(help.contains(
-            "--intent-v2           required hard-cut intent schema selector for `wrela agent-run` (implied by `wrela studio synth`/`wrela studio synth-assets`/`wrela studio full-factory`)"
-        ));
+        assert!(help.contains("init [path]"));
+        assert!(help.contains("deploy [path]"));
+        assert!(help.contains("--target=NAME"));
+        assert!(help.contains("--holes-only"));
+        assert!(help.contains("--allow-review-fixes"));
+        assert!(help.contains("--strict-naming"));
     }
 }

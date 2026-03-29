@@ -126,93 +126,79 @@ fn run() -> Integer {
 }
 
 #[test]
-fn test_lane_keywords_lex_as_keywords() {
+fn test_surviving_keywords_lex_as_keywords() {
     let input = "\
-node C profile ui {}
+class C {}
 resource R {}
 event E {}
-theme T {}
 system tick() -> Nothing {}
-view hud() -> Nothing {}
-material layer() -> Nothing {}
-anim pulse() -> Nothing {}
+fn tick() -> Nothing {}
+check ready() -> Boolean
+assert value true
+use core
+from std
 ";
     let mut lexer = Lexer::new(input);
     let (tokens, errors) = lexer.lex();
     assert!(errors.is_empty(), "{errors:?}");
     let tokens = strip_spans(tokens);
 
-    assert!(tokens.contains(&Token::Node));
+    assert!(tokens.contains(&Token::Class));
     assert!(tokens.contains(&Token::Resource));
     assert!(tokens.contains(&Token::Event));
-    assert!(tokens.contains(&Token::Theme));
     assert!(tokens.contains(&Token::System));
-    assert!(tokens.contains(&Token::View));
-    assert!(tokens.contains(&Token::Material));
-    assert!(tokens.contains(&Token::Anim));
+    assert!(tokens.contains(&Token::Fn));
+    assert!(tokens.contains(&Token::Check));
+    assert!(tokens.contains(&Token::Assert));
+    assert!(tokens.contains(&Token::Use));
+    assert!(tokens.contains(&Token::From));
 }
 
 #[test]
-fn test_render_gpu_keywords_lex_as_keywords() {
+fn test_removed_visual_game_words_lex_as_identifiers() {
     let input = "\
-render Lane {
-    preset balanced
-    profile quality
-    overrides {}
-}
-gpu fn shade() -> String {
-    return \"wgsl\"
-}
+asset scene node theme view material anim gpu shader render assets mmo
+asset_spec character_spec rig_spec anim_set_spec audio_spec vfx_spec ui_spec world_recipe
 ";
     let mut lexer = Lexer::new(input);
     let (tokens, errors) = lexer.lex();
     assert!(errors.is_empty(), "{errors:?}");
+
     let tokens = strip_spans(tokens);
+    let identifiers: Vec<String> = tokens
+        .into_iter()
+        .filter_map(|token| match token {
+            Token::Identifier(text) => Some(text.to_string()),
+            Token::Newline(_) | Token::Eof | Token::Whitespace(_) => None,
+            other => panic!("expected identifier token, found {other:?}"),
+        })
+        .collect();
 
-    assert!(tokens.contains(&Token::Render));
-    assert!(tokens.contains(&Token::Preset));
-    assert!(tokens.contains(&Token::Profile));
-    assert!(tokens.contains(&Token::Overrides));
-    assert!(tokens.contains(&Token::Gpu));
-}
-
-#[test]
-fn test_asset_factory_keywords_lex_as_keywords() {
-    let input = "\
-asset_spec Assets {}
-style_profile Style {}
-generator_profile Generator {}
-quality_profile Quality {}
-provenance_policy Provenance {}
-character_spec Character {}
-rig_spec Rig {}
-anim_set_spec AnimSet {}
-audio_spec Audio {}
-vfx_spec Vfx {}
-ui_spec Ui {}
-world_recipe World {}
-assets AssetStream {}
-mmo Cluster {}
-";
-    let mut lexer = Lexer::new(input);
-    let (tokens, errors) = lexer.lex();
-    assert!(errors.is_empty(), "{errors:?}");
-    let tokens = strip_spans(tokens);
-
-    assert!(tokens.contains(&Token::AssetSpec));
-    assert!(tokens.contains(&Token::StyleProfile));
-    assert!(tokens.contains(&Token::GeneratorProfile));
-    assert!(tokens.contains(&Token::QualityProfile));
-    assert!(tokens.contains(&Token::ProvenancePolicy));
-    assert!(tokens.contains(&Token::CharacterSpec));
-    assert!(tokens.contains(&Token::RigSpec));
-    assert!(tokens.contains(&Token::AnimSetSpec));
-    assert!(tokens.contains(&Token::AudioSpec));
-    assert!(tokens.contains(&Token::VfxSpec));
-    assert!(tokens.contains(&Token::UiSpec));
-    assert!(tokens.contains(&Token::WorldRecipe));
-    assert!(tokens.contains(&Token::Assets));
-    assert!(tokens.contains(&Token::Mmo));
+    assert_eq!(
+        identifiers,
+        vec![
+            "asset",
+            "scene",
+            "node",
+            "theme",
+            "view",
+            "material",
+            "anim",
+            "gpu",
+            "shader",
+            "render",
+            "assets",
+            "mmo",
+            "asset_spec",
+            "character_spec",
+            "rig_spec",
+            "anim_set_spec",
+            "audio_spec",
+            "vfx_spec",
+            "ui_spec",
+            "world_recipe",
+        ]
+    );
 }
 
 #[test]

@@ -1,5 +1,5 @@
 use crate::hir::{
-    Arg, BinaryOp, Body, ClassRole, Expr, FieldDefault, Function, FunctionKind, FunctionRole, Idx,
+    Arg, BinaryOp, Body, Expr, FieldDefault, Function, FunctionKind, FunctionRole, Idx,
     InterfaceMethodKind, Literal, Module, Pattern, Stmt, TypeRef, UnaryOp, Visibility,
 };
 use miette::{Diagnostic, SourceSpan};
@@ -458,24 +458,20 @@ pub enum TypeError {
         span: SourceSpan,
     },
 
-    #[error("Float type is not allowed in deterministic game modules")]
+    #[error("Float type is not allowed in deterministic modules")]
     #[diagnostic(
         code(lang::ty::deterministic_float_type_forbidden),
-        help(
-            "Use scaled Integer values and helpers from pkg/game/fixed for deterministic fixed-lane math."
-        )
+        help("Use scaled Integer values for deterministic arithmetic.")
     )]
     DeterministicFloatTypeForbidden {
         #[label("Float type is forbidden here")]
         span: SourceSpan,
     },
 
-    #[error("float literals are not allowed in deterministic game modules")]
+    #[error("float literals are not allowed in deterministic modules")]
     #[diagnostic(
         code(lang::ty::deterministic_float_literal_forbidden),
-        help(
-            "Use scaled Integer values and helpers from pkg/game/fixed for deterministic fixed-lane math."
-        )
+        help("Use scaled Integer values for deterministic arithmetic.")
     )]
     DeterministicFloatLiteralForbidden {
         #[label("float literal is forbidden here")]
@@ -605,17 +601,6 @@ fn module_is_deterministic_game_module(module: &Module) -> bool {
         .functions
         .iter()
         .any(|(_, func)| matches!(func.role, FunctionRole::System))
-        || module.classes.iter().any(|(_, class)| {
-            matches!(
-                class.role,
-                ClassRole::Node
-                    | ClassRole::Component
-                    | ClassRole::Resource
-                    | ClassRole::Event
-                    | ClassRole::Scene
-                    | ClassRole::Theme
-            )
-        })
 }
 
 fn enforce_deterministic_fixed_lane_policy(module: &Module, errors: &mut Vec<TypeError>) {

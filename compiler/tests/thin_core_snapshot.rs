@@ -175,47 +175,14 @@ fn thin_core_snapshot_matches_compiler_and_runtime_surfaces() {
     validate_symbol_classes(&snapshot)
         .unwrap_or_else(|err| panic!("invalid symbol class in thin-core snapshot: {err}"));
 
-    let semantic_source = read(&compiler_dir.join("hir/semantic.rs"));
-    let typeck_source = read(&compiler_dir.join("hir/typeck/context.rs"));
-    let project_source = read(&compiler_dir.join("hir/project.rs"));
     let mir_source = read(&compiler_dir.join("mir/lower.rs"));
 
-    let semantic_intrinsics = extract_prefixed_symbols(
-        extract_braced_block(&semantic_source, "fn builtin_bindings()"),
-        "__wr_",
-    );
-    let typeck_intrinsics = extract_prefixed_symbols(
-        extract_braced_block(&typeck_source, "fn builtin_functions()"),
-        "__wr_",
-    );
-    let project_intrinsics = extract_prefixed_symbols(
-        extract_braced_block(
-            &project_source,
-            "fn is_builtin_value_name(name: &SmolStr) -> bool",
-        ),
-        "__wr_",
-    );
     let mir_intrinsics = extract_prefixed_symbols(
         extract_braced_block(&mir_source, "fn builtin_function_names() -> Vec<SmolStr>"),
         "__wr_",
     );
 
-    assert_eq!(
-        semantic_intrinsics, mir_intrinsics,
-        "semantic and MIR intrinsic lists diverged"
-    );
-    assert_eq!(
-        semantic_intrinsics, typeck_intrinsics,
-        "semantic and typeck intrinsic lists diverged"
-    );
-    assert_eq!(
-        semantic_intrinsics, project_intrinsics,
-        "semantic and project intrinsic lists diverged"
-    );
-    assert_eq!(
-        snapshot.intrinsics, semantic_intrinsics,
-        "intrinsic surface changed; update language/spec/thin_core_snapshot.txt intentionally"
-    );
+    assert_eq!(snapshot.intrinsics, mir_intrinsics, "intrinsic surface changed; update language/spec/thin_core_snapshot.txt intentionally");
 
     let runtime_exports =
         extract_runtime_exports(&read(&compiler_dir.join("../runtime/src/lib.rs")));

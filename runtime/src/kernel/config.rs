@@ -326,14 +326,6 @@ pub fn set_test_runtime_config_override(config: Option<RuntimeConfig>) {
     TEST_RUNTIME_CONFIG_OVERRIDE.with(|slot| *slot.borrow_mut() = config);
 }
 
-#[cfg(test)]
-pub fn set_test_runtime_config_override_global(config: Option<RuntimeConfig>) {
-    *TEST_RUNTIME_CONFIG_OVERRIDE_GLOBAL
-        .get_or_init(|| Mutex::new(None))
-        .lock()
-        .expect("runtime global test override lock") = config;
-}
-
 fn validate_runtime_config(config: &RuntimeConfig) {
     assert!(
         config.actor_mailbox_cap > 0,

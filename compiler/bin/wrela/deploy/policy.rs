@@ -607,11 +607,10 @@ fn resolve_intent_policy(
 
 fn parse_workload_class(value: &str) -> Result<DbWorkloadClass, String> {
     match value.trim().to_ascii_lowercase().as_str() {
-        "game_meta_realtime" => Ok(DbWorkloadClass::GameMetaRealtime),
         "general_transactional" => Ok(DbWorkloadClass::GeneralTransactional),
         "analytics_heavy" => Ok(DbWorkloadClass::AnalyticsHeavy),
         _ => Err(format!(
-            "intent.workload_class `{value}` is invalid. remediation: use one of game_meta_realtime|general_transactional|analytics_heavy"
+            "intent.workload_class `{value}` is invalid. remediation: use one of general_transactional|analytics_heavy"
         )),
     }
 }
@@ -710,7 +709,6 @@ fn remediation_action_code(action: DbIntentRemediationAction) -> &'static str {
 
 fn workload_class_code(value: DbWorkloadClass) -> &'static str {
     match value {
-        DbWorkloadClass::GameMetaRealtime => "game_meta_realtime",
         DbWorkloadClass::GeneralTransactional => "general_transactional",
         DbWorkloadClass::AnalyticsHeavy => "analytics_heavy",
     }
@@ -1209,7 +1207,7 @@ enforce_all_copies = true
 
 [intent]
 policy_id = "  orders-v7  "
-workload_class = "  game_meta_realtime  "
+workload_class = "  general_transactional  "
 latency_target_ms = 90
 min_write_throughput_ops = 12000
 residency_scope = [" eu-west ", "us-east"]
@@ -1224,7 +1222,7 @@ ORDERS = " hot_meta "
         let resolved = resolve_deploy_policy(temp.path(), "ord", &DeployPolicyOverrides::default())
             .expect("resolve policy");
         assert_eq!(resolved.intent.policy_id, "orders-v7");
-        assert_eq!(resolved.intent.workload_class, "game_meta_realtime");
+        assert_eq!(resolved.intent.workload_class, "general_transactional");
         assert_eq!(resolved.intent.latency_target_ms, 90);
         assert_eq!(resolved.intent.min_write_throughput_ops, 12000);
         assert_eq!(

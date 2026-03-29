@@ -1,6 +1,6 @@
 //
 // Deprecated compatibility shim for legacy HTTP transport wrappers.
-// Interactive web transport behavior is retired in favor of host/game_transport.
+// Interactive web transport behavior is retired in favor of the core HTTP server surface.
 
 class HttpListenerConfiguration {
     mutable bind_address: String = "127.0.0.1:8080"
@@ -30,7 +30,7 @@ fn create_http_server_configuration_map(configuration: HttpListenerConfiguration
 
 }
 fn create_web_transport_retired_error() -> String {
-    return "host/web_server_transport retired: use host/game_transport and pkg/game"
+    return "host/web_server_transport retired: use the core HTTP server surface"
 
 
 }

@@ -36,32 +36,15 @@ impl Root {
 pub enum Stmt {
     Expr(StmtExpr),
     ClassDef(ClassDef),
-    NodeDef(NodeDef),
     ResourceDef(ResourceDef),
     EventDef(EventDef),
-    ThemeDef(ThemeDef),
     EnumDef(EnumDef),
     FuncDef(FuncDef),
     SystemDef(SystemDef),
-    ViewDef(ViewDef),
-    MaterialDef(MaterialDef),
-    AnimDef(AnimDef),
-    GpuFuncDef(GpuFuncDef),
-    RenderDef(RenderDef),
-    AssetsDef(AssetsDef),
-    MmoDef(MmoDef),
-    AssetSpecDef(AssetSpecDef),
     StyleProfileDef(StyleProfileDef),
     GeneratorProfileDef(GeneratorProfileDef),
     QualityProfileDef(QualityProfileDef),
     ProvenancePolicyDef(ProvenancePolicyDef),
-    CharacterSpecDef(CharacterSpecDef),
-    RigSpecDef(RigSpecDef),
-    AnimSetSpecDef(AnimSetSpecDef),
-    AudioSpecDef(AudioSpecDef),
-    VfxSpecDef(VfxSpecDef),
-    UiSpecDef(UiSpecDef),
-    WorldRecipeDef(WorldRecipeDef),
     VarAssign(VarAssign),
     IfStmt(IfStmt),
     WhileStmt(WhileStmt),
@@ -77,9 +60,6 @@ pub enum Stmt {
     CaptureStmt(CaptureStmt),
     RequireStmt(RequireStmt),
     PrivateBlock(PrivateBlock),
-    ShaderDef(ShaderDef),
-    AssetDecl(AssetDecl),
-    SceneDecl(SceneDecl),
 }
 
 impl AstNode for Stmt {
@@ -88,32 +68,15 @@ impl AstNode for Stmt {
             kind,
             SyntaxKind::StmtExpr
                 | SyntaxKind::ClassDef
-                | SyntaxKind::NodeDef
                 | SyntaxKind::ResourceDef
                 | SyntaxKind::EventDef
-                | SyntaxKind::ThemeDef
                 | SyntaxKind::EnumDef
                 | SyntaxKind::FuncDef
                 | SyntaxKind::SystemDef
-                | SyntaxKind::ViewDef
-                | SyntaxKind::MaterialDef
-                | SyntaxKind::AnimDef
-                | SyntaxKind::GpuFuncDef
-                | SyntaxKind::RenderDef
-                | SyntaxKind::AssetsDef
-                | SyntaxKind::MmoDef
-                | SyntaxKind::AssetSpecDef
                 | SyntaxKind::StyleProfileDef
                 | SyntaxKind::GeneratorProfileDef
                 | SyntaxKind::QualityProfileDef
                 | SyntaxKind::ProvenancePolicyDef
-                | SyntaxKind::CharacterSpecDef
-                | SyntaxKind::RigSpecDef
-                | SyntaxKind::AnimSetSpecDef
-                | SyntaxKind::AudioSpecDef
-                | SyntaxKind::VfxSpecDef
-                | SyntaxKind::UiSpecDef
-                | SyntaxKind::WorldRecipeDef
                 | SyntaxKind::VarAssign
                 | SyntaxKind::IfStmt
                 | SyntaxKind::WhileStmt
@@ -129,30 +92,17 @@ impl AstNode for Stmt {
                 | SyntaxKind::CaptureStmt
                 | SyntaxKind::RequireStmt
                 | SyntaxKind::PrivateBlock
-                | SyntaxKind::ShaderDef
-                | SyntaxKind::AssetDecl
-                | SyntaxKind::SceneDef
         )
     }
     fn cast(node: SyntaxNode) -> Option<Self> {
         match node.kind() {
             SyntaxKind::StmtExpr => StmtExpr::cast(node).map(Stmt::Expr),
             SyntaxKind::ClassDef => ClassDef::cast(node).map(Stmt::ClassDef),
-            SyntaxKind::NodeDef => NodeDef::cast(node).map(Stmt::NodeDef),
             SyntaxKind::ResourceDef => ResourceDef::cast(node).map(Stmt::ResourceDef),
             SyntaxKind::EventDef => EventDef::cast(node).map(Stmt::EventDef),
-            SyntaxKind::ThemeDef => ThemeDef::cast(node).map(Stmt::ThemeDef),
             SyntaxKind::EnumDef => EnumDef::cast(node).map(Stmt::EnumDef),
             SyntaxKind::FuncDef => FuncDef::cast(node).map(Stmt::FuncDef),
             SyntaxKind::SystemDef => SystemDef::cast(node).map(Stmt::SystemDef),
-            SyntaxKind::ViewDef => ViewDef::cast(node).map(Stmt::ViewDef),
-            SyntaxKind::MaterialDef => MaterialDef::cast(node).map(Stmt::MaterialDef),
-            SyntaxKind::AnimDef => AnimDef::cast(node).map(Stmt::AnimDef),
-            SyntaxKind::GpuFuncDef => GpuFuncDef::cast(node).map(Stmt::GpuFuncDef),
-            SyntaxKind::RenderDef => RenderDef::cast(node).map(Stmt::RenderDef),
-            SyntaxKind::AssetsDef => AssetsDef::cast(node).map(Stmt::AssetsDef),
-            SyntaxKind::MmoDef => MmoDef::cast(node).map(Stmt::MmoDef),
-            SyntaxKind::AssetSpecDef => AssetSpecDef::cast(node).map(Stmt::AssetSpecDef),
             SyntaxKind::StyleProfileDef => StyleProfileDef::cast(node).map(Stmt::StyleProfileDef),
             SyntaxKind::GeneratorProfileDef => {
                 GeneratorProfileDef::cast(node).map(Stmt::GeneratorProfileDef)
@@ -163,15 +113,6 @@ impl AstNode for Stmt {
             SyntaxKind::ProvenancePolicyDef => {
                 ProvenancePolicyDef::cast(node).map(Stmt::ProvenancePolicyDef)
             }
-            SyntaxKind::CharacterSpecDef => {
-                CharacterSpecDef::cast(node).map(Stmt::CharacterSpecDef)
-            }
-            SyntaxKind::RigSpecDef => RigSpecDef::cast(node).map(Stmt::RigSpecDef),
-            SyntaxKind::AnimSetSpecDef => AnimSetSpecDef::cast(node).map(Stmt::AnimSetSpecDef),
-            SyntaxKind::AudioSpecDef => AudioSpecDef::cast(node).map(Stmt::AudioSpecDef),
-            SyntaxKind::VfxSpecDef => VfxSpecDef::cast(node).map(Stmt::VfxSpecDef),
-            SyntaxKind::UiSpecDef => UiSpecDef::cast(node).map(Stmt::UiSpecDef),
-            SyntaxKind::WorldRecipeDef => WorldRecipeDef::cast(node).map(Stmt::WorldRecipeDef),
             SyntaxKind::VarAssign => VarAssign::cast(node).map(Stmt::VarAssign),
             SyntaxKind::IfStmt => IfStmt::cast(node).map(Stmt::IfStmt),
             SyntaxKind::WhileStmt => WhileStmt::cast(node).map(Stmt::WhileStmt),
@@ -189,9 +130,6 @@ impl AstNode for Stmt {
             SyntaxKind::CaptureStmt => CaptureStmt::cast(node).map(Stmt::CaptureStmt),
             SyntaxKind::RequireStmt => RequireStmt::cast(node).map(Stmt::RequireStmt),
             SyntaxKind::PrivateBlock => PrivateBlock::cast(node).map(Stmt::PrivateBlock),
-            SyntaxKind::ShaderDef => ShaderDef::cast(node).map(Stmt::ShaderDef),
-            SyntaxKind::AssetDecl => AssetDecl::cast(node).map(Stmt::AssetDecl),
-            SyntaxKind::SceneDef => SceneDecl::cast(node).map(Stmt::SceneDecl),
             _ => None,
         }
     }
@@ -199,32 +137,15 @@ impl AstNode for Stmt {
         match self {
             Stmt::Expr(it) => it.syntax(),
             Stmt::ClassDef(it) => it.syntax(),
-            Stmt::NodeDef(it) => it.syntax(),
             Stmt::ResourceDef(it) => it.syntax(),
             Stmt::EventDef(it) => it.syntax(),
-            Stmt::ThemeDef(it) => it.syntax(),
             Stmt::EnumDef(it) => it.syntax(),
             Stmt::FuncDef(it) => it.syntax(),
             Stmt::SystemDef(it) => it.syntax(),
-            Stmt::ViewDef(it) => it.syntax(),
-            Stmt::MaterialDef(it) => it.syntax(),
-            Stmt::AnimDef(it) => it.syntax(),
-            Stmt::GpuFuncDef(it) => it.syntax(),
-            Stmt::RenderDef(it) => it.syntax(),
-            Stmt::AssetsDef(it) => it.syntax(),
-            Stmt::MmoDef(it) => it.syntax(),
-            Stmt::AssetSpecDef(it) => it.syntax(),
             Stmt::StyleProfileDef(it) => it.syntax(),
             Stmt::GeneratorProfileDef(it) => it.syntax(),
             Stmt::QualityProfileDef(it) => it.syntax(),
             Stmt::ProvenancePolicyDef(it) => it.syntax(),
-            Stmt::CharacterSpecDef(it) => it.syntax(),
-            Stmt::RigSpecDef(it) => it.syntax(),
-            Stmt::AnimSetSpecDef(it) => it.syntax(),
-            Stmt::AudioSpecDef(it) => it.syntax(),
-            Stmt::VfxSpecDef(it) => it.syntax(),
-            Stmt::UiSpecDef(it) => it.syntax(),
-            Stmt::WorldRecipeDef(it) => it.syntax(),
             Stmt::VarAssign(it) => it.syntax(),
             Stmt::IfStmt(it) => it.syntax(),
             Stmt::WhileStmt(it) => it.syntax(),
@@ -240,9 +161,6 @@ impl AstNode for Stmt {
             Stmt::CaptureStmt(it) => it.syntax(),
             Stmt::RequireStmt(it) => it.syntax(),
             Stmt::PrivateBlock(it) => it.syntax(),
-            Stmt::ShaderDef(it) => it.syntax(),
-            Stmt::AssetDecl(it) => it.syntax(),
-            Stmt::SceneDecl(it) => it.syntax(),
         }
     }
 }
@@ -570,62 +488,8 @@ macro_rules! impl_class_like_def {
     };
 }
 
-impl_class_like_def!(NodeDef, SyntaxKind::NodeDef);
 impl_class_like_def!(ResourceDef, SyntaxKind::ResourceDef);
 impl_class_like_def!(EventDef, SyntaxKind::EventDef);
-impl_class_like_def!(ThemeDef, SyntaxKind::ThemeDef);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NodeProfile {
-    Ui,
-    World,
-    Canvas,
-}
-
-pub struct NodeProfileClause(SyntaxNode);
-impl AstNode for NodeProfileClause {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::NodeProfileClause
-    }
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(node.kind()) {
-            Some(NodeProfileClause(node))
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-}
-
-impl NodeProfileClause {
-    pub fn value(&self) -> Option<SyntaxToken> {
-        let mut tokens = self
-            .0
-            .children_with_tokens()
-            .filter_map(|it| it.into_token())
-            .filter(|token| !token.kind().is_trivia());
-        let _ = tokens.next();
-        tokens.find(|token| token.kind() == SyntaxKind::Ident)
-    }
-
-    pub fn profile(&self) -> Option<NodeProfile> {
-        let value = self.value()?;
-        match value.text() {
-            "ui" => Some(NodeProfile::Ui),
-            "world" => Some(NodeProfile::World),
-            "canvas" => Some(NodeProfile::Canvas),
-            _ => None,
-        }
-    }
-}
-
-impl NodeDef {
-    pub fn profile_clause(&self) -> Option<NodeProfileClause> {
-        self.0.children().filter_map(NodeProfileClause::cast).next()
-    }
-}
 
 pub struct EnumDef(SyntaxNode);
 impl AstNode for EnumDef {
@@ -697,6 +561,74 @@ impl EnumVariant {
             .filter(|it| it.kind() == SyntaxKind::ParamList)
             .flat_map(|node| node.children())
             .filter_map(Param::cast)
+    }
+}
+
+pub struct Attribute(SyntaxNode);
+impl AstNode for Attribute {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::Attribute
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(Attribute(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+#[derive(Clone)]
+pub struct AttributeArg {
+    key: SyntaxToken,
+    value: SyntaxToken,
+}
+
+impl AttributeArg {
+    pub fn key(&self) -> SyntaxToken {
+        self.key.clone()
+    }
+
+    pub fn value(&self) -> SyntaxToken {
+        self.value.clone()
+    }
+}
+
+impl Attribute {
+    pub fn name(&self) -> Option<SyntaxToken> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .find(|token| token.kind() == SyntaxKind::Ident)
+    }
+
+    pub fn args(&self) -> impl Iterator<Item = AttributeArg> {
+        let tokens = self
+            .0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .filter(|token| !token.kind().is_trivia())
+            .collect::<Vec<_>>();
+        let mut out = Vec::new();
+        let mut idx = 0usize;
+        while idx + 2 < tokens.len() {
+            if tokens[idx].kind() == SyntaxKind::Ident
+                && tokens[idx + 1].kind() == SyntaxKind::Equals
+                && is_attribute_arg_value_kind(tokens[idx + 2].kind())
+            {
+                out.push(AttributeArg {
+                    key: tokens[idx].clone(),
+                    value: tokens[idx + 2].clone(),
+                });
+                idx += 3;
+                continue;
+            }
+            idx += 1;
+        }
+        out.into_iter()
     }
 }
 
@@ -863,842 +795,6 @@ macro_rules! impl_function_like_def {
 }
 
 impl_function_like_def!(SystemDef, SyntaxKind::SystemDef);
-impl_function_like_def!(ViewDef, SyntaxKind::ViewDef);
-impl_function_like_def!(AnimDef, SyntaxKind::AnimDef);
-impl_function_like_def!(GpuFuncDef, SyntaxKind::GpuFuncDef);
-
-pub struct MaterialDef(SyntaxNode);
-impl AstNode for MaterialDef {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::MaterialDef
-    }
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(node.kind()) {
-            Some(Self(node))
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-}
-
-impl MaterialDef {
-    pub fn attributes(&self) -> impl Iterator<Item = Attribute> {
-        self.0.children().filter_map(Attribute::cast)
-    }
-
-    pub fn name(&self) -> Option<SyntaxToken> {
-        self.0
-            .children_with_tokens()
-            .filter_map(|it| it.into_token())
-            .find(|it| it.kind() == SyntaxKind::Ident)
-    }
-
-    pub fn surface_model_clause(&self) -> Option<MaterialSurfaceModelClause> {
-        self.0
-            .children()
-            .filter_map(MaterialSurfaceModelClause::cast)
-            .next()
-    }
-
-    pub fn preset_clause(&self) -> Option<MaterialPresetClause> {
-        self.0
-            .children()
-            .filter_map(MaterialPresetClause::cast)
-            .next()
-    }
-
-    pub fn textures_clauses(&self) -> impl Iterator<Item = MaterialTexturesClause> {
-        self.0.children().filter_map(MaterialTexturesClause::cast)
-    }
-
-    pub fn params_clauses(&self) -> impl Iterator<Item = MaterialParamsClause> {
-        self.0.children().filter_map(MaterialParamsClause::cast)
-    }
-
-    pub fn features_clauses(&self) -> impl Iterator<Item = MaterialFeaturesClause> {
-        self.0.children().filter_map(MaterialFeaturesClause::cast)
-    }
-
-    pub fn semantics_clauses(&self) -> impl Iterator<Item = MaterialSemanticsClause> {
-        self.0.children().filter_map(MaterialSemanticsClause::cast)
-    }
-
-    pub fn render_alpha_clause(&self) -> Option<MaterialRenderAlphaClause> {
-        self.0
-            .children()
-            .filter_map(MaterialRenderAlphaClause::cast)
-            .next()
-    }
-
-    pub fn render_double_sided_clause(&self) -> Option<MaterialRenderDoubleSidedClause> {
-        self.0
-            .children()
-            .filter_map(MaterialRenderDoubleSidedClause::cast)
-            .next()
-    }
-
-    pub fn render_receives_decals_clause(&self) -> Option<MaterialRenderReceivesDecalsClause> {
-        self.0
-            .children()
-            .filter_map(MaterialRenderReceivesDecalsClause::cast)
-            .next()
-    }
-}
-
-pub struct MaterialSurfaceModelClause(SyntaxNode);
-impl AstNode for MaterialSurfaceModelClause {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::MaterialSurfaceModelClause
-    }
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(node.kind()) {
-            Some(Self(node))
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-}
-
-impl MaterialSurfaceModelClause {
-    pub fn value(&self) -> Option<SyntaxToken> {
-        material_clause_value_nth(&self.0, 0)
-    }
-}
-
-pub struct MaterialPresetClause(SyntaxNode);
-impl AstNode for MaterialPresetClause {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::MaterialPresetClause
-    }
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(node.kind()) {
-            Some(Self(node))
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-}
-
-impl MaterialPresetClause {
-    pub fn value(&self) -> Option<SyntaxToken> {
-        material_clause_value_nth(&self.0, 0)
-    }
-}
-
-pub struct MaterialTexturesClause(SyntaxNode);
-impl AstNode for MaterialTexturesClause {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::MaterialTexturesClause
-    }
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(node.kind()) {
-            Some(Self(node))
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-}
-
-impl MaterialTexturesClause {
-    pub fn slot(&self) -> Option<SyntaxToken> {
-        material_clause_value_nth(&self.0, 0)
-    }
-
-    pub fn value(&self) -> Option<SyntaxToken> {
-        material_clause_value_nth(&self.0, 1)
-    }
-}
-
-pub struct MaterialParamsClause(SyntaxNode);
-impl AstNode for MaterialParamsClause {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::MaterialParamsClause
-    }
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(node.kind()) {
-            Some(Self(node))
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-}
-
-impl MaterialParamsClause {
-    pub fn name(&self) -> Option<SyntaxToken> {
-        material_clause_value_nth(&self.0, 0)
-    }
-
-    pub fn value(&self) -> Option<SyntaxToken> {
-        material_clause_value_nth(&self.0, 1)
-    }
-}
-
-pub struct MaterialFeaturesClause(SyntaxNode);
-impl AstNode for MaterialFeaturesClause {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::MaterialFeaturesClause
-    }
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(node.kind()) {
-            Some(Self(node))
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-}
-
-impl MaterialFeaturesClause {
-    pub fn name(&self) -> Option<SyntaxToken> {
-        material_clause_value_nth(&self.0, 0)
-    }
-
-    pub fn value(&self) -> Option<SyntaxToken> {
-        material_clause_value_nth(&self.0, 1)
-    }
-}
-
-pub struct MaterialSemanticsClause(SyntaxNode);
-impl AstNode for MaterialSemanticsClause {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::MaterialSemanticsClause
-    }
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(node.kind()) {
-            Some(Self(node))
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-}
-
-impl MaterialSemanticsClause {
-    pub fn name(&self) -> Option<SyntaxToken> {
-        material_clause_value_nth(&self.0, 0)
-    }
-
-    pub fn value(&self) -> Option<SyntaxToken> {
-        material_clause_value_nth(&self.0, 1)
-    }
-}
-
-pub struct MaterialRenderAlphaClause(SyntaxNode);
-impl AstNode for MaterialRenderAlphaClause {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::MaterialRenderAlphaClause
-    }
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(node.kind()) {
-            Some(Self(node))
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-}
-
-impl MaterialRenderAlphaClause {
-    pub fn mode(&self) -> Option<SyntaxToken> {
-        material_clause_value_nth(&self.0, 1)
-    }
-}
-
-pub struct MaterialRenderDoubleSidedClause(SyntaxNode);
-impl AstNode for MaterialRenderDoubleSidedClause {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::MaterialRenderDoubleSidedClause
-    }
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(node.kind()) {
-            Some(Self(node))
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-}
-
-impl MaterialRenderDoubleSidedClause {
-    pub fn value(&self) -> Option<SyntaxToken> {
-        material_clause_value_nth(&self.0, 1)
-    }
-}
-
-pub struct MaterialRenderReceivesDecalsClause(SyntaxNode);
-impl AstNode for MaterialRenderReceivesDecalsClause {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::MaterialRenderReceivesDecalsClause
-    }
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(node.kind()) {
-            Some(Self(node))
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-}
-
-impl MaterialRenderReceivesDecalsClause {
-    pub fn value(&self) -> Option<SyntaxToken> {
-        material_clause_value_nth(&self.0, 1)
-    }
-}
-
-pub struct Attribute(SyntaxNode);
-impl AstNode for Attribute {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::Attribute
-    }
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(node.kind()) {
-            Some(Attribute(node))
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-}
-
-impl Attribute {
-    pub fn name(&self) -> Option<SyntaxToken> {
-        self.0
-            .children_with_tokens()
-            .filter_map(|it| it.into_token())
-            .find(|it| it.kind() == SyntaxKind::Ident || it.kind() == SyntaxKind::ShaderKw)
-    }
-
-    pub fn args(&self) -> Vec<AttributeArg> {
-        let tokens: Vec<SyntaxToken> = self
-            .0
-            .children_with_tokens()
-            .filter_map(|it| it.into_token())
-            .filter(|token| !token.kind().is_trivia())
-            .collect();
-        let Some(open_idx) = tokens
-            .iter()
-            .position(|token| token.kind() == SyntaxKind::LParen)
-        else {
-            return Vec::new();
-        };
-        let mut args = Vec::new();
-        let mut idx = open_idx + 1;
-        while idx < tokens.len() {
-            let token = &tokens[idx];
-            if token.kind() == SyntaxKind::RParen {
-                break;
-            }
-            if token.kind() != SyntaxKind::Ident {
-                idx += 1;
-                continue;
-            }
-            let key = token.clone();
-            idx += 1;
-            if idx >= tokens.len() || tokens[idx].kind() != SyntaxKind::Equals {
-                continue;
-            }
-            idx += 1;
-            if idx >= tokens.len() {
-                break;
-            }
-            if !is_attribute_arg_value_kind(tokens[idx].kind()) {
-                idx += 1;
-                continue;
-            }
-            let value = tokens[idx].clone();
-            idx += 1;
-            args.push(AttributeArg { key, value });
-            if idx < tokens.len() && tokens[idx].kind() == SyntaxKind::Comma {
-                idx += 1;
-            }
-        }
-        args
-    }
-}
-
-pub struct AttributeArg {
-    key: SyntaxToken,
-    value: SyntaxToken,
-}
-
-impl AttributeArg {
-    pub fn key(&self) -> &SyntaxToken {
-        &self.key
-    }
-
-    pub fn value(&self) -> &SyntaxToken {
-        &self.value
-    }
-}
-
-fn is_attribute_arg_value_kind(kind: SyntaxKind) -> bool {
-    matches!(
-        kind,
-        SyntaxKind::Ident
-            | SyntaxKind::StringLiteral
-            | SyntaxKind::IntNumber
-            | SyntaxKind::FloatNumber
-            | SyntaxKind::TrueKw
-            | SyntaxKind::FalseKw
-    ) || is_declaration_clause_value_kind(kind)
-}
-
-fn is_declaration_clause_value_kind(kind: SyntaxKind) -> bool {
-    matches!(
-        kind,
-        SyntaxKind::Ident
-            | SyntaxKind::StringLiteral
-            | SyntaxKind::RenderKw
-            | SyntaxKind::PresetKw
-            | SyntaxKind::ProfileKw
-            | SyntaxKind::OverridesKw
-            | SyntaxKind::MaterialKw
-            | SyntaxKind::GpuKw
-            | SyntaxKind::AssetsKw
-            | SyntaxKind::MmoKw
-            | SyntaxKind::AssetSpecKw
-            | SyntaxKind::StyleProfileKw
-            | SyntaxKind::GeneratorProfileKw
-            | SyntaxKind::QualityProfileKw
-            | SyntaxKind::ProvenancePolicyKw
-            | SyntaxKind::CharacterSpecKw
-            | SyntaxKind::RigSpecKw
-            | SyntaxKind::AnimSetSpecKw
-            | SyntaxKind::AudioSpecKw
-            | SyntaxKind::VfxSpecKw
-            | SyntaxKind::UiSpecKw
-            | SyntaxKind::WorldRecipeKw
-    )
-}
-
-pub struct RenderDef(SyntaxNode);
-impl AstNode for RenderDef {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::RenderDef
-    }
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(node.kind()) {
-            Some(RenderDef(node))
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-}
-
-impl RenderDef {
-    pub fn name(&self) -> Option<SyntaxToken> {
-        self.0
-            .children_with_tokens()
-            .filter_map(|it| it.into_token())
-            .find(|it| it.kind() == SyntaxKind::Ident)
-    }
-
-    pub fn resources_clause(&self) -> Option<RenderResourcesClause> {
-        self.0
-            .children()
-            .filter_map(RenderResourcesClause::cast)
-            .next()
-    }
-
-    pub fn temporal_clause(&self) -> Option<RenderTemporalClause> {
-        self.0
-            .children()
-            .filter_map(RenderTemporalClause::cast)
-            .next()
-    }
-
-    pub fn quality_tier_clause(&self) -> Option<RenderQualityTierClause> {
-        self.0
-            .children()
-            .filter_map(RenderQualityTierClause::cast)
-            .next()
-    }
-
-    pub fn budget_tags_clause(&self) -> Option<RenderBudgetTagsClause> {
-        self.0
-            .children()
-            .filter_map(RenderBudgetTagsClause::cast)
-            .next()
-    }
-
-    pub fn shader_clause(&self) -> Option<RenderShaderClause> {
-        self.shader_clauses().next()
-    }
-
-    pub fn shader_clauses(&self) -> impl Iterator<Item = RenderShaderClause> {
-        self.0.children().filter_map(RenderShaderClause::cast)
-    }
-}
-
-pub struct RenderResourcesClause(SyntaxNode);
-impl AstNode for RenderResourcesClause {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::RenderResourcesClause
-    }
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(node.kind()) {
-            Some(RenderResourcesClause(node))
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-}
-
-impl RenderResourcesClause {
-    pub fn value(&self) -> Option<SyntaxToken> {
-        declaration_clause_value_token(&self.0)
-    }
-}
-
-pub struct RenderTemporalClause(SyntaxNode);
-impl AstNode for RenderTemporalClause {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::RenderTemporalClause
-    }
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(node.kind()) {
-            Some(RenderTemporalClause(node))
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-}
-
-impl RenderTemporalClause {
-    pub fn value(&self) -> Option<SyntaxToken> {
-        declaration_clause_value_token(&self.0)
-    }
-}
-
-pub struct RenderQualityTierClause(SyntaxNode);
-impl AstNode for RenderQualityTierClause {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::RenderQualityTierClause
-    }
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(node.kind()) {
-            Some(RenderQualityTierClause(node))
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-}
-
-impl RenderQualityTierClause {
-    pub fn value(&self) -> Option<SyntaxToken> {
-        let mut tokens = self
-            .0
-            .children_with_tokens()
-            .filter_map(|it| it.into_token())
-            .filter(|token| !token.kind().is_trivia());
-        let _ = tokens.next();
-        let _ = tokens.next();
-        tokens.find(|token| is_declaration_clause_value_kind(token.kind()))
-    }
-}
-
-pub struct RenderBudgetTagsClause(SyntaxNode);
-impl AstNode for RenderBudgetTagsClause {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::RenderBudgetTagsClause
-    }
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(node.kind()) {
-            Some(RenderBudgetTagsClause(node))
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-}
-
-impl RenderBudgetTagsClause {
-    pub fn tags(&self) -> impl Iterator<Item = SyntaxToken> {
-        let mut tokens = self
-            .0
-            .children_with_tokens()
-            .filter_map(|it| it.into_token())
-            .filter(|token| !token.kind().is_trivia() && token.kind() != SyntaxKind::Comma);
-        let _ = tokens.next();
-        let _ = tokens.next();
-        tokens.filter(|token| is_declaration_clause_value_kind(token.kind()))
-    }
-}
-
-pub struct RenderShaderClause(SyntaxNode);
-impl AstNode for RenderShaderClause {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::RenderShaderClause
-    }
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(node.kind()) {
-            Some(RenderShaderClause(node))
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-}
-
-impl RenderShaderClause {
-    pub fn mode(&self) -> Option<SyntaxToken> {
-        let mut tokens = self
-            .0
-            .children_with_tokens()
-            .filter_map(|it| it.into_token())
-            .filter(|token| !token.kind().is_trivia())
-            .skip(1);
-        tokens.find(|token| is_declaration_clause_value_kind(token.kind()))
-    }
-
-    pub fn symbol(&self) -> Option<SyntaxToken> {
-        let mut tokens = self
-            .0
-            .children_with_tokens()
-            .filter_map(|it| it.into_token())
-            .filter(|token| !token.kind().is_trivia())
-            .skip(2);
-        tokens.find(|token| is_declaration_clause_value_kind(token.kind()))
-    }
-}
-
-pub struct AssetsDef(SyntaxNode);
-impl AstNode for AssetsDef {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::AssetsDef
-    }
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(node.kind()) {
-            Some(AssetsDef(node))
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-}
-
-impl AssetsDef {
-    pub fn name(&self) -> Option<SyntaxToken> {
-        self.0
-            .children_with_tokens()
-            .filter_map(|it| it.into_token())
-            .find(|it| it.kind() == SyntaxKind::Ident)
-    }
-
-    pub fn manifest_clause(&self) -> Option<AssetsManifestClause> {
-        self.0
-            .children()
-            .filter_map(AssetsManifestClause::cast)
-            .next()
-    }
-
-    pub fn streaming_clause(&self) -> Option<AssetsStreamingClause> {
-        self.0
-            .children()
-            .filter_map(AssetsStreamingClause::cast)
-            .next()
-    }
-}
-
-pub struct AssetsManifestClause(SyntaxNode);
-impl AstNode for AssetsManifestClause {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::AssetsManifestClause
-    }
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(node.kind()) {
-            Some(AssetsManifestClause(node))
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-}
-
-impl AssetsManifestClause {
-    pub fn value(&self) -> Option<SyntaxToken> {
-        declaration_clause_value_token(&self.0)
-    }
-}
-
-pub struct AssetsStreamingClause(SyntaxNode);
-impl AstNode for AssetsStreamingClause {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::AssetsStreamingClause
-    }
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(node.kind()) {
-            Some(AssetsStreamingClause(node))
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-}
-
-impl AssetsStreamingClause {
-    pub fn value(&self) -> Option<SyntaxToken> {
-        declaration_clause_value_token(&self.0)
-    }
-}
-
-pub struct MmoDef(SyntaxNode);
-impl AstNode for MmoDef {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::MmoDef
-    }
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(node.kind()) {
-            Some(MmoDef(node))
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-}
-
-impl MmoDef {
-    pub fn name(&self) -> Option<SyntaxToken> {
-        self.0
-            .children_with_tokens()
-            .filter_map(|it| it.into_token())
-            .find(|it| it.kind() == SyntaxKind::Ident)
-    }
-
-    pub fn gateway_clause(&self) -> Option<MmoGatewayClause> {
-        self.0.children().filter_map(MmoGatewayClause::cast).next()
-    }
-
-    pub fn zone_clause(&self) -> Option<MmoZoneClause> {
-        self.0.children().filter_map(MmoZoneClause::cast).next()
-    }
-
-    pub fn world_clause(&self) -> Option<MmoWorldClause> {
-        self.0.children().filter_map(MmoWorldClause::cast).next()
-    }
-}
-
-pub struct MmoGatewayClause(SyntaxNode);
-impl AstNode for MmoGatewayClause {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::MmoGatewayClause
-    }
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(node.kind()) {
-            Some(MmoGatewayClause(node))
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-}
-
-impl MmoGatewayClause {
-    pub fn value(&self) -> Option<SyntaxToken> {
-        declaration_clause_value_token(&self.0)
-    }
-}
-
-pub struct MmoZoneClause(SyntaxNode);
-impl AstNode for MmoZoneClause {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::MmoZoneClause
-    }
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(node.kind()) {
-            Some(MmoZoneClause(node))
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-}
-
-impl MmoZoneClause {
-    pub fn value(&self) -> Option<SyntaxToken> {
-        declaration_clause_value_token(&self.0)
-    }
-}
-
-pub struct MmoWorldClause(SyntaxNode);
-impl AstNode for MmoWorldClause {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::MmoWorldClause
-    }
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(node.kind()) {
-            Some(MmoWorldClause(node))
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-}
-
-impl MmoWorldClause {
-    pub fn value(&self) -> Option<SyntaxToken> {
-        declaration_clause_value_token(&self.0)
-    }
-}
-
 macro_rules! impl_profiled_spec_def {
     (
         $def_name:ident,
@@ -1794,14 +890,6 @@ macro_rules! impl_profiled_spec_def {
 }
 
 impl_profiled_spec_def!(
-    AssetSpecDef,
-    SyntaxKind::AssetSpecDef,
-    AssetSpecIdClause,
-    SyntaxKind::AssetSpecIdClause,
-    AssetSpecProfileClause,
-    SyntaxKind::AssetSpecProfileClause
-);
-impl_profiled_spec_def!(
     StyleProfileDef,
     SyntaxKind::StyleProfileDef,
     StyleProfileIdClause,
@@ -1833,62 +921,6 @@ impl_profiled_spec_def!(
     ProvenancePolicyProfileClause,
     SyntaxKind::ProvenancePolicyProfileClause
 );
-impl_profiled_spec_def!(
-    CharacterSpecDef,
-    SyntaxKind::CharacterSpecDef,
-    CharacterSpecIdClause,
-    SyntaxKind::CharacterSpecIdClause,
-    CharacterSpecProfileClause,
-    SyntaxKind::CharacterSpecProfileClause
-);
-impl_profiled_spec_def!(
-    RigSpecDef,
-    SyntaxKind::RigSpecDef,
-    RigSpecIdClause,
-    SyntaxKind::RigSpecIdClause,
-    RigSpecProfileClause,
-    SyntaxKind::RigSpecProfileClause
-);
-impl_profiled_spec_def!(
-    AnimSetSpecDef,
-    SyntaxKind::AnimSetSpecDef,
-    AnimSetSpecIdClause,
-    SyntaxKind::AnimSetSpecIdClause,
-    AnimSetSpecProfileClause,
-    SyntaxKind::AnimSetSpecProfileClause
-);
-impl_profiled_spec_def!(
-    AudioSpecDef,
-    SyntaxKind::AudioSpecDef,
-    AudioSpecIdClause,
-    SyntaxKind::AudioSpecIdClause,
-    AudioSpecProfileClause,
-    SyntaxKind::AudioSpecProfileClause
-);
-impl_profiled_spec_def!(
-    VfxSpecDef,
-    SyntaxKind::VfxSpecDef,
-    VfxSpecIdClause,
-    SyntaxKind::VfxSpecIdClause,
-    VfxSpecProfileClause,
-    SyntaxKind::VfxSpecProfileClause
-);
-impl_profiled_spec_def!(
-    UiSpecDef,
-    SyntaxKind::UiSpecDef,
-    UiSpecIdClause,
-    SyntaxKind::UiSpecIdClause,
-    UiSpecProfileClause,
-    SyntaxKind::UiSpecProfileClause
-);
-impl_profiled_spec_def!(
-    WorldRecipeDef,
-    SyntaxKind::WorldRecipeDef,
-    WorldRecipeIdClause,
-    SyntaxKind::WorldRecipeIdClause,
-    WorldRecipeProfileClause,
-    SyntaxKind::WorldRecipeProfileClause
-);
 
 fn declaration_clause_value_token(node: &SyntaxNode) -> Option<SyntaxToken> {
     let mut tokens = node
@@ -1899,25 +931,35 @@ fn declaration_clause_value_token(node: &SyntaxNode) -> Option<SyntaxToken> {
     tokens.find(|token| is_declaration_clause_value_kind(token.kind()))
 }
 
-fn material_clause_value_nth(node: &SyntaxNode, nth: usize) -> Option<SyntaxToken> {
-    let mut values = node
-        .children_with_tokens()
-        .filter_map(|it| it.into_token())
-        .filter(|token| !token.kind().is_trivia())
-        .skip(1)
-        .filter(|token| is_material_clause_value_kind(token.kind()));
-    values.nth(nth)
+fn is_attribute_arg_value_kind(kind: SyntaxKind) -> bool {
+    matches!(
+        kind,
+        SyntaxKind::Ident
+            | SyntaxKind::StringLiteral
+            | SyntaxKind::IntNumber
+            | SyntaxKind::FloatNumber
+            | SyntaxKind::TrueKw
+            | SyntaxKind::FalseKw
+            | SyntaxKind::PresetKw
+            | SyntaxKind::ProfileKw
+            | SyntaxKind::OverridesKw
+    )
 }
 
-fn is_material_clause_value_kind(kind: SyntaxKind) -> bool {
-    is_declaration_clause_value_kind(kind)
-        || matches!(
-            kind,
-            SyntaxKind::IntNumber
-                | SyntaxKind::FloatNumber
-                | SyntaxKind::TrueKw
-                | SyntaxKind::FalseKw
-        )
+fn is_declaration_clause_value_kind(kind: SyntaxKind) -> bool {
+    matches!(
+        kind,
+        SyntaxKind::Ident
+            | SyntaxKind::StringLiteral
+            | SyntaxKind::IntNumber
+            | SyntaxKind::FloatNumber
+            | SyntaxKind::TrueKw
+            | SyntaxKind::FalseKw
+            | SyntaxKind::NothingKw
+            | SyntaxKind::PresetKw
+            | SyntaxKind::ProfileKw
+            | SyntaxKind::OverridesKw
+    )
 }
 
 pub struct VarAssign(SyntaxNode);
@@ -3303,635 +2345,5 @@ fn read(self_value: Integer) -> Integer {
             .expect("expected implicit return candidate");
         let expr = trailing.expr().expect("expected trailing expression");
         assert!(expr.is_self(), "expected trailing expression to be self");
-    }
-}
-
-pub struct ShaderDef(SyntaxNode);
-impl AstNode for ShaderDef {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::ShaderDef
-    }
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(node.kind()) {
-            Some(ShaderDef(node))
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-}
-
-impl ShaderDef {
-    pub fn name(&self) -> Option<SyntaxToken> {
-        self.0
-            .children_with_tokens()
-            .filter_map(|it| it.into_token())
-            .find(|it| it.kind() == SyntaxKind::Ident)
-    }
-
-    pub fn params(&self) -> impl Iterator<Item = Param> {
-        self.0
-            .children()
-            .filter(|it| it.kind() == SyntaxKind::ParamList)
-            .flat_map(|node| node.children())
-            .filter_map(Param::cast)
-    }
-
-    pub fn ret_type(&self) -> Option<TypeRef> {
-        self.0.children().filter_map(TypeRef::cast).next()
-    }
-
-    pub fn statements(&self) -> impl Iterator<Item = Stmt> {
-        self.0
-            .children()
-            .filter_map(Block::cast)
-            .next()
-            .into_iter()
-            .flat_map(|b| {
-                b.0.children()
-                    .filter_map(Stmt::cast)
-                    .collect::<Vec<_>>()
-                    .into_iter()
-            })
-    }
-}
-
-// --- Asset Declaration ---
-
-pub struct AssetDecl(SyntaxNode);
-impl AstNode for AssetDecl {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::AssetDecl
-    }
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(node.kind()) {
-            Some(AssetDecl(node))
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-}
-
-impl AssetDecl {
-    pub fn name(&self) -> Option<SyntaxToken> {
-        self.0
-            .children_with_tokens()
-            .filter_map(|it| it.into_token())
-            .find(|it| it.kind() == SyntaxKind::Ident)
-    }
-
-    pub fn kind_clause(&self) -> Option<AssetKindClause> {
-        self.0.children().filter_map(AssetKindClause::cast).next()
-    }
-
-    pub fn prompt_clause(&self) -> Option<AssetPromptClause> {
-        self.0.children().filter_map(AssetPromptClause::cast).next()
-    }
-
-    pub fn style_clause(&self) -> Option<AssetStyleClause> {
-        self.0.children().filter_map(AssetStyleClause::cast).next()
-    }
-
-    pub fn negative_clause(&self) -> Option<AssetNegativeClause> {
-        self.0
-            .children()
-            .filter_map(AssetNegativeClause::cast)
-            .next()
-    }
-
-    pub fn lod_budget_clause(&self) -> Option<AssetLodBudgetClause> {
-        self.0
-            .children()
-            .filter_map(AssetLodBudgetClause::cast)
-            .next()
-    }
-}
-
-pub struct AssetKindClause(SyntaxNode);
-impl AstNode for AssetKindClause {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::AssetKindClause
-    }
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(node.kind()) {
-            Some(AssetKindClause(node))
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-}
-
-impl AssetKindClause {
-    pub fn value(&self) -> Option<SyntaxToken> {
-        declaration_clause_value_token(&self.0)
-    }
-}
-
-pub struct AssetPromptClause(SyntaxNode);
-impl AstNode for AssetPromptClause {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::AssetPromptClause
-    }
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(node.kind()) {
-            Some(AssetPromptClause(node))
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-}
-
-impl AssetPromptClause {
-    pub fn value(&self) -> Option<SyntaxToken> {
-        self.0
-            .children_with_tokens()
-            .filter_map(|it| it.into_token())
-            .find(|t| t.kind() == SyntaxKind::StringLiteral)
-    }
-}
-
-pub struct AssetStyleClause(SyntaxNode);
-impl AstNode for AssetStyleClause {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::AssetStyleClause
-    }
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(node.kind()) {
-            Some(AssetStyleClause(node))
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-}
-
-impl AssetStyleClause {
-    pub fn value(&self) -> Option<SyntaxToken> {
-        self.0
-            .children_with_tokens()
-            .filter_map(|it| it.into_token())
-            .find(|t| t.kind() == SyntaxKind::StringLiteral)
-    }
-}
-
-pub struct AssetNegativeClause(SyntaxNode);
-impl AstNode for AssetNegativeClause {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::AssetNegativeClause
-    }
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(node.kind()) {
-            Some(AssetNegativeClause(node))
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-}
-
-impl AssetNegativeClause {
-    pub fn value(&self) -> Option<SyntaxToken> {
-        self.0
-            .children_with_tokens()
-            .filter_map(|it| it.into_token())
-            .find(|t| t.kind() == SyntaxKind::StringLiteral)
-    }
-}
-
-pub struct AssetLodBudgetClause(SyntaxNode);
-impl AstNode for AssetLodBudgetClause {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::AssetLodBudgetClause
-    }
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(node.kind()) {
-            Some(AssetLodBudgetClause(node))
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-}
-
-impl AssetLodBudgetClause {
-    pub fn value(&self) -> Option<SyntaxToken> {
-        self.0
-            .children_with_tokens()
-            .filter_map(|it| it.into_token())
-            .find(|t| t.kind() == SyntaxKind::IntNumber)
-    }
-}
-
-// --- Scene Declaration ---
-
-pub struct SceneDecl(SyntaxNode);
-impl AstNode for SceneDecl {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::SceneDef
-    }
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(node.kind()) {
-            Some(SceneDecl(node))
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-}
-
-impl SceneDecl {
-    pub fn name(&self) -> Option<SyntaxToken> {
-        self.0
-            .children_with_tokens()
-            .filter_map(|it| it.into_token())
-            .find(|it| it.kind() == SyntaxKind::Ident)
-    }
-
-    pub fn entity_blocks(&self) -> impl Iterator<Item = SceneEntityBlock> {
-        self.0.children().filter_map(SceneEntityBlock::cast)
-    }
-
-    pub fn lighting_block(&self) -> Option<SceneLightingBlock> {
-        self.0
-            .children()
-            .filter_map(SceneLightingBlock::cast)
-            .next()
-    }
-
-    pub fn camera_block(&self) -> Option<SceneCameraBlock> {
-        self.0.children().filter_map(SceneCameraBlock::cast).next()
-    }
-}
-
-pub struct SceneEntityBlock(SyntaxNode);
-impl AstNode for SceneEntityBlock {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::SceneEntityBlock
-    }
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(node.kind()) {
-            Some(SceneEntityBlock(node))
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-}
-
-impl SceneEntityBlock {
-    /// Returns the entity name (the second Ident token, since the first is the contextual
-    /// keyword "entity").
-    pub fn name(&self) -> Option<SyntaxToken> {
-        self.0
-            .children_with_tokens()
-            .filter_map(|it| it.into_token())
-            .filter(|it| it.kind() == SyntaxKind::Ident)
-            .nth(1)
-    }
-
-    pub fn mesh_clause(&self) -> Option<SceneEntityMeshClause> {
-        self.0
-            .children()
-            .filter_map(SceneEntityMeshClause::cast)
-            .next()
-    }
-
-    pub fn position_clause(&self) -> Option<SceneEntityPositionClause> {
-        self.0
-            .children()
-            .filter_map(SceneEntityPositionClause::cast)
-            .next()
-    }
-
-    pub fn rotation_clause(&self) -> Option<SceneEntityRotationClause> {
-        self.0
-            .children()
-            .filter_map(SceneEntityRotationClause::cast)
-            .next()
-    }
-
-    pub fn scale_clause(&self) -> Option<SceneEntityScaleClause> {
-        self.0
-            .children()
-            .filter_map(SceneEntityScaleClause::cast)
-            .next()
-    }
-}
-
-macro_rules! impl_scene_clause {
-    ($name:ident, $kind:expr) => {
-        pub struct $name(SyntaxNode);
-        impl AstNode for $name {
-            fn can_cast(kind: SyntaxKind) -> bool {
-                kind == $kind
-            }
-            fn cast(node: SyntaxNode) -> Option<Self> {
-                if Self::can_cast(node.kind()) {
-                    Some($name(node))
-                } else {
-                    None
-                }
-            }
-            fn syntax(&self) -> &SyntaxNode {
-                &self.0
-            }
-        }
-    };
-}
-
-impl_scene_clause!(SceneEntityMeshClause, SyntaxKind::SceneEntityMeshClause);
-impl_scene_clause!(
-    SceneEntityPositionClause,
-    SyntaxKind::SceneEntityPositionClause
-);
-impl_scene_clause!(
-    SceneEntityRotationClause,
-    SyntaxKind::SceneEntityRotationClause
-);
-impl_scene_clause!(SceneEntityScaleClause, SyntaxKind::SceneEntityScaleClause);
-
-impl SceneEntityMeshClause {
-    pub fn value(&self) -> Option<SyntaxToken> {
-        declaration_clause_value_token(&self.0)
-    }
-}
-
-fn extract_vec3_values(node: &SyntaxNode) -> [i64; 3] {
-    let ints: Vec<i64> = node
-        .children_with_tokens()
-        .filter_map(|it| it.into_token())
-        .filter(|t| !t.kind().is_trivia())
-        .scan(false, |negate, token| {
-            if token.kind() == SyntaxKind::Minus {
-                *negate = true;
-                Some(None)
-            } else if token.kind() == SyntaxKind::IntNumber {
-                let val: i64 = token.text().parse().unwrap_or(0);
-                let result = if *negate { -val } else { val };
-                *negate = false;
-                Some(Some(result))
-            } else {
-                *negate = false;
-                Some(None)
-            }
-        })
-        .flatten()
-        .collect();
-    [
-        ints.first().copied().unwrap_or(0),
-        ints.get(1).copied().unwrap_or(0),
-        ints.get(2).copied().unwrap_or(0),
-    ]
-}
-
-impl SceneEntityPositionClause {
-    pub fn values(&self) -> [i64; 3] {
-        extract_vec3_values(&self.0)
-    }
-}
-
-impl SceneEntityRotationClause {
-    pub fn values(&self) -> [i64; 3] {
-        extract_vec3_values(&self.0)
-    }
-}
-
-impl SceneEntityScaleClause {
-    pub fn values(&self) -> [i64; 3] {
-        extract_vec3_values(&self.0)
-    }
-}
-
-pub struct SceneLightingBlock(SyntaxNode);
-impl AstNode for SceneLightingBlock {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::SceneLightingBlock
-    }
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(node.kind()) {
-            Some(SceneLightingBlock(node))
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-}
-
-impl_scene_clause!(
-    SceneLightingSunDirectionClause,
-    SyntaxKind::SceneLightingSunDirectionClause
-);
-impl_scene_clause!(
-    SceneLightingSunColorClause,
-    SyntaxKind::SceneLightingSunColorClause
-);
-impl_scene_clause!(
-    SceneLightingSunIntensityClause,
-    SyntaxKind::SceneLightingSunIntensityClause
-);
-impl_scene_clause!(
-    SceneLightingAmbientColorClause,
-    SyntaxKind::SceneLightingAmbientColorClause
-);
-impl_scene_clause!(
-    SceneLightingAmbientIntensityClause,
-    SyntaxKind::SceneLightingAmbientIntensityClause
-);
-
-impl SceneLightingBlock {
-    pub fn sun_direction_clause(&self) -> Option<SceneLightingSunDirectionClause> {
-        self.0
-            .children()
-            .filter_map(SceneLightingSunDirectionClause::cast)
-            .next()
-    }
-    pub fn sun_color_clause(&self) -> Option<SceneLightingSunColorClause> {
-        self.0
-            .children()
-            .filter_map(SceneLightingSunColorClause::cast)
-            .next()
-    }
-    pub fn sun_intensity_clause(&self) -> Option<SceneLightingSunIntensityClause> {
-        self.0
-            .children()
-            .filter_map(SceneLightingSunIntensityClause::cast)
-            .next()
-    }
-    pub fn ambient_color_clause(&self) -> Option<SceneLightingAmbientColorClause> {
-        self.0
-            .children()
-            .filter_map(SceneLightingAmbientColorClause::cast)
-            .next()
-    }
-    pub fn ambient_intensity_clause(&self) -> Option<SceneLightingAmbientIntensityClause> {
-        self.0
-            .children()
-            .filter_map(SceneLightingAmbientIntensityClause::cast)
-            .next()
-    }
-}
-
-impl SceneLightingSunDirectionClause {
-    pub fn values(&self) -> [i64; 3] {
-        extract_vec3_values(&self.0)
-    }
-}
-
-impl SceneLightingSunColorClause {
-    pub fn values(&self) -> [u8; 3] {
-        let ints = extract_vec3_values(&self.0);
-        [
-            ints[0].clamp(0, 255) as u8,
-            ints[1].clamp(0, 255) as u8,
-            ints[2].clamp(0, 255) as u8,
-        ]
-    }
-}
-
-impl SceneLightingSunIntensityClause {
-    pub fn value(&self) -> Option<i64> {
-        self.0
-            .children_with_tokens()
-            .filter_map(|it| it.into_token())
-            .find(|t| t.kind() == SyntaxKind::IntNumber)
-            .and_then(|t| t.text().parse().ok())
-    }
-}
-
-impl SceneLightingAmbientColorClause {
-    pub fn values(&self) -> [u8; 3] {
-        let ints = extract_vec3_values(&self.0);
-        [
-            ints[0].clamp(0, 255) as u8,
-            ints[1].clamp(0, 255) as u8,
-            ints[2].clamp(0, 255) as u8,
-        ]
-    }
-}
-
-impl SceneLightingAmbientIntensityClause {
-    pub fn value(&self) -> Option<i64> {
-        self.0
-            .children_with_tokens()
-            .filter_map(|it| it.into_token())
-            .find(|t| t.kind() == SyntaxKind::IntNumber)
-            .and_then(|t| t.text().parse().ok())
-    }
-}
-
-pub struct SceneCameraBlock(SyntaxNode);
-impl AstNode for SceneCameraBlock {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::SceneCameraBlock
-    }
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(node.kind()) {
-            Some(SceneCameraBlock(node))
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
-}
-
-impl_scene_clause!(SceneCameraModeClause, SyntaxKind::SceneCameraModeClause);
-impl_scene_clause!(SceneCameraTargetClause, SyntaxKind::SceneCameraTargetClause);
-impl_scene_clause!(
-    SceneCameraDistanceClause,
-    SyntaxKind::SceneCameraDistanceClause
-);
-impl_scene_clause!(SceneCameraPitchClause, SyntaxKind::SceneCameraPitchClause);
-
-impl SceneCameraBlock {
-    pub fn mode_clause(&self) -> Option<SceneCameraModeClause> {
-        self.0
-            .children()
-            .filter_map(SceneCameraModeClause::cast)
-            .next()
-    }
-    pub fn target_clause(&self) -> Option<SceneCameraTargetClause> {
-        self.0
-            .children()
-            .filter_map(SceneCameraTargetClause::cast)
-            .next()
-    }
-    pub fn distance_clause(&self) -> Option<SceneCameraDistanceClause> {
-        self.0
-            .children()
-            .filter_map(SceneCameraDistanceClause::cast)
-            .next()
-    }
-    pub fn pitch_clause(&self) -> Option<SceneCameraPitchClause> {
-        self.0
-            .children()
-            .filter_map(SceneCameraPitchClause::cast)
-            .next()
-    }
-}
-
-impl SceneCameraModeClause {
-    pub fn value(&self) -> Option<SyntaxToken> {
-        declaration_clause_value_token(&self.0)
-    }
-}
-
-impl SceneCameraTargetClause {
-    pub fn value(&self) -> Option<SyntaxToken> {
-        declaration_clause_value_token(&self.0)
-    }
-}
-
-fn extract_possibly_negative_int(node: &SyntaxNode) -> Option<i64> {
-    let tokens: Vec<_> = node
-        .children_with_tokens()
-        .filter_map(|it| it.into_token())
-        .filter(|t| !t.kind().is_trivia())
-        .collect();
-    let mut negate = false;
-    for token in tokens.iter().skip(2) {
-        if token.kind() == SyntaxKind::Minus {
-            negate = true;
-        } else if token.kind() == SyntaxKind::IntNumber {
-            let val: i64 = token.text().parse().unwrap_or(0);
-            return Some(if negate { -val } else { val });
-        }
-    }
-    None
-}
-
-impl SceneCameraDistanceClause {
-    pub fn value(&self) -> Option<i64> {
-        extract_possibly_negative_int(&self.0)
-    }
-}
-
-impl SceneCameraPitchClause {
-    pub fn value(&self) -> Option<i64> {
-        extract_possibly_negative_int(&self.0)
     }
 }

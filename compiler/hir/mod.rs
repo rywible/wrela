@@ -14,5 +14,4 @@ pub use def::*;
 pub use naming::{NamingError, check_module as check_naming_module};
 pub use semantic::*;
 pub mod project;
-pub mod render_shader_ir;
 pub use typeck::{FunctionTypeInfo, Type, TypeError, TypeInfo};

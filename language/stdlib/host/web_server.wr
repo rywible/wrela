@@ -1,7 +1,7 @@
 //
 // Wrela-native HTTP server primitives.
 // NOTE: The legacy interactive HTTP transport lane has been retired.
-// Compatibility wrappers remain only to keep compile surfaces stable.
+// Compatibility wrappers remain only to steer callers toward the core HTTP server surface.
 
 use {
     get_bytes_from_string,
@@ -70,7 +70,7 @@ fn create_http_server_configuration_map(configuration: HttpListenerConfiguration
 
 }
 fn create_web_interactive_lane_retired_error() -> String {
-    return "host/web_server interactive lane retired: use host/game_transport and pkg/game"
+    return "host/web_server interactive lane retired: use the core HTTP server surface"
 
 
 }

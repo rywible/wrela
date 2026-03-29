@@ -1,11 +1,9 @@
 #![allow(unused_assignments)]
 
 use crate::hir::{
-    Arg, AssetFactoryDeclarationKind, AssetFactoryDeclarationSurface, AssetsContract, BinaryOp,
-    Body, Class, ClassRole, Expr, Function, FunctionKind, FunctionRole, GpuFunctionSurface, Idx,
-    InterfaceMethodKind, Literal, MatchCase, MaterialDeclarationSurface, MmoContract, Module,
-    Objective, Pattern, RenderContract, Stmt, SurfaceDeclarationKind, SystemMetadata, TypeRef,
-    UnaryOp,
+    Arg, BinaryOp, Body, Class, Expr, Function, FunctionKind, FunctionRole, Idx,
+    InterfaceMethodKind, Literal, MatchCase, Module, Objective, Pattern, Stmt, SystemMetadata,
+    TypeRef, UnaryOp,
 };
 use miette::{Diagnostic, SourceSpan};
 use rowan::TextRange;
@@ -438,10 +436,10 @@ pub enum SemanticError {
         span: SourceSpan,
     },
 
-    #[error("system '{system}' metadata stage must be `fixed` or `render`")]
+    #[error("system '{system}' metadata stage must be `fixed`")]
     #[diagnostic(
         code(lang::sem::invalid_system_stage),
-        help("Set `stage=fixed` or `stage=render` in system metadata.")
+        help("Set `stage=fixed` in system metadata.")
     )]
     InvalidSystemStage {
         system: SmolStr,
@@ -462,417 +460,6 @@ pub enum SemanticError {
         access: &'static str,
         name: SmolStr,
         #[label("unknown class-like declaration in metadata")]
-        span: SourceSpan,
-    },
-
-    #[error("gpu fn '{function}' must return String")]
-    #[diagnostic(
-        code(lang::sem::gpu_fn_return_type),
-        help("Return WGSL source as `String` from gpu functions.")
-    )]
-    GpuFunctionReturnTypeMustBeString {
-        function: SmolStr,
-        found: Option<SmolStr>,
-        expansion_node_id: Option<u32>,
-        #[label("gpu function return type here")]
-        span: SourceSpan,
-    },
-
-    #[error("gpu fn '{function}' cannot use capture statements")]
-    #[diagnostic(
-        code(lang::sem::gpu_fn_capture_forbidden),
-        help("Pass required values through gpu fn parameters instead of capture.")
-    )]
-    GpuFunctionCaptureForbidden {
-        function: SmolStr,
-        capture_name: SmolStr,
-        expansion_node_id: Option<u32>,
-        #[label("capture used here")]
-        span: SourceSpan,
-    },
-
-    #[error("{kind} declaration '{declaration}' is missing required `id` value")]
-    #[diagnostic(
-        code(lang::sem::asset_factory_missing_id),
-        help("Add `id <non-empty>` to this declaration.")
-    )]
-    AssetFactoryDeclarationMissingId {
-        kind: AssetFactoryDeclarationKind,
-        declaration: SmolStr,
-        #[label("missing `id` value here")]
-        span: SourceSpan,
-    },
-
-    #[error("{kind} declaration '{declaration}' has empty `id` value")]
-    #[diagnostic(
-        code(lang::sem::asset_factory_empty_id),
-        help("Use a non-empty id, for example `id {declaration}_v1`.")
-    )]
-    AssetFactoryDeclarationEmptyId {
-        kind: AssetFactoryDeclarationKind,
-        declaration: SmolStr,
-        #[label("empty `id` value here")]
-        span: SourceSpan,
-    },
-
-    #[error("{kind} declaration '{declaration}' has invalid `profile` value '{profile}'")]
-    #[diagnostic(
-        code(lang::sem::asset_factory_invalid_profile),
-        help("Use one of: fast, balanced, strict.")
-    )]
-    AssetFactoryDeclarationInvalidProfile {
-        kind: AssetFactoryDeclarationKind,
-        declaration: SmolStr,
-        profile: SmolStr,
-        #[label("invalid profile value here")]
-        span: SourceSpan,
-    },
-
-    #[error("duplicate asset-factory declaration name '{name}'")]
-    #[diagnostic(
-        code(lang::sem::asset_factory_duplicate_name),
-        help("Rename one declaration so asset-factory declaration names are unique.")
-    )]
-    AssetFactoryDuplicateDeclarationName {
-        name: SmolStr,
-        first_kind: AssetFactoryDeclarationKind,
-        duplicate_kind: AssetFactoryDeclarationKind,
-        #[label("duplicate declaration here")]
-        span: SourceSpan,
-        #[label("first declaration here")]
-        previous: Option<SourceSpan>,
-    },
-
-    #[error("assets declaration '{declaration}' is missing required `manifest` field")]
-    #[diagnostic(
-        code(lang::sem::assets_declaration_missing_manifest),
-        help("Add `manifest <id>` to the assets declaration.")
-    )]
-    AssetsDeclarationMissingManifest {
-        declaration: SmolStr,
-        expansion_node_id: Option<u32>,
-        #[label("assets declaration declared here")]
-        span: SourceSpan,
-    },
-
-    #[error("assets declaration '{declaration}' has empty `manifest` field")]
-    #[diagnostic(
-        code(lang::sem::assets_declaration_empty_manifest),
-        help("Use a non-empty `manifest <id>` value.")
-    )]
-    AssetsDeclarationEmptyManifest {
-        declaration: SmolStr,
-        expansion_node_id: Option<u32>,
-        #[label("assets declaration declared here")]
-        span: SourceSpan,
-    },
-
-    #[error("assets declaration '{declaration}' is missing required `streaming` field")]
-    #[diagnostic(
-        code(lang::sem::assets_declaration_missing_streaming),
-        help("Add `streaming <id>` to the assets declaration.")
-    )]
-    AssetsDeclarationMissingStreaming {
-        declaration: SmolStr,
-        expansion_node_id: Option<u32>,
-        #[label("assets declaration declared here")]
-        span: SourceSpan,
-    },
-
-    #[error("assets declaration '{declaration}' has empty `streaming` field")]
-    #[diagnostic(
-        code(lang::sem::assets_declaration_empty_streaming),
-        help("Use a non-empty `streaming <id>` value.")
-    )]
-    AssetsDeclarationEmptyStreaming {
-        declaration: SmolStr,
-        expansion_node_id: Option<u32>,
-        #[label("assets declaration declared here")]
-        span: SourceSpan,
-    },
-
-    #[error("mmo declaration '{declaration}' is missing required `gateway` field")]
-    #[diagnostic(
-        code(lang::sem::mmo_declaration_missing_gateway),
-        help("Add `gateway <id>` to the mmo declaration.")
-    )]
-    MmoDeclarationMissingGateway {
-        declaration: SmolStr,
-        expansion_node_id: Option<u32>,
-        #[label("mmo declaration declared here")]
-        span: SourceSpan,
-    },
-
-    #[error("mmo declaration '{declaration}' has empty `gateway` field")]
-    #[diagnostic(
-        code(lang::sem::mmo_declaration_empty_gateway),
-        help("Use a non-empty `gateway <id>` value.")
-    )]
-    MmoDeclarationEmptyGateway {
-        declaration: SmolStr,
-        expansion_node_id: Option<u32>,
-        #[label("mmo declaration declared here")]
-        span: SourceSpan,
-    },
-
-    #[error("mmo declaration '{declaration}' is missing required `zone` field")]
-    #[diagnostic(
-        code(lang::sem::mmo_declaration_missing_zone),
-        help("Add `zone <id>` to the mmo declaration.")
-    )]
-    MmoDeclarationMissingZone {
-        declaration: SmolStr,
-        expansion_node_id: Option<u32>,
-        #[label("mmo declaration declared here")]
-        span: SourceSpan,
-    },
-
-    #[error("mmo declaration '{declaration}' has empty `zone` field")]
-    #[diagnostic(
-        code(lang::sem::mmo_declaration_empty_zone),
-        help("Use a non-empty `zone <id>` value.")
-    )]
-    MmoDeclarationEmptyZone {
-        declaration: SmolStr,
-        expansion_node_id: Option<u32>,
-        #[label("mmo declaration declared here")]
-        span: SourceSpan,
-    },
-
-    #[error("mmo declaration '{declaration}' is missing required `world` field")]
-    #[diagnostic(
-        code(lang::sem::mmo_declaration_missing_world),
-        help("Add `world <id>` to the mmo declaration.")
-    )]
-    MmoDeclarationMissingWorld {
-        declaration: SmolStr,
-        expansion_node_id: Option<u32>,
-        #[label("mmo declaration declared here")]
-        span: SourceSpan,
-    },
-
-    #[error("mmo declaration '{declaration}' has empty `world` field")]
-    #[diagnostic(
-        code(lang::sem::mmo_declaration_empty_world),
-        help("Use a non-empty `world <id>` value.")
-    )]
-    MmoDeclarationEmptyWorld {
-        declaration: SmolStr,
-        expansion_node_id: Option<u32>,
-        #[label("mmo declaration declared here")]
-        span: SourceSpan,
-    },
-
-    #[error("material '{material}' is missing required `surface_model` clause")]
-    #[diagnostic(
-        code(lang::sem::material_missing_surface_model),
-        help("Add `surface_model <model>` to the material declaration.")
-    )]
-    MissingSurfaceModel {
-        material: SmolStr,
-        #[label("material declared here")]
-        span: SourceSpan,
-    },
-
-    #[error("material '{material}' uses unknown surface model '{surface_model}'")]
-    #[diagnostic(
-        code(lang::sem::material_unknown_surface_model),
-        help("Use one of: pbr, pbr_metal_rough, unlit.")
-    )]
-    UnknownSurfaceModel {
-        material: SmolStr,
-        surface_model: SmolStr,
-        #[label("unknown surface model")]
-        span: SourceSpan,
-    },
-
-    #[error("material '{material}' uses unknown alpha mode '{alpha_mode}'")]
-    #[diagnostic(
-        code(lang::sem::material_unknown_alpha_mode),
-        help("Use one of: opaque, mask, blend, transparent.")
-    )]
-    UnknownAlphaMode {
-        material: SmolStr,
-        alpha_mode: SmolStr,
-        #[label("unknown alpha mode")]
-        span: SourceSpan,
-    },
-
-    #[error("material '{material}' has invalid parameter '{parameter}'")]
-    #[diagnostic(code(lang::sem::material_invalid_param), help("{reason}"))]
-    InvalidMaterialParam {
-        material: SmolStr,
-        parameter: SmolStr,
-        reason: String,
-        #[label("invalid material parameter")]
-        span: SourceSpan,
-    },
-
-    #[error("material '{material}' uses unknown feature '{feature}'")]
-    #[diagnostic(
-        code(lang::sem::material_unknown_feature),
-        help("Use one of: clearcoat, transmission, anisotropy, subsurface_lite, receive_shadows.")
-    )]
-    UnknownMaterialFeature {
-        material: SmolStr,
-        feature: SmolStr,
-        #[label("unknown material feature")]
-        span: SourceSpan,
-    },
-
-    #[error("material '{material}' feature '{feature}' has non-boolean value '{value}'")]
-    #[diagnostic(
-        code(lang::sem::material_invalid_feature_value),
-        help("Use `true` or `false` for material feature values.")
-    )]
-    InvalidMaterialFeatureValue {
-        material: SmolStr,
-        feature: SmolStr,
-        value: SmolStr,
-        #[label("invalid material feature value")]
-        span: SourceSpan,
-    },
-
-    #[error("material '{material}' duplicates texture slot '{slot}'")]
-    #[diagnostic(
-        code(lang::sem::material_duplicate_texture_slot),
-        help("Each texture slot can be declared once per material.")
-    )]
-    DuplicateMaterialTextureSlot {
-        material: SmolStr,
-        slot: SmolStr,
-        #[label("duplicate texture slot")]
-        span: SourceSpan,
-    },
-
-    #[error("material '{material}' uses unknown texture slot '{slot}'")]
-    #[diagnostic(
-        code(lang::sem::material_unknown_texture_slot),
-        help("Allowed texture slots: albedo, normal, orm, emissive, thickness, detail_normal.")
-    )]
-    UnknownMaterialTextureSlot {
-        material: SmolStr,
-        slot: SmolStr,
-        #[label("unknown texture slot")]
-        span: SourceSpan,
-    },
-
-    #[error("render contract '{contract}' references unknown material '{material}'")]
-    #[diagnostic(
-        code(lang::sem::render_unknown_material_ref),
-        help("Declare `material {material} {{ ... }}` or update `shader material <Name>`.")
-    )]
-    UnknownRenderMaterialRef {
-        contract: SmolStr,
-        material: SmolStr,
-        #[label("unknown material reference")]
-        span: SourceSpan,
-    },
-
-    #[error("render contract '{contract}' is missing required `resources` clause")]
-    #[diagnostic(
-        code(lang::sem::render_v5_missing_resources),
-        help(
-            "Add `resources <AssetsDeclaration>` and declare the assets block with `assets <Name> {{ ... }}`."
-        )
-    )]
-    RenderContractMissingResources {
-        contract: SmolStr,
-        expansion_node_id: Option<u32>,
-        #[label("render contract declared here")]
-        span: SourceSpan,
-    },
-
-    #[error("render contract '{contract}' references unknown assets declaration '{resources}'")]
-    #[diagnostic(
-        code(lang::sem::render_v5_unknown_resources),
-        help(
-            "Use the name of an existing `assets <Name> {{ ... }}` declaration in `resources <Name>`."
-        )
-    )]
-    RenderContractUnknownResources {
-        contract: SmolStr,
-        resources: SmolStr,
-        available_assets: Vec<SmolStr>,
-        expansion_node_id: Option<u32>,
-        #[label("unknown assets declaration")]
-        span: SourceSpan,
-    },
-
-    #[error("render contract '{contract}' is missing required `temporal` clause")]
-    #[diagnostic(
-        code(lang::sem::render_v5_missing_temporal),
-        help("Add `temporal <mode>`; temporal mode must be explicit in render v5.")
-    )]
-    RenderContractMissingTemporal {
-        contract: SmolStr,
-        expansion_node_id: Option<u32>,
-        #[label("render contract declared here")]
-        span: SourceSpan,
-    },
-
-    #[error("render contract '{contract}' is missing required `quality tier` clause")]
-    #[diagnostic(
-        code(lang::sem::render_v5_missing_quality_tier),
-        help("Add `quality tier <tier>`; implicit quality defaults were removed in v5.")
-    )]
-    RenderContractMissingQualityTier {
-        contract: SmolStr,
-        expansion_node_id: Option<u32>,
-        #[label("render contract declared here")]
-        span: SourceSpan,
-    },
-
-    #[error("render contract '{contract}' uses unknown quality tier '{quality_tier}'")]
-    #[diagnostic(
-        code(lang::sem::render_v5_unknown_quality_tier),
-        help(
-            "Use one of: low, medium, high, ultra, hero, gameplay, balanced, quality, performance."
-        )
-    )]
-    UnknownRenderQualityTier {
-        contract: SmolStr,
-        quality_tier: SmolStr,
-        #[label("unknown quality tier")]
-        span: SourceSpan,
-    },
-
-    #[error("render contract '{contract}' is missing required `budget tags` clause")]
-    #[diagnostic(
-        code(lang::sem::render_v5_missing_budget_tags),
-        help("Add `budget tags <tag>[, <tag>...]` with at least one explicit tag.")
-    )]
-    RenderContractMissingBudgetTags {
-        contract: SmolStr,
-        expansion_node_id: Option<u32>,
-        #[label("render contract declared here")]
-        span: SourceSpan,
-    },
-
-    #[error("render contract '{contract}' has empty `budget tags` entries")]
-    #[diagnostic(
-        code(lang::sem::render_v5_empty_budget_tags),
-        help("Remove blank entries; each budget tag must be a non-empty identifier/string.")
-    )]
-    RenderContractEmptyBudgetTags {
-        contract: SmolStr,
-        expansion_node_id: Option<u32>,
-        #[label("invalid budget tags here")]
-        span: SourceSpan,
-    },
-
-    #[error("render contract '{contract}' uses removed legacy clause `{clause}`")]
-    #[diagnostic(
-        code(lang::sem::render_v5_legacy_clause),
-        help(
-            "Migrate to render v5 clauses only: `resources <AssetsDeclaration>`, `temporal <mode>`, `quality tier <tier>`, and `budget tags <tag>[, <tag>...]`."
-        )
-    )]
-    RenderContractLegacyClause {
-        contract: SmolStr,
-        expansion_node_id: Option<u32>,
-        clause: SmolStr,
-        #[label("legacy clause used here")]
         span: SourceSpan,
     },
 
@@ -1027,39 +614,6 @@ impl SemanticError {
             SemanticError::InvalidAttributeArgValue { span, .. } => *span,
             SemanticError::InvalidSystemStage { span, .. } => *span,
             SemanticError::UnknownSystemMetadataTarget { span, .. } => *span,
-            SemanticError::GpuFunctionReturnTypeMustBeString { span, .. } => *span,
-            SemanticError::GpuFunctionCaptureForbidden { span, .. } => *span,
-            SemanticError::AssetFactoryDeclarationMissingId { span, .. } => *span,
-            SemanticError::AssetFactoryDeclarationEmptyId { span, .. } => *span,
-            SemanticError::AssetFactoryDeclarationInvalidProfile { span, .. } => *span,
-            SemanticError::AssetFactoryDuplicateDeclarationName { span, .. } => *span,
-            SemanticError::AssetsDeclarationMissingManifest { span, .. } => *span,
-            SemanticError::AssetsDeclarationEmptyManifest { span, .. } => *span,
-            SemanticError::AssetsDeclarationMissingStreaming { span, .. } => *span,
-            SemanticError::AssetsDeclarationEmptyStreaming { span, .. } => *span,
-            SemanticError::MmoDeclarationMissingGateway { span, .. } => *span,
-            SemanticError::MmoDeclarationEmptyGateway { span, .. } => *span,
-            SemanticError::MmoDeclarationMissingZone { span, .. } => *span,
-            SemanticError::MmoDeclarationEmptyZone { span, .. } => *span,
-            SemanticError::MmoDeclarationMissingWorld { span, .. } => *span,
-            SemanticError::MmoDeclarationEmptyWorld { span, .. } => *span,
-            SemanticError::MissingSurfaceModel { span, .. } => *span,
-            SemanticError::UnknownSurfaceModel { span, .. } => *span,
-            SemanticError::UnknownAlphaMode { span, .. } => *span,
-            SemanticError::InvalidMaterialParam { span, .. } => *span,
-            SemanticError::UnknownMaterialFeature { span, .. } => *span,
-            SemanticError::InvalidMaterialFeatureValue { span, .. } => *span,
-            SemanticError::DuplicateMaterialTextureSlot { span, .. } => *span,
-            SemanticError::UnknownMaterialTextureSlot { span, .. } => *span,
-            SemanticError::UnknownRenderMaterialRef { span, .. } => *span,
-            SemanticError::RenderContractMissingResources { span, .. } => *span,
-            SemanticError::RenderContractUnknownResources { span, .. } => *span,
-            SemanticError::RenderContractMissingTemporal { span, .. } => *span,
-            SemanticError::RenderContractMissingQualityTier { span, .. } => *span,
-            SemanticError::UnknownRenderQualityTier { span, .. } => *span,
-            SemanticError::RenderContractMissingBudgetTags { span, .. } => *span,
-            SemanticError::RenderContractEmptyBudgetTags { span, .. } => *span,
-            SemanticError::RenderContractLegacyClause { span, .. } => *span,
             SemanticError::SystemWriteWriteConflict { span, .. } => *span,
             SemanticError::SystemReadWriteHazard { span, .. } => *span,
             SemanticError::SystemUndeclaredResourceAccess { span, .. } => *span,
@@ -1118,8 +672,6 @@ struct Checker<'a> {
     loop_depth: usize,
     method_ids: HashSet<usize>,
     class_names: HashSet<SmolStr>,
-    assets_declaration_names: HashSet<SmolStr>,
-    material_declaration_names: HashSet<SmolStr>,
     in_method: bool,
     in_check: bool,
     in_certified_flow: bool,
@@ -1142,70 +694,14 @@ pub fn check_module(module: &Module) -> SemanticDiagnostics {
     SemanticDiagnostics { errors, warnings }
 }
 
-const ALLOWED_ASSET_FACTORY_PROFILES: &[&str] = &["fast", "balanced", "strict"];
-const ALLOWED_SURFACE_MODELS: &[&str] = &["pbr", "pbr_metal_rough", "unlit"];
-const ALLOWED_ALPHA_MODES: &[&str] = &["opaque", "mask", "blend", "transparent"];
-const ALLOWED_MATERIAL_FEATURES: &[&str] = &[
-    "clearcoat",
-    "transmission",
-    "anisotropy",
-    "subsurface_lite",
-    "receive_shadows",
-];
-const ALLOWED_MATERIAL_TEXTURE_SLOTS: &[&str] = &[
-    "albedo",
-    "normal",
-    "orm",
-    "emissive",
-    "thickness",
-    "detail_normal",
-];
-const ALLOWED_RENDER_QUALITY_TIERS: &[&str] = &[
-    "low",
-    "medium",
-    "high",
-    "ultra",
-    "hero",
-    "gameplay",
-    "balanced",
-    "quality",
-    "performance",
-];
-const ALLOWED_MATERIAL_PARAMS: &[&str] = &[
-    "roughness",
-    "metallic",
-    "clearcoat_roughness",
-    "anisotropy",
-    "transmission",
-    "subsurface_strength",
-];
-const ALLOWED_MATERIAL_SEMANTICS: &[&str] = &[
-    "physics_surface",
-    "footstep_class",
-    "impact_vfx_class",
-    "wear_response",
-    "friction",
-    "restitution",
-];
-
 impl<'a> Checker<'a> {
     fn new(module: &'a Module) -> Self {
         let mut method_ids = HashSet::new();
         let mut class_names = HashSet::new();
-        let mut assets_declaration_names = HashSet::new();
-        let mut material_declaration_names = HashSet::new();
         for class in module.classes.iter().map(|(_, c)| c) {
             class_names.insert(class.name.clone());
             for method in &class.methods {
                 method_ids.insert(method.into_raw());
-            }
-        }
-        for material in &module.material_declarations {
-            material_declaration_names.insert(material.name.clone());
-        }
-        for contract in &module.render_contracts {
-            if contract.kind == SurfaceDeclarationKind::Assets {
-                assets_declaration_names.insert(contract.name.clone());
             }
         }
         let objective_required_by_fn = compute_objective_requirements(module, &method_ids);
@@ -1221,8 +717,6 @@ impl<'a> Checker<'a> {
             loop_depth: 0,
             method_ids,
             class_names,
-            assets_declaration_names,
-            material_declaration_names,
             in_method: false,
             in_check: false,
             in_certified_flow: false,
@@ -1300,41 +794,6 @@ impl<'a> Checker<'a> {
             if matches!(func.role, FunctionRole::System) {
                 self.check_system_metadata(func);
             }
-        }
-
-        let mut material_declaration_spans = HashMap::<SmolStr, TextRange>::new();
-        for material in &self.module.material_declarations {
-            if let Some(previous) =
-                material_declaration_spans.insert(material.name.clone(), material.span)
-            {
-                self.errors.push(SemanticError::DuplicateDefinition {
-                    name: material.name.clone(),
-                    kind: "material",
-                    span: span_from_option(material.name_span.or(Some(material.span))),
-                    previous: Some(span_from_range(previous)),
-                });
-            }
-        }
-
-        for material in &self.module.material_declarations {
-            self.check_material_declaration(material);
-        }
-
-        self.check_asset_factory_declarations();
-
-        self.check_asset_declarations();
-        self.check_scene_declarations();
-
-        for contract in &self.module.render_contracts {
-            match contract.kind {
-                SurfaceDeclarationKind::Render => self.check_render_contract(contract),
-                SurfaceDeclarationKind::Assets => self.check_assets_declaration(contract),
-                SurfaceDeclarationKind::Mmo => self.check_mmo_declaration(contract),
-            }
-        }
-
-        for gpu in &self.module.gpu_functions {
-            self.check_gpu_function_surface(gpu);
         }
 
         for (_idx, class) in self.module.classes.iter() {
@@ -1534,7 +993,7 @@ impl<'a> Checker<'a> {
             .system_metadata
             .as_ref()
             .and_then(|meta| meta.stage.clone());
-        if !matches!(stage.as_deref(), Some("fixed") | Some("render")) {
+        if !matches!(stage.as_deref(), Some("fixed")) {
             self.errors.push(SemanticError::InvalidSystemStage {
                 system: func.name.clone(),
                 found: stage,
@@ -1567,617 +1026,6 @@ impl<'a> Checker<'a> {
                         span,
                     });
             }
-        }
-    }
-
-    fn check_gpu_function_surface(&mut self, gpu: &GpuFunctionSurface) {
-        let return_span = gpu
-            .ret_type
-            .as_ref()
-            .and_then(|ty| ty.name_span)
-            .map(span_from_range)
-            .unwrap_or_else(|| span_from_option(gpu.name_span));
-        if !type_ref_is_string(gpu.ret_type.as_ref()) {
-            self.errors
-                .push(SemanticError::GpuFunctionReturnTypeMustBeString {
-                    function: gpu.name.clone(),
-                    found: gpu.ret_type.as_ref().map(type_ref_signature),
-                    expansion_node_id: None,
-                    span: return_span,
-                });
-        }
-
-        let Some(body) = gpu.body.as_ref() else {
-            return;
-        };
-        for (stmt_id, stmt) in body.stmts.iter() {
-            if let Stmt::Capture { name, .. } = stmt {
-                self.errors
-                    .push(SemanticError::GpuFunctionCaptureForbidden {
-                        function: gpu.name.clone(),
-                        capture_name: name.clone(),
-                        expansion_node_id: None,
-                        span: span_from_range(body.stmt_span(stmt_id)),
-                    });
-            }
-        }
-    }
-
-    fn check_material_declaration(&mut self, material: &MaterialDeclarationSurface) {
-        let material_span = span_from_range(material.span);
-        match material.surface_model.as_ref() {
-            None => self.errors.push(SemanticError::MissingSurfaceModel {
-                material: material.name.clone(),
-                span: material_span,
-            }),
-            Some(surface_model)
-                if !ALLOWED_SURFACE_MODELS
-                    .iter()
-                    .any(|allowed| *allowed == surface_model.value.as_str()) =>
-            {
-                self.errors.push(SemanticError::UnknownSurfaceModel {
-                    material: material.name.clone(),
-                    surface_model: surface_model.value.clone(),
-                    span: span_from_range(surface_model.span),
-                });
-            }
-            Some(_) => {}
-        }
-
-        if let Some(alpha_mode) = material.render.alpha.as_ref()
-            && !ALLOWED_ALPHA_MODES
-                .iter()
-                .any(|allowed| *allowed == alpha_mode.value.as_str())
-        {
-            self.errors.push(SemanticError::UnknownAlphaMode {
-                material: material.name.clone(),
-                alpha_mode: alpha_mode.value.clone(),
-                span: span_from_range(alpha_mode.span),
-            });
-        }
-
-        let mut seen_texture_slots: HashSet<SmolStr> = HashSet::new();
-        for texture in &material.textures {
-            let normalized_slot =
-                SmolStr::new(normalize_material_value(texture.slot.value.as_str()));
-            if !ALLOWED_MATERIAL_TEXTURE_SLOTS
-                .iter()
-                .any(|allowed| *allowed == normalized_slot.as_str())
-            {
-                self.errors.push(SemanticError::UnknownMaterialTextureSlot {
-                    material: material.name.clone(),
-                    slot: texture.slot.value.clone(),
-                    span: span_from_range(texture.slot.span),
-                });
-                continue;
-            }
-            if !seen_texture_slots.insert(normalized_slot.clone()) {
-                self.errors
-                    .push(SemanticError::DuplicateMaterialTextureSlot {
-                        material: material.name.clone(),
-                        slot: normalized_slot,
-                        span: span_from_range(texture.slot.span),
-                    });
-            }
-        }
-
-        let mut seen_params: HashSet<SmolStr> = HashSet::new();
-        for param in &material.params {
-            let param_name = param.name.value.clone();
-            if !seen_params.insert(param_name.clone()) {
-                self.errors.push(SemanticError::InvalidMaterialParam {
-                    material: material.name.clone(),
-                    parameter: param_name,
-                    reason: "parameter is declared more than once".to_string(),
-                    span: span_from_range(param.name.span),
-                });
-                continue;
-            }
-
-            if !ALLOWED_MATERIAL_PARAMS
-                .iter()
-                .any(|allowed| *allowed == param.name.value.as_str())
-            {
-                self.errors.push(SemanticError::InvalidMaterialParam {
-                    material: material.name.clone(),
-                    parameter: param.name.value.clone(),
-                    reason: format!(
-                        "unknown parameter; allowed parameters are {}",
-                        ALLOWED_MATERIAL_PARAMS.join(", ")
-                    ),
-                    span: span_from_range(param.name.span),
-                });
-                continue;
-            }
-
-            let Ok(value) = param.value.value.parse::<f32>() else {
-                self.errors.push(SemanticError::InvalidMaterialParam {
-                    material: material.name.clone(),
-                    parameter: param.name.value.clone(),
-                    reason: "parameter value must be numeric".to_string(),
-                    span: span_from_range(param.value.span),
-                });
-                continue;
-            };
-
-            let in_range = match param.name.value.as_str() {
-                "anisotropy" => (-1.0..=1.0).contains(&value),
-                "roughness"
-                | "metallic"
-                | "clearcoat_roughness"
-                | "transmission"
-                | "subsurface_strength" => (0.0..=1.0).contains(&value),
-                _ => true,
-            };
-            if !in_range {
-                let expected = if param.name.value.as_str() == "anisotropy" {
-                    "[-1.0, 1.0]"
-                } else {
-                    "[0.0, 1.0]"
-                };
-                self.errors.push(SemanticError::InvalidMaterialParam {
-                    material: material.name.clone(),
-                    parameter: param.name.value.clone(),
-                    reason: format!("value {} is out of range {}", value, expected),
-                    span: span_from_range(param.value.span),
-                });
-            }
-        }
-
-        for feature in &material.features {
-            if !ALLOWED_MATERIAL_FEATURES
-                .iter()
-                .any(|allowed| *allowed == feature.name.value.as_str())
-            {
-                self.errors.push(SemanticError::UnknownMaterialFeature {
-                    material: material.name.clone(),
-                    feature: feature.name.value.clone(),
-                    span: span_from_range(feature.name.span),
-                });
-            }
-            let normalized_value = normalize_material_value(feature.value.value.as_str());
-            if normalized_value != "true" && normalized_value != "false" {
-                self.errors
-                    .push(SemanticError::InvalidMaterialFeatureValue {
-                        material: material.name.clone(),
-                        feature: feature.name.value.clone(),
-                        value: feature.value.value.clone(),
-                        span: span_from_range(feature.value.span),
-                    });
-            }
-        }
-
-        let mut seen_semantics: HashSet<SmolStr> = HashSet::new();
-        for semantic in &material.semantic_bindings {
-            if !seen_semantics.insert(semantic.key.value.clone()) {
-                self.errors.push(SemanticError::InvalidMaterialParam {
-                    material: material.name.clone(),
-                    parameter: SmolStr::new(format!("semantics.{}", semantic.key.value)),
-                    reason: "semantic key is declared more than once".to_string(),
-                    span: span_from_range(semantic.key.span),
-                });
-                continue;
-            }
-
-            if !ALLOWED_MATERIAL_SEMANTICS
-                .iter()
-                .any(|allowed| *allowed == semantic.key.value.as_str())
-            {
-                self.errors.push(SemanticError::InvalidMaterialParam {
-                    material: material.name.clone(),
-                    parameter: SmolStr::new(format!("semantics.{}", semantic.key.value)),
-                    reason: format!(
-                        "unknown semantic key; allowed semantic keys are {}",
-                        ALLOWED_MATERIAL_SEMANTICS.join(", ")
-                    ),
-                    span: span_from_range(semantic.key.span),
-                });
-                continue;
-            }
-
-            if matches!(semantic.key.value.as_str(), "friction" | "restitution") {
-                let Ok(value) = semantic.value.value.parse::<f32>() else {
-                    self.errors.push(SemanticError::InvalidMaterialParam {
-                        material: material.name.clone(),
-                        parameter: SmolStr::new(format!("semantics.{}", semantic.key.value)),
-                        reason: "value must be numeric".to_string(),
-                        span: span_from_range(semantic.value.span),
-                    });
-                    continue;
-                };
-                if !(0.0..=1.0).contains(&value) {
-                    self.errors.push(SemanticError::InvalidMaterialParam {
-                        material: material.name.clone(),
-                        parameter: SmolStr::new(format!("semantics.{}", semantic.key.value)),
-                        reason: format!("value {} is out of range [0.0, 1.0]", value),
-                        span: span_from_range(semantic.value.span),
-                    });
-                }
-            }
-        }
-    }
-
-    fn check_asset_factory_declarations(&mut self) {
-        let mut declarations = self.asset_factory_declaration_surfaces();
-        declarations.sort_by(|lhs, rhs| {
-            let lhs_start: usize = lhs.span.start().into();
-            let rhs_start: usize = rhs.span.start().into();
-            let lhs_end: usize = lhs.span.end().into();
-            let rhs_end: usize = rhs.span.end().into();
-            lhs_start
-                .cmp(&rhs_start)
-                .then_with(|| lhs_end.cmp(&rhs_end))
-                .then_with(|| lhs.kind.keyword().cmp(rhs.kind.keyword()))
-                .then_with(|| lhs.name.as_str().cmp(rhs.name.as_str()))
-        });
-
-        let mut seen_by_name: HashMap<SmolStr, (AssetFactoryDeclarationKind, TextRange)> =
-            HashMap::new();
-
-        for declaration in &declarations {
-            self.check_asset_factory_declaration(declaration);
-            if let Some((first_kind, first_span)) = seen_by_name.get(&declaration.name).copied() {
-                self.errors
-                    .push(SemanticError::AssetFactoryDuplicateDeclarationName {
-                        name: declaration.name.clone(),
-                        first_kind,
-                        duplicate_kind: declaration.kind,
-                        span: span_from_range(declaration.span),
-                        previous: Some(span_from_range(first_span)),
-                    });
-            } else {
-                seen_by_name.insert(
-                    declaration.name.clone(),
-                    (declaration.kind, declaration.span),
-                );
-            }
-        }
-    }
-
-    fn asset_factory_declaration_surfaces(&self) -> Vec<AssetFactoryDeclarationSurface> {
-        let mut declarations = Vec::new();
-        declarations.extend(
-            self.module
-                .asset_specs
-                .iter()
-                .map(|it| it.declaration.clone()),
-        );
-        declarations.extend(
-            self.module
-                .style_profiles
-                .iter()
-                .map(|it| it.declaration.clone()),
-        );
-        declarations.extend(
-            self.module
-                .generator_plans
-                .iter()
-                .map(|it| it.declaration.clone()),
-        );
-        declarations.extend(
-            self.module
-                .quality_gates
-                .iter()
-                .map(|it| it.declaration.clone()),
-        );
-        declarations.extend(
-            self.module
-                .provenance_ledgers
-                .iter()
-                .map(|it| it.declaration.clone()),
-        );
-        declarations.extend(
-            self.module
-                .asset_build_graphs
-                .iter()
-                .map(|it| it.declaration.clone()),
-        );
-        declarations
-    }
-
-    fn check_asset_factory_declaration(&mut self, declaration: &AssetFactoryDeclarationSurface) {
-        match declaration.id.as_ref() {
-            None => self
-                .errors
-                .push(SemanticError::AssetFactoryDeclarationMissingId {
-                    kind: declaration.kind,
-                    declaration: declaration.name.clone(),
-                    span: span_from_range(declaration.span),
-                }),
-            Some(id_value) => {
-                if id_value.trim().is_empty() {
-                    let id_span = declaration.id_span.unwrap_or(declaration.span);
-                    self.errors
-                        .push(SemanticError::AssetFactoryDeclarationEmptyId {
-                            kind: declaration.kind,
-                            declaration: declaration.name.clone(),
-                            span: span_from_range(id_span),
-                        });
-                }
-            }
-        }
-
-        if let Some(profile) = declaration.profile.as_ref()
-            && !ALLOWED_ASSET_FACTORY_PROFILES
-                .iter()
-                .any(|candidate| *candidate == profile.as_str())
-        {
-            let profile_span = declaration.profile_span.unwrap_or(declaration.span);
-            self.errors
-                .push(SemanticError::AssetFactoryDeclarationInvalidProfile {
-                    kind: declaration.kind,
-                    declaration: declaration.name.clone(),
-                    profile: profile.clone(),
-                    span: span_from_range(profile_span),
-                });
-        }
-    }
-
-    fn check_assets_declaration(&mut self, contract: &RenderContract) {
-        let span = span_from_range(contract.span);
-        let (manifest, streaming) = if let Some(AssetsContract {
-            manifest,
-            streaming,
-        }) = contract.assets.as_ref()
-        {
-            (manifest.clone(), streaming.clone())
-        } else {
-            (None, None)
-        };
-        match manifest.as_ref() {
-            None => {
-                self.errors
-                    .push(SemanticError::AssetsDeclarationMissingManifest {
-                        declaration: contract.name.clone(),
-                        expansion_node_id: None,
-                        span,
-                    });
-            }
-            Some(value) if value.trim().is_empty() => {
-                self.errors
-                    .push(SemanticError::AssetsDeclarationEmptyManifest {
-                        declaration: contract.name.clone(),
-                        expansion_node_id: None,
-                        span,
-                    });
-            }
-            Some(_) => {}
-        }
-        match streaming.as_ref() {
-            None => {
-                self.errors
-                    .push(SemanticError::AssetsDeclarationMissingStreaming {
-                        declaration: contract.name.clone(),
-                        expansion_node_id: None,
-                        span,
-                    });
-            }
-            Some(value) if value.trim().is_empty() => {
-                self.errors
-                    .push(SemanticError::AssetsDeclarationEmptyStreaming {
-                        declaration: contract.name.clone(),
-                        expansion_node_id: None,
-                        span,
-                    });
-            }
-            Some(_) => {}
-        }
-    }
-
-    fn check_mmo_declaration(&mut self, contract: &RenderContract) {
-        let span = span_from_range(contract.span);
-        let (gateway, zone, world) = if let Some(MmoContract {
-            gateway,
-            zone,
-            world,
-        }) = contract.mmo.as_ref()
-        {
-            (gateway.clone(), zone.clone(), world.clone())
-        } else {
-            (None, None, None)
-        };
-        match gateway.as_ref() {
-            None => {
-                self.errors
-                    .push(SemanticError::MmoDeclarationMissingGateway {
-                        declaration: contract.name.clone(),
-                        expansion_node_id: None,
-                        span,
-                    });
-            }
-            Some(value) if value.trim().is_empty() => {
-                self.errors.push(SemanticError::MmoDeclarationEmptyGateway {
-                    declaration: contract.name.clone(),
-                    expansion_node_id: None,
-                    span,
-                });
-            }
-            Some(_) => {}
-        }
-        match zone.as_ref() {
-            None => {
-                self.errors.push(SemanticError::MmoDeclarationMissingZone {
-                    declaration: contract.name.clone(),
-                    expansion_node_id: None,
-                    span,
-                });
-            }
-            Some(value) if value.trim().is_empty() => {
-                self.errors.push(SemanticError::MmoDeclarationEmptyZone {
-                    declaration: contract.name.clone(),
-                    expansion_node_id: None,
-                    span,
-                });
-            }
-            Some(_) => {}
-        }
-        match world.as_ref() {
-            None => {
-                self.errors.push(SemanticError::MmoDeclarationMissingWorld {
-                    declaration: contract.name.clone(),
-                    expansion_node_id: None,
-                    span,
-                });
-            }
-            Some(value) if value.trim().is_empty() => {
-                self.errors.push(SemanticError::MmoDeclarationEmptyWorld {
-                    declaration: contract.name.clone(),
-                    expansion_node_id: None,
-                    span,
-                });
-            }
-            Some(_) => {}
-        }
-    }
-
-    fn check_render_contract(&mut self, contract: &RenderContract) {
-        let contract_span = span_from_range(contract.span);
-        let mut report_legacy_clause = |clause: &str, span: SourceSpan| {
-            self.errors.push(SemanticError::RenderContractLegacyClause {
-                contract: contract.name.clone(),
-                clause: SmolStr::new(clause),
-                expansion_node_id: None,
-                span,
-            });
-        };
-
-        if contract.preset.is_some() {
-            report_legacy_clause("preset", contract_span);
-        }
-        if contract.profile.is_some() {
-            report_legacy_clause("profile", contract_span);
-        }
-        if contract.target.is_some() {
-            report_legacy_clause("target", contract_span);
-        }
-        if contract.overrides.tier0.is_some()
-            || contract.overrides.tier1.is_some()
-            || contract.overrides.tier2.is_some()
-            || !contract.overrides.duplicate_tiers.is_empty()
-        {
-            report_legacy_clause("overrides", contract_span);
-        }
-
-        match contract.resources.as_ref() {
-            None => self
-                .errors
-                .push(SemanticError::RenderContractMissingResources {
-                    contract: contract.name.clone(),
-                    expansion_node_id: None,
-                    span: contract_span,
-                }),
-            Some(resources) => {
-                if resources.value.trim().is_empty() {
-                    self.errors
-                        .push(SemanticError::RenderContractMissingResources {
-                            contract: contract.name.clone(),
-                            expansion_node_id: None,
-                            span: span_from_range(resources.span),
-                        });
-                } else if !self.assets_declaration_names.contains(&resources.value) {
-                    let mut available_assets = self
-                        .assets_declaration_names
-                        .iter()
-                        .cloned()
-                        .collect::<Vec<_>>();
-                    available_assets.sort();
-                    self.errors
-                        .push(SemanticError::RenderContractUnknownResources {
-                            contract: contract.name.clone(),
-                            resources: resources.value.clone(),
-                            available_assets,
-                            expansion_node_id: None,
-                            span: span_from_range(resources.span),
-                        });
-                }
-            }
-        }
-
-        match contract.temporal.as_ref() {
-            None => self
-                .errors
-                .push(SemanticError::RenderContractMissingTemporal {
-                    contract: contract.name.clone(),
-                    expansion_node_id: None,
-                    span: contract_span,
-                }),
-            Some(temporal) if temporal.value.trim().is_empty() => {
-                self.errors
-                    .push(SemanticError::RenderContractMissingTemporal {
-                        contract: contract.name.clone(),
-                        expansion_node_id: None,
-                        span: span_from_range(temporal.span),
-                    });
-            }
-            Some(_) => {}
-        }
-
-        match contract.quality_tier.as_ref() {
-            None => self
-                .errors
-                .push(SemanticError::RenderContractMissingQualityTier {
-                    contract: contract.name.clone(),
-                    expansion_node_id: None,
-                    span: contract_span,
-                }),
-            Some(quality_tier) if quality_tier.value.trim().is_empty() => {
-                self.errors
-                    .push(SemanticError::RenderContractMissingQualityTier {
-                        contract: contract.name.clone(),
-                        expansion_node_id: None,
-                        span: span_from_range(quality_tier.span),
-                    });
-            }
-            Some(quality_tier) => {
-                let normalized_tier = normalize_material_value(quality_tier.value.as_str());
-                if !ALLOWED_RENDER_QUALITY_TIERS
-                    .iter()
-                    .any(|allowed| *allowed == normalized_tier.as_str())
-                {
-                    self.errors.push(SemanticError::UnknownRenderQualityTier {
-                        contract: contract.name.clone(),
-                        quality_tier: quality_tier.value.clone(),
-                        span: span_from_range(quality_tier.span),
-                    });
-                }
-            }
-        }
-
-        match contract.budget_tags.as_ref() {
-            None => self
-                .errors
-                .push(SemanticError::RenderContractMissingBudgetTags {
-                    contract: contract.name.clone(),
-                    expansion_node_id: None,
-                    span: contract_span,
-                }),
-            Some(budget_tags) => {
-                if budget_tags.tags.is_empty()
-                    || budget_tags
-                        .tags
-                        .iter()
-                        .any(|tag| tag.value.trim().is_empty())
-                {
-                    self.errors
-                        .push(SemanticError::RenderContractEmptyBudgetTags {
-                            contract: contract.name.clone(),
-                            expansion_node_id: None,
-                            span: span_from_range(budget_tags.span),
-                        });
-                }
-            }
-        }
-
-        if let Some(material_mode) = contract.shader_modes.material.as_ref()
-            && !self
-                .material_declaration_names
-                .contains(&material_mode.symbol)
-        {
-            self.errors.push(SemanticError::UnknownRenderMaterialRef {
-                contract: contract.name.clone(),
-                material: material_mode.symbol.clone(),
-                span: span_from_range(material_mode.span),
-            });
         }
     }
 
@@ -3030,57 +1878,6 @@ impl<'a> Checker<'a> {
         self.is_pool_of_call(body, *callee)
     }
 
-    fn check_asset_declarations(&mut self) {
-        let mut seen_names: HashMap<SmolStr, TextRange> = HashMap::new();
-        for asset in &self.module.asset_declarations {
-            if let Some(previous) = seen_names.insert(asset.name.clone(), asset.span) {
-                self.errors.push(SemanticError::DuplicateDefinition {
-                    name: asset.name.clone(),
-                    kind: "asset",
-                    span: span_from_range(asset.span),
-                    previous: Some(span_from_range(previous)),
-                });
-            }
-        }
-    }
-
-    fn check_scene_declarations(&mut self) {
-        let asset_names: HashMap<SmolStr, &crate::hir::HirAssetDecl> = self
-            .module
-            .asset_declarations
-            .iter()
-            .map(|a| (a.name.clone(), a))
-            .collect();
-        for scene in &self.module.scene_declarations {
-            let mut entity_names: HashSet<SmolStr> = HashSet::new();
-            for entity in &scene.entities {
-                if !entity_names.insert(entity.name.clone()) {
-                    self.errors.push(SemanticError::DuplicateDefinition {
-                        name: entity.name.clone(),
-                        kind: "entity",
-                        span: span_from_range(scene.span),
-                        previous: None,
-                    });
-                }
-                if let Some(asset) = asset_names.get(&entity.mesh_asset) {
-                    if asset.kind != crate::hir::AssetDeclKind::Mesh {
-                        self.errors.push(SemanticError::UndefinedName {
-                            name: SmolStr::new(format!(
-                                "asset '{}' is not a mesh (it is {:?})",
-                                entity.mesh_asset, asset.kind
-                            )),
-                            span: span_from_range(scene.span),
-                        });
-                    }
-                } else if !entity.mesh_asset.is_empty() {
-                    self.errors.push(SemanticError::UndefinedName {
-                        name: entity.mesh_asset.clone(),
-                        span: span_from_range(scene.span),
-                    });
-                }
-            }
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3145,24 +1942,6 @@ fn forbidden_boolean_return_shape(ret: Option<&TypeRef>) -> Option<ForbiddenBool
 
 fn returns_boolean(ret: Option<&TypeRef>) -> bool {
     ret.map(|ty| ty.name.as_str() == "Boolean").unwrap_or(false)
-}
-
-fn type_ref_is_string(ret: Option<&TypeRef>) -> bool {
-    ret.map(|ty| ty.name.as_str() == "String" && ty.args.is_empty())
-        .unwrap_or(false)
-}
-
-fn type_ref_signature(ty: &TypeRef) -> SmolStr {
-    if ty.args.is_empty() {
-        return ty.name.clone();
-    }
-    let args = ty
-        .args
-        .iter()
-        .map(type_ref_signature)
-        .collect::<Vec<_>>()
-        .join(", ");
-    SmolStr::new(format!("{}[{args}]", ty.name))
 }
 
 fn type_ref_is_boolean(ty: &TypeRef) -> bool {
@@ -3396,10 +2175,6 @@ fn pattern_has_bindings(pattern: &Pattern) -> bool {
             .any(|(_name, value)| pattern_has_bindings(value)),
         _ => false,
     }
-}
-
-fn normalize_material_value(raw: &str) -> String {
-    raw.trim().to_ascii_lowercase().replace('-', "_")
 }
 
 fn span_from_option(range: Option<TextRange>) -> SourceSpan {
@@ -3997,62 +2772,6 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
         (SmolStr::new("__wr_external_call"), BindingKind::Function),
         (SmolStr::new("__wr_http_call"), BindingKind::Function),
         (
-            SmolStr::new("__wr_game_session_create_listener"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_game_session_poll_event"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_game_session_accept_connection"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_game_session_read_connection_bytes"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_game_session_read_http_request_frame"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_game_session_read_message"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_game_session_write_connection_bytes"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_game_session_write_http_response_frame"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_game_session_write_http_response_vectored"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_game_session_write_message"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_game_session_send_file"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_game_session_configure_listener_socket"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_game_session_close_connection"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_game_session_close_listener"),
-            BindingKind::Function,
-        ),
-        (
             SmolStr::new("__wr_web_parse_json_text"),
             BindingKind::Function,
         ),
@@ -4283,89 +3002,6 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
         ),
         (SmolStr::new("__wr_clock_ns"), BindingKind::Function),
         (SmolStr::new("__wr_sleep_ms"), BindingKind::Function),
-        (SmolStr::new("__wr_entity_spawn"), BindingKind::Function),
-        (SmolStr::new("__wr_entity_despawn"), BindingKind::Function),
-        (
-            SmolStr::new("__wr_entity_set_position"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_entity_get_position_x"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_entity_get_position_y"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_entity_get_position_z"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_entity_set_component"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_entity_get_component"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_entity_query_archetype"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_entity_query_radius"),
-            BindingKind::Function,
-        ),
-        (SmolStr::new("__wr_entity_count"), BindingKind::Function),
-        (
-            SmolStr::new("__wr_audio_play_oneshot"),
-            BindingKind::Function,
-        ),
-        (SmolStr::new("__wr_audio_play_loop"), BindingKind::Function),
-        (SmolStr::new("__wr_audio_stop_loop"), BindingKind::Function),
-        (
-            SmolStr::new("__wr_audio_set_listener"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_audio_set_parameter"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_physics_create_body"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_physics_remove_body"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_physics_set_velocity"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_physics_get_position_x"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_physics_get_position_y"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_physics_get_position_z"),
-            BindingKind::Function,
-        ),
-        (SmolStr::new("__wr_physics_step"), BindingKind::Function),
-        (
-            SmolStr::new("__wr_physics_query_contacts"),
-            BindingKind::Function,
-        ),
-        (SmolStr::new("__wr_physics_raycast"), BindingKind::Function),
-        (
-            SmolStr::new("__wr_physics_add_breakable_joint"),
-            BindingKind::Function,
-        ),
         (SmolStr::new("Pool"), BindingKind::Implicit),
     ]
 }
@@ -4454,17 +3090,10 @@ fn check_system_conflicts(module: &Module) -> Vec<SemanticError> {
 fn check_missing_resource_decls(module: &Module) -> Vec<SemanticError> {
     let mut errors = Vec::new();
 
-    // Collect resource class names
     let resource_names: HashSet<SmolStr> = module
         .classes
         .iter()
-        .filter_map(|(_, cls)| {
-            if cls.role == ClassRole::Resource {
-                Some(cls.name.clone())
-            } else {
-                None
-            }
-        })
+        .map(|(_, cls)| cls.name.clone())
         .collect();
 
     for (_, func) in module.functions.iter() {
@@ -4739,19 +3368,6 @@ mod tests {
     use crate::parser::ast;
     use crate::parser::ast::AstNode;
     use crate::parser::parse;
-
-    fn first_render_contract_mut(module: &mut Module) -> &mut RenderContract {
-        module
-            .render_contracts
-            .iter_mut()
-            .find(|contract| contract.kind == SurfaceDeclarationKind::Render)
-            .expect("expected render contract")
-    }
-
-    fn set_render_legacy_preset(module: &mut Module, preset: &str) {
-        let render = first_render_contract_mut(module);
-        render.preset = Some(SmolStr::new(preset));
-    }
 
     #[test]
     fn test_undefined_name() {
@@ -5539,697 +4155,11 @@ fn draw() -> Nothing {
     }
 
     #[test]
-    fn test_gpu_function_capture_is_rejected() {
-        let input = r#"gpu fn shade(v: Integer) -> String {
-    capture source = v
-    return "wgsl"
-}"#;
-        let node = parse(input);
-        let root = ast::Root::cast(node).unwrap();
-        let module = lower(root);
-        let diagnostics = check_module(&module);
-        assert!(diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::GpuFunctionCaptureForbidden { function, capture_name, .. }
-                    if function == "shade" && capture_name == "source"
-            )
-        }));
-    }
-
-    #[test]
-    fn test_gpu_function_requires_string_return_type() {
-        let input = r#"gpu fn shade(v: Integer) -> Integer {
-    return v
-}"#;
-        let node = parse(input);
-        let root = ast::Root::cast(node).unwrap();
-        let module = lower(root);
-        let diagnostics = check_module(&module);
-        assert!(diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::GpuFunctionReturnTypeMustBeString { function, found, .. }
-                    if function == "shade" && found.as_deref() == Some("Integer")
-            )
-        }));
-    }
-
-    #[test]
-    fn test_asset_factory_declaration_missing_id_is_rejected() {
-        let input = r#"asset_spec Assets {
-    profile fast
-}"#;
-        let node = parse(input);
-        let root = ast::Root::cast(node).unwrap();
-        let module = lower(root);
-        let diagnostics = check_module(&module);
-        assert!(diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::AssetFactoryDeclarationMissingId {
-                    kind,
-                    declaration,
-                    ..
-                } if *kind == AssetFactoryDeclarationKind::AssetSpec && declaration == "Assets"
-            )
-        }));
-    }
-
-    #[test]
-    fn test_asset_factory_declaration_empty_id_is_rejected() {
-        let input = r#"style_profile Style {
-    id ""
-    profile balanced
-}"#;
-        let node = parse(input);
-        let root = ast::Root::cast(node).unwrap();
-        let module = lower(root);
-        let diagnostics = check_module(&module);
-        assert!(diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::AssetFactoryDeclarationEmptyId {
-                    kind,
-                    declaration,
-                    ..
-                } if *kind == AssetFactoryDeclarationKind::StyleProfile && declaration == "Style"
-            )
-        }));
-    }
-
-    #[test]
-    fn test_asset_factory_declaration_invalid_profile_is_rejected() {
-        let input = r#"generator_profile Generator {
-    id generator_v1
-    profile realtime
-}"#;
-        let node = parse(input);
-        let root = ast::Root::cast(node).unwrap();
-        let module = lower(root);
-        let diagnostics = check_module(&module);
-        assert!(diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::AssetFactoryDeclarationInvalidProfile {
-                    kind,
-                    declaration,
-                    profile,
-                    ..
-                } if *kind == AssetFactoryDeclarationKind::GeneratorProfile
-                    && declaration == "Generator"
-                    && profile == "realtime"
-            )
-        }));
-    }
-
-    #[test]
-    fn test_asset_factory_duplicate_declaration_name_is_rejected() {
-        let input = r#"asset_spec Shared {
-    id shared_asset
-}
-style_profile Shared {
-    id shared_style
-}"#;
-        let node = parse(input);
-        let root = ast::Root::cast(node).unwrap();
-        let module = lower(root);
-        let diagnostics = check_module(&module);
-        assert!(diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::AssetFactoryDuplicateDeclarationName {
-                    name,
-                    first_kind,
-                    duplicate_kind,
-                    ..
-                } if name == "Shared"
-                    && *first_kind == AssetFactoryDeclarationKind::AssetSpec
-                    && *duplicate_kind == AssetFactoryDeclarationKind::StyleProfile
-            )
-        }));
-    }
-
-    #[test]
-    fn test_asset_factory_duplicate_name_reports_original_first_span_for_third_duplicate() {
-        let input = r#"asset_spec Shared {
-    id shared_asset
-}
-style_profile Shared {
-    id shared_style
-}
-generator_profile Shared {
-    id shared_generator
-}"#;
-        let node = parse(input);
-        let root = ast::Root::cast(node).unwrap();
-        let module = lower(root);
-        let diagnostics = check_module(&module);
-        let mut duplicates =
-            diagnostics
-                .errors
-                .iter()
-                .filter_map(|err| match err {
-                    SemanticError::AssetFactoryDuplicateDeclarationName {
-                        name, previous, ..
-                    } if name == "Shared" => Some(previous.unwrap_or((0usize, 0usize).into())),
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
-        duplicates.sort_by_key(|span| span.offset());
-        assert_eq!(duplicates.len(), 2);
-        assert_eq!(duplicates[0], duplicates[1]);
-    }
-
-    #[test]
-    fn test_assets_declaration_missing_manifest_is_rejected() {
-        let input = r#"assets UiAssets {
-    streaming chunked
-}"#;
-        let node = parse(input);
-        let root = ast::Root::cast(node).unwrap();
-        let module = lower(root);
-        let diagnostics = check_module(&module);
-        assert!(diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::AssetsDeclarationMissingManifest { declaration, .. }
-                    if declaration == "UiAssets"
-            )
-        }));
-    }
-
-    #[test]
-    fn test_assets_declaration_missing_streaming_is_rejected() {
-        let input = r#"assets UiAssets {
-    manifest web_manifest
-}"#;
-        let node = parse(input);
-        let root = ast::Root::cast(node).unwrap();
-        let module = lower(root);
-        let diagnostics = check_module(&module);
-        assert!(diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::AssetsDeclarationMissingStreaming { declaration, .. }
-                    if declaration == "UiAssets"
-            )
-        }));
-    }
-
-    #[test]
-    fn test_assets_declaration_empty_values_are_rejected() {
-        let input = r#"assets UiAssets {
-    manifest ""
-    streaming ""
-}"#;
-        let node = parse(input);
-        let root = ast::Root::cast(node).unwrap();
-        let module = lower(root);
-        let diagnostics = check_module(&module);
-        assert!(diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::AssetsDeclarationEmptyManifest { declaration, .. }
-                    if declaration == "UiAssets"
-            )
-        }));
-        assert!(diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::AssetsDeclarationEmptyStreaming { declaration, .. }
-                    if declaration == "UiAssets"
-            )
-        }));
-    }
-
-    #[test]
-    fn test_mmo_declaration_missing_required_fields_are_rejected() {
-        let input = r#"mmo GlobalShard {
-    gateway edge_gateway
-}"#;
-        let node = parse(input);
-        let root = ast::Root::cast(node).unwrap();
-        let module = lower(root);
-        let diagnostics = check_module(&module);
-        assert!(diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::MmoDeclarationMissingZone { declaration, .. }
-                    if declaration == "GlobalShard"
-            )
-        }));
-        assert!(diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::MmoDeclarationMissingWorld { declaration, .. }
-                    if declaration == "GlobalShard"
-            )
-        }));
-    }
-
-    #[test]
-    fn test_mmo_declaration_missing_gateway_is_rejected() {
-        let input = r#"mmo GlobalShard {
-    zone us_east_zone
-    world earth_world
-}"#;
-        let node = parse(input);
-        let root = ast::Root::cast(node).unwrap();
-        let module = lower(root);
-        let diagnostics = check_module(&module);
-        assert!(diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::MmoDeclarationMissingGateway { declaration, .. }
-                    if declaration == "GlobalShard"
-            )
-        }));
-    }
-
-    #[test]
-    fn test_mmo_declaration_empty_values_are_rejected() {
-        let input = r#"mmo GlobalShard {
-    gateway ""
-    zone ""
-    world ""
-}"#;
-        let node = parse(input);
-        let root = ast::Root::cast(node).unwrap();
-        let module = lower(root);
-        let diagnostics = check_module(&module);
-        assert!(diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::MmoDeclarationEmptyGateway { declaration, .. }
-                    if declaration == "GlobalShard"
-            )
-        }));
-        assert!(diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::MmoDeclarationEmptyZone { declaration, .. }
-                    if declaration == "GlobalShard"
-            )
-        }));
-        assert!(diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::MmoDeclarationEmptyWorld { declaration, .. }
-                    if declaration == "GlobalShard"
-            )
-        }));
-    }
-
-    #[test]
-    fn test_render_contract_missing_required_v5_clauses_is_rejected() {
-        let input = r#"render UiLane {
-    resources UiAssets
-}"#;
-        let node = parse(input);
-        let root = ast::Root::cast(node).unwrap();
-        let module = lower(root);
-        let diagnostics = check_module(&module);
-        assert!(diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::RenderContractMissingTemporal { contract, .. } if contract == "UiLane"
-            )
-        }));
-        assert!(diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::RenderContractMissingQualityTier { contract, .. }
-                    if contract == "UiLane"
-            )
-        }));
-        assert!(diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::RenderContractMissingBudgetTags { contract, .. }
-                    if contract == "UiLane"
-            )
-        }));
-    }
-
-    #[test]
-    fn test_render_contract_missing_resources_is_rejected() {
-        let input = r#"render UiLane {
-    temporal stable
-    quality tier high
-    budget tags ui
-}"#;
-        let node = parse(input);
-        let root = ast::Root::cast(node).unwrap();
-        let module = lower(root);
-        let diagnostics = check_module(&module);
-        assert!(diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::RenderContractMissingResources { contract, .. }
-                    if contract == "UiLane"
-            )
-        }));
-    }
-
-    #[test]
-    fn test_render_contract_unknown_resources_is_rejected() {
-        let input = r#"assets UiAssets {
-    manifest ui_manifest
-    streaming chunked
-}
-render UiLane {
-    resources MissingAssets
-    temporal reproject
-    quality tier high
-    budget tags ui, frame
-}"#;
-        let node = parse(input);
-        let root = ast::Root::cast(node).unwrap();
-        let module = lower(root);
-        let diagnostics = check_module(&module);
-        assert!(diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::RenderContractUnknownResources {
-                    contract,
-                    resources,
-                    available_assets,
-                    ..
-                } if contract == "UiLane"
-                    && resources == "MissingAssets"
-                    && available_assets.iter().any(|name| name == "UiAssets")
-            )
-        }));
-    }
-
-    #[test]
-    fn test_material_requires_surface_model() {
-        let input = r#"material TreeBark {
-    preset forest
-}"#;
-        let node = parse(input);
-        let root = ast::Root::cast(node).unwrap();
-        let module = lower(root);
-        let diagnostics = check_module(&module);
-        assert!(diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::MissingSurfaceModel { material, .. } if material == "TreeBark"
-            )
-        }));
-    }
-
-    #[test]
-    fn test_material_surface_and_alpha_literals_are_validated() {
-        let input = r#"material WaterSurface {
-    surface_model pb_r
-    render alpha translucent
-}"#;
-        let node = parse(input);
-        let root = ast::Root::cast(node).unwrap();
-        let module = lower(root);
-        let diagnostics = check_module(&module);
-        assert!(diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::UnknownSurfaceModel { material, surface_model, .. }
-                    if material == "WaterSurface" && surface_model == "pb_r"
-            )
-        }));
-        assert!(diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::UnknownAlphaMode { material, alpha_mode, .. }
-                    if material == "WaterSurface" && alpha_mode == "translucent"
-            )
-        }));
-    }
-
-    #[test]
-    fn test_material_detects_duplicate_texture_slot_and_unknown_feature() {
-        let input = r#"material ArmorPlate {
-    surface_model pbr
-    textures albedo armor_a
-    textures albedo armor_b
-    features sparkles true
-}"#;
-        let node = parse(input);
-        let root = ast::Root::cast(node).unwrap();
-        let module = lower(root);
-        let diagnostics = check_module(&module);
-        assert!(diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::DuplicateMaterialTextureSlot { material, slot, .. }
-                    if material == "ArmorPlate" && slot == "albedo"
-            )
-        }));
-        assert!(diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::UnknownMaterialFeature { material, feature, .. }
-                    if material == "ArmorPlate" && feature == "sparkles"
-            )
-        }));
-    }
-
-    #[test]
-    fn test_material_feature_values_must_be_strict_booleans() {
-        let input = r#"material ArmorPlate {
-    surface_model pbr
-    features clearcoat enabled
-}"#;
-        let node = parse(input);
-        let root = ast::Root::cast(node).unwrap();
-        let module = lower(root);
-        let diagnostics = check_module(&module);
-        assert!(diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::InvalidMaterialFeatureValue { material, feature, value, .. }
-                    if material == "ArmorPlate" && feature == "clearcoat" && value == "enabled"
-            )
-        }));
-    }
-
-    #[test]
-    fn test_duplicate_material_declaration_names_are_rejected() {
-        let input = r#"material SharedMat {
-    surface_model pbr
-}
-
-material SharedMat {
-    surface_model unlit
-}"#;
-        let node = parse(input);
-        let root = ast::Root::cast(node).unwrap();
-        let module = lower(root);
-        let diagnostics = check_module(&module);
-        assert!(diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::DuplicateDefinition { name, kind, .. }
-                    if name == "SharedMat" && *kind == "material"
-            )
-        }));
-    }
-
-    #[test]
-    fn test_material_rejects_unknown_texture_slot() {
-        let input = r#"material Ground {
-    surface_model pbr
-    textures diffuse "ground_albedo.ktx2"
-}"#;
-        let node = parse(input);
-        let root = ast::Root::cast(node).unwrap();
-        let module = lower(root);
-        let diagnostics = check_module(&module);
-        assert!(diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::UnknownMaterialTextureSlot { material, slot, .. }
-                    if material == "Ground" && slot == "diffuse"
-            )
-        }));
-    }
-
-    #[test]
-    fn test_material_param_and_semantics_ranges_are_validated() {
-        let input = r#"material StoneFloor {
-    surface_model pbr
-    params roughness 1.5
-    params glow 0.4
-    semantics friction 1.2
-}"#;
-        let node = parse(input);
-        let root = ast::Root::cast(node).unwrap();
-        let module = lower(root);
-        let diagnostics = check_module(&module);
-        assert!(diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::InvalidMaterialParam { material, parameter, .. }
-                    if material == "StoneFloor" && parameter == "roughness"
-            )
-        }));
-        assert!(diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::InvalidMaterialParam { material, parameter, .. }
-                    if material == "StoneFloor" && parameter == "glow"
-            )
-        }));
-        assert!(diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::InvalidMaterialParam { material, parameter, .. }
-                    if material == "StoneFloor" && parameter == "semantics.friction"
-            )
-        }));
-    }
-
-    #[test]
-    fn test_render_shader_material_reference_must_exist() {
-        let input = r#"assets UiAssets {
-    manifest ui_manifest
-    streaming chunked
-}
-material ExistingMaterial {
-    surface_model pbr
-}
-render UiLane {
-    resources UiAssets
-    temporal stable
-    quality tier high
-    budget tags ui
-    shader material MissingMaterial
-}"#;
-        let node = parse(input);
-        let root = ast::Root::cast(node).unwrap();
-        let module = lower(root);
-        let diagnostics = check_module(&module);
-        assert!(diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::UnknownRenderMaterialRef { contract, material, .. }
-                    if contract == "UiLane" && material == "MissingMaterial"
-            )
-        }));
-    }
-
-    #[test]
-    fn test_render_contract_empty_budget_tags_is_rejected() {
-        let input = r#"assets UiAssets {
-    manifest ui_manifest
-    streaming chunked
-}
-render UiLane {
-    resources UiAssets
-    temporal stable
-    quality tier medium
-    budget tags "", ui
-}"#;
-        let node = parse(input);
-        let root = ast::Root::cast(node).unwrap();
-        let module = lower(root);
-        let diagnostics = check_module(&module);
-        assert!(diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::RenderContractEmptyBudgetTags { contract, .. }
-                    if contract == "UiLane"
-            )
-        }));
-    }
-
-    #[test]
-    fn test_render_contract_unknown_quality_tier_is_rejected() {
-        let input = r#"assets UiAssets {
-    manifest ui_manifest
-    streaming chunked
-}
-render UiLane {
-    resources UiAssets
-    temporal reproject
-    quality tier cinematic
-    budget tags ui, frame
-}"#;
-        let node = parse(input);
-        let root = ast::Root::cast(node).unwrap();
-        let module = lower(root);
-        let diagnostics = check_module(&module);
-        assert!(diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::UnknownRenderQualityTier { contract, quality_tier, .. }
-                    if contract == "UiLane" && quality_tier == "cinematic"
-            )
-        }));
-    }
-
-    #[test]
-    fn test_render_contract_v5_shape_is_accepted() {
-        let input = r#"assets UiAssets {
-    manifest ui_manifest
-    streaming chunked
-}
-render UiLane {
-    resources UiAssets
-    temporal reproject
-    quality tier high
-    budget tags ui, frame
-}"#;
-        let node = parse(input);
-        let root = ast::Root::cast(node).unwrap();
-        let module = lower(root);
-        let diagnostics = check_module(&module);
-        assert!(!diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::RenderContractMissingResources { .. }
-                    | SemanticError::RenderContractUnknownResources { .. }
-                    | SemanticError::RenderContractMissingTemporal { .. }
-                    | SemanticError::RenderContractMissingQualityTier { .. }
-                    | SemanticError::RenderContractMissingBudgetTags { .. }
-                    | SemanticError::RenderContractEmptyBudgetTags { .. }
-                    | SemanticError::RenderContractLegacyClause { .. }
-            )
-        }));
-    }
-
-    #[test]
-    fn test_render_contract_legacy_clauses_are_rejected_if_injected() {
-        let input = r#"assets UiAssets {
-    manifest ui_manifest
-    streaming chunked
-}
-render UiLane {
-    resources UiAssets
-    temporal stable
-    quality tier medium
-    budget tags ui
-}"#;
-        let node = parse(input);
-        let root = ast::Root::cast(node).unwrap();
-        let mut module = lower(root);
-        set_render_legacy_preset(&mut module, "legacy_preset");
-        let diagnostics = check_module(&module);
-        assert!(diagnostics.errors.iter().any(|err| {
-            matches!(
-                err,
-                SemanticError::RenderContractLegacyClause { contract, clause, .. }
-                    if contract == "UiLane" && clause == "preset"
-            )
-        }));
-    }
-
-    #[test]
     fn test_system_metadata_accepts_fixed_stage_with_known_class_likes() {
-        let input = r#"node PositionNode profile world {
+        let input = r#"class PositionNode {
     x: Integer
 }
-resource FrameClock {
+class FrameClock {
     tick: Integer
 }
 system tick[stage=fixed, reads=[PositionNode], writes=[FrameClock]]() -> Nothing {
@@ -6256,7 +4186,7 @@ system tick[stage=fixed, reads=[PositionNode], writes=[FrameClock]]() -> Nothing
 
     #[test]
     fn test_system_metadata_rejects_unknown_stage() {
-        let input = r#"node PositionNode profile world {
+        let input = r#"class PositionNode {
     x: Integer
 }
 system tick[stage=update, reads=[PositionNode], writes=[PositionNode]]() -> Nothing {
@@ -6278,7 +4208,7 @@ system tick[stage=update, reads=[PositionNode], writes=[PositionNode]]() -> Noth
 
     #[test]
     fn test_system_metadata_requires_stage() {
-        let input = r#"node PositionNode profile world {
+        let input = r#"class PositionNode {
     x: Integer
 }
 system tick[reads=[PositionNode], writes=[PositionNode]]() -> Nothing {
@@ -6300,10 +4230,10 @@ system tick[reads=[PositionNode], writes=[PositionNode]]() -> Nothing {
 
     #[test]
     fn test_system_metadata_rejects_unknown_reads_and_writes_targets() {
-        let input = r#"node PositionNode profile world {
+        let input = r#"class PositionNode {
     x: Integer
 }
-system tick[stage=render, reads=[MissingRead], writes=[MissingWrite]]() -> Nothing {
+system tick[stage=fixed, reads=[MissingRead], writes=[MissingWrite]]() -> Nothing {
     return
 }
 "#;
@@ -6331,7 +4261,7 @@ system tick[stage=render, reads=[MissingRead], writes=[MissingWrite]]() -> Nothi
 
     #[test]
     fn test_system_write_write_conflict_same_stage() {
-        let input = r#"resource Health {
+        let input = r#"class Health {
     value: Integer
 }
 system sys_a[stage=fixed, writes=[Health]]() -> Nothing {
@@ -6360,7 +4290,7 @@ system sys_b[stage=fixed, writes=[Health]]() -> Nothing {
 
     #[test]
     fn test_system_read_write_hazard() {
-        let input = r#"resource Physics {
+        let input = r#"class Physics {
     velocity: Integer
 }
 system writer[stage=fixed, writes=[Physics]]() -> Nothing {
@@ -6388,14 +4318,17 @@ system reader[stage=fixed, reads=[Physics]]() -> Nothing {
     }
 
     #[test]
-    fn test_system_no_conflict_different_stages() {
-        let input = r#"resource Transform {
+    fn test_system_no_conflict_disjoint_writes() {
+        let input = r#"class Transform {
     x: Integer
+}
+class Velocity {
+    value: Integer
 }
 system mover[stage=fixed, writes=[Transform]]() -> Nothing {
     return
 }
-system renderer[stage=render, writes=[Transform]]() -> Nothing {
+system updater[stage=fixed, writes=[Velocity]]() -> Nothing {
     return
 }
 "#;
@@ -6411,7 +4344,7 @@ system renderer[stage=render, writes=[Transform]]() -> Nothing {
                         | SemanticError::SystemReadWriteHazard { .. }
                 )
             }),
-            "expected no conflict errors for different stages, got: {:?}",
+            "expected no conflict errors for disjoint writes, got: {:?}",
             diagnostics.errors
         );
     }
@@ -6428,18 +4361,6 @@ system renderer[stage=render, writes=[Transform]]() -> Nothing {
             enums: Arena::new(),
             interfaces: Arena::new(),
             uses: Vec::new(),
-            material_declarations: Vec::new(),
-            render_contracts: Vec::new(),
-            gpu_functions: Vec::new(),
-            asset_specs: Vec::new(),
-            style_profiles: Vec::new(),
-            generator_plans: Vec::new(),
-            asset_build_graphs: Vec::new(),
-            provenance_ledgers: Vec::new(),
-            quality_gates: Vec::new(),
-            shader_functions: Vec::new(),
-            asset_declarations: Vec::new(),
-            scene_declarations: Vec::new(),
         };
         module.functions.alloc(Function {
             name: SmolStr::new("sys_a"),
@@ -6492,10 +4413,10 @@ system renderer[stage=render, writes=[Transform]]() -> Nothing {
 
     #[test]
     fn test_no_false_positive_valid_systems() {
-        let input = r#"resource Input {
+        let input = r#"class Input {
     buttons: Integer
 }
-resource Position {
+class Position {
     x: Integer
 }
 system input_sys[stage=fixed, writes=[Input]]() -> Nothing {

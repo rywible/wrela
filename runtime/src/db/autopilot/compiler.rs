@@ -274,7 +274,6 @@ impl BudgetClass {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DbWorkloadClass {
-    GameMetaRealtime,
     GeneralTransactional,
     AnalyticsHeavy,
 }
@@ -698,7 +697,6 @@ fn parse_required_namespace_policy_map(
 fn parse_db_workload_class(value: &str) -> Result<DbWorkloadClass, String> {
     let normalized = value.trim().to_ascii_lowercase();
     match normalized.as_str() {
-        "game_meta_realtime" => Ok(DbWorkloadClass::GameMetaRealtime),
         "general_transactional" => Ok(DbWorkloadClass::GeneralTransactional),
         "analytics_heavy" => Ok(DbWorkloadClass::AnalyticsHeavy),
         _ => Err(format!("unknown workload_class `{value}`")),
@@ -732,7 +730,6 @@ fn is_valid_namespace_key(namespace: &str) -> bool {
 impl DbWorkloadClass {
     fn as_str(self) -> &'static str {
         match self {
-            Self::GameMetaRealtime => "game_meta_realtime",
             Self::GeneralTransactional => "general_transactional",
             Self::AnalyticsHeavy => "analytics_heavy",
         }

@@ -129,7 +129,6 @@ fn write_fixture_file(
     std::fs::write(path, contents)
 }
 
-
 const STRICT_DEPLOY_ENV_KEYS: [&str; 18] = [
     "WRELADB_REPLICATION_FACTOR",
     "WRELADB_WRITE_QUORUM",
@@ -292,17 +291,24 @@ fn cli_help() {
     assert!(stdout.contains("--kpi-scheduler-p99-improve-min-pct"));
     assert!(stdout.contains("--kpi-rewrite-overhead-max-pct"));
     assert!(stdout.contains("--target=NAME"));
-    assert!(stdout.contains("mmo <subcommand> <path>"));
-    assert!(stdout.contains("gateway|zone|world|loadtest|ops"));
-    assert!(stdout.contains(
-        "studio <subcommand> <path>  frontend app + orchestration commands (init|build|check|run|preview|explain|fix|synth|bake|pack|gate|ship|synth-assets|bake-assets|validate-assets|package-assets|promote-assets|full-factory)"
-    ));
-    assert!(stdout.contains("agent-run <path>"));
-    assert!(stdout.contains("prompt-driven orchestration for game app path"));
-    assert!(stdout.contains("--intent-v2"));
-    assert!(stdout.contains("--client-runtime=MODE"));
-    assert!(stdout.contains("--shader-provenance"));
-    assert!(stdout.contains("--no-shortcuts"));
+    assert!(!stdout.contains("game <subcommand> <path>"));
+    assert!(!stdout.contains("realtime <subcommand> <path>"));
+    assert!(!stdout.contains("mmo <subcommand> <path>"));
+    assert!(!stdout.contains("frontend <subcommand> <path>"));
+    assert!(!stdout.contains("studio <subcommand> <path>"));
+    assert!(!stdout.contains("agent-run <path>"));
+    assert!(!stdout.contains("--render=NAME"));
+    assert!(!stdout.contains("--host=NAME"));
+    assert!(!stdout.contains("--client-runtime=MODE"));
+    assert!(!stdout.contains("--shader-provenance"));
+    assert!(!stdout.contains("--no-shortcuts"));
+    assert!(!stdout.contains("--intent-v2"));
+    assert!(!stdout.contains("--determinism"));
+    assert!(!stdout.contains("--rollback"));
+    assert!(!stdout.contains("--render-lane"));
+    assert!(!stdout.contains("--asset-streaming"));
+    assert!(!stdout.contains("--gpu-metrics"));
+    assert!(!stdout.contains("--streaming-metrics"));
     assert!(stdout.contains("--app=NAME"));
     assert!(stdout.contains("--deploy-policy=PATH"));
     assert!(stdout.contains("--rf=N"));
@@ -318,8 +324,6 @@ fn cli_help() {
     assert!(stdout.contains("run certification"));
     assert!(!stdout.contains("--no-certify"));
 }
-
-
 
 #[test]
 fn cli_rejects_removed_format_flag_alias() {
@@ -3499,7 +3503,6 @@ fn collect_json_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) 
     }
 }
 
-
 fn write_connector_cassette(root: &std::path::Path, name: &str, status: u16) {
     let cassettes_dir = root.join("tests").join("cassettes");
     std::fs::create_dir_all(&cassettes_dir).expect("create cassettes dir");
@@ -3590,7 +3593,6 @@ fn certification_cache_hash(source_hash: &str, toolchain_version: &str) -> Strin
     payload.extend_from_slice(toolchain_version.as_bytes());
     fnv1a64_hex(&payload)
 }
-
 
 fn parse_single_json_stdout(stdout: &[u8]) -> serde_json::Value {
     let mut values = parse_json_stdout_lines(stdout);

@@ -1924,7 +1924,7 @@ system tick[stage=fixed, reads=[PositionNode], writes=[PositionNode]]() -> Nothi
 
     #[test]
     fn test_deterministic_game_module_rejects_float_type_refs() {
-        let input = r#"node PositionNode profile world {
+        let input = r#"class PositionNode {
     x: Float
 }
 system tick[stage=fixed, reads=[PositionNode], writes=[PositionNode]]() -> Nothing {
@@ -1944,8 +1944,11 @@ system tick[stage=fixed, reads=[PositionNode], writes=[PositionNode]]() -> Nothi
 
     #[test]
     fn test_node_only_module_is_still_deterministic() {
-        let input = r#"node PositionNode profile world {
+        let input = r#"resource PositionNode {
     x: Float
+}
+system tick[stage=fixed, reads=[PositionNode], writes=[PositionNode]]() -> Nothing {
+    return
 }
 "#;
         let node = parse(input);

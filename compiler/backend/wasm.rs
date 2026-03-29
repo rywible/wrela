@@ -92,25 +92,19 @@ const WASM_BLOCK_I64: u8 = WASM_TYPE_I64;
 
 // WASM opcodes
 const OP_UNREACHABLE: u8 = 0x00;
-const OP_NOP: u8 = 0x01;
 const OP_BLOCK: u8 = 0x02;
 const OP_LOOP: u8 = 0x03;
 const OP_IF: u8 = 0x04;
 const OP_ELSE: u8 = 0x05;
 const OP_END: u8 = 0x0B;
 const OP_BR: u8 = 0x0C;
-const OP_BR_IF: u8 = 0x0D;
 const OP_RETURN: u8 = 0x0F;
 const OP_CALL: u8 = 0x10;
 const OP_DROP: u8 = 0x1A;
 const OP_SELECT: u8 = 0x1B;
 const OP_LOCAL_GET: u8 = 0x20;
 const OP_LOCAL_SET: u8 = 0x21;
-const OP_LOCAL_TEE: u8 = 0x22;
-const OP_I64_LOAD: u8 = 0x29;
-const OP_I64_STORE: u8 = 0x37;
 const OP_I64_CONST: u8 = 0x42;
-const OP_I64_EQZ: u8 = 0x50;
 const OP_I64_EQ: u8 = 0x51;
 const OP_I64_NE: u8 = 0x52;
 const OP_I64_LT_S: u8 = 0x53;
@@ -202,11 +196,6 @@ fn import_class_set_slot(reg: &mut ImportRegistry) -> u32 {
 
 fn import_iter_init(reg: &mut ImportRegistry) -> u32 {
     reg.get_or_import("wr_iter_init", 1, true)
-}
-
-fn import_iter_next(reg: &mut ImportRegistry) -> u32 {
-    // iter, out_val_ptr, out_done_ptr -> void
-    reg.get_or_import("wr_iter_next", 3, false)
 }
 
 fn import_num_neg(reg: &mut ImportRegistry) -> u32 {
@@ -332,10 +321,6 @@ fn import_box_float(reg: &mut ImportRegistry) -> u32 {
     reg.get_or_import("wr_box_float", 1, true)
 }
 
-fn import_unbox_float(reg: &mut ImportRegistry) -> u32 {
-    reg.get_or_import("wr_unbox_float", 1, true)
-}
-
 fn import_type_id(reg: &mut ImportRegistry) -> u32 {
     reg.get_or_import("wr_type_id", 1, true)
 }
@@ -446,11 +431,6 @@ impl<'a> WasmFuncCtx<'a> {
         encode_unsigned_leb128(&mut self.code, idx as u64);
     }
 
-    fn emit_local_tee(&mut self, idx: u32) {
-        self.code.push(OP_LOCAL_TEE);
-        encode_unsigned_leb128(&mut self.code, idx as u64);
-    }
-
     fn emit_call(&mut self, func_idx: u32) {
         self.code.push(OP_CALL);
         encode_unsigned_leb128(&mut self.code, func_idx as u64);
@@ -462,10 +442,6 @@ impl<'a> WasmFuncCtx<'a> {
 
     fn emit_return(&mut self) {
         self.code.push(OP_RETURN);
-    }
-
-    fn emit_unreachable(&mut self) {
-        self.code.push(OP_UNREACHABLE);
     }
 
     fn emit_nanbox_nil(&mut self) {

@@ -2,8 +2,8 @@ use crate::diag::catalog::ProjectDiagKind;
 use crate::hir::arena::Idx;
 use crate::hir::lower::{lower, lower_root_body};
 use crate::hir::{
-    Arg, Body, ClassRole, Expr, Function, FunctionKind, FunctionRole, Literal, Module, Stmt,
-    UnaryOp, UseName, UseNameKind, Visibility,
+    Arg, Body, Expr, Function, FunctionKind, FunctionRole, Literal, Module, Stmt, UnaryOp,
+    UseName, UseNameKind, Visibility,
 };
 use crate::parser;
 use crate::parser::ast::AstNode;
@@ -27,12 +27,6 @@ pub struct ProjectProvenance {
     pub function_owner_path_by_id: HashMap<usize, PathBuf>,
     pub function_owner_span_by_id: HashMap<usize, TextRange>,
     pub function_owner_path_by_name: HashMap<SmolStr, PathBuf>,
-    pub material_declaration_owner_path_by_name: HashMap<SmolStr, PathBuf>,
-    pub material_declaration_span_by_name: HashMap<SmolStr, TextRange>,
-    pub render_contract_owner_path_by_name: HashMap<SmolStr, PathBuf>,
-    pub render_contract_span_by_name: HashMap<SmolStr, TextRange>,
-    pub gpu_function_owner_path_by_name: HashMap<SmolStr, PathBuf>,
-    pub gpu_function_span_by_name: HashMap<SmolStr, TextRange>,
     pub class_owner_path_by_name: HashMap<SmolStr, PathBuf>,
     pub enum_owner_path_by_name: HashMap<SmolStr, PathBuf>,
     pub interface_owner_path_by_name: HashMap<SmolStr, PathBuf>,
@@ -324,7 +318,6 @@ pub fn load_project_with_roots(
     loader.analyze_imports();
     loader.enforce_db_api_split_import_policy();
     loader.enforce_architecture_rules();
-    loader.enforce_domain_declaration_boundary();
     loader.enforce_external_call_policy();
     loader.enforce_intrinsic_boundary();
     let classified_effects = loader.classify_function_effects();
@@ -340,23 +333,9 @@ pub fn load_project_with_roots(
         enums: Default::default(),
         interfaces: Default::default(),
         uses: Vec::new(),
-        material_declarations: Vec::new(),
-        render_contracts: Vec::new(),
-        gpu_functions: Vec::new(),
-        asset_specs: Vec::new(),
-        style_profiles: Vec::new(),
-        generator_plans: Vec::new(),
-        asset_build_graphs: Vec::new(),
-        provenance_ledgers: Vec::new(),
-        quality_gates: Vec::new(),
-        shader_functions: Vec::new(),
-        asset_declarations: Vec::new(),
-        scene_declarations: Vec::new(),
     };
 
     let mut function_origins: HashMap<SmolStr, (SmolStr, Option<TextRange>, PathBuf, String)> =
-        HashMap::new();
-    let mut material_origins: HashMap<SmolStr, (SmolStr, Option<TextRange>, PathBuf, String)> =
         HashMap::new();
     let mut class_origins: HashMap<SmolStr, (SmolStr, Option<TextRange>, PathBuf, String)> =
         HashMap::new();
@@ -407,46 +386,6 @@ pub fn load_project_with_roots(
                     (
                         module.name.clone(),
                         func.name_span,
-                        module.path.clone(),
-                        module.source.clone(),
-                    ),
-                );
-            }
-        }
-        for material in &module.module.material_declarations {
-            if let Some((prev_mod, prev_span, prev_path, prev_src)) =
-                material_origins.get(&material.name)
-            {
-                loader.errors.push(ProjectError {
-                    kind: ProjectDiagKind::LoadError,
-                    path: module.path.clone(),
-                    source: module.source.clone(),
-                    message: format!(
-                        "duplicate material declaration '{}' (already defined in module '{}')",
-                        material.name, prev_mod
-                    ),
-                    span: span_from_range(
-                        material
-                            .name_span
-                            .unwrap_or_else(|| TextRange::empty(0.into())),
-                    ),
-                });
-                loader.errors.push(ProjectError {
-                    kind: ProjectDiagKind::LoadError,
-                    path: prev_path.clone(),
-                    source: prev_src.clone(),
-                    message: format!(
-                        "previous definition of material '{}' in module '{}'",
-                        material.name, prev_mod
-                    ),
-                    span: span_from_range(prev_span.unwrap_or_else(|| TextRange::empty(0.into()))),
-                });
-            } else {
-                material_origins.insert(
-                    material.name.clone(),
-                    (
-                        module.name.clone(),
-                        material.name_span,
                         module.path.clone(),
                         module.source.clone(),
                     ),
@@ -576,61 +515,6 @@ pub fn load_project_with_roots(
 
     let mut provenance = ProjectProvenance::default();
     for module in loader.modules.values() {
-        merged
-            .material_declarations
-            .extend(module.module.material_declarations.clone());
-        for material in &module.module.material_declarations {
-            provenance
-                .material_declaration_owner_path_by_name
-                .entry(material.name.clone())
-                .or_insert_with(|| module.path.clone());
-            provenance
-                .material_declaration_span_by_name
-                .entry(material.name.clone())
-                .or_insert(material.span);
-        }
-        merged
-            .render_contracts
-            .extend(module.module.render_contracts.clone());
-        merged
-            .gpu_functions
-            .extend(module.module.gpu_functions.clone());
-        merged.asset_specs.extend(module.module.asset_specs.clone());
-        merged
-            .style_profiles
-            .extend(module.module.style_profiles.clone());
-        merged
-            .generator_plans
-            .extend(module.module.generator_plans.clone());
-        merged
-            .asset_build_graphs
-            .extend(module.module.asset_build_graphs.clone());
-        merged
-            .provenance_ledgers
-            .extend(module.module.provenance_ledgers.clone());
-        merged
-            .quality_gates
-            .extend(module.module.quality_gates.clone());
-        for render in &module.module.render_contracts {
-            provenance
-                .render_contract_owner_path_by_name
-                .entry(render.name.clone())
-                .or_insert_with(|| module.path.clone());
-            provenance
-                .render_contract_span_by_name
-                .entry(render.name.clone())
-                .or_insert(render.span);
-        }
-        for gpu in &module.module.gpu_functions {
-            provenance
-                .gpu_function_owner_path_by_name
-                .entry(gpu.name.clone())
-                .or_insert_with(|| module.path.clone());
-            provenance
-                .gpu_function_span_by_name
-                .entry(gpu.name.clone())
-                .or_insert(gpu.span);
-        }
         let mut func_map = HashMap::new();
         for (idx, func) in module.module.functions.iter() {
             let new_idx = merged.functions.alloc(func.clone());
@@ -686,9 +570,6 @@ pub fn load_project_with_roots(
             provenance
                 .interface_owner_path_by_name
                 .insert(interface.name.clone(), module.path.clone());
-        }
-        for shader in &module.module.shader_functions {
-            merged.shader_functions.push(shader.clone());
         }
     }
 
@@ -1427,106 +1308,6 @@ impl ProjectLoader {
                         span: span_from_range(use_site.module_span.unwrap_or(use_site.span)),
                     });
                 }
-            }
-        }
-    }
-
-    fn enforce_domain_declaration_boundary(&mut self) {
-        if self.project_mode != ProjectMode::Project {
-            return;
-        }
-
-        let mut module_names: Vec<SmolStr> = self.modules.keys().cloned().collect();
-        module_names.sort_by(|a, b| a.as_str().cmp(b.as_str()));
-        for module_name in module_names {
-            let Some(module) = self.modules.get(&module_name) else {
-                continue;
-            };
-            if classify_module_layer(module.name.as_str()) != ModuleLayer::Domain {
-                continue;
-            }
-
-            for (_, class) in module.module.classes.iter() {
-                if class.role != ClassRole::Node {
-                    continue;
-                }
-                self.errors.push(ProjectError {
-                    kind: ProjectDiagKind::LoadError,
-                    path: module.path.clone(),
-                    source: module.source.clone(),
-                    message: domain_declaration_violation_message(
-                        module.name.as_str(),
-                        "node",
-                        class.name.as_str(),
-                        "node",
-                    ),
-                    span: span_from_range(
-                        class
-                            .name_span
-                            .unwrap_or_else(|| TextRange::empty(0.into())),
-                    ),
-                });
-            }
-
-            for (_, func) in module.module.functions.iter() {
-                let declaration_kind = match func.role {
-                    FunctionRole::View => Some("view"),
-                    FunctionRole::Anim => Some("anim"),
-                    _ => None,
-                };
-                let Some(declaration_kind) = declaration_kind else {
-                    continue;
-                };
-                self.errors.push(ProjectError {
-                    kind: ProjectDiagKind::LoadError,
-                    path: module.path.clone(),
-                    source: module.source.clone(),
-                    message: domain_declaration_violation_message(
-                        module.name.as_str(),
-                        declaration_kind,
-                        func.name.as_str(),
-                        declaration_kind,
-                    ),
-                    span: span_from_range(
-                        func.name_span.unwrap_or_else(|| TextRange::empty(0.into())),
-                    ),
-                });
-            }
-
-            for material in &module.module.material_declarations {
-                self.errors.push(ProjectError {
-                    kind: ProjectDiagKind::LoadError,
-                    path: module.path.clone(),
-                    source: module.source.clone(),
-                    message: domain_declaration_violation_message(
-                        module.name.as_str(),
-                        "material",
-                        material.name.as_str(),
-                        "material",
-                    ),
-                    span: span_from_range(
-                        material
-                            .name_span
-                            .unwrap_or_else(|| TextRange::empty(0.into())),
-                    ),
-                });
-            }
-
-            for render_contract in &module.module.render_contracts {
-                self.errors.push(ProjectError {
-                    kind: ProjectDiagKind::LoadError,
-                    path: module.path.clone(),
-                    source: module.source.clone(),
-                    message: domain_declaration_violation_message(
-                        module.name.as_str(),
-                        "render contract",
-                        render_contract.name.as_str(),
-                        "render",
-                    ),
-                    span: span_from_range(
-                        render_contract.name_span.unwrap_or(render_contract.span),
-                    ),
-                });
             }
         }
     }
@@ -3191,27 +2972,6 @@ fn host_http_import_violation_message(source_module: &str) -> String {
     )
 }
 
-fn suggested_presentation_module(module_name: &str) -> String {
-    if let Some(suffix) = module_name.strip_prefix("domain/") {
-        format!("presentation/{suffix}")
-    } else {
-        "presentation/<feature>".to_string()
-    }
-}
-
-fn domain_declaration_violation_message(
-    module_name: &str,
-    declaration_kind: &str,
-    declaration_name: &str,
-    declaration_keyword: &str,
-) -> String {
-    let presentation_module = suggested_presentation_module(module_name);
-    format!(
-        "domain module '{}' declares {} '{}'. '{}' declarations are presentation-only. help: move this declaration to src/presentation/** (suggested module '{}') and keep src/domain/** focused on pure domain contracts and logic",
-        module_name, declaration_kind, declaration_name, declaration_keyword, presentation_module
-    )
-}
-
 fn layer_label(layer: ModuleLayer) -> &'static str {
     match layer {
         ModuleLayer::Domain => "domain",
@@ -3468,20 +3228,6 @@ fn is_builtin_value_name(name: &SmolStr) -> bool {
             | "__wr_db_explain_global_route_lookup"
             | "__wr_external_call"
             | "__wr_http_call"
-            | "__wr_game_session_create_listener"
-            | "__wr_game_session_poll_event"
-            | "__wr_game_session_accept_connection"
-            | "__wr_game_session_read_connection_bytes"
-            | "__wr_game_session_read_http_request_frame"
-            | "__wr_game_session_read_message"
-            | "__wr_game_session_write_connection_bytes"
-            | "__wr_game_session_write_http_response_frame"
-            | "__wr_game_session_write_http_response_vectored"
-            | "__wr_game_session_write_message"
-            | "__wr_game_session_send_file"
-            | "__wr_game_session_configure_listener_socket"
-            | "__wr_game_session_close_connection"
-            | "__wr_game_session_close_listener"
             | "__wr_metrics_web_writev_calls_id"
             | "__wr_metrics_web_sendfile_calls_id"
             | "__wr_web_parse_json_text"
@@ -3492,32 +3238,6 @@ fn is_builtin_value_name(name: &SmolStr) -> bool {
             | "__wr_auth_verify_jwt"
             | "__wr_auth_generate_secure_token"
             | "__wr_auth_render_jwks_document"
-            | "__wr_entity_spawn"
-            | "__wr_entity_despawn"
-            | "__wr_entity_set_position"
-            | "__wr_entity_get_position_x"
-            | "__wr_entity_get_position_y"
-            | "__wr_entity_get_position_z"
-            | "__wr_entity_set_component"
-            | "__wr_entity_get_component"
-            | "__wr_entity_query_archetype"
-            | "__wr_entity_query_radius"
-            | "__wr_entity_count"
-            | "__wr_audio_play_oneshot"
-            | "__wr_audio_play_loop"
-            | "__wr_audio_stop_loop"
-            | "__wr_audio_set_listener"
-            | "__wr_audio_set_parameter"
-            | "__wr_physics_create_body"
-            | "__wr_physics_remove_body"
-            | "__wr_physics_set_velocity"
-            | "__wr_physics_get_position_x"
-            | "__wr_physics_get_position_y"
-            | "__wr_physics_get_position_z"
-            | "__wr_physics_step"
-            | "__wr_physics_query_contacts"
-            | "__wr_physics_raycast"
-            | "__wr_physics_add_breakable_joint"
             | "Pool"
             | "queue"
             | "drop"
@@ -3766,56 +3486,10 @@ fn collect_pattern_bindings(pattern: &crate::hir::Pattern, scope: &mut Scope) {
 mod tests {
     use super::*;
     use std::fs;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    static TEMP_PROJECT_SEQ: AtomicU64 = AtomicU64::new(0);
 
     fn write_temp(path: &Path, contents: &str) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, contents).unwrap();
-    }
-
-    fn temp_project_base(prefix: &str) -> PathBuf {
-        let seq = TEMP_PROJECT_SEQ.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!(
-            "{prefix}_{}_{}_{}",
-            std::process::id(),
-            seq,
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ))
-    }
-
-    fn assert_domain_declaration_is_rejected(
-        declaration_source: &str,
-        expected_fragment: &str,
-        expected_keyword: &str,
-    ) {
-        let base = temp_project_base("wrela_project_domain_declaration_boundary");
-        let entry_path = base.join("src").join("main.wr");
-        let domain_path = base.join("src").join("domain").join("ui.wr");
-        write_temp(
-            &entry_path,
-            "use * from domain/ui\n\nfn run() -> Integer { return 1 }\n",
-        );
-        write_temp(&domain_path, &format!("{declaration_source}\n"));
-
-        let errors = match load_project(&entry_path) {
-            Ok(_) => panic!("domain declaration should fail"),
-            Err(errors) => errors,
-        };
-        assert!(
-            errors.iter().any(|error| {
-                error.path == domain_path
-                    && error.message.contains(expected_fragment)
-                    && error.message.contains("src/presentation/**")
-                    && error.message.contains(expected_keyword)
-            }),
-            "expected domain declaration boundary diagnostic for {expected_fragment}, got {errors:?}"
-        );
     }
 
     #[test]
@@ -4193,48 +3867,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_domain_node_declaration_requires_presentation_layer() {
-        assert_domain_declaration_is_rejected(
-            "node MainScene profile ui {\n    enabled: Boolean\n}",
-            "declares node 'MainScene'",
-            "'node' declarations are presentation-only",
-        );
-    }
-
-    #[test]
-    fn test_domain_view_declaration_requires_presentation_layer() {
-        assert_domain_declaration_is_rejected(
-            "view hud() -> Nothing {\n    return\n}",
-            "declares view 'hud'",
-            "'view' declarations are presentation-only",
-        );
-    }
-
-    #[test]
-    fn test_domain_material_declaration_requires_presentation_layer() {
-        assert_domain_declaration_is_rejected(
-            "material button {\n    surface_model pbr\n}",
-            "declares material 'button'",
-            "'material' declarations are presentation-only",
-        );
-    }
-
-    #[test]
-    fn test_domain_anim_declaration_requires_presentation_layer() {
-        assert_domain_declaration_is_rejected(
-            "anim pulse() -> Nothing {\n    return\n}",
-            "declares anim 'pulse'",
-            "'anim' declarations are presentation-only",
-        );
-    }
-
-    #[test]
-    fn test_domain_render_contract_requires_presentation_layer() {
-        assert_domain_declaration_is_rejected(
-            "render UiLane {\n    resources UiAssets\n    temporal stable\n    quality tier quality\n    budget tags ui\n}",
-            "declares render contract 'UiLane'",
-            "'render' declarations are presentation-only",
-        );
-    }
 }

@@ -16,14 +16,6 @@ pub enum Token {
     Resource,
     #[strum(serialize = "event")]
     Event,
-    #[strum(serialize = "asset")]
-    Asset,
-    #[strum(serialize = "scene")]
-    Scene,
-    #[strum(serialize = "theme")]
-    Theme,
-    #[strum(serialize = "node")]
-    Node,
     #[strum(serialize = "interface")]
     Interface,
     #[strum(serialize = "has")]
@@ -38,14 +30,8 @@ pub enum Token {
     Fn,
     #[strum(serialize = "system")]
     System,
-    #[strum(serialize = "view")]
-    View,
-    #[strum(serialize = "material")]
-    Material,
     #[strum(serialize = "widget")]
     Widget,
-    #[strum(serialize = "anim")]
-    Anim,
     #[strum(serialize = "if")]
     If,
     #[strum(serialize = "else")]
@@ -120,22 +106,12 @@ pub enum Token {
     Given,
     #[strum(serialize = "require")]
     Require,
-    #[strum(serialize = "render")]
-    Render,
     #[strum(serialize = "preset")]
     Preset,
     #[strum(serialize = "profile")]
     Profile,
     #[strum(serialize = "overrides")]
     Overrides,
-    #[strum(serialize = "gpu")]
-    Gpu,
-    #[strum(serialize = "assets")]
-    Assets,
-    #[strum(serialize = "mmo")]
-    Mmo,
-    #[strum(serialize = "asset_spec")]
-    AssetSpec,
     #[strum(serialize = "style_profile")]
     StyleProfile,
     #[strum(serialize = "generator_profile")]
@@ -144,22 +120,6 @@ pub enum Token {
     QualityProfile,
     #[strum(serialize = "provenance_policy")]
     ProvenancePolicy,
-    #[strum(serialize = "character_spec")]
-    CharacterSpec,
-    #[strum(serialize = "rig_spec")]
-    RigSpec,
-    #[strum(serialize = "anim_set_spec")]
-    AnimSetSpec,
-    #[strum(serialize = "audio_spec")]
-    AudioSpec,
-    #[strum(serialize = "vfx_spec")]
-    VfxSpec,
-    #[strum(serialize = "ui_spec")]
-    UiSpec,
-    #[strum(serialize = "world_recipe")]
-    WorldRecipe,
-    #[strum(serialize = "shader")]
-    Shader,
 
     // Literals
     #[strum(serialize = "Identifier")]
@@ -280,10 +240,6 @@ impl Token {
                 | Token::Component
                 | Token::Resource
                 | Token::Event
-                | Token::Asset
-                | Token::Scene
-                | Token::Theme
-                | Token::Node
                 | Token::Interface
                 | Token::Has
                 | Token::Can
@@ -291,10 +247,7 @@ impl Token {
                 | Token::Derives
                 | Token::Fn
                 | Token::System
-                | Token::View
-                | Token::Material
                 | Token::Widget
-                | Token::Anim
                 | Token::If
                 | Token::Else
                 | Token::While
@@ -332,26 +285,13 @@ impl Token {
                 | Token::Checks
                 | Token::Given
                 | Token::Require
-                | Token::Render
                 | Token::Preset
                 | Token::Profile
                 | Token::Overrides
-                | Token::Gpu
-                | Token::Assets
-                | Token::Mmo
-                | Token::AssetSpec
                 | Token::StyleProfile
                 | Token::GeneratorProfile
                 | Token::QualityProfile
                 | Token::ProvenancePolicy
-                | Token::CharacterSpec
-                | Token::RigSpec
-                | Token::AnimSetSpec
-                | Token::AudioSpec
-                | Token::VfxSpec
-                | Token::UiSpec
-                | Token::WorldRecipe
-                | Token::Shader
         )
     }
 

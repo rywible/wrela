@@ -28,11 +28,7 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
     }
     for node in root.descendants() {
         match node.kind() {
-            SyntaxKind::FuncDef
-            | SyntaxKind::SystemDef
-            | SyntaxKind::ViewDef
-            | SyntaxKind::AnimDef
-            | SyntaxKind::GpuFuncDef => {
+            SyntaxKind::FuncDef | SyntaxKind::SystemDef => {
                 if !has_token(&node, SyntaxKind::Ident) {
                     errors.push(ValidationError {
                         kind: ValidationDiagKind::AstRule,
@@ -52,20 +48,7 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                     });
                 }
             }
-            SyntaxKind::MaterialDef => {
-                if !has_token(&node, SyntaxKind::Ident) {
-                    errors.push(ValidationError {
-                        kind: ValidationDiagKind::AstRule,
-                        message: "material declaration requires a name".to_string(),
-                        span: span_for_node(&node),
-                    });
-                }
-            }
-            SyntaxKind::ClassDef
-            | SyntaxKind::NodeDef
-            | SyntaxKind::ResourceDef
-            | SyntaxKind::EventDef
-            | SyntaxKind::ThemeDef => {
+            SyntaxKind::ClassDef | SyntaxKind::ResourceDef | SyntaxKind::EventDef => {
                 if !has_token(&node, SyntaxKind::Ident) {
                     errors.push(ValidationError {
                         kind: ValidationDiagKind::AstRule,
@@ -131,37 +114,6 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                                 });
                             }
                             _ => {}
-                        }
-                    }
-                }
-                if node.kind() == SyntaxKind::NodeDef {
-                    let profile_clause = node
-                        .children()
-                        .find(|child| child.kind() == SyntaxKind::NodeProfileClause);
-                    if profile_clause.is_none() {
-                        errors.push(ValidationError {
-                            kind: ValidationDiagKind::AstRule,
-                            message: "node definition requires `profile ui|world|canvas`"
-                                .to_string(),
-                            span: span_for_node(&node),
-                        });
-                    } else if let Some(clause) =
-                        profile_clause.and_then(ast::NodeProfileClause::cast)
-                    {
-                        if !has_token(clause.syntax(), SyntaxKind::ProfileKw) {
-                            errors.push(ValidationError {
-                                kind: ValidationDiagKind::AstRule,
-                                message: "node definition requires `profile ui|world|canvas`"
-                                    .to_string(),
-                                span: span_for_node(clause.syntax()),
-                            });
-                        } else if clause.profile().is_none() {
-                            errors.push(ValidationError {
-                                kind: ValidationDiagKind::AstRule,
-                                message: "node profile must be one of `ui`, `world`, or `canvas`"
-                                    .to_string(),
-                                span: span_for_node(clause.syntax()),
-                            });
                         }
                     }
                 }
@@ -250,10 +202,8 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                     Some(
                         SyntaxKind::Root
                             | SyntaxKind::ClassDef
-                            | SyntaxKind::NodeDef
                             | SyntaxKind::ResourceDef
                             | SyntaxKind::EventDef
-                            | SyntaxKind::ThemeDef
                     )
                 ) {
                     errors.push(ValidationError {
@@ -269,16 +219,10 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                                 if !matches!(
                                     stmt.kind(),
                                     SyntaxKind::ClassDef
-                                        | SyntaxKind::NodeDef
                                         | SyntaxKind::ResourceDef
                                         | SyntaxKind::EventDef
-                                        | SyntaxKind::ThemeDef
                                         | SyntaxKind::FuncDef
                                         | SyntaxKind::SystemDef
-                                        | SyntaxKind::ViewDef
-                                        | SyntaxKind::MaterialDef
-                                        | SyntaxKind::AnimDef
-                                        | SyntaxKind::GpuFuncDef
                                 ) {
                                     errors.push(ValidationError {
                                         kind: ValidationDiagKind::AstRule,
@@ -293,13 +237,7 @@ contain functions and classes"
                     }
                 } else if matches!(
                     parent_kind,
-                    Some(
-                        SyntaxKind::ClassDef
-                            | SyntaxKind::NodeDef
-                            | SyntaxKind::ResourceDef
-                            | SyntaxKind::EventDef
-                            | SyntaxKind::ThemeDef
-                    )
+                    Some(SyntaxKind::ClassDef | SyntaxKind::ResourceDef | SyntaxKind::EventDef)
                 ) {
                     for child in node.children() {
                         if !matches!(
@@ -488,14 +426,7 @@ fn is_in_function(node: &SyntaxNode) -> bool {
     node.ancestors().any(|ancestor| {
         matches!(
             ancestor.kind(),
-            SyntaxKind::FuncDef
-                | SyntaxKind::SystemDef
-                | SyntaxKind::ViewDef
-                | SyntaxKind::MaterialDef
-                | SyntaxKind::AnimDef
-                | SyntaxKind::GpuFuncDef
-                | SyntaxKind::MethodDef
-                | SyntaxKind::ShaderDef
+            SyntaxKind::FuncDef | SyntaxKind::SystemDef | SyntaxKind::MethodDef
         )
     })
 }
@@ -601,9 +532,9 @@ while true {
     }
 
     #[test]
-    fn test_return_inside_gpu_function_is_allowed() {
+    fn test_return_inside_function_is_allowed() {
         let text = "\
-gpu fn shade() -> String {
+fn shade() -> String {
     return \"wgsl\"
 }
 ";
@@ -767,35 +698,5 @@ interface Predicate {
         let root = parse(text);
         let errors = validate(&root);
         assert!(errors.is_empty(), "{errors:?}");
-    }
-
-    #[test]
-    fn test_node_requires_profile_clause() {
-        let text = "\
-node Position {
-    x: Integer
-}
-";
-        let root = parse(text);
-        let errors = validate(&root);
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.message == "node definition requires `profile ui|world|canvas`"),
-            "{errors:?}"
-        );
-    }
-
-    #[test]
-    fn test_node_profile_value_must_be_known() {
-        let text = "node Position profile bad { x: Integer }\n";
-        let root = parse(text);
-        let errors = validate(&root);
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.message == "node profile must be one of `ui`, `world`, or `canvas`"),
-            "{errors:?}"
-        );
     }
 }

@@ -8,10 +8,6 @@ pub enum SyntaxKind {
     ComponentKw,        // component
     ResourceKw,         // resource
     EventKw,            // event
-    AssetKw,            // asset
-    SceneKw,            // scene
-    ThemeKw,            // theme
-    NodeKw,             // node
     InterfaceKw,        // interface
     HasKw,              // has
     CanKw,              // can
@@ -19,10 +15,7 @@ pub enum SyntaxKind {
     DerivesKw,          // derives
     FnKw,               // fn
     SystemKw,           // system
-    ViewKw,             // view
-    MaterialKw,         // material
     WidgetKw,           // widget
-    AnimKw,             // anim
     IfKw,               // if
     ElseKw,             // else
     WhileKw,            // while
@@ -60,26 +53,13 @@ pub enum SyntaxKind {
     ChecksKw,           // checks
     GivenKw,            // given
     RequireKw,          // require
-    RenderKw,           // render
     PresetKw,           // preset
     ProfileKw,          // profile
     OverridesKw,        // overrides
-    GpuKw,              // gpu
-    AssetsKw,           // assets
-    MmoKw,              // mmo
-    AssetSpecKw,        // asset_spec
     StyleProfileKw,     // style_profile
     GeneratorProfileKw, // generator_profile
     QualityProfileKw,   // quality_profile
     ProvenancePolicyKw, // provenance_policy
-    CharacterSpecKw,    // character_spec
-    RigSpecKw,          // rig_spec
-    AnimSetSpecKw,      // anim_set_spec
-    AudioSpecKw,        // audio_spec
-    VfxSpecKw,          // vfx_spec
-    UiSpecKw,           // ui_spec
-    WorldRecipeKw,      // world_recipe
-    ShaderKw,           // shader
 
     // Literals
     Ident,
@@ -145,54 +125,14 @@ pub enum SyntaxKind {
     // --- Nodes (Composite elements) ---
     Root,
     ClassDef,
-    NodeDef,
-    NodeProfileClause,
     ComponentDef,
     ResourceDef,
     EventDef,
-    SceneDef,
-    ThemeDef,
     EnumDef,
     EnumVariant,
     FuncDef,
     SystemDef,
-    ViewDef,
-    MaterialDef,
-    MaterialSurfaceModelClause,
-    MaterialPresetClause,
-    MaterialTexturesClause,
-    MaterialParamsClause,
-    MaterialFeaturesClause,
-    MaterialSemanticsClause,
-    MaterialRenderAlphaClause,
-    MaterialRenderDoubleSidedClause,
-    MaterialRenderReceivesDecalsClause,
     WidgetDef,
-    AnimDef,
-    GpuFuncDef,
-    RenderDef,
-    RenderResourcesClause,
-    RenderTemporalClause,
-    RenderQualityTierClause,
-    RenderBudgetTagsClause,
-    RenderPresetClause,
-    RenderProfileClause,
-    RenderTargetClause,
-    RenderShaderClause,
-    RenderOverridesClause,
-    RenderOverrideTier0,
-    RenderOverrideTier1,
-    RenderOverrideTier2,
-    AssetsDef,
-    AssetsManifestClause,
-    AssetsStreamingClause,
-    MmoDef,
-    MmoGatewayClause,
-    MmoZoneClause,
-    MmoWorldClause,
-    AssetSpecDef,
-    AssetSpecIdClause,
-    AssetSpecProfileClause,
     StyleProfileDef,
     StyleProfileIdClause,
     StyleProfileProfileClause,
@@ -205,50 +145,6 @@ pub enum SyntaxKind {
     ProvenancePolicyDef,
     ProvenancePolicyIdClause,
     ProvenancePolicyProfileClause,
-    CharacterSpecDef,
-    CharacterSpecIdClause,
-    CharacterSpecProfileClause,
-    RigSpecDef,
-    RigSpecIdClause,
-    RigSpecProfileClause,
-    AnimSetSpecDef,
-    AnimSetSpecIdClause,
-    AnimSetSpecProfileClause,
-    AudioSpecDef,
-    AudioSpecIdClause,
-    AudioSpecProfileClause,
-    VfxSpecDef,
-    VfxSpecIdClause,
-    VfxSpecProfileClause,
-    UiSpecDef,
-    UiSpecIdClause,
-    UiSpecProfileClause,
-    WorldRecipeDef,
-    WorldRecipeIdClause,
-    WorldRecipeProfileClause,
-    ShaderDef,
-    AssetDecl,
-    AssetKindClause,
-    AssetPromptClause,
-    AssetStyleClause,
-    AssetNegativeClause,
-    AssetLodBudgetClause,
-    SceneEntityBlock,
-    SceneLightingBlock,
-    SceneCameraBlock,
-    SceneEntityMeshClause,
-    SceneEntityPositionClause,
-    SceneEntityRotationClause,
-    SceneEntityScaleClause,
-    SceneLightingSunDirectionClause,
-    SceneLightingSunColorClause,
-    SceneLightingSunIntensityClause,
-    SceneLightingAmbientColorClause,
-    SceneLightingAmbientIntensityClause,
-    SceneCameraModeClause,
-    SceneCameraTargetClause,
-    SceneCameraDistanceClause,
-    SceneCameraPitchClause,
     MethodDef,
     MustMethodDef,
     FieldDef,
@@ -312,10 +208,6 @@ impl From<Token> for SyntaxKind {
             Token::Component => SyntaxKind::ComponentKw,
             Token::Resource => SyntaxKind::ResourceKw,
             Token::Event => SyntaxKind::EventKw,
-            Token::Asset => SyntaxKind::AssetKw,
-            Token::Scene => SyntaxKind::SceneKw,
-            Token::Theme => SyntaxKind::ThemeKw,
-            Token::Node => SyntaxKind::NodeKw,
             Token::Interface => SyntaxKind::InterfaceKw,
             Token::Has => SyntaxKind::HasKw,
             Token::Can => SyntaxKind::CanKw,
@@ -323,10 +215,7 @@ impl From<Token> for SyntaxKind {
             Token::Derives => SyntaxKind::DerivesKw,
             Token::Fn => SyntaxKind::FnKw,
             Token::System => SyntaxKind::SystemKw,
-            Token::View => SyntaxKind::ViewKw,
-            Token::Material => SyntaxKind::MaterialKw,
             Token::Widget => SyntaxKind::WidgetKw,
-            Token::Anim => SyntaxKind::AnimKw,
             Token::If => SyntaxKind::IfKw,
             Token::Else => SyntaxKind::ElseKw,
             Token::While => SyntaxKind::WhileKw,
@@ -364,26 +253,13 @@ impl From<Token> for SyntaxKind {
             Token::Checks => SyntaxKind::ChecksKw,
             Token::Given => SyntaxKind::GivenKw,
             Token::Require => SyntaxKind::RequireKw,
-            Token::Render => SyntaxKind::RenderKw,
             Token::Preset => SyntaxKind::PresetKw,
             Token::Profile => SyntaxKind::ProfileKw,
             Token::Overrides => SyntaxKind::OverridesKw,
-            Token::Gpu => SyntaxKind::GpuKw,
-            Token::Assets => SyntaxKind::AssetsKw,
-            Token::Mmo => SyntaxKind::MmoKw,
-            Token::AssetSpec => SyntaxKind::AssetSpecKw,
             Token::StyleProfile => SyntaxKind::StyleProfileKw,
             Token::GeneratorProfile => SyntaxKind::GeneratorProfileKw,
             Token::QualityProfile => SyntaxKind::QualityProfileKw,
             Token::ProvenancePolicy => SyntaxKind::ProvenancePolicyKw,
-            Token::CharacterSpec => SyntaxKind::CharacterSpecKw,
-            Token::RigSpec => SyntaxKind::RigSpecKw,
-            Token::AnimSetSpec => SyntaxKind::AnimSetSpecKw,
-            Token::AudioSpec => SyntaxKind::AudioSpecKw,
-            Token::VfxSpec => SyntaxKind::VfxSpecKw,
-            Token::UiSpec => SyntaxKind::UiSpecKw,
-            Token::WorldRecipe => SyntaxKind::WorldRecipeKw,
-            Token::Shader => SyntaxKind::ShaderKw,
             Token::Identifier(_) => SyntaxKind::Ident,
             Token::StringLiteral(_) => SyntaxKind::StringLiteral,
             Token::StringStart(_) => SyntaxKind::StringStart,
