@@ -4,8 +4,8 @@ use wrela::hir;
 use wrela::hir::checkir::{CheckBinaryOp, CheckValue, extract_module};
 use wrela::mir;
 use wrela::mir::ir::{
-    BasicBlock, BlockId, Local, LocalId, MirFunction, MirModule, MirType, Place, Rvalue, Stmt,
-    Temp, TempId, Terminator, Value,
+    BasicBlock, BlockId, Local, LocalId, MirFunction, MirModule, MirType, Place,
+    PortableAbiType, Rvalue, Stmt, Temp, TempId, Terminator, Value,
 };
 use wrela::mir::rewrite::{
     RewriteBudget, admit_rulepack, admit_rulepack_scored, apply_rulepack, mine_admit_and_apply,
@@ -305,6 +305,8 @@ fn sample_rewrite_module() -> MirModule {
     let func = MirFunction {
         name: "run".into(),
         params: vec![LocalId(0)],
+        abi_params: vec![PortableAbiType::Value],
+        abi_return: PortableAbiType::Value,
         locals: vec![Local {
             name: "x".into(),
             mutable: false,

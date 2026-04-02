@@ -34,6 +34,8 @@ pub enum Stmt {
     Assert {
         kind: AssertKind,
         expr: Idx<Expr>,
+        rhs: Option<Idx<Expr>>,
+        tolerance: Option<Idx<Expr>>,
     },
     Require {
         condition: Idx<Expr>,
@@ -100,6 +102,7 @@ pub enum Stmt {
 pub enum AssertKind {
     Value,
     Identity,
+    Approx,
 }
 
 #[derive(Debug, Clone, PartialEq)]

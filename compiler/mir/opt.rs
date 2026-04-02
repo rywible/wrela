@@ -3717,6 +3717,8 @@ fn run() -> Integer {
         let mut func = MirFunction {
             name: "map_get".into(),
             params: Vec::new(),
+            abi_params: Vec::new(),
+            abi_return: PortableAbiType::Value,
             locals: Vec::new(),
             temps: vec![
                 Temp {
@@ -3746,6 +3748,8 @@ fn run() -> Integer {
         let mut func = MirFunction {
             name: "test".into(),
             params: vec![],
+            abi_params: vec![],
+            abi_return: PortableAbiType::Value,
             locals: vec![Local {
                 name: "x".into(),
                 mutable: true,
@@ -3793,6 +3797,8 @@ fn run() -> Integer {
         let mut func = MirFunction {
             name: "test_int".into(),
             params: vec![],
+            abi_params: vec![],
+            abi_return: PortableAbiType::Value,
             locals: vec![Local {
                 name: "x".into(),
                 mutable: true,
@@ -3830,6 +3836,8 @@ fn run() -> Integer {
         let mut func = MirFunction {
             name: "phi_rc_guard".into(),
             params: vec![],
+            abi_params: vec![],
+            abi_return: PortableAbiType::Value,
             locals: vec![
                 Local {
                     name: "bind_address#ssa0".into(),
@@ -3982,6 +3990,8 @@ fn run() -> Integer {
         let mut func = MirFunction {
             name: "result_ok_fastpath".into(),
             params: vec![],
+            abi_params: vec![],
+            abi_return: PortableAbiType::Value,
             locals: vec![Local {
                 name: "v".into(),
                 mutable: false,
@@ -4053,6 +4063,8 @@ fn run() -> Integer {
         let mut func = MirFunction {
             name: "result_err_fastpath".into(),
             params: vec![],
+            abi_params: vec![],
+            abi_return: PortableAbiType::Value,
             locals: vec![],
             temps: vec![
                 Temp {
@@ -4139,6 +4151,8 @@ fn run() -> Integer {
         let mut func = MirFunction {
             name: "caller".into(),
             params: vec![],
+            abi_params: vec![],
+            abi_return: PortableAbiType::Value,
             locals: vec![Local {
                 name: "recv".into(),
                 mutable: false,
@@ -4193,6 +4207,8 @@ fn run() -> Integer {
         let mut func = MirFunction {
             name: "caller".into(),
             params: vec![],
+            abi_params: vec![],
+            abi_return: PortableAbiType::Value,
             locals: vec![Local {
                 name: "recv".into(),
                 mutable: false,
@@ -4248,6 +4264,8 @@ fn run() -> Integer {
                 MirFunction {
                     name: "main".into(),
                     params: vec![],
+                    abi_params: vec![],
+                    abi_return: PortableAbiType::Value,
                     locals: vec![],
                     temps: vec![Temp {
                         ty: MirType::Unknown,
@@ -4273,6 +4291,8 @@ fn run() -> Integer {
                 MirFunction {
                     name: "alive".into(),
                     params: vec![],
+                    abi_params: vec![],
+                    abi_return: PortableAbiType::Value,
                     locals: vec![],
                     temps: vec![],
                     blocks: vec![BasicBlock {
@@ -4285,6 +4305,8 @@ fn run() -> Integer {
                 MirFunction {
                     name: "dead".into(),
                     params: vec![],
+                    abi_params: vec![],
+                    abi_return: PortableAbiType::Value,
                     locals: vec![],
                     temps: vec![],
                     blocks: vec![BasicBlock {
@@ -4311,6 +4333,8 @@ fn run() -> Integer {
         let small = MirFunction {
             name: "small".into(),
             params: vec![],
+            abi_params: vec![],
+            abi_return: PortableAbiType::Value,
             locals: vec![],
             temps: vec![],
             blocks: vec![BasicBlock {
@@ -4325,6 +4349,8 @@ fn run() -> Integer {
                 MirFunction {
                     name: "main".into(),
                     params: vec![],
+                    abi_params: vec![],
+                    abi_return: PortableAbiType::Value,
                     locals: vec![],
                     temps: vec![Temp {
                         ty: MirType::Unknown,
@@ -4350,6 +4376,8 @@ fn run() -> Integer {
                 MirFunction {
                     name: "helper".into(),
                     params: vec![],
+                    abi_params: vec![],
+                    abi_return: PortableAbiType::Value,
                     locals: vec![],
                     temps: vec![Temp {
                         ty: MirType::Unknown,

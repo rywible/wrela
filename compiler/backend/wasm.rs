@@ -1815,6 +1815,8 @@ mod tests {
             functions: vec![MirFunction {
                 name: "main".into(),
                 params: vec![],
+                abi_params: vec![],
+                abi_return: PortableAbiType::Value,
                 locals: vec![],
                 temps: vec![],
                 blocks: vec![BasicBlock {
@@ -1837,6 +1839,8 @@ mod tests {
             functions: vec![MirFunction {
                 name: "main".into(),
                 params: vec![],
+                abi_params: vec![],
+                abi_return: PortableAbiType::Value,
                 locals: vec![Local {
                     name: "x".into(),
                     mutable: false,
@@ -1941,6 +1945,8 @@ mod tests {
             functions: vec![MirFunction {
                 name: "main".into(),
                 params: vec![],
+                abi_params: vec![],
+                abi_return: PortableAbiType::Value,
                 locals: vec![],
                 temps: vec![],
                 blocks: vec![

@@ -5,6 +5,10 @@ The authoritative executable spec lives in this project root:
 - `/Users/ryanwible/projects/wrela/language/spec/src/main.wr`
 - `/Users/ryanwible/projects/wrela/language/spec/tests/spec/language_spec_test.wr`
 
+Design RFCs live under:
+
+- `/Users/ryanwible/projects/wrela/language/spec/rfcs/`
+
 Run spec-lane checks from the project root:
 
 - `cargo run -p wrela -- check /Users/ryanwible/projects/wrela/language/spec`

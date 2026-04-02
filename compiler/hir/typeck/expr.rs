@@ -148,7 +148,7 @@ fn infer_expr(
                     in_result_fn,
                 );
                 match object_ty {
-                    Type::List(inner_ty) => {
+                    Type::List(inner_ty) | Type::Array(inner_ty, _) => {
                         if types_known(&Type::Integer, &index_ty) && index_ty != Type::Integer {
                             errors.push(TypeError::InvalidIndexType {
                                 expected: "Integer".to_string(),
@@ -250,6 +250,25 @@ fn infer_expr(
                 );
                 if let Type::Actor(_) = object_ty {
                     errors.push(TypeError::ActorMemberAccess {
+                        member: member.clone(),
+                        span: span_from_range(*op_span),
+                    });
+                    return Type::Unknown;
+                }
+                if let Some(_) = vector_component_type(&object_ty, member) {
+                    errors.push(TypeError::ImmutableFieldAssign {
+                        member: member.clone(),
+                        span: span_from_range(*op_span),
+                        help: "Vector components are read-only projections; construct a new vector instead.".to_string(),
+                    });
+                    return Type::Unknown;
+                }
+                if matches!(
+                    &object_ty,
+                    Type::Vec2 | Type::Vec3 | Type::Vec4 | Type::Quat | Type::Mat3 | Type::Mat4
+                ) {
+                    errors.push(TypeError::UnknownMember {
+                        object: type_label(&object_ty),
                         member: member.clone(),
                         span: span_from_range(*op_span),
                     });
@@ -500,6 +519,23 @@ fn infer_expr(
                 valid_callee = true;
             }
             if let Expr::Variable(name) = &body.exprs[*callee] {
+                if let Some(ret) = infer_math_builtin_call(
+                    body,
+                    expr_id,
+                    name,
+                    args,
+                    ctx,
+                    classes,
+                    enums,
+                    interfaces,
+                    functions,
+                    errors,
+                    allow_result,
+                    in_result_fn,
+                ) {
+                    ret_ty = Some(ret);
+                    valid_callee = true;
+                }
                 if classes.is_class(name) {
                     if let Some(class) = classes.get(name) {
                         let class_args = resolve_type_args(
@@ -532,7 +568,7 @@ fn infer_expr(
                         valid_callee = true;
                     }
                 }
-                if let Some(function) = functions.get(name) {
+                if !valid_callee && let Some(function) = functions.get(name) {
                     if !type_args.is_empty() {
                         if function.type_params.is_empty() {
                             errors.push(TypeError::UnexpectedTypeArgs {
@@ -570,21 +606,7 @@ fn infer_expr(
                             in_result_fn,
                         );
                     } else {
-                        check_call_args(
-                            body,
-                            expr_id,
-                            args,
-                            &function.params,
-                            ctx,
-                            classes,
-                            enums,
-                            interfaces,
-                            functions,
-                            errors,
-                            !name.as_str().starts_with("__wr_"),
-                            allow_result,
-                            in_result_fn,
-                        );
+                        check_call_args(body, expr_id, args, &function.params, ctx, classes, enums, interfaces, functions, errors, !builtin_allows_positional_args(name), allow_result, in_result_fn);
                     }
                     ret_ty = Some(function.ret.clone());
                     valid_callee = true;
@@ -734,6 +756,88 @@ fn infer_expr(
                                         ret_ty = Some(Type::Unknown);
                                     }
                                 }
+                            }
+                            Type::Vec2 => {
+                                if matches!(member.as_str(), "x" | "y") {
+                                    errors.push(TypeError::CallField {
+                                        member: member.clone(),
+                                        span: span_from_range(*member_span),
+                                    });
+                                } else {
+                                    errors.push(TypeError::UnknownMember {
+                                        object: "Vec2".to_string(),
+                                        member: member.clone(),
+                                        span: span_from_range(*member_span),
+                                    });
+                                }
+                                ret_ty = Some(Type::Unknown);
+                                valid_callee = true;
+                            }
+                            Type::Vec3 => {
+                                if matches!(member.as_str(), "x" | "y" | "z") {
+                                    errors.push(TypeError::CallField {
+                                        member: member.clone(),
+                                        span: span_from_range(*member_span),
+                                    });
+                                } else {
+                                    errors.push(TypeError::UnknownMember {
+                                        object: "Vec3".to_string(),
+                                        member: member.clone(),
+                                        span: span_from_range(*member_span),
+                                    });
+                                }
+                                ret_ty = Some(Type::Unknown);
+                                valid_callee = true;
+                            }
+                            Type::Vec4 => {
+                                if matches!(member.as_str(), "x" | "y" | "z" | "w") {
+                                    errors.push(TypeError::CallField {
+                                        member: member.clone(),
+                                        span: span_from_range(*member_span),
+                                    });
+                                } else {
+                                    errors.push(TypeError::UnknownMember {
+                                        object: "Vec4".to_string(),
+                                        member: member.clone(),
+                                        span: span_from_range(*member_span),
+                                    });
+                                }
+                                ret_ty = Some(Type::Unknown);
+                                valid_callee = true;
+                            }
+                            Type::Quat => {
+                                if matches!(member.as_str(), "x" | "y" | "z" | "w") {
+                                    errors.push(TypeError::CallField {
+                                        member: member.clone(),
+                                        span: span_from_range(*member_span),
+                                    });
+                                } else {
+                                    errors.push(TypeError::UnknownMember {
+                                        object: "Quat".to_string(),
+                                        member: member.clone(),
+                                        span: span_from_range(*member_span),
+                                    });
+                                }
+                                ret_ty = Some(Type::Unknown);
+                                valid_callee = true;
+                            }
+                            Type::Mat3 => {
+                                errors.push(TypeError::UnknownMember {
+                                    object: "Mat3".to_string(),
+                                    member: member.clone(),
+                                    span: span_from_range(*member_span),
+                                });
+                                ret_ty = Some(Type::Unknown);
+                                valid_callee = true;
+                            }
+                            Type::Mat4 => {
+                                errors.push(TypeError::UnknownMember {
+                                    object: "Mat4".to_string(),
+                                    member: member.clone(),
+                                    span: span_from_range(*member_span),
+                                });
+                                ret_ty = Some(Type::Unknown);
+                                valid_callee = true;
                             }
                             Type::Named(class_name, class_args)
                                 if interfaces.is_interface(&class_name) =>
@@ -890,6 +994,17 @@ fn infer_expr(
                     member: member.clone(),
                     span: span_from_range(*member_span),
                 });
+            } else if let Some(component_ty) = vector_component_type(&object_ty, member) {
+                result = component_ty;
+            } else if matches!(
+                &object_ty,
+                Type::Vec2 | Type::Vec3 | Type::Vec4 | Type::Quat | Type::Mat3 | Type::Mat4
+            ) {
+                errors.push(TypeError::UnknownMember {
+                    object: type_label(&object_ty),
+                    member: member.clone(),
+                    span: span_from_range(*member_span),
+                });
             } else if let Type::Named(class_name, class_args) = object_ty {
                 if interfaces.is_interface(&class_name) {
                     errors.push(TypeError::UnknownMember {
@@ -947,7 +1062,7 @@ fn infer_expr(
                 in_result_fn,
             );
             match object_ty {
-                Type::List(inner_ty) => {
+                Type::List(inner_ty) | Type::Array(inner_ty, _) => {
                     if types_known(&Type::Integer, &index_ty) && index_ty != Type::Integer {
                         errors.push(TypeError::InvalidIndexType {
                             expected: "Integer".to_string(),
@@ -1213,3 +1328,916 @@ fn check_call_args(
     }
 }
 
+fn builtin_allows_positional_args(name: &SmolStr) -> bool {
+    name.as_str().starts_with("__wr_")
+        || matches!(
+            name.as_str(),
+            "assert"
+                | "vec2"
+                | "vec3"
+                | "vec4"
+                | "quat"
+                | "mat3_identity"
+                | "mat3_cols"
+                | "mat4_identity"
+                | "mat4_cols"
+                | "dot"
+                | "length"
+                | "normalize"
+                | "cross"
+                | "min"
+                | "max"
+                | "clamp"
+                | "mix"
+                | "abs"
+                | "sign"
+                | "floor"
+                | "ceil"
+                | "fract"
+                | "sin"
+                | "cos"
+                | "sqrt"
+                | "pow"
+                | "distance"
+                | "reflect"
+                | "f32"
+                | "i32"
+                | "u32"
+        )
+}
+
+fn infer_math_builtin_call(
+    body: &Body,
+    expr_id: Idx<Expr>,
+    name: &SmolStr,
+    args: &Vec<crate::hir::Arg>,
+    ctx: &mut TypeContext,
+    classes: &ClassIndex,
+    enums: &EnumIndex,
+    interfaces: &InterfaceIndex,
+    functions: &FunctionIndex,
+    errors: &mut Vec<TypeError>,
+    allow_result: bool,
+    in_result_fn: bool,
+) -> Option<Type> {
+    let span = span_from_range(body.expr_span(expr_id));
+    match name.as_str() {
+        "vec2" => {
+            let params = vec![
+                (SmolStr::new("x"), Type::F32),
+                (SmolStr::new("y"), Type::F32),
+            ];
+            check_call_args(
+                body,
+                expr_id,
+                args,
+                &params,
+                ctx,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+                false,
+                allow_result,
+                in_result_fn,
+            );
+            Some(Type::Vec2)
+        }
+        "vec3" => {
+            let params = vec![
+                (SmolStr::new("x"), Type::F32),
+                (SmolStr::new("y"), Type::F32),
+                (SmolStr::new("z"), Type::F32),
+            ];
+            check_call_args(
+                body,
+                expr_id,
+                args,
+                &params,
+                ctx,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+                false,
+                allow_result,
+                in_result_fn,
+            );
+            Some(Type::Vec3)
+        }
+        "vec4" => {
+            let params = vec![
+                (SmolStr::new("x"), Type::F32),
+                (SmolStr::new("y"), Type::F32),
+                (SmolStr::new("z"), Type::F32),
+                (SmolStr::new("w"), Type::F32),
+            ];
+            check_call_args(
+                body,
+                expr_id,
+                args,
+                &params,
+                ctx,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+                false,
+                allow_result,
+                in_result_fn,
+            );
+            Some(Type::Vec4)
+        }
+        "quat" => {
+            let params = vec![
+                (SmolStr::new("x"), Type::F32),
+                (SmolStr::new("y"), Type::F32),
+                (SmolStr::new("z"), Type::F32),
+                (SmolStr::new("w"), Type::F32),
+            ];
+            check_call_args(
+                body,
+                expr_id,
+                args,
+                &params,
+                ctx,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+                false,
+                allow_result,
+                in_result_fn,
+            );
+            Some(Type::Quat)
+        }
+        "mat3_identity" => {
+            if args.len() != 0 {
+                errors.push(TypeError::ArgumentCountMismatch {
+                    expected: 0,
+                    found: args.len(),
+                    span,
+                });
+            }
+            Some(Type::Mat3)
+        }
+        "mat3_cols" => {
+            let params = vec![
+                (SmolStr::new("c0"), Type::Vec3),
+                (SmolStr::new("c1"), Type::Vec3),
+                (SmolStr::new("c2"), Type::Vec3),
+            ];
+            check_call_args(
+                body,
+                expr_id,
+                args,
+                &params,
+                ctx,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+                false,
+                allow_result,
+                in_result_fn,
+            );
+            Some(Type::Mat3)
+        }
+        "mat4_identity" => {
+            if args.len() != 0 {
+                errors.push(TypeError::ArgumentCountMismatch {
+                    expected: 0,
+                    found: args.len(),
+                    span,
+                });
+            }
+            Some(Type::Mat4)
+        }
+        "mat4_cols" => {
+            let params = vec![
+                (SmolStr::new("c0"), Type::Vec4),
+                (SmolStr::new("c1"), Type::Vec4),
+                (SmolStr::new("c2"), Type::Vec4),
+                (SmolStr::new("c3"), Type::Vec4),
+            ];
+            check_call_args(
+                body,
+                expr_id,
+                args,
+                &params,
+                ctx,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+                false,
+                allow_result,
+                in_result_fn,
+            );
+            Some(Type::Mat4)
+        }
+        "dot" => {
+            if args.len() != 2 {
+                errors.push(TypeError::ArgumentCountMismatch {
+                    expected: 2,
+                    found: args.len(),
+                    span,
+                });
+                return Some(Type::Unknown);
+            }
+            let left_ty = infer_call_arg_type(
+                body,
+                &args[0],
+                ctx,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+                allow_result,
+                in_result_fn,
+            );
+            let right_ty = infer_call_arg_type(
+                body,
+                &args[1],
+                ctx,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+                allow_result,
+                in_result_fn,
+            );
+            if same_vector_like_kind(&left_ty, &right_ty).is_none() {
+                push_math_builtin_arg_mismatch(
+                    "left",
+                    &left_ty,
+                    args,
+                    0,
+                    "Vec2, Vec3, Vec4, or Quat",
+                    errors,
+                );
+                push_math_builtin_arg_mismatch(
+                    "right",
+                    &right_ty,
+                    args,
+                    1,
+                    "Vec2, Vec3, Vec4, or Quat",
+                    errors,
+                );
+                return Some(Type::Unknown);
+            }
+            Some(Type::F32)
+        }
+        "length" | "normalize" => {
+            if args.len() != 1 {
+                errors.push(TypeError::ArgumentCountMismatch {
+                    expected: 1,
+                    found: args.len(),
+                    span,
+                });
+                return Some(Type::Unknown);
+            }
+            let value_ty = infer_call_arg_type(
+                body,
+                &args[0],
+                ctx,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+                allow_result,
+                in_result_fn,
+            );
+            if !is_vector_like_type(&value_ty) {
+                push_math_builtin_arg_mismatch(
+                    "value",
+                    &value_ty,
+                    args,
+                    0,
+                    "Vec2, Vec3, Vec4, or Quat",
+                    errors,
+                );
+                return Some(Type::Unknown);
+            }
+            Some(if name.as_str() == "length" {
+                Type::F32
+            } else {
+                value_ty
+            })
+        }
+        "cross" => {
+            let params = vec![
+                (SmolStr::new("left"), Type::Vec3),
+                (SmolStr::new("right"), Type::Vec3),
+            ];
+            check_call_args(
+                body,
+                expr_id,
+                args,
+                &params,
+                ctx,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+                false,
+                allow_result,
+                in_result_fn,
+            );
+            Some(Type::Vec3)
+        }
+        "distance" | "reflect" => {
+            if args.len() != 2 {
+                errors.push(TypeError::ArgumentCountMismatch {
+                    expected: 2,
+                    found: args.len(),
+                    span,
+                });
+                return Some(Type::Unknown);
+            }
+            let left_ty = infer_call_arg_type(
+                body,
+                &args[0],
+                ctx,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+                allow_result,
+                in_result_fn,
+            );
+            let right_ty = infer_call_arg_type(
+                body,
+                &args[1],
+                ctx,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+                allow_result,
+                in_result_fn,
+            );
+            if !(is_vector_only_type(&left_ty) && same_vector_kind(&left_ty, &right_ty)) {
+                push_math_builtin_arg_mismatch(
+                    "left",
+                    &left_ty,
+                    args,
+                    0,
+                    "matching Vec2, Vec3, or Vec4 operands",
+                    errors,
+                );
+                push_math_builtin_arg_mismatch(
+                    "right",
+                    &right_ty,
+                    args,
+                    1,
+                    "matching Vec2, Vec3, or Vec4 operands",
+                    errors,
+                );
+                return Some(Type::Unknown);
+            }
+            if name.as_str() == "distance" {
+                Some(Type::F32)
+            } else if is_vector_only_type(&left_ty) {
+                Some(left_ty)
+            } else {
+                push_math_builtin_arg_mismatch(
+                    "left",
+                    &left_ty,
+                    args,
+                    0,
+                    "Vec2, Vec3, or Vec4",
+                    errors,
+                );
+                push_math_builtin_arg_mismatch(
+                    "right",
+                    &right_ty,
+                    args,
+                    1,
+                    "Vec2, Vec3, or Vec4",
+                    errors,
+                );
+                Some(Type::Unknown)
+            }
+        }
+        "min" | "max" | "pow" => infer_componentwise_binary_builtin(
+            body, expr_id, args, ctx, classes, enums, interfaces, functions, errors, allow_result,
+            in_result_fn,
+        ),
+        "clamp" | "mix" => infer_componentwise_ternary_builtin(
+            body, expr_id, args, ctx, classes, enums, interfaces, functions, errors, allow_result,
+            in_result_fn,
+        ),
+        "abs" | "sign" | "floor" | "ceil" | "fract" | "sin" | "cos" | "sqrt" => {
+            infer_componentwise_unary_builtin(
+                body,
+                expr_id,
+                args,
+                ctx,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+                allow_result,
+                in_result_fn,
+            )
+        }
+        "f32" => infer_scalar_cast_builtin(
+            body,
+            expr_id,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            Type::F32,
+        ),
+        "i32" => infer_scalar_cast_builtin(
+            body,
+            expr_id,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            Type::I32,
+        ),
+        "u32" => infer_scalar_cast_builtin(
+            body,
+            expr_id,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            Type::U32,
+        ),
+        _ => None,
+    }
+}
+
+fn infer_call_arg_type(
+    body: &Body,
+    arg: &crate::hir::Arg,
+    ctx: &mut TypeContext,
+    classes: &ClassIndex,
+    enums: &EnumIndex,
+    interfaces: &InterfaceIndex,
+    functions: &FunctionIndex,
+    errors: &mut Vec<TypeError>,
+    allow_result: bool,
+    in_result_fn: bool,
+) -> Type {
+    let value = match arg {
+        crate::hir::Arg::Positional { value, .. } | crate::hir::Arg::Named { value, .. } => *value,
+    };
+    infer_expr(
+        body,
+        value,
+        ctx,
+        classes,
+        enums,
+        interfaces,
+        functions,
+        errors,
+        false,
+        allow_result,
+        in_result_fn,
+    )
+}
+
+fn infer_componentwise_unary_builtin(
+    body: &Body,
+    expr_id: Idx<Expr>,
+    args: &Vec<crate::hir::Arg>,
+    ctx: &mut TypeContext,
+    classes: &ClassIndex,
+    enums: &EnumIndex,
+    interfaces: &InterfaceIndex,
+    functions: &FunctionIndex,
+    errors: &mut Vec<TypeError>,
+    allow_result: bool,
+    in_result_fn: bool,
+) -> Option<Type> {
+    let span = span_from_range(body.expr_span(expr_id));
+    if args.len() != 1 {
+        errors.push(TypeError::ArgumentCountMismatch {
+            expected: 1,
+            found: args.len(),
+            span,
+        });
+        return Some(Type::Unknown);
+    }
+    let value_ty = infer_call_arg_type(
+        body,
+        &args[0],
+        ctx,
+        classes,
+        enums,
+        interfaces,
+        functions,
+        errors,
+        allow_result,
+        in_result_fn,
+    );
+    if is_scalar_numeric_type(&value_ty) {
+        return Some(Type::F32);
+    }
+    if is_vector_like_type(&value_ty) {
+        return Some(value_ty);
+    }
+    push_math_builtin_arg_mismatch(
+        "value",
+        &value_ty,
+        args,
+        0,
+        "scalar numeric, Vec2, Vec3, Vec4, or Quat",
+        errors,
+    );
+    Some(Type::Unknown)
+}
+
+fn infer_componentwise_binary_builtin(
+    body: &Body,
+    expr_id: Idx<Expr>,
+    args: &Vec<crate::hir::Arg>,
+    ctx: &mut TypeContext,
+    classes: &ClassIndex,
+    enums: &EnumIndex,
+    interfaces: &InterfaceIndex,
+    functions: &FunctionIndex,
+    errors: &mut Vec<TypeError>,
+    allow_result: bool,
+    in_result_fn: bool,
+) -> Option<Type> {
+    let span = span_from_range(body.expr_span(expr_id));
+    if args.len() != 2 {
+        errors.push(TypeError::ArgumentCountMismatch {
+            expected: 2,
+            found: args.len(),
+            span,
+        });
+        return Some(Type::Unknown);
+    }
+    let left_ty = infer_call_arg_type(
+        body,
+        &args[0],
+        ctx,
+        classes,
+        enums,
+        interfaces,
+        functions,
+        errors,
+        allow_result,
+        in_result_fn,
+    );
+    let right_ty = infer_call_arg_type(
+        body,
+        &args[1],
+        ctx,
+        classes,
+        enums,
+        interfaces,
+        functions,
+        errors,
+        allow_result,
+        in_result_fn,
+    );
+    match (left_ty, right_ty) {
+        (left, right) if is_scalar_numeric_type(&left) && is_scalar_numeric_type(&right) => {
+            Some(Type::F32)
+        }
+        (left, right) if is_vector_like_type(&left) && is_vector_like_type(&right) => {
+            if same_vector_like_kind(&left, &right).is_some() {
+                Some(left)
+            } else {
+                push_math_builtin_arg_mismatch(
+                    "left",
+                    &left,
+                    args,
+                    0,
+                    "matching Vec2, Vec3, Vec4, or Quat operands",
+                    errors,
+                );
+                push_math_builtin_arg_mismatch(
+                    "right",
+                    &right,
+                    args,
+                    1,
+                    "matching Vec2, Vec3, Vec4, or Quat operands",
+                    errors,
+                );
+                Some(Type::Unknown)
+            }
+        }
+        (left, right) if is_vector_like_type(&left) && is_scalar_numeric_type(&right) => {
+            Some(left)
+        }
+        (left, right) if is_scalar_numeric_type(&left) && is_vector_like_type(&right) => {
+            Some(right)
+        }
+        (left, right) => {
+            push_math_builtin_arg_mismatch(
+                "left",
+                &left,
+                args,
+                0,
+                "scalar numeric, Vec2, Vec3, Vec4, or Quat",
+                errors,
+            );
+            push_math_builtin_arg_mismatch(
+                "right",
+                &right,
+                args,
+                1,
+                "scalar numeric, Vec2, Vec3, Vec4, or Quat",
+                errors,
+            );
+            Some(Type::Unknown)
+        }
+    }
+}
+
+fn infer_componentwise_ternary_builtin(
+    body: &Body,
+    expr_id: Idx<Expr>,
+    args: &Vec<crate::hir::Arg>,
+    ctx: &mut TypeContext,
+    classes: &ClassIndex,
+    enums: &EnumIndex,
+    interfaces: &InterfaceIndex,
+    functions: &FunctionIndex,
+    errors: &mut Vec<TypeError>,
+    allow_result: bool,
+    in_result_fn: bool,
+) -> Option<Type> {
+    let span = span_from_range(body.expr_span(expr_id));
+    if args.len() != 3 {
+        errors.push(TypeError::ArgumentCountMismatch {
+            expected: 3,
+            found: args.len(),
+            span,
+        });
+        return Some(Type::Unknown);
+    }
+    let value_ty = infer_call_arg_type(
+        body,
+        &args[0],
+        ctx,
+        classes,
+        enums,
+        interfaces,
+        functions,
+        errors,
+        allow_result,
+        in_result_fn,
+    );
+    let min_ty = infer_call_arg_type(
+        body,
+        &args[1],
+        ctx,
+        classes,
+        enums,
+        interfaces,
+        functions,
+        errors,
+        allow_result,
+        in_result_fn,
+    );
+    let max_ty = infer_call_arg_type(
+        body,
+        &args[2],
+        ctx,
+        classes,
+        enums,
+        interfaces,
+        functions,
+        errors,
+        allow_result,
+        in_result_fn,
+    );
+    if is_scalar_numeric_type(&value_ty) {
+        if is_scalar_numeric_type(&min_ty) && is_scalar_numeric_type(&max_ty) {
+            return Some(Type::F32);
+        }
+        push_math_builtin_arg_mismatch(
+            "min",
+            &min_ty,
+            args,
+            1,
+            "scalar numeric",
+            errors,
+        );
+        push_math_builtin_arg_mismatch(
+            "max",
+            &max_ty,
+            args,
+            2,
+            "scalar numeric",
+            errors,
+        );
+        return Some(Type::Unknown);
+    }
+    if !is_vector_like_type(&value_ty) {
+        push_math_builtin_arg_mismatch(
+            "value",
+            &value_ty,
+            args,
+            0,
+            "scalar numeric, Vec2, Vec3, Vec4, or Quat",
+            errors,
+        );
+        return Some(Type::Unknown);
+    }
+    if !arg_matches_componentwise_shape(&min_ty, &value_ty) {
+        push_math_builtin_arg_mismatch(
+            "min",
+            &min_ty,
+            args,
+            1,
+            "scalar numeric or matching vector/quaternion",
+            errors,
+        );
+        return Some(Type::Unknown);
+    }
+    if !arg_matches_componentwise_shape(&max_ty, &value_ty) {
+        push_math_builtin_arg_mismatch(
+            "max",
+            &max_ty,
+            args,
+            2,
+            "scalar numeric or matching vector/quaternion",
+            errors,
+        );
+        return Some(Type::Unknown);
+    }
+    Some(value_ty)
+}
+
+fn infer_scalar_cast_builtin(
+    body: &Body,
+    expr_id: Idx<Expr>,
+    args: &Vec<crate::hir::Arg>,
+    ctx: &mut TypeContext,
+    classes: &ClassIndex,
+    enums: &EnumIndex,
+    interfaces: &InterfaceIndex,
+    functions: &FunctionIndex,
+    errors: &mut Vec<TypeError>,
+    allow_result: bool,
+    in_result_fn: bool,
+    target: Type,
+) -> Option<Type> {
+    let span = span_from_range(body.expr_span(expr_id));
+    if args.len() != 1 {
+        errors.push(TypeError::ArgumentCountMismatch {
+            expected: 1,
+            found: args.len(),
+            span,
+        });
+        return Some(Type::Unknown);
+    }
+    let value_ty = infer_call_arg_type(
+        body,
+        &args[0],
+        ctx,
+        classes,
+        enums,
+        interfaces,
+        functions,
+        errors,
+        allow_result,
+        in_result_fn,
+    );
+    if matches!(value_ty, Type::Unknown) {
+        return Some(Type::Unknown);
+    }
+    if is_scalar_numeric_type(&value_ty) {
+        return Some(target);
+    }
+    push_math_builtin_arg_mismatch(
+        "value",
+        &value_ty,
+        args,
+        0,
+        "scalar numeric",
+        errors,
+    );
+    Some(Type::Unknown)
+}
+
+fn push_math_builtin_arg_mismatch(
+    name: &str,
+    found: &Type,
+    args: &[crate::hir::Arg],
+    index: usize,
+    expected: &str,
+    errors: &mut Vec<TypeError>,
+) {
+    let Some(arg) = args.get(index) else {
+        return;
+    };
+    let span = match arg {
+        crate::hir::Arg::Positional { span, .. } | crate::hir::Arg::Named { span, .. } => {
+            span_from_range(*span)
+        }
+    };
+    errors.push(TypeError::ArgumentTypeMismatch {
+        name: SmolStr::new(name),
+        expected: expected.to_string(),
+        found: type_label(found),
+        span,
+    });
+}
+
+fn is_scalar_numeric_type(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Integer
+            | Type::I32
+            | Type::U32
+            | Type::I64
+            | Type::U64
+            | Type::Float
+            | Type::F32
+            | Type::Number
+    )
+}
+
+fn is_vector_like_type(ty: &Type) -> bool {
+    matches!(ty, Type::Vec2 | Type::Vec3 | Type::Vec4 | Type::Quat)
+}
+
+fn is_vector_only_type(ty: &Type) -> bool {
+    matches!(ty, Type::Vec2 | Type::Vec3 | Type::Vec4)
+}
+
+fn is_same_vector_kind(left: &Type, right: &Type) -> bool {
+    matches!(
+        (left, right),
+        (Type::Vec2, Type::Vec2)
+            | (Type::Vec3, Type::Vec3)
+            | (Type::Vec4, Type::Vec4)
+            | (Type::Quat, Type::Quat)
+    )
+}
+
+fn same_vector_like_kind(left: &Type, right: &Type) -> Option<Type> {
+    match (left, right) {
+        (Type::Vec2, Type::Vec2) => Some(Type::Vec2),
+        (Type::Vec3, Type::Vec3) => Some(Type::Vec3),
+        (Type::Vec4, Type::Vec4) => Some(Type::Vec4),
+        (Type::Quat, Type::Quat) => Some(Type::Quat),
+        _ => None,
+    }
+}
+
+fn arg_matches_componentwise_shape(arg: &Type, shape: &Type) -> bool {
+    matches!(arg, Type::Unknown)
+        || is_scalar_numeric_type(arg)
+        || (is_vector_like_type(arg) && is_same_vector_kind(arg, shape))
+}
+
+fn vector_component_type(object_ty: &Type, member: &SmolStr) -> Option<Type> {
+    let member = member.as_str();
+    match object_ty {
+        Type::Vec2 => match member {
+            "x" | "y" => Some(Type::F32),
+            _ => None,
+        },
+        Type::Vec3 => match member {
+            "x" | "y" | "z" => Some(Type::F32),
+            _ => None,
+        },
+        Type::Vec4 | Type::Quat => match member {
+            "x" | "y" | "z" | "w" => Some(Type::F32),
+            _ => None,
+        },
+        _ => None,
+    }
+}

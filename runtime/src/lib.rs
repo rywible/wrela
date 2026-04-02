@@ -18,7 +18,7 @@ mod unsafe_primitives;
 pub mod wasm_runtime;
 mod web;
 
-pub(crate) use data::{arena, bytes, class, iter, list, map, object, result, string, value};
+pub(crate) use data::{arena, bytes, class, iter, list, map, math, object, result, string, value};
 pub(crate) use kernel::{actor, config, diagnostics, metrics};
 
 use data::object::drop_object;
@@ -1331,6 +1331,39 @@ pub extern "C" fn wr_identity_eq(a: Value, b: Value) -> Value {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn wr_approx_eq(a: Value, b: Value, tolerance: Value) -> Value {
+    Value::from_bool(value::value_approx_eq(a, b, tolerance))
+}
+
+fn numeric_value_f64(val: Value) -> Option<f64> {
+    if let Some(int) = int_value(val) {
+        return Some(int as f64);
+    }
+    if val.is_float() {
+        return Some(val.as_float());
+    }
+    None
+}
+
+fn cast_to_f32_value(val: Value) -> Value {
+    numeric_value_f64(val)
+        .map(|value| Value::from_float((value as f32) as f64))
+        .unwrap_or(Value::nil())
+}
+
+fn cast_to_i32_value(val: Value) -> Value {
+    numeric_value_f64(val)
+        .map(|value| Value::from_int(value as i32 as i64))
+        .unwrap_or(Value::nil())
+}
+
+fn cast_to_u32_value(val: Value) -> Value {
+    numeric_value_f64(val)
+        .map(|value| Value::from_int(value as u32 as i64))
+        .unwrap_or(Value::nil())
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn wr_str_from_utf8(ptr: *const u8, len: usize) -> Value {
     string::str_from_utf8(ptr, len)
 }
@@ -1483,6 +1516,425 @@ pub extern "C" fn wr_num_le(a: Value, b: Value) -> Value {
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_num_ge(a: Value, b: Value) -> Value {
     num_ge(a, b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_cast_f32(val: Value) -> Value {
+    cast_to_f32_value(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_cast_i32(val: Value) -> Value {
+    cast_to_i32_value(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_cast_u32(val: Value) -> Value {
+    cast_to_u32_value(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_vec2_new(x: Value, y: Value) -> Value {
+    math::vec2_new(x, y)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_vec3_new(x: Value, y: Value, z: Value) -> Value {
+    math::vec3_new(x, y, z)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_vec4_new(x: Value, y: Value, z: Value, w: Value) -> Value {
+    math::vec4_new(x, y, z, w)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_quat_new(x: Value, y: Value, z: Value, w: Value) -> Value {
+    math::quat_new(x, y, z, w)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_vec_component(val: Value, index: Value) -> Value {
+    let Some(index) = int_value(index).filter(|v| *v >= 0).map(|v| v as usize) else {
+        return Value::nil();
+    };
+    math::vec_component(val, index)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_mat3_component(val: Value, index: Value) -> Value {
+    let Some(index) = int_value(index).filter(|v| *v >= 0).map(|v| v as usize) else {
+        return Value::nil();
+    };
+    math::mat3_component(val, index)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_mat4_component(val: Value, index: Value) -> Value {
+    let Some(index) = int_value(index).filter(|v| *v >= 0).map(|v| v as usize) else {
+        return Value::nil();
+    };
+    math::mat4_component(val, index)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_vec2_x(val: Value) -> Value {
+    math::vec_x(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_vec2_y(val: Value) -> Value {
+    math::vec_y(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_vec3_x(val: Value) -> Value {
+    math::vec_x(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_vec3_y(val: Value) -> Value {
+    math::vec_y(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_vec3_z(val: Value) -> Value {
+    math::vec_z(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_vec4_x(val: Value) -> Value {
+    math::vec_x(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_vec4_y(val: Value) -> Value {
+    math::vec_y(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_vec4_z(val: Value) -> Value {
+    math::vec_z(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_vec4_w(val: Value) -> Value {
+    math::vec_w(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_quat_x(val: Value) -> Value {
+    math::quat_x(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_quat_y(val: Value) -> Value {
+    math::quat_y(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_quat_z(val: Value) -> Value {
+    math::quat_z(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_quat_w(val: Value) -> Value {
+    math::quat_w(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_vec_add(a: Value, b: Value) -> Value {
+    math::vec_add(a, b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_vec_sub(a: Value, b: Value) -> Value {
+    math::vec_sub(a, b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_vec_mul(a: Value, b: Value) -> Value {
+    math::vec_mul(a, b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_vec_div(a: Value, b: Value) -> Value {
+    math::vec_div(a, b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_vec_dot(a: Value, b: Value) -> Value {
+    math::vec_dot(a, b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_vec_length(val: Value) -> Value {
+    math::vec_length(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_vec_normalize(val: Value) -> Value {
+    math::vec_normalize(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_vec_cross(a: Value, b: Value) -> Value {
+    math::vec_cross(a, b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_vec_min(a: Value, b: Value) -> Value {
+    math::vec_min(a, b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_vec_max(a: Value, b: Value) -> Value {
+    math::vec_max(a, b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_vec_clamp(value: Value, min: Value, max: Value) -> Value {
+    math::vec_clamp(value, min, max)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_vec_mix(a: Value, b: Value, t: Value) -> Value {
+    math::vec_mix(a, b, t)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_vec_abs(val: Value) -> Value {
+    math::vec_abs(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_vec_sign(val: Value) -> Value {
+    math::vec_sign(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_vec_floor(val: Value) -> Value {
+    math::vec_floor(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_vec_ceil(val: Value) -> Value {
+    math::vec_ceil(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_vec_fract(val: Value) -> Value {
+    math::vec_fract(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_vec_sin(val: Value) -> Value {
+    math::vec_sin(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_vec_cos(val: Value) -> Value {
+    math::vec_cos(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_vec_sqrt(val: Value) -> Value {
+    math::vec_sqrt(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_vec_pow(a: Value, b: Value) -> Value {
+    math::vec_pow(a, b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_vec_distance(a: Value, b: Value) -> Value {
+    math::vec_distance(a, b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_vec_reflect(incident: Value, normal: Value) -> Value {
+    math::vec_reflect(incident, normal)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_quat_add(a: Value, b: Value) -> Value {
+    math::vec_add(a, b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_quat_sub(a: Value, b: Value) -> Value {
+    math::vec_sub(a, b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_quat_mul(a: Value, b: Value) -> Value {
+    math::vec_mul(a, b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_quat_div(a: Value, b: Value) -> Value {
+    math::vec_div(a, b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_quat_dot(a: Value, b: Value) -> Value {
+    math::vec_dot(a, b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_quat_length(val: Value) -> Value {
+    math::vec_length(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_quat_normalize(val: Value) -> Value {
+    math::vec_normalize(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_quat_min(a: Value, b: Value) -> Value {
+    math::vec_min(a, b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_quat_max(a: Value, b: Value) -> Value {
+    math::vec_max(a, b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_quat_clamp(value: Value, min: Value, max: Value) -> Value {
+    math::vec_clamp(value, min, max)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_quat_mix(a: Value, b: Value, t: Value) -> Value {
+    math::vec_mix(a, b, t)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_quat_abs(val: Value) -> Value {
+    math::vec_abs(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_quat_sign(val: Value) -> Value {
+    math::vec_sign(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_quat_floor(val: Value) -> Value {
+    math::vec_floor(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_quat_ceil(val: Value) -> Value {
+    math::vec_ceil(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_quat_fract(val: Value) -> Value {
+    math::vec_fract(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_quat_sin(val: Value) -> Value {
+    math::vec_sin(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_quat_cos(val: Value) -> Value {
+    math::vec_cos(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_quat_sqrt(val: Value) -> Value {
+    math::vec_sqrt(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_quat_pow(a: Value, b: Value) -> Value {
+    math::vec_pow(a, b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_mat3_identity() -> Value {
+    math::mat3_identity()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_mat3_from_columns(c0: Value, c1: Value, c2: Value) -> Value {
+    math::mat3_from_columns(c0, c1, c2)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_mat3_mul_vec3(mat: Value, vec: Value) -> Value {
+    math::mat3_mul_vec3(mat, vec)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_mat3_mul_mat3(a: Value, b: Value) -> Value {
+    math::mat3_mul_mat3(a, b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_mat3_add(a: Value, b: Value) -> Value {
+    math::mat3_add(a, b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_mat3_sub(a: Value, b: Value) -> Value {
+    math::mat3_sub(a, b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_mat3_mul_scalar(mat: Value, scalar: Value) -> Value {
+    math::mat3_mul_scalar(mat, scalar)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_mat3_div_scalar(mat: Value, scalar: Value) -> Value {
+    math::mat3_div_scalar(mat, scalar)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_mat4_identity() -> Value {
+    math::mat4_identity()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_mat4_from_columns(c0: Value, c1: Value, c2: Value, c3: Value) -> Value {
+    math::mat4_from_columns(c0, c1, c2, c3)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_mat4_mul_vec4(mat: Value, vec: Value) -> Value {
+    math::mat4_mul_vec4(mat, vec)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_mat4_mul_mat4(a: Value, b: Value) -> Value {
+    math::mat4_mul_mat4(a, b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_mat4_add(a: Value, b: Value) -> Value {
+    math::mat4_add(a, b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_mat4_sub(a: Value, b: Value) -> Value {
+    math::mat4_sub(a, b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_mat4_mul_scalar(mat: Value, scalar: Value) -> Value {
+    math::mat4_mul_scalar(mat, scalar)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_mat4_div_scalar(mat: Value, scalar: Value) -> Value {
+    math::mat4_div_scalar(mat, scalar)
 }
 
 #[unsafe(no_mangle)]
@@ -2615,6 +3067,13 @@ mod tests {
 
         let float = wr_box_float(3.5);
         assert_eq!(wr_unbox_float(float), 3.5);
+    }
+
+    #[test]
+    fn explicit_numeric_casts_round_trip_expected_values() {
+        assert_eq!(wr_cast_f32(Value::from_int(7)).as_float(), 7.0);
+        assert_eq!(wr_cast_i32(Value::from_float(7.8)).as_int(), 7);
+        assert_eq!(wr_cast_u32(Value::from_float(7.8)).as_int(), 7);
     }
 
     #[test]

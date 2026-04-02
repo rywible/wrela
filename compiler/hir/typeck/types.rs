@@ -1,5 +1,5 @@
 use crate::hir::{
-    Arg, BinaryOp, Body, Expr, FieldDefault, Function, FunctionKind, FunctionRole, Idx,
+    Arg, BinaryOp, Body, ClassRole, Expr, FieldDefault, Function, FunctionKind, FunctionRole, Idx,
     InterfaceMethodKind, Literal, Module, Pattern, Stmt, TypeRef, UnaryOp, Visibility,
 };
 use miette::{Diagnostic, SourceSpan};
@@ -13,12 +13,18 @@ pub enum Type {
     Unknown,
     Never,
     Integer,
+    I32,
+    U32,
+    I64,
+    U64,
     Float,
+    F32,
     Number,
     Boolean,
     String,
     Nil,
     List(Box<Type>),
+    Array(Box<Type>, usize),
     Map(Box<Type>, Box<Type>),
     Named(SmolStr, Vec<Type>),
     Param(SmolStr),
@@ -28,7 +34,9 @@ pub enum Type {
     Vec2,
     Vec3,
     Vec4,
+    Mat3,
     Mat4,
+    Quat,
     GpuBuffer(Box<Type>),
     Texture2D,
     Sampler,
@@ -197,6 +205,46 @@ pub enum TypeError {
     AssertExpectedEquality {
         mode: &'static str,
         #[label("assert here")]
+        span: SourceSpan,
+    },
+
+    #[error("assert approx requires numeric operands and a numeric tolerance")]
+    #[diagnostic(code(lang::ty::assert_approx_numeric))]
+    AssertApproxRequiresNumeric {
+        #[label("assert approx here")]
+        span: SourceSpan,
+    },
+
+    #[error("value '{name}' cannot declare methods in the substrate lane")]
+    #[diagnostic(code(lang::ty::value_methods_forbidden))]
+    ValueMethodsForbidden {
+        name: SmolStr,
+        #[label("method declared here")]
+        span: SourceSpan,
+    },
+
+    #[error("value '{name}' cannot implement interfaces")]
+    #[diagnostic(code(lang::ty::value_interfaces_forbidden))]
+    ValueInterfacesForbidden {
+        name: SmolStr,
+        #[label("value declared here")]
+        span: SourceSpan,
+    },
+
+    #[error("value field '{field}' cannot be mutable")]
+    #[diagnostic(code(lang::ty::value_field_mutable_forbidden))]
+    ValueFieldMutableForbidden {
+        field: SmolStr,
+        #[label("mutable field here")]
+        span: SourceSpan,
+    },
+
+    #[error("value field '{field}' must use fixed-layout substrate types (found '{found}')")]
+    #[diagnostic(code(lang::ty::value_field_type_forbidden))]
+    ValueFieldTypeForbidden {
+        field: SmolStr,
+        found: String,
+        #[label("field type here")]
         span: SourceSpan,
     },
 
@@ -511,6 +559,11 @@ impl TypeError {
             TypeError::InterfaceMethodMismatch { span, .. } => *span,
             TypeError::AssertIdentityPrimitive { span } => *span,
             TypeError::AssertExpectedEquality { span, .. } => *span,
+            TypeError::AssertApproxRequiresNumeric { span } => *span,
+            TypeError::ValueMethodsForbidden { span, .. } => *span,
+            TypeError::ValueInterfacesForbidden { span, .. } => *span,
+            TypeError::ValueFieldMutableForbidden { span, .. } => *span,
+            TypeError::ValueFieldTypeForbidden { span, .. } => *span,
             TypeError::EqualityRequiresEq { span, .. } => *span,
             TypeError::InvalidAwaitOperand { span } => *span,
             TypeError::InvalidTryOperand { span } => *span,
@@ -586,6 +639,7 @@ pub fn check_module_with_info(module: &Module) -> (Vec<TypeError>, TypeInfo) {
             &mut info,
         );
     }
+    validate_value_classes(module, &class_index, &mut errors);
     check_interface_conformance(&class_index, &interface_index, &mut errors);
     check_async_actor_usage(module, &info, &class_index, &mut errors);
     (errors, info)
@@ -714,7 +768,20 @@ fn collect_forbidden_float_literals_in_stmt(
 ) {
     match &body.stmts[stmt_id] {
         Stmt::Expr(expr) => collect_forbidden_float_literals_in_expr(body, *expr, errors),
-        Stmt::Assert { expr, .. } => collect_forbidden_float_literals_in_expr(body, *expr, errors),
+        Stmt::Assert {
+            expr,
+            rhs,
+            tolerance,
+            ..
+        } => {
+            collect_forbidden_float_literals_in_expr(body, *expr, errors);
+            if let Some(rhs) = rhs {
+                collect_forbidden_float_literals_in_expr(body, *rhs, errors);
+            }
+            if let Some(tolerance) = tolerance {
+                collect_forbidden_float_literals_in_expr(body, *tolerance, errors);
+            }
+        }
         Stmt::Require { condition, message } => {
             collect_forbidden_float_literals_in_expr(body, *condition, errors);
             collect_forbidden_float_literals_in_expr(body, *message, errors);
@@ -928,6 +995,96 @@ fn validate_boundary_type_refs(module: &Module, errors: &mut Vec<TypeError>) {
             if let Some(ret) = &method.ret_type {
                 collect_boundary_missing_type_args(ret, errors);
             }
+        }
+    }
+}
+
+fn validate_value_classes(module: &Module, classes: &ClassIndex, errors: &mut Vec<TypeError>) {
+    for (_idx, class) in module.classes.iter() {
+        if !matches!(class.role, ClassRole::Value) {
+            continue;
+        }
+        if !class.implements.is_empty() {
+            errors.push(TypeError::ValueInterfacesForbidden {
+                name: class.name.clone(),
+                span: span_from_option_range(class.name_span),
+            });
+        }
+        for method_id in &class.methods {
+            let method = &module.functions[*method_id];
+            errors.push(TypeError::ValueMethodsForbidden {
+                name: class.name.clone(),
+                span: span_from_option_range(method.name_span),
+            });
+        }
+        for field in &class.fields {
+            if field.mutable {
+                errors.push(TypeError::ValueFieldMutableForbidden {
+                    field: field.name.clone(),
+                    span: span_from_option_range(field.name_span),
+                });
+            }
+            let Some(field_ty) = &field.ty else {
+                continue;
+            };
+            let ty = type_from_ref(field_ty);
+            let mut visiting = HashSet::new();
+            if !supports_fixed_value_type(&ty, classes, &mut visiting) {
+                errors.push(TypeError::ValueFieldTypeForbidden {
+                    field: field.name.clone(),
+                    found: type_label(&ty),
+                    span: span_from_option_range(field_ty.name_span),
+                });
+            }
+        }
+    }
+}
+
+fn supports_fixed_value_type(
+    ty: &Type,
+    classes: &ClassIndex,
+    visiting: &mut HashSet<SmolStr>,
+) -> bool {
+    match ty {
+        Type::Unknown
+        | Type::Never
+        | Type::Integer
+        | Type::Float
+        | Type::Number
+        | Type::String
+        | Type::Nil
+        | Type::List(_)
+        | Type::Map(_, _)
+        | Type::Result(_, _)
+        | Type::Actor(_)
+        | Type::Pending(_)
+        | Type::GpuBuffer(_)
+        | Type::Texture2D
+        | Type::Sampler => false,
+        Type::Boolean | Type::I32 | Type::U32 | Type::I64 | Type::U64 | Type::F32 => true,
+        Type::Vec2 | Type::Vec3 | Type::Vec4 | Type::Mat3 | Type::Mat4 | Type::Quat => true,
+        Type::Param(_) => false,
+        Type::Array(inner, len) => *len > 0 && supports_fixed_value_type(inner, classes, visiting),
+        Type::Named(name, args) => {
+            if !args.is_empty() {
+                return false;
+            }
+            let Some(class_sig) = classes.get(name) else {
+                return false;
+            };
+            if !matches!(class_sig.role, ClassRole::Value) {
+                return false;
+            }
+            if !visiting.insert(name.clone()) {
+                return true;
+            }
+            let ok = class_sig
+                .field_order
+                .iter()
+                .filter_map(|field| class_sig.fields.get(field))
+                .all(|field_ty| supports_fixed_value_type(field_ty, classes, visiting));
+            visiting.remove(name);
+            ok
         }
     }
 }

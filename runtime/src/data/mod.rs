@@ -4,6 +4,7 @@ pub(crate) mod class;
 pub(crate) mod iter;
 pub(crate) mod list;
 pub(crate) mod map;
+pub(crate) mod math;
 pub(crate) mod object;
 pub(crate) mod result;
 pub(crate) mod string;

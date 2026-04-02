@@ -128,6 +128,7 @@ pub enum SyntaxKind {
     ComponentDef,
     ResourceDef,
     EventDef,
+    ValueDef,
     EnumDef,
     EnumVariant,
     FuncDef,

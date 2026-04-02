@@ -29,6 +29,19 @@ pub fn event_def(p: &mut Parser) {
     );
 }
 
+pub fn value_def(p: &mut Parser) {
+    let m = p.start();
+    if p.at_ident_text("value") {
+        p.bump();
+    } else {
+        p.error_with_message("expected 'value' to start a value declaration", true);
+    }
+    p.expect_with_message(SyntaxKind::Ident, "expected type name after 'value'");
+    parse_type_params(p);
+    parse_class_body(p);
+    m.complete(p, SyntaxKind::ValueDef);
+}
+
 fn class_like_def(
     p: &mut Parser,
     keyword: SyntaxKind,

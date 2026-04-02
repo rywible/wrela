@@ -689,7 +689,12 @@ fn check_stmt_async_usage(
             errors,
             in_detach,
         ),
-        Stmt::Assert { expr, .. } => {
+        Stmt::Assert {
+            expr,
+            rhs,
+            tolerance,
+            ..
+        } => {
             check_expr_async_usage(
                 body,
                 *expr,
@@ -704,6 +709,38 @@ fn check_stmt_async_usage(
                 errors,
                 in_detach,
             );
+            if let Some(rhs) = rhs {
+                check_expr_async_usage(
+                    body,
+                    *rhs,
+                    fn_info,
+                    classes,
+                    class_method_ids,
+                    requires_actor,
+                    class_requires_actor,
+                    class_trace,
+                    cause,
+                    func_labels,
+                    errors,
+                    in_detach,
+                );
+            }
+            if let Some(tolerance) = tolerance {
+                check_expr_async_usage(
+                    body,
+                    *tolerance,
+                    fn_info,
+                    classes,
+                    class_method_ids,
+                    requires_actor,
+                    class_requires_actor,
+                    class_trace,
+                    cause,
+                    func_labels,
+                    errors,
+                    in_detach,
+                );
+            }
         }
         Stmt::Require { condition, message } => {
             check_expr_async_usage(
@@ -749,7 +786,7 @@ fn check_stmt_async_usage(
                 func_labels,
                 errors,
                 in_detach,
-            )
+            );
         }
         Stmt::Defer { expr } => check_expr_async_usage(
             body,
@@ -1282,4 +1319,3 @@ fn check_expr_async_usage(
         Expr::Literal(_) | Expr::Variable(_) => {}
     }
 }
-

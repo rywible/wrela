@@ -1033,7 +1033,12 @@ impl<'a> Checker<'a> {
         let stmt = &body.stmts[stmt_id];
         match stmt {
             Stmt::Expr(expr) => self.check_expr_with_ctx(body, *expr, false, true),
-            Stmt::Assert { expr, .. } => {
+            Stmt::Assert {
+                expr,
+                rhs,
+                tolerance,
+                ..
+            } => {
                 if self.in_check {
                     self.errors.push(SemanticError::CheckInvalidKeyword {
                         keyword: "assert",
@@ -1042,8 +1047,17 @@ impl<'a> Checker<'a> {
                 }
                 if self.in_certified_flow {
                     self.reject_trivial_assert_in_certified_flow(body, stmt_id, *expr);
+                    if let Some(rhs) = rhs {
+                        self.reject_trivial_assert_in_certified_flow(body, stmt_id, *rhs);
+                    }
                 }
                 self.check_expr_with_ctx(body, *expr, false, true);
+                if let Some(rhs) = rhs {
+                    self.check_expr_with_ctx(body, *rhs, false, true);
+                }
+                if let Some(tolerance) = tolerance {
+                    self.check_expr_with_ctx(body, *tolerance, false, true);
+                }
             }
             Stmt::Require { condition, message } => {
                 if self.in_check {
@@ -2365,7 +2379,12 @@ fn collect_stmt_calls_and_awaits(
             has_await,
             callees,
         ),
-        Stmt::Assert { expr, .. } => {
+        Stmt::Assert {
+            expr,
+            rhs,
+            tolerance,
+            ..
+        } => {
             collect_expr_calls_and_awaits(
                 body,
                 *expr,
@@ -2374,6 +2393,26 @@ fn collect_stmt_calls_and_awaits(
                 has_await,
                 callees,
             );
+            if let Some(rhs) = rhs {
+                collect_expr_calls_and_awaits(
+                    body,
+                    *rhs,
+                    function_ids,
+                    method_name_ids,
+                    has_await,
+                    callees,
+                );
+            }
+            if let Some(tolerance) = tolerance {
+                collect_expr_calls_and_awaits(
+                    body,
+                    *tolerance,
+                    function_ids,
+                    method_name_ids,
+                    has_await,
+                    callees,
+                );
+            }
         }
         Stmt::Require { condition, message } => {
             collect_expr_calls_and_awaits(
@@ -2797,6 +2836,36 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
             SmolStr::new("__wr_auth_render_jwks_document"),
             BindingKind::Function,
         ),
+        (SmolStr::new("vec2"), BindingKind::Function),
+        (SmolStr::new("vec3"), BindingKind::Function),
+        (SmolStr::new("vec4"), BindingKind::Function),
+        (SmolStr::new("quat"), BindingKind::Function),
+        (SmolStr::new("mat3_identity"), BindingKind::Function),
+        (SmolStr::new("mat3_cols"), BindingKind::Function),
+        (SmolStr::new("mat4_identity"), BindingKind::Function),
+        (SmolStr::new("mat4_cols"), BindingKind::Function),
+        (SmolStr::new("dot"), BindingKind::Function),
+        (SmolStr::new("length"), BindingKind::Function),
+        (SmolStr::new("normalize"), BindingKind::Function),
+        (SmolStr::new("cross"), BindingKind::Function),
+        (SmolStr::new("min"), BindingKind::Function),
+        (SmolStr::new("max"), BindingKind::Function),
+        (SmolStr::new("clamp"), BindingKind::Function),
+        (SmolStr::new("mix"), BindingKind::Function),
+        (SmolStr::new("abs"), BindingKind::Function),
+        (SmolStr::new("sign"), BindingKind::Function),
+        (SmolStr::new("floor"), BindingKind::Function),
+        (SmolStr::new("ceil"), BindingKind::Function),
+        (SmolStr::new("fract"), BindingKind::Function),
+        (SmolStr::new("sin"), BindingKind::Function),
+        (SmolStr::new("cos"), BindingKind::Function),
+        (SmolStr::new("sqrt"), BindingKind::Function),
+        (SmolStr::new("pow"), BindingKind::Function),
+        (SmolStr::new("distance"), BindingKind::Function),
+        (SmolStr::new("reflect"), BindingKind::Function),
+        (SmolStr::new("f32"), BindingKind::Function),
+        (SmolStr::new("i32"), BindingKind::Function),
+        (SmolStr::new("u32"), BindingKind::Function),
         (SmolStr::new("__wr_list_push"), BindingKind::Function),
         (SmolStr::new("__wr_list_get"), BindingKind::Function),
         (SmolStr::new("__wr_list_set"), BindingKind::Function),

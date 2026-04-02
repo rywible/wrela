@@ -816,10 +816,23 @@ fn collect_pattern_bindings(pattern: &Pattern, out: &mut HashSet<SmolStr>) {
 
 fn count_name_in_stmt(body: &Body, stmt_id: Idx<Stmt>, name: &SmolStr) -> usize {
     match &body.stmts[stmt_id] {
-        Stmt::Expr(expr)
-        | Stmt::IgnoreResult { expr }
-        | Stmt::Defer { expr }
-        | Stmt::Assert { expr, .. } => count_name_in_expr(body, *expr, name),
+        Stmt::Expr(expr) | Stmt::IgnoreResult { expr } | Stmt::Defer { expr } => {
+            count_name_in_expr(body, *expr, name)
+        }
+        Stmt::Assert {
+            expr,
+            rhs,
+            tolerance,
+            ..
+        } => {
+            count_name_in_expr(body, *expr, name)
+                + rhs
+                    .map(|rhs| count_name_in_expr(body, rhs, name))
+                    .unwrap_or(0)
+                + tolerance
+                    .map(|tolerance| count_name_in_expr(body, tolerance, name))
+                    .unwrap_or(0)
+        }
         Stmt::Require { condition, message } => {
             count_name_in_expr(body, *condition, name) + count_name_in_expr(body, *message, name)
         }

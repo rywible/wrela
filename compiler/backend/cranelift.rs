@@ -1,8 +1,8 @@
 use crate::hir::{CheckBinaryOp, CheckDagShapeFamily, CheckIrFunction, CheckValue, DecisionNode};
 use crate::hir::{Objective, PoolSize};
 use crate::mir::ir::{
-    AllocKind, CallKind, CallTarget, MirFunction, MirModule, MirType, Place, Rvalue, Stmt,
-    Terminator, Value,
+    AllocKind, CallKind, CallTarget, MirFunction, MirModule, MirType, Place, PortableAbiType,
+    PortableStructField, Rvalue, Stmt, Terminator, Value,
 };
 use cranelift_codegen::ir::{
     AbiParam, Function, InstBuilder, MemFlags, Signature, StackSlotData, StackSlotKind, types,
@@ -45,6 +45,16 @@ pub struct CodegenError(pub String);
 struct PhiNode {
     place: Place,
     sources: Vec<(crate::mir::ir::BlockId, Value)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PortableLaneKind {
+    Bool,
+    I32,
+    U32,
+    I64,
+    U64,
+    F32,
 }
 
 pub(crate) fn classify_check_shape_family(func: &CheckIrFunction) -> CheckDagShapeFamily {
@@ -333,6 +343,7 @@ pub fn compile_to_object(mir: &MirModule) -> Result<Vec<u8>, CodegenError> {
     }
     let mut module = create_object_module()?;
     let func_ids = declare_functions(&mut module, mir)?;
+    let function_abis = collect_function_abis(mir);
     let method_wrappers = declare_method_wrappers(&mut module, mir, &func_ids)?;
     let mut runtime = RuntimeRegistry::new();
 
@@ -350,6 +361,7 @@ pub fn compile_to_object(mir: &MirModule) -> Result<Vec<u8>, CodegenError> {
         lower_function(
             func,
             &func_ids,
+            &function_abis,
             &mut ctx.func,
             &mut fb_ctx,
             &mut module,
@@ -802,19 +814,44 @@ fn declare_functions(
     Ok(ids)
 }
 
+fn collect_function_abis(
+    mir: &MirModule,
+) -> HashMap<SmolStr, (Vec<PortableAbiType>, PortableAbiType)> {
+    mir.functions
+        .iter()
+        .map(|func| {
+            (
+                func.name.clone(),
+                (func.abi_params.clone(), func.abi_return.clone()),
+            )
+        })
+        .collect()
+}
+
 fn function_signature(module: &ObjectModule, func: &MirFunction) -> Signature {
     let mut sig = module.make_signature();
     sig.call_conv = module.target_config().default_call_conv;
-    for _param in &func.params {
-        sig.params.push(AbiParam::new(types::I64));
+    if portable_abi_uses_sret(&func.abi_return) {
+        sig.params
+            .push(AbiParam::new(module.target_config().pointer_type()));
     }
-    sig.returns.push(AbiParam::new(types::I64));
+    for param in &func.abi_params {
+        for lane in portable_abi_param_types(param) {
+            sig.params.push(AbiParam::new(lane));
+        }
+    }
+    if portable_abi_is_legacy_value(&func.abi_return) {
+        sig.returns.push(AbiParam::new(types::I64));
+    } else if let Some(ret_ty) = portable_abi_scalar_type(&func.abi_return) {
+        sig.returns.push(AbiParam::new(ret_ty));
+    }
     sig
 }
 
 fn lower_function(
     func: &MirFunction,
     func_ids: &HashMap<SmolStr, cranelift_module::FuncId>,
+    function_abis: &HashMap<SmolStr, (Vec<PortableAbiType>, PortableAbiType)>,
     clif: &mut Function,
     fb_ctx: &mut FunctionBuilderContext,
     module: &mut ObjectModule,
@@ -841,6 +878,7 @@ fn lower_function(
     let entry_block = block_map[func.entry.0];
     builder.append_block_params_for_function_params(entry_block);
     builder.switch_to_block(entry_block);
+    let entry_params = builder.block_params(entry_block).to_vec();
 
     let mut locals = HashMap::new();
     for (idx, local) in func.locals.iter().enumerate() {
@@ -849,12 +887,30 @@ fn lower_function(
         locals.insert(idx, var);
     }
 
-    for (param_idx, local_id) in func.params.iter().enumerate() {
-        let phi_offset = phi_map
-            .get(func.entry.0)
-            .map(|phis| phis.len())
-            .unwrap_or(0);
-        let param_val = builder.block_params(entry_block)[param_idx + phi_offset];
+    let phi_offset = phi_map
+        .get(func.entry.0)
+        .map(|phis| phis.len())
+        .unwrap_or(0);
+    let mut entry_cursor = phi_offset;
+    let return_ptr = if portable_abi_uses_sret(&func.abi_return) {
+        let ptr = entry_params.get(entry_cursor).copied();
+        entry_cursor += 1;
+        ptr
+    } else {
+        None
+    };
+
+    for ((local_id, abi_ty), _param_idx) in func
+        .params
+        .iter()
+        .zip(func.abi_params.iter())
+        .zip(0..func.params.len())
+    {
+        let lane_count = portable_abi_lane_count(abi_ty);
+        let lane_end = entry_cursor + lane_count;
+        let param_lanes = &entry_params[entry_cursor..lane_end];
+        let param_val = box_portable_param(&mut builder, module, runtime, abi_ty, param_lanes, 0)?;
+        entry_cursor = lane_end;
         if let Some(var) = locals.get(&local_id.0) {
             builder.def_var(*var, param_val);
         }
@@ -862,9 +918,14 @@ fn lower_function(
 
     let mut temps: HashMap<usize, cranelift_codegen::ir::Value> = HashMap::new();
 
-    for (block_idx, block) in func.blocks.iter().enumerate() {
+    let block_order = std::iter::once(func.entry.0)
+        .chain((0..func.blocks.len()).filter(|idx| *idx != func.entry.0));
+    for block_idx in block_order {
+        let block = &func.blocks[block_idx];
         let block_id = block_map[block_idx];
-        builder.switch_to_block(block_id);
+        if block_idx != func.entry.0 {
+            builder.switch_to_block(block_id);
+        }
         if let Some(phis) = phi_map.get(block_idx) {
             let params = builder.block_params(block_id).to_vec();
             for (idx, phi) in phis.iter().enumerate() {
@@ -893,12 +954,15 @@ fn lower_function(
                 &locals_tys,
                 &temps_tys,
                 func_ids,
+                function_abis,
                 module,
                 runtime,
             )?;
         }
         lower_terminator(
             &block.terminator,
+            &func.abi_return,
+            return_ptr,
             block_idx,
             &mut builder,
             &locals,
@@ -926,6 +990,7 @@ fn lower_stmt(
     locals_tys: &Vec<MirType>,
     temps_tys: &Vec<MirType>,
     func_ids: &HashMap<SmolStr, cranelift_module::FuncId>,
+    function_abis: &HashMap<SmolStr, (Vec<PortableAbiType>, PortableAbiType)>,
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
 ) -> Result<(), CodegenError> {
@@ -933,7 +998,16 @@ fn lower_stmt(
         Stmt::Phi { .. } => {}
         Stmt::Assign { place, value, .. } => {
             let val = lower_rvalue(
-                value, builder, locals, temps, locals_tys, temps_tys, func_ids, module, runtime,
+                value,
+                builder,
+                locals,
+                temps,
+                locals_tys,
+                temps_tys,
+                func_ids,
+                function_abis,
+                module,
+                runtime,
             )?;
             match place {
                 Place::Local(local) => {
@@ -1083,6 +1157,7 @@ fn lower_rvalue(
     locals_tys: &Vec<MirType>,
     temps_tys: &Vec<MirType>,
     func_ids: &HashMap<SmolStr, cranelift_module::FuncId>,
+    function_abis: &HashMap<SmolStr, (Vec<PortableAbiType>, PortableAbiType)>,
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
 ) -> Result<cranelift_codegen::ir::Value, CodegenError> {
@@ -1109,6 +1184,48 @@ fn lower_rvalue(
                             let box_callee = module.declare_func_in_func(box_id, builder.func);
                             let box_call = builder.ins().call(box_callee, &[neg]);
                             Ok(builder.inst_results(box_call)[0])
+                        }
+                        ty if is_mir_vector_type(&ty) => {
+                            let minus_one = lower_value(
+                                &Value::Const(crate::hir::Literal::Float(-1.0)),
+                                builder,
+                                locals,
+                                temps,
+                                module,
+                                runtime,
+                            )?;
+                            let func_id = runtime_fn_vec_mul(module, runtime)?;
+                            let callee = module.declare_func_in_func(func_id, builder.func);
+                            let call = builder.ins().call(callee, &[v, minus_one]);
+                            Ok(builder.inst_results(call)[0])
+                        }
+                        MirType::Mat3 => {
+                            let minus_one = lower_value(
+                                &Value::Const(crate::hir::Literal::Float(-1.0)),
+                                builder,
+                                locals,
+                                temps,
+                                module,
+                                runtime,
+                            )?;
+                            let func_id = runtime_fn_mat3_mul_scalar(module, runtime)?;
+                            let callee = module.declare_func_in_func(func_id, builder.func);
+                            let call = builder.ins().call(callee, &[v, minus_one]);
+                            Ok(builder.inst_results(call)[0])
+                        }
+                        ty if is_mir_matrix_type(&ty) => {
+                            let minus_one = lower_value(
+                                &Value::Const(crate::hir::Literal::Float(-1.0)),
+                                builder,
+                                locals,
+                                temps,
+                                module,
+                                runtime,
+                            )?;
+                            let func_id = runtime_fn_mat4_mul_scalar(module, runtime)?;
+                            let callee = module.declare_func_in_func(func_id, builder.func);
+                            let call = builder.ins().call(callee, &[v, minus_one]);
+                            Ok(builder.inst_results(call)[0])
                         }
                         _ => {
                             let func_id = runtime_fn_num_neg(module, runtime)?;
@@ -1142,7 +1259,22 @@ fn lower_rvalue(
                 crate::hir::BinaryOp::Add => {
                     let lty = mir_type_of_value(lhs, locals_tys, temps_tys);
                     let rty = mir_type_of_value(rhs, locals_tys, temps_tys);
-                    if matches!(lty, MirType::Integer) && matches!(rty, MirType::Integer) {
+                    if same_mir_vector_kind(&lty, &rty) {
+                        let func_id = runtime_fn_vec_add(module, runtime)?;
+                        let callee = module.declare_func_in_func(func_id, builder.func);
+                        let call = builder.ins().call(callee, &[lhs_val, rhs_val]);
+                        builder.inst_results(call)[0]
+                    } else if matches!(lty, MirType::Mat3) && matches!(rty, MirType::Mat3) {
+                        let func_id = runtime_fn_mat3_add(module, runtime)?;
+                        let callee = module.declare_func_in_func(func_id, builder.func);
+                        let call = builder.ins().call(callee, &[lhs_val, rhs_val]);
+                        builder.inst_results(call)[0]
+                    } else if same_mir_matrix_kind(&lty, &rty) {
+                        let func_id = runtime_fn_mat4_add(module, runtime)?;
+                        let callee = module.declare_func_in_func(func_id, builder.func);
+                        let call = builder.ins().call(callee, &[lhs_val, rhs_val]);
+                        builder.inst_results(call)[0]
+                    } else if matches!(lty, MirType::Integer) && matches!(rty, MirType::Integer) {
                         let l = untag_int(builder, module, runtime, lhs_val)?;
                         let r = untag_int(builder, module, runtime, rhs_val)?;
                         let res = builder.ins().iadd(l, r);
@@ -1178,7 +1310,22 @@ fn lower_rvalue(
                 crate::hir::BinaryOp::Sub => {
                     let lty = mir_type_of_value(lhs, locals_tys, temps_tys);
                     let rty = mir_type_of_value(rhs, locals_tys, temps_tys);
-                    if matches!(lty, MirType::Integer) && matches!(rty, MirType::Integer) {
+                    if same_mir_vector_kind(&lty, &rty) {
+                        let func_id = runtime_fn_vec_sub(module, runtime)?;
+                        let callee = module.declare_func_in_func(func_id, builder.func);
+                        let call = builder.ins().call(callee, &[lhs_val, rhs_val]);
+                        builder.inst_results(call)[0]
+                    } else if matches!(lty, MirType::Mat3) && matches!(rty, MirType::Mat3) {
+                        let func_id = runtime_fn_mat3_sub(module, runtime)?;
+                        let callee = module.declare_func_in_func(func_id, builder.func);
+                        let call = builder.ins().call(callee, &[lhs_val, rhs_val]);
+                        builder.inst_results(call)[0]
+                    } else if same_mir_matrix_kind(&lty, &rty) {
+                        let func_id = runtime_fn_mat4_sub(module, runtime)?;
+                        let callee = module.declare_func_in_func(func_id, builder.func);
+                        let call = builder.ins().call(callee, &[lhs_val, rhs_val]);
+                        builder.inst_results(call)[0]
+                    } else if matches!(lty, MirType::Integer) && matches!(rty, MirType::Integer) {
                         let l = untag_int(builder, module, runtime, lhs_val)?;
                         let r = untag_int(builder, module, runtime, rhs_val)?;
                         let res = builder.ins().isub(l, r);
@@ -1206,7 +1353,55 @@ fn lower_rvalue(
                 crate::hir::BinaryOp::Mul => {
                     let lty = mir_type_of_value(lhs, locals_tys, temps_tys);
                     let rty = mir_type_of_value(rhs, locals_tys, temps_tys);
-                    if matches!(lty, MirType::Integer) && matches!(rty, MirType::Integer) {
+                    if same_mir_vector_kind(&lty, &rty)
+                        || (is_mir_vector_type(&lty) && is_mir_scalar_numeric(&rty))
+                        || (is_mir_scalar_numeric(&lty) && is_mir_vector_type(&rty))
+                    {
+                        let func_id = runtime_fn_vec_mul(module, runtime)?;
+                        let callee = module.declare_func_in_func(func_id, builder.func);
+                        let call = builder.ins().call(callee, &[lhs_val, rhs_val]);
+                        builder.inst_results(call)[0]
+                    } else if matches!(lty, MirType::Mat3) && matches!(rty, MirType::Vec3) {
+                        let func_id = runtime_fn_mat3_mul_vec3(module, runtime)?;
+                        let callee = module.declare_func_in_func(func_id, builder.func);
+                        let call = builder.ins().call(callee, &[lhs_val, rhs_val]);
+                        builder.inst_results(call)[0]
+                    } else if matches!(lty, MirType::Mat4) && matches!(rty, MirType::Vec4) {
+                        let func_id = runtime_fn_mat4_mul_vec4(module, runtime)?;
+                        let callee = module.declare_func_in_func(func_id, builder.func);
+                        let call = builder.ins().call(callee, &[lhs_val, rhs_val]);
+                        builder.inst_results(call)[0]
+                    } else if matches!(lty, MirType::Mat3) && matches!(rty, MirType::Mat3) {
+                        let func_id = runtime_fn_mat3_mul_mat3(module, runtime)?;
+                        let callee = module.declare_func_in_func(func_id, builder.func);
+                        let call = builder.ins().call(callee, &[lhs_val, rhs_val]);
+                        builder.inst_results(call)[0]
+                    } else if same_mir_matrix_kind(&lty, &rty) {
+                        let func_id = runtime_fn_mat4_mul_mat4(module, runtime)?;
+                        let callee = module.declare_func_in_func(func_id, builder.func);
+                        let call = builder.ins().call(callee, &[lhs_val, rhs_val]);
+                        builder.inst_results(call)[0]
+                    } else if matches!(lty, MirType::Mat3) && is_mir_scalar_numeric(&rty) {
+                        let func_id = runtime_fn_mat3_mul_scalar(module, runtime)?;
+                        let callee = module.declare_func_in_func(func_id, builder.func);
+                        let call = builder.ins().call(callee, &[lhs_val, rhs_val]);
+                        builder.inst_results(call)[0]
+                    } else if is_mir_scalar_numeric(&lty) && matches!(rty, MirType::Mat3) {
+                        let func_id = runtime_fn_mat3_mul_scalar(module, runtime)?;
+                        let callee = module.declare_func_in_func(func_id, builder.func);
+                        let call = builder.ins().call(callee, &[rhs_val, lhs_val]);
+                        builder.inst_results(call)[0]
+                    } else if is_mir_matrix_type(&lty) && is_mir_scalar_numeric(&rty) {
+                        let func_id = runtime_fn_mat4_mul_scalar(module, runtime)?;
+                        let callee = module.declare_func_in_func(func_id, builder.func);
+                        let call = builder.ins().call(callee, &[lhs_val, rhs_val]);
+                        builder.inst_results(call)[0]
+                    } else if is_mir_scalar_numeric(&lty) && is_mir_matrix_type(&rty) {
+                        let func_id = runtime_fn_mat4_mul_scalar(module, runtime)?;
+                        let callee = module.declare_func_in_func(func_id, builder.func);
+                        let call = builder.ins().call(callee, &[rhs_val, lhs_val]);
+                        builder.inst_results(call)[0]
+                    } else if matches!(lty, MirType::Integer) && matches!(rty, MirType::Integer) {
                         let l = untag_int(builder, module, runtime, lhs_val)?;
                         let r = untag_int(builder, module, runtime, rhs_val)?;
                         let res = builder.ins().imul(l, r);
@@ -1234,7 +1429,22 @@ fn lower_rvalue(
                 crate::hir::BinaryOp::Div => {
                     let lty = mir_type_of_value(lhs, locals_tys, temps_tys);
                     let rty = mir_type_of_value(rhs, locals_tys, temps_tys);
-                    if matches!(lty, MirType::Integer) && matches!(rty, MirType::Integer) {
+                    if is_mir_vector_type(&lty) && is_mir_scalar_numeric(&rty) {
+                        let func_id = runtime_fn_vec_div(module, runtime)?;
+                        let callee = module.declare_func_in_func(func_id, builder.func);
+                        let call = builder.ins().call(callee, &[lhs_val, rhs_val]);
+                        builder.inst_results(call)[0]
+                    } else if matches!(lty, MirType::Mat3) && is_mir_scalar_numeric(&rty) {
+                        let func_id = runtime_fn_mat3_div_scalar(module, runtime)?;
+                        let callee = module.declare_func_in_func(func_id, builder.func);
+                        let call = builder.ins().call(callee, &[lhs_val, rhs_val]);
+                        builder.inst_results(call)[0]
+                    } else if is_mir_matrix_type(&lty) && is_mir_scalar_numeric(&rty) {
+                        let func_id = runtime_fn_mat4_div_scalar(module, runtime)?;
+                        let callee = module.declare_func_in_func(func_id, builder.func);
+                        let call = builder.ins().call(callee, &[lhs_val, rhs_val]);
+                        builder.inst_results(call)[0]
+                    } else if matches!(lty, MirType::Integer) && matches!(rty, MirType::Integer) {
                         let l = untag_int(builder, module, runtime, lhs_val)?;
                         let r = untag_int(builder, module, runtime, rhs_val)?;
                         let zero = builder.ins().iconst(types::I64, 0);
@@ -1593,304 +1803,12 @@ fn lower_rvalue(
                         }
                         CallTarget::Indirect(_) => "<indirect>".to_string(),
                     };
-                    let func_id = match target {
+                    let (func_id, user_abi) = match target {
                         CallTarget::Function(name) => {
                             if let Some(id) = func_ids.get(name).copied() {
-                                Some(id)
+                                (Some(id), function_abis.get(name).cloned())
                             } else {
-                                match name.as_str() {
-                                    "__wr_print" => Some(runtime_fn_print(module, runtime)?),
-                                    "assert" => Some(runtime_fn_assert(module, runtime)?),
-                                    "assert_eq" => Some(runtime_fn_assert_eq(module, runtime)?),
-                                    "value_deep_eq" => {
-                                        Some(runtime_fn_value_deep_eq(module, runtime)?)
-                                    }
-                                    "identity_eq" => Some(runtime_fn_identity_eq(module, runtime)?),
-                                    "assert_value_equality" => {
-                                        Some(runtime_fn_assert_value_equality(module, runtime)?)
-                                    }
-                                    "assert_identity" => {
-                                        Some(runtime_fn_assert_identity(module, runtime)?)
-                                    }
-                                    "__wr_assert_err" => {
-                                        Some(runtime_fn_assert_err(module, runtime)?)
-                                    }
-                                    "__wr_log" => Some(runtime_fn_log(module, runtime)?),
-                                    "__wr_log_configure" => {
-                                        Some(runtime_fn_log_configure(module, runtime)?)
-                                    }
-                                    "__wr_list_push" => {
-                                        Some(runtime_fn_list_push(module, runtime)?)
-                                    }
-                                    "__wr_list_get" => {
-                                        Some(runtime_fn_list_get_val(module, runtime)?)
-                                    }
-                                    "__wr_list_set" => {
-                                        Some(runtime_fn_list_set_val(module, runtime)?)
-                                    }
-                                    "__wr_list_len" => Some(runtime_fn_list_len(module, runtime)?),
-                                    "__wr_map_new" => Some(runtime_fn_map_new(module, runtime)?),
-                                    "__wr_map_get" => Some(runtime_fn_map_get(module, runtime)?),
-                                    "__wr_map_len" => Some(runtime_fn_map_len(module, runtime)?),
-                                    "__wr_map_set" => Some(runtime_fn_map_set(module, runtime)?),
-                                    "__wr_str_len" => Some(runtime_fn_str_len(module, runtime)?),
-                                    "__wr_runtime_cpu_count" => {
-                                        Some(runtime_fn_runtime_cpu_count(module, runtime)?)
-                                    }
-                                    "__wr_reactor_new" => {
-                                        Some(runtime_fn_reactor_new(module, runtime)?)
-                                    }
-                                    "__wr_reactor_drop" => {
-                                        Some(runtime_fn_reactor_drop(module, runtime)?)
-                                    }
-                                    "__wr_reactor_register" => {
-                                        Some(runtime_fn_reactor_register(module, runtime)?)
-                                    }
-                                    "__wr_reactor_deregister" => {
-                                        Some(runtime_fn_reactor_deregister(module, runtime)?)
-                                    }
-                                    "__wr_reactor_arm_timer" => {
-                                        Some(runtime_fn_reactor_arm_timer(module, runtime)?)
-                                    }
-                                    "__wr_task_signal_new" => {
-                                        Some(runtime_fn_task_signal_new(module, runtime)?)
-                                    }
-                                    "__wr_task_signal_drop" => {
-                                        Some(runtime_fn_task_signal_drop(module, runtime)?)
-                                    }
-                                    "__wr_task_unpark_one" => {
-                                        Some(runtime_fn_task_unpark_one(module, runtime)?)
-                                    }
-                                    "__wr_task_unpark_all" => {
-                                        Some(runtime_fn_task_unpark_all(module, runtime)?)
-                                    }
-                                    "__wr_task_epoch" => {
-                                        Some(runtime_fn_task_epoch(module, runtime)?)
-                                    }
-                                    "__wr_atomic_i64_new" => {
-                                        Some(runtime_fn_atomic_i64_new(module, runtime)?)
-                                    }
-                                    "__wr_atomic_i64_drop" => {
-                                        Some(runtime_fn_atomic_i64_drop(module, runtime)?)
-                                    }
-                                    "__wr_atomic_i64_load" => {
-                                        Some(runtime_fn_atomic_i64_load(module, runtime)?)
-                                    }
-                                    "__wr_atomic_i64_store" => {
-                                        Some(runtime_fn_atomic_i64_store(module, runtime)?)
-                                    }
-                                    "__wr_atomic_i64_fetch_add" => {
-                                        Some(runtime_fn_atomic_i64_fetch_add(module, runtime)?)
-                                    }
-                                    "__wr_pool_size" => {
-                                        Some(runtime_fn_pool_size(module, runtime)?)
-                                    }
-                                    "__wr_pool_rr" => Some(runtime_fn_pool_rr(module, runtime)?),
-                                    "__wr_pool_queue_len" => {
-                                        Some(runtime_fn_pool_queue_len(module, runtime)?)
-                                    }
-                                    "__wr_actor_mailbox_len" => {
-                                        Some(runtime_fn_actor_mailbox_len(module, runtime)?)
-                                    }
-                                    "__wr_actor_pause" => {
-                                        Some(runtime_fn_actor_pause(module, runtime)?)
-                                    }
-                                    "__wr_actor_resume" => {
-                                        Some(runtime_fn_actor_resume(module, runtime)?)
-                                    }
-                                    "__wr_actor_pause_wait" => {
-                                        Some(runtime_fn_actor_pause_wait(module, runtime)?)
-                                    }
-                                    "__wr_actor_fire_burst_begin" => {
-                                        Some(runtime_fn_actor_fire_burst_begin(module, runtime)?)
-                                    }
-                                    "__wr_actor_fire_burst_end" => {
-                                        Some(runtime_fn_actor_fire_burst_end(module, runtime)?)
-                                    }
-                                    "__wr_actor_fire_burst_abort" => {
-                                        Some(runtime_fn_actor_fire_burst_abort(module, runtime)?)
-                                    }
-                                    "__wr_metrics_get" => {
-                                        Some(runtime_fn_metrics_get(module, runtime)?)
-                                    }
-                                    "__wr_metrics_dropped_paused_id" => {
-                                        Some(runtime_fn_metrics_dropped_paused_id(module, runtime)?)
-                                    }
-                                    "__wr_metrics_messages_dropped_id" => Some(
-                                        runtime_fn_metrics_messages_dropped_id(module, runtime)?,
-                                    ),
-                                    "__wr_metrics_web_writev_calls_id" => Some(
-                                        runtime_fn_metrics_web_writev_calls_id(module, runtime)?,
-                                    ),
-                                    "__wr_metrics_web_sendfile_calls_id" => Some(
-                                        runtime_fn_metrics_web_sendfile_calls_id(module, runtime)?,
-                                    ),
-                                    "__wr_clock_ns" => Some(runtime_fn_clock_ns(module, runtime)?),
-                                    "__wr_sleep_ms" => Some(runtime_fn_sleep_ms(module, runtime)?),
-                                    "__wr_env_get" => Some(runtime_fn_env_get(module, runtime)?),
-                                    "__wr_env_set" => Some(runtime_fn_env_set(module, runtime)?),
-                                    "__wr_runtime_configure" => {
-                                        Some(runtime_fn_runtime_configure(module, runtime)?)
-                                    }
-                                    "__wr_db_core_open" => {
-                                        Some(runtime_fn_db_core_open(module, runtime)?)
-                                    }
-                                    "__wr_db_core_close" => {
-                                        Some(runtime_fn_db_core_close(module, runtime)?)
-                                    }
-                                    "__wr_db_core_submit_batch" => {
-                                        Some(runtime_fn_db_core_submit_batch(module, runtime)?)
-                                    }
-                                    "__wr_db_core_read_point" => {
-                                        Some(runtime_fn_db_core_read_point(module, runtime)?)
-                                    }
-                                    "__wr_db_core_read_range" => {
-                                        Some(runtime_fn_db_core_read_range(module, runtime)?)
-                                    }
-                                    "__wr_db_core_txn_begin" => {
-                                        Some(runtime_fn_db_core_txn_begin(module, runtime)?)
-                                    }
-                                    "__wr_db_core_txn_prepare" => {
-                                        Some(runtime_fn_db_core_txn_prepare(module, runtime)?)
-                                    }
-                                    "__wr_db_core_txn_commit" => {
-                                        Some(runtime_fn_db_core_txn_commit(module, runtime)?)
-                                    }
-                                    "__wr_db_core_txn_abort" => {
-                                        Some(runtime_fn_db_core_txn_abort(module, runtime)?)
-                                    }
-                                    "__wr_db_admin_snapshot_start" => {
-                                        Some(runtime_fn_db_admin_snapshot_start(module, runtime)?)
-                                    }
-                                    "__wr_db_admin_snapshot_status" => {
-                                        Some(runtime_fn_db_admin_snapshot_status(module, runtime)?)
-                                    }
-                                    "__wr_db_admin_restore" => {
-                                        Some(runtime_fn_db_admin_restore(module, runtime)?)
-                                    }
-                                    "__wr_db_admin_checkpoint_create" => Some(
-                                        runtime_fn_db_admin_checkpoint_create(module, runtime)?,
-                                    ),
-                                    "__wr_db_admin_checkpoint_restore_latest" => Some(
-                                        runtime_fn_db_admin_checkpoint_restore_latest(
-                                            module, runtime,
-                                        )?,
-                                    ),
-                                    "__wr_db_admin_schema_epoch_set" => {
-                                        Some(runtime_fn_db_admin_schema_epoch_set(module, runtime)?)
-                                    }
-                                    "__wr_db_admin_schema_set_all_voters_on_target_binary" => {
-                                        Some(runtime_fn_db_admin_schema_set_all_voters_on_target_binary(
-                                            module, runtime,
-                                        )?)
-                                    }
-                                    "__wr_db_admin_autoscale_tick" => {
-                                        Some(runtime_fn_db_admin_autoscale_tick(module, runtime)?)
-                                    }
-                                    "__wr_db_admin_plan_rehome" => {
-                                        Some(runtime_fn_db_admin_plan_rehome(module, runtime)?)
-                                    }
-                                    "__wr_db_admin_advance_rehome" => {
-                                        Some(runtime_fn_db_admin_advance_rehome(module, runtime)?)
-                                    }
-                                    "__wr_db_admin_promote_async_failover" => Some(
-                                        runtime_fn_db_admin_promote_async_failover(
-                                            module, runtime,
-                                        )?,
-                                    ),
-                                    "__wr_db_explain_checkpoint_count" => {
-                                        Some(runtime_fn_db_explain_checkpoint_count(module, runtime)?)
-                                    }
-                                    "__wr_db_explain_schema_epoch_get" => {
-                                        Some(runtime_fn_db_explain_schema_epoch_get(module, runtime)?)
-                                    }
-                                    "__wr_db_explain_health_has_checkpoint_or_schema_error" => {
-                                        Some(
-                                            runtime_fn_db_explain_health_has_checkpoint_or_schema_error(
-                                                module, runtime,
-                                            )?,
-                                        )
-                                    }
-                                    "__wr_db_explain_private_mesh_status" => {
-                                        Some(runtime_fn_db_explain_private_mesh_status(module, runtime)?)
-                                    }
-                                    "__wr_db_explain_logical_shard_count" => {
-                                        Some(runtime_fn_db_explain_logical_shard_count(module, runtime)?)
-                                    }
-                                    "__wr_db_explain_active_group_count" => {
-                                        Some(runtime_fn_db_explain_active_group_count(module, runtime)?)
-                                    }
-                                    "__wr_db_explain_autoscale_status" => {
-                                        Some(runtime_fn_db_explain_autoscale_status(module, runtime)?)
-                                    }
-                                    "__wr_db_explain_topology_status" => {
-                                        Some(runtime_fn_db_explain_topology_status(module, runtime)?)
-                                    }
-                                    "__wr_db_explain_shard_map_epoch" => {
-                                        Some(runtime_fn_db_explain_shard_map_epoch(module, runtime)?)
-                                    }
-                                    "__wr_db_explain_shard_for_key" => {
-                                        Some(runtime_fn_db_explain_shard_for_key(module, runtime)?)
-                                    }
-                                    "__wr_db_explain_resolve_owner" => {
-                                        Some(runtime_fn_db_explain_resolve_owner(module, runtime)?)
-                                    }
-                                    "__wr_db_explain_global_route_lookup" => Some(
-                                        runtime_fn_db_explain_global_route_lookup(module, runtime)?,
-                                    ),
-                                    "__wr_bytes_from_string" => {
-                                        Some(runtime_fn_bytes_from_string(module, runtime)?)
-                                    }
-                                    "__wr_bytes_from_list" => {
-                                        Some(runtime_fn_bytes_from_list(module, runtime)?)
-                                    }
-                                    "__wr_bytes_to_string" => {
-                                        Some(runtime_fn_bytes_to_string(module, runtime)?)
-                                    }
-                                    "__wr_bytes_to_list" => {
-                                        Some(runtime_fn_bytes_to_list(module, runtime)?)
-                                    }
-                                    "__wr_bytes_len" => {
-                                        Some(runtime_fn_bytes_len(module, runtime)?)
-                                    }
-                                    "__wr_fs_read_bytes" => {
-                                        Some(runtime_fn_fs_read_bytes(module, runtime)?)
-                                    }
-                                    "__wr_fs_write_bytes" => {
-                                        Some(runtime_fn_fs_write_bytes(module, runtime)?)
-                                    }
-                                    "__wr_external_call" => {
-                                        Some(runtime_fn_external_call(module, runtime)?)
-                                    }
-                                    "__wr_http_call" => {
-                                        Some(runtime_fn_http_call(module, runtime)?)
-                                    }
-                                    "__wr_web_parse_json_text" => {
-                                        Some(runtime_fn_web_parse_json_text(module, runtime)?)
-                                    }
-                                    "__wr_web_render_json_text" => {
-                                        Some(runtime_fn_web_render_json_text(module, runtime)?)
-                                    }
-                                    "__wr_auth_hash_password" => {
-                                        Some(runtime_fn_auth_hash_password(module, runtime)?)
-                                    }
-                                    "__wr_auth_verify_password_hash" => {
-                                        Some(runtime_fn_auth_verify_password_hash(module, runtime)?)
-                                    }
-                                    "__wr_auth_sign_jwt" => {
-                                        Some(runtime_fn_auth_sign_jwt(module, runtime)?)
-                                    }
-                                    "__wr_auth_verify_jwt" => {
-                                        Some(runtime_fn_auth_verify_jwt(module, runtime)?)
-                                    }
-                                    "__wr_auth_generate_secure_token" => Some(
-                                        runtime_fn_auth_generate_secure_token(module, runtime)?,
-                                    ),
-                                    "__wr_auth_render_jwks_document" => {
-                                        Some(runtime_fn_auth_render_jwks_document(module, runtime)?)
-                                    }
-                                    _ => None,
-                                }
+                                (runtime_builtin_func_id(name, module, runtime)?, None)
                             }
                         }
                         CallTarget::Method {
@@ -1899,7 +1817,10 @@ fn lower_rvalue(
                             let recv =
                                 lower_value(receiver, builder, locals, temps, module, runtime)?;
                             call_args.insert(0, recv);
-                            func_ids.get(method).copied()
+                            (
+                                func_ids.get(method).copied(),
+                                function_abis.get(method).cloned(),
+                            )
                         }
                         CallTarget::GuardedInterface {
                             fast_paths,
@@ -1969,15 +1890,27 @@ fn lower_rvalue(
                             builder.switch_to_block(result_block);
                             return Ok(builder.block_params(result_block)[0]);
                         }
-                        CallTarget::Indirect(_) => None,
-                    }
-                    .ok_or_else(|| {
+                        CallTarget::Indirect(_) => (None, None),
+                    };
+                    let func_id = func_id.ok_or_else(|| {
                         CodegenError(format!("unsupported call target: {}", target_name))
                     })?;
                     let callee = module.declare_func_in_func(func_id, builder.func);
-                    let call_inst = builder.ins().call(callee, &call_args);
-                    let results = builder.inst_results(call_inst);
-                    Ok(results[0])
+                    if let Some((param_abis, ret_abi)) = user_abi {
+                        emit_portable_function_call(
+                            builder,
+                            module,
+                            runtime,
+                            callee,
+                            &call_args,
+                            &param_abis,
+                            &ret_abi,
+                        )
+                    } else {
+                        let call_inst = builder.ins().call(callee, &call_args);
+                        let results = builder.inst_results(call_inst);
+                        Ok(results[0])
+                    }
                 }
                 CallKind::Actor => {
                     let (handle, method_id) = match target {
@@ -2203,6 +2136,38 @@ fn mir_type_of_value(
     }
 }
 
+fn is_mir_scalar_numeric(ty: &MirType) -> bool {
+    matches!(ty, MirType::Integer | MirType::Float)
+}
+
+fn is_mir_vector_type(ty: &MirType) -> bool {
+    matches!(
+        ty,
+        MirType::Vec2 | MirType::Vec3 | MirType::Vec4 | MirType::Quat
+    )
+}
+
+fn is_mir_matrix_type(ty: &MirType) -> bool {
+    matches!(ty, MirType::Mat3 | MirType::Mat4)
+}
+
+fn same_mir_vector_kind(left: &MirType, right: &MirType) -> bool {
+    matches!(
+        (left, right),
+        (MirType::Vec2, MirType::Vec2)
+            | (MirType::Vec3, MirType::Vec3)
+            | (MirType::Vec4, MirType::Vec4)
+            | (MirType::Quat, MirType::Quat)
+    )
+}
+
+fn same_mir_matrix_kind(left: &MirType, right: &MirType) -> bool {
+    matches!(
+        (left, right),
+        (MirType::Mat3, MirType::Mat3) | (MirType::Mat4, MirType::Mat4)
+    )
+}
+
 fn mir_type_of_literal(lit: &crate::hir::Literal) -> MirType {
     match lit {
         crate::hir::Literal::Integer(_) => MirType::Integer,
@@ -2237,8 +2202,872 @@ fn place_ty(place: &Place, locals_tys: &[MirType], temps_tys: &[MirType]) -> Mir
     }
 }
 
+fn portable_abi_is_legacy_value(abi: &PortableAbiType) -> bool {
+    matches!(abi, PortableAbiType::Value)
+}
+
+fn portable_abi_scalar_kind(abi: &PortableAbiType) -> Option<PortableLaneKind> {
+    match abi {
+        PortableAbiType::Bool => Some(PortableLaneKind::Bool),
+        PortableAbiType::I32 => Some(PortableLaneKind::I32),
+        PortableAbiType::U32 => Some(PortableLaneKind::U32),
+        PortableAbiType::I64 => Some(PortableLaneKind::I64),
+        PortableAbiType::U64 => Some(PortableLaneKind::U64),
+        PortableAbiType::F32 => Some(PortableLaneKind::F32),
+        _ => None,
+    }
+}
+
+fn portable_lane_clif_type(kind: PortableLaneKind) -> cranelift_codegen::ir::Type {
+    match kind {
+        PortableLaneKind::Bool => types::I8,
+        PortableLaneKind::I32 | PortableLaneKind::U32 => types::I32,
+        PortableLaneKind::I64 | PortableLaneKind::U64 => types::I64,
+        PortableLaneKind::F32 => types::F32,
+    }
+}
+
+fn portable_abi_scalar_type(abi: &PortableAbiType) -> Option<cranelift_codegen::ir::Type> {
+    portable_abi_scalar_kind(abi).map(portable_lane_clif_type)
+}
+
+fn portable_abi_uses_sret(abi: &PortableAbiType) -> bool {
+    !portable_abi_is_legacy_value(abi) && portable_abi_scalar_kind(abi).is_none()
+}
+
+fn portable_abi_param_types(abi: &PortableAbiType) -> Vec<cranelift_codegen::ir::Type> {
+    let mut out = Vec::with_capacity(portable_abi_lane_count(abi).max(1));
+    portable_abi_collect_param_types(abi, &mut out);
+    out
+}
+
+fn portable_abi_collect_param_types(
+    abi: &PortableAbiType,
+    out: &mut Vec<cranelift_codegen::ir::Type>,
+) {
+    if portable_abi_is_legacy_value(abi) {
+        out.push(types::I64);
+        return;
+    }
+    if let Some(scalar) = portable_abi_scalar_type(abi) {
+        out.push(scalar);
+        return;
+    }
+    match abi {
+        PortableAbiType::Vec2 => out.extend([types::F32, types::F32]),
+        PortableAbiType::Vec3 => out.extend([types::F32, types::F32, types::F32]),
+        PortableAbiType::Vec4 | PortableAbiType::Quat => {
+            out.extend([types::F32, types::F32, types::F32, types::F32])
+        }
+        PortableAbiType::Mat3 => out.extend([types::F32; 9]),
+        PortableAbiType::Mat4 => out.extend([types::F32; 16]),
+        PortableAbiType::Array(inner, len) => {
+            for _ in 0..*len {
+                portable_abi_collect_param_types(inner, out);
+            }
+        }
+        PortableAbiType::Struct { fields, .. } => {
+            for field in fields {
+                portable_abi_collect_param_types(&field.ty, out);
+            }
+        }
+        PortableAbiType::Value => out.push(types::I64),
+        PortableAbiType::Bool
+        | PortableAbiType::I32
+        | PortableAbiType::U32
+        | PortableAbiType::I64
+        | PortableAbiType::U64
+        | PortableAbiType::F32 => unreachable!(),
+    }
+}
+
+fn portable_abi_lane_count(abi: &PortableAbiType) -> usize {
+    match abi {
+        PortableAbiType::Value
+        | PortableAbiType::Bool
+        | PortableAbiType::I32
+        | PortableAbiType::U32
+        | PortableAbiType::I64
+        | PortableAbiType::U64
+        | PortableAbiType::F32 => 1,
+        PortableAbiType::Vec2 => 2,
+        PortableAbiType::Vec3 => 3,
+        PortableAbiType::Vec4 | PortableAbiType::Quat => 4,
+        PortableAbiType::Mat3 => 9,
+        PortableAbiType::Mat4 => 16,
+        PortableAbiType::Array(inner, len) => portable_abi_lane_count(inner) * len,
+        PortableAbiType::Struct { fields, .. } => fields
+            .iter()
+            .map(|field| portable_abi_lane_count(&field.ty))
+            .sum(),
+    }
+}
+
+fn portable_abi_layout(abi: &PortableAbiType) -> (u32, u32) {
+    match abi {
+        PortableAbiType::Bool => (1, 1),
+        PortableAbiType::I32 | PortableAbiType::U32 | PortableAbiType::F32 => (4, 4),
+        PortableAbiType::I64 | PortableAbiType::U64 => (8, 8),
+        PortableAbiType::Vec2 => portable_fixed_array_layout(4, 4, 2),
+        PortableAbiType::Vec3 => portable_fixed_array_layout(4, 4, 3),
+        PortableAbiType::Vec4 | PortableAbiType::Quat => portable_fixed_array_layout(4, 4, 4),
+        PortableAbiType::Mat3 => portable_fixed_array_layout(4, 4, 9),
+        PortableAbiType::Mat4 => portable_fixed_array_layout(4, 4, 16),
+        PortableAbiType::Array(inner, len) => {
+            let (size, align) = portable_abi_layout(inner);
+            portable_fixed_array_layout(size, align, *len)
+        }
+        PortableAbiType::Struct { fields, .. } => {
+            let mut offset = 0;
+            let mut max_align = 1;
+            for field in fields {
+                let (field_size, field_align) = portable_abi_layout(&field.ty);
+                max_align = max_align.max(field_align);
+                offset = align_to_u32(offset, field_align);
+                offset += field_size;
+            }
+            (align_to_u32(offset, max_align).max(1), max_align.max(1))
+        }
+        PortableAbiType::Value => (8, 8),
+    }
+}
+
+fn portable_fixed_array_layout(item_size: u32, item_align: u32, len: usize) -> (u32, u32) {
+    let stride = align_to_u32(item_size, item_align);
+    if len == 0 {
+        (0, item_align.max(1))
+    } else {
+        (
+            stride.saturating_mul(len.saturating_sub(1) as u32) + item_size,
+            item_align.max(1),
+        )
+    }
+}
+
+fn align_to_u32(offset: u32, align: u32) -> u32 {
+    if align <= 1 {
+        return offset;
+    }
+    let rem = offset % align;
+    if rem == 0 {
+        offset
+    } else {
+        offset + (align - rem)
+    }
+}
+
+fn align_shift_for_bytes(align: u32) -> u8 {
+    align.max(1).trailing_zeros() as u8
+}
+
+fn field_offset(fields: &[PortableStructField], index: usize) -> u32 {
+    let mut offset = 0;
+    for field in fields.iter().take(index) {
+        let (size, align) = portable_abi_layout(&field.ty);
+        offset = align_to_u32(offset, align);
+        offset += size;
+    }
+    if let Some(field) = fields.get(index) {
+        let (_, align) = portable_abi_layout(&field.ty);
+        align_to_u32(offset, align)
+    } else {
+        offset
+    }
+}
+
+fn tagged_index_value(
+    builder: &mut FunctionBuilder,
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+    index: usize,
+) -> Result<cranelift_codegen::ir::Value, CodegenError> {
+    let raw = builder.ins().iconst(types::I64, index as i64);
+    tag_int(builder, module, runtime, raw)
+}
+
+fn boxed_float_from_f32_lane(
+    builder: &mut FunctionBuilder,
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+    lane: cranelift_codegen::ir::Value,
+) -> Result<cranelift_codegen::ir::Value, CodegenError> {
+    let promoted = builder.ins().fpromote(types::F64, lane);
+    let func_id = runtime_fn_box_float(module, runtime)?;
+    let callee = module.declare_func_in_func(func_id, builder.func);
+    let call = builder.ins().call(callee, &[promoted]);
+    Ok(builder.inst_results(call)[0])
+}
+
+fn box_scalar_lane_to_value(
+    builder: &mut FunctionBuilder,
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+    kind: PortableLaneKind,
+    lane: cranelift_codegen::ir::Value,
+) -> Result<cranelift_codegen::ir::Value, CodegenError> {
+    match kind {
+        PortableLaneKind::Bool => Ok(tag_bool(builder, lane)),
+        PortableLaneKind::I32 => {
+            let widened = builder.ins().sextend(types::I64, lane);
+            tag_int(builder, module, runtime, widened)
+        }
+        PortableLaneKind::U32 => {
+            let widened = builder.ins().uextend(types::I64, lane);
+            tag_int(builder, module, runtime, widened)
+        }
+        PortableLaneKind::I64 | PortableLaneKind::U64 => tag_int(builder, module, runtime, lane),
+        PortableLaneKind::F32 => boxed_float_from_f32_lane(builder, module, runtime, lane),
+    }
+}
+
+fn lower_value_to_scalar_lane(
+    builder: &mut FunctionBuilder,
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+    abi: &PortableAbiType,
+    value: cranelift_codegen::ir::Value,
+    ty: cranelift_codegen::ir::Type,
+) -> Result<cranelift_codegen::ir::Value, CodegenError> {
+    let Some(kind) = portable_abi_scalar_kind(abi) else {
+        return Err(CodegenError("expected scalar portable ABI".to_string()));
+    };
+    match kind {
+        PortableLaneKind::Bool => {
+            let raw = untag_bool(builder, value);
+            Ok(if ty == types::I8 {
+                builder.ins().ireduce(types::I8, raw)
+            } else {
+                raw
+            })
+        }
+        PortableLaneKind::I32 => {
+            let cast_id = runtime_fn_cast_i32(module, runtime)?;
+            let cast_callee = module.declare_func_in_func(cast_id, builder.func);
+            let cast_call = builder.ins().call(cast_callee, &[value]);
+            let casted = builder.inst_results(cast_call)[0];
+            let raw = untag_int(builder, module, runtime, casted)?;
+            Ok(builder.ins().ireduce(ty, raw))
+        }
+        PortableLaneKind::U32 => {
+            let cast_id = runtime_fn_cast_u32(module, runtime)?;
+            let cast_callee = module.declare_func_in_func(cast_id, builder.func);
+            let cast_call = builder.ins().call(cast_callee, &[value]);
+            let casted = builder.inst_results(cast_call)[0];
+            let raw = untag_int(builder, module, runtime, casted)?;
+            Ok(builder.ins().ireduce(ty, raw))
+        }
+        PortableLaneKind::I64 | PortableLaneKind::U64 => untag_int(builder, module, runtime, value),
+        PortableLaneKind::F32 => {
+            let cast_id = runtime_fn_cast_f32(module, runtime)?;
+            let cast_callee = module.declare_func_in_func(cast_id, builder.func);
+            let cast_call = builder.ins().call(cast_callee, &[value]);
+            let casted = builder.inst_results(cast_call)[0];
+            let unbox_id = runtime_fn_unbox_float(module, runtime)?;
+            let unbox_callee = module.declare_func_in_func(unbox_id, builder.func);
+            let unbox_call = builder.ins().call(unbox_callee, &[casted]);
+            let f64_value = builder.inst_results(unbox_call)[0];
+            Ok(builder.ins().fdemote(types::F32, f64_value))
+        }
+    }
+}
+
+fn box_portable_param(
+    builder: &mut FunctionBuilder,
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+    abi: &PortableAbiType,
+    lanes: &[cranelift_codegen::ir::Value],
+    start: usize,
+) -> Result<cranelift_codegen::ir::Value, CodegenError> {
+    let (value, _) = box_portable_param_inner(builder, module, runtime, abi, lanes, start)?;
+    Ok(value)
+}
+
+fn box_portable_param_inner(
+    builder: &mut FunctionBuilder,
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+    abi: &PortableAbiType,
+    lanes: &[cranelift_codegen::ir::Value],
+    start: usize,
+) -> Result<(cranelift_codegen::ir::Value, usize), CodegenError> {
+    if portable_abi_is_legacy_value(abi) {
+        return Ok((lanes[start], start + 1));
+    }
+    if let Some(kind) = portable_abi_scalar_kind(abi) {
+        return Ok((
+            box_scalar_lane_to_value(builder, module, runtime, kind, lanes[start])?,
+            start + 1,
+        ));
+    }
+
+    match abi {
+        PortableAbiType::Vec2
+        | PortableAbiType::Vec3
+        | PortableAbiType::Vec4
+        | PortableAbiType::Quat => {
+            let lane_count = portable_abi_lane_count(abi);
+            let mut cursor = start;
+            let mut values = Vec::with_capacity(lane_count);
+            for _ in 0..lane_count {
+                values.push(boxed_float_from_f32_lane(
+                    builder,
+                    module,
+                    runtime,
+                    lanes[cursor],
+                )?);
+                cursor += 1;
+            }
+            let func_id = match abi {
+                PortableAbiType::Vec2 => runtime_fn_vec2_new(module, runtime)?,
+                PortableAbiType::Vec3 => runtime_fn_vec3_new(module, runtime)?,
+                PortableAbiType::Vec4 => runtime_fn_vec4_new(module, runtime)?,
+                PortableAbiType::Quat => runtime_fn_quat_new(module, runtime)?,
+                _ => unreachable!(),
+            };
+            let callee = module.declare_func_in_func(func_id, builder.func);
+            let call = builder.ins().call(callee, &values);
+            Ok((builder.inst_results(call)[0], cursor))
+        }
+        PortableAbiType::Mat3 => {
+            let mut cursor = start;
+            let mut cols = Vec::with_capacity(3);
+            for _ in 0..3 {
+                let (col, next) = box_portable_param_inner(
+                    builder,
+                    module,
+                    runtime,
+                    &PortableAbiType::Vec3,
+                    lanes,
+                    cursor,
+                )?;
+                cols.push(col);
+                cursor = next;
+            }
+            let func_id = runtime_fn_mat3_from_columns(module, runtime)?;
+            let callee = module.declare_func_in_func(func_id, builder.func);
+            let call = builder.ins().call(callee, &cols);
+            Ok((builder.inst_results(call)[0], cursor))
+        }
+        PortableAbiType::Mat4 => {
+            let mut cursor = start;
+            let mut cols = Vec::with_capacity(4);
+            for _ in 0..4 {
+                let (col, next) = box_portable_param_inner(
+                    builder,
+                    module,
+                    runtime,
+                    &PortableAbiType::Vec4,
+                    lanes,
+                    cursor,
+                )?;
+                cols.push(col);
+                cursor = next;
+            }
+            let func_id = runtime_fn_mat4_from_columns(module, runtime)?;
+            let callee = module.declare_func_in_func(func_id, builder.func);
+            let call = builder.ins().call(callee, &cols);
+            Ok((builder.inst_results(call)[0], cursor))
+        }
+        PortableAbiType::Array(inner, len) => {
+            let ptr_ty = module.target_config().pointer_type();
+            let len_val = builder.ins().iconst(ptr_ty, *len as i64);
+            let func_id = runtime_fn_list_new_local(module, runtime)?;
+            let callee = module.declare_func_in_func(func_id, builder.func);
+            let call = builder.ins().call(callee, &[len_val]);
+            let list = builder.inst_results(call)[0];
+            let set_id = runtime_fn_list_set_raw(module, runtime)?;
+            let set_callee = module.declare_func_in_func(set_id, builder.func);
+            let mut cursor = start;
+            for idx in 0..*len {
+                let (item, next) =
+                    box_portable_param_inner(builder, module, runtime, inner, lanes, cursor)?;
+                cursor = next;
+                let idx_val = builder.ins().iconst(ptr_ty, idx as i64);
+                builder.ins().call(set_callee, &[list, idx_val, item]);
+            }
+            Ok((list, cursor))
+        }
+        PortableAbiType::Struct {
+            class_id, fields, ..
+        } => {
+            let field_names: Vec<SmolStr> = fields.iter().map(|field| field.name.clone()).collect();
+            let (names_ptr, lens_ptr, count_val) =
+                build_bytes_arrays(builder, module, runtime, &field_names)?;
+            let func_id = runtime_fn_class_new(module, runtime)?;
+            let callee = module.declare_func_in_func(func_id, builder.func);
+            let class_id_val = builder.ins().iconst(types::I64, *class_id as i64);
+            let call = builder
+                .ins()
+                .call(callee, &[class_id_val, names_ptr, lens_ptr, count_val]);
+            let obj = builder.inst_results(call)[0];
+            let set_id = runtime_fn_class_set_slot(module, runtime)?;
+            let set_callee = module.declare_func_in_func(set_id, builder.func);
+            let ptr_ty = module.target_config().pointer_type();
+            let mut cursor = start;
+            for (idx, field) in fields.iter().enumerate() {
+                let (field_val, next) =
+                    box_portable_param_inner(builder, module, runtime, &field.ty, lanes, cursor)?;
+                cursor = next;
+                let (name_ptr, len_val) =
+                    lower_bytes_literal(builder, module, runtime, field.name.as_str())?;
+                let slot_val = builder.ins().iconst(ptr_ty, idx as i64);
+                builder
+                    .ins()
+                    .call(set_callee, &[obj, name_ptr, len_val, slot_val, field_val]);
+            }
+            Ok((obj, cursor))
+        }
+        PortableAbiType::Value
+        | PortableAbiType::Bool
+        | PortableAbiType::I32
+        | PortableAbiType::U32
+        | PortableAbiType::I64
+        | PortableAbiType::U64
+        | PortableAbiType::F32 => unreachable!(),
+    }
+}
+
+fn emit_vec_component(
+    builder: &mut FunctionBuilder,
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+    value: cranelift_codegen::ir::Value,
+    index: usize,
+) -> Result<cranelift_codegen::ir::Value, CodegenError> {
+    let func_id = runtime_fn_vec_component(module, runtime)?;
+    let callee = module.declare_func_in_func(func_id, builder.func);
+    let index_val = tagged_index_value(builder, module, runtime, index)?;
+    let call = builder.ins().call(callee, &[value, index_val]);
+    Ok(builder.inst_results(call)[0])
+}
+
+fn emit_mat_component(
+    builder: &mut FunctionBuilder,
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+    abi: &PortableAbiType,
+    value: cranelift_codegen::ir::Value,
+    index: usize,
+) -> Result<cranelift_codegen::ir::Value, CodegenError> {
+    let func_id = match abi {
+        PortableAbiType::Mat3 => runtime_fn_mat3_component(module, runtime)?,
+        PortableAbiType::Mat4 => runtime_fn_mat4_component(module, runtime)?,
+        _ => return Err(CodegenError("expected matrix portable ABI".to_string())),
+    };
+    let callee = module.declare_func_in_func(func_id, builder.func);
+    let index_val = tagged_index_value(builder, module, runtime, index)?;
+    let call = builder.ins().call(callee, &[value, index_val]);
+    Ok(builder.inst_results(call)[0])
+}
+
+fn emit_list_get_value(
+    builder: &mut FunctionBuilder,
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+    list: cranelift_codegen::ir::Value,
+    index: usize,
+) -> Result<cranelift_codegen::ir::Value, CodegenError> {
+    let func_id = runtime_fn_list_get_val(module, runtime)?;
+    let callee = module.declare_func_in_func(func_id, builder.func);
+    let index_val = tagged_index_value(builder, module, runtime, index)?;
+    let call = builder.ins().call(callee, &[list, index_val]);
+    Ok(builder.inst_results(call)[0])
+}
+
+fn emit_class_get_value(
+    builder: &mut FunctionBuilder,
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+    object: cranelift_codegen::ir::Value,
+    field: &PortableStructField,
+    slot: usize,
+) -> Result<cranelift_codegen::ir::Value, CodegenError> {
+    let func_id = runtime_fn_class_get_slot(module, runtime)?;
+    let callee = module.declare_func_in_func(func_id, builder.func);
+    let (name_ptr, len_val) = lower_bytes_literal(builder, module, runtime, field.name.as_str())?;
+    let slot_val = builder
+        .ins()
+        .iconst(module.target_config().pointer_type(), slot as i64);
+    let call = builder
+        .ins()
+        .call(callee, &[object, name_ptr, len_val, slot_val]);
+    Ok(builder.inst_results(call)[0])
+}
+
+fn append_portable_call_arg_lanes(
+    builder: &mut FunctionBuilder,
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+    abi: &PortableAbiType,
+    value: cranelift_codegen::ir::Value,
+    out: &mut Vec<cranelift_codegen::ir::Value>,
+) -> Result<(), CodegenError> {
+    if portable_abi_is_legacy_value(abi) {
+        out.push(value);
+        return Ok(());
+    }
+    if let Some(ty) = portable_abi_scalar_type(abi) {
+        out.push(lower_value_to_scalar_lane(
+            builder, module, runtime, abi, value, ty,
+        )?);
+        return Ok(());
+    }
+    match abi {
+        PortableAbiType::Vec2
+        | PortableAbiType::Vec3
+        | PortableAbiType::Vec4
+        | PortableAbiType::Quat => {
+            for idx in 0..portable_abi_lane_count(abi) {
+                let component = emit_vec_component(builder, module, runtime, value, idx)?;
+                out.push(lower_value_to_scalar_lane(
+                    builder,
+                    module,
+                    runtime,
+                    &PortableAbiType::F32,
+                    component,
+                    types::F32,
+                )?);
+            }
+        }
+        PortableAbiType::Mat3 | PortableAbiType::Mat4 => {
+            for idx in 0..portable_abi_lane_count(abi) {
+                let component = emit_mat_component(builder, module, runtime, abi, value, idx)?;
+                out.push(lower_value_to_scalar_lane(
+                    builder,
+                    module,
+                    runtime,
+                    &PortableAbiType::F32,
+                    component,
+                    types::F32,
+                )?);
+            }
+        }
+        PortableAbiType::Array(inner, len) => {
+            for idx in 0..*len {
+                let item = emit_list_get_value(builder, module, runtime, value, idx)?;
+                append_portable_call_arg_lanes(builder, module, runtime, inner, item, out)?;
+            }
+        }
+        PortableAbiType::Struct { fields, .. } => {
+            for (idx, field) in fields.iter().enumerate() {
+                let field_val = emit_class_get_value(builder, module, runtime, value, field, idx)?;
+                append_portable_call_arg_lanes(
+                    builder, module, runtime, &field.ty, field_val, out,
+                )?;
+            }
+        }
+        PortableAbiType::Value
+        | PortableAbiType::Bool
+        | PortableAbiType::I32
+        | PortableAbiType::U32
+        | PortableAbiType::I64
+        | PortableAbiType::U64
+        | PortableAbiType::F32 => {}
+    }
+    Ok(())
+}
+
+fn emit_portable_function_call(
+    builder: &mut FunctionBuilder,
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+    callee: cranelift_codegen::ir::FuncRef,
+    call_args: &[cranelift_codegen::ir::Value],
+    param_abis: &[PortableAbiType],
+    ret_abi: &PortableAbiType,
+) -> Result<cranelift_codegen::ir::Value, CodegenError> {
+    let ptr_ty = module.target_config().pointer_type();
+    let mut lowered = Vec::new();
+    let out_ptr = if portable_abi_uses_sret(ret_abi) {
+        let (size, align) = portable_abi_layout(ret_abi);
+        let slot = builder.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            size.max(1),
+            align_shift_for_bytes(align),
+        ));
+        let ptr = builder.ins().stack_addr(ptr_ty, slot, 0);
+        lowered.push(ptr);
+        Some(ptr)
+    } else {
+        None
+    };
+
+    for (arg, abi) in call_args.iter().zip(param_abis.iter()) {
+        append_portable_call_arg_lanes(builder, module, runtime, abi, *arg, &mut lowered)?;
+    }
+
+    let call_inst = builder.ins().call(callee, &lowered);
+    if portable_abi_is_legacy_value(ret_abi) {
+        Ok(builder.inst_results(call_inst)[0])
+    } else if let Some(kind) = portable_abi_scalar_kind(ret_abi) {
+        let raw = builder.inst_results(call_inst)[0];
+        box_scalar_lane_to_value(builder, module, runtime, kind, raw)
+    } else if let Some(out_ptr) = out_ptr {
+        load_portable_aggregate_from_memory(builder, module, runtime, out_ptr, ret_abi, 0)
+    } else {
+        Ok(builder.ins().iconst(types::I64, nanbox_nil_const()))
+    }
+}
+
+fn load_scalar_from_memory(
+    builder: &mut FunctionBuilder,
+    ptr: cranelift_codegen::ir::Value,
+    kind: PortableLaneKind,
+    offset: u32,
+) -> cranelift_codegen::ir::Value {
+    builder.ins().load(
+        portable_lane_clif_type(kind),
+        MemFlags::new(),
+        ptr,
+        offset as i32,
+    )
+}
+
+fn load_portable_aggregate_from_memory(
+    builder: &mut FunctionBuilder,
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+    ptr: cranelift_codegen::ir::Value,
+    abi: &PortableAbiType,
+    offset: u32,
+) -> Result<cranelift_codegen::ir::Value, CodegenError> {
+    if let Some(kind) = portable_abi_scalar_kind(abi) {
+        let lane = load_scalar_from_memory(builder, ptr, kind, offset);
+        return box_scalar_lane_to_value(builder, module, runtime, kind, lane);
+    }
+
+    match abi {
+        PortableAbiType::Vec2
+        | PortableAbiType::Vec3
+        | PortableAbiType::Vec4
+        | PortableAbiType::Quat => {
+            let lane_count = portable_abi_lane_count(abi);
+            let mut lanes = Vec::with_capacity(lane_count);
+            for idx in 0..lane_count {
+                lanes.push(load_scalar_from_memory(
+                    builder,
+                    ptr,
+                    PortableLaneKind::F32,
+                    offset + (idx as u32 * 4),
+                ));
+            }
+            box_portable_param(builder, module, runtime, abi, &lanes, 0)
+        }
+        PortableAbiType::Mat3 | PortableAbiType::Mat4 => {
+            let lane_count = portable_abi_lane_count(abi);
+            let mut lanes = Vec::with_capacity(lane_count);
+            for idx in 0..lane_count {
+                lanes.push(load_scalar_from_memory(
+                    builder,
+                    ptr,
+                    PortableLaneKind::F32,
+                    offset + (idx as u32 * 4),
+                ));
+            }
+            box_portable_param(builder, module, runtime, abi, &lanes, 0)
+        }
+        PortableAbiType::Array(inner, len) => {
+            let ptr_ty = module.target_config().pointer_type();
+            let len_val = builder.ins().iconst(ptr_ty, *len as i64);
+            let func_id = runtime_fn_list_new_local(module, runtime)?;
+            let callee = module.declare_func_in_func(func_id, builder.func);
+            let call = builder.ins().call(callee, &[len_val]);
+            let list = builder.inst_results(call)[0];
+            let set_id = runtime_fn_list_set_raw(module, runtime)?;
+            let set_callee = module.declare_func_in_func(set_id, builder.func);
+            let (inner_size, inner_align) = portable_abi_layout(inner);
+            let stride = align_to_u32(inner_size, inner_align);
+            for idx in 0..*len {
+                let item = load_portable_aggregate_from_memory(
+                    builder,
+                    module,
+                    runtime,
+                    ptr,
+                    inner,
+                    offset + (idx as u32 * stride),
+                )?;
+                let idx_val = builder.ins().iconst(ptr_ty, idx as i64);
+                builder.ins().call(set_callee, &[list, idx_val, item]);
+            }
+            Ok(list)
+        }
+        PortableAbiType::Struct {
+            class_id, fields, ..
+        } => {
+            let field_names: Vec<SmolStr> = fields.iter().map(|field| field.name.clone()).collect();
+            let (names_ptr, lens_ptr, count_val) =
+                build_bytes_arrays(builder, module, runtime, &field_names)?;
+            let func_id = runtime_fn_class_new(module, runtime)?;
+            let callee = module.declare_func_in_func(func_id, builder.func);
+            let class_id_val = builder.ins().iconst(types::I64, *class_id as i64);
+            let call = builder
+                .ins()
+                .call(callee, &[class_id_val, names_ptr, lens_ptr, count_val]);
+            let obj = builder.inst_results(call)[0];
+            let set_id = runtime_fn_class_set_slot(module, runtime)?;
+            let set_callee = module.declare_func_in_func(set_id, builder.func);
+            let ptr_ty = module.target_config().pointer_type();
+            for (idx, field) in fields.iter().enumerate() {
+                let field_val = load_portable_aggregate_from_memory(
+                    builder,
+                    module,
+                    runtime,
+                    ptr,
+                    &field.ty,
+                    offset + field_offset(fields, idx),
+                )?;
+                let (name_ptr, len_val) =
+                    lower_bytes_literal(builder, module, runtime, field.name.as_str())?;
+                let slot_val = builder.ins().iconst(ptr_ty, idx as i64);
+                builder
+                    .ins()
+                    .call(set_callee, &[obj, name_ptr, len_val, slot_val, field_val]);
+            }
+            Ok(obj)
+        }
+        PortableAbiType::Value => {
+            Ok(builder
+                .ins()
+                .load(types::I64, MemFlags::new(), ptr, offset as i32))
+        }
+        PortableAbiType::Bool
+        | PortableAbiType::I32
+        | PortableAbiType::U32
+        | PortableAbiType::I64
+        | PortableAbiType::U64
+        | PortableAbiType::F32 => unreachable!(),
+    }
+}
+
+fn store_scalar_to_memory(
+    builder: &mut FunctionBuilder,
+    ptr: cranelift_codegen::ir::Value,
+    lane: cranelift_codegen::ir::Value,
+    kind: PortableLaneKind,
+    offset: u32,
+) {
+    builder
+        .ins()
+        .store(MemFlags::new(), lane, ptr, offset as i32);
+    let _ = kind;
+}
+
+fn store_value_to_portable_aggregate(
+    builder: &mut FunctionBuilder,
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+    ptr: cranelift_codegen::ir::Value,
+    abi: &PortableAbiType,
+    value: cranelift_codegen::ir::Value,
+    offset: u32,
+) -> Result<(), CodegenError> {
+    if let Some(kind) = portable_abi_scalar_kind(abi) {
+        let lane = lower_value_to_scalar_lane(
+            builder,
+            module,
+            runtime,
+            abi,
+            value,
+            portable_lane_clif_type(kind),
+        )?;
+        store_scalar_to_memory(builder, ptr, lane, kind, offset);
+        return Ok(());
+    }
+
+    match abi {
+        PortableAbiType::Vec2
+        | PortableAbiType::Vec3
+        | PortableAbiType::Vec4
+        | PortableAbiType::Quat => {
+            for idx in 0..portable_abi_lane_count(abi) {
+                let component = emit_vec_component(builder, module, runtime, value, idx)?;
+                let lane = lower_value_to_scalar_lane(
+                    builder,
+                    module,
+                    runtime,
+                    &PortableAbiType::F32,
+                    component,
+                    types::F32,
+                )?;
+                store_scalar_to_memory(
+                    builder,
+                    ptr,
+                    lane,
+                    PortableLaneKind::F32,
+                    offset + (idx as u32 * 4),
+                );
+            }
+        }
+        PortableAbiType::Mat3 | PortableAbiType::Mat4 => {
+            for idx in 0..portable_abi_lane_count(abi) {
+                let component = emit_mat_component(builder, module, runtime, abi, value, idx)?;
+                let lane = lower_value_to_scalar_lane(
+                    builder,
+                    module,
+                    runtime,
+                    &PortableAbiType::F32,
+                    component,
+                    types::F32,
+                )?;
+                store_scalar_to_memory(
+                    builder,
+                    ptr,
+                    lane,
+                    PortableLaneKind::F32,
+                    offset + (idx as u32 * 4),
+                );
+            }
+        }
+        PortableAbiType::Array(inner, len) => {
+            let (inner_size, inner_align) = portable_abi_layout(inner);
+            let stride = align_to_u32(inner_size, inner_align);
+            for idx in 0..*len {
+                let item = emit_list_get_value(builder, module, runtime, value, idx)?;
+                store_value_to_portable_aggregate(
+                    builder,
+                    module,
+                    runtime,
+                    ptr,
+                    inner,
+                    item,
+                    offset + (idx as u32 * stride),
+                )?;
+            }
+        }
+        PortableAbiType::Struct { fields, .. } => {
+            for (idx, field) in fields.iter().enumerate() {
+                let field_val = emit_class_get_value(builder, module, runtime, value, field, idx)?;
+                store_value_to_portable_aggregate(
+                    builder,
+                    module,
+                    runtime,
+                    ptr,
+                    &field.ty,
+                    field_val,
+                    offset + field_offset(fields, idx),
+                )?;
+            }
+        }
+        PortableAbiType::Value => {
+            builder
+                .ins()
+                .store(MemFlags::new(), value, ptr, offset as i32);
+        }
+        PortableAbiType::Bool
+        | PortableAbiType::I32
+        | PortableAbiType::U32
+        | PortableAbiType::I64
+        | PortableAbiType::U64
+        | PortableAbiType::F32 => unreachable!(),
+    }
+    Ok(())
+}
+
 fn lower_terminator(
     term: &Terminator,
+    abi_return: &PortableAbiType,
+    return_ptr: Option<cranelift_codegen::ir::Value>,
     block_idx: usize,
     builder: &mut FunctionBuilder,
     locals: &HashMap<usize, Variable>,
@@ -2258,7 +3087,20 @@ fn lower_terminator(
                 .map(|value| lower_value(value, builder, locals, temps, _module, runtime))
                 .transpose()?
                 .unwrap_or_else(|| builder.ins().iconst(types::I64, nanbox_nil_const()));
-            builder.ins().return_(&[ret]);
+            if portable_abi_is_legacy_value(abi_return) {
+                builder.ins().return_(&[ret]);
+            } else if let Some(ret_ty) = portable_abi_scalar_type(abi_return) {
+                let lane =
+                    lower_value_to_scalar_lane(builder, _module, runtime, abi_return, ret, ret_ty)?;
+                builder.ins().return_(&[lane]);
+            } else if let Some(return_ptr) = return_ptr {
+                store_value_to_portable_aggregate(
+                    builder, _module, runtime, return_ptr, abi_return, ret, 0,
+                )?;
+                builder.ins().return_(&[]);
+            } else {
+                builder.ins().return_(&[]);
+            }
         }
         Terminator::Jump { target, .. } => {
             let args = phi_args_for_target(
@@ -2570,6 +3412,323 @@ fn runtime_fn_num_ge(
     runtime.get_func(module, "wr_num_ge", sig)
 }
 
+fn runtime_fn_symbol(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+    symbol: &'static str,
+    params: &[cranelift_codegen::ir::Type],
+    returns: &[cranelift_codegen::ir::Type],
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, params, returns);
+    runtime.get_func(module, symbol, sig)
+}
+
+fn runtime_fn_quat_new(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    runtime_fn_symbol(
+        module,
+        runtime,
+        "wr_quat_new",
+        &[types::I64, types::I64, types::I64, types::I64],
+        &[types::I64],
+    )
+}
+
+fn runtime_fn_vec2_new(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_vec2_new", sig)
+}
+
+fn runtime_fn_vec3_new(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig =
+        RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_vec3_new", sig)
+}
+
+fn runtime_fn_vec4_new(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(
+        module,
+        &[types::I64, types::I64, types::I64, types::I64],
+        &[types::I64],
+    );
+    runtime.get_func(module, "wr_vec4_new", sig)
+}
+
+fn runtime_fn_vec_component(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_vec_component", sig)
+}
+
+fn runtime_fn_mat3_component(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    runtime_fn_symbol(
+        module,
+        runtime,
+        "wr_mat3_component",
+        &[types::I64, types::I64],
+        &[types::I64],
+    )
+}
+
+fn runtime_fn_mat4_component(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    runtime_fn_symbol(
+        module,
+        runtime,
+        "wr_mat4_component",
+        &[types::I64, types::I64],
+        &[types::I64],
+    )
+}
+
+fn runtime_fn_vec_add(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_vec_add", sig)
+}
+
+fn runtime_fn_vec_sub(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_vec_sub", sig)
+}
+
+fn runtime_fn_vec_mul(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_vec_mul", sig)
+}
+
+fn runtime_fn_vec_div(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_vec_div", sig)
+}
+
+fn runtime_fn_vec_dot(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_vec_dot", sig)
+}
+
+fn runtime_fn_vec_length(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_vec_length", sig)
+}
+
+fn runtime_fn_vec_normalize(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_vec_normalize", sig)
+}
+
+fn runtime_fn_vec_cross(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_vec_cross", sig)
+}
+
+fn runtime_fn_mat3_identity(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    runtime_fn_symbol(module, runtime, "wr_mat3_identity", &[], &[types::I64])
+}
+
+fn runtime_fn_mat3_from_columns(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    runtime_fn_symbol(
+        module,
+        runtime,
+        "wr_mat3_from_columns",
+        &[types::I64, types::I64, types::I64],
+        &[types::I64],
+    )
+}
+
+fn runtime_fn_mat4_identity(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(module, "wr_mat4_identity", sig)
+}
+
+fn runtime_fn_mat4_from_columns(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(
+        module,
+        &[types::I64, types::I64, types::I64, types::I64],
+        &[types::I64],
+    );
+    runtime.get_func(module, "wr_mat4_from_columns", sig)
+}
+
+fn runtime_fn_mat4_mul_vec4(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_mat4_mul_vec4", sig)
+}
+
+fn runtime_fn_mat4_mul_mat4(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_mat4_mul_mat4", sig)
+}
+
+fn runtime_fn_mat4_add(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_mat4_add", sig)
+}
+
+fn runtime_fn_mat4_sub(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_mat4_sub", sig)
+}
+
+fn runtime_fn_mat4_mul_scalar(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_mat4_mul_scalar", sig)
+}
+
+fn runtime_fn_mat4_div_scalar(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_mat4_div_scalar", sig)
+}
+
+fn runtime_fn_mat3_mul_vec3(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    runtime_fn_symbol(
+        module,
+        runtime,
+        "wr_mat3_mul_vec3",
+        &[types::I64, types::I64],
+        &[types::I64],
+    )
+}
+
+fn runtime_fn_mat3_mul_mat3(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    runtime_fn_symbol(
+        module,
+        runtime,
+        "wr_mat3_mul_mat3",
+        &[types::I64, types::I64],
+        &[types::I64],
+    )
+}
+
+fn runtime_fn_mat3_add(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    runtime_fn_symbol(
+        module,
+        runtime,
+        "wr_mat3_add",
+        &[types::I64, types::I64],
+        &[types::I64],
+    )
+}
+
+fn runtime_fn_mat3_sub(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    runtime_fn_symbol(
+        module,
+        runtime,
+        "wr_mat3_sub",
+        &[types::I64, types::I64],
+        &[types::I64],
+    )
+}
+
+fn runtime_fn_mat3_mul_scalar(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    runtime_fn_symbol(
+        module,
+        runtime,
+        "wr_mat3_mul_scalar",
+        &[types::I64, types::I64],
+        &[types::I64],
+    )
+}
+
+fn runtime_fn_mat3_div_scalar(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    runtime_fn_symbol(
+        module,
+        runtime,
+        "wr_mat3_div_scalar",
+        &[types::I64, types::I64],
+        &[types::I64],
+    )
+}
+
 fn runtime_fn_range_new(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
@@ -2624,6 +3783,136 @@ fn runtime_fn_identity_eq(
 ) -> Result<cranelift_module::FuncId, CodegenError> {
     let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
     runtime.get_func(module, "wr_identity_eq", sig)
+}
+
+fn runtime_fn_approx_eq(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig =
+        RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_approx_eq", sig)
+}
+
+fn runtime_fn_cast_f32(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    runtime_fn_symbol(module, runtime, "wr_cast_f32", &[types::I64], &[types::I64])
+}
+
+fn runtime_fn_cast_i32(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    runtime_fn_symbol(module, runtime, "wr_cast_i32", &[types::I64], &[types::I64])
+}
+
+fn runtime_fn_cast_u32(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    runtime_fn_symbol(module, runtime, "wr_cast_u32", &[types::I64], &[types::I64])
+}
+
+fn runtime_fn_math_unary(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+    symbol: &'static str,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    runtime_fn_symbol(module, runtime, symbol, &[types::I64], &[types::I64])
+}
+
+fn runtime_fn_math_binary(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+    symbol: &'static str,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    runtime_fn_symbol(
+        module,
+        runtime,
+        symbol,
+        &[types::I64, types::I64],
+        &[types::I64],
+    )
+}
+
+fn runtime_fn_math_ternary(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+    symbol: &'static str,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    runtime_fn_symbol(
+        module,
+        runtime,
+        symbol,
+        &[types::I64, types::I64, types::I64],
+        &[types::I64],
+    )
+}
+
+fn runtime_builtin_func_id(
+    name: &SmolStr,
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<Option<cranelift_module::FuncId>, CodegenError> {
+    let func_id = match name.as_str() {
+        "__wr_print" => Some(runtime_fn_print(module, runtime)?),
+        "assert" => Some(runtime_fn_assert(module, runtime)?),
+        "assert_eq" => Some(runtime_fn_assert_eq(module, runtime)?),
+        "value_deep_eq" => Some(runtime_fn_value_deep_eq(module, runtime)?),
+        "identity_eq" => Some(runtime_fn_identity_eq(module, runtime)?),
+        "approx_eq" => Some(runtime_fn_approx_eq(module, runtime)?),
+        "__wr_vec_component" => Some(runtime_fn_vec_component(module, runtime)?),
+        "vec2" => Some(runtime_fn_vec2_new(module, runtime)?),
+        "vec3" => Some(runtime_fn_vec3_new(module, runtime)?),
+        "vec4" => Some(runtime_fn_vec4_new(module, runtime)?),
+        "quat" => Some(runtime_fn_quat_new(module, runtime)?),
+        "mat3_identity" => Some(runtime_fn_mat3_identity(module, runtime)?),
+        "mat3_cols" => Some(runtime_fn_mat3_from_columns(module, runtime)?),
+        "mat4_identity" => Some(runtime_fn_mat4_identity(module, runtime)?),
+        "mat4_cols" => Some(runtime_fn_mat4_from_columns(module, runtime)?),
+        "dot" => Some(runtime_fn_vec_dot(module, runtime)?),
+        "length" => Some(runtime_fn_vec_length(module, runtime)?),
+        "normalize" => Some(runtime_fn_vec_normalize(module, runtime)?),
+        "cross" => Some(runtime_fn_vec_cross(module, runtime)?),
+        "min" => Some(runtime_fn_math_binary(module, runtime, "wr_vec_min")?),
+        "max" => Some(runtime_fn_math_binary(module, runtime, "wr_vec_max")?),
+        "clamp" => Some(runtime_fn_math_ternary(module, runtime, "wr_vec_clamp")?),
+        "mix" => Some(runtime_fn_math_ternary(module, runtime, "wr_vec_mix")?),
+        "abs" => Some(runtime_fn_math_unary(module, runtime, "wr_vec_abs")?),
+        "sign" => Some(runtime_fn_math_unary(module, runtime, "wr_vec_sign")?),
+        "floor" => Some(runtime_fn_math_unary(module, runtime, "wr_vec_floor")?),
+        "ceil" => Some(runtime_fn_math_unary(module, runtime, "wr_vec_ceil")?),
+        "fract" => Some(runtime_fn_math_unary(module, runtime, "wr_vec_fract")?),
+        "sin" => Some(runtime_fn_math_unary(module, runtime, "wr_vec_sin")?),
+        "cos" => Some(runtime_fn_math_unary(module, runtime, "wr_vec_cos")?),
+        "sqrt" => Some(runtime_fn_math_unary(module, runtime, "wr_vec_sqrt")?),
+        "pow" => Some(runtime_fn_math_binary(module, runtime, "wr_vec_pow")?),
+        "distance" => Some(runtime_fn_math_binary(module, runtime, "wr_vec_distance")?),
+        "reflect" => Some(runtime_fn_math_binary(module, runtime, "wr_vec_reflect")?),
+        "f32" => Some(runtime_fn_cast_f32(module, runtime)?),
+        "i32" => Some(runtime_fn_cast_i32(module, runtime)?),
+        "u32" => Some(runtime_fn_cast_u32(module, runtime)?),
+        "assert_value_equality" => Some(runtime_fn_assert_value_equality(module, runtime)?),
+        "__wr_map_new" => Some(runtime_fn_map_new(module, runtime)?),
+        "__wr_map_new_local" => Some(runtime_fn_map_new_local(module, runtime)?),
+        "__wr_map_get" => Some(runtime_fn_map_get(module, runtime)?),
+        "__wr_map_set" => Some(runtime_fn_map_set(module, runtime)?),
+        "__wr_map_len" => Some(runtime_fn_map_len(module, runtime)?),
+        "__wr_list_get" => Some(runtime_fn_list_get_val(module, runtime)?),
+        "__wr_list_set" => Some(runtime_fn_list_set_val(module, runtime)?),
+        "__wr_list_new" => Some(runtime_fn_list_new(module, runtime)?),
+        "__wr_list_push" => Some(runtime_fn_list_push(module, runtime)?),
+        "__wr_list_len" => Some(runtime_fn_list_len(module, runtime)?),
+        "__wr_external_call" => Some(runtime_fn_external_call(module, runtime)?),
+        "__wr_bytes_from_string" => Some(runtime_fn_bytes_from_string(module, runtime)?),
+        "__wr_bytes_from_list" => Some(runtime_fn_bytes_from_list(module, runtime)?),
+        "__wr_bytes_to_string" => Some(runtime_fn_bytes_to_string(module, runtime)?),
+        "__wr_bytes_to_list" => Some(runtime_fn_bytes_to_list(module, runtime)?),
+        _ => None,
+    };
+    Ok(func_id)
 }
 
 fn runtime_fn_str_intern_utf8(
@@ -4210,7 +5499,12 @@ fn ty_to_clif(ty: &MirType) -> Result<cranelift_codegen::ir::Type, CodegenError>
         | MirType::Actor(_)
         | MirType::Pending(_)
         | MirType::Result(_, _) => Ok(types::I64),
-        MirType::Vec2 | MirType::Vec3 | MirType::Vec4 | MirType::Mat4 => Ok(types::I64),
+        MirType::Vec2
+        | MirType::Vec3
+        | MirType::Vec4
+        | MirType::Quat
+        | MirType::Mat3
+        | MirType::Mat4 => Ok(types::I64),
     }
 }
 
@@ -4219,8 +5513,8 @@ mod tests {
     use super::{compile_to_object, runtime_numeric_symbol};
     use crate::hir::{BinaryOp, Literal};
     use crate::mir::ir::{
-        BasicBlock, BlockId, CallKind, CallTarget, MirFunction, MirModule, MirType, Place, Rvalue,
-        Stmt, Temp, TempId, Terminator, Value,
+        BasicBlock, BlockId, CallKind, CallTarget, MirFunction, MirModule, MirType, Place,
+        PortableAbiType, Rvalue, Stmt, Temp, TempId, Terminator, Value,
     };
     use rowan::TextRange;
 
@@ -4246,6 +5540,8 @@ mod tests {
         let func = MirFunction {
             name: "run".into(),
             params: Vec::new(),
+            abi_params: Vec::new(),
+            abi_return: PortableAbiType::Value,
             locals: Vec::new(),
             temps: vec![
                 Temp {

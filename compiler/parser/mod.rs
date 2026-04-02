@@ -960,6 +960,241 @@ fn f(x: Integer) -> Boolean {
     }
 
     #[test]
+    fn test_value_declaration_parses_without_errors() {
+        let text = "\
+value Point {
+    x: F32
+    y: F32
+}
+";
+        let (_node, errors) = parse_with_errors(text);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_value_declaration_attaches_to_ast() {
+        use ast::{AstNode, Stmt};
+
+        let text = "\
+value Point {
+    x: F32
+    y: F32
+}
+";
+        let node = parse(text);
+        let root = ast::Root::cast(node).unwrap();
+        let value_def = match root.statements().next().unwrap() {
+            Stmt::ValueDef(def) => def,
+            _ => panic!("Expected value definition"),
+        };
+        assert_eq!(value_def.name().unwrap().text(), "Point");
+
+        let fields: Vec<_> = value_def.fields().collect();
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0].name().unwrap().text(), "x");
+        assert_eq!(fields[0].ty().unwrap().name().unwrap().text(), "F32");
+        assert_eq!(fields[1].name().unwrap().text(), "y");
+        assert_eq!(fields[1].ty().unwrap().name().unwrap().text(), "F32");
+    }
+
+    #[test]
+    fn test_fixed_array_type_with_numeric_length_parses_without_errors() {
+        let text = "\
+fn take_values(values: Array[F32, 4]) -> Nothing {
+    return nothing
+}
+";
+        let (_node, errors) = parse_with_errors(text);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_fixed_array_type_retains_numeric_length_in_ast() {
+        use ast::{AstNode, Stmt};
+
+        let text = "\
+fn take_values(values: Array[F32, 4]) -> Nothing {
+    return nothing
+}
+";
+        let node = parse(text);
+        let root = ast::Root::cast(node).unwrap();
+        let func = match root.statements().next().unwrap() {
+            Stmt::FuncDef(f) => f,
+            _ => panic!("Expected function definition"),
+        };
+        let param = func.params().next().expect("missing param");
+        let ty = param.ty().expect("missing param type");
+        assert_eq!(ty.name().unwrap().text(), "Array");
+
+        let args = ty.args();
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0].name().unwrap().text(), "F32");
+        assert_eq!(args[1].name().unwrap().text(), "4");
+    }
+
+    #[test]
+    fn test_assert_approx_parses_without_errors() {
+        let text = "\
+fn test_vec3_normalize() -> Nothing {
+    assert approx value.x ~= 0.6 within 0.0001
+}
+";
+        let (_node, errors) = parse_with_errors(text);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_assert_approx_attaches_rhs_and_tolerance_to_ast() {
+        use ast::{AssertMode, AstNode, Expr, Stmt};
+
+        let text = "\
+fn test_vec3_normalize() -> Nothing {
+    assert approx value.x ~= 0.6 within 0.0001
+}
+";
+        let node = parse(text);
+        let root = ast::Root::cast(node).unwrap();
+        let func = match root.statements().next().unwrap() {
+            Stmt::FuncDef(f) => f,
+            _ => panic!("Expected function definition"),
+        };
+        let stmt = func.statements().next().expect("missing stmt");
+        let assert_stmt = match stmt {
+            Stmt::AssertStmt(assert_stmt) => assert_stmt,
+            _ => panic!("Expected assert statement"),
+        };
+
+        assert!(matches!(assert_stmt.mode(), AssertMode::Approx));
+        assert!(matches!(assert_stmt.expr().unwrap(), Expr::Member(_)));
+        assert!(matches!(assert_stmt.rhs_expr().unwrap(), Expr::Literal(_)));
+        assert!(matches!(
+            assert_stmt.tolerance_expr().unwrap(),
+            Expr::Literal(_)
+        ));
+    }
+
+    #[test]
+    fn test_vec3_constructor_and_field_access_parse() {
+        use ast::{AssertMode, AstNode, Expr, Stmt};
+
+        let text = "\
+fn f() -> Nothing {
+    value = vec3(1.0, 2.0, 3.0)
+    assert approx value.x ~= 1.0 within 0.001
+}
+";
+        let (_node, errors) = parse_with_errors(text);
+        assert!(errors.is_empty(), "{errors:?}");
+
+        let node = parse(text);
+        let root = ast::Root::cast(node).unwrap();
+        let func = match root.statements().next().unwrap() {
+            Stmt::FuncDef(f) => f,
+            _ => panic!("Expected function definition"),
+        };
+        let mut stmts = func.statements();
+        let first = stmts.next().expect("missing assignment");
+        assert!(matches!(first, Stmt::VarAssign(_)));
+        let second = stmts.next().expect("missing assert");
+        let assert_stmt = match second {
+            Stmt::AssertStmt(assert_stmt) => assert_stmt,
+            _ => panic!("Expected assert statement"),
+        };
+        assert!(matches!(assert_stmt.mode(), AssertMode::Approx));
+        assert!(matches!(assert_stmt.expr().unwrap(), Expr::Member(_)));
+    }
+
+    #[test]
+    fn test_vec2_constructor_and_math_parse() {
+        use ast::{AssertMode, AstNode, Expr, Stmt};
+
+        let text = "\
+fn f() -> Nothing {
+    value = vec2(3.0, 4.0)
+    unit = normalize(value)
+    assert approx dot(unit, vec2(0.6, 0.8)) ~= 1.0 within 0.001
+}
+";
+        let (_node, errors) = parse_with_errors(text);
+        assert!(errors.is_empty(), "{errors:?}");
+
+        let node = parse(text);
+        let root = ast::Root::cast(node).unwrap();
+        let func = match root.statements().next().unwrap() {
+            Stmt::FuncDef(f) => f,
+            _ => panic!("Expected function definition"),
+        };
+        let mut stmts = func.statements();
+        assert!(matches!(stmts.next().unwrap(), Stmt::VarAssign(_)));
+        assert!(matches!(stmts.next().unwrap(), Stmt::VarAssign(_)));
+        let assert_stmt = match stmts.next().unwrap() {
+            Stmt::AssertStmt(assert_stmt) => assert_stmt,
+            _ => panic!("Expected assert statement"),
+        };
+        assert!(matches!(assert_stmt.mode(), AssertMode::Approx));
+        assert!(matches!(assert_stmt.expr().unwrap(), Expr::Call(_)));
+    }
+
+    #[test]
+    fn test_vec_math_calls_parse() {
+        use ast::{AstNode, Expr, Stmt};
+
+        let text = "\
+fn f() -> Nothing {
+    value = dot(vec3(1.0, 0.0, 0.0), normalize(vec3(0.0, 2.0, 0.0)))
+    value = cross(vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0))
+}
+";
+        let (_node, errors) = parse_with_errors(text);
+        assert!(errors.is_empty(), "{errors:?}");
+
+        let node = parse(text);
+        let root = ast::Root::cast(node).unwrap();
+        let func = match root.statements().next().unwrap() {
+            Stmt::FuncDef(f) => f,
+            _ => panic!("Expected function definition"),
+        };
+        assert!(func.statements().count() >= 2);
+        let call_stmt = match func.statements().next().unwrap() {
+            Stmt::Expr(expr) => expr,
+            _ => panic!("Expected expression statement"),
+        };
+        assert!(matches!(call_stmt.expr(), Some(Expr::Bin(_)) | Some(Expr::Call(_))));
+    }
+
+    #[test]
+    fn test_mat4_cols_parse() {
+        use ast::{AstNode, Expr, Stmt};
+
+        let text = "\
+fn f() -> Nothing {
+    m = mat4_cols(
+        vec4(1.0, 0.0, 0.0, 0.0),
+        vec4(0.0, 1.0, 0.0, 0.0),
+        vec4(0.0, 0.0, 1.0, 0.0),
+        vec4(0.0, 0.0, 0.0, 1.0)
+    )
+    return nothing
+}
+";
+        let (_node, errors) = parse_with_errors(text);
+        assert!(errors.is_empty(), "{errors:?}");
+
+        let node = parse(text);
+        let root = ast::Root::cast(node).unwrap();
+        let func = match root.statements().next().unwrap() {
+            Stmt::FuncDef(f) => f,
+            _ => panic!("Expected function definition"),
+        };
+        let stmt = func.statements().next().expect("missing mat4 statement");
+        assert!(matches!(stmt, Stmt::VarAssign(_) | Stmt::ReturnStmt(_)));
+        if let Stmt::VarAssign(assign) = stmt {
+            assert!(matches!(assign.value(), Some(Expr::Call(_))));
+        }
+    }
+
+    #[test]
     fn test_for_header_extensions_parse() {
         let text = "\
 fn f() -> Nothing {

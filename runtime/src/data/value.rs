@@ -162,6 +162,12 @@ pub enum TypeId {
     Pool = 12,
     Bytes = 13,
     BoxedInteger = 14,
+    Vec2 = 15,
+    Vec3 = 16,
+    Vec4 = 17,
+    Quat = 18,
+    Mat3 = 19,
+    Mat4 = 20,
     UserBase = 100,
 }
 
@@ -183,6 +189,15 @@ pub fn type_id_raw(val: Value) -> u32 {
             let header = &*val.as_ptr();
             if header.type_id == TypeId::BoxedInteger as u32 {
                 return TypeId::Integer as u32;
+            }
+            if header.type_id == TypeId::Vec2 as u32
+                || header.type_id == TypeId::Vec3 as u32
+                || header.type_id == TypeId::Vec4 as u32
+                || header.type_id == TypeId::Quat as u32
+                || header.type_id == TypeId::Mat3 as u32
+                || header.type_id == TypeId::Mat4 as u32
+            {
+                return header.type_id;
             }
             return header.type_id;
         }
@@ -282,6 +297,44 @@ fn value_eq_inner(a: Value, b: Value, depth: usize, seen: &mut HashSet<(usize, u
                 return false;
             }
             return value_eq_inner(a_val, b_val, depth + 1, seen);
+        }
+        if let (Some(av), Some(bv)) = (crate::data::math::as_vec_ref(a), crate::data::math::as_vec_ref(b))
+        {
+            let av = &*av;
+            let bv = &*bv;
+            if av.len != bv.len || av.header.type_id != bv.header.type_id {
+                return false;
+            }
+            for idx in 0..av.len {
+                if av.data[idx] != bv.data[idx] {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if let (Some(am), Some(bm)) =
+            (crate::data::math::as_mat3_ref(a), crate::data::math::as_mat3_ref(b))
+        {
+            let am = &*am;
+            let bm = &*bm;
+            for idx in 0..9 {
+                if am.data[idx] != bm.data[idx] {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if let (Some(am), Some(bm)) =
+            (crate::data::math::as_mat4_ref(a), crate::data::math::as_mat4_ref(b))
+        {
+            let am = &*am;
+            let bm = &*bm;
+            for idx in 0..16 {
+                if am.data[idx] != bm.data[idx] {
+                    return false;
+                }
+            }
+            return true;
         }
         if ah.type_id >= TypeId::UserBase as u32 {
             let Some((a_type, a_fields)) = crate::class::class_type_and_fields(a) else {
@@ -439,6 +492,44 @@ fn value_hash_inner(val: Value, depth: usize, seen: &mut HashSet<usize>) -> u64 
             } else {
                 hash_tagged(10, 0)
             }
+        } else if header.type_id == TypeId::Vec2 as u32
+            || header.type_id == TypeId::Vec3 as u32
+            || header.type_id == TypeId::Vec4 as u32
+            || header.type_id == TypeId::Quat as u32
+        {
+            if let Some(vec) = crate::data::math::as_vec_ref(val) {
+                let vec = &*vec;
+                let mut acc = hash_tagged(15, vec.len as u64);
+                acc = hash_combine(acc, hash_tagged(16, vec.header.type_id as u64));
+                for idx in 0..vec.len {
+                    acc = hash_combine(acc, hash_float(vec.data[idx]));
+                }
+                acc
+            } else {
+                hash_tagged(15, 0)
+            }
+        } else if header.type_id == TypeId::Mat3 as u32 {
+            if let Some(mat) = crate::data::math::as_mat3_ref(val) {
+                let mat = &*mat;
+                let mut acc = hash_tagged(16, 9);
+                for idx in 0..9 {
+                    acc = hash_combine(acc, hash_float(mat.data[idx]));
+                }
+                acc
+            } else {
+                hash_tagged(16, 0)
+            }
+        } else if header.type_id == TypeId::Mat4 as u32 {
+            if let Some(mat) = crate::data::math::as_mat4_ref(val) {
+                let mat = &*mat;
+                let mut acc = hash_tagged(17, 16);
+                for idx in 0..16 {
+                    acc = hash_combine(acc, hash_float(mat.data[idx]));
+                }
+                acc
+            } else {
+                hash_tagged(17, 0)
+            }
         } else if header.type_id >= TypeId::UserBase as u32 {
             if let Some((type_id, fields)) = crate::class::class_type_and_fields(val) {
                 let mut acc = hash_tagged(11, type_id as u64);
@@ -476,6 +567,11 @@ fn hash_tagged(tag: u64, value: u64) -> u64 {
     hash_combine(tag.wrapping_mul(0x517c_c1b7_2722_0a95), value)
 }
 
+fn hash_float(value: f32) -> u64 {
+    let normalized = if value == 0.0 { 0.0 } else { value };
+    hash_tagged(13, (normalized as f64).to_bits())
+}
+
 #[repr(C)]
 struct IntBox {
     header: ObjHeader,
@@ -507,6 +603,81 @@ pub fn int_value(val: Value) -> Option<i64> {
                 return Some((*boxed).val);
             }
         }
+    }
+    None
+}
+
+pub fn value_approx_eq(left: Value, right: Value, tolerance: Value) -> bool {
+    let Some(tolerance) = numeric_value(tolerance) else {
+        return false;
+    };
+    if tolerance.is_nan() || tolerance.is_sign_negative() {
+        return false;
+    }
+    if let (Some(left_vec), Some(right_vec)) = (
+        crate::data::math::as_vec_ref(left),
+        crate::data::math::as_vec_ref(right),
+    ) {
+        unsafe {
+            let left_vec = &*left_vec;
+            let right_vec = &*right_vec;
+            if left_vec.len != right_vec.len || left_vec.header.type_id != right_vec.header.type_id {
+                return false;
+            }
+            for idx in 0..left_vec.len {
+                let delta = (left_vec.data[idx] - right_vec.data[idx]) as f64;
+                if delta.abs() > tolerance {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+    if let (Some(left_mat), Some(right_mat)) = (
+        crate::data::math::as_mat3_ref(left),
+        crate::data::math::as_mat3_ref(right),
+    ) {
+        unsafe {
+            let left_mat = &*left_mat;
+            let right_mat = &*right_mat;
+            for idx in 0..9 {
+                if (left_mat.data[idx] as f64 - right_mat.data[idx] as f64).abs() > tolerance {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+    if let (Some(left_mat), Some(right_mat)) = (
+        crate::data::math::as_mat4_ref(left),
+        crate::data::math::as_mat4_ref(right),
+    ) {
+        unsafe {
+            let left_mat = &*left_mat;
+            let right_mat = &*right_mat;
+            for idx in 0..16 {
+                if ((left_mat.data[idx] as f64) - (right_mat.data[idx] as f64)).abs() > tolerance {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+    let (Some(left), Some(right)) = (numeric_value(left), numeric_value(right)) else {
+        return false;
+    };
+    if left.is_nan() || right.is_nan() {
+        return false;
+    }
+    (left - right).abs() <= tolerance
+}
+
+fn numeric_value(val: Value) -> Option<f64> {
+    if let Some(int) = int_value(val) {
+        return Some(int as f64);
+    }
+    if val.is_float() {
+        return Some(val.as_float());
     }
     None
 }

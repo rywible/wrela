@@ -158,6 +158,7 @@ pub fn lower_module_with_types(module: &Module, type_info: &TypeInfo) -> MirModu
             func.name.clone()
         };
         functions.push(lower_function(
+            module,
             func,
             name,
             body,
@@ -185,6 +186,7 @@ pub fn lower_module_with_types(module: &Module, type_info: &TypeInfo) -> MirModu
 }
 
 fn lower_function(
+    module: &hir::Module,
     func: &hir::Function,
     name: SmolStr,
     body: &hir::Body,
@@ -248,6 +250,24 @@ fn lower_function(
     MirFunction {
         name: lowerer.name,
         params: lowerer.params,
+        abi_params: func
+            .params
+            .iter()
+            .map(|param| {
+                portable_abi_from_type_ref(
+                    param.ty.as_ref(),
+                    module,
+                    type_tags,
+                    &mut HashSet::new(),
+                )
+            })
+            .collect(),
+        abi_return: portable_abi_from_type_ref(
+            func.ret_type.as_ref(),
+            module,
+            type_tags,
+            &mut HashSet::new(),
+        ),
         locals: lowerer.locals,
         temps: lowerer.temps,
         blocks: lowerer.blocks,
@@ -479,8 +499,13 @@ impl FunctionLowerer {
             HirStmt::Expr(expr) => {
                 let _ = self.lower_expr(body, *expr);
             }
-            HirStmt::Assert { kind, expr } => {
-                let cond = self.lower_assert_expr(body, *expr, *kind);
+            HirStmt::Assert {
+                kind,
+                expr,
+                rhs,
+                tolerance,
+            } => {
+                let cond = self.lower_assert_expr(body, *expr, *rhs, *kind, *tolerance);
                 let func = SmolStr::new("assert");
                 let args = vec![cond, Value::Const(Literal::Nil)];
                 let temp = self.new_temp(MirType::Nil);
@@ -1342,8 +1367,35 @@ impl FunctionLowerer {
         &mut self,
         body: &hir::Body,
         expr_id: hir::Idx<Expr>,
+        rhs_id: Option<hir::Idx<Expr>>,
         kind: hir::AssertKind,
+        tolerance: Option<hir::Idx<Expr>>,
     ) -> Value {
+        if matches!(kind, hir::AssertKind::Approx) {
+            let span = body.expr_span(expr_id);
+            let left_id = match &body.exprs[expr_id] {
+                Expr::Binary { lhs, .. } => *lhs,
+                _ => expr_id,
+            };
+            let left = self.lower_expr(body, left_id);
+            let right = rhs_id
+                .map(|rhs| self.lower_expr(body, rhs))
+                .unwrap_or(Value::Const(Literal::Nil));
+            let tol = tolerance
+                .map(|tol| self.lower_expr(body, tol))
+                .unwrap_or(Value::Const(Literal::Nil));
+            let temp = self.new_temp(MirType::Boolean);
+            self.push_stmt(MirStmt::Assign {
+                place: Place::Temp(temp),
+                value: Rvalue::Call {
+                    kind: CallKind::Sync,
+                    target: CallTarget::Function(SmolStr::new("approx_eq")),
+                    args: vec![left, right, tol],
+                },
+                span,
+            });
+            return Value::Temp(temp);
+        }
         let span = body.expr_span(expr_id);
         if let Expr::Binary { lhs, op, rhs, .. } = &body.exprs[expr_id]
             && matches!(op, BinaryOp::Eq | BinaryOp::Ne)
@@ -1353,6 +1405,7 @@ impl FunctionLowerer {
             let func = match kind {
                 hir::AssertKind::Value => SmolStr::new("value_deep_eq"),
                 hir::AssertKind::Identity => SmolStr::new("identity_eq"),
+                hir::AssertKind::Approx => unreachable!(),
             };
             let temp = self.new_temp(MirType::Boolean);
             self.push_stmt(MirStmt::Assign {
@@ -2087,6 +2140,21 @@ impl FunctionLowerer {
                         self.maybe_call_configure(&class_name, Value::Temp(temp), span);
                         return Value::Temp(temp);
                     }
+                }
+                if let Some(component_index) = vector_component_index(self.expr_type(*object), member)
+                {
+                    let base = self.lower_expr(body, *object);
+                    let temp = self.new_temp_for_expr(expr_id);
+                    self.push_stmt(MirStmt::Assign {
+                        place: Place::Temp(temp),
+                        value: Rvalue::Call {
+                            kind: CallKind::Sync,
+                            target: CallTarget::Function(SmolStr::new("__wr_vec_component")),
+                            args: vec![base, Value::Const(Literal::Integer(component_index as i64))],
+                        },
+                        span,
+                    });
+                    return Value::Temp(temp);
                 }
                 let base = self.lower_expr(body, *object);
                 let slot = self.member_slot_hint(*object, member);
@@ -3186,6 +3254,8 @@ fn builtin_type_tag(name: &SmolStr) -> Option<TypeTagId> {
         "Result" => Some(TypeTagId(11)),
         "Pool" => Some(TypeTagId(12)),
         "Bytes" => Some(TypeTagId(13)),
+        "Mat3" => Some(TypeTagId(14)),
+        "Quat" => Some(TypeTagId(15)),
         _ => None,
     }
 }
@@ -3284,12 +3354,12 @@ fn objective_code(objective: hir::Objective) -> i64 {
 fn mir_type_from_type(ty: &Type) -> MirType {
     match ty {
         Type::Unknown => MirType::Unknown,
-        Type::Integer => MirType::Integer,
-        Type::Float => MirType::Float,
+        Type::Integer | Type::I32 | Type::U32 | Type::I64 | Type::U64 => MirType::Integer,
+        Type::Float | Type::F32 => MirType::Float,
         Type::Boolean => MirType::Boolean,
         Type::String => MirType::String,
         Type::Nil => MirType::Nil,
-        Type::List(_) => MirType::Named(SmolStr::new("List")),
+        Type::List(_) | Type::Array(_, _) => MirType::Named(SmolStr::new("List")),
         Type::Map(_, _) => MirType::Named(SmolStr::new("Map")),
         Type::Named(name, _) => MirType::Named(name.clone()),
         Type::Param(_) => MirType::Unknown,
@@ -3302,12 +3372,90 @@ fn mir_type_from_type(ty: &Type) -> MirType {
         Type::Vec2 => MirType::Vec2,
         Type::Vec3 => MirType::Vec3,
         Type::Vec4 => MirType::Vec4,
+        Type::Mat3 => MirType::Mat3,
         Type::Mat4 => MirType::Mat4,
+        Type::Quat => MirType::Quat,
         Type::GpuBuffer(_) => MirType::Named(SmolStr::new("Buffer")),
         Type::Texture2D => MirType::Named(SmolStr::new("Texture2D")),
         Type::Sampler => MirType::Named(SmolStr::new("Sampler")),
         _ => MirType::Unknown,
     }
+}
+
+fn portable_abi_from_type_ref(
+    ty: Option<&crate::hir::TypeRef>,
+    module: &hir::Module,
+    type_tags: &HashMap<SmolStr, TypeTagId>,
+    visiting: &mut HashSet<SmolStr>,
+) -> PortableAbiType {
+    let Some(ty) = ty else {
+        return PortableAbiType::Value;
+    };
+
+    match ty.name.as_str() {
+        "Bool" => PortableAbiType::Bool,
+        "I32" => PortableAbiType::I32,
+        "U32" => PortableAbiType::U32,
+        "I64" => PortableAbiType::I64,
+        "U64" => PortableAbiType::U64,
+        "F32" => PortableAbiType::F32,
+        "Vec2" => PortableAbiType::Vec2,
+        "Vec3" => PortableAbiType::Vec3,
+        "Vec4" => PortableAbiType::Vec4,
+        "Mat3" => PortableAbiType::Mat3,
+        "Mat4" => PortableAbiType::Mat4,
+        "Quat" => PortableAbiType::Quat,
+        "Array" => match ty.args.as_slice() {
+            [inner, len] => len
+                .name
+                .parse::<usize>()
+                .ok()
+                .map(|len| {
+                    PortableAbiType::Array(
+                        Box::new(portable_abi_from_type_ref(
+                            Some(inner),
+                            module,
+                            type_tags,
+                            visiting,
+                        )),
+                        len,
+                    )
+                })
+                .unwrap_or(PortableAbiType::Value),
+            _ => PortableAbiType::Value,
+        },
+        name => portable_value_struct_abi(name, module, type_tags, visiting)
+            .unwrap_or(PortableAbiType::Value),
+    }
+}
+
+fn portable_value_struct_abi(
+    name: &str,
+    module: &hir::Module,
+    type_tags: &HashMap<SmolStr, TypeTagId>,
+    visiting: &mut HashSet<SmolStr>,
+) -> Option<PortableAbiType> {
+    let name = SmolStr::new(name);
+    let class = module.classes.iter().find_map(|(_, class)| {
+        (class.name == name && matches!(class.role, hir::ClassRole::Value)).then_some(class)
+    })?;
+    if !visiting.insert(class.name.clone()) {
+        return None;
+    }
+    let fields = class
+        .fields
+        .iter()
+        .map(|field| PortableStructField {
+            name: field.name.clone(),
+            ty: portable_abi_from_type_ref(field.ty.as_ref(), module, type_tags, visiting),
+        })
+        .collect();
+    visiting.remove(&class.name);
+    Some(PortableAbiType::Struct {
+        name: class.name.clone(),
+        class_id: type_tags.get(&class.name)?.0 as u32,
+        fields,
+    })
 }
 
 fn build_interface_dispatch_functions(
@@ -3445,6 +3593,8 @@ fn build_interface_dispatch_function(
     MirFunction {
         name: SmolStr::new(format!("{}.{}", interface, method)),
         params: params_ids,
+        abi_params: vec![PortableAbiType::Value; params.len() + 1],
+        abi_return: PortableAbiType::Value,
         locals,
         temps,
         blocks,
@@ -3457,6 +3607,7 @@ fn builtin_function_names() -> Vec<SmolStr> {
     vec![
         SmolStr::new("__wr_assert_err"),
         SmolStr::new("__wr_print"),
+        SmolStr::new("__wr_vec_component"),
         SmolStr::new("__wr_bytes_from_string"),
         SmolStr::new("__wr_bytes_from_list"),
         SmolStr::new("__wr_bytes_to_string"),
@@ -3474,6 +3625,36 @@ fn builtin_function_names() -> Vec<SmolStr> {
         SmolStr::new("__wr_auth_verify_jwt"),
         SmolStr::new("__wr_auth_generate_secure_token"),
         SmolStr::new("__wr_auth_render_jwks_document"),
+        SmolStr::new("vec2"),
+        SmolStr::new("vec3"),
+        SmolStr::new("vec4"),
+        SmolStr::new("quat"),
+        SmolStr::new("mat3_identity"),
+        SmolStr::new("mat3_cols"),
+        SmolStr::new("mat4_identity"),
+        SmolStr::new("mat4_cols"),
+        SmolStr::new("f32"),
+        SmolStr::new("i32"),
+        SmolStr::new("u32"),
+        SmolStr::new("dot"),
+        SmolStr::new("length"),
+        SmolStr::new("normalize"),
+        SmolStr::new("cross"),
+        SmolStr::new("min"),
+        SmolStr::new("max"),
+        SmolStr::new("clamp"),
+        SmolStr::new("mix"),
+        SmolStr::new("abs"),
+        SmolStr::new("sign"),
+        SmolStr::new("floor"),
+        SmolStr::new("ceil"),
+        SmolStr::new("fract"),
+        SmolStr::new("sin"),
+        SmolStr::new("cos"),
+        SmolStr::new("sqrt"),
+        SmolStr::new("pow"),
+        SmolStr::new("distance"),
+        SmolStr::new("reflect"),
         SmolStr::new("__wr_map_new"),
         SmolStr::new("__wr_list_push"),
         SmolStr::new("__wr_list_get"),
@@ -3554,6 +3735,25 @@ fn builtin_function_names() -> Vec<SmolStr> {
         SmolStr::new("__wr_db_explain_resolve_owner"),
         SmolStr::new("__wr_db_explain_global_route_lookup"),
     ]
+}
+
+fn vector_component_index(ty: MirType, member: &SmolStr) -> Option<usize> {
+    match (ty, member.as_str()) {
+        (MirType::Vec2, "x") => Some(0),
+        (MirType::Vec2, "y") => Some(1),
+        (MirType::Vec3, "x") => Some(0),
+        (MirType::Vec3, "y") => Some(1),
+        (MirType::Vec3, "z") => Some(2),
+        (MirType::Vec4, "x") => Some(0),
+        (MirType::Vec4, "y") => Some(1),
+        (MirType::Vec4, "z") => Some(2),
+        (MirType::Vec4, "w") => Some(3),
+        (MirType::Quat, "x") => Some(0),
+        (MirType::Quat, "y") => Some(1),
+        (MirType::Quat, "z") => Some(2),
+        (MirType::Quat, "w") => Some(3),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

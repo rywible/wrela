@@ -9,12 +9,18 @@ fn supports_structural_value_type(
         Type::Param(_) => true,
         Type::Never
         | Type::Integer
+        | Type::I32
+        | Type::U32
+        | Type::I64
+        | Type::U64
         | Type::Float
+        | Type::F32
         | Type::Number
         | Type::Boolean
         | Type::String
         | Type::Nil => true,
         Type::List(inner) => supports_structural_value_type(inner, classes, enums, visiting),
+        Type::Array(inner, _) => supports_structural_value_type(inner, classes, enums, visiting),
         Type::Map(key, value) => {
             supports_structural_value_type(key, classes, enums, visiting)
                 && supports_structural_value_type(value, classes, enums, visiting)
@@ -24,7 +30,7 @@ fn supports_structural_value_type(
                 && supports_structural_value_type(err, classes, enums, visiting)
         }
         Type::Actor(_) | Type::Pending(_) => false,
-        Type::Vec2 | Type::Vec3 | Type::Vec4 | Type::Mat4 => true,
+        Type::Vec2 | Type::Vec3 | Type::Vec4 | Type::Mat3 | Type::Mat4 | Type::Quat => true,
         Type::GpuBuffer(_) | Type::Texture2D | Type::Sampler => true,
         Type::Named(name, args) => {
             if name.as_str() == "Bytes" {
@@ -187,6 +193,7 @@ struct FunctionSig {
 
 #[derive(Debug, Clone)]
 struct ClassSig {
+    role: ClassRole,
     type_params: Vec<SmolStr>,
     fields: HashMap<SmolStr, Type>,
     field_mutable: HashMap<SmolStr, bool>,
@@ -279,6 +286,7 @@ impl ClassIndex {
             classes.insert(
                 class.name.clone(),
                 ClassSig {
+                    role: class.role,
                     type_params: type_params.clone(),
                     fields,
                     methods,
@@ -1641,6 +1649,361 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("key"), Type::String),
                 ],
                 ret: Type::String,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("vec2"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("x"), Type::F32),
+                    (SmolStr::new("y"), Type::F32),
+                ],
+                ret: Type::Vec2,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("vec3"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("x"), Type::F32),
+                    (SmolStr::new("y"), Type::F32),
+                    (SmolStr::new("z"), Type::F32),
+                ],
+                ret: Type::Vec3,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("vec4"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("x"), Type::F32),
+                    (SmolStr::new("y"), Type::F32),
+                    (SmolStr::new("z"), Type::F32),
+                    (SmolStr::new("w"), Type::F32),
+                ],
+                ret: Type::Vec4,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("quat"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("x"), Type::F32),
+                    (SmolStr::new("y"), Type::F32),
+                    (SmolStr::new("z"), Type::F32),
+                    (SmolStr::new("w"), Type::F32),
+                ],
+                ret: Type::Quat,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("mat3_identity"),
+            FunctionSig {
+                params: vec![],
+                ret: Type::Mat3,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("mat3_cols"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("c0"), Type::Vec3),
+                    (SmolStr::new("c1"), Type::Vec3),
+                    (SmolStr::new("c2"), Type::Vec3),
+                ],
+                ret: Type::Mat3,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("mat4_identity"),
+            FunctionSig {
+                params: vec![],
+                ret: Type::Mat4,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("mat4_cols"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("c0"), Type::Vec4),
+                    (SmolStr::new("c1"), Type::Vec4),
+                    (SmolStr::new("c2"), Type::Vec4),
+                    (SmolStr::new("c3"), Type::Vec4),
+                ],
+                ret: Type::Mat4,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("dot"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("left"), Type::Unknown),
+                    (SmolStr::new("right"), Type::Unknown),
+                ],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("length"),
+            FunctionSig {
+                params: vec![(SmolStr::new("value"), Type::Unknown)],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("normalize"),
+            FunctionSig {
+                params: vec![(SmolStr::new("value"), Type::Unknown)],
+                ret: Type::Unknown,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("cross"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("left"), Type::Unknown),
+                    (SmolStr::new("right"), Type::Unknown),
+                ],
+                ret: Type::Vec3,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("min"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("left"), Type::Unknown),
+                    (SmolStr::new("right"), Type::Unknown),
+                ],
+                ret: Type::Unknown,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("max"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("left"), Type::Unknown),
+                    (SmolStr::new("right"), Type::Unknown),
+                ],
+                ret: Type::Unknown,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("clamp"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("value"), Type::Unknown),
+                    (SmolStr::new("min"), Type::Unknown),
+                    (SmolStr::new("max"), Type::Unknown),
+                ],
+                ret: Type::Unknown,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("mix"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("value"), Type::Unknown),
+                    (SmolStr::new("other"), Type::Unknown),
+                    (SmolStr::new("t"), Type::Unknown),
+                ],
+                ret: Type::Unknown,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("abs"),
+            FunctionSig {
+                params: vec![(SmolStr::new("value"), Type::Unknown)],
+                ret: Type::Unknown,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("sign"),
+            FunctionSig {
+                params: vec![(SmolStr::new("value"), Type::Unknown)],
+                ret: Type::Unknown,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("floor"),
+            FunctionSig {
+                params: vec![(SmolStr::new("value"), Type::Unknown)],
+                ret: Type::Unknown,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("ceil"),
+            FunctionSig {
+                params: vec![(SmolStr::new("value"), Type::Unknown)],
+                ret: Type::Unknown,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("fract"),
+            FunctionSig {
+                params: vec![(SmolStr::new("value"), Type::Unknown)],
+                ret: Type::Unknown,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("sin"),
+            FunctionSig {
+                params: vec![(SmolStr::new("value"), Type::Unknown)],
+                ret: Type::Unknown,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("cos"),
+            FunctionSig {
+                params: vec![(SmolStr::new("value"), Type::Unknown)],
+                ret: Type::Unknown,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("sqrt"),
+            FunctionSig {
+                params: vec![(SmolStr::new("value"), Type::Unknown)],
+                ret: Type::Unknown,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("pow"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("left"), Type::Unknown),
+                    (SmolStr::new("right"), Type::Unknown),
+                ],
+                ret: Type::Unknown,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("distance"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("left"), Type::Unknown),
+                    (SmolStr::new("right"), Type::Unknown),
+                ],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("reflect"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("left"), Type::Unknown),
+                    (SmolStr::new("right"), Type::Unknown),
+                ],
+                ret: Type::Unknown,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("f32"),
+            FunctionSig {
+                params: vec![(SmolStr::new("value"), Type::Unknown)],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("i32"),
+            FunctionSig {
+                params: vec![(SmolStr::new("value"), Type::Unknown)],
+                ret: Type::I32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("u32"),
+            FunctionSig {
+                params: vec![(SmolStr::new("value"), Type::Unknown)],
+                ret: Type::U32,
                 kind: FunctionKind::Function,
                 type_params: Vec::new(),
                 type_param_bounds: Vec::new(),

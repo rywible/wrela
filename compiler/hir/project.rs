@@ -1786,7 +1786,20 @@ fn collect_called_functions(body: &Body, stmts: &[Idx<Stmt>], called: &mut Vec<S
     for stmt_id in stmts {
         match &body.stmts[*stmt_id] {
             Stmt::Expr(expr) => collect_called_functions_in_expr(body, *expr, called),
-            Stmt::Assert { expr, .. } => collect_called_functions_in_expr(body, *expr, called),
+            Stmt::Assert {
+                expr,
+                rhs,
+                tolerance,
+                ..
+            } => {
+                collect_called_functions_in_expr(body, *expr, called);
+                if let Some(rhs) = rhs {
+                    collect_called_functions_in_expr(body, *rhs, called);
+                }
+                if let Some(tolerance) = tolerance {
+                    collect_called_functions_in_expr(body, *tolerance, called);
+                }
+            }
             Stmt::Require { condition, message } => {
                 collect_called_functions_in_expr(body, *condition, called);
                 collect_called_functions_in_expr(body, *message, called);
@@ -1873,16 +1886,47 @@ fn enforce_external_call_policy_in_block(
                 source,
                 errors,
             ),
-            Stmt::Assert { expr, .. } => enforce_external_call_policy_in_expr(
-                body,
-                *expr,
-                imported,
-                module_name,
-                function_name,
-                path,
-                source,
-                errors,
-            ),
+            Stmt::Assert {
+                expr,
+                rhs,
+                tolerance,
+                ..
+            } => {
+                enforce_external_call_policy_in_expr(
+                    body,
+                    *expr,
+                    imported,
+                    module_name,
+                    function_name,
+                    path,
+                    source,
+                    errors,
+                );
+                if let Some(rhs) = rhs {
+                    enforce_external_call_policy_in_expr(
+                        body,
+                        *rhs,
+                        imported,
+                        module_name,
+                        function_name,
+                        path,
+                        source,
+                        errors,
+                    );
+                }
+                if let Some(tolerance) = tolerance {
+                    enforce_external_call_policy_in_expr(
+                        body,
+                        *tolerance,
+                        imported,
+                        module_name,
+                        function_name,
+                        path,
+                        source,
+                        errors,
+                    );
+                }
+            }
             Stmt::Require { condition, message } => {
                 enforce_external_call_policy_in_expr(
                     body,
@@ -2526,7 +2570,20 @@ fn find_disallowed_domain_async_keyword_in_block(
     for stmt_id in stmts {
         let found = match &body.stmts[*stmt_id] {
             Stmt::Expr(expr) => find_disallowed_domain_async_keyword_in_expr(body, *expr),
-            Stmt::Assert { expr, .. } => find_disallowed_domain_async_keyword_in_expr(body, *expr),
+            Stmt::Assert {
+                expr,
+                rhs,
+                tolerance,
+                ..
+            } => find_disallowed_domain_async_keyword_in_expr(body, *expr)
+                .or_else(|| {
+                    rhs.and_then(|rhs| find_disallowed_domain_async_keyword_in_expr(body, rhs))
+                })
+                .or_else(|| {
+                    tolerance.and_then(|tolerance| {
+                        find_disallowed_domain_async_keyword_in_expr(body, tolerance)
+                    })
+                }),
             Stmt::Require { condition, message } => {
                 find_disallowed_domain_async_keyword_in_expr(body, *condition)
                     .or_else(|| find_disallowed_domain_async_keyword_in_expr(body, *message))
@@ -3094,7 +3151,10 @@ fn collect_type_names(
     type_params: &HashSet<SmolStr>,
 ) {
     let Some(ty) = ty else { return };
-    if !is_builtin_type_name(&ty.name) && !type_params.contains(&ty.name) {
+    if !is_builtin_type_name(&ty.name)
+        && !type_params.contains(&ty.name)
+        && ty.name.parse::<usize>().is_err()
+    {
         record_used(
             used,
             ty.name.clone(),
@@ -3113,9 +3173,16 @@ fn is_builtin_type_name(name: &SmolStr) -> bool {
             | "Float"
             | "Number"
             | "Boolean"
+            | "Bool"
             | "String"
             | "Nothing"
             | "Bytes"
+            | "Vec2"
+            | "Vec3"
+            | "Vec4"
+            | "Mat3"
+            | "Mat4"
+            | "Quat"
             | "List"
             | "Map"
             | "Result"
@@ -3123,6 +3190,12 @@ fn is_builtin_type_name(name: &SmolStr) -> bool {
             | "Pending"
             | "Any"
             | "Error"
+            | "I32"
+            | "U32"
+            | "I64"
+            | "U64"
+            | "F32"
+            | "Array"
     )
 }
 
@@ -3142,6 +3215,36 @@ fn is_builtin_value_name(name: &SmolStr) -> bool {
         name.as_str(),
         "__wr_assert_err"
             | "__wr_print"
+            | "vec2"
+            | "vec3"
+            | "vec4"
+            | "quat"
+            | "mat3_identity"
+            | "mat3_cols"
+            | "mat4_identity"
+            | "mat4_cols"
+            | "dot"
+            | "length"
+            | "normalize"
+            | "cross"
+            | "min"
+            | "max"
+            | "clamp"
+            | "mix"
+            | "abs"
+            | "sign"
+            | "floor"
+            | "ceil"
+            | "fract"
+            | "sin"
+            | "cos"
+            | "sqrt"
+            | "pow"
+            | "distance"
+            | "reflect"
+            | "f32"
+            | "i32"
+            | "u32"
             | "__wr_list_push"
             | "__wr_list_get"
             | "__wr_list_set"
@@ -3285,7 +3388,20 @@ fn collect_used_in_block(
         let stmt = &body.stmts[*stmt_id];
         match stmt {
             Stmt::Expr(expr) => collect_used_in_expr(body, *expr, scope, used),
-            Stmt::Assert { expr, .. } => collect_used_in_expr(body, *expr, scope, used),
+            Stmt::Assert {
+                expr,
+                rhs,
+                tolerance,
+                ..
+            } => {
+                collect_used_in_expr(body, *expr, scope, used);
+                if let Some(rhs) = rhs {
+                    collect_used_in_expr(body, *rhs, scope, used);
+                }
+                if let Some(tolerance) = tolerance {
+                    collect_used_in_expr(body, *tolerance, scope, used);
+                }
+            }
             Stmt::Require { condition, message } => {
                 collect_used_in_expr(body, *condition, scope, used);
                 collect_used_in_expr(body, *message, scope, used);

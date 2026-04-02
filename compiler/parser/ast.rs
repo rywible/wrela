@@ -38,6 +38,7 @@ pub enum Stmt {
     ClassDef(ClassDef),
     ResourceDef(ResourceDef),
     EventDef(EventDef),
+    ValueDef(ValueDef),
     EnumDef(EnumDef),
     FuncDef(FuncDef),
     SystemDef(SystemDef),
@@ -70,6 +71,7 @@ impl AstNode for Stmt {
                 | SyntaxKind::ClassDef
                 | SyntaxKind::ResourceDef
                 | SyntaxKind::EventDef
+                | SyntaxKind::ValueDef
                 | SyntaxKind::EnumDef
                 | SyntaxKind::FuncDef
                 | SyntaxKind::SystemDef
@@ -100,6 +102,7 @@ impl AstNode for Stmt {
             SyntaxKind::ClassDef => ClassDef::cast(node).map(Stmt::ClassDef),
             SyntaxKind::ResourceDef => ResourceDef::cast(node).map(Stmt::ResourceDef),
             SyntaxKind::EventDef => EventDef::cast(node).map(Stmt::EventDef),
+            SyntaxKind::ValueDef => ValueDef::cast(node).map(Stmt::ValueDef),
             SyntaxKind::EnumDef => EnumDef::cast(node).map(Stmt::EnumDef),
             SyntaxKind::FuncDef => FuncDef::cast(node).map(Stmt::FuncDef),
             SyntaxKind::SystemDef => SystemDef::cast(node).map(Stmt::SystemDef),
@@ -139,6 +142,7 @@ impl AstNode for Stmt {
             Stmt::ClassDef(it) => it.syntax(),
             Stmt::ResourceDef(it) => it.syntax(),
             Stmt::EventDef(it) => it.syntax(),
+            Stmt::ValueDef(it) => it.syntax(),
             Stmt::EnumDef(it) => it.syntax(),
             Stmt::FuncDef(it) => it.syntax(),
             Stmt::SystemDef(it) => it.syntax(),
@@ -168,6 +172,7 @@ impl AstNode for Stmt {
 pub enum AssertMode {
     Value,
     Identity,
+    Approx,
 }
 
 pub struct AssertStmt(SyntaxNode);
@@ -202,6 +207,9 @@ impl AssertStmt {
                 if text == "identity" {
                     return AssertMode::Identity;
                 }
+                if text == "approx" {
+                    return AssertMode::Approx;
+                }
             }
         }
         AssertMode::Value
@@ -209,6 +217,19 @@ impl AssertStmt {
 
     pub fn expr(&self) -> Option<Expr> {
         self.0.children().filter_map(Expr::cast).next()
+    }
+
+    pub fn rhs_expr(&self) -> Option<Expr> {
+        let mut exprs = self.0.children().filter_map(Expr::cast);
+        exprs.next()?;
+        exprs.next()
+    }
+
+    pub fn tolerance_expr(&self) -> Option<Expr> {
+        let mut exprs = self.0.children().filter_map(Expr::cast);
+        exprs.next()?;
+        exprs.next()?;
+        exprs.next()
     }
 }
 
@@ -490,6 +511,66 @@ macro_rules! impl_class_like_def {
 
 impl_class_like_def!(ResourceDef, SyntaxKind::ResourceDef);
 impl_class_like_def!(EventDef, SyntaxKind::EventDef);
+
+pub struct ValueDef(SyntaxNode);
+impl AstNode for ValueDef {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::ValueDef
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(Self(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl ValueDef {
+    pub fn name(&self) -> Option<SyntaxToken> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .filter(|it| it.kind() == SyntaxKind::Ident)
+            .nth(1)
+    }
+
+    pub fn type_params(&self) -> impl Iterator<Item = SyntaxToken> {
+        self.0
+            .children()
+            .filter(|it| it.kind() == SyntaxKind::TypeParamList)
+            .flat_map(|node| node.children_with_tokens())
+            .filter_map(|it| it.into_token())
+            .filter(|it| it.kind() == SyntaxKind::Ident)
+    }
+
+    pub fn is_a(&self) -> Option<SyntaxToken> {
+        self.0
+            .children()
+            .find(|it| it.kind() == SyntaxKind::IsAClause)
+            .and_then(|node| {
+                node.children_with_tokens()
+                    .filter_map(|it| it.into_token())
+                    .filter(|it| it.kind() == SyntaxKind::Ident)
+                    .last()
+            })
+    }
+
+    pub fn fields(&self) -> impl Iterator<Item = FieldDef> {
+        self.0.children().filter_map(FieldDef::cast)
+    }
+
+    pub fn methods(&self) -> impl Iterator<Item = MethodDef> {
+        self.0.children().filter_map(MethodDef::cast)
+    }
+
+    pub fn must_methods(&self) -> impl Iterator<Item = MustMethodDef> {
+        self.0.children().filter_map(MustMethodDef::cast)
+    }
+}
 
 pub struct EnumDef(SyntaxNode);
 impl AstNode for EnumDef {
@@ -1968,7 +2049,7 @@ impl TypeRef {
         self.0
             .children_with_tokens()
             .filter_map(|it| it.into_token())
-            .find(|it| it.kind() == SyntaxKind::Ident)
+            .find(|it| matches!(it.kind(), SyntaxKind::Ident | SyntaxKind::IntNumber))
     }
 
     pub fn args(&self) -> Vec<TypeRef> {

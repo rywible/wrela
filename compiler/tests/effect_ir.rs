@@ -2,8 +2,8 @@ use rowan::TextRange;
 use wrela::hir::Literal;
 use wrela::mir::effect_ir::{EffectKind, extract_effect_ir};
 use wrela::mir::ir::{
-    BasicBlock, BlockId, Local, LocalId, MirFunction, MirType, Place, Rvalue, Stmt, Temp, TempId,
-    Terminator, Value,
+    BasicBlock, BlockId, Local, LocalId, MirFunction, MirType, Place, PortableAbiType, Rvalue,
+    Stmt, Temp, TempId, Terminator, Value,
 };
 use wrela::mir::opt;
 
@@ -15,6 +15,8 @@ fn test_function() -> MirFunction {
     MirFunction {
         name: "effect_test".into(),
         params: vec![],
+        abi_params: vec![],
+        abi_return: PortableAbiType::Value,
         locals: vec![
             Local {
                 name: "ok_val".into(),
@@ -198,6 +200,8 @@ fn annihilation_rewrites_cross_block_when_dominance_holds() {
     let mut func = MirFunction {
         name: "cross_block_ok".into(),
         params: vec![],
+        abi_params: vec![],
+        abi_return: PortableAbiType::Value,
         locals: vec![Local {
             name: "ok".into(),
             mutable: false,
@@ -262,6 +266,8 @@ fn annihilation_blocks_non_dominating_cross_block_rewrite() {
     let mut func = MirFunction {
         name: "cross_block_blocked".into(),
         params: vec![],
+        abi_params: vec![],
+        abi_return: PortableAbiType::Value,
         locals: vec![Local {
             name: "ok".into(),
             mutable: false,
@@ -322,6 +328,8 @@ fn opt_hoists_loop_invariant_result_is_ok() {
     let mut func = MirFunction {
         name: "loop_hoist".into(),
         params: vec![],
+        abi_params: vec![],
+        abi_return: PortableAbiType::Value,
         locals: vec![Local {
             name: "ok".into(),
             mutable: false,

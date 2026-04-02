@@ -187,6 +187,137 @@ fn test_functions_and_return() -> Nothing {
     assert value add(left=2, right=3) == 5
 }
 
+value SubstrateSample {
+    flag: Bool
+    count: I32
+    measure: F32
+}
+
+fn compute_middle_value(values: Array[I32, 3]) -> I32 {
+    return values[1]
+}
+
+fn test_value_declarations_and_scalar_aliases() -> Nothing {
+    sample = SubstrateSample(flag=true, count=7, measure=1.25)
+    assert value sample.flag == true
+    assert value sample.count == 7
+    assert approx sample.measure ~= 1.251 within 0.01
+}
+
+fn test_fixed_array_type_surface() -> Nothing {
+    assert value compute_middle_value(values=[4, 6, 7]) == 6
+}
+
+// ------------------------------------------------------------
+// Vector and matrix substrate
+
+fn test_vec2_surface() -> Nothing {
+    base = vec2(3.0, 4.0)
+    unit = normalize(base)
+    shifted = base + vec2(1.0, -1.0)
+    restored = (shifted * 0.5) / 0.5
+    assert approx base.x ~= 3.0 within 0.0001
+    assert approx base.y ~= 4.0 within 0.0001
+    assert approx length(base) ~= 5.0 within 0.0001
+    assert approx dot(unit, vec2(0.6, 0.8)) ~= 1.0 within 0.0001
+    assert approx restored.x ~= 4.0 within 0.0001
+    assert approx restored.y ~= 3.0 within 0.0001
+}
+
+fn test_vec3_field_access() -> Nothing {
+    value = vec3(1.0, 2.0, 3.0)
+    assert approx value.x ~= 1.0 within 0.0001
+    assert approx value.y ~= 2.0 within 0.0001
+    assert approx value.z ~= 3.0 within 0.0001
+}
+
+fn test_vec_math_intrinsics() -> Nothing {
+    unit = normalize(vec3(3.0, 0.0, 4.0))
+    assert approx dot(unit, vec3(1.0, 0.0, 0.0)) ~= 0.6 within 0.0001
+    assert approx length(unit) ~= 1.0 within 0.0001
+    assert approx cross(vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0)).z ~= 1.0 within 0.0001
+}
+
+fn test_portable_math_surface() -> Nothing {
+    q = normalize(quat(0.0, 3.0, 4.0, 0.0))
+    assert approx q.y ~= 0.6 within 0.0001
+    assert approx q.z ~= 0.8 within 0.0001
+    assert approx length(q) ~= 1.0 within 0.0001
+
+    basis = mat3_cols(
+        vec3(1.0, 0.0, 0.0),
+        vec3(0.0, 1.0, 0.0),
+        vec3(0.0, 0.0, 1.0)
+    )
+    assert approx (mat3_identity() * vec3(4.0, 5.0, 6.0)).y ~= 5.0 within 0.0001
+    projected = basis * vec3(1.0, 2.0, 3.0)
+    assert approx projected.x ~= 1.0 within 0.0001
+    assert approx projected.y ~= 2.0 within 0.0001
+    assert approx projected.z ~= 3.0 within 0.0001
+
+    assert approx f32(7) ~= 7.0 within 0.0001
+    assert value i32(7.8) == 7
+    assert value u32(7.8) == 7
+    assert approx min(2.0, 3.0) ~= 2.0 within 0.0001
+    assert approx max(2.0, 3.0) ~= 3.0 within 0.0001
+    assert approx clamp(5.0, 0.0, 4.0) ~= 4.0 within 0.0001
+    assert approx mix(10.0, 20.0, 0.25) ~= 12.5 within 0.0001
+    assert approx abs(-3.5) ~= 3.5 within 0.0001
+    assert approx sign(-3.5) ~= -1.0 within 0.0001
+    assert approx floor(1.8) ~= 1.0 within 0.0001
+    assert approx ceil(1.2) ~= 2.0 within 0.0001
+    assert approx fract(1.25) ~= 0.25 within 0.0001
+    assert approx sin(0.0) ~= 0.0 within 0.0001
+    assert approx cos(0.0) ~= 1.0 within 0.0001
+    assert approx sqrt(9.0) ~= 3.0 within 0.0001
+    assert approx pow(2.0, 3.0) ~= 8.0 within 0.0001
+    assert approx distance(vec3(0.0, 0.0, 0.0), vec3(0.0, 3.0, 4.0)) ~= 5.0 within 0.0001
+    reflected = reflect(vec3(1.0, -1.0, 0.0), vec3(0.0, 1.0, 0.0))
+    assert approx reflected.y ~= 1.0 within 0.0001
+}
+
+fn test_vec_and_mat_arithmetic() -> Nothing {
+    left = vec3(1.0, 2.0, 3.0)
+    right = vec3(4.0, 5.0, 6.0)
+    sum = left + right
+    delta = right - left
+    scaled = sum * 0.5
+    restored = scaled / 0.5
+    assert approx restored.x ~= 5.0 within 0.0001
+    assert approx restored.y ~= 7.0 within 0.0001
+    assert approx restored.z ~= 9.0 within 0.0001
+    assert approx delta.x ~= 3.0 within 0.0001
+    assert approx delta.y ~= 3.0 within 0.0001
+    assert approx delta.z ~= 3.0 within 0.0001
+
+    transform = mat4_cols(
+        vec4(1.0, 0.0, 0.0, 0.0),
+        vec4(0.0, 1.0, 0.0, 0.0),
+        vec4(0.0, 0.0, 1.0, 0.0),
+        vec4(4.0, 5.0, 6.0, 1.0)
+    )
+    adjusted = (transform + mat4_identity() - mat4_identity()) * 0.5 / 0.5
+    result = adjusted * vec4(1.0, 2.0, 3.0, 1.0)
+    assert approx result.x ~= 5.0 within 0.0001
+    assert approx result.y ~= 7.0 within 0.0001
+    assert approx result.z ~= 9.0 within 0.0001
+    assert approx result.w ~= 1.0 within 0.0001
+}
+
+fn test_mat4_transform_path() -> Nothing {
+    transform = mat4_cols(
+        vec4(1.0, 0.0, 0.0, 0.0),
+        vec4(0.0, 1.0, 0.0, 0.0),
+        vec4(0.0, 0.0, 1.0, 0.0),
+        vec4(0.0, 0.0, 0.0, 1.0)
+    )
+    result = transform * vec4(1.0, 2.0, 3.0, 1.0)
+    assert approx result.x ~= 1.0 within 0.0001
+    assert approx result.y ~= 2.0 within 0.0001
+    assert approx result.z ~= 3.0 within 0.0001
+    assert approx result.w ~= 1.0 within 0.0001
+}
+
 // ------------------------------------------------------------
 // 5) Classes, fields, methods, and implicit receiver
 
@@ -564,4 +695,8 @@ fn test_assert_identity_for_objects() -> Nothing {
     left_numbers = [1]
     right_numbers = [1]
     assert identity left_numbers != right_numbers
+}
+
+fn test_assert_approx_within_tolerance() -> Nothing {
+    assert approx 1.0 ~= 1.001 within 0.01
 }

@@ -1945,8 +1945,19 @@ fn collect_public_surface_connector_literals_from_stmts(
             } => {
                 collect_public_surface_connector_literals_from_expr(body, *expr, out);
             }
-            hir::Stmt::Assert { expr, .. } => {
+            hir::Stmt::Assert {
+                expr,
+                rhs,
+                tolerance,
+                ..
+            } => {
                 collect_public_surface_connector_literals_from_expr(body, *expr, out);
+                if let Some(rhs) = rhs {
+                    collect_public_surface_connector_literals_from_expr(body, *rhs, out);
+                }
+                if let Some(tolerance) = tolerance {
+                    collect_public_surface_connector_literals_from_expr(body, *tolerance, out);
+                }
             }
             hir::Stmt::Let { value, .. } | hir::Stmt::Assign { value, .. } => {
                 collect_public_surface_connector_literals_from_expr(body, *value, out);

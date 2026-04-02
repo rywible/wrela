@@ -27,7 +27,12 @@ fn check_stmt(
                 returns_result,
             );
         }
-        Stmt::Assert { kind, expr } => {
+        Stmt::Assert {
+            kind,
+            expr,
+            rhs,
+            tolerance,
+        } => {
             let _expr_ty = infer_expr(
                 body,
                 *expr,
@@ -63,6 +68,33 @@ fn check_stmt(
                         body,
                         *expr,
                         AssertEqualityMode::Identity,
+                        ctx,
+                        classes,
+                        enums,
+                        interfaces,
+                        functions,
+                        errors,
+                        returns_result,
+                        span,
+                    );
+                }
+                crate::hir::AssertKind::Approx => {
+                    let Some(rhs) = *rhs else {
+                        errors.push(TypeError::AssertExpectedEquality {
+                            mode: "approx",
+                            span,
+                        });
+                        return;
+                    };
+                    let Some(tolerance) = *tolerance else {
+                        errors.push(TypeError::AssertApproxRequiresNumeric { span });
+                        return;
+                    };
+                    check_assert_approx(
+                        body,
+                        *expr,
+                        rhs,
+                        tolerance,
                         ctx,
                         classes,
                         enums,
@@ -848,6 +880,69 @@ impl AssertEqualityMode {
     }
 }
 
+fn check_assert_approx(
+    body: &Body,
+    lhs_id: Idx<Expr>,
+    rhs_id: Idx<Expr>,
+    tolerance_id: Idx<Expr>,
+    ctx: &mut TypeContext,
+    classes: &ClassIndex,
+    enums: &EnumIndex,
+    interfaces: &InterfaceIndex,
+    functions: &FunctionIndex,
+    errors: &mut Vec<TypeError>,
+    returns_result: bool,
+    span: SourceSpan,
+) {
+    let left_ty = infer_expr(
+        body,
+        lhs_id,
+        ctx,
+        classes,
+        enums,
+        interfaces,
+        functions,
+        errors,
+        false,
+        returns_result,
+        returns_result,
+    );
+    let right_ty = infer_expr(
+        body,
+        rhs_id,
+        ctx,
+        classes,
+        enums,
+        interfaces,
+        functions,
+        errors,
+        false,
+        returns_result,
+        returns_result,
+    );
+    let tolerance_ty = infer_expr(
+        body,
+        tolerance_id,
+        ctx,
+        classes,
+        enums,
+        interfaces,
+        functions,
+        errors,
+        false,
+        returns_result,
+        returns_result,
+    );
+    let numeric_ok = is_numeric(&left_ty)
+        && is_numeric(&right_ty)
+        && is_numeric(&tolerance_ty)
+        && (is_assignable(&left_ty, &right_ty, classes, interfaces)
+            || is_assignable(&right_ty, &left_ty, classes, interfaces));
+    if types_known(&left_ty, &right_ty) && types_known(&left_ty, &tolerance_ty) && !numeric_ok {
+        errors.push(TypeError::AssertApproxRequiresNumeric { span });
+    }
+}
+
 fn check_assert_expr(
     body: &Body,
     expr_id: Idx<Expr>,
@@ -925,4 +1020,3 @@ fn check_assert_expr(
         }
     }
 }
-

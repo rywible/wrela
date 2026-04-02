@@ -19,6 +19,7 @@ pub fn lower_root_body(root: ast::Root) -> Option<Body> {
             ast::Stmt::FuncDef(_)
             | ast::Stmt::SystemDef(_)
             | ast::Stmt::ClassDef(_)
+            | ast::Stmt::ValueDef(_)
             | ast::Stmt::EnumDef(_)
             | ast::Stmt::UseStmt(_)
             | ast::Stmt::PrivateBlock(_)
@@ -94,6 +95,10 @@ impl LoweringContext {
                     let class = self.lower_class_like(c, ClassRole::Resource);
                     self.module.classes.alloc(class);
                 }
+                ast::Stmt::ValueDef(c) => {
+                    let class = self.lower_class_like(c, ClassRole::Value);
+                    self.module.classes.alloc(class);
+                }
                 ast::Stmt::EnumDef(e) => {
                     let en = self.lower_enum(e);
                     self.module.enums.alloc(en);
@@ -120,6 +125,10 @@ impl LoweringContext {
                             }
                             ast::Stmt::ResourceDef(c) => {
                                 let class = self.lower_class_like(c, ClassRole::Resource);
+                                self.module.classes.alloc(class);
+                            }
+                            ast::Stmt::ValueDef(c) => {
+                                let class = self.lower_class_like(c, ClassRole::Value);
                                 self.module.classes.alloc(class);
                             }
                             ast::Stmt::EnumDef(e) => {
@@ -524,6 +533,32 @@ trait ClassLikeDef {
 impl ClassLikeDef for ast::ResourceDef {
     fn syntax(&self) -> &SyntaxNode {
         <ast::ResourceDef as AstNode>::syntax(self)
+    }
+
+    fn name(&self) -> Option<SyntaxToken> {
+        self.name()
+    }
+
+    fn type_params(&self) -> Box<dyn Iterator<Item = SyntaxToken> + '_> {
+        Box::new(self.type_params())
+    }
+
+    fn is_a(&self) -> Option<SyntaxToken> {
+        self.is_a()
+    }
+
+    fn fields(&self) -> Box<dyn Iterator<Item = ast::FieldDef> + '_> {
+        Box::new(self.fields())
+    }
+
+    fn methods(&self) -> Box<dyn Iterator<Item = ast::MethodDef> + '_> {
+        Box::new(self.methods())
+    }
+}
+
+impl ClassLikeDef for ast::ValueDef {
+    fn syntax(&self) -> &SyntaxNode {
+        <ast::ValueDef as AstNode>::syntax(self)
     }
 
     fn name(&self) -> Option<SyntaxToken> {
@@ -997,8 +1032,16 @@ impl BodyLoweringContext {
                 let kind = match a.mode() {
                     ast::AssertMode::Value => crate::hir::AssertKind::Value,
                     ast::AssertMode::Identity => crate::hir::AssertKind::Identity,
+                    ast::AssertMode::Approx => crate::hir::AssertKind::Approx,
                 };
-                Stmt::Assert { kind, expr }
+                let rhs = a.rhs_expr().and_then(|e| self.lower_expr(e));
+                let tolerance = a.tolerance_expr().and_then(|e| self.lower_expr(e));
+                Stmt::Assert {
+                    kind,
+                    expr,
+                    rhs,
+                    tolerance,
+                }
             }
             ast::Stmt::RequireStmt(r) => {
                 let condition = r

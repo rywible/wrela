@@ -48,7 +48,10 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                     });
                 }
             }
-            SyntaxKind::ClassDef | SyntaxKind::ResourceDef | SyntaxKind::EventDef => {
+            SyntaxKind::ClassDef
+            | SyntaxKind::ResourceDef
+            | SyntaxKind::EventDef
+            | SyntaxKind::ValueDef => {
                 if !has_token(&node, SyntaxKind::Ident) {
                     errors.push(ValidationError {
                         kind: ValidationDiagKind::AstRule,
@@ -110,6 +113,45 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                                     kind: ValidationDiagKind::AstRule,
                                     message: "interfaces may only contain 'must' method signatures"
                                         .to_string(),
+                                    span: span_for_node(&child),
+                                });
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                if node.kind() == SyntaxKind::ValueDef {
+                    for child in node.children() {
+                        match child.kind() {
+                            SyntaxKind::FieldDef => {
+                                if let Some(field) = ast::FieldDef::cast(child.clone())
+                                    && field.is_mutable()
+                                {
+                                    errors.push(ValidationError {
+                                        kind: ValidationDiagKind::AstRule,
+                                        message: "value fields cannot be mutable".to_string(),
+                                        span: span_for_node(&child),
+                                    });
+                                }
+                            }
+                            SyntaxKind::MethodDef | SyntaxKind::MustMethodDef => {
+                                errors.push(ValidationError {
+                                    kind: ValidationDiagKind::AstRule,
+                                    message: "values may only contain fields".to_string(),
+                                    span: span_for_node(&child),
+                                });
+                            }
+                            SyntaxKind::IsAClause => {
+                                errors.push(ValidationError {
+                                    kind: ValidationDiagKind::AstRule,
+                                    message: "values cannot declare 'is a'".to_string(),
+                                    span: span_for_node(&child),
+                                });
+                            }
+                            SyntaxKind::PrivateBlock => {
+                                errors.push(ValidationError {
+                                    kind: ValidationDiagKind::AstRule,
+                                    message: "values cannot contain private blocks".to_string(),
                                     span: span_for_node(&child),
                                 });
                             }
@@ -187,7 +229,8 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                 }
             }
             SyntaxKind::TypeRef => {
-                if !has_token(&node, SyntaxKind::Ident) {
+                if !has_token(&node, SyntaxKind::Ident) && !has_token(&node, SyntaxKind::IntNumber)
+                {
                     errors.push(ValidationError {
                         kind: ValidationDiagKind::AstRule,
                         message: "type reference requires a name".to_string(),

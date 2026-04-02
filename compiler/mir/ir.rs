@@ -44,11 +44,42 @@ pub struct MirMethodInfo {
 pub struct MirFunction {
     pub name: SmolStr,
     pub params: Vec<LocalId>,
+    pub abi_params: Vec<PortableAbiType>,
+    pub abi_return: PortableAbiType,
     pub locals: Vec<Local>,
     pub temps: Vec<Temp>,
     pub blocks: Vec<BasicBlock>,
     pub entry: BlockId,
     pub suspendable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PortableAbiType {
+    Value,
+    Bool,
+    I32,
+    U32,
+    I64,
+    U64,
+    F32,
+    Vec2,
+    Vec3,
+    Vec4,
+    Mat3,
+    Mat4,
+    Quat,
+    Array(Box<PortableAbiType>, usize),
+    Struct {
+        name: SmolStr,
+        class_id: u32,
+        fields: Vec<PortableStructField>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PortableStructField {
+    pub name: SmolStr,
+    pub ty: PortableAbiType,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -84,7 +115,9 @@ pub enum MirType {
     Vec2,
     Vec3,
     Vec4,
+    Mat3,
     Mat4,
+    Quat,
 }
 
 impl MirType {
@@ -97,7 +130,9 @@ impl MirType {
             | MirType::Vec2
             | MirType::Vec3
             | MirType::Vec4
+            | MirType::Mat3
             | MirType::Mat4 => false,
+            MirType::Quat => false,
             _ => true,
         }
     }

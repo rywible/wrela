@@ -5,6 +5,13 @@ mod tests {
     use crate::parser::ast::AstNode;
     use crate::parser::{ast, parse};
 
+    fn check_source(input: &str) -> Vec<TypeError> {
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        check_module(&module)
+    }
+
     #[test]
     fn test_type_error_binary() {
         let input = r#"fn f() -> Integer {
@@ -62,6 +69,411 @@ mod tests {
             errors
                 .iter()
                 .any(|err| matches!(err, TypeError::InvalidBinaryOperands { .. }))
+        );
+    }
+
+    #[test]
+    fn test_value_class_methods_are_forbidden() {
+        let input = r#"value Pair {
+    left: I32
+
+    fn sum() -> I32 {
+        return self.left
+    }
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::ValueMethodsForbidden { .. })),
+            "expected ValueMethodsForbidden, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_value_class_interfaces_are_forbidden() {
+        let input = r#"interface Showable {
+    must show() -> String
+}
+
+value Pair {
+    is a Showable
+    left: I32
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::ValueInterfacesForbidden { .. })),
+            "expected ValueInterfacesForbidden, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_value_class_mutable_fields_are_forbidden() {
+        let input = r#"value Pair {
+    mutable left: I32
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::ValueFieldMutableForbidden { field, .. } if field.as_str() == "left"
+            )),
+            "expected ValueFieldMutableForbidden, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_value_class_field_types_must_be_fixed_layout() {
+        let input = r#"value Pair {
+    left: Integer
+    right: List[I32]
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::ValueFieldTypeForbidden { field, found, .. }
+                    if field.as_str() == "left" && found == "Integer"
+            )),
+            "expected Integer field rejection, got: {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::ValueFieldTypeForbidden { field, found, .. }
+                    if field.as_str() == "right" && found == "List[I32]"
+            )),
+            "expected List field rejection, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_value_class_with_fixed_layout_fields_is_allowed() {
+        let input = r#"value Sample {
+    flag: Bool
+    count: I32
+    coords: Array[I32, 3]
+}
+"#;
+        let errors = check_source(input);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_vec3_constructor_field_access_and_approx_typecheck() {
+        let input = r#"fn f() -> Nothing {
+    value = vec3(1.0, 2.0, 3.0)
+    assert approx value.x ~= 1.0 within 0.001
+}
+"#;
+        let errors = check_source(input);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_vec2_surface_typecheck() {
+        let input = r#"fn f() -> Nothing {
+    base = vec2(3.0, 4.0)
+    unit = normalize(base)
+    shifted = base + vec2(1.0, -1.0)
+    restored = (shifted * 0.5) / 0.5
+    assert approx base.x ~= 3.0 within 0.001
+    assert approx base.y ~= 4.0 within 0.001
+    assert approx length(base) ~= 5.0 within 0.001
+    assert approx dot(unit, vec2(0.6, 0.8)) ~= 1.0 within 0.001
+    assert approx restored.x ~= 4.0 within 0.001
+}
+"#;
+        let errors = check_source(input);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_vec_math_intrinsics_typecheck() {
+        let input = r#"fn f() -> Nothing {
+    projection = dot(vec3(1.0, 0.0, 0.0), normalize(vec3(0.0, 2.0, 0.0)))
+    size = length(vec3(3.0, 0.0, 4.0))
+    axis = cross(vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0))
+    assert approx projection ~= 0.0 within 1.0
+    assert approx size ~= 5.0 within 0.001
+    assert approx axis.z ~= 1.0 within 0.001
+}
+"#;
+        let errors = check_source(input);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_quat_and_mat3_surface_typecheck() {
+        let input = r#"fn f() -> Nothing {
+    q = quat(1.0, 2.0, 3.0, 4.0)
+    assert approx q.x ~= 1.0 within 0.001
+    assert approx q.w ~= 4.0 within 0.001
+    assert approx length(q) ~= 5.477 within 0.01
+    scaled = mix(q, quat(4.0, 3.0, 2.0, 1.0), 0.5)
+    clamped = clamp(scaled, 0.0, 10.0)
+    rooted = sqrt(9.0)
+    casted = f32(i32(u32(rooted)))
+    assert approx casted ~= 3.0 within 0.001
+
+    basis = mat3_cols(
+        vec3(1.0, 0.0, 0.0),
+        vec3(0.0, 1.0, 0.0),
+        vec3(0.0, 0.0, 1.0)
+    )
+    assert approx clamped.x ~= 2.5 within 0.001
+}
+"#;
+        let errors = check_source(input);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_quat_components_are_read_only() {
+        let input = r#"fn f() -> Nothing {
+    mutable q = quat(1.0, 2.0, 3.0, 4.0)
+    q.x = 5.0
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::ImmutableFieldAssign { member, .. } if member.as_str() == "x"
+            )),
+            "expected ImmutableFieldAssign(x), got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_scalar_math_intrinsics_typecheck() {
+        let input = r#"fn f() -> Nothing {
+    low = min(1.0, 2.0)
+    high = max(1.0, 2.0)
+    bounded = clamp(1.5, 0.0, 2.0)
+    blended = mix(1.0, 2.0, 0.5)
+    absolute = abs(-1.25)
+    signed = sign(-1.25)
+    floored = floor(1.9)
+    ceiled = ceil(1.1)
+    fractional = fract(1.25)
+    s = sin(0.0)
+    c = cos(0.0)
+    root = sqrt(9.0)
+    power = pow(2.0, 3.0)
+    assert approx low ~= 1.0 within 0.001
+    assert approx high ~= 2.0 within 0.001
+    assert approx bounded ~= 1.5 within 0.001
+    assert approx blended ~= 1.5 within 0.001
+    assert approx absolute ~= 1.25 within 0.001
+    assert approx signed ~= -1.0 within 0.001
+    assert approx floored ~= 1.0 within 0.001
+    assert approx ceiled ~= 2.0 within 0.001
+    assert approx fractional ~= 0.25 within 0.001
+    assert approx s ~= 0.0 within 0.001
+    assert approx c ~= 1.0 within 0.001
+    assert approx root ~= 3.0 within 0.001
+    assert approx power ~= 8.0 within 0.001
+}
+"#;
+        let errors = check_source(input);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_mat3_has_no_component_members() {
+        let input = r#"fn f() -> Nothing {
+    value = mat3_identity()
+    assert approx value.x ~= 0.0 within 0.001
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::UnknownMember { member, .. } if member.as_str() == "x")),
+            "expected UnknownMember(x), got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_distance_and_reflect_reject_quat_operands() {
+        let input = r#"fn f() -> Nothing {
+    q = quat(1.0, 0.0, 0.0, 1.0)
+    assert approx distance(q, q) ~= 0.0 within 0.001
+    assert approx reflect(q, q).w ~= 1.0 within 0.001
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::ArgumentTypeMismatch { .. })),
+            "expected ArgumentTypeMismatch for vector-only math, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_componentwise_math_rejects_mismatched_shapes() {
+        let input = r#"fn f() -> Nothing {
+    value = min(vec2(1.0, 2.0), vec3(3.0, 4.0, 5.0))
+    other = clamp(vec2(1.0, 2.0), vec3(0.0, 0.0, 0.0), vec2(2.0, 2.0))
+    assert approx value.x ~= 1.0 within 0.001
+    assert approx other.y ~= 2.0 within 0.001
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::ArgumentTypeMismatch { .. })),
+            "expected ArgumentTypeMismatch for mismatched math shapes, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_cast_builtins_reject_vector_inputs() {
+        let input = r#"fn f() -> Nothing {
+    value = vec3(1.0, 2.0, 3.0)
+    casted = f32(value)
+    assert approx casted ~= 1.0 within 0.001
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::ArgumentTypeMismatch { .. })),
+            "expected ArgumentTypeMismatch for scalar casts, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_mat4_and_vec4_typecheck() {
+        let input = r#"fn f() -> Nothing {
+    mutable m = mat4_cols(
+        vec4(1.0, 0.0, 0.0, 0.0),
+        vec4(0.0, 1.0, 0.0, 0.0),
+        vec4(0.0, 0.0, 1.0, 0.0),
+        vec4(0.0, 0.0, 0.0, 1.0)
+    )
+    value = m * vec4(1.0, 2.0, 3.0, 1.0)
+}
+"#;
+        let errors = check_source(input);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_vec_and_mat_arithmetic_typecheck() {
+        let input = r#"fn f() -> Nothing {
+    left = vec3(1.0, 2.0, 3.0)
+    right = vec3(4.0, 5.0, 6.0)
+    sum = left + right
+    delta = right - left
+    scaled = sum * 0.5
+    restored = scaled / 0.5
+
+    basis = mat4_cols(
+        vec4(1.0, 0.0, 0.0, 0.0),
+        vec4(0.0, 1.0, 0.0, 0.0),
+        vec4(0.0, 0.0, 1.0, 0.0),
+        vec4(4.0, 5.0, 6.0, 1.0)
+    )
+    shifted = basis + mat4_identity()
+    lowered = shifted - mat4_identity()
+    halved = lowered * 0.5
+    restored_matrix = halved / 0.5
+
+    assert approx restored.x ~= 5.0 within 0.001
+    assert approx delta.y ~= 3.0 within 0.001
+    point = restored_matrix * vec4(1.0, 2.0, 3.0, 1.0)
+    assert approx point.w ~= 1.0 within 0.001
+}
+"#;
+        let errors = check_source(input);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_vec_intrinsics_require_matching_dimensions() {
+        let input = r#"fn f() -> Nothing {
+    value = dot(vec3(1.0, 0.0, 0.0), vec4(1.0, 0.0, 0.0, 0.0))
+    assert approx value ~= 1.0 within 0.001
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::ArgumentTypeMismatch { .. })),
+            "expected ArgumentTypeMismatch, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_vec_components_reject_unknown_members() {
+        let input = r#"fn f() -> Nothing {
+    value = vec3(1.0, 2.0, 3.0)
+    assert approx value.q ~= 0.0 within 0.001
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::UnknownMember { member, .. } if member.as_str() == "q")),
+            "expected UnknownMember(q), got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_assert_approx_accepts_numeric_equality_with_numeric_tolerance() {
+        let input = r#"fn f() -> Nothing {
+    assert approx 1.0 ~= 1.001 within 0.01
+}
+"#;
+        let errors = check_source(input);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_assert_approx_requires_equality_expression() {
+        let input = r#"fn f() -> Nothing {
+    assert approx 1.0 + 2.0 within 0.01
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::AssertExpectedEquality { mode, .. } if *mode == "approx"
+            )),
+            "expected AssertExpectedEquality for approx, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_assert_approx_requires_numeric_operands_and_tolerance() {
+        let input = r#"fn f() -> Nothing {
+    assert approx true ~= false within 0.01
+    assert approx 1.0 ~= 1.0 within "tight"
+}
+"#;
+        let errors = check_source(input);
+        let approx_errors = errors
+            .iter()
+            .filter(|err| matches!(err, TypeError::AssertApproxRequiresNumeric { .. }))
+            .count();
+        assert_eq!(
+            approx_errors, 2,
+            "expected two AssertApproxRequiresNumeric errors, got: {errors:?}"
         );
     }
 

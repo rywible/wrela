@@ -39,6 +39,10 @@ pub(crate) fn parse_statement(p: &mut Parser) {
         class::event_def(p);
         return;
     }
+    if is_value_start(p) {
+        class::value_def(p);
+        return;
+    }
     if is_class_start(p) {
         class::class_def(p);
         return;
@@ -96,7 +100,31 @@ fn parse_assert(p: &mut Parser) {
         p.expect_stmt_boundary();
         return;
     }
-    p.error_with_message_no_bump("expected 'value' or 'identity' after assert");
+    if p.at_ident_text("approx") {
+        p.bump();
+        expr::expr(p);
+        p.expect_with_message(
+            SyntaxKind::BitwiseNot,
+            "expected '~=' after left-hand approximate assertion value",
+        );
+        p.expect_with_message(
+            SyntaxKind::Equals,
+            "expected '=' after '~' in approximate assertion",
+        );
+        expr::expr(p);
+        if p.at_ident_text("within") {
+            p.bump();
+            expr::expr(p);
+        } else {
+            p.error_with_message_no_bump(
+                "expected 'within' and a tolerance after approximate assertion",
+            );
+        }
+        m.complete(p, SyntaxKind::AssertStmt);
+        p.expect_stmt_boundary();
+        return;
+    }
+    p.error_with_message_no_bump("expected 'value', 'identity', or 'approx' after assert");
     m.complete(p, SyntaxKind::AssertStmt);
     p.expect_stmt_boundary();
 }
@@ -653,6 +681,15 @@ fn is_class_start(p: &mut Parser) -> bool {
         return true;
     }
     false
+}
+
+fn is_value_start(p: &mut Parser) -> bool {
+    p.at_ident_text("value")
+        && p.peek_nth_non_trivia(1) == SyntaxKind::Ident
+        && matches!(
+            p.peek_nth_non_trivia(2),
+            SyntaxKind::LBrace | SyntaxKind::LBracket
+        )
 }
 
 fn is_func_start(p: &mut Parser) -> bool {

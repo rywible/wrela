@@ -643,6 +643,8 @@ mod tests {
         let func = MirFunction {
             name: SmolStr::new("f"),
             params: Vec::new(),
+            abi_params: Vec::new(),
+            abi_return: PortableAbiType::Value,
             locals: vec![Local {
                 name: SmolStr::new("x"),
                 mutable: true,
@@ -694,6 +696,8 @@ mod tests {
         let func = MirFunction {
             name: SmolStr::new("f"),
             params: Vec::new(),
+            abi_params: Vec::new(),
+            abi_return: PortableAbiType::Value,
             locals: vec![Local {
                 name: SmolStr::new("x"),
                 mutable: false,

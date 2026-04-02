@@ -45,6 +45,7 @@ pub struct TypeParam {
 pub enum ClassRole {
     Class,
     Resource,
+    Value,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

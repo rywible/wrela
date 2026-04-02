@@ -19,6 +19,9 @@ fn interface_type_compatible(expected: &Type, actual: &Type) -> bool {
     }
     match (expected, actual) {
         (Type::List(a), Type::List(b)) => interface_type_compatible(a, b),
+        (Type::Array(a, alen), Type::Array(b, blen)) => {
+            alen == blen && interface_type_compatible(a, b)
+        }
         (Type::Map(ak, av), Type::Map(bk, bv)) => {
             interface_type_compatible(ak, bk) && interface_type_compatible(av, bv)
         }
@@ -72,11 +75,49 @@ fn instantiate_method_ret(class: &ClassSig, class_args: &[Type], member: &SmolSt
     Some(substitute_type(&method.ret, &subst))
 }
 
+fn is_vector_type(ty: &Type) -> bool {
+    matches!(ty, Type::Vec2 | Type::Vec3 | Type::Vec4 | Type::Quat)
+}
+
+fn is_matrix_type(ty: &Type) -> bool {
+    matches!(ty, Type::Mat3 | Type::Mat4)
+}
+
+fn is_vector_or_matrix_type(ty: &Type) -> bool {
+    is_vector_type(ty) || is_matrix_type(ty)
+}
+
+fn same_vector_kind(left: &Type, right: &Type) -> bool {
+    matches!(
+        (left, right),
+        (Type::Vec2, Type::Vec2) | (Type::Vec3, Type::Vec3) | (Type::Vec4, Type::Vec4)
+            | (Type::Quat, Type::Quat)
+    )
+}
+
+fn same_matrix_kind(left: &Type, right: &Type) -> bool {
+    matches!((left, right), (Type::Mat3, Type::Mat3) | (Type::Mat4, Type::Mat4))
+}
+
+fn is_scalar_numeric(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Integer
+            | Type::I32
+            | Type::U32
+            | Type::I64
+            | Type::U64
+            | Type::Float
+            | Type::F32
+            | Type::Number
+    )
+}
+
 fn valid_unary(op: UnaryOp, operand: &Type) -> bool {
     match op {
-        UnaryOp::Neg => is_numeric(operand),
+        UnaryOp::Neg => is_scalar_numeric(operand) || is_vector_or_matrix_type(operand),
         UnaryOp::Not => *operand == Type::Boolean,
-        UnaryOp::BitNot => *operand == Type::Integer,
+        UnaryOp::BitNot => is_integer_like(operand),
         UnaryOp::Err => !matches!(operand, Type::Never),
         UnaryOp::Try => is_result_type(operand),
         UnaryOp::Await | UnaryOp::Spawn | UnaryOp::Fire => true,
@@ -87,7 +128,7 @@ fn unary_result(op: UnaryOp, operand: &Type) -> Type {
     match op {
         UnaryOp::Neg => operand.clone(),
         UnaryOp::Not => Type::Boolean,
-        UnaryOp::BitNot => Type::Integer,
+        UnaryOp::BitNot => operand.clone(),
         UnaryOp::Err => Type::Result(Box::new(Type::Unknown), Box::new(operand.clone())),
         UnaryOp::Try => match operand {
             Type::Result(ok, _) => *ok.clone(),
@@ -110,22 +151,40 @@ fn binary_from_assign(op: BinaryOp) -> BinaryOp {
 fn valid_binary(op: BinaryOp, left: &Type, right: &Type) -> bool {
     match op {
         BinaryOp::Add => {
-            (is_numeric(left) && is_numeric(right))
+            (same_vector_kind(left, right) || same_matrix_kind(left, right))
+                || (is_scalar_numeric(left) && is_scalar_numeric(right))
                 || (*left == Type::String && *right == Type::String)
         }
-        BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => {
-            is_numeric(left) && is_numeric(right)
+        BinaryOp::Sub => {
+            same_vector_kind(left, right)
+                || same_matrix_kind(left, right)
+                || (is_scalar_numeric(left) && is_scalar_numeric(right))
         }
+        BinaryOp::Mul => {
+            (is_scalar_numeric(left) && is_scalar_numeric(right))
+                || (is_vector_type(left) && is_scalar_numeric(right))
+                || (is_scalar_numeric(left) && is_vector_type(right))
+                || (is_matrix_type(left) && is_scalar_numeric(right))
+                || (is_scalar_numeric(left) && is_matrix_type(right))
+                || (same_matrix_kind(left, right))
+                || ((*left == Type::Mat3 && *right == Type::Vec3)
+                    || (*left == Type::Mat4 && *right == Type::Vec4))
+        }
+        BinaryOp::Div => {
+            (is_scalar_numeric(left) && is_scalar_numeric(right))
+                || (is_vector_or_matrix_type(left) && is_scalar_numeric(right))
+        }
+        BinaryOp::Mod => is_scalar_numeric(left) && is_scalar_numeric(right),
         BinaryOp::Eq | BinaryOp::Ne => true,
         BinaryOp::Lt | BinaryOp::Gt | BinaryOp::Le | BinaryOp::Ge => {
-            is_numeric(left) && is_numeric(right)
+            is_scalar_numeric(left) && is_scalar_numeric(right)
         }
         BinaryOp::And | BinaryOp::Or => *left == Type::Boolean && *right == Type::Boolean,
         BinaryOp::Otherwise => true,
         BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor | BinaryOp::Shl | BinaryOp::Shr => {
-            *left == Type::Integer && *right == Type::Integer
+            is_integer_like(left) && is_integer_like(right)
         }
-        BinaryOp::Range => is_numeric(left) && is_numeric(right),
+        BinaryOp::Range => is_scalar_numeric(left) && is_scalar_numeric(right),
         BinaryOp::Assign
         | BinaryOp::AddAssign
         | BinaryOp::SubAssign
@@ -155,15 +214,52 @@ fn valid_equality_operands(
 fn binary_result(op: BinaryOp, left: &Type, right: &Type) -> Type {
     match op {
         BinaryOp::Add => {
-            if *left == Type::String && *right == Type::String {
+            if same_vector_kind(left, right) || same_matrix_kind(left, right) {
+                left.clone()
+            } else if *left == Type::String && *right == Type::String {
                 Type::String
             } else {
                 numeric_result(left, right)
             }
         }
-        BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => {
-            numeric_result(left, right)
+        BinaryOp::Sub => {
+            if same_vector_kind(left, right) || same_matrix_kind(left, right) {
+                left.clone()
+            } else {
+                numeric_result(left, right)
+            }
         }
+        BinaryOp::Mul => {
+            if is_scalar_numeric(left) && is_scalar_numeric(right) {
+                numeric_result(left, right)
+            } else if is_vector_type(left) && is_scalar_numeric(right) {
+                left.clone()
+            } else if is_scalar_numeric(left) && is_vector_type(right) {
+                right.clone()
+            } else if is_matrix_type(left) && is_scalar_numeric(right) {
+                left.clone()
+            } else if is_scalar_numeric(left) && is_matrix_type(right) {
+                right.clone()
+            } else if same_matrix_kind(left, right) {
+                left.clone()
+            } else if (*left == Type::Mat3 && *right == Type::Vec3)
+                || (*left == Type::Mat4 && *right == Type::Vec4)
+            {
+                right.clone()
+            } else {
+                Type::Unknown
+            }
+        }
+        BinaryOp::Div => {
+            if is_scalar_numeric(left) && is_scalar_numeric(right) {
+                numeric_result(left, right)
+            } else if is_vector_or_matrix_type(left) && is_scalar_numeric(right) {
+                left.clone()
+            } else {
+                Type::Unknown
+            }
+        }
+        BinaryOp::Mod => numeric_result(left, right),
         BinaryOp::Eq | BinaryOp::Ne => Type::Boolean,
         BinaryOp::Lt | BinaryOp::Gt | BinaryOp::Le | BinaryOp::Ge => Type::Boolean,
         BinaryOp::And | BinaryOp::Or => Type::Boolean,
@@ -181,11 +277,16 @@ fn binary_result(op: BinaryOp, left: &Type, right: &Type) -> Type {
 }
 
 fn numeric_result(left: &Type, right: &Type) -> Type {
+    if left == right && is_scalar_numeric(left) {
+        return left.clone();
+    }
     if *left == Type::Float || *right == Type::Float {
         Type::Float
+    } else if *left == Type::F32 || *right == Type::F32 {
+        Type::F32
     } else if *left == Type::Number || *right == Type::Number {
         Type::Number
-    } else if *left == Type::Integer && *right == Type::Integer {
+    } else if is_integer_like(left) && is_integer_like(right) {
         Type::Integer
     } else {
         Type::Unknown
@@ -193,7 +294,14 @@ fn numeric_result(left: &Type, right: &Type) -> Type {
 }
 
 fn is_numeric(ty: &Type) -> bool {
-    matches!(ty, Type::Integer | Type::Float | Type::Number)
+    is_scalar_numeric(ty)
+}
+
+fn is_integer_like(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Integer | Type::I32 | Type::U32 | Type::I64 | Type::U64
+    )
 }
 
 fn is_assignable(
@@ -216,6 +324,11 @@ fn is_assignable(
             is_assignable(ok_e, ok_f, classes, interfaces)
                 && is_assignable(err_e, err_f, classes, interfaces)
         }
+        (Type::Array(exp, exp_len), Type::Array(found, found_len)) => {
+            exp_len == found_len && is_assignable(exp, found, classes, interfaces)
+        }
+        (Type::Array(exp, _), Type::List(found)) => is_assignable(exp, found, classes, interfaces),
+        (Type::List(exp), Type::Array(found, _)) => is_assignable(exp, found, classes, interfaces),
         (Type::Result(ok_e, _), other) => is_assignable(ok_e, other, classes, interfaces),
         (Type::Pending(exp), Type::Pending(found)) => {
             matches!(**exp, Type::Unknown) || is_assignable(exp, found, classes, interfaces)
@@ -246,6 +359,13 @@ fn is_assignable(
         }
         (Type::Number, ty) if is_numeric(ty) => true,
         (Type::Float, Type::Integer) => true,
+        (Type::Float, ty) if is_integer_like(ty) || *ty == Type::F32 => true,
+        (Type::F32, ty) if is_integer_like(ty) || *ty == Type::Float => true,
+        (Type::Integer, ty) if is_integer_like(ty) => true,
+        (Type::I32, ty) if is_integer_like(ty) => true,
+        (Type::U32, ty) if is_integer_like(ty) => true,
+        (Type::I64, ty) if is_integer_like(ty) => true,
+        (Type::U64, ty) if is_integer_like(ty) => true,
         _ => false,
     }
 }
@@ -260,9 +380,17 @@ fn types_known(left: &Type, right: &Type) -> bool {
 
 fn is_identity_primitive(ty: &Type) -> bool {
     match ty {
-        Type::Integer | Type::Float | Type::Number | Type::Boolean | Type::String | Type::Nil => {
-            true
-        }
+        Type::Integer
+        | Type::I32
+        | Type::U32
+        | Type::I64
+        | Type::U64
+        | Type::Float
+        | Type::F32
+        | Type::Number
+        | Type::Boolean
+        | Type::String
+        | Type::Nil => true,
         Type::Named(name, _) => name.as_str() == "Bytes",
         _ => false,
     }
@@ -285,12 +413,18 @@ fn type_label(ty: &Type) -> String {
         Type::Unknown => "unknown".to_string(),
         Type::Never => "never".to_string(),
         Type::Integer => "Integer".to_string(),
+        Type::I32 => "I32".to_string(),
+        Type::U32 => "U32".to_string(),
+        Type::I64 => "I64".to_string(),
+        Type::U64 => "U64".to_string(),
         Type::Float => "Float".to_string(),
+        Type::F32 => "F32".to_string(),
         Type::Number => "Number".to_string(),
         Type::Boolean => "Boolean".to_string(),
         Type::String => "String".to_string(),
         Type::Nil => "Nothing".to_string(),
         Type::List(inner) => format!("List[{}]", type_label(inner)),
+        Type::Array(inner, len) => format!("Array[{}, {}]", type_label(inner), len),
         Type::Map(key, value) => format!("Map[{}, {}]", type_label(key), type_label(value)),
         Type::Named(name, args) => {
             if args.is_empty() {
@@ -310,7 +444,9 @@ fn type_label(ty: &Type) -> String {
         Type::Vec2 => "Vec2".to_string(),
         Type::Vec3 => "Vec3".to_string(),
         Type::Vec4 => "Vec4".to_string(),
+        Type::Mat3 => "Mat3".to_string(),
         Type::Mat4 => "Mat4".to_string(),
+        Type::Quat => "Quat".to_string(),
         Type::GpuBuffer(inner) => format!("Buffer[{}]", type_label(inner)),
         Type::Texture2D => "Texture2D".to_string(),
         Type::Sampler => "Sampler".to_string(),
@@ -328,6 +464,14 @@ fn collection_method_sig(
                 Type::Nil,
             )),
             "len" => Some((vec![], Type::Integer)),
+            _ => None,
+        },
+        Type::Array(inner_ty, _) => match member.as_str() {
+            "len" => Some((vec![], Type::Integer)),
+            "get" => Some((
+                vec![(SmolStr::new("index"), Type::Integer)],
+                (*inner_ty.clone()),
+            )),
             _ => None,
         },
         Type::Map(key_ty, value_ty) => match member.as_str() {
@@ -484,4 +628,3 @@ fn type_satisfies_bound(ty: &Type, bound: &str, classes: &ClassIndex) -> bool {
         _ => false,
     }
 }
-

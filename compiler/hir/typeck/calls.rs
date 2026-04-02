@@ -298,12 +298,32 @@ fn type_from_ref_with_params(ty: &TypeRef, params: &HashSet<SmolStr>) -> Type {
     }
     match ty.name.as_str() {
         "Integer" => Type::Integer,
+        "I32" => Type::I32,
+        "U32" => Type::U32,
+        "I64" => Type::I64,
+        "U64" => Type::U64,
         "Any" => Type::Unknown,
         "Float" => Type::Float,
+        "F32" => Type::F32,
+        "Vec2" => Type::Vec2,
+        "Vec3" => Type::Vec3,
+        "Vec4" => Type::Vec4,
+        "Mat3" => Type::Mat3,
+        "Mat4" => Type::Mat4,
+        "Quat" => Type::Quat,
         "Number" => Type::Number,
         "Boolean" => Type::Boolean,
+        "Bool" => Type::Boolean,
         "String" => Type::String,
         "Nothing" => Type::Nil,
+        "Array" => match ty.args.as_slice() {
+            [inner, len] => {
+                let inner = type_from_ref_with_params(inner, params);
+                let len = len.name.as_str().parse::<usize>().ok().unwrap_or(0);
+                Type::Array(Box::new(inner), len)
+            }
+            _ => Type::Array(Box::new(Type::Unknown), 0),
+        },
         "List" => match args.as_slice() {
             [inner] => Type::List(Box::new(inner.clone())),
             _ => Type::List(Box::new(Type::Unknown)),
@@ -405,4 +425,3 @@ fn resolve_type_args(
     }
     resolved
 }
-

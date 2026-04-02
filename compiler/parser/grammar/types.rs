@@ -3,7 +3,11 @@ use crate::parser::kind::SyntaxKind;
 
 pub fn parse_type(p: &mut Parser) {
     let m = p.start();
-    p.expect(SyntaxKind::Ident);
+    if p.at(SyntaxKind::Ident) || p.at(SyntaxKind::IntNumber) {
+        p.bump();
+    } else {
+        p.expect(SyntaxKind::Ident);
+    }
     if p.at(SyntaxKind::LBracket) {
         parse_type_args(p);
     }
