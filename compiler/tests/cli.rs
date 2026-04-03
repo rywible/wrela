@@ -2514,6 +2514,387 @@ fn write_test_project(root: &std::path::Path) {
     .unwrap();
 }
 
+fn write_virtual_gpu_compute_project(root: &std::path::Path) {
+    let src_dir = root.join("src");
+    let gpu_dir = src_dir.join("gpu");
+    let tests_dir = root.join("tests").join("spec");
+    std::fs::create_dir_all(&gpu_dir).unwrap();
+    std::fs::create_dir_all(&tests_dir).unwrap();
+    write_fixture_file(
+        src_dir.join("main.wr"),
+        r#"fn run() -> Integer {
+    return 0
+}
+"#,
+    )
+    .unwrap();
+    write_fixture_file(
+        gpu_dir.join("compute.wr"),
+        r#"kernel fn run_kernel(snapshot: GpuBuffer[I32], counts: GpuBuffer[I32]) -> Nothing {
+    gid = global_invocation_id()
+    lid = local_invocation_id()
+    wid = workgroup_id()
+    num = num_workgroups()
+    size = workgroup_size()
+
+    if gid[0] == u32(0) and lid[0] == u32(0) and wid[0] == u32(0) {
+        gpu_buffer_set(buffer=snapshot, index=0, value=i32(gid[0]))
+        gpu_buffer_set(buffer=snapshot, index=1, value=i32(lid[0]))
+        gpu_buffer_set(buffer=snapshot, index=2, value=i32(wid[0]))
+        gpu_buffer_set(buffer=snapshot, index=3, value=i32(num[0]))
+        gpu_buffer_set(buffer=snapshot, index=4, value=i32(size[0]))
+        gpu_buffer_set(
+            buffer=snapshot,
+            index=5,
+            value=i32(gpu_buffer_len(buffer=counts))
+        )
+    }
+
+    gpu_buffer_set(buffer=counts, index=gid[0], value=i32(1))
+}
+
+fn run_virtual_gpu_compute_smoke() -> Array[I32, 10] {
+    snapshot = gpu_buffer_new(
+        length=6,
+        default_value=i32(0)
+    )
+    counts = gpu_buffer_new(
+        length=4,
+        default_value=i32(0)
+    )
+    dispatch_compute(
+        kernel=run_kernel,
+        snapshot=snapshot,
+        counts=counts,
+        workgroups_x=u32(2),
+        workgroups_y=u32(1),
+        workgroups_z=u32(1),
+        workgroup_size_x=u32(2),
+        workgroup_size_y=u32(1),
+        workgroup_size_z=u32(1)
+    )
+    return [
+        gpu_buffer_get(buffer=snapshot, index=0),
+        gpu_buffer_get(buffer=snapshot, index=1),
+        gpu_buffer_get(buffer=snapshot, index=2),
+        gpu_buffer_get(buffer=snapshot, index=3),
+        gpu_buffer_get(buffer=snapshot, index=4),
+        gpu_buffer_get(buffer=snapshot, index=5),
+        gpu_buffer_get(buffer=counts, index=0),
+        gpu_buffer_get(buffer=counts, index=1),
+        gpu_buffer_get(buffer=counts, index=2),
+        gpu_buffer_get(buffer=counts, index=3)
+    ]
+}
+
+fn run_virtual_gpu_atomic_schedule_smoke() -> Array[I32, 5] {
+    counter = gpu_atomic_i32_new(initial=i32(0))
+    observed = gpu_buffer_new(
+        length=4,
+        default_value=i32(0)
+    )
+    dispatch_compute(
+        kernel=run_atomic_schedule_kernel,
+        counter=counter,
+        observed=observed,
+        schedule=gpu_schedule_reverse(),
+        workgroups_x=u32(2),
+        workgroups_y=u32(1),
+        workgroups_z=u32(1),
+        workgroup_size_x=u32(2),
+        workgroup_size_y=u32(1),
+        workgroup_size_z=u32(1)
+    )
+    return [
+        gpu_atomic_i32_load(atomic=counter),
+        gpu_buffer_get(buffer=observed, index=0),
+        gpu_buffer_get(buffer=observed, index=1),
+        gpu_buffer_get(buffer=observed, index=2),
+        gpu_buffer_get(buffer=observed, index=3)
+    ]
+}
+
+kernel fn run_atomic_schedule_kernel(counter: GpuAtomicI32, observed: GpuBuffer[I32]) -> Nothing {
+    gid = global_invocation_id()
+    previous = gpu_atomic_i32_fetch_add(
+        atomic=counter,
+        delta=i32(1)
+    )
+    gpu_buffer_set(
+        buffer=observed,
+        index=gid[0],
+        value=previous
+    )
+}
+"#,
+    )
+    .unwrap();
+    write_fixture_file(
+        tests_dir.join("virtual_gpu_compute_test.wr"),
+        r#"use run_virtual_gpu_atomic_schedule_smoke from gpu/compute
+use run_virtual_gpu_compute_smoke from gpu/compute
+
+fn test_virtual_gpu_compute_smoke() -> Nothing {
+    summary = run_virtual_gpu_compute_smoke()
+    assert value summary.len() == 10
+    assert value summary[0] == 0
+    assert value summary[1] == 0
+    assert value summary[2] == 0
+    assert value summary[3] == 2
+    assert value summary[4] == 2
+    assert value summary[5] == 4
+    assert value summary[6] == 1
+    assert value summary[7] == 1
+    assert value summary[8] == 1
+    assert value summary[9] == 1
+}
+
+fn test_virtual_gpu_atomic_schedule_smoke() -> Nothing {
+    summary = run_virtual_gpu_atomic_schedule_smoke()
+    assert value summary.len() == 5
+    assert value summary[0] == 4
+    assert value summary[1] == 3
+    assert value summary[2] == 2
+    assert value summary[3] == 1
+    assert value summary[4] == 0
+}
+
+fn test_virtual_gpu_atomic_drop_smoke() -> Nothing {
+    counter = gpu_atomic_i32_new(initial=i32(1))
+    assert value gpu_atomic_i32_drop(atomic=counter) == true
+}
+"#,
+    )
+    .unwrap();
+}
+
+fn write_virtual_gpu_atomic_schedule_project(root: &std::path::Path) {
+    let src_dir = root.join("src");
+    let gpu_dir = src_dir.join("gpu");
+    let tests_dir = root.join("tests").join("spec");
+    std::fs::create_dir_all(&gpu_dir).unwrap();
+    std::fs::create_dir_all(&tests_dir).unwrap();
+    write_fixture_file(
+        src_dir.join("main.wr"),
+        r#"fn run() -> Integer {
+    return 0
+}
+"#,
+    )
+    .unwrap();
+    write_fixture_file(
+        gpu_dir.join("compute.wr"),
+        r#"kernel fn run_kernel(counter: GpuAtomicI32, observed: GpuBuffer[I32]) -> Nothing {
+    gid = global_invocation_id()
+    previous = gpu_atomic_i32_fetch_add(
+        atomic=counter,
+        delta=i32(1)
+    )
+    gpu_buffer_set(
+        buffer=observed,
+        index=gid[0],
+        value=previous
+    )
+}
+
+fn run_virtual_gpu_atomic_schedule_smoke() -> Array[I32, 5] {
+    counter = gpu_atomic_i32_new(initial=i32(0))
+    observed = gpu_buffer_new(
+        length=4,
+        default_value=i32(0)
+    )
+    dispatch_compute(
+        kernel=run_kernel,
+        counter=counter,
+        observed=observed,
+        schedule=gpu_schedule_reverse(),
+        workgroups_x=u32(2),
+        workgroups_y=u32(1),
+        workgroups_z=u32(1),
+        workgroup_size_x=u32(2),
+        workgroup_size_y=u32(1),
+        workgroup_size_z=u32(1)
+    )
+    return [
+        gpu_atomic_i32_load(atomic=counter),
+        gpu_buffer_get(buffer=observed, index=0),
+        gpu_buffer_get(buffer=observed, index=1),
+        gpu_buffer_get(buffer=observed, index=2),
+        gpu_buffer_get(buffer=observed, index=3)
+    ]
+}
+"#,
+    )
+    .unwrap();
+    write_fixture_file(
+        tests_dir.join("virtual_gpu_atomic_schedule_test.wr"),
+        r#"use run_virtual_gpu_atomic_schedule_smoke from gpu/compute
+
+fn test_virtual_gpu_atomic_schedule_smoke() -> Nothing {
+    summary = run_virtual_gpu_atomic_schedule_smoke()
+    assert value summary.len() == 5
+    assert value summary[0] == 4
+    assert value summary[1] == 3
+    assert value summary[2] == 2
+    assert value summary[3] == 1
+    assert value summary[4] == 0
+}
+"#,
+    )
+    .unwrap();
+}
+
+fn write_virtual_gpu_workgroup_schedule_project(root: &std::path::Path) {
+    let src_dir = root.join("src");
+    let gpu_dir = src_dir.join("gpu");
+    let tests_dir = root.join("tests").join("spec");
+    std::fs::create_dir_all(&gpu_dir).unwrap();
+    std::fs::create_dir_all(&tests_dir).unwrap();
+    write_fixture_file(
+        src_dir.join("main.wr"),
+        r#"fn run() -> Integer {
+    return 0
+}
+"#,
+    )
+    .unwrap();
+    write_fixture_file(
+        gpu_dir.join("compute.wr"),
+        r#"kernel fn run_kernel(counter: GpuAtomicI32, observed: GpuBuffer[I32]) -> Nothing {
+    gid = global_invocation_id()
+    previous = gpu_atomic_i32_fetch_add(
+        atomic=counter,
+        delta=i32(1)
+    )
+    gpu_buffer_set(
+        buffer=observed,
+        index=gid[0],
+        value=previous
+    )
+}
+
+fn run_workgroup_reverse_smoke() -> Array[I32, 5] {
+    counter = gpu_atomic_i32_new(initial=i32(0))
+    observed = gpu_buffer_new(length=4, default_value=i32(0))
+    dispatch_compute(
+        kernel=run_kernel,
+        counter=counter,
+        observed=observed,
+        schedule=gpu_schedule_workgroup_reverse(),
+        workgroups_x=u32(2),
+        workgroups_y=u32(1),
+        workgroups_z=u32(1),
+        workgroup_size_x=u32(2),
+        workgroup_size_y=u32(1),
+        workgroup_size_z=u32(1)
+    )
+    return [
+        gpu_atomic_i32_load(atomic=counter),
+        gpu_buffer_get(buffer=observed, index=0),
+        gpu_buffer_get(buffer=observed, index=1),
+        gpu_buffer_get(buffer=observed, index=2),
+        gpu_buffer_get(buffer=observed, index=3)
+    ]
+}
+
+fn run_round_robin_smoke() -> Array[I32, 5] {
+    counter = gpu_atomic_i32_new(initial=i32(0))
+    observed = gpu_buffer_new(length=4, default_value=i32(0))
+    dispatch_compute(
+        kernel=run_kernel,
+        counter=counter,
+        observed=observed,
+        schedule=gpu_schedule_round_robin_workgroups(),
+        workgroups_x=u32(2),
+        workgroups_y=u32(1),
+        workgroups_z=u32(1),
+        workgroup_size_x=u32(2),
+        workgroup_size_y=u32(1),
+        workgroup_size_z=u32(1)
+    )
+    return [
+        gpu_atomic_i32_load(atomic=counter),
+        gpu_buffer_get(buffer=observed, index=0),
+        gpu_buffer_get(buffer=observed, index=1),
+        gpu_buffer_get(buffer=observed, index=2),
+        gpu_buffer_get(buffer=observed, index=3)
+    ]
+}
+
+fn run_workgroup_shuffle_smoke() -> Array[I32, 9] {
+    counter = gpu_atomic_i32_new(initial=i32(0))
+    observed = gpu_buffer_new(length=8, default_value=i32(0))
+    dispatch_compute(
+        kernel=run_kernel,
+        counter=counter,
+        observed=observed,
+        schedule=gpu_schedule_workgroup_shuffle(seed=u32(7)),
+        workgroups_x=u32(4),
+        workgroups_y=u32(1),
+        workgroups_z=u32(1),
+        workgroup_size_x=u32(2),
+        workgroup_size_y=u32(1),
+        workgroup_size_z=u32(1)
+    )
+    return [
+        gpu_atomic_i32_load(atomic=counter),
+        gpu_buffer_get(buffer=observed, index=0),
+        gpu_buffer_get(buffer=observed, index=1),
+        gpu_buffer_get(buffer=observed, index=2),
+        gpu_buffer_get(buffer=observed, index=3),
+        gpu_buffer_get(buffer=observed, index=4),
+        gpu_buffer_get(buffer=observed, index=5),
+        gpu_buffer_get(buffer=observed, index=6),
+        gpu_buffer_get(buffer=observed, index=7)
+    ]
+}
+"#,
+    )
+    .unwrap();
+    write_fixture_file(
+        tests_dir.join("virtual_gpu_workgroup_schedule_test.wr"),
+        r#"use run_round_robin_smoke from gpu/compute
+use run_workgroup_reverse_smoke from gpu/compute
+use run_workgroup_shuffle_smoke from gpu/compute
+
+fn test_workgroup_reverse_smoke() -> Nothing {
+    summary = run_workgroup_reverse_smoke()
+    assert value summary.len() == 5
+    assert value summary[0] == 4
+    assert value summary[1] == 2
+    assert value summary[2] == 3
+    assert value summary[3] == 0
+    assert value summary[4] == 1
+}
+
+fn test_round_robin_workgroups_smoke() -> Nothing {
+    summary = run_round_robin_smoke()
+    assert value summary.len() == 5
+    assert value summary[0] == 4
+    assert value summary[1] == 0
+    assert value summary[2] == 2
+    assert value summary[3] == 1
+    assert value summary[4] == 3
+}
+
+fn test_workgroup_shuffle_smoke() -> Nothing {
+    summary = run_workgroup_shuffle_smoke()
+    assert value summary.len() == 9
+    assert value summary[0] == 8
+    assert value summary[1] == 4
+    assert value summary[2] == 5
+    assert value summary[3] == 0
+    assert value summary[4] == 1
+    assert value summary[5] == 6
+    assert value summary[6] == 7
+    assert value summary[7] == 2
+    assert value summary[8] == 3
+}
+"#,
+    )
+    .unwrap();
+}
+
 fn write_lexically_invalid_project(root: &std::path::Path) {
     let src_dir = root.join("src");
     let tests_dir = root.join("tests");
@@ -6165,8 +6546,83 @@ fn cli_test_forces_runtime_deterministic_env() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(combined.contains("tests: 1 passed, 0 failed"));
+}
+
+#[test]
+fn cli_test_virtual_gpu_compute_project_runs_on_cpu() {
+    let dir = workspace_tempdir();
+    write_virtual_gpu_compute_project(dir.path());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .current_dir(dir.path())
+        .arg("test")
+        .arg(".")
+        .output()
+        .expect("run wrela test");
+    assert!(
+        output.status.success(),
+        "expected virtual GPU compute project to pass\nstdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("tests: 1 passed, 0 failed"));
+    assert!(stdout.contains("tests: 3 passed, 0 failed"));
+}
+
+#[test]
+fn cli_test_virtual_gpu_atomic_schedule_project_runs_on_cpu() {
+    let dir = workspace_tempdir();
+    write_virtual_gpu_atomic_schedule_project(dir.path());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .current_dir(dir.path())
+        .arg("test")
+        .arg(".")
+        .output()
+        .expect("run wrela test");
+    assert!(
+        output.status.success(),
+        "expected virtual GPU atomic schedule project to pass\nstdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(combined.contains("tests: 1 passed, 0 failed"));
+}
+
+#[test]
+fn cli_test_virtual_gpu_workgroup_schedule_project_runs_on_cpu() {
+    let dir = workspace_tempdir();
+    write_virtual_gpu_workgroup_schedule_project(dir.path());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .current_dir(dir.path())
+        .arg("test")
+        .arg(".")
+        .output()
+        .expect("run wrela test");
+    assert!(
+        output.status.success(),
+        "expected virtual GPU workgroup schedule project to pass\nstdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(combined.contains("tests: 3 passed, 0 failed"));
 }
 
 #[test]
@@ -6509,6 +6965,75 @@ fn cli_test_json_summary_ordering_is_deterministic_with_parallel_jobs() {
     assert_eq!(
         first_ids, sorted_ids,
         "json tests should be sorted by stable id"
+    );
+}
+
+#[test]
+fn cli_test_json_naming_warning_paths_point_to_original_spec_files() {
+    let dir = workspace_tempdir();
+    std::fs::create_dir_all(dir.path().join("src")).expect("create src");
+    std::fs::create_dir_all(dir.path().join("tests").join("spec")).expect("create spec tests");
+    write_fixture_file(
+        dir.path().join("src").join("main.wr"),
+        r#"fn run() -> Integer {
+    return 0
+}
+"#,
+    )
+    .expect("write main");
+    write_fixture_file(
+        dir.path().join("tests").join("spec").join("counter_test.wr"),
+        r#"class Counter {
+    count: Integer
+}
+
+fn test_smoke() -> Nothing {
+    assert value true == true
+}
+"#,
+    )
+    .expect("write spec test");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .current_dir(dir.path())
+        .arg("test")
+        .arg("--lane=spec")
+        .arg("--error-format=json")
+        .arg("--jobs=1")
+        .arg(".")
+        .output()
+        .expect("run wrela test");
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let diagnostics = parse_json_stdout_lines(&output.stdout);
+    let field_warning = diagnostics
+        .iter()
+        .find(|diag| {
+            diag.get("code").and_then(|value| value.as_str())
+                == Some("lang::naming::noun_only_required")
+                && diag
+                    .get("message")
+                    .and_then(|value| value.as_str())
+                    .is_some_and(|message| message.contains("field 'count'"))
+        })
+        .expect("field naming warning");
+    let path = field_warning
+        .get("path")
+        .and_then(|value| value.as_str())
+        .expect("warning path")
+        .replace('\\', "/");
+    assert!(
+        path.ends_with("/tests/spec/counter_test.wr"),
+        "expected original spec file path, got {path}"
+    );
+    assert!(
+        !path.contains("/target/wrela_tests/"),
+        "warning path should not point at generated harness: {path}"
     );
 }
 

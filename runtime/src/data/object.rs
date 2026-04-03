@@ -39,9 +39,7 @@ pub unsafe fn drop_object(ptr: *mut ObjHeader) {
             || x == TypeId::Vec3 as u32
             || x == TypeId::Vec4 as u32
             || x == TypeId::Quat as u32 =>
-        {
-            unsafe { drop_vec(ptr) }
-        }
+        unsafe { drop_vec(ptr) },
         x if x == TypeId::Mat3 as u32 => unsafe { drop_mat3(ptr) },
         x if x == TypeId::Mat4 as u32 => unsafe { drop_mat4(ptr) },
         _ => {

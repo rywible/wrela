@@ -28,6 +28,7 @@ fn interface_type_compatible(expected: &Type, actual: &Type) -> bool {
         (Type::Result(aok, aerr), Type::Result(bok, berr)) => {
             interface_type_compatible(aok, bok) && interface_type_compatible(aerr, berr)
         }
+        (Type::GpuBuffer(a), Type::GpuBuffer(b)) => interface_type_compatible(a, b),
         (Type::Actor(a), Type::Actor(b)) => interface_type_compatible(a, b),
         (Type::Pending(a), Type::Pending(b)) => interface_type_compatible(a, b),
         (Type::Named(aname, aargs), Type::Named(bname, bargs)) => {
@@ -90,13 +91,18 @@ fn is_vector_or_matrix_type(ty: &Type) -> bool {
 fn same_vector_kind(left: &Type, right: &Type) -> bool {
     matches!(
         (left, right),
-        (Type::Vec2, Type::Vec2) | (Type::Vec3, Type::Vec3) | (Type::Vec4, Type::Vec4)
+        (Type::Vec2, Type::Vec2)
+            | (Type::Vec3, Type::Vec3)
+            | (Type::Vec4, Type::Vec4)
             | (Type::Quat, Type::Quat)
     )
 }
 
 fn same_matrix_kind(left: &Type, right: &Type) -> bool {
-    matches!((left, right), (Type::Mat3, Type::Mat3) | (Type::Mat4, Type::Mat4))
+    matches!(
+        (left, right),
+        (Type::Mat3, Type::Mat3) | (Type::Mat4, Type::Mat4)
+    )
 }
 
 fn is_scalar_numeric(ty: &Type) -> bool {
@@ -329,6 +335,9 @@ fn is_assignable(
         }
         (Type::Array(exp, _), Type::List(found)) => is_assignable(exp, found, classes, interfaces),
         (Type::List(exp), Type::Array(found, _)) => is_assignable(exp, found, classes, interfaces),
+        (Type::GpuBuffer(exp), Type::GpuBuffer(found)) => {
+            is_assignable(exp, found, classes, interfaces)
+        }
         (Type::Result(ok_e, _), other) => is_assignable(ok_e, other, classes, interfaces),
         (Type::Pending(exp), Type::Pending(found)) => {
             matches!(**exp, Type::Unknown) || is_assignable(exp, found, classes, interfaces)
@@ -447,7 +456,10 @@ fn type_label(ty: &Type) -> String {
         Type::Mat3 => "Mat3".to_string(),
         Type::Mat4 => "Mat4".to_string(),
         Type::Quat => "Quat".to_string(),
-        Type::GpuBuffer(inner) => format!("Buffer[{}]", type_label(inner)),
+        Type::GpuBuffer(inner) => format!("GpuBuffer[{}]", type_label(inner)),
+        Type::GpuAtomicI32 => "GpuAtomicI32".to_string(),
+        Type::GpuAtomicU32 => "GpuAtomicU32".to_string(),
+        Type::GpuDispatchSchedule => "GpuDispatchSchedule".to_string(),
         Type::Texture2D => "Texture2D".to_string(),
         Type::Sampler => "Sampler".to_string(),
     }

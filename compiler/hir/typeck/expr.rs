@@ -536,6 +536,25 @@ fn infer_expr(
                     ret_ty = Some(ret);
                     valid_callee = true;
                 }
+                if !valid_callee
+                    && let Some(ret) = infer_compute_builtin_call(
+                        body,
+                        expr_id,
+                        name,
+                        args,
+                        ctx,
+                        classes,
+                        enums,
+                        interfaces,
+                        functions,
+                        errors,
+                        allow_result,
+                        in_result_fn,
+                    )
+                {
+                    ret_ty = Some(ret);
+                    valid_callee = true;
+                }
                 if classes.is_class(name) {
                     if let Some(class) = classes.get(name) {
                         let class_args = resolve_type_args(
@@ -569,6 +588,14 @@ fn infer_expr(
                     }
                 }
                 if !valid_callee && let Some(function) = functions.get(name) {
+                    if ctx.in_portable_lane() && !functions.is_portable(name) {
+                        errors.push(TypeError::PortableHostCallForbidden {
+                            function: ctx.current_function_name(),
+                            callee: name.clone(),
+                            span: span_from_range(body.expr_span(expr_id)),
+                            help: "Portable declarations may only call other portable declarations or portable-safe intrinsics.".to_string(),
+                        });
+                    }
                     if !type_args.is_empty() {
                         if function.type_params.is_empty() {
                             errors.push(TypeError::UnexpectedTypeArgs {
@@ -576,7 +603,8 @@ fn infer_expr(
                             });
                         } else {
                             // Generic function call with explicit type args — check bounds
-                            let resolved_type_args: Vec<Type> = type_args.iter().map(type_from_ref).collect();
+                            let resolved_type_args: Vec<Type> =
+                                type_args.iter().map(type_from_ref).collect();
                             check_type_param_bounds(
                                 &function.type_params,
                                 &function.type_param_bounds,
@@ -606,7 +634,21 @@ fn infer_expr(
                             in_result_fn,
                         );
                     } else {
-                        check_call_args(body, expr_id, args, &function.params, ctx, classes, enums, interfaces, functions, errors, !builtin_allows_positional_args(name), allow_result, in_result_fn);
+                        check_call_args(
+                            body,
+                            expr_id,
+                            args,
+                            &function.params,
+                            ctx,
+                            classes,
+                            enums,
+                            interfaces,
+                            functions,
+                            errors,
+                            !builtin_allows_positional_args(name),
+                            allow_result,
+                            in_result_fn,
+                        );
                     }
                     ret_ty = Some(function.ret.clone());
                     valid_callee = true;
@@ -840,6 +882,27 @@ fn infer_expr(
                                 valid_callee = true;
                             }
                             Type::Named(class_name, class_args)
+                                if class_args.is_empty()
+                                    && is_portable_named_data_type_name(class_name.as_str()) =>
+                            {
+                                if portable_named_field_type(class_name.as_str(), member.as_str())
+                                    .is_some()
+                                {
+                                    errors.push(TypeError::CallField {
+                                        member: member.clone(),
+                                        span: span_from_range(*member_span),
+                                    });
+                                } else {
+                                    errors.push(TypeError::UnknownMember {
+                                        object: class_name.to_string(),
+                                        member: member.clone(),
+                                        span: span_from_range(*member_span),
+                                    });
+                                }
+                                ret_ty = Some(Type::Unknown);
+                                valid_callee = true;
+                            }
+                            Type::Named(class_name, class_args)
                                 if interfaces.is_interface(&class_name) =>
                             {
                                 if let Some(interface) = interfaces.get(&class_name) {
@@ -1006,7 +1069,20 @@ fn infer_expr(
                     span: span_from_range(*member_span),
                 });
             } else if let Type::Named(class_name, class_args) = object_ty {
-                if interfaces.is_interface(&class_name) {
+                if class_args.is_empty()
+                    && let Some(field_ty) =
+                        portable_named_field_type(class_name.as_str(), member.as_str())
+                {
+                    result = field_ty;
+                } else if class_args.is_empty()
+                    && is_portable_named_data_type_name(class_name.as_str())
+                {
+                    errors.push(TypeError::UnknownMember {
+                        object: class_name.to_string(),
+                        member: member.clone(),
+                        span: span_from_range(*member_span),
+                    });
+                } else if interfaces.is_interface(&class_name) {
                     errors.push(TypeError::UnknownMember {
                         object: class_name.to_string(),
                         member: member.clone(),
@@ -1137,7 +1213,10 @@ fn infer_expr(
             }
             Type::String
         }
-        Expr::Closure { params, body: closure_body } => {
+        Expr::Closure {
+            params,
+            body: closure_body,
+        } => {
             ctx.enter_scope();
             for param in params {
                 let ty = param
@@ -1366,6 +1445,709 @@ fn builtin_allows_positional_args(name: &SmolStr) -> bool {
         )
 }
 
+fn call_named_arg_value(args: &[crate::hir::Arg], name: &str) -> Option<Idx<Expr>> {
+    for arg in args {
+        if let crate::hir::Arg::Named {
+            name: arg_name,
+            value,
+            ..
+        } = arg
+            && arg_name.as_str() == name
+        {
+            return Some(*value);
+        }
+    }
+    None
+}
+
+fn infer_compute_builtin_call(
+    body: &Body,
+    expr_id: Idx<Expr>,
+    name: &SmolStr,
+    args: &Vec<crate::hir::Arg>,
+    ctx: &mut TypeContext,
+    classes: &ClassIndex,
+    enums: &EnumIndex,
+    interfaces: &InterfaceIndex,
+    functions: &FunctionIndex,
+    errors: &mut Vec<TypeError>,
+    allow_result: bool,
+    in_result_fn: bool,
+) -> Option<Type> {
+    let span = span_from_range(body.expr_span(expr_id));
+    match name.as_str() {
+        "gpu_buffer_new" => {
+            let params = vec![
+                (SmolStr::new("length"), Type::Integer),
+                (SmolStr::new("default_value"), Type::Unknown),
+            ];
+            check_call_args(
+                body,
+                expr_id,
+                args,
+                &params,
+                ctx,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+                true,
+                allow_result,
+                in_result_fn,
+            );
+            let value_ty = call_named_arg_value(args, "default_value")
+                .map(|value| {
+                    infer_expr(
+                        body,
+                        value,
+                        ctx,
+                        classes,
+                        enums,
+                        interfaces,
+                        functions,
+                        errors,
+                        false,
+                        allow_result,
+                        in_result_fn,
+                    )
+                })
+                .unwrap_or(Type::Unknown);
+            Some(Type::GpuBuffer(Box::new(value_ty)))
+        }
+        "gpu_buffer_len" => {
+            let Some(buffer_value) = call_named_arg_value(args, "buffer") else {
+                errors.push(TypeError::ArgumentCountMismatch {
+                    expected: 1,
+                    found: args.len(),
+                    span,
+                });
+                return Some(Type::Unknown);
+            };
+            let buffer_ty = infer_expr(
+                body,
+                buffer_value,
+                ctx,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+                false,
+                allow_result,
+                in_result_fn,
+            );
+            let params = vec![(SmolStr::new("buffer"), Type::Unknown)];
+            check_call_args(
+                body,
+                expr_id,
+                args,
+                &params,
+                ctx,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+                true,
+                allow_result,
+                in_result_fn,
+            );
+            if !matches!(buffer_ty, Type::GpuBuffer(_)) {
+                errors.push(TypeError::ArgumentTypeMismatch {
+                    name: SmolStr::new("buffer"),
+                    expected: "GpuBuffer[unknown]".to_string(),
+                    found: type_label(&buffer_ty),
+                    span,
+                });
+                return Some(Type::Unknown);
+            }
+            Some(Type::Integer)
+        }
+        "gpu_buffer_get" => {
+            let Some(buffer_value) = call_named_arg_value(args, "buffer") else {
+                errors.push(TypeError::ArgumentCountMismatch {
+                    expected: 2,
+                    found: args.len(),
+                    span,
+                });
+                return Some(Type::Unknown);
+            };
+            let buffer_ty = infer_expr(
+                body,
+                buffer_value,
+                ctx,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+                false,
+                allow_result,
+                in_result_fn,
+            );
+            let Some(inner_ty) = (match buffer_ty {
+                Type::GpuBuffer(inner) => Some(*inner),
+                other => {
+                    errors.push(TypeError::ArgumentTypeMismatch {
+                        name: SmolStr::new("buffer"),
+                        expected: "GpuBuffer[unknown]".to_string(),
+                        found: type_label(&other),
+                        span,
+                    });
+                    None
+                }
+            }) else {
+                return Some(Type::Unknown);
+            };
+            let Some(index_expr) = call_named_arg_value(args, "index") else {
+                errors.push(TypeError::ArgumentCountMismatch {
+                    expected: 2,
+                    found: args.len(),
+                    span,
+                });
+                return Some(Type::Unknown);
+            };
+            let index_ty = infer_expr(
+                body,
+                index_expr,
+                ctx,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+                false,
+                allow_result,
+                in_result_fn,
+            );
+            if !matches!(index_ty, Type::Unknown)
+                && !matches!(
+                    index_ty,
+                    Type::Integer | Type::I32 | Type::U32 | Type::I64 | Type::U64
+                )
+            {
+                errors.push(TypeError::ArgumentTypeMismatch {
+                    name: SmolStr::new("index"),
+                    expected: "Integer-like scalar".to_string(),
+                    found: type_label(&index_ty),
+                    span,
+                });
+            }
+            let params = vec![
+                (SmolStr::new("buffer"), Type::Unknown),
+                (SmolStr::new("index"), Type::Unknown),
+            ];
+            check_call_args(
+                body,
+                expr_id,
+                args,
+                &params,
+                ctx,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+                true,
+                allow_result,
+                in_result_fn,
+            );
+            Some(inner_ty)
+        }
+        "gpu_buffer_set" => {
+            let Some(buffer_value) = call_named_arg_value(args, "buffer") else {
+                errors.push(TypeError::ArgumentCountMismatch {
+                    expected: 3,
+                    found: args.len(),
+                    span,
+                });
+                return Some(Type::Nil);
+            };
+            let buffer_ty = infer_expr(
+                body,
+                buffer_value,
+                ctx,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+                false,
+                allow_result,
+                in_result_fn,
+            );
+            let Some(inner_ty) = (match buffer_ty {
+                Type::GpuBuffer(inner) => Some(*inner),
+                other => {
+                    errors.push(TypeError::ArgumentTypeMismatch {
+                        name: SmolStr::new("buffer"),
+                        expected: "GpuBuffer[unknown]".to_string(),
+                        found: type_label(&other),
+                        span,
+                    });
+                    None
+                }
+            }) else {
+                return Some(Type::Nil);
+            };
+            let Some(index_expr) = call_named_arg_value(args, "index") else {
+                errors.push(TypeError::ArgumentCountMismatch {
+                    expected: 3,
+                    found: args.len(),
+                    span,
+                });
+                return Some(Type::Nil);
+            };
+            let index_ty = infer_expr(
+                body,
+                index_expr,
+                ctx,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+                false,
+                allow_result,
+                in_result_fn,
+            );
+            if !matches!(index_ty, Type::Unknown)
+                && !matches!(
+                    index_ty,
+                    Type::Integer | Type::I32 | Type::U32 | Type::I64 | Type::U64
+                )
+            {
+                errors.push(TypeError::ArgumentTypeMismatch {
+                    name: SmolStr::new("index"),
+                    expected: "Integer-like scalar".to_string(),
+                    found: type_label(&index_ty),
+                    span,
+                });
+            }
+            let Some(value_expr) = call_named_arg_value(args, "value") else {
+                errors.push(TypeError::ArgumentCountMismatch {
+                    expected: 3,
+                    found: args.len(),
+                    span,
+                });
+                return Some(Type::Nil);
+            };
+            let value_ty = infer_expr(
+                body,
+                value_expr,
+                ctx,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+                false,
+                allow_result,
+                in_result_fn,
+            );
+            if !matches!(inner_ty, Type::Unknown)
+                && types_known(&inner_ty, &value_ty)
+                && !is_assignable(&inner_ty, &value_ty, classes, interfaces)
+            {
+                errors.push(TypeError::ArgumentTypeMismatch {
+                    name: SmolStr::new("value"),
+                    expected: type_label(&inner_ty),
+                    found: type_label(&value_ty),
+                    span,
+                });
+            }
+            let params = vec![
+                (SmolStr::new("buffer"), Type::Unknown),
+                (SmolStr::new("index"), Type::Unknown),
+                (SmolStr::new("value"), inner_ty),
+            ];
+            check_call_args(
+                body,
+                expr_id,
+                args,
+                &params,
+                ctx,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+                true,
+                allow_result,
+                in_result_fn,
+            );
+            Some(Type::Nil)
+        }
+        "gpu_atomic_i32_new" => infer_exact_builtin_call(
+            body,
+            expr_id,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            &[(SmolStr::new("initial"), Type::I32)],
+            Type::GpuAtomicI32,
+        ),
+        "gpu_atomic_i32_drop" => infer_exact_builtin_call(
+            body,
+            expr_id,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            &[(SmolStr::new("atomic"), Type::GpuAtomicI32)],
+            Type::Boolean,
+        ),
+        "gpu_atomic_i32_load" => infer_exact_builtin_call(
+            body,
+            expr_id,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            &[(SmolStr::new("atomic"), Type::GpuAtomicI32)],
+            Type::I32,
+        ),
+        "gpu_atomic_i32_store" => infer_exact_builtin_call(
+            body,
+            expr_id,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            &[
+                (SmolStr::new("atomic"), Type::GpuAtomicI32),
+                (SmolStr::new("value"), Type::I32),
+            ],
+            Type::Nil,
+        ),
+        "gpu_atomic_i32_fetch_add" => infer_exact_builtin_call(
+            body,
+            expr_id,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            &[
+                (SmolStr::new("atomic"), Type::GpuAtomicI32),
+                (SmolStr::new("delta"), Type::I32),
+            ],
+            Type::I32,
+        ),
+        "gpu_atomic_u32_new" => infer_exact_builtin_call(
+            body,
+            expr_id,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            &[(SmolStr::new("initial"), Type::U32)],
+            Type::GpuAtomicU32,
+        ),
+        "gpu_atomic_u32_drop" => infer_exact_builtin_call(
+            body,
+            expr_id,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            &[(SmolStr::new("atomic"), Type::GpuAtomicU32)],
+            Type::Boolean,
+        ),
+        "gpu_atomic_u32_load" => infer_exact_builtin_call(
+            body,
+            expr_id,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            &[(SmolStr::new("atomic"), Type::GpuAtomicU32)],
+            Type::U32,
+        ),
+        "gpu_atomic_u32_store" => infer_exact_builtin_call(
+            body,
+            expr_id,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            &[
+                (SmolStr::new("atomic"), Type::GpuAtomicU32),
+                (SmolStr::new("value"), Type::U32),
+            ],
+            Type::Nil,
+        ),
+        "gpu_atomic_u32_fetch_add" => infer_exact_builtin_call(
+            body,
+            expr_id,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            &[
+                (SmolStr::new("atomic"), Type::GpuAtomicU32),
+                (SmolStr::new("delta"), Type::U32),
+            ],
+            Type::U32,
+        ),
+        "gpu_schedule_deterministic" => infer_exact_builtin_call(
+            body,
+            expr_id,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            &[],
+            Type::GpuDispatchSchedule,
+        ),
+        "gpu_schedule_reverse" => infer_exact_builtin_call(
+            body,
+            expr_id,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            &[],
+            Type::GpuDispatchSchedule,
+        ),
+        "gpu_schedule_shuffle" => infer_exact_builtin_call(
+            body,
+            expr_id,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            &[(SmolStr::new("seed"), Type::U32)],
+            Type::GpuDispatchSchedule,
+        ),
+        "gpu_schedule_workgroup_reverse" => infer_exact_builtin_call(
+            body,
+            expr_id,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            &[],
+            Type::GpuDispatchSchedule,
+        ),
+        "gpu_schedule_workgroup_shuffle" => infer_exact_builtin_call(
+            body,
+            expr_id,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            &[(SmolStr::new("seed"), Type::U32)],
+            Type::GpuDispatchSchedule,
+        ),
+        "gpu_schedule_round_robin_workgroups" => infer_exact_builtin_call(
+            body,
+            expr_id,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            &[],
+            Type::GpuDispatchSchedule,
+        ),
+        "workgroup_barrier" => {
+            errors.push(TypeError::UnsupportedComputeFeature {
+                feature: "workgroup_barrier",
+                span,
+                help: "Barriered workgroup execution is the next virtual GPU cut; use data-parallel kernels plus atomics for now.".to_string(),
+            });
+            Some(Type::Nil)
+        }
+        "storage_barrier" => {
+            errors.push(TypeError::UnsupportedComputeFeature {
+                feature: "storage_barrier",
+                span,
+                help: "Storage barriers are not modeled in the CPU reference GPU yet; keep kernels order-independent or use explicit atomic coordination.".to_string(),
+            });
+            Some(Type::Nil)
+        }
+        "dispatch_compute" => {
+            let Some(kernel_expr) = call_named_arg_value(args, "kernel") else {
+                errors.push(TypeError::UnknownArgument {
+                    name: SmolStr::new("kernel"),
+                    span,
+                });
+                return Some(Type::Nil);
+            };
+            let Expr::Variable(kernel_name) = &body.exprs[kernel_expr] else {
+                errors.push(TypeError::InvalidCallee {
+                    span: span_from_range(body.expr_span(kernel_expr)),
+                });
+                return Some(Type::Nil);
+            };
+            let Some(kernel) = functions.get(kernel_name) else {
+                errors.push(TypeError::InvalidCallee {
+                    span: span_from_range(body.expr_span(kernel_expr)),
+                });
+                return Some(Type::Nil);
+            };
+            if !functions.is_portable(kernel_name) {
+                errors.push(TypeError::DispatchKernelMustBePortable {
+                    callee: kernel_name.clone(),
+                    span: span_from_range(body.expr_span(kernel_expr)),
+                });
+            }
+            let mut params = vec![(SmolStr::new("kernel"), Type::Unknown)];
+            params.extend([
+                (SmolStr::new("workgroups_x"), Type::U32),
+                (SmolStr::new("workgroups_y"), Type::U32),
+                (SmolStr::new("workgroups_z"), Type::U32),
+                (SmolStr::new("workgroup_size_x"), Type::U32),
+                (SmolStr::new("workgroup_size_y"), Type::U32),
+                (SmolStr::new("workgroup_size_z"), Type::U32),
+            ]);
+            if call_named_arg_value(args, "schedule").is_some() {
+                params.push((SmolStr::new("schedule"), Type::GpuDispatchSchedule));
+            }
+            params.extend(kernel.params.clone());
+            check_call_args(
+                body,
+                expr_id,
+                args,
+                &params,
+                ctx,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+                true,
+                allow_result,
+                in_result_fn,
+            );
+            if kernel.ret != Type::Nil {
+                errors.push(TypeError::ReturnTypeMismatch {
+                    expected: "Nothing".to_string(),
+                    found: type_label(&kernel.ret),
+                    span: span_from_range(body.expr_span(kernel_expr)),
+                });
+            }
+            Some(Type::Nil)
+        }
+        _ => None,
+    }
+}
+
+fn infer_exact_builtin_call(
+    body: &Body,
+    expr_id: Idx<Expr>,
+    args: &Vec<crate::hir::Arg>,
+    ctx: &mut TypeContext,
+    classes: &ClassIndex,
+    enums: &EnumIndex,
+    interfaces: &InterfaceIndex,
+    functions: &FunctionIndex,
+    errors: &mut Vec<TypeError>,
+    allow_result: bool,
+    in_result_fn: bool,
+    params: &[(SmolStr, Type)],
+    ret: Type,
+) -> Option<Type> {
+    let params_vec = params.to_vec();
+    check_call_args(
+        body,
+        expr_id,
+        args,
+        &params_vec,
+        ctx,
+        classes,
+        enums,
+        interfaces,
+        functions,
+        errors,
+        true,
+        allow_result,
+        in_result_fn,
+    );
+    Some(ret)
+}
+
 fn infer_math_builtin_call(
     body: &Body,
     expr_id: Idx<Expr>,
@@ -1542,6 +2324,93 @@ fn infer_math_builtin_call(
             );
             Some(Type::Mat4)
         }
+        "bounds2" => infer_exact_builtin_call(
+            body,
+            expr_id,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            &[
+                (SmolStr::new("min"), Type::Vec2),
+                (SmolStr::new("max"), Type::Vec2),
+            ],
+            portable_named_type("Bounds2"),
+        ),
+        "bounds3" => infer_exact_builtin_call(
+            body,
+            expr_id,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            &[
+                (SmolStr::new("min"), Type::Vec3),
+                (SmolStr::new("max"), Type::Vec3),
+            ],
+            portable_named_type("Bounds3"),
+        ),
+        "ray3" => infer_exact_builtin_call(
+            body,
+            expr_id,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            &[
+                (SmolStr::new("origin"), Type::Vec3),
+                (SmolStr::new("direction"), Type::Vec3),
+            ],
+            portable_named_type("Ray3"),
+        ),
+        "transform3" => infer_exact_builtin_call(
+            body,
+            expr_id,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            &[
+                (SmolStr::new("matrix"), Type::Mat4),
+                (SmolStr::new("inverse"), Type::Mat4),
+            ],
+            portable_named_type("Transform3"),
+        ),
+        "transform3_identity" => infer_exact_builtin_call(
+            body,
+            expr_id,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            &[],
+            portable_named_type("Transform3"),
+        ),
         "dot" => {
             if args.len() != 2 {
                 errors.push(TypeError::ArgumentCountMismatch {
@@ -1596,6 +2465,66 @@ fn infer_math_builtin_call(
             }
             Some(Type::F32)
         }
+        "bounds2_center" => infer_exact_builtin_call(
+            body,
+            expr_id,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            &[(SmolStr::new("bounds"), portable_named_type("Bounds2"))],
+            Type::Vec2,
+        ),
+        "bounds2_size" => infer_exact_builtin_call(
+            body,
+            expr_id,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            &[(SmolStr::new("bounds"), portable_named_type("Bounds2"))],
+            Type::Vec2,
+        ),
+        "bounds3_center" => infer_exact_builtin_call(
+            body,
+            expr_id,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            &[(SmolStr::new("bounds"), portable_named_type("Bounds3"))],
+            Type::Vec3,
+        ),
+        "bounds3_size" => infer_exact_builtin_call(
+            body,
+            expr_id,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            &[(SmolStr::new("bounds"), portable_named_type("Bounds3"))],
+            Type::Vec3,
+        ),
         "length" | "normalize" => {
             if args.len() != 1 {
                 errors.push(TypeError::ArgumentCountMismatch {
@@ -1732,12 +2661,117 @@ fn infer_math_builtin_call(
                 Some(Type::Unknown)
             }
         }
+        "transform_point" => infer_exact_builtin_call(
+            body,
+            expr_id,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            &[
+                (SmolStr::new("transform"), portable_named_type("Transform3")),
+                (SmolStr::new("point"), Type::Vec3),
+            ],
+            Type::Vec3,
+        ),
+        "transform_vector" => infer_exact_builtin_call(
+            body,
+            expr_id,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            &[
+                (SmolStr::new("transform"), portable_named_type("Transform3")),
+                (SmolStr::new("vector"), Type::Vec3),
+            ],
+            Type::Vec3,
+        ),
+        "transform_normal" => infer_exact_builtin_call(
+            body,
+            expr_id,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            &[
+                (SmolStr::new("transform"), portable_named_type("Transform3")),
+                (SmolStr::new("normal"), Type::Vec3),
+            ],
+            Type::Vec3,
+        ),
+        "compose_transform3" => infer_exact_builtin_call(
+            body,
+            expr_id,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            &[
+                (SmolStr::new("left"), portable_named_type("Transform3")),
+                (SmolStr::new("right"), portable_named_type("Transform3")),
+            ],
+            portable_named_type("Transform3"),
+        ),
+        "inverse_transform3" => infer_exact_builtin_call(
+            body,
+            expr_id,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            &[(SmolStr::new("transform"), portable_named_type("Transform3"))],
+            portable_named_type("Transform3"),
+        ),
         "min" | "max" | "pow" => infer_componentwise_binary_builtin(
-            body, expr_id, args, ctx, classes, enums, interfaces, functions, errors, allow_result,
+            body,
+            expr_id,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
             in_result_fn,
         ),
         "clamp" | "mix" => infer_componentwise_ternary_builtin(
-            body, expr_id, args, ctx, classes, enums, interfaces, functions, errors, allow_result,
+            body,
+            expr_id,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
             in_result_fn,
         ),
         "abs" | "sign" | "floor" | "ceil" | "fract" | "sin" | "cos" | "sqrt" => {
@@ -1955,9 +2989,7 @@ fn infer_componentwise_binary_builtin(
                 Some(Type::Unknown)
             }
         }
-        (left, right) if is_vector_like_type(&left) && is_scalar_numeric_type(&right) => {
-            Some(left)
-        }
+        (left, right) if is_vector_like_type(&left) && is_scalar_numeric_type(&right) => Some(left),
         (left, right) if is_scalar_numeric_type(&left) && is_vector_like_type(&right) => {
             Some(right)
         }
@@ -2045,22 +3077,8 @@ fn infer_componentwise_ternary_builtin(
         if is_scalar_numeric_type(&min_ty) && is_scalar_numeric_type(&max_ty) {
             return Some(Type::F32);
         }
-        push_math_builtin_arg_mismatch(
-            "min",
-            &min_ty,
-            args,
-            1,
-            "scalar numeric",
-            errors,
-        );
-        push_math_builtin_arg_mismatch(
-            "max",
-            &max_ty,
-            args,
-            2,
-            "scalar numeric",
-            errors,
-        );
+        push_math_builtin_arg_mismatch("min", &min_ty, args, 1, "scalar numeric", errors);
+        push_math_builtin_arg_mismatch("max", &max_ty, args, 2, "scalar numeric", errors);
         return Some(Type::Unknown);
     }
     if !is_vector_like_type(&value_ty) {
@@ -2140,14 +3158,7 @@ fn infer_scalar_cast_builtin(
     if is_scalar_numeric_type(&value_ty) {
         return Some(target);
     }
-    push_math_builtin_arg_mismatch(
-        "value",
-        &value_ty,
-        args,
-        0,
-        "scalar numeric",
-        errors,
-    );
+    push_math_builtin_arg_mismatch("value", &value_ty, args, 0, "scalar numeric", errors);
     Some(Type::Unknown)
 }
 

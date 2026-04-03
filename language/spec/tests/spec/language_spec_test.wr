@@ -318,6 +318,58 @@ fn test_mat4_transform_path() -> Nothing {
     assert approx result.w ~= 1.0 within 0.0001
 }
 
+class PortableKernelShadow {
+    offset: Integer
+
+    fn add_one(value: Integer) -> Integer {
+        return value + self.offset
+    }
+
+    fn run_portable_kernel() -> Integer {
+        return self.offset
+    }
+}
+
+kernel fn add_one(value: I32) -> I32 {
+    return value + i32(1)
+}
+
+kernel fn run_portable_kernel(output: GpuBuffer[I32]) -> Nothing {
+    gid = global_invocation_id()
+    gpu_buffer_set(
+        buffer=output,
+        index=gid[0],
+        value=add_one(i32(gid[0]))
+    )
+}
+
+fn test_kernel_fn_direct_call_surface() -> Nothing {
+    assert value add_one(value=i32(1)) == 2
+}
+
+fn test_kernel_fn_dispatch_surface() -> Nothing {
+    shadow = PortableKernelShadow(offset=99)
+    assert value shadow.add_one(value=1) == 100
+    assert value shadow.run_portable_kernel() == 99
+
+    output = gpu_buffer_new(length=4, default_value=i32(0))
+    dispatch_compute(
+        kernel=run_portable_kernel,
+        output=output,
+        workgroups_x=u32(2),
+        workgroups_y=u32(1),
+        workgroups_z=u32(1),
+        workgroup_size_x=u32(2),
+        workgroup_size_y=u32(1),
+        workgroup_size_z=u32(1)
+    )
+
+    assert value gpu_buffer_get(buffer=output, index=0) == 1
+    assert value gpu_buffer_get(buffer=output, index=1) == 2
+    assert value gpu_buffer_get(buffer=output, index=2) == 3
+    assert value gpu_buffer_get(buffer=output, index=3) == 4
+}
+
 // ------------------------------------------------------------
 // 5) Classes, fields, methods, and implicit receiver
 

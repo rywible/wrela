@@ -2,17 +2,31 @@ use super::{expect_block_intro, parse_block, parse_param_list, types};
 use crate::parser::Parser;
 use crate::parser::kind::SyntaxKind;
 
+#[derive(Clone, Copy)]
+enum FunctionDeclHead {
+    Function,
+    Kernel,
+    System,
+}
+
 pub fn func_def(p: &mut Parser) {
     let m = p.start();
     parse_func_attributes(p);
-    parse_func_signature_and_block(p, SyntaxKind::FnKw, false);
+    parse_func_signature_and_block(p, FunctionDeclHead::Function);
     m.complete(p, SyntaxKind::FuncDef);
+}
+
+pub fn kernel_def(p: &mut Parser) {
+    let m = p.start();
+    parse_func_attributes(p);
+    parse_func_signature_and_block(p, FunctionDeclHead::Kernel);
+    m.complete(p, SyntaxKind::KernelDef);
 }
 
 pub fn system_def(p: &mut Parser) {
     let m = p.start();
     parse_func_attributes(p);
-    parse_func_signature_and_block(p, SyntaxKind::SystemKw, true);
+    parse_func_signature_and_block(p, FunctionDeclHead::System);
     m.complete(p, SyntaxKind::SystemDef);
 }
 
@@ -22,17 +36,19 @@ pub fn attributed_func_or_check_def(p: &mut Parser) -> bool {
     }
     let m = p.start();
     parse_func_attributes(p);
-    if p.at(SyntaxKind::FnKw) || p.at(SyntaxKind::SystemKw) {
-        let (head, node_kind, allow_metadata) = if p.at(SyntaxKind::SystemKw) {
-            (SyntaxKind::SystemKw, SyntaxKind::SystemDef, true)
+    if p.at(SyntaxKind::FnKw) || p.at(SyntaxKind::KernelKw) || p.at(SyntaxKind::SystemKw) {
+        let (head, node_kind) = if p.at(SyntaxKind::KernelKw) {
+            (FunctionDeclHead::Kernel, SyntaxKind::KernelDef)
+        } else if p.at(SyntaxKind::SystemKw) {
+            (FunctionDeclHead::System, SyntaxKind::SystemDef)
         } else {
-            (SyntaxKind::FnKw, SyntaxKind::FuncDef, false)
+            (FunctionDeclHead::Function, SyntaxKind::FuncDef)
         };
-        parse_func_signature_and_block(p, head, allow_metadata);
+        parse_func_signature_and_block(p, head);
         m.complete(p, node_kind);
         return true;
     }
-    p.error_with_message_no_bump("expected `fn` after attributes");
+    p.error_with_message_no_bump("expected `fn`, `kernel fn`, or `system` after attributes");
     m.complete(p, SyntaxKind::Error);
     true
 }
@@ -86,34 +102,13 @@ fn parse_attribute_arg_value(p: &mut Parser) {
     p.error_with_message_no_bump("expected attribute argument value");
 }
 
-fn parse_func_signature_and_block(p: &mut Parser, head: SyntaxKind, allow_metadata: bool) {
-    p.expect_with_message(head, expected_head_error(head));
+fn parse_func_signature_and_block(p: &mut Parser, head: FunctionDeclHead) {
+    parse_function_decl_head(p, head);
     p.expect_with_message(SyntaxKind::Ident, expected_name_error(head));
-    if allow_metadata {
+    if matches!(head, FunctionDeclHead::System) {
         parse_system_metadata(p);
-    } else if p.at(SyntaxKind::LBracket) {
-        // Parse optional type parameters: fn foo[T, U: Bound](...)
-        let m = p.start();
-        p.bump(); // consume [
-        let mut first = true;
-        while !p.at(SyntaxKind::RBracket) && !p.is_at_eof() {
-            if !first {
-                if p.at(SyntaxKind::Comma) {
-                    p.bump();
-                } else {
-                    break;
-                }
-            }
-            p.expect_with_message(SyntaxKind::Ident, "expected type parameter name");
-            // Optional bound: T: BoundName
-            if p.at(SyntaxKind::Colon) {
-                p.bump();
-                p.expect_with_message(SyntaxKind::Ident, "expected bound name after ':'");
-            }
-            first = false;
-        }
-        p.expect_with_message(SyntaxKind::RBracket, "expected ']' after type parameters");
-        m.complete(p, SyntaxKind::TypeParamList);
+    } else {
+        parse_optional_type_params(p);
     }
     p.expect_with_message(SyntaxKind::LParen, "expected '(' after function name");
     parse_param_list(p);
@@ -125,20 +120,59 @@ fn parse_func_signature_and_block(p: &mut Parser, head: SyntaxKind, allow_metada
     parse_block(p);
 }
 
-fn expected_head_error(head: SyntaxKind) -> &'static str {
+fn parse_function_decl_head(p: &mut Parser, head: FunctionDeclHead) {
     match head {
-        SyntaxKind::FnKw => "expected 'fn' to start a function definition",
-        SyntaxKind::SystemKw => "expected 'system' to start a system declaration",
-        _ => "expected declaration keyword",
+        FunctionDeclHead::Function => p.expect_with_message(
+            SyntaxKind::FnKw,
+            "expected 'fn' to start a function definition",
+        ),
+        FunctionDeclHead::Kernel => {
+            p.expect_with_message(
+                SyntaxKind::KernelKw,
+                "expected 'kernel fn' to start a kernel declaration",
+            );
+            p.expect_with_message(SyntaxKind::FnKw, "expected 'fn' after 'kernel'");
+        }
+        FunctionDeclHead::System => p.expect_with_message(
+            SyntaxKind::SystemKw,
+            "expected 'system' to start a system declaration",
+        ),
     }
 }
 
-fn expected_name_error(head: SyntaxKind) -> &'static str {
+fn expected_name_error(head: FunctionDeclHead) -> &'static str {
     match head {
-        SyntaxKind::FnKw => "expected function name after 'fn'",
-        SyntaxKind::SystemKw => "expected system name after 'system'",
-        _ => "expected declaration name",
+        FunctionDeclHead::Function => "expected function name after 'fn'",
+        FunctionDeclHead::Kernel => "expected function name after 'kernel fn'",
+        FunctionDeclHead::System => "expected system name after 'system'",
     }
+}
+
+fn parse_optional_type_params(p: &mut Parser) {
+    if !p.at(SyntaxKind::LBracket) {
+        return;
+    }
+    let m = p.start();
+    p.bump(); // consume [
+    let mut first = true;
+    while !p.at(SyntaxKind::RBracket) && !p.is_at_eof() {
+        if !first {
+            if p.at(SyntaxKind::Comma) {
+                p.bump();
+            } else {
+                break;
+            }
+        }
+        p.expect_with_message(SyntaxKind::Ident, "expected type parameter name");
+        // Optional bound: T: BoundName
+        if p.at(SyntaxKind::Colon) {
+            p.bump();
+            p.expect_with_message(SyntaxKind::Ident, "expected bound name after ':'");
+        }
+        first = false;
+    }
+    p.expect_with_message(SyntaxKind::RBracket, "expected ']' after type parameters");
+    m.complete(p, SyntaxKind::TypeParamList);
 }
 
 fn parse_system_metadata(p: &mut Parser) {

@@ -2,6 +2,10 @@ use crate::parser::SyntaxNode;
 use crate::parser::SyntaxToken;
 use crate::parser::kind::SyntaxKind;
 
+pub(crate) fn is_name_like_label_token(kind: SyntaxKind) -> bool {
+    kind.is_name_like_label()
+}
+
 pub trait AstNode {
     fn can_cast(kind: SyntaxKind) -> bool;
     fn cast(node: SyntaxNode) -> Option<Self>
@@ -41,6 +45,7 @@ pub enum Stmt {
     ValueDef(ValueDef),
     EnumDef(EnumDef),
     FuncDef(FuncDef),
+    KernelDef(KernelDef),
     SystemDef(SystemDef),
     StyleProfileDef(StyleProfileDef),
     GeneratorProfileDef(GeneratorProfileDef),
@@ -74,6 +79,7 @@ impl AstNode for Stmt {
                 | SyntaxKind::ValueDef
                 | SyntaxKind::EnumDef
                 | SyntaxKind::FuncDef
+                | SyntaxKind::KernelDef
                 | SyntaxKind::SystemDef
                 | SyntaxKind::StyleProfileDef
                 | SyntaxKind::GeneratorProfileDef
@@ -105,6 +111,7 @@ impl AstNode for Stmt {
             SyntaxKind::ValueDef => ValueDef::cast(node).map(Stmt::ValueDef),
             SyntaxKind::EnumDef => EnumDef::cast(node).map(Stmt::EnumDef),
             SyntaxKind::FuncDef => FuncDef::cast(node).map(Stmt::FuncDef),
+            SyntaxKind::KernelDef => KernelDef::cast(node).map(Stmt::KernelDef),
             SyntaxKind::SystemDef => SystemDef::cast(node).map(Stmt::SystemDef),
             SyntaxKind::StyleProfileDef => StyleProfileDef::cast(node).map(Stmt::StyleProfileDef),
             SyntaxKind::GeneratorProfileDef => {
@@ -145,6 +152,7 @@ impl AstNode for Stmt {
             Stmt::ValueDef(it) => it.syntax(),
             Stmt::EnumDef(it) => it.syntax(),
             Stmt::FuncDef(it) => it.syntax(),
+            Stmt::KernelDef(it) => it.syntax(),
             Stmt::SystemDef(it) => it.syntax(),
             Stmt::StyleProfileDef(it) => it.syntax(),
             Stmt::GeneratorProfileDef(it) => it.syntax(),
@@ -876,6 +884,7 @@ macro_rules! impl_function_like_def {
 }
 
 impl_function_like_def!(SystemDef, SyntaxKind::SystemDef);
+impl_function_like_def!(KernelDef, SyntaxKind::KernelDef);
 macro_rules! impl_profiled_spec_def {
     (
         $def_name:ident,
@@ -1885,7 +1894,7 @@ impl NamedArg {
         self.0
             .children_with_tokens()
             .filter_map(|it| it.into_token())
-            .find(|it| it.kind() == SyntaxKind::Ident)
+            .find(|it| is_name_like_label_token(it.kind()))
     }
 
     pub fn value(&self) -> Option<Expr> {
@@ -2405,6 +2414,53 @@ private {
             }
         }
         assert_eq!(names, vec!["helper".to_string(), "helper_gate".to_string()]);
+    }
+
+    #[test]
+    fn root_statements_capture_top_level_kernel_definitions() {
+        let source = r#"
+kernel fn shade() -> Nothing {
+    return nothing
+}
+"#;
+        let syntax = parser::parse(source);
+        let root = Root::cast(syntax).expect("root");
+        let kernel = root
+            .statements()
+            .find_map(|stmt| match stmt {
+                Stmt::KernelDef(kernel) => Some(kernel),
+                _ => None,
+            })
+            .expect("kernel definition");
+        assert_eq!(kernel.name().expect("kernel name").text(), "shade");
+    }
+
+    #[test]
+    fn private_block_exposes_nested_kernel_statements() {
+        let source = r#"
+private {
+    kernel fn shade() -> Nothing {
+        return nothing
+    }
+}
+"#;
+        let syntax = parser::parse(source);
+        let root = Root::cast(syntax).expect("root");
+        let private = root
+            .statements()
+            .find_map(|stmt| match stmt {
+                Stmt::PrivateBlock(block) => Some(block),
+                _ => None,
+            })
+            .expect("private block");
+        let kernel = private
+            .statements()
+            .find_map(|stmt| match stmt {
+                Stmt::KernelDef(kernel) => Some(kernel),
+                _ => None,
+            })
+            .expect("kernel definition");
+        assert_eq!(kernel.name().expect("kernel name").text(), "shade");
     }
 
     #[test]

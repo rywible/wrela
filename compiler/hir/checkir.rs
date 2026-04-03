@@ -1,5 +1,7 @@
 use crate::hir::arena::Idx;
-use crate::hir::{BinaryOp, Body, Expr, Function, FunctionKind, Literal, Module, Stmt, UnaryOp};
+use crate::hir::{
+    BinaryOp, Body, Expr, Function, FunctionKind, FunctionRole, Literal, Module, Stmt, UnaryOp,
+};
 use smol_str::SmolStr;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -126,6 +128,7 @@ pub fn extract_module(module: &Module) -> CheckIrModule {
     for (func_idx, func) in module.functions.iter() {
         let is_legacy_check = matches!(func.kind, FunctionKind::Check | FunctionKind::CheckMethod);
         let is_boolean_fn = matches!(func.kind, FunctionKind::Function | FunctionKind::Method)
+            && matches!(func.role, FunctionRole::Function)
             && returns_boolean(func);
         if !is_legacy_check && !is_boolean_fn {
             continue;

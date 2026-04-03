@@ -15,6 +15,7 @@ mod host;
 mod kernel;
 pub mod reactor;
 mod unsafe_primitives;
+mod virtual_gpu;
 pub mod wasm_runtime;
 mod web;
 
@@ -1469,6 +1470,164 @@ pub extern "C" fn wr_list_len(list_val: Value) -> Value {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn wr_gpu_buffer_new(len: Value, default_value: Value) -> Value {
+    virtual_gpu::gpu_buffer_new(len, default_value)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_gpu_buffer_len(handle: Value) -> Value {
+    virtual_gpu::gpu_buffer_len(handle)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_gpu_buffer_get(handle: Value, index: Value) -> Value {
+    virtual_gpu::gpu_buffer_get(handle, index)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_gpu_buffer_set(handle: Value, index: Value, value: Value) -> Value {
+    virtual_gpu::gpu_buffer_set(handle, index, value)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_gpu_global_invocation_id() -> Value {
+    virtual_gpu::global_invocation_id()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_gpu_local_invocation_id() -> Value {
+    virtual_gpu::local_invocation_id()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_gpu_workgroup_id() -> Value {
+    virtual_gpu::workgroup_id()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_gpu_num_workgroups() -> Value {
+    virtual_gpu::num_workgroups()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_gpu_workgroup_size() -> Value {
+    virtual_gpu::workgroup_size()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_gpu_dispatch_begin(
+    num_workgroups_x: Value,
+    num_workgroups_y: Value,
+    num_workgroups_z: Value,
+    workgroup_size_x: Value,
+    workgroup_size_y: Value,
+    workgroup_size_z: Value,
+    schedule: Value,
+) -> Value {
+    virtual_gpu::dispatch_begin(
+        num_workgroups_x,
+        num_workgroups_y,
+        num_workgroups_z,
+        workgroup_size_x,
+        workgroup_size_y,
+        workgroup_size_z,
+        schedule,
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_gpu_dispatch_select_invocation(index: Value) -> Value {
+    virtual_gpu::dispatch_select_invocation(index)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_gpu_dispatch_end() -> Value {
+    virtual_gpu::dispatch_end()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_gpu_atomic_i32_new(initial: Value) -> Value {
+    virtual_gpu::gpu_atomic_i32_new(initial)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_gpu_atomic_i32_drop(handle: Value) -> Value {
+    virtual_gpu::gpu_atomic_i32_drop(handle)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_gpu_atomic_i32_load(handle: Value) -> Value {
+    virtual_gpu::gpu_atomic_i32_load(handle)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_gpu_atomic_i32_store(handle: Value, value: Value) -> Value {
+    let _ = virtual_gpu::gpu_atomic_i32_store(handle, value);
+    Value::nil()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_gpu_atomic_i32_fetch_add(handle: Value, delta: Value) -> Value {
+    virtual_gpu::gpu_atomic_i32_fetch_add(handle, delta)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_gpu_atomic_u32_new(initial: Value) -> Value {
+    virtual_gpu::gpu_atomic_u32_new(initial)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_gpu_atomic_u32_drop(handle: Value) -> Value {
+    virtual_gpu::gpu_atomic_u32_drop(handle)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_gpu_atomic_u32_load(handle: Value) -> Value {
+    virtual_gpu::gpu_atomic_u32_load(handle)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_gpu_atomic_u32_store(handle: Value, value: Value) -> Value {
+    let _ = virtual_gpu::gpu_atomic_u32_store(handle, value);
+    Value::nil()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_gpu_atomic_u32_fetch_add(handle: Value, delta: Value) -> Value {
+    virtual_gpu::gpu_atomic_u32_fetch_add(handle, delta)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_gpu_schedule_deterministic() -> Value {
+    virtual_gpu::gpu_schedule_deterministic()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_gpu_schedule_reverse() -> Value {
+    virtual_gpu::gpu_schedule_reverse()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_gpu_schedule_shuffle(seed: Value) -> Value {
+    virtual_gpu::gpu_schedule_shuffle(seed)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_gpu_schedule_workgroup_reverse() -> Value {
+    virtual_gpu::gpu_schedule_workgroup_reverse()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_gpu_schedule_workgroup_shuffle(seed: Value) -> Value {
+    virtual_gpu::gpu_schedule_workgroup_shuffle(seed)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_gpu_schedule_round_robin_workgroups() -> Value {
+    virtual_gpu::gpu_schedule_round_robin_workgroups()
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn wr_num_add(a: Value, b: Value) -> Value {
     num_add(a, b)
 }
@@ -2838,7 +2997,6 @@ fn num_kind(val: Value) -> Option<NumKind> {
     None
 }
 
-
 fn is_string(val: Value) -> bool {
     if !val.is_ptr() {
         return false;
@@ -3883,5 +4041,93 @@ mod tests {
             caps & crate::unsafe_primitives::RUNTIME_CAP_ABI_NEGOTIATION_MARKER,
             crate::unsafe_primitives::RUNTIME_CAP_ABI_NEGOTIATION_MARKER
         );
+    }
+
+    #[test]
+    fn gpu_atomic_exports_round_trip() {
+        let handle = wr_gpu_atomic_i32_new(Value::from_int(5));
+        assert!(handle.is_int());
+        assert!(int_value(wr_gpu_atomic_i32_load(handle)) == Some(5));
+        assert!(int_value(wr_gpu_atomic_i32_fetch_add(handle, Value::from_int(7))) == Some(5));
+        assert!(int_value(wr_gpu_atomic_i32_load(handle)) == Some(12));
+        assert!(wr_gpu_atomic_i32_store(handle, Value::from_int(99)).is_nil());
+        assert!(int_value(wr_gpu_atomic_i32_load(handle)) == Some(99));
+        assert!(wr_gpu_atomic_i32_drop(handle) == Value::from_bool(true));
+
+        let handle = wr_gpu_atomic_u32_new(Value::from_int(11));
+        assert!(handle.is_int());
+        assert!(int_value(wr_gpu_atomic_u32_load(handle)) == Some(11));
+        assert!(int_value(wr_gpu_atomic_u32_fetch_add(handle, Value::from_int(2))) == Some(11));
+        assert!(int_value(wr_gpu_atomic_u32_load(handle)) == Some(13));
+        assert!(wr_gpu_atomic_u32_store(handle, Value::from_int(123)).is_nil());
+        assert!(int_value(wr_gpu_atomic_u32_load(handle)) == Some(123));
+        assert!(wr_gpu_atomic_u32_drop(handle) == Value::from_bool(true));
+    }
+
+    #[test]
+    fn gpu_schedule_exports_drive_reverse_dispatch() {
+        let schedule = wr_gpu_schedule_reverse();
+        assert!(schedule.is_int());
+        wr_gpu_dispatch_begin(
+            Value::from_int(2),
+            Value::from_int(1),
+            Value::from_int(1),
+            Value::from_int(2),
+            Value::from_int(1),
+            Value::from_int(1),
+            schedule,
+        );
+        wr_gpu_dispatch_select_invocation(Value::from_int(0));
+        let gid = wr_gpu_global_invocation_id();
+        assert_eq!(int_value(crate::list::list_get(gid, 0)), Some(3));
+        wr_gpu_dispatch_end();
+    }
+
+    #[test]
+    fn gpu_schedule_exports_return_immediate_values() {
+        let deterministic = wr_gpu_schedule_deterministic();
+        let reverse = wr_gpu_schedule_reverse();
+        let workgroup_reverse = wr_gpu_schedule_workgroup_reverse();
+        let round_robin = wr_gpu_schedule_round_robin_workgroups();
+
+        assert!(deterministic.is_int());
+        assert!(reverse.is_int());
+        assert!(workgroup_reverse.is_int());
+        assert!(round_robin.is_int());
+        assert!(deterministic != reverse);
+        assert!(reverse != workgroup_reverse);
+        assert!(workgroup_reverse != round_robin);
+    }
+
+    #[test]
+    fn gpu_schedule_exports_drive_round_robin_dispatch() {
+        let schedule = wr_gpu_schedule_round_robin_workgroups();
+        wr_gpu_dispatch_begin(
+            Value::from_int(2),
+            Value::from_int(1),
+            Value::from_int(1),
+            Value::from_int(2),
+            Value::from_int(1),
+            Value::from_int(1),
+            schedule,
+        );
+
+        wr_gpu_dispatch_select_invocation(Value::from_int(0));
+        let gid0 = wr_gpu_global_invocation_id();
+        assert_eq!(int_value(crate::list::list_get(gid0, 0)), Some(0));
+
+        wr_gpu_dispatch_select_invocation(Value::from_int(1));
+        let gid1 = wr_gpu_global_invocation_id();
+        assert_eq!(int_value(crate::list::list_get(gid1, 0)), Some(2));
+
+        wr_gpu_dispatch_select_invocation(Value::from_int(2));
+        let gid2 = wr_gpu_global_invocation_id();
+        assert_eq!(int_value(crate::list::list_get(gid2, 0)), Some(1));
+
+        wr_gpu_dispatch_select_invocation(Value::from_int(3));
+        let gid3 = wr_gpu_global_invocation_id();
+        assert_eq!(int_value(crate::list::list_get(gid3, 0)), Some(3));
+
+        wr_gpu_dispatch_end();
     }
 }

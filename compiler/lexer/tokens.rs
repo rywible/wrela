@@ -28,6 +28,8 @@ pub enum Token {
     Derives,
     #[strum(serialize = "fn")]
     Fn,
+    #[strum(serialize = "kernel")]
+    Kernel,
     #[strum(serialize = "system")]
     System,
     #[strum(serialize = "widget")]
@@ -246,6 +248,7 @@ impl Token {
                 | Token::Must
                 | Token::Derives
                 | Token::Fn
+                | Token::Kernel
                 | Token::System
                 | Token::Widget
                 | Token::If

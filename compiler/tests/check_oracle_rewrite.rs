@@ -4,8 +4,8 @@ use wrela::hir;
 use wrela::hir::checkir::{CheckBinaryOp, CheckValue, extract_module};
 use wrela::mir;
 use wrela::mir::ir::{
-    BasicBlock, BlockId, Local, LocalId, MirFunction, MirModule, MirType, Place,
-    PortableAbiType, Rvalue, Stmt, Temp, TempId, Terminator, Value,
+    BasicBlock, BlockId, Local, LocalId, MirFunction, MirModule, MirType, Place, PortableAbiType,
+    Rvalue, Stmt, Temp, TempId, Terminator, Value,
 };
 use wrela::mir::rewrite::{
     RewriteBudget, admit_rulepack, admit_rulepack_scored, apply_rulepack, mine_admit_and_apply,

@@ -250,18 +250,21 @@ fn lower_function(
     MirFunction {
         name: lowerer.name,
         params: lowerer.params,
-        abi_params: func
-            .params
-            .iter()
-            .map(|param| {
+        abi_params: {
+            let mut abi_params = Vec::with_capacity(func.params.len() + usize::from(is_method));
+            if is_method {
+                abi_params.push(PortableAbiType::Value);
+            }
+            abi_params.extend(func.params.iter().map(|param| {
                 portable_abi_from_type_ref(
                     param.ty.as_ref(),
                     module,
                     type_tags,
                     &mut HashSet::new(),
                 )
-            })
-            .collect(),
+            }));
+            abi_params
+        },
         abi_return: portable_abi_from_type_ref(
             func.ret_type.as_ref(),
             module,
@@ -2141,7 +2144,8 @@ impl FunctionLowerer {
                         return Value::Temp(temp);
                     }
                 }
-                if let Some(component_index) = vector_component_index(self.expr_type(*object), member)
+                if let Some(component_index) =
+                    vector_component_index(self.expr_type(*object), member)
                 {
                     let base = self.lower_expr(body, *object);
                     let temp = self.new_temp_for_expr(expr_id);
@@ -2150,7 +2154,10 @@ impl FunctionLowerer {
                         value: Rvalue::Call {
                             kind: CallKind::Sync,
                             target: CallTarget::Function(SmolStr::new("__wr_vec_component")),
-                            args: vec![base, Value::Const(Literal::Integer(component_index as i64))],
+                            args: vec![
+                                base,
+                                Value::Const(Literal::Integer(component_index as i64)),
+                            ],
                         },
                         span,
                     });
@@ -2190,6 +2197,9 @@ impl FunctionLowerer {
                 Value::Temp(temp)
             }
             Expr::Call { callee, args, .. } => {
+                if let Some(spec) = self.parse_dispatch_compute(body, expr_id) {
+                    return self.lower_dispatch_compute_call(body, span, &spec);
+                }
                 if let Some((class_name, class_id)) = self.resolve_class_init_target(body, *callee)
                 {
                     let fields = self
@@ -2976,6 +2986,334 @@ impl FunctionLowerer {
         })
     }
 
+    fn parse_dispatch_compute(
+        &self,
+        body: &hir::Body,
+        expr_id: hir::Idx<Expr>,
+    ) -> Option<ComputeDispatchSpec> {
+        let (callee, args) = match &body.exprs[expr_id] {
+            Expr::Call { callee, args, .. } => (callee, args),
+            _ => return None,
+        };
+        let Expr::Variable(name) = &body.exprs[*callee] else {
+            return None;
+        };
+        if name.as_str() != "dispatch_compute" {
+            return None;
+        }
+        let mut kernel = None;
+        let mut workgroups_x = None;
+        let mut workgroups_y = None;
+        let mut workgroups_z = None;
+        let mut workgroup_size_x = None;
+        let mut workgroup_size_y = None;
+        let mut workgroup_size_z = None;
+        let mut schedule = None;
+        let mut kernel_args = Vec::new();
+        for arg in args {
+            match arg {
+                hir::Arg::Positional { value, .. } => kernel_args.push(*value),
+                hir::Arg::Named { name, value, .. } => match name.as_str() {
+                    "kernel" => {
+                        if let Expr::Variable(func_name) = &body.exprs[*value] {
+                            kernel = Some(func_name.clone());
+                        } else {
+                            return None;
+                        }
+                    }
+                    "workgroups_x" => workgroups_x = Some(*value),
+                    "workgroups_y" => workgroups_y = Some(*value),
+                    "workgroups_z" => workgroups_z = Some(*value),
+                    "workgroup_size_x" => workgroup_size_x = Some(*value),
+                    "workgroup_size_y" => workgroup_size_y = Some(*value),
+                    "workgroup_size_z" => workgroup_size_z = Some(*value),
+                    "schedule" => schedule = Some(*value),
+                    _ => kernel_args.push(*value),
+                },
+            }
+        }
+        Some(ComputeDispatchSpec {
+            kernel: kernel?,
+            workgroups_x: workgroups_x?,
+            workgroups_y: workgroups_y?,
+            workgroups_z: workgroups_z?,
+            workgroup_size_x: workgroup_size_x?,
+            workgroup_size_y: workgroup_size_y?,
+            workgroup_size_z: workgroup_size_z?,
+            schedule,
+            kernel_args,
+        })
+    }
+
+    fn lower_dispatch_compute_call(
+        &mut self,
+        body: &hir::Body,
+        span: TextRange,
+        spec: &ComputeDispatchSpec,
+    ) -> Value {
+        let workgroups_x = self.lower_expr(body, spec.workgroups_x);
+        let workgroups_y = self.lower_expr(body, spec.workgroups_y);
+        let workgroups_z = self.lower_expr(body, spec.workgroups_z);
+        let workgroup_size_x = self.lower_expr(body, spec.workgroup_size_x);
+        let workgroup_size_y = self.lower_expr(body, spec.workgroup_size_y);
+        let workgroup_size_z = self.lower_expr(body, spec.workgroup_size_z);
+        let schedule = spec
+            .schedule
+            .map(|expr| self.lower_expr(body, expr))
+            .unwrap_or(Value::Const(Literal::Nil));
+        let kernel_args = spec
+            .kernel_args
+            .iter()
+            .map(|expr| self.lower_expr(body, *expr))
+            .collect::<Vec<_>>();
+
+        let workgroups_x_local = self.new_local(
+            SmolStr::new(format!("$gpu_workgroups_x{}", self.locals.len())),
+            false,
+            MirType::Integer,
+        );
+        let workgroups_y_local = self.new_local(
+            SmolStr::new(format!("$gpu_workgroups_y{}", self.locals.len())),
+            false,
+            MirType::Integer,
+        );
+        let workgroups_z_local = self.new_local(
+            SmolStr::new(format!("$gpu_workgroups_z{}", self.locals.len())),
+            false,
+            MirType::Integer,
+        );
+        let workgroup_size_x_local = self.new_local(
+            SmolStr::new(format!("$gpu_workgroup_size_x{}", self.locals.len())),
+            false,
+            MirType::Integer,
+        );
+        let workgroup_size_y_local = self.new_local(
+            SmolStr::new(format!("$gpu_workgroup_size_y{}", self.locals.len())),
+            false,
+            MirType::Integer,
+        );
+        let workgroup_size_z_local = self.new_local(
+            SmolStr::new(format!("$gpu_workgroup_size_z{}", self.locals.len())),
+            false,
+            MirType::Integer,
+        );
+        for (local, value) in [
+            (workgroups_x_local, workgroups_x),
+            (workgroups_y_local, workgroups_y),
+            (workgroups_z_local, workgroups_z),
+            (workgroup_size_x_local, workgroup_size_x),
+            (workgroup_size_y_local, workgroup_size_y),
+            (workgroup_size_z_local, workgroup_size_z),
+        ] {
+            self.push_stmt(MirStmt::Assign {
+                place: Place::Local(local),
+                value: Rvalue::Use(value),
+                span,
+            });
+        }
+
+        let total_x_local = self.new_local(
+            SmolStr::new(format!("$gpu_total_x{}", self.locals.len())),
+            false,
+            MirType::Integer,
+        );
+        let total_y_local = self.new_local(
+            SmolStr::new(format!("$gpu_total_y{}", self.locals.len())),
+            false,
+            MirType::Integer,
+        );
+        let total_z_local = self.new_local(
+            SmolStr::new(format!("$gpu_total_z{}", self.locals.len())),
+            false,
+            MirType::Integer,
+        );
+        let total_xy_local = self.new_local(
+            SmolStr::new(format!("$gpu_total_xy{}", self.locals.len())),
+            false,
+            MirType::Integer,
+        );
+        let total_count_local = self.new_local(
+            SmolStr::new(format!("$gpu_total_count{}", self.locals.len())),
+            false,
+            MirType::Integer,
+        );
+        for (local, lhs, rhs) in [
+            (
+                total_x_local,
+                Value::Local(workgroups_x_local),
+                Value::Local(workgroup_size_x_local),
+            ),
+            (
+                total_y_local,
+                Value::Local(workgroups_y_local),
+                Value::Local(workgroup_size_y_local),
+            ),
+            (
+                total_z_local,
+                Value::Local(workgroups_z_local),
+                Value::Local(workgroup_size_z_local),
+            ),
+        ] {
+            let temp = self.new_temp(MirType::Integer);
+            self.push_stmt(MirStmt::Assign {
+                place: Place::Temp(temp),
+                value: Rvalue::Binary {
+                    op: BinaryOp::Mul,
+                    lhs,
+                    rhs,
+                },
+                span,
+            });
+            self.push_stmt(MirStmt::Assign {
+                place: Place::Local(local),
+                value: Rvalue::Use(Value::Temp(temp)),
+                span,
+            });
+        }
+        let total_xy_temp = self.new_temp(MirType::Integer);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(total_xy_temp),
+            value: Rvalue::Binary {
+                op: BinaryOp::Mul,
+                lhs: Value::Local(total_x_local),
+                rhs: Value::Local(total_y_local),
+            },
+            span,
+        });
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Local(total_xy_local),
+            value: Rvalue::Use(Value::Temp(total_xy_temp)),
+            span,
+        });
+        let total_count_temp = self.new_temp(MirType::Integer);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(total_count_temp),
+            value: Rvalue::Binary {
+                op: BinaryOp::Mul,
+                lhs: Value::Local(total_xy_local),
+                rhs: Value::Local(total_z_local),
+            },
+            span,
+        });
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Local(total_count_local),
+            value: Rvalue::Use(Value::Temp(total_count_temp)),
+            span,
+        });
+
+        let dispatch_begin = self.new_temp(MirType::Nil);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(dispatch_begin),
+            value: Rvalue::Call {
+                kind: CallKind::Sync,
+                target: CallTarget::Function(SmolStr::new("__wr_gpu_dispatch_begin")),
+                args: vec![
+                    Value::Local(workgroups_x_local),
+                    Value::Local(workgroups_y_local),
+                    Value::Local(workgroups_z_local),
+                    Value::Local(workgroup_size_x_local),
+                    Value::Local(workgroup_size_y_local),
+                    Value::Local(workgroup_size_z_local),
+                    schedule,
+                ],
+            },
+            span,
+        });
+
+        let loop_index_local = self.new_local(
+            SmolStr::new(format!("$gpu_linear_index{}", self.locals.len())),
+            true,
+            MirType::Integer,
+        );
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Local(loop_index_local),
+            value: Rvalue::Use(Value::Const(Literal::Integer(0))),
+            span,
+        });
+
+        let head_block = self.new_block();
+        let body_block = self.new_block();
+        let exit_block = self.new_block();
+        self.set_terminator(Terminator::Jump {
+            target: head_block,
+            span,
+        });
+
+        self.current_block = head_block;
+        let cond_temp = self.new_temp(MirType::Boolean);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(cond_temp),
+            value: Rvalue::Binary {
+                op: BinaryOp::Lt,
+                lhs: Value::Local(loop_index_local),
+                rhs: Value::Local(total_count_local),
+            },
+            span,
+        });
+        self.set_terminator(Terminator::Branch {
+            cond: Value::Temp(cond_temp),
+            then_target: body_block,
+            else_target: exit_block,
+            span,
+        });
+
+        self.current_block = body_block;
+        let dispatch_select = self.new_temp(MirType::Nil);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(dispatch_select),
+            value: Rvalue::Call {
+                kind: CallKind::Sync,
+                target: CallTarget::Function(SmolStr::new("__wr_gpu_dispatch_select_invocation")),
+                args: vec![Value::Local(loop_index_local)],
+            },
+            span,
+        });
+
+        let kernel_result = self.new_temp(MirType::Nil);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(kernel_result),
+            value: Rvalue::Call {
+                kind: CallKind::Sync,
+                target: CallTarget::Function(spec.kernel.clone()),
+                args: kernel_args,
+            },
+            span,
+        });
+
+        let next_index = self.new_temp(MirType::Integer);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(next_index),
+            value: Rvalue::Binary {
+                op: BinaryOp::Add,
+                lhs: Value::Local(loop_index_local),
+                rhs: Value::Const(Literal::Integer(1)),
+            },
+            span,
+        });
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Local(loop_index_local),
+            value: Rvalue::Use(Value::Temp(next_index)),
+            span,
+        });
+        self.set_terminator(Terminator::Jump {
+            target: head_block,
+            span,
+        });
+
+        self.current_block = exit_block;
+        let dispatch_end = self.new_temp(MirType::Nil);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(dispatch_end),
+            value: Rvalue::Call {
+                kind: CallKind::Sync,
+                target: CallTarget::Function(SmolStr::new("__wr_gpu_dispatch_end")),
+                args: Vec::new(),
+            },
+            span,
+        });
+        Value::Const(Literal::Nil)
+    }
+
     fn lower_await(&mut self, body: &hir::Body, expr_id: hir::Idx<Expr>, span: TextRange) -> Value {
         let pending = self.lower_pending_call_or_value(body, expr_id, span);
         let temp = self.new_temp_for_expr(expr_id);
@@ -3279,6 +3617,18 @@ struct ClassTargetInfo {
     field_values: Vec<Option<Value>>,
 }
 
+struct ComputeDispatchSpec {
+    kernel: SmolStr,
+    workgroups_x: hir::Idx<Expr>,
+    workgroups_y: hir::Idx<Expr>,
+    workgroups_z: hir::Idx<Expr>,
+    workgroup_size_x: hir::Idx<Expr>,
+    workgroup_size_y: hir::Idx<Expr>,
+    workgroup_size_z: hir::Idx<Expr>,
+    schedule: Option<hir::Idx<Expr>>,
+    kernel_args: Vec<hir::Idx<Expr>>,
+}
+
 fn pool_size_from_expr(body: &hir::Body, expr_id: hir::Idx<Expr>) -> Option<hir::PoolSize> {
     match &body.exprs[expr_id] {
         Expr::Literal(hir::Literal::Integer(value)) => Some(hir::PoolSize::Fixed(*value)),
@@ -3376,6 +3726,9 @@ fn mir_type_from_type(ty: &Type) -> MirType {
         Type::Mat4 => MirType::Mat4,
         Type::Quat => MirType::Quat,
         Type::GpuBuffer(_) => MirType::Named(SmolStr::new("Buffer")),
+        Type::GpuAtomicI32 => MirType::Named(SmolStr::new("GpuAtomicI32")),
+        Type::GpuAtomicU32 => MirType::Named(SmolStr::new("GpuAtomicU32")),
+        Type::GpuDispatchSchedule => MirType::Named(SmolStr::new("GpuDispatchSchedule")),
         Type::Texture2D => MirType::Named(SmolStr::new("Texture2D")),
         Type::Sampler => MirType::Named(SmolStr::new("Sampler")),
         _ => MirType::Unknown,
@@ -3655,6 +4008,35 @@ fn builtin_function_names() -> Vec<SmolStr> {
         SmolStr::new("pow"),
         SmolStr::new("distance"),
         SmolStr::new("reflect"),
+        SmolStr::new("gpu_buffer_new"),
+        SmolStr::new("gpu_buffer_len"),
+        SmolStr::new("gpu_buffer_get"),
+        SmolStr::new("gpu_buffer_set"),
+        SmolStr::new("gpu_atomic_i32_new"),
+        SmolStr::new("gpu_atomic_i32_drop"),
+        SmolStr::new("gpu_atomic_i32_load"),
+        SmolStr::new("gpu_atomic_i32_store"),
+        SmolStr::new("gpu_atomic_i32_fetch_add"),
+        SmolStr::new("gpu_atomic_u32_new"),
+        SmolStr::new("gpu_atomic_u32_drop"),
+        SmolStr::new("gpu_atomic_u32_load"),
+        SmolStr::new("gpu_atomic_u32_store"),
+        SmolStr::new("gpu_atomic_u32_fetch_add"),
+        SmolStr::new("global_invocation_id"),
+        SmolStr::new("local_invocation_id"),
+        SmolStr::new("workgroup_id"),
+        SmolStr::new("num_workgroups"),
+        SmolStr::new("workgroup_size"),
+        SmolStr::new("gpu_schedule_deterministic"),
+        SmolStr::new("gpu_schedule_reverse"),
+        SmolStr::new("gpu_schedule_shuffle"),
+        SmolStr::new("gpu_schedule_workgroup_reverse"),
+        SmolStr::new("gpu_schedule_workgroup_shuffle"),
+        SmolStr::new("gpu_schedule_round_robin_workgroups"),
+        SmolStr::new("dispatch_compute"),
+        SmolStr::new("__wr_gpu_dispatch_begin"),
+        SmolStr::new("__wr_gpu_dispatch_select_invocation"),
+        SmolStr::new("__wr_gpu_dispatch_end"),
         SmolStr::new("__wr_map_new"),
         SmolStr::new("__wr_list_push"),
         SmolStr::new("__wr_list_get"),

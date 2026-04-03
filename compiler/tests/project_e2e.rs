@@ -921,6 +921,81 @@ fn run() -> Integer {
 }
 
 #[test]
+fn function_effect_classifies_virtual_gpu_builtins() {
+    let base = tempfile::tempdir().expect("tempdir");
+    let entry_path = base.path().join("src").join("main.wr");
+
+    write_temp(
+        &entry_path,
+        r#"fn build_schedule() -> GpuDispatchSchedule {
+    return gpu_schedule_reverse()
+}
+
+fn read_counter(counter: GpuAtomicI32) -> I32 {
+    return gpu_atomic_i32_load(atomic=counter)
+}
+
+kernel fn run_kernel(counter: GpuAtomicI32, observed: GpuBuffer[I32]) -> Nothing {
+    gid = global_invocation_id()
+    previous = gpu_atomic_i32_fetch_add(atomic=counter, delta=i32(1))
+    gpu_buffer_set(buffer=observed, index=gid[0], value=previous)
+}
+
+fn launch() -> Nothing {
+    counter = gpu_atomic_i32_new(initial=i32(0))
+    observed = gpu_buffer_new(length=4, default_value=i32(0))
+    dispatch_compute(
+        kernel=run_kernel,
+        counter=counter,
+        observed=observed,
+        schedule=build_schedule(),
+        workgroups_x=u32(2),
+        workgroups_y=u32(1),
+        workgroups_z=u32(1),
+        workgroup_size_x=u32(2),
+        workgroup_size_y=u32(1),
+        workgroup_size_z=u32(1)
+    )
+}
+
+fn run() -> Integer {
+    launch()
+    return 0
+}
+"#,
+    );
+
+    let project = load_project(&entry_path).expect("load project");
+    let build_schedule = project
+        .function_effects
+        .iter()
+        .find(|entry| entry.module == "main" && entry.function == "build_schedule")
+        .expect("missing build_schedule effect");
+    assert_eq!(build_schedule.effect, FunctionEffect::Pure);
+
+    let read_counter = project
+        .function_effects
+        .iter()
+        .find(|entry| entry.module == "main" && entry.function == "read_counter")
+        .expect("missing read_counter effect");
+    assert_eq!(read_counter.effect, FunctionEffect::HostRead);
+
+    let kernel = project
+        .function_effects
+        .iter()
+        .find(|entry| entry.module == "main" && entry.function == "run_kernel")
+        .expect("missing kernel effect");
+    assert_eq!(kernel.effect, FunctionEffect::HostWrite);
+
+    let launch = project
+        .function_effects
+        .iter()
+        .find(|entry| entry.module == "main" && entry.function == "launch")
+        .expect("missing launch effect");
+    assert_eq!(launch.effect, FunctionEffect::HostWrite);
+}
+
+#[test]
 fn host_http_import_outside_integrations_fails() {
     let base = tempfile::tempdir().expect("tempdir");
     let entry_path = base.path().join("src").join("main.wr");

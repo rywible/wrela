@@ -918,6 +918,7 @@ impl<'a> Checker<'a> {
         }
 
         if matches!(func.kind, FunctionKind::Function | FunctionKind::Method)
+            && matches!(func.role, FunctionRole::Function)
             && returns_boolean(func.ret_type.as_ref())
         {
             let ret_span = func
@@ -1891,7 +1892,6 @@ impl<'a> Checker<'a> {
         };
         self.is_pool_of_call(body, *callee)
     }
-
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2162,13 +2162,19 @@ impl<'a> Checker<'a> {
         matches!(
             name.as_str(),
             "Integer"
+                | "I32"
+                | "U32"
+                | "I64"
+                | "U64"
                 | "Boolean"
                 | "Nothing"
                 | "Nil"
                 | "Float"
+                | "F32"
                 | "String"
                 | "List"
                 | "Map"
+                | "Array"
                 | "Actor"
                 | "Pending"
                 | "Iterator"
@@ -2176,6 +2182,16 @@ impl<'a> Checker<'a> {
                 | "Pool"
                 | "Bytes"
                 | "StoredBoolean"
+                | "Vec2"
+                | "Vec3"
+                | "Vec4"
+                | "Mat3"
+                | "Mat4"
+                | "Quat"
+                | "GpuBuffer"
+                | "GpuAtomicI32"
+                | "GpuAtomicU32"
+                | "GpuDispatchSchedule"
         )
     }
 }
@@ -2866,6 +2882,52 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
         (SmolStr::new("f32"), BindingKind::Function),
         (SmolStr::new("i32"), BindingKind::Function),
         (SmolStr::new("u32"), BindingKind::Function),
+        (SmolStr::new("gpu_buffer_new"), BindingKind::Function),
+        (SmolStr::new("gpu_buffer_len"), BindingKind::Function),
+        (SmolStr::new("gpu_buffer_get"), BindingKind::Function),
+        (SmolStr::new("gpu_buffer_set"), BindingKind::Function),
+        (SmolStr::new("gpu_atomic_i32_new"), BindingKind::Function),
+        (SmolStr::new("gpu_atomic_i32_drop"), BindingKind::Function),
+        (SmolStr::new("gpu_atomic_i32_load"), BindingKind::Function),
+        (SmolStr::new("gpu_atomic_i32_store"), BindingKind::Function),
+        (
+            SmolStr::new("gpu_atomic_i32_fetch_add"),
+            BindingKind::Function,
+        ),
+        (SmolStr::new("gpu_atomic_u32_new"), BindingKind::Function),
+        (SmolStr::new("gpu_atomic_u32_drop"), BindingKind::Function),
+        (SmolStr::new("gpu_atomic_u32_load"), BindingKind::Function),
+        (SmolStr::new("gpu_atomic_u32_store"), BindingKind::Function),
+        (
+            SmolStr::new("gpu_atomic_u32_fetch_add"),
+            BindingKind::Function,
+        ),
+        (
+            SmolStr::new("gpu_schedule_deterministic"),
+            BindingKind::Function,
+        ),
+        (SmolStr::new("gpu_schedule_reverse"), BindingKind::Function),
+        (SmolStr::new("gpu_schedule_shuffle"), BindingKind::Function),
+        (
+            SmolStr::new("gpu_schedule_workgroup_reverse"),
+            BindingKind::Function,
+        ),
+        (
+            SmolStr::new("gpu_schedule_workgroup_shuffle"),
+            BindingKind::Function,
+        ),
+        (
+            SmolStr::new("gpu_schedule_round_robin_workgroups"),
+            BindingKind::Function,
+        ),
+        (SmolStr::new("workgroup_barrier"), BindingKind::Function),
+        (SmolStr::new("storage_barrier"), BindingKind::Function),
+        (SmolStr::new("global_invocation_id"), BindingKind::Function),
+        (SmolStr::new("local_invocation_id"), BindingKind::Function),
+        (SmolStr::new("workgroup_id"), BindingKind::Function),
+        (SmolStr::new("num_workgroups"), BindingKind::Function),
+        (SmolStr::new("workgroup_size"), BindingKind::Function),
+        (SmolStr::new("dispatch_compute"), BindingKind::Function),
         (SmolStr::new("__wr_list_push"), BindingKind::Function),
         (SmolStr::new("__wr_list_get"), BindingKind::Function),
         (SmolStr::new("__wr_list_set"), BindingKind::Function),

@@ -624,8 +624,8 @@ fn terminator_successors(term: &Terminator) -> Vec<crate::mir::ir::BlockId> {
 mod tests {
     use super::*;
     use crate::mir::ir::{
-        AllocKind, BasicBlock, BlockId, Local, LocalId, MirFunction, MirType, Place, Rvalue, Stmt,
-        Temp, Terminator, Value,
+        AllocKind, BasicBlock, BlockId, Local, LocalId, MirFunction, MirType, Place,
+        PortableAbiType, Rvalue, Stmt, Temp, Terminator, Value,
     };
     use rowan::TextRange;
     use smol_str::SmolStr;

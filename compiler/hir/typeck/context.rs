@@ -31,9 +31,17 @@ fn supports_structural_value_type(
         }
         Type::Actor(_) | Type::Pending(_) => false,
         Type::Vec2 | Type::Vec3 | Type::Vec4 | Type::Mat3 | Type::Mat4 | Type::Quat => true,
-        Type::GpuBuffer(_) | Type::Texture2D | Type::Sampler => true,
+        Type::GpuBuffer(_)
+        | Type::GpuAtomicI32
+        | Type::GpuAtomicU32
+        | Type::GpuDispatchSchedule
+        | Type::Texture2D
+        | Type::Sampler => true,
         Type::Named(name, args) => {
             if name.as_str() == "Bytes" {
+                return true;
+            }
+            if args.is_empty() && is_portable_named_data_type_name(name.as_str()) {
                 return true;
             }
             if let Some(class_sig) = classes.get(name) {
@@ -98,6 +106,8 @@ fn check_function(
 ) {
     let mut fn_info = FunctionTypeInfo::default();
     let mut ctx = TypeContext::with_info(&mut fn_info);
+    ctx.set_function_lane(func.lane());
+    ctx.set_function_name(func.name.clone());
     ctx.enter_scope();
     let has_func_type_params = !func.type_params.is_empty();
     if has_func_type_params {
@@ -237,7 +247,8 @@ impl ClassIndex {
     fn new(module: &Module) -> Self {
         let mut classes = HashMap::new();
         for (_idx, class) in module.classes.iter() {
-            let type_params: Vec<SmolStr> = class.type_params.iter().map(|tp| tp.name.clone()).collect();
+            let type_params: Vec<SmolStr> =
+                class.type_params.iter().map(|tp| tp.name.clone()).collect();
             let param_set: HashSet<SmolStr> = type_params.iter().cloned().collect();
             let mut fields = HashMap::new();
             let mut field_mutable = HashMap::new();
@@ -313,7 +324,8 @@ impl EnumIndex {
     fn new(module: &Module) -> Self {
         let mut enums = HashMap::new();
         for (_idx, en) in module.enums.iter() {
-            let type_params: Vec<SmolStr> = en.type_params.iter().map(|tp| tp.name.clone()).collect();
+            let type_params: Vec<SmolStr> =
+                en.type_params.iter().map(|tp| tp.name.clone()).collect();
             let param_set: HashSet<SmolStr> = type_params.iter().cloned().collect();
             let mut variants = HashMap::new();
             for variant in &en.variants {
@@ -353,7 +365,11 @@ impl InterfaceIndex {
     fn new(module: &Module) -> Self {
         let mut interfaces = HashMap::new();
         for (_idx, interface) in module.interfaces.iter() {
-            let type_params: Vec<SmolStr> = interface.type_params.iter().map(|tp| tp.name.clone()).collect();
+            let type_params: Vec<SmolStr> = interface
+                .type_params
+                .iter()
+                .map(|tp| tp.name.clone())
+                .collect();
             let param_set: HashSet<SmolStr> = type_params.iter().cloned().collect();
             let mut methods = HashMap::new();
             for method in &interface.methods {
@@ -450,6 +466,7 @@ fn check_interface_conformance(
 
 struct FunctionIndex {
     functions: HashMap<SmolStr, FunctionSig>,
+    portable_functions: HashSet<SmolStr>,
 }
 
 impl FunctionIndex {
@@ -462,12 +479,15 @@ impl FunctionIndex {
         }
 
         let mut functions = HashMap::new();
+        let mut portable_functions = HashSet::new();
         for (idx, func) in module.functions.iter() {
             if method_ids.contains(&idx.into_raw()) {
                 continue;
             }
-            let fn_type_params: Vec<SmolStr> = func.type_params.iter().map(|tp| tp.name.clone()).collect();
-            let fn_type_param_set: std::collections::HashSet<SmolStr> = fn_type_params.iter().cloned().collect();
+            let fn_type_params: Vec<SmolStr> =
+                func.type_params.iter().map(|tp| tp.name.clone()).collect();
+            let fn_type_param_set: std::collections::HashSet<SmolStr> =
+                fn_type_params.iter().cloned().collect();
             let params = func
                 .params
                 .iter()
@@ -487,7 +507,11 @@ impl FunctionIndex {
                 .as_ref()
                 .map(|t| type_from_ref_with_params(t, &fn_type_param_set))
                 .unwrap_or(Type::Unknown);
-            let fn_type_param_bounds: Vec<Vec<SmolStr>> = func.type_params.iter().map(|tp| tp.bounds.clone()).collect();
+            let fn_type_param_bounds: Vec<Vec<SmolStr>> = func
+                .type_params
+                .iter()
+                .map(|tp| tp.bounds.clone())
+                .collect();
             functions.insert(
                 func.name.clone(),
                 FunctionSig {
@@ -498,16 +522,95 @@ impl FunctionIndex {
                     type_param_bounds: fn_type_param_bounds,
                 },
             );
+            if matches!(func.lane(), FunctionLane::Portable) {
+                portable_functions.insert(func.name.clone());
+            }
         }
         for (name, sig) in builtin_functions() {
+            if builtin_function_is_portable(name.as_str()) {
+                portable_functions.insert(name.clone());
+            }
             functions.entry(name).or_insert(sig);
         }
-        Self { functions }
+        Self {
+            functions,
+            portable_functions,
+        }
     }
 
     fn get(&self, name: &SmolStr) -> Option<&FunctionSig> {
         self.functions.get(name)
     }
+
+    fn is_portable(&self, name: &SmolStr) -> bool {
+        self.portable_functions.contains(name)
+    }
+}
+
+fn builtin_function_is_portable(name: &str) -> bool {
+    matches!(
+        name,
+        "vec2"
+            | "vec3"
+            | "vec4"
+            | "quat"
+            | "mat3_identity"
+            | "mat3_cols"
+            | "mat4_identity"
+            | "mat4_cols"
+            | "bounds2"
+            | "bounds3"
+            | "ray3"
+            | "transform3"
+            | "transform3_identity"
+            | "bounds2_center"
+            | "bounds2_size"
+            | "bounds3_center"
+            | "bounds3_size"
+            | "transform_point"
+            | "transform_vector"
+            | "transform_normal"
+            | "compose_transform3"
+            | "inverse_transform3"
+            | "gpu_buffer_len"
+            | "gpu_buffer_get"
+            | "gpu_buffer_set"
+            | "gpu_atomic_i32_load"
+            | "gpu_atomic_i32_store"
+            | "gpu_atomic_i32_fetch_add"
+            | "gpu_atomic_u32_load"
+            | "gpu_atomic_u32_store"
+            | "gpu_atomic_u32_fetch_add"
+            | "workgroup_barrier"
+            | "storage_barrier"
+            | "global_invocation_id"
+            | "local_invocation_id"
+            | "workgroup_id"
+            | "num_workgroups"
+            | "workgroup_size"
+            | "dot"
+            | "length"
+            | "normalize"
+            | "cross"
+            | "min"
+            | "max"
+            | "clamp"
+            | "mix"
+            | "abs"
+            | "sign"
+            | "floor"
+            | "ceil"
+            | "fract"
+            | "sin"
+            | "cos"
+            | "sqrt"
+            | "pow"
+            | "distance"
+            | "reflect"
+            | "f32"
+            | "i32"
+            | "u32"
+    )
 }
 
 fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
@@ -1761,6 +1864,387 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
+            SmolStr::new("bounds2"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("min"), Type::Vec2),
+                    (SmolStr::new("max"), Type::Vec2),
+                ],
+                ret: portable_named_type("Bounds2"),
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("bounds3"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("min"), Type::Vec3),
+                    (SmolStr::new("max"), Type::Vec3),
+                ],
+                ret: portable_named_type("Bounds3"),
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("ray3"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("origin"), Type::Vec3),
+                    (SmolStr::new("direction"), Type::Vec3),
+                ],
+                ret: portable_named_type("Ray3"),
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("transform3"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("matrix"), Type::Mat4),
+                    (SmolStr::new("inverse"), Type::Mat4),
+                ],
+                ret: portable_named_type("Transform3"),
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("transform3_identity"),
+            FunctionSig {
+                params: vec![],
+                ret: portable_named_type("Transform3"),
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("gpu_buffer_new"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("length"), Type::Integer),
+                    (SmolStr::new("default_value"), Type::Unknown),
+                ],
+                ret: Type::GpuBuffer(Box::new(Type::Unknown)),
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("gpu_buffer_len"),
+            FunctionSig {
+                params: vec![(
+                    SmolStr::new("buffer"),
+                    Type::GpuBuffer(Box::new(Type::Unknown)),
+                )],
+                ret: Type::Integer,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("gpu_buffer_get"),
+            FunctionSig {
+                params: vec![
+                    (
+                        SmolStr::new("buffer"),
+                        Type::GpuBuffer(Box::new(Type::Unknown)),
+                    ),
+                    (SmolStr::new("index"), Type::Unknown),
+                ],
+                ret: Type::Unknown,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("gpu_buffer_set"),
+            FunctionSig {
+                params: vec![
+                    (
+                        SmolStr::new("buffer"),
+                        Type::GpuBuffer(Box::new(Type::Unknown)),
+                    ),
+                    (SmolStr::new("index"), Type::Unknown),
+                    (SmolStr::new("value"), Type::Unknown),
+                ],
+                ret: Type::Nil,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("gpu_atomic_i32_new"),
+            FunctionSig {
+                params: vec![(SmolStr::new("initial"), Type::I32)],
+                ret: Type::GpuAtomicI32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("gpu_atomic_i32_drop"),
+            FunctionSig {
+                params: vec![(SmolStr::new("atomic"), Type::GpuAtomicI32)],
+                ret: Type::Boolean,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("gpu_atomic_i32_load"),
+            FunctionSig {
+                params: vec![(SmolStr::new("atomic"), Type::GpuAtomicI32)],
+                ret: Type::I32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("gpu_atomic_i32_store"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("atomic"), Type::GpuAtomicI32),
+                    (SmolStr::new("value"), Type::I32),
+                ],
+                ret: Type::Nil,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("gpu_atomic_i32_fetch_add"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("atomic"), Type::GpuAtomicI32),
+                    (SmolStr::new("delta"), Type::I32),
+                ],
+                ret: Type::I32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("gpu_atomic_u32_new"),
+            FunctionSig {
+                params: vec![(SmolStr::new("initial"), Type::U32)],
+                ret: Type::GpuAtomicU32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("gpu_atomic_u32_drop"),
+            FunctionSig {
+                params: vec![(SmolStr::new("atomic"), Type::GpuAtomicU32)],
+                ret: Type::Boolean,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("gpu_atomic_u32_load"),
+            FunctionSig {
+                params: vec![(SmolStr::new("atomic"), Type::GpuAtomicU32)],
+                ret: Type::U32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("gpu_atomic_u32_store"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("atomic"), Type::GpuAtomicU32),
+                    (SmolStr::new("value"), Type::U32),
+                ],
+                ret: Type::Nil,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("gpu_atomic_u32_fetch_add"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("atomic"), Type::GpuAtomicU32),
+                    (SmolStr::new("delta"), Type::U32),
+                ],
+                ret: Type::U32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("gpu_schedule_deterministic"),
+            FunctionSig {
+                params: vec![],
+                ret: Type::GpuDispatchSchedule,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("gpu_schedule_reverse"),
+            FunctionSig {
+                params: vec![],
+                ret: Type::GpuDispatchSchedule,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("gpu_schedule_shuffle"),
+            FunctionSig {
+                params: vec![(SmolStr::new("seed"), Type::U32)],
+                ret: Type::GpuDispatchSchedule,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("gpu_schedule_workgroup_reverse"),
+            FunctionSig {
+                params: vec![],
+                ret: Type::GpuDispatchSchedule,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("gpu_schedule_workgroup_shuffle"),
+            FunctionSig {
+                params: vec![(SmolStr::new("seed"), Type::U32)],
+                ret: Type::GpuDispatchSchedule,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("gpu_schedule_round_robin_workgroups"),
+            FunctionSig {
+                params: vec![],
+                ret: Type::GpuDispatchSchedule,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("workgroup_barrier"),
+            FunctionSig {
+                params: vec![],
+                ret: Type::Nil,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("storage_barrier"),
+            FunctionSig {
+                params: vec![],
+                ret: Type::Nil,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("global_invocation_id"),
+            FunctionSig {
+                params: vec![],
+                ret: Type::Array(Box::new(Type::U32), 3),
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("local_invocation_id"),
+            FunctionSig {
+                params: vec![],
+                ret: Type::Array(Box::new(Type::U32), 3),
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("workgroup_id"),
+            FunctionSig {
+                params: vec![],
+                ret: Type::Array(Box::new(Type::U32), 3),
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("num_workgroups"),
+            FunctionSig {
+                params: vec![],
+                ret: Type::Array(Box::new(Type::U32), 3),
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("workgroup_size"),
+            FunctionSig {
+                params: vec![],
+                ret: Type::Array(Box::new(Type::U32), 3),
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("dispatch_compute"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("kernel"), Type::Unknown),
+                    (SmolStr::new("workgroups_x"), Type::U32),
+                    (SmolStr::new("workgroups_y"), Type::U32),
+                    (SmolStr::new("workgroups_z"), Type::U32),
+                    (SmolStr::new("workgroup_size_x"), Type::U32),
+                    (SmolStr::new("workgroup_size_y"), Type::U32),
+                    (SmolStr::new("workgroup_size_z"), Type::U32),
+                ],
+                ret: Type::Nil,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
             SmolStr::new("dot"),
             FunctionSig {
                 params: vec![
@@ -1768,6 +2252,46 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("right"), Type::Unknown),
                 ],
                 ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("bounds2_center"),
+            FunctionSig {
+                params: vec![(SmolStr::new("bounds"), portable_named_type("Bounds2"))],
+                ret: Type::Vec2,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("bounds2_size"),
+            FunctionSig {
+                params: vec![(SmolStr::new("bounds"), portable_named_type("Bounds2"))],
+                ret: Type::Vec2,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("bounds3_center"),
+            FunctionSig {
+                params: vec![(SmolStr::new("bounds"), portable_named_type("Bounds3"))],
+                ret: Type::Vec3,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("bounds3_size"),
+            FunctionSig {
+                params: vec![(SmolStr::new("bounds"), portable_named_type("Bounds3"))],
+                ret: Type::Vec3,
                 kind: FunctionKind::Function,
                 type_params: Vec::new(),
                 type_param_bounds: Vec::new(),
@@ -1980,6 +2504,68 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
+            SmolStr::new("transform_point"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("transform"), portable_named_type("Transform3")),
+                    (SmolStr::new("point"), Type::Vec3),
+                ],
+                ret: Type::Vec3,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("transform_vector"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("transform"), portable_named_type("Transform3")),
+                    (SmolStr::new("vector"), Type::Vec3),
+                ],
+                ret: Type::Vec3,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("transform_normal"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("transform"), portable_named_type("Transform3")),
+                    (SmolStr::new("normal"), Type::Vec3),
+                ],
+                ret: Type::Vec3,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("compose_transform3"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("left"), portable_named_type("Transform3")),
+                    (SmolStr::new("right"), portable_named_type("Transform3")),
+                ],
+                ret: portable_named_type("Transform3"),
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("inverse_transform3"),
+            FunctionSig {
+                params: vec![(SmolStr::new("transform"), portable_named_type("Transform3"))],
+                ret: portable_named_type("Transform3"),
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
             SmolStr::new("f32"),
             FunctionSig {
                 params: vec![(SmolStr::new("value"), Type::Unknown)],
@@ -2048,6 +2634,8 @@ struct TypeContext {
     scopes: Vec<HashMap<SmolStr, Type>>,
     type_params: Vec<HashSet<SmolStr>>,
     info: Option<*mut FunctionTypeInfo>,
+    function_lane: FunctionLane,
+    function_name: SmolStr,
 }
 
 impl TypeContext {
@@ -2056,6 +2644,28 @@ impl TypeContext {
             scopes: Vec::new(),
             type_params: Vec::new(),
             info: Some(info as *mut FunctionTypeInfo),
+            function_lane: FunctionLane::Host,
+            function_name: SmolStr::new(""),
+        }
+    }
+
+    fn set_function_lane(&mut self, lane: FunctionLane) {
+        self.function_lane = lane;
+    }
+
+    fn set_function_name(&mut self, name: SmolStr) {
+        self.function_name = name;
+    }
+
+    fn in_portable_lane(&self) -> bool {
+        matches!(self.function_lane, FunctionLane::Portable)
+    }
+
+    fn current_function_name(&self) -> SmolStr {
+        if self.function_name.is_empty() {
+            SmolStr::new("<portable>")
+        } else {
+            self.function_name.clone()
         }
     }
 

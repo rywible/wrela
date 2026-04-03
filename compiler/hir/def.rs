@@ -51,7 +51,14 @@ pub enum ClassRole {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FunctionRole {
     Function,
+    Kernel,
     System,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FunctionLane {
+    Host,
+    Portable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,6 +99,15 @@ pub struct Function {
     pub params: Vec<Param>,
     pub ret_type: Option<TypeRef>,
     pub body: Option<Body>,
+}
+
+impl Function {
+    pub fn lane(&self) -> FunctionLane {
+        match self.role {
+            FunctionRole::Function | FunctionRole::System => FunctionLane::Host,
+            FunctionRole::Kernel => FunctionLane::Portable,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

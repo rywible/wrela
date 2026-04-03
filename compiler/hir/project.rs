@@ -2,8 +2,8 @@ use crate::diag::catalog::ProjectDiagKind;
 use crate::hir::arena::Idx;
 use crate::hir::lower::{lower, lower_root_body};
 use crate::hir::{
-    Arg, Body, Expr, Function, FunctionKind, FunctionRole, Literal, Module, Stmt, UnaryOp,
-    UseName, UseNameKind, Visibility,
+    Arg, Body, Expr, Function, FunctionKind, FunctionRole, Literal, Module, Stmt, UnaryOp, UseName,
+    UseNameKind, Visibility,
 };
 use crate::parser;
 use crate::parser::ast::AstNode;
@@ -18,8 +18,16 @@ pub struct LoadedProject {
     pub entry_source: String,
     pub warnings: Vec<ProjectWarning>,
     pub function_effects: Vec<FunctionEffectEntry>,
+    pub source_modules: Vec<ProjectSourceModule>,
     pub module_sources: HashMap<PathBuf, String>,
     pub provenance: ProjectProvenance,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProjectSourceModule {
+    pub path: PathBuf,
+    pub source: String,
+    pub module: Module,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -140,6 +148,15 @@ struct EffectNode {
     function_idx: Idx<Function>,
     name_span: Option<TextRange>,
     direct: FunctionEffect,
+    callees: Vec<usize>,
+}
+
+#[derive(Clone)]
+struct PortableProjectNode {
+    module: SmolStr,
+    function: SmolStr,
+    function_idx: Idx<Function>,
+    name_span: Option<TextRange>,
     callees: Vec<usize>,
 }
 
@@ -320,6 +337,7 @@ pub fn load_project_with_roots(
     loader.enforce_architecture_rules();
     loader.enforce_external_call_policy();
     loader.enforce_intrinsic_boundary();
+    loader.enforce_portable_kernel_policy();
     let classified_effects = loader.classify_function_effects();
     loader.enforce_network_boundary_policy(&classified_effects);
     loader.enforce_domain_purity_policy(&classified_effects);
@@ -579,6 +597,17 @@ pub fn load_project_with_roots(
         .map(|m| m.source.clone())
         .unwrap_or_default();
 
+    let mut source_modules = loader
+        .modules
+        .values()
+        .map(|module| ProjectSourceModule {
+            path: module.path.clone(),
+            source: module.source.clone(),
+            module: module.module.clone(),
+        })
+        .collect::<Vec<_>>();
+    source_modules.sort_by(|left, right| left.path.cmp(&right.path));
+
     let module_sources = loader
         .modules
         .values()
@@ -593,6 +622,7 @@ pub fn load_project_with_roots(
             .into_iter()
             .map(|entry| entry.entry)
             .collect(),
+        source_modules,
         module_sources,
         provenance,
     })
@@ -1412,6 +1442,164 @@ impl ProjectLoader {
         }
     }
 
+    fn enforce_portable_kernel_policy(&mut self) {
+        let mut public_functions: HashMap<SmolStr, HashSet<SmolStr>> = HashMap::new();
+        for (module_name, module) in &self.modules {
+            let mut exports = HashSet::new();
+            for (_, func) in module.module.functions.iter() {
+                if is_effect_trackable_function(func)
+                    && matches!(func.visibility, Visibility::Public)
+                {
+                    exports.insert(func.name.clone());
+                }
+            }
+            public_functions.insert(module_name.clone(), exports);
+        }
+
+        let mut module_names: Vec<SmolStr> = self.modules.keys().cloned().collect();
+        module_names.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+
+        let mut nodes = Vec::new();
+        let mut node_index_by_symbol: HashMap<(SmolStr, SmolStr), usize> = HashMap::new();
+        for module_name in &module_names {
+            let Some(module) = self.modules.get(module_name) else {
+                continue;
+            };
+            let mut funcs: Vec<(Idx<Function>, &Function)> = module
+                .module
+                .functions
+                .iter()
+                .filter(|(_, func)| is_effect_trackable_function(func))
+                .collect();
+            funcs.sort_by(|(a_idx, a), (b_idx, b)| {
+                a.name
+                    .as_str()
+                    .cmp(b.name.as_str())
+                    .then_with(|| a_idx.into_raw().cmp(&b_idx.into_raw()))
+            });
+            for (func_idx, func) in funcs {
+                let node_idx = nodes.len();
+                nodes.push(PortableProjectNode {
+                    module: module_name.clone(),
+                    function: func.name.clone(),
+                    function_idx: func_idx,
+                    name_span: func.name_span,
+                    callees: Vec::new(),
+                });
+                node_index_by_symbol.insert((module_name.clone(), func.name.clone()), node_idx);
+            }
+        }
+
+        let mut roots = HashSet::new();
+        for node_idx in 0..nodes.len() {
+            let module_name = nodes[node_idx].module.clone();
+            let Some(module) = self.modules.get(&module_name) else {
+                continue;
+            };
+            let func = &module.module.functions[nodes[node_idx].function_idx];
+            let imported = imported_function_bindings(module, &public_functions);
+            let mut callees = HashSet::new();
+            if let Some(body) = &func.body {
+                let mut called = Vec::new();
+                collect_called_functions(body, &body.root_stmts, &mut called);
+                for callee_name in called {
+                    if let Some(target_module) = imported.get(&callee_name) {
+                        if let Some(target_idx) =
+                            node_index_by_symbol.get(&(target_module.clone(), callee_name.clone()))
+                        {
+                            callees.insert(*target_idx);
+                        }
+                        continue;
+                    }
+                    if let Some(target_idx) =
+                        node_index_by_symbol.get(&(module_name.clone(), callee_name.clone()))
+                    {
+                        callees.insert(*target_idx);
+                    }
+                }
+
+                let mut kernel_targets = Vec::new();
+                collect_dispatch_kernel_targets(body, &body.root_stmts, &mut kernel_targets);
+                for kernel_name in kernel_targets {
+                    if let Some(target_module) = imported.get(&kernel_name) {
+                        if let Some(target_idx) =
+                            node_index_by_symbol.get(&(target_module.clone(), kernel_name.clone()))
+                        {
+                            roots.insert(*target_idx);
+                        }
+                        continue;
+                    }
+                    if let Some(target_idx) =
+                        node_index_by_symbol.get(&(module_name.clone(), kernel_name.clone()))
+                    {
+                        roots.insert(*target_idx);
+                    }
+                }
+            }
+
+            let mut callee_list: Vec<usize> = callees.into_iter().collect();
+            callee_list.sort_unstable();
+            nodes[node_idx].callees = callee_list;
+        }
+
+        if roots.is_empty() {
+            return;
+        }
+
+        let mut reachable = roots.clone();
+        let mut stack: Vec<usize> = roots.into_iter().collect();
+        while let Some(idx) = stack.pop() {
+            for callee in &nodes[idx].callees {
+                if reachable.insert(*callee) {
+                    stack.push(*callee);
+                }
+            }
+        }
+
+        for node_idx in reachable {
+            let node = &nodes[node_idx];
+            let Some(module) = self.modules.get(&node.module) else {
+                continue;
+            };
+            let func = &module.module.functions[node.function_idx];
+            let imported = imported_function_bindings(module, &public_functions);
+            let Some(body) = &func.body else {
+                continue;
+            };
+            let mut called = Vec::new();
+            collect_called_functions(body, &body.root_stmts, &mut called);
+            let mut seen_host_calls = HashSet::new();
+            for callee_name in called {
+                let imported_host_wrapper = imported.get(&callee_name).is_some_and(|module_name| {
+                    (module_name == "host/external" || module_name == "host/http")
+                        && matches!(
+                            callee_name.as_str(),
+                            "try_to_call_external" | "try_to_http_call"
+                        )
+                });
+                if !(imported_host_wrapper
+                    || is_host_only_portable_builtin_symbol(callee_name.as_str()))
+                    || !seen_host_calls.insert(callee_name.clone())
+                {
+                    continue;
+                }
+                self.errors.push(ProjectError {
+                    kind: ProjectDiagKind::LoadError,
+                    path: module.path.clone(),
+                    source: module.source.clone(),
+                    message: format!(
+                        "portable kernel function '{}::{}' calls host-only operation '{}'. keep scheduling, allocation, I/O, and runtime orchestration in host code, then pass portable data or buffers into the kernel",
+                        node.module, node.function, callee_name
+                    ),
+                    span: span_from_range(
+                        node.name_span
+                            .unwrap_or_else(|| TextRange::empty(0.into())),
+                    ),
+                });
+            }
+        }
+    }
+
     fn classify_function_effects(&self) -> Vec<ClassifiedFunctionEffect> {
         let mut public_functions: HashMap<SmolStr, HashSet<SmolStr>> = HashMap::new();
         for (module_name, module) in &self.modules {
@@ -1678,6 +1866,34 @@ fn effect_for_builtin_symbol(name: &str) -> FunctionEffect {
         {
             FunctionEffect::Network
         }
+        "gpu_buffer_len"
+        | "gpu_buffer_get"
+        | "gpu_atomic_i32_load"
+        | "gpu_atomic_u32_load"
+        | "global_invocation_id"
+        | "local_invocation_id"
+        | "workgroup_id"
+        | "num_workgroups"
+        | "workgroup_size" => FunctionEffect::HostRead,
+        "gpu_buffer_new"
+        | "gpu_buffer_set"
+        | "gpu_atomic_i32_new"
+        | "gpu_atomic_i32_drop"
+        | "gpu_atomic_i32_store"
+        | "gpu_atomic_i32_fetch_add"
+        | "gpu_atomic_u32_new"
+        | "gpu_atomic_u32_drop"
+        | "gpu_atomic_u32_store"
+        | "gpu_atomic_u32_fetch_add"
+        | "dispatch_compute"
+        | "workgroup_barrier"
+        | "storage_barrier" => FunctionEffect::HostWrite,
+        "gpu_schedule_deterministic"
+        | "gpu_schedule_reverse"
+        | "gpu_schedule_shuffle"
+        | "gpu_schedule_workgroup_reverse"
+        | "gpu_schedule_workgroup_shuffle"
+        | "gpu_schedule_round_robin_workgroups" => FunctionEffect::Pure,
         _ => FunctionEffect::Pure,
     }
 }
@@ -1862,6 +2078,186 @@ fn collect_called_functions(body: &Body, stmts: &[Idx<Stmt>], called: &mut Vec<S
             Stmt::Use { .. } | Stmt::Break | Stmt::Continue => {}
         }
     }
+}
+
+fn collect_dispatch_kernel_targets(body: &Body, stmts: &[Idx<Stmt>], targets: &mut Vec<SmolStr>) {
+    for stmt_id in stmts {
+        match &body.stmts[*stmt_id] {
+            Stmt::Expr(expr) => collect_dispatch_kernel_targets_in_expr(body, *expr, targets),
+            Stmt::Assert {
+                expr,
+                rhs,
+                tolerance,
+                ..
+            } => {
+                collect_dispatch_kernel_targets_in_expr(body, *expr, targets);
+                if let Some(rhs) = rhs {
+                    collect_dispatch_kernel_targets_in_expr(body, *rhs, targets);
+                }
+                if let Some(tolerance) = tolerance {
+                    collect_dispatch_kernel_targets_in_expr(body, *tolerance, targets);
+                }
+            }
+            Stmt::Require { condition, message } => {
+                collect_dispatch_kernel_targets_in_expr(body, *condition, targets);
+                collect_dispatch_kernel_targets_in_expr(body, *message, targets);
+            }
+            Stmt::Let { value, .. }
+            | Stmt::Assign { value, .. }
+            | Stmt::IgnoreResult { expr: value }
+            | Stmt::Capture { value, .. }
+            | Stmt::Defer { expr: value } => {
+                collect_dispatch_kernel_targets_in_expr(body, *value, targets);
+            }
+            Stmt::Optimize { body: inner, .. } => {
+                collect_dispatch_kernel_targets(body, inner, targets);
+            }
+            Stmt::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                collect_dispatch_kernel_targets_in_expr(body, *condition, targets);
+                collect_dispatch_kernel_targets(body, then_branch, targets);
+                if let Some(branch) = else_branch {
+                    collect_dispatch_kernel_targets(body, branch, targets);
+                }
+            }
+            Stmt::For {
+                iterable,
+                body: inner,
+                ..
+            } => {
+                collect_dispatch_kernel_targets_in_expr(body, *iterable, targets);
+                collect_dispatch_kernel_targets(body, inner, targets);
+            }
+            Stmt::Match {
+                subject,
+                cases,
+                otherwise,
+            } => {
+                collect_dispatch_kernel_targets_in_expr(body, *subject, targets);
+                for case in cases {
+                    if let Some(guard) = case.guard {
+                        collect_dispatch_kernel_targets_in_expr(body, guard, targets);
+                    }
+                    collect_dispatch_kernel_targets(body, &case.body, targets);
+                }
+                if let Some(otherwise) = otherwise {
+                    collect_dispatch_kernel_targets(body, otherwise, targets);
+                }
+            }
+            Stmt::While {
+                condition,
+                body: inner,
+            } => {
+                collect_dispatch_kernel_targets_in_expr(body, *condition, targets);
+                collect_dispatch_kernel_targets(body, inner, targets);
+            }
+            Stmt::Return(expr) => {
+                if let Some(expr) = expr {
+                    collect_dispatch_kernel_targets_in_expr(body, *expr, targets);
+                }
+            }
+            Stmt::Use { .. } | Stmt::Break | Stmt::Continue => {}
+        }
+    }
+}
+
+fn collect_dispatch_kernel_targets_in_expr(
+    body: &Body,
+    expr_id: Idx<Expr>,
+    targets: &mut Vec<SmolStr>,
+) {
+    match &body.exprs[expr_id] {
+        Expr::Call { callee, args, .. } => {
+            if let Expr::Variable(name) = &body.exprs[*callee]
+                && name.as_str() == "dispatch_compute"
+            {
+                for arg in args {
+                    if let Arg::Named { name, value, .. } = arg
+                        && name.as_str() == "kernel"
+                        && let Expr::Variable(kernel_name) = &body.exprs[*value]
+                    {
+                        targets.push(kernel_name.clone());
+                    }
+                }
+            }
+            collect_dispatch_kernel_targets_in_expr(body, *callee, targets);
+            for arg in args {
+                match arg {
+                    Arg::Positional { value, .. } | Arg::Named { value, .. } => {
+                        collect_dispatch_kernel_targets_in_expr(body, *value, targets);
+                    }
+                }
+            }
+        }
+        Expr::Detach { target, .. } | Expr::Crash { expr: target } => {
+            collect_dispatch_kernel_targets_in_expr(body, *target, targets);
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            collect_dispatch_kernel_targets_in_expr(body, *lhs, targets);
+            collect_dispatch_kernel_targets_in_expr(body, *rhs, targets);
+        }
+        Expr::Unary { expr, .. } => {
+            collect_dispatch_kernel_targets_in_expr(body, *expr, targets);
+        }
+        Expr::TypeApply { callee, .. } => {
+            collect_dispatch_kernel_targets_in_expr(body, *callee, targets);
+        }
+        Expr::Member { object, .. } => {
+            collect_dispatch_kernel_targets_in_expr(body, *object, targets);
+        }
+        Expr::Index { object, index, .. } => {
+            collect_dispatch_kernel_targets_in_expr(body, *object, targets);
+            collect_dispatch_kernel_targets_in_expr(body, *index, targets);
+        }
+        Expr::List(items) => {
+            for item in items {
+                collect_dispatch_kernel_targets_in_expr(body, *item, targets);
+            }
+        }
+        Expr::Map(items) => {
+            for (key, value) in items {
+                collect_dispatch_kernel_targets_in_expr(body, *key, targets);
+                collect_dispatch_kernel_targets_in_expr(body, *value, targets);
+            }
+        }
+        Expr::StringInterp(parts) => {
+            for part in parts {
+                if let crate::hir::StringPart::Expr(expr) = part {
+                    collect_dispatch_kernel_targets_in_expr(body, *expr, targets);
+                }
+            }
+        }
+        Expr::Closure {
+            body: closure_body, ..
+        } => {
+            collect_dispatch_kernel_targets_in_expr(body, *closure_body, targets);
+        }
+        Expr::Literal(_) | Expr::Variable(_) => {}
+    }
+}
+
+fn is_host_only_portable_builtin_symbol(name: &str) -> bool {
+    name.starts_with("__wr_")
+        || matches!(
+            name,
+            "try_to_call_external"
+                | "try_to_http_call"
+                | "dispatch_compute"
+                | "gpu_buffer_new"
+                | "gpu_atomic_i32_new"
+                | "gpu_atomic_i32_drop"
+                | "gpu_atomic_u32_new"
+                | "gpu_atomic_u32_drop"
+                | "gpu_schedule_deterministic"
+                | "gpu_schedule_reverse"
+                | "gpu_schedule_shuffle"
+                | "gpu_schedule_workgroup_reverse"
+                | "gpu_schedule_workgroup_shuffle"
+                | "gpu_schedule_round_robin_workgroups"
+        )
 }
 
 fn enforce_external_call_policy_in_block(
@@ -3183,6 +3579,14 @@ fn is_builtin_type_name(name: &SmolStr) -> bool {
             | "Mat3"
             | "Mat4"
             | "Quat"
+            | "Bounds2"
+            | "Bounds3"
+            | "Ray3"
+            | "Transform3"
+            | "GpuBuffer"
+            | "GpuAtomicI32"
+            | "GpuAtomicU32"
+            | "GpuDispatchSchedule"
             | "List"
             | "Map"
             | "Result"
@@ -3223,6 +3627,20 @@ fn is_builtin_value_name(name: &SmolStr) -> bool {
             | "mat3_cols"
             | "mat4_identity"
             | "mat4_cols"
+            | "bounds2"
+            | "bounds3"
+            | "ray3"
+            | "transform3"
+            | "transform3_identity"
+            | "bounds2_center"
+            | "bounds2_size"
+            | "bounds3_center"
+            | "bounds3_size"
+            | "transform_point"
+            | "transform_vector"
+            | "transform_normal"
+            | "compose_transform3"
+            | "inverse_transform3"
             | "dot"
             | "length"
             | "normalize"
@@ -3245,6 +3663,34 @@ fn is_builtin_value_name(name: &SmolStr) -> bool {
             | "f32"
             | "i32"
             | "u32"
+            | "gpu_buffer_new"
+            | "gpu_buffer_len"
+            | "gpu_buffer_get"
+            | "gpu_buffer_set"
+            | "gpu_atomic_i32_new"
+            | "gpu_atomic_i32_drop"
+            | "gpu_atomic_i32_load"
+            | "gpu_atomic_i32_store"
+            | "gpu_atomic_i32_fetch_add"
+            | "gpu_atomic_u32_new"
+            | "gpu_atomic_u32_drop"
+            | "gpu_atomic_u32_load"
+            | "gpu_atomic_u32_store"
+            | "gpu_atomic_u32_fetch_add"
+            | "gpu_schedule_deterministic"
+            | "gpu_schedule_reverse"
+            | "gpu_schedule_shuffle"
+            | "gpu_schedule_workgroup_reverse"
+            | "gpu_schedule_workgroup_shuffle"
+            | "gpu_schedule_round_robin_workgroups"
+            | "workgroup_barrier"
+            | "storage_barrier"
+            | "global_invocation_id"
+            | "local_invocation_id"
+            | "workgroup_id"
+            | "num_workgroups"
+            | "workgroup_size"
+            | "dispatch_compute"
             | "__wr_list_push"
             | "__wr_list_get"
             | "__wr_list_set"
@@ -3982,5 +4428,4 @@ mod tests {
             panic!("{errors:?}");
         }
     }
-
 }

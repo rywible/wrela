@@ -14,6 +14,7 @@ pub enum SyntaxKind {
     MustKw,             // must
     DerivesKw,          // derives
     FnKw,               // fn
+    KernelKw,           // kernel
     SystemKw,           // system
     WidgetKw,           // widget
     IfKw,               // if
@@ -132,6 +133,7 @@ pub enum SyntaxKind {
     EnumDef,
     EnumVariant,
     FuncDef,
+    KernelDef,
     SystemDef,
     WidgetDef,
     StyleProfileDef,
@@ -215,6 +217,7 @@ impl From<Token> for SyntaxKind {
             Token::Must => SyntaxKind::MustKw,
             Token::Derives => SyntaxKind::DerivesKw,
             Token::Fn => SyntaxKind::FnKw,
+            Token::Kernel => SyntaxKind::KernelKw,
             Token::System => SyntaxKind::SystemKw,
             Token::Widget => SyntaxKind::WidgetKw,
             Token::If => SyntaxKind::IfKw,
@@ -328,6 +331,14 @@ impl From<SyntaxKind> for u16 {
 }
 
 impl SyntaxKind {
+    pub fn is_keyword(self) -> bool {
+        self >= SyntaxKind::ClassKw && self < SyntaxKind::Ident
+    }
+
+    pub fn is_name_like_label(self) -> bool {
+        self.is_keyword() || matches!(self, SyntaxKind::Ident)
+    }
+
     pub fn is_trivia(self) -> bool {
         matches!(
             self,

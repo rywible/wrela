@@ -908,6 +908,37 @@ class Whale {
     }
 
     #[test]
+    fn test_keyword_named_arg_ast() {
+        use ast::{Arg, AstNode, Expr, Stmt};
+        let text = "dispatch_compute(kernel=run_kernel, default=run_kernel)";
+        let node = parse(text);
+        let root = ast::Root::cast(node).unwrap();
+        let stmt = root.statements().next().unwrap();
+        let Stmt::Expr(stmt_expr) = stmt else {
+            panic!("Expected expression statement");
+        };
+        let expr = stmt_expr.expr().unwrap();
+        let Expr::Call(call) = expr else {
+            panic!("Expected call expression");
+        };
+        let labels: Vec<String> = call
+            .args()
+            .map(|arg| match arg {
+                Arg::Named(named) => named.name().unwrap().text().to_string(),
+                _ => panic!("Expected named argument"),
+            })
+            .collect();
+        assert_eq!(labels, vec!["kernel".to_string(), "default".to_string()]);
+    }
+
+    #[test]
+    fn test_reserved_keyword_named_arg_parses_without_special_cases() {
+        let text = "foo(if=1, return=2, default=3)";
+        let (_node, errors) = parse_with_errors(text);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
     fn test_try_expr_ast() {
         use ast::{AstNode, Expr, Stmt};
         let text = "source()?";
@@ -1160,7 +1191,10 @@ fn f() -> Nothing {
             Stmt::Expr(expr) => expr,
             _ => panic!("Expected expression statement"),
         };
-        assert!(matches!(call_stmt.expr(), Some(Expr::Bin(_)) | Some(Expr::Call(_))));
+        assert!(matches!(
+            call_stmt.expr(),
+            Some(Expr::Bin(_)) | Some(Expr::Call(_))
+        ));
     }
 
     #[test]
@@ -1305,6 +1339,99 @@ fn test_sample() -> Nothing {
     }
 
     #[test]
+    fn test_kernel_function_parses_without_errors() {
+        let text = "\
+kernel fn shade[T](value: Integer) -> Integer {
+    return value
+}
+";
+        let (_node, errors) = parse_with_errors(text);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_kernel_function_attaches_to_ast() {
+        use ast::{AstNode, Stmt};
+        let text = "\
+kernel fn shade[T](value: Integer) -> Integer {
+    return value
+}
+";
+        let node = parse(text);
+        let root = ast::Root::cast(node).unwrap();
+        let kernel = match root.statements().next().unwrap() {
+            Stmt::KernelDef(kernel) => kernel,
+            _ => panic!("Expected kernel definition"),
+        };
+        let type_params: Vec<String> = kernel
+            .type_params()
+            .map(|token| token.text().to_string())
+            .collect();
+        assert_eq!(kernel.name().unwrap().text(), "shade");
+        assert_eq!(type_params, vec!["T".to_string()]);
+        assert_eq!(kernel.params().count(), 1);
+    }
+
+    #[test]
+    fn test_kernel_function_attributes_attach_to_kernel_ast() {
+        use ast::{AstNode, Stmt};
+        let text = "\
+@serial
+kernel fn shade() -> Nothing {
+    return nothing
+}
+";
+        let node = parse(text);
+        let root = ast::Root::cast(node).unwrap();
+        let kernel = match root.statements().next().unwrap() {
+            Stmt::KernelDef(kernel) => kernel,
+            _ => panic!("Expected kernel definition"),
+        };
+        let attrs: Vec<String> = kernel
+            .attributes()
+            .filter_map(|attr| attr.name())
+            .map(|token| token.text().to_string())
+            .collect();
+        assert_eq!(attrs, vec!["serial".to_string()]);
+    }
+
+    #[test]
+    fn test_regular_function_still_attaches_to_func_ast_after_kernel_changes() {
+        use ast::{AstNode, Stmt};
+        let text = "\
+fn helper() -> Integer {
+    return 1
+}
+";
+        let node = parse(text);
+        let root = ast::Root::cast(node).unwrap();
+        let func = match root.statements().next().unwrap() {
+            Stmt::FuncDef(func) => func,
+            _ => panic!("Expected function definition"),
+        };
+        assert_eq!(func.name().unwrap().text(), "helper");
+    }
+
+    #[test]
+    fn test_system_definition_still_parses_with_metadata_after_kernel_changes() {
+        use ast::{AstNode, Stmt};
+        let text = "\
+system tick[stage=fixed, reads=[Clock], writes=[FrameClock]]() -> Nothing {
+    return nothing
+}
+";
+        let (_node, errors) = parse_with_errors(text);
+        assert!(errors.is_empty(), "{errors:?}");
+
+        let node = parse(text);
+        let root = ast::Root::cast(node).unwrap();
+        match root.statements().next().unwrap() {
+            Stmt::SystemDef(system) => assert_eq!(system.name().unwrap().text(), "tick"),
+            _ => panic!("Expected system definition"),
+        }
+    }
+
+    #[test]
     fn test_shader_related_attributes_parse_as_ordinary_names() {
         use ast::{AstNode, Stmt};
         let text = "\
@@ -1328,7 +1455,11 @@ fn test_sample() -> Nothing {
             .collect();
         assert_eq!(
             attrs,
-            vec!["shader".to_string(), "pipeline".to_string(), "pass".to_string()]
+            vec![
+                "shader".to_string(),
+                "pipeline".to_string(),
+                "pass".to_string()
+            ]
         );
     }
 }

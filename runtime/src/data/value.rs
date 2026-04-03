@@ -298,8 +298,10 @@ fn value_eq_inner(a: Value, b: Value, depth: usize, seen: &mut HashSet<(usize, u
             }
             return value_eq_inner(a_val, b_val, depth + 1, seen);
         }
-        if let (Some(av), Some(bv)) = (crate::data::math::as_vec_ref(a), crate::data::math::as_vec_ref(b))
-        {
+        if let (Some(av), Some(bv)) = (
+            crate::data::math::as_vec_ref(a),
+            crate::data::math::as_vec_ref(b),
+        ) {
             let av = &*av;
             let bv = &*bv;
             if av.len != bv.len || av.header.type_id != bv.header.type_id {
@@ -312,9 +314,10 @@ fn value_eq_inner(a: Value, b: Value, depth: usize, seen: &mut HashSet<(usize, u
             }
             return true;
         }
-        if let (Some(am), Some(bm)) =
-            (crate::data::math::as_mat3_ref(a), crate::data::math::as_mat3_ref(b))
-        {
+        if let (Some(am), Some(bm)) = (
+            crate::data::math::as_mat3_ref(a),
+            crate::data::math::as_mat3_ref(b),
+        ) {
             let am = &*am;
             let bm = &*bm;
             for idx in 0..9 {
@@ -324,9 +327,10 @@ fn value_eq_inner(a: Value, b: Value, depth: usize, seen: &mut HashSet<(usize, u
             }
             return true;
         }
-        if let (Some(am), Some(bm)) =
-            (crate::data::math::as_mat4_ref(a), crate::data::math::as_mat4_ref(b))
-        {
+        if let (Some(am), Some(bm)) = (
+            crate::data::math::as_mat4_ref(a),
+            crate::data::math::as_mat4_ref(b),
+        ) {
             let am = &*am;
             let bm = &*bm;
             for idx in 0..16 {
@@ -621,7 +625,8 @@ pub fn value_approx_eq(left: Value, right: Value, tolerance: Value) -> bool {
         unsafe {
             let left_vec = &*left_vec;
             let right_vec = &*right_vec;
-            if left_vec.len != right_vec.len || left_vec.header.type_id != right_vec.header.type_id {
+            if left_vec.len != right_vec.len || left_vec.header.type_id != right_vec.header.type_id
+            {
                 return false;
             }
             for idx in 0..left_vec.len {

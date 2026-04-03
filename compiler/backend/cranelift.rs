@@ -3851,6 +3851,121 @@ fn runtime_fn_math_ternary(
     )
 }
 
+fn runtime_fn_gpu_buffer_new(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    runtime_fn_symbol(
+        module,
+        runtime,
+        "wr_gpu_buffer_new",
+        &[types::I64, types::I64],
+        &[types::I64],
+    )
+}
+
+fn runtime_fn_gpu_buffer_len(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    runtime_fn_symbol(
+        module,
+        runtime,
+        "wr_gpu_buffer_len",
+        &[types::I64],
+        &[types::I64],
+    )
+}
+
+fn runtime_fn_gpu_buffer_get(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    runtime_fn_symbol(
+        module,
+        runtime,
+        "wr_gpu_buffer_get",
+        &[types::I64, types::I64],
+        &[types::I64],
+    )
+}
+
+fn runtime_fn_gpu_buffer_set(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    runtime_fn_symbol(
+        module,
+        runtime,
+        "wr_gpu_buffer_set",
+        &[types::I64, types::I64, types::I64],
+        &[types::I64],
+    )
+}
+
+fn runtime_fn_gpu_atomic_unary(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+    symbol: &'static str,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    runtime_fn_symbol(module, runtime, symbol, &[types::I64], &[types::I64])
+}
+
+fn runtime_fn_gpu_atomic_binary(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+    symbol: &'static str,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    runtime_fn_symbol(
+        module,
+        runtime,
+        symbol,
+        &[types::I64, types::I64],
+        &[types::I64],
+    )
+}
+
+fn runtime_fn_gpu_builtin_vector(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+    symbol: &'static str,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    runtime_fn_symbol(module, runtime, symbol, &[], &[types::I64])
+}
+
+fn runtime_fn_gpu_dispatch_begin(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    runtime_fn_symbol(
+        module,
+        runtime,
+        "wr_gpu_dispatch_begin",
+        &[types::I64; 7],
+        &[types::I64],
+    )
+}
+
+fn runtime_fn_gpu_dispatch_select_invocation(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    runtime_fn_symbol(
+        module,
+        runtime,
+        "wr_gpu_dispatch_select_invocation",
+        &[types::I64],
+        &[types::I64],
+    )
+}
+
+fn runtime_fn_gpu_dispatch_end(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    runtime_fn_symbol(module, runtime, "wr_gpu_dispatch_end", &[], &[types::I64])
+}
+
 fn runtime_builtin_func_id(
     name: &SmolStr,
     module: &mut ObjectModule,
@@ -3891,6 +4006,132 @@ fn runtime_builtin_func_id(
         "pow" => Some(runtime_fn_math_binary(module, runtime, "wr_vec_pow")?),
         "distance" => Some(runtime_fn_math_binary(module, runtime, "wr_vec_distance")?),
         "reflect" => Some(runtime_fn_math_binary(module, runtime, "wr_vec_reflect")?),
+        "gpu_buffer_new" => Some(runtime_fn_gpu_buffer_new(module, runtime)?),
+        "gpu_buffer_len" => Some(runtime_fn_gpu_buffer_len(module, runtime)?),
+        "gpu_buffer_get" => Some(runtime_fn_gpu_buffer_get(module, runtime)?),
+        "gpu_buffer_set" => Some(runtime_fn_gpu_buffer_set(module, runtime)?),
+        "gpu_atomic_i32_new" => Some(runtime_fn_gpu_atomic_unary(
+            module,
+            runtime,
+            "wr_gpu_atomic_i32_new",
+        )?),
+        "gpu_atomic_i32_drop" => Some(runtime_fn_gpu_atomic_unary(
+            module,
+            runtime,
+            "wr_gpu_atomic_i32_drop",
+        )?),
+        "gpu_atomic_i32_load" => Some(runtime_fn_gpu_atomic_unary(
+            module,
+            runtime,
+            "wr_gpu_atomic_i32_load",
+        )?),
+        "gpu_atomic_i32_store" => Some(runtime_fn_gpu_atomic_binary(
+            module,
+            runtime,
+            "wr_gpu_atomic_i32_store",
+        )?),
+        "gpu_atomic_i32_fetch_add" => Some(runtime_fn_gpu_atomic_binary(
+            module,
+            runtime,
+            "wr_gpu_atomic_i32_fetch_add",
+        )?),
+        "gpu_atomic_u32_new" => Some(runtime_fn_gpu_atomic_unary(
+            module,
+            runtime,
+            "wr_gpu_atomic_u32_new",
+        )?),
+        "gpu_atomic_u32_drop" => Some(runtime_fn_gpu_atomic_unary(
+            module,
+            runtime,
+            "wr_gpu_atomic_u32_drop",
+        )?),
+        "gpu_atomic_u32_load" => Some(runtime_fn_gpu_atomic_unary(
+            module,
+            runtime,
+            "wr_gpu_atomic_u32_load",
+        )?),
+        "gpu_atomic_u32_store" => Some(runtime_fn_gpu_atomic_binary(
+            module,
+            runtime,
+            "wr_gpu_atomic_u32_store",
+        )?),
+        "gpu_atomic_u32_fetch_add" => Some(runtime_fn_gpu_atomic_binary(
+            module,
+            runtime,
+            "wr_gpu_atomic_u32_fetch_add",
+        )?),
+        "global_invocation_id" => Some(runtime_fn_gpu_builtin_vector(
+            module,
+            runtime,
+            "wr_gpu_global_invocation_id",
+        )?),
+        "local_invocation_id" => Some(runtime_fn_gpu_builtin_vector(
+            module,
+            runtime,
+            "wr_gpu_local_invocation_id",
+        )?),
+        "workgroup_id" => Some(runtime_fn_gpu_builtin_vector(
+            module,
+            runtime,
+            "wr_gpu_workgroup_id",
+        )?),
+        "num_workgroups" => Some(runtime_fn_gpu_builtin_vector(
+            module,
+            runtime,
+            "wr_gpu_num_workgroups",
+        )?),
+        "workgroup_size" => Some(runtime_fn_gpu_builtin_vector(
+            module,
+            runtime,
+            "wr_gpu_workgroup_size",
+        )?),
+        "gpu_schedule_deterministic" => Some(runtime_fn_symbol(
+            module,
+            runtime,
+            "wr_gpu_schedule_deterministic",
+            &[],
+            &[types::I64],
+        )?),
+        "gpu_schedule_reverse" => Some(runtime_fn_symbol(
+            module,
+            runtime,
+            "wr_gpu_schedule_reverse",
+            &[],
+            &[types::I64],
+        )?),
+        "gpu_schedule_shuffle" => Some(runtime_fn_symbol(
+            module,
+            runtime,
+            "wr_gpu_schedule_shuffle",
+            &[types::I64],
+            &[types::I64],
+        )?),
+        "gpu_schedule_workgroup_reverse" => Some(runtime_fn_symbol(
+            module,
+            runtime,
+            "wr_gpu_schedule_workgroup_reverse",
+            &[],
+            &[types::I64],
+        )?),
+        "gpu_schedule_workgroup_shuffle" => Some(runtime_fn_symbol(
+            module,
+            runtime,
+            "wr_gpu_schedule_workgroup_shuffle",
+            &[types::I64],
+            &[types::I64],
+        )?),
+        "gpu_schedule_round_robin_workgroups" => Some(runtime_fn_symbol(
+            module,
+            runtime,
+            "wr_gpu_schedule_round_robin_workgroups",
+            &[],
+            &[types::I64],
+        )?),
+        "__wr_gpu_dispatch_begin" => Some(runtime_fn_gpu_dispatch_begin(module, runtime)?),
+        "__wr_gpu_dispatch_select_invocation" => {
+            Some(runtime_fn_gpu_dispatch_select_invocation(module, runtime)?)
+        }
+        "__wr_gpu_dispatch_end" => Some(runtime_fn_gpu_dispatch_end(module, runtime)?),
         "f32" => Some(runtime_fn_cast_f32(module, runtime)?),
         "i32" => Some(runtime_fn_cast_i32(module, runtime)?),
         "u32" => Some(runtime_fn_cast_u32(module, runtime)?),
@@ -3900,6 +4141,8 @@ fn runtime_builtin_func_id(
         "__wr_map_get" => Some(runtime_fn_map_get(module, runtime)?),
         "__wr_map_set" => Some(runtime_fn_map_set(module, runtime)?),
         "__wr_map_len" => Some(runtime_fn_map_len(module, runtime)?),
+        "__wr_env_get" => Some(runtime_fn_env_get(module, runtime)?),
+        "__wr_env_set" => Some(runtime_fn_env_set(module, runtime)?),
         "__wr_list_get" => Some(runtime_fn_list_get_val(module, runtime)?),
         "__wr_list_set" => Some(runtime_fn_list_set_val(module, runtime)?),
         "__wr_list_new" => Some(runtime_fn_list_new(module, runtime)?),
@@ -3910,6 +4153,7 @@ fn runtime_builtin_func_id(
         "__wr_bytes_from_list" => Some(runtime_fn_bytes_from_list(module, runtime)?),
         "__wr_bytes_to_string" => Some(runtime_fn_bytes_to_string(module, runtime)?),
         "__wr_bytes_to_list" => Some(runtime_fn_bytes_to_list(module, runtime)?),
+        "__wr_bytes_len" => Some(runtime_fn_bytes_len(module, runtime)?),
         _ => None,
     };
     Ok(func_id)

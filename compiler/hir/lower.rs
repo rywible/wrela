@@ -17,13 +17,13 @@ pub fn lower_root_body(root: ast::Root) -> Option<Body> {
     for stmt in root.statements() {
         match stmt {
             ast::Stmt::FuncDef(_)
+            | ast::Stmt::KernelDef(_)
             | ast::Stmt::SystemDef(_)
             | ast::Stmt::ClassDef(_)
             | ast::Stmt::ValueDef(_)
             | ast::Stmt::EnumDef(_)
             | ast::Stmt::UseStmt(_)
-            | ast::Stmt::PrivateBlock(_)
-            => {}
+            | ast::Stmt::PrivateBlock(_) => {}
             other => {
                 let s = body_ctx.lower_stmt(other);
                 body_ctx.body.root_stmts.push(s);
@@ -78,6 +78,10 @@ impl LoweringContext {
                     let func = self.lower_func(f);
                     self.module.functions.alloc(func);
                 }
+                ast::Stmt::KernelDef(f) => {
+                    let func = self.lower_kernel_def(f);
+                    self.module.functions.alloc(func);
+                }
                 ast::Stmt::SystemDef(f) => {
                     let func = self.lower_system_def(f);
                     self.module.functions.alloc(func);
@@ -108,6 +112,10 @@ impl LoweringContext {
                         match stmt {
                             ast::Stmt::FuncDef(f) => {
                                 let func = self.lower_func(f);
+                                self.module.functions.alloc(func);
+                            }
+                            ast::Stmt::KernelDef(f) => {
+                                let func = self.lower_kernel_def(f);
                                 self.module.functions.alloc(func);
                             }
                             ast::Stmt::SystemDef(f) => {
@@ -211,6 +219,37 @@ impl LoweringContext {
             kind: FunctionKind::Function,
             role: FunctionRole::System,
             system_metadata: parse_system_metadata(f.syntax()),
+            type_params,
+            params,
+            ret_type,
+            body: Some(body_ctx.body),
+        }
+    }
+
+    fn lower_kernel_def(&mut self, f: ast::KernelDef) -> Function {
+        let attributes = lower_attributes(f.attributes());
+        let name = f.name().map(|t| SmolStr::new(t.text())).unwrap_or_default();
+        let name_span = f.name().map(|t| t.text_range());
+        let visibility = visibility_for_node_default(f.syntax());
+        let type_params = lower_func_type_params(f.syntax());
+        let params = f.params().map(|p| self.lower_param(p)).collect();
+        let ret_type = f.ret_type().map(|t| self.lower_type_ref(t));
+
+        let mut body_ctx = BodyLoweringContext::new();
+        for stmt in f.statements() {
+            let s = body_ctx.lower_stmt(stmt);
+            body_ctx.body.root_stmts.push(s);
+        }
+        Self::finalize_implicit_return(&mut body_ctx.body, ret_type.as_ref());
+
+        Function {
+            name,
+            name_span,
+            attributes,
+            visibility,
+            kind: FunctionKind::Function,
+            role: FunctionRole::Kernel,
+            system_metadata: None,
             type_params,
             params,
             ret_type,
@@ -2012,6 +2051,58 @@ class Counter {
             panic!("Expected member lhs");
         };
         assert_eq!(member, "value");
+    }
+
+    #[test]
+    fn test_lower_kernel_function_marks_portable_lane() {
+        let input = "\
+kernel fn shade[T](value: Integer) -> Integer {
+    return value
+}
+";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let func = &module.functions[Idx::new(0)];
+
+        assert_eq!(func.name, "shade");
+        assert_eq!(func.role, FunctionRole::Kernel);
+        assert_eq!(func.lane(), FunctionLane::Portable);
+        assert_eq!(func.type_params.len(), 1);
+        assert_eq!(func.type_params[0].name, "T");
+    }
+
+    #[test]
+    fn test_lower_plain_function_and_system_keep_host_lane() {
+        let input = "\
+fn helper() -> Integer {
+    return 1
+}
+
+system tick[stage=fixed, reads=[Clock], writes=[FrameClock]]() -> Nothing {
+    return nothing
+}
+";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+
+        let helper = &module.functions[Idx::new(0)];
+        assert_eq!(helper.name, "helper");
+        assert_eq!(helper.role, FunctionRole::Function);
+        assert_eq!(helper.lane(), FunctionLane::Host);
+
+        let system = &module.functions[Idx::new(1)];
+        assert_eq!(system.name, "tick");
+        assert_eq!(system.role, FunctionRole::System);
+        assert_eq!(system.lane(), FunctionLane::Host);
+        let metadata = system
+            .system_metadata
+            .as_ref()
+            .expect("system metadata should be preserved");
+        assert_eq!(metadata.stage.as_deref(), Some("fixed"));
+        assert_eq!(metadata.reads, vec![SmolStr::new("Clock")]);
+        assert_eq!(metadata.writes, vec![SmolStr::new("FrameClock")]);
     }
 
     #[test]

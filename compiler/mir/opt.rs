@@ -3590,7 +3590,7 @@ mod tests {
     use super::*;
     use crate::hir::lower as hir_lower;
     use crate::mir::ir::BlockId;
-    use crate::mir::ir::{BasicBlock, Local, LocalId, Temp, TempId};
+    use crate::mir::ir::{BasicBlock, Local, LocalId, PortableAbiType, Temp, TempId};
     use crate::mir::lower::lower_module;
     use crate::parser::ast;
     use crate::parser::ast::AstNode;

@@ -311,6 +311,13 @@ fn type_from_ref_with_params(ty: &TypeRef, params: &HashSet<SmolStr>) -> Type {
         "Mat3" => Type::Mat3,
         "Mat4" => Type::Mat4,
         "Quat" => Type::Quat,
+        "GpuBuffer" => match args.as_slice() {
+            [inner] => Type::GpuBuffer(Box::new(inner.clone())),
+            _ => Type::GpuBuffer(Box::new(Type::Unknown)),
+        },
+        "GpuAtomicI32" => Type::GpuAtomicI32,
+        "GpuAtomicU32" => Type::GpuAtomicU32,
+        "GpuDispatchSchedule" => Type::GpuDispatchSchedule,
         "Number" => Type::Number,
         "Boolean" => Type::Boolean,
         "Bool" => Type::Boolean,

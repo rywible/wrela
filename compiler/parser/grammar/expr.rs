@@ -1,4 +1,5 @@
 use super::types;
+use crate::parser::ast::is_name_like_label_token;
 use crate::parser::Parser;
 use crate::parser::kind::SyntaxKind;
 
@@ -383,7 +384,7 @@ fn parse_call(
 }
 
 fn parse_arg(p: &mut Parser) {
-    if p.at(SyntaxKind::Ident) && p.peek_nontrivia_at(1) == SyntaxKind::Equals {
+    if is_name_like_label_token(p.peek()) && p.peek_nontrivia_at(1) == SyntaxKind::Equals {
         let m = p.start();
         p.bump();
         p.expect(SyntaxKind::Equals);

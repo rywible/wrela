@@ -5890,6 +5890,7 @@ fn compile_to_mir_with_root(
     let source_name = entry_path.display().to_string();
     let mut source_by_path = project.module_sources.clone();
     let provenance = project.provenance.clone();
+    let naming_errors = project_naming_diagnostics(&project);
     source_by_path
         .entry(entry_path.to_path_buf())
         .or_insert_with(|| source.clone());
@@ -5921,9 +5922,8 @@ fn compile_to_mir_with_root(
         had_errors = true;
     }
     let strict_naming = false;
-    let naming_errors = hir::naming::check_module(&module, &type_info);
-    for err in naming_errors {
-        let path = resolve_path_from_owner_spans(err.primary_span(), &provenance, &default_path);
+    for (path, _source_for_path, err) in naming_errors {
+        let path = path.display().to_string();
         let fixes = conservative_naming_fixes(&err, &path);
         let severity = naming_policy_severity(&err, strict_naming);
         let record = DiagRecord::from_diagnostic(

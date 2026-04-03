@@ -1,5 +1,5 @@
 use super::object::ObjHeader;
-use super::value::{header, TypeId, Value};
+use super::value::{TypeId, Value, header};
 
 #[repr(C)]
 pub(crate) struct VecObj {
@@ -153,19 +153,39 @@ pub fn quat_w(val: Value) -> Value {
 }
 
 pub fn vec_add(a: Value, b: Value) -> Value {
-    binary_vec_op(a, b, |left, right| left + right, None::<fn(f32, f32) -> f32>)
+    binary_vec_op(
+        a,
+        b,
+        |left, right| left + right,
+        None::<fn(f32, f32) -> f32>,
+    )
 }
 
 pub fn vec_sub(a: Value, b: Value) -> Value {
-    binary_vec_op(a, b, |left, right| left - right, None::<fn(f32, f32) -> f32>)
+    binary_vec_op(
+        a,
+        b,
+        |left, right| left - right,
+        None::<fn(f32, f32) -> f32>,
+    )
 }
 
 pub fn vec_mul(a: Value, b: Value) -> Value {
-    binary_vec_op(a, b, |left, right| left * right, Some(|left, scalar| left * scalar))
+    binary_vec_op(
+        a,
+        b,
+        |left, right| left * right,
+        Some(|left, scalar| left * scalar),
+    )
 }
 
 pub fn vec_div(a: Value, b: Value) -> Value {
-    binary_vec_op(a, b, |left, right| left / right, Some(|left, scalar| left / scalar))
+    binary_vec_op(
+        a,
+        b,
+        |left, right| left / right,
+        Some(|left, scalar| left / scalar),
+    )
 }
 
 pub fn vec_min(a: Value, b: Value) -> Value {
@@ -391,7 +411,10 @@ pub fn mat3_from_columns(c0: Value, c1: Value, c2: Value) -> Value {
         let c0 = &*c0;
         let c1 = &*c1;
         let c2 = &*c2;
-        if c0.type_id() != TypeId::Vec3 || c1.type_id() != TypeId::Vec3 || c2.type_id() != TypeId::Vec3 {
+        if c0.type_id() != TypeId::Vec3
+            || c1.type_id() != TypeId::Vec3
+            || c2.type_id() != TypeId::Vec3
+        {
             return Value::nil();
         }
         construct_mat3([
@@ -416,16 +439,7 @@ pub fn mat3_mul_vec3(mat: Value, vec: Value) -> Value {
             return Value::nil();
         }
         let out = mat3_apply_vec3(mat, [vec.data[0], vec.data[1], vec.data[2]]);
-        construct_vec(
-            TypeId::Vec3,
-            [
-                out[0],
-                out[1],
-                out[2],
-                0.0,
-            ],
-            3,
-        )
+        construct_vec(TypeId::Vec3, [out[0], out[1], out[2], 0.0], 3)
     }
 }
 
@@ -442,10 +456,7 @@ pub fn mat3_mul_mat3(a: Value, b: Value) -> Value {
         let mut out = [0.0f32; 9];
         for col in 0..3 {
             let base = col * 3;
-            let product = mat3_apply_vec3(
-                a,
-                [b.data[base], b.data[base + 1], b.data[base + 2]],
-            );
+            let product = mat3_apply_vec3(a, [b.data[base], b.data[base + 1], b.data[base + 2]]);
             out[base] = product[0];
             out[base + 1] = product[1];
             out[base + 2] = product[2];
@@ -527,11 +538,7 @@ pub fn mat4_mul_vec4(mat: Value, vec: Value) -> Value {
             return Value::nil();
         }
         let out = mat4_apply_vec4(mat, [vec.data[0], vec.data[1], vec.data[2], vec.data[3]]);
-        construct_vec(
-            TypeId::Vec4,
-            [out[0], out[1], out[2], out[3]],
-            4,
-        )
+        construct_vec(TypeId::Vec4, [out[0], out[1], out[2], out[3]], 4)
     }
 }
 
@@ -550,7 +557,12 @@ pub fn mat4_mul_mat4(a: Value, b: Value) -> Value {
             let base = col * 4;
             let product = mat4_apply_vec4(
                 a,
-                [b.data[base], b.data[base + 1], b.data[base + 2], b.data[base + 3]],
+                [
+                    b.data[base],
+                    b.data[base + 1],
+                    b.data[base + 2],
+                    b.data[base + 3],
+                ],
             );
             out[base] = product[0];
             out[base + 1] = product[1];
@@ -800,9 +812,7 @@ where
 fn mat3_apply_vec3(mat: &Mat3Obj, vec: [f32; 3]) -> [f32; 3] {
     let mut out = [0.0f32; 3];
     for row in 0..3 {
-        out[row] = mat.data[row] * vec[0]
-            + mat.data[3 + row] * vec[1]
-            + mat.data[6 + row] * vec[2];
+        out[row] = mat.data[row] * vec[0] + mat.data[3 + row] * vec[1] + mat.data[6 + row] * vec[2];
     }
     out
 }
@@ -935,7 +945,11 @@ mod tests {
 
     #[test]
     fn constructors_and_component_getters_work() {
-        let v = vec3_new(Value::from_int(1), Value::from_float(2.5), Value::from_int(3));
+        let v = vec3_new(
+            Value::from_int(1),
+            Value::from_float(2.5),
+            Value::from_int(3),
+        );
         assert!(wr_value_eq(vec_x(v), Value::from_float(1.0)).is_bool());
         assert!(wr_value_eq(vec_y(v), Value::from_float(2.5)).is_bool());
         assert!(wr_value_eq(vec_z(v), Value::from_float(3.0)).is_bool());
@@ -965,22 +979,37 @@ mod tests {
         assert!(wr_approx_eq(dot, Value::from_float(1.0), Value::from_float(1e-5)).as_bool());
 
         let shifted = vec_add(base, vec2_new(Value::from_int(1), Value::from_int(-1)));
-        let restored = vec_div(vec_mul(shifted, Value::from_float(0.5)), Value::from_float(0.5));
+        let restored = vec_div(
+            vec_mul(shifted, Value::from_float(0.5)),
+            Value::from_float(0.5),
+        );
         assert!(wr_value_eq(vec_x(restored), Value::from_float(4.0)).is_bool());
         assert!(wr_value_eq(vec_y(restored), Value::from_float(3.0)).is_bool());
     }
 
     #[test]
     fn vector_intrinsics_work() {
-        let left = vec3_new(Value::from_float(-3.5), Value::from_float(2.0), Value::from_float(9.0));
-        let right = vec3_new(Value::from_float(1.0), Value::from_float(4.0), Value::from_float(-2.0));
+        let left = vec3_new(
+            Value::from_float(-3.5),
+            Value::from_float(2.0),
+            Value::from_float(9.0),
+        );
+        let right = vec3_new(
+            Value::from_float(1.0),
+            Value::from_float(4.0),
+            Value::from_float(-2.0),
+        );
         let min_v = vec_min(left, right);
         let max_v = vec_max(left, right);
         assert!(wr_value_eq(vec_x(min_v), Value::from_float(-3.5)).is_bool());
         assert!(wr_value_eq(vec_y(max_v), Value::from_float(4.0)).is_bool());
 
         let clamped = vec_clamp(
-            vec3_new(Value::from_float(-2.0), Value::from_float(0.4), Value::from_float(3.0)),
+            vec3_new(
+                Value::from_float(-2.0),
+                Value::from_float(0.4),
+                Value::from_float(3.0),
+            ),
             Value::from_float(-1.0),
             Value::from_float(1.0),
         );
@@ -988,12 +1017,34 @@ mod tests {
         assert!(wr_value_eq(vec_z(clamped), Value::from_float(1.0)).is_bool());
 
         let mixed = vec_mix(
-            vec3_new(Value::from_float(0.0), Value::from_float(10.0), Value::from_float(20.0)),
-            vec3_new(Value::from_float(10.0), Value::from_float(20.0), Value::from_float(30.0)),
+            vec3_new(
+                Value::from_float(0.0),
+                Value::from_float(10.0),
+                Value::from_float(20.0),
+            ),
+            vec3_new(
+                Value::from_float(10.0),
+                Value::from_float(20.0),
+                Value::from_float(30.0),
+            ),
             Value::from_float(0.25),
         );
-        assert!(wr_approx_eq(vec_x(mixed), Value::from_float(2.5), Value::from_float(1e-6)).as_bool());
-        assert!(wr_approx_eq(vec_y(mixed), Value::from_float(12.5), Value::from_float(1e-6)).as_bool());
+        assert!(
+            wr_approx_eq(
+                vec_x(mixed),
+                Value::from_float(2.5),
+                Value::from_float(1e-6)
+            )
+            .as_bool()
+        );
+        assert!(
+            wr_approx_eq(
+                vec_y(mixed),
+                Value::from_float(12.5),
+                Value::from_float(1e-6)
+            )
+            .as_bool()
+        );
 
         let rooted = vec_sqrt(vec4_new(
             Value::from_float(1.0),
@@ -1016,52 +1067,96 @@ mod tests {
             Value::from_float(0.0),
             Value::from_float(std::f32::consts::FRAC_PI_2 as f64),
         ));
-        assert!(wr_approx_eq(vec_y(trig), Value::from_float(1.0), Value::from_float(1e-6)).as_bool());
+        assert!(
+            wr_approx_eq(vec_y(trig), Value::from_float(1.0), Value::from_float(1e-6)).as_bool()
+        );
 
         let dist = vec_distance(
-            vec3_new(Value::from_float(0.0), Value::from_float(0.0), Value::from_float(0.0)),
-            vec3_new(Value::from_float(0.0), Value::from_float(3.0), Value::from_float(4.0)),
+            vec3_new(
+                Value::from_float(0.0),
+                Value::from_float(0.0),
+                Value::from_float(0.0),
+            ),
+            vec3_new(
+                Value::from_float(0.0),
+                Value::from_float(3.0),
+                Value::from_float(4.0),
+            ),
         );
         assert!(wr_approx_eq(dist, Value::from_float(5.0), Value::from_float(1e-6)).as_bool());
 
         let reflected = vec_reflect(
-            vec3_new(Value::from_float(1.0), Value::from_float(-1.0), Value::from_float(0.0)),
-            vec3_new(Value::from_float(0.0), Value::from_float(1.0), Value::from_float(0.0)),
+            vec3_new(
+                Value::from_float(1.0),
+                Value::from_float(-1.0),
+                Value::from_float(0.0),
+            ),
+            vec3_new(
+                Value::from_float(0.0),
+                Value::from_float(1.0),
+                Value::from_float(0.0),
+            ),
         );
-        assert!(wr_approx_eq(vec_x(reflected), Value::from_float(1.0), Value::from_float(1e-6)).as_bool());
-        assert!(wr_approx_eq(vec_y(reflected), Value::from_float(1.0), Value::from_float(1e-6)).as_bool());
+        assert!(
+            wr_approx_eq(
+                vec_x(reflected),
+                Value::from_float(1.0),
+                Value::from_float(1e-6)
+            )
+            .as_bool()
+        );
+        assert!(
+            wr_approx_eq(
+                vec_y(reflected),
+                Value::from_float(1.0),
+                Value::from_float(1e-6)
+            )
+            .as_bool()
+        );
     }
 
     #[test]
     fn scalar_intrinsics_work() {
-        assert!(wr_approx_eq(
-            vec_min(Value::from_float(2.0), Value::from_float(3.0)),
-            Value::from_float(2.0),
-            Value::from_float(1e-6)
-        )
-        .as_bool());
-        assert!(wr_approx_eq(
-            vec_max(Value::from_float(2.0), Value::from_float(3.0)),
-            Value::from_float(3.0),
-            Value::from_float(1e-6)
-        )
-        .as_bool());
-        assert!(wr_approx_eq(
-            vec_clamp(Value::from_float(5.0), Value::from_float(0.0), Value::from_float(4.0)),
-            Value::from_float(4.0),
-            Value::from_float(1e-6)
-        )
-        .as_bool());
-        assert!(wr_approx_eq(
-            vec_mix(
-                Value::from_float(10.0),
-                Value::from_float(20.0),
-                Value::from_float(0.25),
-            ),
-            Value::from_float(12.5),
-            Value::from_float(1e-6)
-        )
-        .as_bool());
+        assert!(
+            wr_approx_eq(
+                vec_min(Value::from_float(2.0), Value::from_float(3.0)),
+                Value::from_float(2.0),
+                Value::from_float(1e-6)
+            )
+            .as_bool()
+        );
+        assert!(
+            wr_approx_eq(
+                vec_max(Value::from_float(2.0), Value::from_float(3.0)),
+                Value::from_float(3.0),
+                Value::from_float(1e-6)
+            )
+            .as_bool()
+        );
+        assert!(
+            wr_approx_eq(
+                vec_clamp(
+                    Value::from_float(5.0),
+                    Value::from_float(0.0),
+                    Value::from_float(4.0)
+                ),
+                Value::from_float(4.0),
+                Value::from_float(1e-6)
+            )
+            .as_bool()
+        );
+        assert!(
+            wr_approx_eq(
+                vec_mix(
+                    Value::from_float(10.0),
+                    Value::from_float(20.0),
+                    Value::from_float(0.25),
+                ),
+                Value::from_float(12.5),
+                Value::from_float(1e-6)
+            )
+            .as_bool()
+        );
     }
 
     #[test]
@@ -1077,15 +1172,24 @@ mod tests {
         assert!(wr_value_eq(dot, Value::from_float(32.0)).is_bool());
 
         let len = vec_length(a);
-        assert!(wr_approx_eq(
-            len,
-            Value::from_float(14.0_f32.sqrt() as f64),
-            Value::from_float(1e-6)
-        )
-        .is_bool());
+        assert!(
+            wr_approx_eq(
+                len,
+                Value::from_float(14.0_f32.sqrt() as f64),
+                Value::from_float(1e-6)
+            )
+            .is_bool()
+        );
 
         let norm = vec_normalize(a);
-        assert!(wr_approx_eq(vec_length(norm), Value::from_float(1.0), Value::from_float(1e-6)).is_bool());
+        assert!(
+            wr_approx_eq(
+                vec_length(norm),
+                Value::from_float(1.0),
+                Value::from_float(1e-6)
+            )
+            .is_bool()
+        );
     }
 
     #[test]
@@ -1110,9 +1214,23 @@ mod tests {
             Value::from_float(4.0),
             Value::from_float(0.0),
         );
-        assert!(wr_approx_eq(vec_length(q), Value::from_float(5.0), Value::from_float(1e-6)).is_bool());
+        assert!(
+            wr_approx_eq(
+                vec_length(q),
+                Value::from_float(5.0),
+                Value::from_float(1e-6)
+            )
+            .is_bool()
+        );
         let normalized = vec_normalize(q);
-        assert!(wr_approx_eq(vec_length(normalized), Value::from_float(1.0), Value::from_float(1e-6)).is_bool());
+        assert!(
+            wr_approx_eq(
+                vec_length(normalized),
+                Value::from_float(1.0),
+                Value::from_float(1e-6)
+            )
+            .is_bool()
+        );
 
         let c0 = vec3_new(Value::from_int(1), Value::from_int(0), Value::from_int(0));
         let c1 = vec3_new(Value::from_int(0), Value::from_int(1), Value::from_int(0));
@@ -1123,15 +1241,43 @@ mod tests {
         assert!(wr_value_eq(vec_x(out3), Value::from_float(1.0)).is_bool());
         assert!(wr_value_eq(vec_z(out3), Value::from_float(3.0)).is_bool());
 
-        let m3_scaled = mat3_div_scalar(mat3_mul_scalar(m3, Value::from_float(2.0)), Value::from_float(2.0));
+        let m3_scaled = mat3_div_scalar(
+            mat3_mul_scalar(m3, Value::from_float(2.0)),
+            Value::from_float(2.0),
+        );
         assert!(wr_value_eq(vec_x(mat3_mul_vec3(m3_scaled, v3)), Value::from_float(1.0)).is_bool());
 
-        let c0 = vec4_new(Value::from_int(1), Value::from_int(0), Value::from_int(0), Value::from_int(0));
-        let c1 = vec4_new(Value::from_int(0), Value::from_int(1), Value::from_int(0), Value::from_int(0));
-        let c2 = vec4_new(Value::from_int(0), Value::from_int(0), Value::from_int(1), Value::from_int(0));
-        let c3 = vec4_new(Value::from_int(4), Value::from_int(5), Value::from_int(6), Value::from_int(1));
+        let c0 = vec4_new(
+            Value::from_int(1),
+            Value::from_int(0),
+            Value::from_int(0),
+            Value::from_int(0),
+        );
+        let c1 = vec4_new(
+            Value::from_int(0),
+            Value::from_int(1),
+            Value::from_int(0),
+            Value::from_int(0),
+        );
+        let c2 = vec4_new(
+            Value::from_int(0),
+            Value::from_int(0),
+            Value::from_int(1),
+            Value::from_int(0),
+        );
+        let c3 = vec4_new(
+            Value::from_int(4),
+            Value::from_int(5),
+            Value::from_int(6),
+            Value::from_int(1),
+        );
         let m = mat4_from_columns(c0, c1, c2, c3);
-        let v = vec4_new(Value::from_int(1), Value::from_int(2), Value::from_int(3), Value::from_int(1));
+        let v = vec4_new(
+            Value::from_int(1),
+            Value::from_int(2),
+            Value::from_int(3),
+            Value::from_int(1),
+        );
         let out = mat4_mul_vec4(m, v);
         assert!(wr_value_eq(vec_x(out), Value::from_float(5.0)).is_bool());
         assert!(wr_value_eq(vec_y(out), Value::from_float(7.0)).is_bool());
@@ -1145,9 +1291,24 @@ mod tests {
 
     #[test]
     fn vec_and_mat_values_participate_in_equality_hashing_and_approx() {
-        let a = vec4_new(Value::from_int(1), Value::from_int(2), Value::from_int(3), Value::from_int(4));
-        let b = vec4_new(Value::from_int(1), Value::from_int(2), Value::from_int(3), Value::from_int(4));
-        let c = vec4_new(Value::from_int(1), Value::from_int(2), Value::from_int(3), Value::from_int(5));
+        let a = vec4_new(
+            Value::from_int(1),
+            Value::from_int(2),
+            Value::from_int(3),
+            Value::from_int(4),
+        );
+        let b = vec4_new(
+            Value::from_int(1),
+            Value::from_int(2),
+            Value::from_int(3),
+            Value::from_int(4),
+        );
+        let c = vec4_new(
+            Value::from_int(1),
+            Value::from_int(2),
+            Value::from_int(3),
+            Value::from_int(5),
+        );
         assert!(wr_value_eq(a, b).is_bool());
         assert!(!wr_value_eq(a, c).as_bool());
         assert_eq!(hash_value(a), hash_value(b));

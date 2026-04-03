@@ -527,4 +527,3 @@ fn normalize_wr_blank_lines(source: &str) -> String {
     }
     out
 }
-

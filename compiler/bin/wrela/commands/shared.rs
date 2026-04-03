@@ -48,6 +48,19 @@ fn naming_policy_severity(error: &hir::naming::NamingError, strict_naming: bool)
     }
 }
 
+fn project_naming_diagnostics(
+    project: &hir::project::LoadedProject,
+) -> Vec<(PathBuf, String, hir::naming::NamingError)> {
+    let mut diagnostics = Vec::new();
+    for source_module in &project.source_modules {
+        let (_type_errors, type_info) = hir::typeck::check_module_with_info(&source_module.module);
+        for err in hir::naming::check_module(&source_module.module, &type_info) {
+            diagnostics.push((source_module.path.clone(), source_module.source.clone(), err));
+        }
+    }
+    diagnostics
+}
+
 pub fn execute(spec: CommandSpec) {
     let trace = spec.trace_enabled;
     if trace {
@@ -1010,4 +1023,3 @@ pub fn execute(spec: CommandSpec) {
         }
     }
 }
-

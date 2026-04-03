@@ -1,6 +1,7 @@
 use crate::hir::{
-    Arg, BinaryOp, Body, ClassRole, Expr, FieldDefault, Function, FunctionKind, FunctionRole, Idx,
-    InterfaceMethodKind, Literal, Module, Pattern, Stmt, TypeRef, UnaryOp, Visibility,
+    Arg, BinaryOp, Body, ClassRole, Expr, FieldDefault, Function, FunctionKind, FunctionLane,
+    FunctionRole, Idx, InterfaceMethodKind, Literal, Module, Pattern, Stmt, TypeRef, UnaryOp,
+    Visibility,
 };
 use miette::{Diagnostic, SourceSpan};
 use rowan::TextRange;
@@ -38,8 +39,29 @@ pub enum Type {
     Mat4,
     Quat,
     GpuBuffer(Box<Type>),
+    GpuAtomicI32,
+    GpuAtomicU32,
+    GpuDispatchSchedule,
     Texture2D,
     Sampler,
+}
+
+fn portable_named_type(name: &str) -> Type {
+    Type::Named(SmolStr::new(name), Vec::new())
+}
+
+fn is_portable_named_data_type_name(name: &str) -> bool {
+    matches!(name, "Bounds2" | "Bounds3" | "Ray3" | "Transform3")
+}
+
+fn portable_named_field_type(name: &str, member: &str) -> Option<Type> {
+    match (name, member) {
+        ("Bounds2", "min" | "max") => Some(Type::Vec2),
+        ("Bounds3", "min" | "max") => Some(Type::Vec3),
+        ("Ray3", "origin" | "direction") => Some(Type::Vec3),
+        ("Transform3", "matrix" | "inverse") => Some(Type::Mat4),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Error, Diagnostic, Clone)]
@@ -268,6 +290,58 @@ pub enum TypeError {
         found: String,
         #[label("argument here")]
         span: SourceSpan,
+    },
+
+    #[error("'{feature}' is not supported by the CPU reference GPU yet")]
+    #[diagnostic(code(lang::ty::unsupported_compute_feature))]
+    UnsupportedComputeFeature {
+        feature: &'static str,
+        #[label("unsupported here")]
+        span: SourceSpan,
+        #[help]
+        help: String,
+    },
+
+    #[error("portable function '{function}' cannot use boundary type '{found}' for {site}")]
+    #[diagnostic(code(lang::ty::portable_boundary_type_forbidden))]
+    PortableBoundaryTypeForbidden {
+        function: SmolStr,
+        site: String,
+        found: String,
+        #[label("non-portable boundary here")]
+        span: SourceSpan,
+        #[help]
+        help: String,
+    },
+
+    #[error("portable function '{function}' cannot call host-only operation '{callee}'")]
+    #[diagnostic(code(lang::ty::portable_host_call_forbidden))]
+    PortableHostCallForbidden {
+        function: SmolStr,
+        callee: SmolStr,
+        #[label("host-only call here")]
+        span: SourceSpan,
+        #[help]
+        help: String,
+    },
+
+    #[error("dispatch_compute requires `kernel fn`; '{callee}' is not portable-lane code")]
+    #[diagnostic(code(lang::ty::dispatch_kernel_must_be_portable))]
+    DispatchKernelMustBePortable {
+        callee: SmolStr,
+        #[label("kernel argument here")]
+        span: SourceSpan,
+    },
+
+    #[error("portable function '{function}' cannot use {construct}")]
+    #[diagnostic(code(lang::ty::portable_construct_forbidden))]
+    PortableConstructForbidden {
+        function: SmolStr,
+        construct: String,
+        #[label("non-portable construct here")]
+        span: SourceSpan,
+        #[help]
+        help: String,
     },
 
     #[error("type argument count mismatch for '{name}' (expected {expected}, found {found})")]
@@ -549,6 +623,11 @@ impl TypeError {
             TypeError::UnknownArgument { span, .. } => *span,
             TypeError::NamedArgsRequired { span, .. } => *span,
             TypeError::ArgumentTypeMismatch { span, .. } => *span,
+            TypeError::UnsupportedComputeFeature { span, .. } => *span,
+            TypeError::PortableBoundaryTypeForbidden { span, .. } => *span,
+            TypeError::PortableHostCallForbidden { span, .. } => *span,
+            TypeError::DispatchKernelMustBePortable { span, .. } => *span,
+            TypeError::PortableConstructForbidden { span, .. } => *span,
             TypeError::TypeArgCountMismatch { span, .. } => *span,
             TypeError::MissingTypeArgs { span, .. } => *span,
             TypeError::BoundaryMissingTypeArgs { span, .. } => *span,
@@ -640,6 +719,7 @@ pub fn check_module_with_info(module: &Module) -> (Vec<TypeError>, TypeInfo) {
         );
     }
     validate_value_classes(module, &class_index, &mut errors);
+    validate_portable_lane_functions(module, &class_index, &mut errors);
     check_interface_conformance(&class_index, &interface_index, &mut errors);
     check_async_actor_usage(module, &info, &class_index, &mut errors);
     (errors, info)
@@ -950,7 +1030,9 @@ fn collect_forbidden_float_literals_in_expr(
                 }
             }
         }
-        Expr::Closure { body: closure_body, .. } => {
+        Expr::Closure {
+            body: closure_body, ..
+        } => {
             collect_forbidden_float_literals_in_expr(body, *closure_body, errors);
         }
     }
@@ -1059,6 +1141,9 @@ fn supports_fixed_value_type(
         | Type::Actor(_)
         | Type::Pending(_)
         | Type::GpuBuffer(_)
+        | Type::GpuAtomicI32
+        | Type::GpuAtomicU32
+        | Type::GpuDispatchSchedule
         | Type::Texture2D
         | Type::Sampler => false,
         Type::Boolean | Type::I32 | Type::U32 | Type::I64 | Type::U64 | Type::F32 => true,
@@ -1066,6 +1151,9 @@ fn supports_fixed_value_type(
         Type::Param(_) => false,
         Type::Array(inner, len) => *len > 0 && supports_fixed_value_type(inner, classes, visiting),
         Type::Named(name, args) => {
+            if args.is_empty() && is_portable_named_data_type_name(name.as_str()) {
+                return true;
+            }
             if !args.is_empty() {
                 return false;
             }
@@ -1087,6 +1175,620 @@ fn supports_fixed_value_type(
             ok
         }
     }
+}
+
+fn validate_portable_lane_functions(
+    module: &Module,
+    classes: &ClassIndex,
+    errors: &mut Vec<TypeError>,
+) {
+    let top_level = portable_function_sets(module);
+    for (_func_idx, func) in module.functions.iter() {
+        if !matches!(func.lane(), FunctionLane::Portable) {
+            continue;
+        }
+        validate_portable_function_boundary(func, classes, errors);
+        if let Some(body) = &func.body {
+            validate_portable_block(
+                body,
+                &body.root_stmts,
+                &func.name,
+                &top_level,
+                classes,
+                errors,
+            );
+        }
+    }
+}
+
+struct PortableFunctionSets {
+    all: HashSet<SmolStr>,
+    portable: HashSet<SmolStr>,
+}
+
+fn portable_function_sets(module: &Module) -> PortableFunctionSets {
+    let mut method_ids = HashSet::new();
+    for (_idx, class) in module.classes.iter() {
+        for method_id in &class.methods {
+            method_ids.insert(*method_id);
+        }
+    }
+
+    let mut all = HashSet::new();
+    let mut portable = HashSet::new();
+    for (idx, func) in module.functions.iter() {
+        if method_ids.contains(&idx) {
+            continue;
+        }
+        all.insert(func.name.clone());
+        if matches!(func.lane(), FunctionLane::Portable) {
+            portable.insert(func.name.clone());
+        }
+    }
+
+    PortableFunctionSets { all, portable }
+}
+
+fn validate_portable_function_boundary(
+    func: &Function,
+    classes: &ClassIndex,
+    errors: &mut Vec<TypeError>,
+) {
+    for param in &func.params {
+        let (found, label) = match &param.ty {
+            Some(ty) => {
+                let found = type_from_ref(ty);
+                (found.clone(), type_label(&found))
+            }
+            None => (Type::Unknown, "inferred".to_string()),
+        };
+        let mut visiting = HashSet::new();
+        if !supports_portable_boundary_type(&found, classes, &mut visiting) {
+            errors.push(TypeError::PortableBoundaryTypeForbidden {
+                function: func.name.clone(),
+                site: format!("parameter '{}'", param.name),
+                found: label,
+                span: param
+                    .ty
+                    .as_ref()
+                    .and_then(|ty| ty.name_span)
+                    .map(span_from_range)
+                    .unwrap_or_else(|| span_from_option_range(param.name_span)),
+                help: "Portable boundaries must use explicit-width scalars, vector/matrix math types, fixed-layout values, arrays, and kernel-safe buffer/atomic handles.".to_string(),
+            });
+        }
+    }
+
+    let (ret_ty, ret_label, ret_span) = match &func.ret_type {
+        Some(ret) => {
+            let ty = type_from_ref(ret);
+            (
+                ty.clone(),
+                type_label(&ty),
+                ret.name_span
+                    .map(span_from_range)
+                    .unwrap_or_else(|| span_from_option_range(func.name_span)),
+            )
+        }
+        None => (
+            Type::Unknown,
+            "inferred".to_string(),
+            span_from_option_range(func.name_span),
+        ),
+    };
+    let mut visiting = HashSet::new();
+    if !supports_portable_boundary_type(&ret_ty, classes, &mut visiting) {
+        errors.push(TypeError::PortableBoundaryTypeForbidden {
+            function: func.name.clone(),
+            site: "return type".to_string(),
+            found: ret_label,
+            span: ret_span,
+            help: "Portable functions need explicit portable return types so the CPU reference path and future GPU backends share the same ABI.".to_string(),
+        });
+    }
+}
+
+fn supports_portable_boundary_type(
+    ty: &Type,
+    classes: &ClassIndex,
+    visiting: &mut HashSet<SmolStr>,
+) -> bool {
+    match ty {
+        Type::Unknown
+        | Type::Integer
+        | Type::Float
+        | Type::Number
+        | Type::String
+        | Type::List(_)
+        | Type::Map(_, _)
+        | Type::Result(_, _)
+        | Type::Actor(_)
+        | Type::Pending(_)
+        | Type::GpuDispatchSchedule
+        | Type::Texture2D
+        | Type::Sampler
+        | Type::Param(_) => false,
+        Type::Never
+        | Type::Boolean
+        | Type::I32
+        | Type::U32
+        | Type::I64
+        | Type::U64
+        | Type::F32
+        | Type::Nil => true,
+        Type::Vec2 | Type::Vec3 | Type::Vec4 | Type::Mat3 | Type::Mat4 | Type::Quat => true,
+        Type::GpuBuffer(inner) => supports_portable_boundary_type(inner, classes, visiting),
+        Type::GpuAtomicI32 | Type::GpuAtomicU32 => true,
+        Type::Array(inner, len) => {
+            *len > 0 && supports_portable_boundary_type(inner, classes, visiting)
+        }
+        Type::Named(name, args) => {
+            if args.is_empty() && is_portable_named_data_type_name(name.as_str()) {
+                return true;
+            }
+            if !args.is_empty() {
+                return false;
+            }
+            let Some(class_sig) = classes.get(name) else {
+                return false;
+            };
+            if !matches!(class_sig.role, ClassRole::Value) {
+                return false;
+            }
+            if !visiting.insert(name.clone()) {
+                return true;
+            }
+            let ok = class_sig
+                .field_order
+                .iter()
+                .filter_map(|field| class_sig.fields.get(field))
+                .all(|field_ty| supports_portable_boundary_type(field_ty, classes, visiting));
+            visiting.remove(name);
+            ok
+        }
+    }
+}
+
+fn validate_portable_block(
+    body: &Body,
+    stmts: &[Idx<Stmt>],
+    function: &SmolStr,
+    functions: &PortableFunctionSets,
+    classes: &ClassIndex,
+    errors: &mut Vec<TypeError>,
+) {
+    for stmt_id in stmts {
+        match &body.stmts[*stmt_id] {
+            Stmt::Expr(expr) => {
+                validate_portable_expr(body, *expr, function, functions, classes, errors);
+            }
+            Stmt::Assert {
+                expr,
+                rhs,
+                tolerance,
+                ..
+            } => {
+                validate_portable_expr(body, *expr, function, functions, classes, errors);
+                if let Some(rhs) = rhs {
+                    validate_portable_expr(body, *rhs, function, functions, classes, errors);
+                }
+                if let Some(tolerance) = tolerance {
+                    validate_portable_expr(body, *tolerance, function, functions, classes, errors);
+                }
+            }
+            Stmt::Require { condition, message } => {
+                validate_portable_expr(body, *condition, function, functions, classes, errors);
+                validate_portable_expr(body, *message, function, functions, classes, errors);
+            }
+            Stmt::Let { value, .. } | Stmt::Assign { value, .. } => {
+                validate_portable_expr(body, *value, function, functions, classes, errors);
+            }
+            Stmt::Optimize { body: inner, .. } => {
+                errors.push(TypeError::PortableConstructForbidden {
+                    function: function.clone(),
+                    construct: "optimization objective blocks".to_string(),
+                    span: span_from_range(body.stmt_span(*stmt_id)),
+                    help: "Keep portable kernels focused on deterministic data-parallel work; orchestration stays in the host lane.".to_string(),
+                });
+                validate_portable_block(body, inner, function, functions, classes, errors);
+            }
+            Stmt::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                validate_portable_expr(body, *condition, function, functions, classes, errors);
+                validate_portable_block(body, then_branch, function, functions, classes, errors);
+                if let Some(branch) = else_branch {
+                    validate_portable_block(body, branch, function, functions, classes, errors);
+                }
+            }
+            Stmt::For {
+                iterable,
+                body: inner,
+                ..
+            } => {
+                validate_portable_expr(body, *iterable, function, functions, classes, errors);
+                validate_portable_block(body, inner, function, functions, classes, errors);
+            }
+            Stmt::Match {
+                subject,
+                cases,
+                otherwise,
+            } => {
+                validate_portable_expr(body, *subject, function, functions, classes, errors);
+                for case in cases {
+                    if let Some(guard) = case.guard {
+                        validate_portable_expr(body, guard, function, functions, classes, errors);
+                    }
+                    validate_portable_block(body, &case.body, function, functions, classes, errors);
+                }
+                if let Some(otherwise) = otherwise {
+                    validate_portable_block(body, otherwise, function, functions, classes, errors);
+                }
+            }
+            Stmt::IgnoreResult { expr } => {
+                errors.push(TypeError::PortableConstructForbidden {
+                    function: function.clone(),
+                    construct: "`ignore result`".to_string(),
+                    span: span_from_range(body.stmt_span(*stmt_id)),
+                    help: "Portable code should stay free of host-style result side channels; return portable data explicitly instead.".to_string(),
+                });
+                validate_portable_expr(body, *expr, function, functions, classes, errors);
+            }
+            Stmt::Capture { value, .. } => {
+                errors.push(TypeError::PortableConstructForbidden {
+                    function: function.clone(),
+                    construct: "`capture`".to_string(),
+                    span: span_from_range(body.stmt_span(*stmt_id)),
+                    help: "Captures belong in higher-level field/query semantics, not the kernel portability substrate.".to_string(),
+                });
+                validate_portable_expr(body, *value, function, functions, classes, errors);
+            }
+            Stmt::Defer { expr } => {
+                errors.push(TypeError::PortableConstructForbidden {
+                    function: function.clone(),
+                    construct: "`defer`".to_string(),
+                    span: span_from_range(body.stmt_span(*stmt_id)),
+                    help: "Portable kernels cannot rely on host-style deferred cleanup. Pass handles in and keep execution order-independent.".to_string(),
+                });
+                validate_portable_expr(body, *expr, function, functions, classes, errors);
+            }
+            Stmt::While {
+                condition,
+                body: inner,
+            } => {
+                validate_portable_expr(body, *condition, function, functions, classes, errors);
+                validate_portable_block(body, inner, function, functions, classes, errors);
+            }
+            Stmt::Return(expr) => {
+                if let Some(expr) = expr {
+                    validate_portable_expr(body, *expr, function, functions, classes, errors);
+                }
+            }
+            Stmt::Use { .. } | Stmt::Break | Stmt::Continue => {}
+        }
+    }
+}
+
+fn validate_portable_expr(
+    body: &Body,
+    expr_id: Idx<Expr>,
+    function: &SmolStr,
+    functions: &PortableFunctionSets,
+    classes: &ClassIndex,
+    errors: &mut Vec<TypeError>,
+) {
+    match &body.exprs[expr_id] {
+        Expr::Literal(Literal::String(_)) => {
+            errors.push(TypeError::PortableConstructForbidden {
+                function: function.clone(),
+                construct: "String literals".to_string(),
+                span: span_from_range(body.expr_span(expr_id)),
+                help: "Portable kernels should operate on fixed-layout numeric data, not heap-backed text.".to_string(),
+            });
+        }
+        Expr::Literal(_) | Expr::Variable(_) => {}
+        Expr::Detach { target, .. } => {
+            errors.push(TypeError::PortableConstructForbidden {
+                function: function.clone(),
+                construct: "`detach`".to_string(),
+                span: span_from_range(body.expr_span(expr_id)),
+                help: "Portable kernels cannot spawn host concurrency; dispatch from the host and keep kernel helpers synchronous.".to_string(),
+            });
+            validate_portable_expr(body, *target, function, functions, classes, errors);
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            validate_portable_expr(body, *lhs, function, functions, classes, errors);
+            validate_portable_expr(body, *rhs, function, functions, classes, errors);
+        }
+        Expr::Unary { op, expr, .. } => {
+            if let Some((construct, help)) = portable_unary_rejection(*op) {
+                errors.push(TypeError::PortableConstructForbidden {
+                    function: function.clone(),
+                    construct: construct.to_string(),
+                    span: span_from_range(body.expr_span(expr_id)),
+                    help: help.to_string(),
+                });
+            }
+            validate_portable_expr(body, *expr, function, functions, classes, errors);
+        }
+        Expr::TypeApply { callee, .. } => {
+            validate_portable_expr(body, *callee, function, functions, classes, errors);
+        }
+        Expr::Crash { expr } => {
+            errors.push(TypeError::PortableConstructForbidden {
+                function: function.clone(),
+                construct: "`crash`".to_string(),
+                span: span_from_range(body.expr_span(expr_id)),
+                help: "Portable kernels should communicate failure through explicit host-side orchestration, not trap semantics.".to_string(),
+            });
+            validate_portable_expr(body, *expr, function, functions, classes, errors);
+        }
+        Expr::Call { callee, args, .. } => {
+            validate_portable_call(
+                body, expr_id, callee, args, function, functions, classes, errors,
+            );
+            validate_portable_expr(body, *callee, function, functions, classes, errors);
+            for arg in args {
+                match arg {
+                    Arg::Positional { value, .. } | Arg::Named { value, .. } => {
+                        validate_portable_expr(body, *value, function, functions, classes, errors);
+                    }
+                }
+            }
+        }
+        Expr::Member { object, .. } => {
+            validate_portable_expr(body, *object, function, functions, classes, errors);
+        }
+        Expr::Index { object, index, .. } => {
+            validate_portable_expr(body, *object, function, functions, classes, errors);
+            validate_portable_expr(body, *index, function, functions, classes, errors);
+        }
+        Expr::List(items) => {
+            errors.push(TypeError::PortableConstructForbidden {
+                function: function.clone(),
+                construct: "List literals".to_string(),
+                span: span_from_range(body.expr_span(expr_id)),
+                help: "Portable kernels cannot allocate dynamic lists. Use fixed-size arrays or buffers instead.".to_string(),
+            });
+            for item in items {
+                validate_portable_expr(body, *item, function, functions, classes, errors);
+            }
+        }
+        Expr::Map(items) => {
+            errors.push(TypeError::PortableConstructForbidden {
+                function: function.clone(),
+                construct: "Map literals".to_string(),
+                span: span_from_range(body.expr_span(expr_id)),
+                help: "Portable kernels cannot allocate hash maps. Flatten the data into arrays, values, or buffers instead.".to_string(),
+            });
+            for (key, value) in items {
+                validate_portable_expr(body, *key, function, functions, classes, errors);
+                validate_portable_expr(body, *value, function, functions, classes, errors);
+            }
+        }
+        Expr::StringInterp(parts) => {
+            errors.push(TypeError::PortableConstructForbidden {
+                function: function.clone(),
+                construct: "string interpolation".to_string(),
+                span: span_from_range(body.expr_span(expr_id)),
+                help: "Portable kernels cannot build heap-backed strings. Keep diagnostic formatting in the host lane.".to_string(),
+            });
+            for part in parts {
+                if let crate::hir::StringPart::Expr(expr) = part {
+                    validate_portable_expr(body, *expr, function, functions, classes, errors);
+                }
+            }
+        }
+        Expr::Closure {
+            body: closure_body, ..
+        } => {
+            errors.push(TypeError::PortableConstructForbidden {
+                function: function.clone(),
+                construct: "closures".to_string(),
+                span: span_from_range(body.expr_span(expr_id)),
+                help: "Portable kernels need a direct, backend-neutral call graph. Hoist helper logic into named functions instead.".to_string(),
+            });
+            validate_portable_expr(body, *closure_body, function, functions, classes, errors);
+        }
+    }
+}
+
+fn validate_portable_call(
+    body: &Body,
+    expr_id: Idx<Expr>,
+    callee: &Idx<Expr>,
+    _args: &[Arg],
+    function: &SmolStr,
+    functions: &PortableFunctionSets,
+    classes: &ClassIndex,
+    errors: &mut Vec<TypeError>,
+) {
+    match &body.exprs[*callee] {
+        Expr::Variable(name) => {
+            if is_portable_safe_builtin_call(name.as_str()) {
+                return;
+            }
+            if functions.portable.contains(name) {
+                return;
+            }
+            if classes
+                .get(name)
+                .is_some_and(|class| matches!(class.role, ClassRole::Value))
+            {
+                return;
+            }
+            if functions.all.contains(name) || is_host_only_builtin_call(name.as_str()) {
+                errors.push(TypeError::PortableHostCallForbidden {
+                    function: function.clone(),
+                    callee: name.clone(),
+                    span: span_from_range(body.expr_span(expr_id)),
+                    help: "Portable code may use pure math intrinsics and kernel-safe buffer/atomic access, but host orchestration and I/O stay outside the portable lane.".to_string(),
+                });
+            }
+        }
+        Expr::Member { object, member, .. } => {
+            let object_ty = portable_member_object_type(body, *object, classes);
+            if let Type::Named(name, args) = object_ty
+                && args.is_empty()
+                && is_portable_named_data_type_name(name.as_str())
+                && portable_named_field_type(name.as_str(), member.as_str()).is_some()
+            {
+                errors.push(TypeError::PortableConstructForbidden {
+                    function: function.clone(),
+                    construct: format!("calling field '{}.{}(...)'", name, member),
+                    span: span_from_range(body.expr_span(expr_id)),
+                    help: "Portable data primitives expose fields directly; access the field value instead of calling it like a method.".to_string(),
+                });
+            }
+        }
+        _ => {}
+    }
+}
+
+fn portable_member_object_type(body: &Body, expr_id: Idx<Expr>, classes: &ClassIndex) -> Type {
+    match &body.exprs[expr_id] {
+        Expr::Variable(_) => Type::Unknown,
+        Expr::Member { object, member, .. } => {
+            let object_ty = portable_member_object_type(body, *object, classes);
+            match object_ty {
+                Type::Named(name, args) if args.is_empty() => {
+                    portable_named_field_type(name.as_str(), member.as_str())
+                        .unwrap_or(Type::Unknown)
+                }
+                _ => Type::Unknown,
+            }
+        }
+        Expr::Call { callee, .. } => {
+            if let Expr::Variable(name) = &body.exprs[*callee] {
+                if classes
+                    .get(name)
+                    .is_some_and(|class| matches!(class.role, ClassRole::Value))
+                {
+                    return Type::Named(name.clone(), Vec::new());
+                }
+                if is_portable_named_data_type_name(name.as_str()) {
+                    return portable_named_type(name.as_str());
+                }
+            }
+            Type::Unknown
+        }
+        _ => Type::Unknown,
+    }
+}
+
+fn portable_unary_rejection(op: UnaryOp) -> Option<(&'static str, &'static str)> {
+    match op {
+        UnaryOp::Await => Some((
+            "`await`",
+            "Portable kernels are synchronous. Await work in the host lane and pass the resolved data in.",
+        )),
+        UnaryOp::Spawn => Some((
+            "`spawn`",
+            "Portable kernels cannot spawn host tasks. Split host orchestration from portable compute helpers.",
+        )),
+        UnaryOp::Fire => Some((
+            "`fire`",
+            "Portable kernels cannot enqueue fire-and-forget work. Keep side-effect scheduling in the host lane.",
+        )),
+        UnaryOp::Err => Some((
+            "`error`",
+            "Portable kernels do not expose host-style Result error channels yet. Return portable data and let the host orchestrate failures.",
+        )),
+        UnaryOp::Try => Some((
+            "`?`",
+            "Portable kernels do not expose host-style Result propagation yet. Keep failure handling in the host lane for now.",
+        )),
+        _ => None,
+    }
+}
+
+fn is_portable_safe_builtin_call(name: &str) -> bool {
+    matches!(
+        name,
+        "vec2"
+            | "vec3"
+            | "vec4"
+            | "quat"
+            | "mat3_identity"
+            | "mat3_cols"
+            | "mat4_identity"
+            | "mat4_cols"
+            | "bounds2"
+            | "bounds3"
+            | "ray3"
+            | "transform3"
+            | "transform3_identity"
+            | "bounds2_center"
+            | "bounds2_size"
+            | "bounds3_center"
+            | "bounds3_size"
+            | "transform_point"
+            | "transform_vector"
+            | "transform_normal"
+            | "compose_transform3"
+            | "inverse_transform3"
+            | "dot"
+            | "length"
+            | "normalize"
+            | "cross"
+            | "min"
+            | "max"
+            | "clamp"
+            | "mix"
+            | "abs"
+            | "sign"
+            | "floor"
+            | "ceil"
+            | "fract"
+            | "sin"
+            | "cos"
+            | "sqrt"
+            | "pow"
+            | "distance"
+            | "reflect"
+            | "f32"
+            | "i32"
+            | "u32"
+            | "gpu_buffer_len"
+            | "gpu_buffer_get"
+            | "gpu_buffer_set"
+            | "gpu_atomic_i32_load"
+            | "gpu_atomic_i32_store"
+            | "gpu_atomic_i32_fetch_add"
+            | "gpu_atomic_u32_load"
+            | "gpu_atomic_u32_store"
+            | "gpu_atomic_u32_fetch_add"
+            | "global_invocation_id"
+            | "local_invocation_id"
+            | "workgroup_id"
+            | "num_workgroups"
+            | "workgroup_size"
+            | "workgroup_barrier"
+            | "storage_barrier"
+    )
+}
+
+fn is_host_only_builtin_call(name: &str) -> bool {
+    name.starts_with("__wr_")
+        || matches!(
+            name,
+            "try_to_call_external"
+                | "try_to_http_call"
+                | "dispatch_compute"
+                | "gpu_buffer_new"
+                | "gpu_atomic_i32_new"
+                | "gpu_atomic_i32_drop"
+                | "gpu_atomic_u32_new"
+                | "gpu_atomic_u32_drop"
+                | "gpu_schedule_deterministic"
+                | "gpu_schedule_reverse"
+                | "gpu_schedule_shuffle"
+                | "gpu_schedule_workgroup_reverse"
+                | "gpu_schedule_workgroup_shuffle"
+                | "gpu_schedule_round_robin_workgroups"
+        )
 }
 
 fn collect_boundary_missing_type_args(ty: &TypeRef, errors: &mut Vec<TypeError>) {

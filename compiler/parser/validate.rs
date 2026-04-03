@@ -28,7 +28,7 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
     }
     for node in root.descendants() {
         match node.kind() {
-            SyntaxKind::FuncDef | SyntaxKind::SystemDef => {
+            SyntaxKind::FuncDef | SyntaxKind::KernelDef | SyntaxKind::SystemDef => {
                 if !has_token(&node, SyntaxKind::Ident) {
                     errors.push(ValidationError {
                         kind: ValidationDiagKind::AstRule,
@@ -265,6 +265,7 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                                         | SyntaxKind::ResourceDef
                                         | SyntaxKind::EventDef
                                         | SyntaxKind::FuncDef
+                                        | SyntaxKind::KernelDef
                                         | SyntaxKind::SystemDef
                                 ) {
                                     errors.push(ValidationError {
@@ -469,7 +470,10 @@ fn is_in_function(node: &SyntaxNode) -> bool {
     node.ancestors().any(|ancestor| {
         matches!(
             ancestor.kind(),
-            SyntaxKind::FuncDef | SyntaxKind::SystemDef | SyntaxKind::MethodDef
+            SyntaxKind::FuncDef
+                | SyntaxKind::KernelDef
+                | SyntaxKind::SystemDef
+                | SyntaxKind::MethodDef
         )
     })
 }
@@ -665,6 +669,32 @@ class Foo {
             return 1
         }
     }
+}
+";
+        let root = parse(text);
+        let errors = validate(&root);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_private_block_top_level_allows_kernel_functions() {
+        let text = "\
+private {
+    kernel fn shade() -> Nothing {
+        return nothing
+    }
+}
+";
+        let root = parse(text);
+        let errors = validate(&root);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_kernel_function_definition_validates_like_other_functions() {
+        let text = "\
+kernel fn shade() -> Integer {
+    return 1
 }
 ";
         let root = parse(text);

@@ -117,6 +117,53 @@ fn run() -> Integer {
 }
 
 #[test]
+fn native_v2_class_method_dispatch_smoke() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = r#"
+class Counter {
+    value: Integer
+
+    fn get_value() -> Integer {
+        return self.value
+    }
+}
+
+fn run() -> Integer {
+    counter = Counter(value=7)
+    return counter.get_value()
+}
+"#;
+
+    let output = compile_and_run_native_source(source, "wr_v2_class_method_dispatch_smoke");
+    let expected = expected_int_exit(7);
+    assert_eq!(output.status.code().unwrap_or(-1), expected);
+}
+
+#[test]
+fn native_v2_bytes_len_smoke() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = r#"
+use {
+    get_bytes_from_string,
+    get_length
+}
+from data/bytes
+
+fn run() -> Integer {
+    return get_length(get_bytes_from_string("hello"))
+}
+"#;
+
+    let output = compile_and_run_native_source(source, "wr_v2_bytes_len_smoke");
+    let expected = expected_int_exit(5);
+    assert_eq!(output.status.code().unwrap_or(-1), expected);
+}
+
+#[test]
 fn native_v2_substrate_scalars_array_and_approx_smoke() {
     if std::env::var("WR_SKIP_NATIVE").is_ok() {
         return;
@@ -316,6 +363,328 @@ fn main() -> Integer {
 "#;
 
     let output = compile_and_run_native_inline_source(source, "wr_v2_portable_math_surface_smoke");
+    let expected = expected_int_exit(0);
+    assert_eq!(
+        output.status.code().unwrap_or(-1),
+        expected,
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn native_v2_virtual_gpu_compute_smoke() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = r#"
+kernel fn run_kernel(snapshot: GpuBuffer[I32], counts: GpuBuffer[I32]) -> Nothing {
+    gid = global_invocation_id()
+    lid = local_invocation_id()
+    wid = workgroup_id()
+    num = num_workgroups()
+    size = workgroup_size()
+
+    if gid[0] == u32(0) and lid[0] == u32(0) and wid[0] == u32(0) {
+        gpu_buffer_set(buffer=snapshot, index=0, value=i32(gid[0]))
+        gpu_buffer_set(buffer=snapshot, index=1, value=i32(lid[0]))
+        gpu_buffer_set(buffer=snapshot, index=2, value=i32(wid[0]))
+        gpu_buffer_set(buffer=snapshot, index=3, value=i32(num[0]))
+        gpu_buffer_set(buffer=snapshot, index=4, value=i32(size[0]))
+        gpu_buffer_set(
+            buffer=snapshot,
+            index=5,
+            value=i32(gpu_buffer_len(buffer=counts))
+        )
+    }
+
+    gpu_buffer_set(buffer=counts, index=gid[0], value=i32(1))
+}
+
+fn main() -> Integer {
+    snapshot = gpu_buffer_new(
+        length=6,
+        default_value=i32(0)
+    )
+    counts = gpu_buffer_new(
+        length=4,
+        default_value=i32(0)
+    )
+    dispatch_compute(
+        kernel=run_kernel,
+        snapshot=snapshot,
+        counts=counts,
+        workgroups_x=u32(2),
+        workgroups_y=u32(1),
+        workgroups_z=u32(1),
+        workgroup_size_x=u32(2),
+        workgroup_size_y=u32(1),
+        workgroup_size_z=u32(1)
+    )
+
+    assert value gpu_buffer_get(buffer=snapshot, index=0) == 0
+    assert value gpu_buffer_get(buffer=snapshot, index=1) == 0
+    assert value gpu_buffer_get(buffer=snapshot, index=2) == 0
+    assert value gpu_buffer_get(buffer=snapshot, index=3) == 2
+    assert value gpu_buffer_get(buffer=snapshot, index=4) == 2
+    assert value gpu_buffer_get(buffer=snapshot, index=5) == 4
+    assert value gpu_buffer_get(buffer=counts, index=0) == 1
+    assert value gpu_buffer_get(buffer=counts, index=1) == 1
+    assert value gpu_buffer_get(buffer=counts, index=2) == 1
+    assert value gpu_buffer_get(buffer=counts, index=3) == 1
+    return 0
+}
+"#;
+
+    let output = compile_and_run_native_inline_source(source, "wr_v2_virtual_gpu_compute_smoke");
+    let expected = expected_int_exit(0);
+    assert_eq!(
+        output.status.code().unwrap_or(-1),
+        expected,
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn native_v2_virtual_gpu_atomic_schedule_smoke() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = r#"
+kernel fn run_kernel(counter: GpuAtomicI32, observed: GpuBuffer[I32]) -> Nothing {
+    gid = global_invocation_id()
+    previous = gpu_atomic_i32_fetch_add(
+        atomic=counter,
+        delta=i32(1)
+    )
+    gpu_buffer_set(
+        buffer=observed,
+        index=gid[0],
+        value=previous
+    )
+}
+
+fn main() -> Integer {
+    counter = gpu_atomic_i32_new(initial=i32(0))
+    observed = gpu_buffer_new(
+        length=4,
+        default_value=i32(0)
+    )
+    dispatch_compute(
+        kernel=run_kernel,
+        counter=counter,
+        observed=observed,
+        schedule=gpu_schedule_reverse(),
+        workgroups_x=u32(2),
+        workgroups_y=u32(1),
+        workgroups_z=u32(1),
+        workgroup_size_x=u32(2),
+        workgroup_size_y=u32(1),
+        workgroup_size_z=u32(1)
+    )
+
+    assert value gpu_atomic_i32_load(atomic=counter) == 4
+    assert value gpu_atomic_i32_drop(atomic=counter) == true
+    assert value gpu_buffer_get(buffer=observed, index=0) == 3
+    assert value gpu_buffer_get(buffer=observed, index=1) == 2
+    assert value gpu_buffer_get(buffer=observed, index=2) == 1
+    assert value gpu_buffer_get(buffer=observed, index=3) == 0
+    return 0
+}
+"#;
+
+    let output =
+        compile_and_run_native_inline_source(source, "wr_v2_virtual_gpu_atomic_schedule_smoke");
+    let expected = expected_int_exit(0);
+    assert_eq!(
+        output.status.code().unwrap_or(-1),
+        expected,
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn native_v2_virtual_gpu_workgroup_reverse_schedule_smoke() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = r#"
+kernel fn run_kernel(counter: GpuAtomicI32, observed: GpuBuffer[I32]) -> Nothing {
+    gid = global_invocation_id()
+    previous = gpu_atomic_i32_fetch_add(
+        atomic=counter,
+        delta=i32(1)
+    )
+    gpu_buffer_set(
+        buffer=observed,
+        index=gid[0],
+        value=previous
+    )
+}
+
+fn main() -> Integer {
+    counter = gpu_atomic_i32_new(initial=i32(0))
+    observed = gpu_buffer_new(
+        length=4,
+        default_value=i32(0)
+    )
+    dispatch_compute(
+        kernel=run_kernel,
+        counter=counter,
+        observed=observed,
+        schedule=gpu_schedule_workgroup_reverse(),
+        workgroups_x=u32(2),
+        workgroups_y=u32(1),
+        workgroups_z=u32(1),
+        workgroup_size_x=u32(2),
+        workgroup_size_y=u32(1),
+        workgroup_size_z=u32(1)
+    )
+
+    assert value gpu_atomic_i32_load(atomic=counter) == 4
+    assert value gpu_buffer_get(buffer=observed, index=0) == 2
+    assert value gpu_buffer_get(buffer=observed, index=1) == 3
+    assert value gpu_buffer_get(buffer=observed, index=2) == 0
+    assert value gpu_buffer_get(buffer=observed, index=3) == 1
+    return 0
+}
+"#;
+
+    let output = compile_and_run_native_inline_source(
+        source,
+        "wr_v2_virtual_gpu_workgroup_reverse_schedule_smoke",
+    );
+    let expected = expected_int_exit(0);
+    assert_eq!(
+        output.status.code().unwrap_or(-1),
+        expected,
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn native_v2_virtual_gpu_round_robin_workgroups_schedule_smoke() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = r#"
+kernel fn run_kernel(counter: GpuAtomicI32, observed: GpuBuffer[I32]) -> Nothing {
+    gid = global_invocation_id()
+    previous = gpu_atomic_i32_fetch_add(
+        atomic=counter,
+        delta=i32(1)
+    )
+    gpu_buffer_set(
+        buffer=observed,
+        index=gid[0],
+        value=previous
+    )
+}
+
+fn main() -> Integer {
+    counter = gpu_atomic_i32_new(initial=i32(0))
+    observed = gpu_buffer_new(
+        length=4,
+        default_value=i32(0)
+    )
+    dispatch_compute(
+        kernel=run_kernel,
+        counter=counter,
+        observed=observed,
+        schedule=gpu_schedule_round_robin_workgroups(),
+        workgroups_x=u32(2),
+        workgroups_y=u32(1),
+        workgroups_z=u32(1),
+        workgroup_size_x=u32(2),
+        workgroup_size_y=u32(1),
+        workgroup_size_z=u32(1)
+    )
+
+    assert value gpu_atomic_i32_load(atomic=counter) == 4
+    assert value gpu_buffer_get(buffer=observed, index=0) == 0
+    assert value gpu_buffer_get(buffer=observed, index=1) == 2
+    assert value gpu_buffer_get(buffer=observed, index=2) == 1
+    assert value gpu_buffer_get(buffer=observed, index=3) == 3
+    return 0
+}
+"#;
+
+    let output = compile_and_run_native_inline_source(
+        source,
+        "wr_v2_virtual_gpu_round_robin_workgroups_schedule_smoke",
+    );
+    let expected = expected_int_exit(0);
+    assert_eq!(
+        output.status.code().unwrap_or(-1),
+        expected,
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn native_v2_virtual_gpu_workgroup_shuffle_schedule_smoke() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = r#"
+kernel fn run_kernel(counter: GpuAtomicI32, observed: GpuBuffer[I32]) -> Nothing {
+    gid = global_invocation_id()
+    previous = gpu_atomic_i32_fetch_add(
+        atomic=counter,
+        delta=i32(1)
+    )
+    gpu_buffer_set(
+        buffer=observed,
+        index=gid[0],
+        value=previous
+    )
+}
+
+fn main() -> Integer {
+    counter = gpu_atomic_i32_new(initial=i32(0))
+    observed = gpu_buffer_new(
+        length=8,
+        default_value=i32(0)
+    )
+    dispatch_compute(
+        kernel=run_kernel,
+        counter=counter,
+        observed=observed,
+        schedule=gpu_schedule_workgroup_shuffle(seed=u32(7)),
+        workgroups_x=u32(4),
+        workgroups_y=u32(1),
+        workgroups_z=u32(1),
+        workgroup_size_x=u32(2),
+        workgroup_size_y=u32(1),
+        workgroup_size_z=u32(1)
+    )
+
+    assert value gpu_atomic_i32_load(atomic=counter) == 8
+    assert value gpu_buffer_get(buffer=observed, index=0) == 4
+    assert value gpu_buffer_get(buffer=observed, index=1) == 5
+    assert value gpu_buffer_get(buffer=observed, index=2) == 0
+    assert value gpu_buffer_get(buffer=observed, index=3) == 1
+    assert value gpu_buffer_get(buffer=observed, index=4) == 6
+    assert value gpu_buffer_get(buffer=observed, index=5) == 7
+    assert value gpu_buffer_get(buffer=observed, index=6) == 2
+    assert value gpu_buffer_get(buffer=observed, index=7) == 3
+    return 0
+}
+"#;
+
+    let output = compile_and_run_native_inline_source(
+        source,
+        "wr_v2_virtual_gpu_workgroup_shuffle_schedule_smoke",
+    );
     let expected = expected_int_exit(0);
     assert_eq!(
         output.status.code().unwrap_or(-1),

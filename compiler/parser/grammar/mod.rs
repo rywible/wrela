@@ -47,6 +47,10 @@ pub(crate) fn parse_statement(p: &mut Parser) {
         class::class_def(p);
         return;
     }
+    if p.at(SyntaxKind::KernelKw) {
+        func::kernel_def(p);
+        return;
+    }
     if p.at(SyntaxKind::SystemKw) {
         func::system_def(p);
         return;

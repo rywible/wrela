@@ -210,6 +210,178 @@ value Pair {
     }
 
     #[test]
+    fn test_workgroup_barrier_reports_unsupported_compute_feature() {
+        let input = r#"kernel fn run_kernel() -> Nothing {
+    workgroup_barrier()
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::UnsupportedComputeFeature { feature, .. }
+                    if *feature == "workgroup_barrier"
+            )),
+            "expected UnsupportedComputeFeature, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_workgroup_dispatch_schedules_typecheck() {
+        let input = r#"kernel fn run_kernel() -> Nothing {
+    noop = 0
+}
+
+fn run() -> Nothing {
+    dispatch_compute(
+        kernel=run_kernel,
+        schedule=gpu_schedule_workgroup_reverse(),
+        workgroups_x=u32(2),
+        workgroups_y=u32(1),
+        workgroups_z=u32(1),
+        workgroup_size_x=u32(2),
+        workgroup_size_y=u32(1),
+        workgroup_size_z=u32(1)
+    )
+    shuffle = gpu_schedule_workgroup_shuffle(seed=u32(7))
+    round_robin = gpu_schedule_round_robin_workgroups()
+}
+"#;
+        let errors = check_source(input);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_dispatch_kernel_rejects_host_only_helper_calls() {
+        let input = r#"fn host_count() -> Integer {
+    return __wr_runtime_cpu_count()
+}
+
+kernel fn run_kernel(data: GpuBuffer[I32]) -> Nothing {
+    observed = host_count()
+    gpu_buffer_set(buffer=data, index=i32(0), value=i32(7))
+}
+
+fn run() -> Nothing {
+    data = gpu_buffer_new(length=1, default_value=i32(0))
+    dispatch_compute(
+        kernel=run_kernel,
+        data=data,
+        schedule=gpu_schedule_deterministic(),
+        workgroups_x=u32(1),
+        workgroups_y=u32(1),
+        workgroups_z=u32(1),
+        workgroup_size_x=u32(1),
+        workgroup_size_y=u32(1),
+        workgroup_size_z=u32(1)
+    )
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::PortableHostCallForbidden { callee, .. }
+                    if callee.as_str() == "host_count"
+            )),
+            "expected PortableHostCallForbidden, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_dispatch_kernel_rejects_host_only_boundary_types() {
+        let input = r#"kernel fn run_kernel(label: String) -> Nothing {
+    noop = 0
+}
+
+fn run() -> Nothing {
+    dispatch_compute(
+        kernel=run_kernel,
+        label="bad",
+        schedule=gpu_schedule_deterministic(),
+        workgroups_x=u32(1),
+        workgroups_y=u32(1),
+        workgroups_z=u32(1),
+        workgroup_size_x=u32(1),
+        workgroup_size_y=u32(1),
+        workgroup_size_z=u32(1)
+    )
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::PortableBoundaryTypeForbidden { function, found, .. }
+                    if function.as_str() == "run_kernel" && found == "String"
+            )),
+            "expected PortableBoundaryTypeForbidden, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_host_may_call_portable_helper_shared_with_kernel() {
+        let input = r#"kernel fn add_one(value: I32) -> I32 {
+    return value + i32(1)
+}
+
+kernel fn run_kernel(data: GpuBuffer[I32]) -> Nothing {
+    next = add_one(value=i32(4))
+    gpu_buffer_set(buffer=data, index=i32(0), value=next)
+}
+
+fn run() -> Nothing {
+    sample = add_one(value=i32(2))
+    data = gpu_buffer_new(length=1, default_value=i32(0))
+    dispatch_compute(
+        kernel=run_kernel,
+        data=data,
+        schedule=gpu_schedule_deterministic(),
+        workgroups_x=u32(1),
+        workgroups_y=u32(1),
+        workgroups_z=u32(1),
+        workgroup_size_x=u32(1),
+        workgroup_size_y=u32(1),
+        workgroup_size_z=u32(1)
+    )
+}
+"#;
+        let errors = check_source(input);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_portable_data_primitives_and_value_fields_typecheck() {
+        let input = r#"value SpatialProbe {
+    bounds: Bounds3
+    ray: Ray3
+    transform: Transform3
+}
+
+fn f() -> Nothing {
+    box = bounds3(
+        min=vec3(0.0, 1.0, 2.0),
+        max=vec3(2.0, 3.0, 4.0)
+    )
+    center = bounds3_center(bounds=box)
+    size = bounds3_size(bounds=box)
+    ray = ray3(origin=center, direction=normalize(vec3(0.0, 2.0, 0.0)))
+    pose = transform3_identity()
+    moved = transform_point(transform=pose, point=ray.origin)
+    normal = transform_normal(transform=pose, normal=ray.direction)
+    assert approx box.min.x ~= 0.0 within 0.001
+    assert approx box.max.z ~= 4.0 within 0.001
+    assert approx center.y ~= 2.0 within 0.001
+    assert approx size.x ~= 2.0 within 0.001
+    assert approx moved.z ~= 3.0 within 0.001
+    assert approx normal.y ~= 1.0 within 0.001
+}
+"#;
+        let errors = check_source(input);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
     fn test_quat_and_mat3_surface_typecheck() {
         let input = r#"fn f() -> Nothing {
     q = quat(1.0, 2.0, 3.0, 4.0)
@@ -2406,7 +2578,12 @@ system tick[stage=fixed, reads=[PositionNode], writes=[PositionNode]]() -> Nothi
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
         // Verify type_params were lowered
-        let func = module.functions.iter().next().expect("expected a function").1;
+        let func = module
+            .functions
+            .iter()
+            .next()
+            .expect("expected a function")
+            .1;
         assert_eq!(func.type_params.len(), 1, "Expected 1 type param");
         assert_eq!(func.type_params[0].name, "T");
         let errors = check_module(&module);
@@ -2422,7 +2599,12 @@ system tick[stage=fixed, reads=[PositionNode], writes=[PositionNode]]() -> Nothi
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
-        let func = module.functions.iter().next().expect("expected a function").1;
+        let func = module
+            .functions
+            .iter()
+            .next()
+            .expect("expected a function")
+            .1;
         assert_eq!(func.type_params.len(), 2, "Expected 2 type params");
         assert_eq!(func.type_params[0].name, "A");
         assert_eq!(func.type_params[1].name, "B");
@@ -2439,10 +2621,24 @@ system tick[stage=fixed, reads=[PositionNode], writes=[PositionNode]]() -> Nothi
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
         let module = lower(root);
-        let func = module.functions.iter().next().expect("expected a function").1;
-        assert_eq!(func.type_params.len(), 1, "Expected 1 type param, got {:?}", func.type_params);
+        let func = module
+            .functions
+            .iter()
+            .next()
+            .expect("expected a function")
+            .1;
+        assert_eq!(
+            func.type_params.len(),
+            1,
+            "Expected 1 type param, got {:?}",
+            func.type_params
+        );
         assert_eq!(func.type_params[0].name, "T");
-        assert_eq!(func.type_params[0].bounds, vec!["Hashable"], "Expected bound 'Hashable'");
+        assert_eq!(
+            func.type_params[0].bounds,
+            vec!["Hashable"],
+            "Expected bound 'Hashable'"
+        );
         let errors = check_module(&module);
         assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
     }
@@ -2461,7 +2657,9 @@ fn caller() -> Integer {
         let module = lower(root);
         let errors = check_module(&module);
         assert!(
-            errors.iter().any(|err| matches!(err, TypeError::UnexpectedTypeArgs { .. })),
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::UnexpectedTypeArgs { .. })),
             "Expected UnexpectedTypeArgs error, got: {:?}",
             errors
         );
@@ -2484,7 +2682,9 @@ fn caller() -> Foo {
         let module = lower(root);
         let errors = check_module(&module);
         assert!(
-            errors.iter().any(|err| matches!(err, TypeError::TypeParamBoundNotSatisfied { .. })),
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::TypeParamBoundNotSatisfied { .. })),
             "Expected TypeParamBoundNotSatisfied error, got: {:?}",
             errors
         );

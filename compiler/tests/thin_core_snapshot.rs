@@ -182,7 +182,10 @@ fn thin_core_snapshot_matches_compiler_and_runtime_surfaces() {
         "__wr_",
     );
 
-    assert_eq!(snapshot.intrinsics, mir_intrinsics, "intrinsic surface changed; update language/spec/thin_core_snapshot.txt intentionally");
+    assert_eq!(
+        snapshot.intrinsics, mir_intrinsics,
+        "intrinsic surface changed; update language/spec/thin_core_snapshot.txt intentionally"
+    );
 
     let runtime_exports =
         extract_runtime_exports(&read(&compiler_dir.join("../runtime/src/lib.rs")));
