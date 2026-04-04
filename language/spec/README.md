@@ -8,6 +8,8 @@ The authoritative executable spec lives in this project root:
 Design RFCs live under:
 
 - `/Users/ryanwible/projects/wrela/language/spec/rfcs/`
+- `/Users/ryanwible/projects/wrela/language/spec/rfcs/0001-field-game-language.md`
+- `/Users/ryanwible/projects/wrela/language/spec/rfcs/0002-field-engine-implementation-roadmap.md`
 
 Run spec-lane checks from the project root:
 

@@ -5,6 +5,7 @@ use crate::hir::{
     InterfaceMethodKind, Literal, MatchCase, Module, Objective, Pattern, Stmt, SystemMetadata,
     TypeRef, UnaryOp,
 };
+use crate::portable::{BUILTIN_HELPER_FUNCTIONS, builtin_records};
 use miette::{Diagnostic, SourceSpan};
 use rowan::TextRange;
 use smol_str::SmolStr;
@@ -782,6 +783,18 @@ impl<'a> Checker<'a> {
                     mutable: false,
                     kind: BindingKind::Class,
                     span: interface.name_span,
+                    used: true,
+                },
+            );
+        }
+
+        for (_idx, shape) in self.module.shapes.iter() {
+            self.declare(
+                shape.name.clone(),
+                Binding {
+                    mutable: false,
+                    kind: BindingKind::Function,
+                    span: shape.name_span,
                     used: true,
                 },
             );
@@ -2811,7 +2824,7 @@ fn collect_expr_calls_and_awaits(
 }
 
 fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
-    vec![
+    let mut bindings = vec![
         (SmolStr::new("__wr_assert_err"), BindingKind::Function),
         (SmolStr::new("__wr_print"), BindingKind::Function),
         (
@@ -2860,6 +2873,50 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
         (SmolStr::new("mat3_cols"), BindingKind::Function),
         (SmolStr::new("mat4_identity"), BindingKind::Function),
         (SmolStr::new("mat4_cols"), BindingKind::Function),
+        (SmolStr::new("transform3_identity"), BindingKind::Function),
+        (SmolStr::new("transform_point"), BindingKind::Function),
+        (SmolStr::new("transform_vector"), BindingKind::Function),
+        (SmolStr::new("transform_normal"), BindingKind::Function),
+        (SmolStr::new("compose_transform3"), BindingKind::Function),
+        (SmolStr::new("inverse_transform3"), BindingKind::Function),
+        (SmolStr::new("field_transform_point"), BindingKind::Function),
+        (SmolStr::new("field_mirror_point"), BindingKind::Function),
+        (SmolStr::new("field_repeat_point"), BindingKind::Function),
+        (SmolStr::new("field_instance_point"), BindingKind::Function),
+        (SmolStr::new("capture"), BindingKind::Function),
+        (SmolStr::new("distance_at"), BindingKind::Function),
+        (SmolStr::new("normal_at"), BindingKind::Function),
+        (SmolStr::new("trace_shape"), BindingKind::Function),
+        (SmolStr::new("surface_at"), BindingKind::Function),
+        (SmolStr::new("trace_shape_batch"), BindingKind::Function),
+        (SmolStr::new("surface_at_batch"), BindingKind::Function),
+        (SmolStr::new("distance_at_batch"), BindingKind::Function),
+        (SmolStr::new("normal_at_batch"), BindingKind::Function),
+        (SmolStr::new("occluded_batch"), BindingKind::Function),
+        (SmolStr::new("dispatch_backend_cpu"), BindingKind::Function),
+        (
+            SmolStr::new("dispatch_backend_virtual_gpu"),
+            BindingKind::Function,
+        ),
+        (SmolStr::new("dispatch_backend_auto"), BindingKind::Function),
+        (SmolStr::new("sphere"), BindingKind::Function),
+        (SmolStr::new("box"), BindingKind::Function),
+        (SmolStr::new("capsule"), BindingKind::Function),
+        (SmolStr::new("cylinder"), BindingKind::Function),
+        (SmolStr::new("plane"), BindingKind::Function),
+        (SmolStr::new("torus"), BindingKind::Function),
+        (SmolStr::new("__wr_primitive_sphere"), BindingKind::Function),
+        (SmolStr::new("__wr_primitive_box"), BindingKind::Function),
+        (
+            SmolStr::new("__wr_primitive_capsule"),
+            BindingKind::Function,
+        ),
+        (
+            SmolStr::new("__wr_primitive_cylinder"),
+            BindingKind::Function,
+        ),
+        (SmolStr::new("__wr_primitive_plane"), BindingKind::Function),
+        (SmolStr::new("__wr_primitive_torus"), BindingKind::Function),
         (SmolStr::new("dot"), BindingKind::Function),
         (SmolStr::new("length"), BindingKind::Function),
         (SmolStr::new("normalize"), BindingKind::Function),
@@ -2881,7 +2938,9 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
         (SmolStr::new("reflect"), BindingKind::Function),
         (SmolStr::new("f32"), BindingKind::Function),
         (SmolStr::new("i32"), BindingKind::Function),
+        (SmolStr::new("i64"), BindingKind::Function),
         (SmolStr::new("u32"), BindingKind::Function),
+        (SmolStr::new("u64"), BindingKind::Function),
         (SmolStr::new("gpu_buffer_new"), BindingKind::Function),
         (SmolStr::new("gpu_buffer_len"), BindingKind::Function),
         (SmolStr::new("gpu_buffer_get"), BindingKind::Function),
@@ -3124,6 +3183,82 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
             BindingKind::Function,
         ),
         (
+            SmolStr::new("__wr_metrics_scene_trace_id"),
+            BindingKind::Function,
+        ),
+        (
+            SmolStr::new("__wr_metrics_field_sample_id"),
+            BindingKind::Function,
+        ),
+        (
+            SmolStr::new("__wr_metrics_scene_trace_support_pruned_branch"),
+            BindingKind::Function,
+        ),
+        (
+            SmolStr::new("__wr_metrics_scene_trace_candidate_branch"),
+            BindingKind::Function,
+        ),
+        (
+            SmolStr::new("__wr_metrics_scene_trace_exact_path"),
+            BindingKind::Function,
+        ),
+        (
+            SmolStr::new("__wr_metrics_scene_trace_conservative_path"),
+            BindingKind::Function,
+        ),
+        (
+            SmolStr::new("__wr_metrics_scene_trace_hit"),
+            BindingKind::Function,
+        ),
+        (
+            SmolStr::new("__wr_metrics_scene_trace_support_pruned_branch_id"),
+            BindingKind::Function,
+        ),
+        (
+            SmolStr::new("__wr_metrics_scene_trace_candidate_branch_id"),
+            BindingKind::Function,
+        ),
+        (
+            SmolStr::new("__wr_metrics_scene_trace_exact_path_id"),
+            BindingKind::Function,
+        ),
+        (
+            SmolStr::new("__wr_metrics_scene_trace_conservative_path_id"),
+            BindingKind::Function,
+        ),
+        (
+            SmolStr::new("__wr_metrics_scene_trace_hit_count_id"),
+            BindingKind::Function,
+        ),
+        (
+            SmolStr::new("__wr_metrics_scene_trace_hit_steps_total_id"),
+            BindingKind::Function,
+        ),
+        (
+            SmolStr::new("__wr_metrics_scene_trace_hit_field_samples_total_id"),
+            BindingKind::Function,
+        ),
+        (
+            SmolStr::new("__wr_metrics_scene_trace_steps_le_1_id"),
+            BindingKind::Function,
+        ),
+        (
+            SmolStr::new("__wr_metrics_scene_trace_steps_le_4_id"),
+            BindingKind::Function,
+        ),
+        (
+            SmolStr::new("__wr_metrics_scene_trace_steps_le_8_id"),
+            BindingKind::Function,
+        ),
+        (
+            SmolStr::new("__wr_metrics_scene_trace_steps_le_16_id"),
+            BindingKind::Function,
+        ),
+        (
+            SmolStr::new("__wr_metrics_scene_trace_steps_gt_16_id"),
+            BindingKind::Function,
+        ),
+        (
             SmolStr::new("__wr_metrics_web_writev_calls_id"),
             BindingKind::Function,
         ),
@@ -3134,7 +3269,35 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
         (SmolStr::new("__wr_clock_ns"), BindingKind::Function),
         (SmolStr::new("__wr_sleep_ms"), BindingKind::Function),
         (SmolStr::new("Pool"), BindingKind::Implicit),
-    ]
+    ];
+    for record in builtin_records() {
+        let record_name = SmolStr::new(record.name);
+        if !bindings
+            .iter()
+            .any(|(name, kind)| name == &record_name && matches!(kind, BindingKind::Class))
+        {
+            bindings.push((record_name, BindingKind::Class));
+        }
+        if let Some(function_name) = record.function_name {
+            let function_name = SmolStr::new(function_name);
+            if !bindings
+                .iter()
+                .any(|(name, kind)| name == &function_name && matches!(kind, BindingKind::Function))
+            {
+                bindings.push((function_name, BindingKind::Function));
+            }
+        }
+    }
+    for helper in BUILTIN_HELPER_FUNCTIONS {
+        let helper_name = SmolStr::new(*helper);
+        if !bindings
+            .iter()
+            .any(|(name, kind)| name == &helper_name && matches!(kind, BindingKind::Function))
+        {
+            bindings.push((helper_name, BindingKind::Function));
+        }
+    }
+    bindings
 }
 
 // ── System scheduling analysis ────────────────────────────────────────────────
@@ -4491,6 +4654,7 @@ system updater[stage=fixed, writes=[Velocity]]() -> Nothing {
             classes: Arena::new(),
             enums: Arena::new(),
             interfaces: Arena::new(),
+            shapes: Arena::new(),
             uses: Vec::new(),
         };
         module.functions.alloc(Function {
@@ -4500,6 +4664,8 @@ system updater[stage=fixed, writes=[Velocity]]() -> Nothing {
             visibility: Visibility::Public,
             kind: FunctionKind::Function,
             role: FunctionRole::System,
+            field: None,
+            field_graph: None,
             system_metadata: Some(SystemMetadata {
                 stage: Some(SmolStr::new("fixed")),
                 reads: Vec::new(),
@@ -4519,6 +4685,8 @@ system updater[stage=fixed, writes=[Velocity]]() -> Nothing {
             visibility: Visibility::Public,
             kind: FunctionKind::Function,
             role: FunctionRole::System,
+            field: None,
+            field_graph: None,
             system_metadata: Some(SystemMetadata {
                 stage: Some(SmolStr::new("fixed")),
                 reads: Vec::new(),

@@ -1,9 +1,13 @@
 use crate::hir::{
-    self, AssignOp, BinaryOp, Expr, FunctionTypeInfo, Literal, Module, Stmt as HirStmt, Type,
-    TypeInfo, UnaryOp,
+    self, AssignOp, BinaryOp, Expr, FieldBounds, FieldClass, FieldSupport, FunctionRole,
+    FunctionTypeInfo, Literal, Module, Stmt as HirStmt, Type, TypeInfo, UnaryOp,
 };
 use crate::mir::ir::Stmt as MirStmt;
 use crate::mir::ir::*;
+use crate::portable::{
+    PortableBuiltinAtom, PortableBuiltinType, builtin_record, builtin_record_by_function,
+    builtin_records,
+};
 use rowan::TextRange;
 use smol_str::SmolStr;
 use std::collections::{HashMap, HashSet};
@@ -15,6 +19,47 @@ fn is_syntactic_stringish(body: &hir::Body, expr: hir::Idx<hir::Expr>) -> bool {
         Expr::StringInterp(_) => true,
         _ => false,
     }
+}
+
+fn stable_shape_capture_id(shape_name: &SmolStr) -> i64 {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let mut hash = FNV_OFFSET_BASIS;
+    for byte in shape_name.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash as i64
+}
+
+fn stable_shape_scene_capture_id(shape_name: &SmolStr) -> i64 {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let mut hash = FNV_OFFSET_BASIS;
+    for byte in b"scene::shape::" {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    for byte in shape_name.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash as i64
+}
+
+fn stable_field_scene_capture_id(field_name: &SmolStr) -> i64 {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let mut hash = FNV_OFFSET_BASIS;
+    for byte in b"scene::field::" {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    for byte in field_name.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash as i64
 }
 
 pub fn lower_module(module: &Module) -> MirModule {
@@ -34,6 +79,25 @@ pub fn lower_module_with_types(module: &Module, type_info: &TypeInfo) -> MirModu
     let mut interface_impls: HashMap<SmolStr, Vec<SmolStr>> = HashMap::new();
     let mut method_ids = HashSet::new();
     let mut method_qnames: HashMap<hir::Idx<hir::Function>, SmolStr> = HashMap::new();
+    for record in builtin_records() {
+        let id = TypeTagId(type_tags.len() + CLASS_ID_BASE);
+        let name = SmolStr::new(record.name);
+        let fields: Vec<SmolStr> = record
+            .fields
+            .iter()
+            .map(|field| SmolStr::new(field.name))
+            .collect();
+        type_tags.push(name.clone());
+        tag_map.insert(name.clone(), id);
+        class_fields.insert(name.clone(), fields.clone());
+        class_field_defaults.insert(name.clone(), vec![None; fields.len()]);
+        classes.push(MirClassInfo {
+            name,
+            id,
+            fields,
+            methods: Vec::new(),
+        });
+    }
     for (_idx, class) in module.classes.iter() {
         let id = TypeTagId(type_tags.len() + CLASS_ID_BASE);
         type_tags.push(class.name.clone());
@@ -129,6 +193,22 @@ pub fn lower_module_with_types(module: &Module, type_info: &TypeInfo) -> MirModu
     for name in builtin_function_names() {
         function_names.insert(name);
     }
+    let field_names: HashSet<SmolStr> = module
+        .functions
+        .iter()
+        .filter_map(|(idx, func)| {
+            if method_ids.contains(&idx.into_raw()) || !matches!(func.role, FunctionRole::Field) {
+                None
+            } else {
+                Some(func.name.clone())
+            }
+        })
+        .collect();
+    let shape_names: HashSet<SmolStr> = module
+        .shapes
+        .iter()
+        .map(|(_, shape)| shape.name.clone())
+        .collect();
     let result_functions: HashSet<SmolStr> = module
         .functions
         .iter()
@@ -138,6 +218,55 @@ pub fn lower_module_with_types(module: &Module, type_info: &TypeInfo) -> MirModu
                 Some(func.name.clone())
             } else {
                 None
+            }
+        })
+        .collect();
+    let shape_graphs: HashMap<SmolStr, hir::ShapeGraph> = module
+        .shapes
+        .iter()
+        .filter_map(|(_, shape)| {
+            shape
+                .graph
+                .as_ref()
+                .map(|graph| (shape.name.clone(), graph.clone()))
+        })
+        .collect();
+    let field_graphs: HashMap<SmolStr, hir::FieldGraph> = module
+        .functions
+        .iter()
+        .filter_map(|(idx, func)| {
+            if method_ids.contains(&idx.into_raw()) || !matches!(func.role, FunctionRole::Field) {
+                None
+            } else {
+                func.field_graph
+                    .as_ref()
+                    .map(|graph| (func.name.clone(), graph.clone()))
+            }
+        })
+        .collect();
+    let field_bodies: HashMap<SmolStr, hir::Body> = module
+        .functions
+        .iter()
+        .filter_map(|(idx, func)| {
+            if method_ids.contains(&idx.into_raw()) || !matches!(func.role, FunctionRole::Field) {
+                None
+            } else {
+                func.body
+                    .as_ref()
+                    .map(|body| (func.name.clone(), body.clone()))
+            }
+        })
+        .collect();
+    let field_metadata: HashMap<SmolStr, hir::FieldMetadata> = module
+        .functions
+        .iter()
+        .filter_map(|(idx, func)| {
+            if method_ids.contains(&idx.into_raw()) || !matches!(func.role, FunctionRole::Field) {
+                None
+            } else {
+                func.field
+                    .as_ref()
+                    .map(|metadata| (func.name.clone(), metadata.clone()))
             }
         })
         .collect();
@@ -166,6 +295,12 @@ pub fn lower_module_with_types(module: &Module, type_info: &TypeInfo) -> MirModu
             &class_fields,
             &class_field_defaults,
             &function_names,
+            &field_names,
+            &shape_names,
+            &shape_graphs,
+            &field_graphs,
+            &field_bodies,
+            &field_metadata,
             &result_functions,
             &class_method_ids,
             &interface_methods,
@@ -173,6 +308,199 @@ pub fn lower_module_with_types(module: &Module, type_info: &TypeInfo) -> MirModu
             fn_types,
         ));
     }
+
+    for (_, shape) in module.shapes.iter() {
+        if shape.graph.is_none() {
+            continue;
+        }
+        functions.push(lower_shape_distance_helper(
+            shape,
+            &tag_map,
+            &class_fields,
+            &class_field_defaults,
+            &function_names,
+            &field_names,
+            &shape_names,
+            &shape_graphs,
+            &field_graphs,
+            &field_bodies,
+            &field_metadata,
+            &result_functions,
+            &class_method_ids,
+            &interface_methods,
+        ));
+        functions.push(lower_shape_trace_helper(
+            shape,
+            module,
+            &tag_map,
+            &class_fields,
+            &class_field_defaults,
+            &function_names,
+            &field_names,
+            &shape_names,
+            &shape_graphs,
+            &field_graphs,
+            &field_bodies,
+            &field_metadata,
+            &result_functions,
+            &class_method_ids,
+            &interface_methods,
+        ));
+        functions.push(lower_shape_surface_helper(
+            shape,
+            module,
+            &tag_map,
+            &class_fields,
+            &class_field_defaults,
+            &function_names,
+            &field_names,
+            &shape_names,
+            &shape_graphs,
+            &field_graphs,
+            &field_bodies,
+            &field_metadata,
+            &result_functions,
+            &class_method_ids,
+            &interface_methods,
+        ));
+    }
+
+    functions.push(lower_scene_distance_capture_helper(
+        module,
+        &tag_map,
+        &class_fields,
+        &class_field_defaults,
+        &function_names,
+        &field_names,
+        &shape_names,
+        &shape_graphs,
+        &field_graphs,
+        &field_bodies,
+        &field_metadata,
+        &result_functions,
+        &class_method_ids,
+        &interface_methods,
+        "FieldCapture",
+        "__wr_field_distance_capture",
+    ));
+    functions.push(lower_scene_normal_capture_helper(
+        module,
+        &tag_map,
+        &class_fields,
+        &class_field_defaults,
+        &function_names,
+        &field_names,
+        &shape_names,
+        &shape_graphs,
+        &field_graphs,
+        &field_bodies,
+        &field_metadata,
+        &result_functions,
+        &class_method_ids,
+        &interface_methods,
+        "FieldCapture",
+        "__wr_field_normal_capture",
+    ));
+    functions.push(lower_scene_distance_capture_helper(
+        module,
+        &tag_map,
+        &class_fields,
+        &class_field_defaults,
+        &function_names,
+        &field_names,
+        &shape_names,
+        &shape_graphs,
+        &field_graphs,
+        &field_bodies,
+        &field_metadata,
+        &result_functions,
+        &class_method_ids,
+        &interface_methods,
+        "ShapeCapture",
+        "__wr_shape_distance_capture",
+    ));
+    functions.push(lower_scene_normal_capture_helper(
+        module,
+        &tag_map,
+        &class_fields,
+        &class_field_defaults,
+        &function_names,
+        &field_names,
+        &shape_names,
+        &shape_graphs,
+        &field_graphs,
+        &field_bodies,
+        &field_metadata,
+        &result_functions,
+        &class_method_ids,
+        &interface_methods,
+        "ShapeCapture",
+        "__wr_shape_normal_capture",
+    ));
+    functions.push(lower_scene_trace_capture_helper(
+        module,
+        &tag_map,
+        &class_fields,
+        &class_field_defaults,
+        &function_names,
+        &field_names,
+        &shape_names,
+        &shape_graphs,
+        &field_graphs,
+        &field_bodies,
+        &field_metadata,
+        &result_functions,
+        &class_method_ids,
+        &interface_methods,
+    ));
+    functions.push(lower_scene_surface_capture_helper(
+        module,
+        &tag_map,
+        &class_fields,
+        &class_field_defaults,
+        &function_names,
+        &field_names,
+        &shape_names,
+        &shape_graphs,
+        &field_graphs,
+        &field_bodies,
+        &field_metadata,
+        &result_functions,
+        &class_method_ids,
+        &interface_methods,
+    ));
+    functions.push(lower_scene_trace_queries_helper(
+        module,
+        &tag_map,
+        &class_fields,
+        &class_field_defaults,
+        &function_names,
+        &field_names,
+        &shape_names,
+        &shape_graphs,
+        &field_graphs,
+        &field_bodies,
+        &field_metadata,
+        &result_functions,
+        &class_method_ids,
+        &interface_methods,
+    ));
+    functions.push(lower_scene_surface_queries_helper(
+        module,
+        &tag_map,
+        &class_fields,
+        &class_field_defaults,
+        &function_names,
+        &field_names,
+        &shape_names,
+        &shape_graphs,
+        &field_graphs,
+        &field_bodies,
+        &field_metadata,
+        &result_functions,
+        &class_method_ids,
+        &interface_methods,
+    ));
 
     let dispatch_functions = build_interface_dispatch_functions(module, &interface_impls, &tag_map);
     for func in dispatch_functions {
@@ -194,6 +522,12 @@ fn lower_function(
     class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
     class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
     function_names: &HashSet<SmolStr>,
+    field_names: &HashSet<SmolStr>,
+    shape_names: &HashSet<SmolStr>,
+    shape_graphs: &HashMap<SmolStr, hir::ShapeGraph>,
+    field_graphs: &HashMap<SmolStr, hir::FieldGraph>,
+    field_bodies: &HashMap<SmolStr, hir::Body>,
+    field_metadata: &HashMap<SmolStr, hir::FieldMetadata>,
     result_functions: &HashSet<SmolStr>,
     class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
     interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
@@ -206,6 +540,12 @@ fn lower_function(
         class_fields,
         class_field_defaults,
         function_names,
+        field_names,
+        shape_names,
+        shape_graphs,
+        field_graphs,
+        field_bodies,
+        field_metadata,
         result_functions,
         class_method_ids,
         interface_methods,
@@ -279,6 +619,1736 @@ fn lower_function(
     }
 }
 
+fn lower_shape_distance_helper(
+    shape: &hir::Shape,
+    type_tags: &HashMap<SmolStr, TypeTagId>,
+    class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
+    class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
+    function_names: &HashSet<SmolStr>,
+    field_names: &HashSet<SmolStr>,
+    shape_names: &HashSet<SmolStr>,
+    shape_graphs: &HashMap<SmolStr, hir::ShapeGraph>,
+    field_graphs: &HashMap<SmolStr, hir::FieldGraph>,
+    field_bodies: &HashMap<SmolStr, hir::Body>,
+    field_metadata: &HashMap<SmolStr, hir::FieldMetadata>,
+    result_functions: &HashSet<SmolStr>,
+    class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
+    interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
+) -> MirFunction {
+    let helper_name = SmolStr::new(format!("__wr_shape_distance_{}", shape.name));
+    let span = TextRange::empty(0.into());
+    let mut lowerer = FunctionLowerer::new(
+        helper_name.clone(),
+        type_tags,
+        class_fields,
+        class_field_defaults,
+        function_names,
+        field_names,
+        shape_names,
+        shape_graphs,
+        field_graphs,
+        field_bodies,
+        field_metadata,
+        result_functions,
+        class_method_ids,
+        interface_methods,
+        false,
+        None,
+    );
+
+    let point = lowerer.new_local(SmolStr::new("p"), false, MirType::Vec3);
+    lowerer.declare_local(SmolStr::new("p"), point);
+    lowerer.params.push(point);
+
+    let entry = lowerer.new_block();
+    lowerer.current_block = entry;
+    let distance = lowerer.lower_shape_distance_expr(
+        &shape.graph.as_ref().expect("shape graph").root,
+        Value::Local(point),
+        span,
+    );
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(distance),
+        span,
+    });
+
+    MirFunction {
+        name: helper_name,
+        params: lowerer.params,
+        abi_params: vec![PortableAbiType::Vec3],
+        abi_return: PortableAbiType::F32,
+        locals: lowerer.locals,
+        temps: lowerer.temps,
+        blocks: lowerer.blocks,
+        entry,
+        suspendable: false,
+    }
+}
+
+fn lower_shape_trace_helper(
+    shape: &hir::Shape,
+    _module: &hir::Module,
+    type_tags: &HashMap<SmolStr, TypeTagId>,
+    class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
+    class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
+    function_names: &HashSet<SmolStr>,
+    field_names: &HashSet<SmolStr>,
+    shape_names: &HashSet<SmolStr>,
+    shape_graphs: &HashMap<SmolStr, hir::ShapeGraph>,
+    field_graphs: &HashMap<SmolStr, hir::FieldGraph>,
+    field_bodies: &HashMap<SmolStr, hir::Body>,
+    field_metadata: &HashMap<SmolStr, hir::FieldMetadata>,
+    result_functions: &HashSet<SmolStr>,
+    class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
+    interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
+) -> MirFunction {
+    let helper_name = SmolStr::new(format!("__wr_shape_trace_{}", shape.name));
+    let span = TextRange::empty(0.into());
+    let mut lowerer = FunctionLowerer::new(
+        helper_name.clone(),
+        type_tags,
+        class_fields,
+        class_field_defaults,
+        function_names,
+        field_names,
+        shape_names,
+        shape_graphs,
+        field_graphs,
+        field_bodies,
+        field_metadata,
+        result_functions,
+        class_method_ids,
+        interface_methods,
+        false,
+        None,
+    );
+
+    let origin = lowerer.new_local(SmolStr::new("origin"), false, MirType::Vec3);
+    let direction = lowerer.new_local(SmolStr::new("direction"), false, MirType::Vec3);
+    let max_distance = lowerer.new_local(SmolStr::new("max_distance"), false, MirType::Float);
+    let min_step = lowerer.new_local(SmolStr::new("min_step"), false, MirType::Float);
+    let hit_epsilon = lowerer.new_local(SmolStr::new("hit_epsilon"), false, MirType::Float);
+    let max_steps = lowerer.new_local(SmolStr::new("max_steps"), false, MirType::Integer);
+    for (name, local) in [
+        (SmolStr::new("origin"), origin),
+        (SmolStr::new("direction"), direction),
+        (SmolStr::new("max_distance"), max_distance),
+        (SmolStr::new("min_step"), min_step),
+        (SmolStr::new("hit_epsilon"), hit_epsilon),
+        (SmolStr::new("max_steps"), max_steps),
+    ] {
+        lowerer.declare_local(name, local);
+        lowerer.params.push(local);
+    }
+
+    let entry = lowerer.new_block();
+    lowerer.current_block = entry;
+
+    let _ = lowerer.lower_call_temp(
+        MirType::Nil,
+        SmolStr::new("__wr_metrics_scene_trace"),
+        vec![],
+        span,
+    );
+    let trace = shape.graph.as_ref().map(|graph| graph.trace);
+    match trace.map(|trace| trace.class) {
+        Some(FieldClass::Exact) => {
+            let _ = lowerer.lower_call_temp(
+                MirType::Nil,
+                SmolStr::new("__wr_metrics_scene_trace_exact_path"),
+                vec![],
+                span,
+            );
+        }
+        _ => {
+            let _ = lowerer.lower_call_temp(
+                MirType::Nil,
+                SmolStr::new("__wr_metrics_scene_trace_conservative_path"),
+                vec![],
+                span,
+            );
+        }
+    }
+    let field_sample_metric_id = lowerer.lower_call_temp(
+        MirType::Integer,
+        SmolStr::new("__wr_metrics_field_sample_id"),
+        vec![],
+        span,
+    );
+    let field_samples_before = lowerer.new_local(
+        SmolStr::new("$shape_field_samples_before"),
+        true,
+        MirType::Integer,
+    );
+    let field_samples_start = lowerer.lower_call_temp(
+        MirType::Integer,
+        SmolStr::new("__wr_metrics_get"),
+        vec![field_sample_metric_id.clone()],
+        span,
+    );
+    lowerer.assign_use(
+        Place::Local(field_samples_before),
+        field_samples_start,
+        span,
+    );
+
+    let total = lowerer.new_local(SmolStr::new("$shape_total"), true, MirType::Float);
+    lowerer.assign_use(Place::Local(total), Value::Const(Literal::Float(0.0)), span);
+
+    let has_hit = lowerer.new_local(SmolStr::new("$shape_hit"), true, MirType::Boolean);
+    lowerer.assign_use(
+        Place::Local(has_hit),
+        Value::Const(Literal::Boolean(false)),
+        span,
+    );
+
+    let position = lowerer.new_local(SmolStr::new("$shape_position"), true, MirType::Vec3);
+    lowerer.assign_use(Place::Local(position), Value::Local(origin), span);
+
+    let normal_default = lowerer.lower_call_temp(
+        MirType::Vec3,
+        SmolStr::new("vec3"),
+        vec![
+            Value::Const(Literal::Float(0.0)),
+            Value::Const(Literal::Float(0.0)),
+            Value::Const(Literal::Float(1.0)),
+        ],
+        span,
+    );
+    let normal = lowerer.new_local(SmolStr::new("$shape_normal"), true, MirType::Vec3);
+    lowerer.assign_use(Place::Local(normal), normal_default, span);
+
+    let payload = lowerer.new_local(
+        SmolStr::new("$shape_payload"),
+        true,
+        MirType::Named(SmolStr::new("Payload")),
+    );
+    let default_payload = lowerer.build_default_payload(span);
+    lowerer.assign_use(Place::Local(payload), default_payload, span);
+
+    let feature_id = lowerer.new_local(
+        SmolStr::new("$shape_feature_id"),
+        true,
+        MirType::Integer,
+    );
+    lowerer.assign_use(
+        Place::Local(feature_id),
+        Value::Const(Literal::Integer(0)),
+        span,
+    );
+
+    let step_count = lowerer.new_local(SmolStr::new("$shape_steps"), true, MirType::Integer);
+    lowerer.assign_use(
+        Place::Local(step_count),
+        Value::Const(Literal::Integer(0)),
+        span,
+    );
+
+    let loop_check = lowerer.new_block();
+    let loop_body = lowerer.new_block();
+    let hit_block = lowerer.new_block();
+    let advance_block = lowerer.new_block();
+    let continue_block = lowerer.new_block();
+    let end_block = lowerer.new_block();
+    lowerer.set_terminator(Terminator::Jump {
+        target: loop_check,
+        span,
+    });
+
+    lowerer.current_block = loop_check;
+    let within_distance = lowerer.lower_binary_temp(
+        MirType::Boolean,
+        BinaryOp::Lt,
+        Value::Local(total),
+        Value::Local(max_distance),
+        span,
+    );
+    let not_hit = lowerer.lower_unary_temp(
+        MirType::Boolean,
+        hir::UnaryOp::Not,
+        Value::Local(has_hit),
+        span,
+    );
+    let cond_a = lowerer.lower_binary_temp(
+        MirType::Boolean,
+        BinaryOp::And,
+        within_distance,
+        not_hit,
+        span,
+    );
+    let within_steps = lowerer.lower_binary_temp(
+        MirType::Boolean,
+        BinaryOp::Lt,
+        Value::Local(step_count),
+        Value::Local(max_steps),
+        span,
+    );
+    let cond =
+        lowerer.lower_binary_temp(MirType::Boolean, BinaryOp::And, cond_a, within_steps, span);
+    lowerer.set_terminator(Terminator::Branch {
+        cond,
+        then_target: loop_body,
+        else_target: end_block,
+        span,
+    });
+
+    lowerer.current_block = loop_body;
+    let scaled_direction = lowerer.lower_binary_temp(
+        MirType::Vec3,
+        BinaryOp::Mul,
+        Value::Local(direction),
+        Value::Local(total),
+        span,
+    );
+    let next_position = lowerer.lower_binary_temp(
+        MirType::Vec3,
+        BinaryOp::Add,
+        Value::Local(origin),
+        scaled_direction,
+        span,
+    );
+    lowerer.assign_use(Place::Local(position), next_position, span);
+    let sampled_distance =
+        lowerer.lower_shape_distance_call(&shape.name, Value::Local(position), span);
+    let is_hit = lowerer.lower_binary_temp(
+        MirType::Boolean,
+        BinaryOp::Lt,
+        sampled_distance.clone(),
+        Value::Local(hit_epsilon),
+        span,
+    );
+    lowerer.set_terminator(Terminator::Branch {
+        cond: is_hit,
+        then_target: hit_block,
+        else_target: advance_block,
+        span,
+    });
+
+    lowerer.current_block = hit_block;
+    lowerer.assign_use(
+        Place::Local(has_hit),
+        Value::Const(Literal::Boolean(true)),
+        span,
+    );
+    let shape_graph = shape.graph.as_ref().expect("shape graph");
+    let (_, payload_value, feature_id_value) = lowerer.lower_shape_payload_selection(
+        &shape_graph.root,
+        shape_graph.provenance.as_ref(),
+        Value::Local(position),
+        Value::Local(hit_epsilon),
+        &mut vec![shape.name.clone()],
+        span,
+    );
+    lowerer.assign_use(Place::Local(payload), payload_value, span);
+    lowerer.assign_use(Place::Local(feature_id), feature_id_value, span);
+    let normal_value = lowerer.lower_shape_normal_call(&shape.name, Value::Local(position), span);
+    lowerer.assign_use(Place::Local(normal), normal_value, span);
+    lowerer.set_terminator(Terminator::Jump {
+        target: continue_block,
+        span,
+    });
+
+    lowerer.current_block = advance_block;
+    let step_scale = match trace.map(|trace| trace.class) {
+        Some(FieldClass::Exact) => Value::Const(Literal::Float(1.0)),
+        _ => Value::Const(Literal::Float(0.75)),
+    };
+    let scaled_step = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Mul,
+        sampled_distance,
+        step_scale,
+        span,
+    );
+    let step = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("max"),
+        vec![scaled_step, Value::Local(min_step)],
+        span,
+    );
+    let next_total = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Add,
+        Value::Local(total),
+        step,
+        span,
+    );
+    lowerer.assign_use(Place::Local(total), next_total, span);
+    lowerer.set_terminator(Terminator::Jump {
+        target: continue_block,
+        span,
+    });
+
+    lowerer.current_block = continue_block;
+    let next_steps = lowerer.lower_binary_temp(
+        MirType::Integer,
+        BinaryOp::Add,
+        Value::Local(step_count),
+        Value::Const(Literal::Integer(1)),
+        span,
+    );
+    lowerer.assign_use(Place::Local(step_count), next_steps, span);
+    lowerer.set_terminator(Terminator::Jump {
+        target: loop_check,
+        span,
+    });
+
+    lowerer.current_block = end_block;
+    let mut hit_class = lowerer.synthetic_class_target_info("Hit3");
+    FunctionLowerer::set_class_field_value(&mut hit_class, "hit", Value::Local(has_hit));
+    FunctionLowerer::set_class_field_value(&mut hit_class, "distance", Value::Local(total));
+    FunctionLowerer::set_class_field_value(&mut hit_class, "position", Value::Local(position));
+    FunctionLowerer::set_class_field_value(&mut hit_class, "normal", Value::Local(normal));
+    FunctionLowerer::set_class_field_value(&mut hit_class, "steps", Value::Local(step_count));
+    FunctionLowerer::set_class_field_value(&mut hit_class, "feature_id", Value::Local(feature_id));
+    FunctionLowerer::set_class_field_value(&mut hit_class, "payload", Value::Local(payload));
+    let hit_value = lowerer.build_class_instance(&hit_class, span);
+    let field_samples_after = lowerer.lower_call_temp(
+        MirType::Integer,
+        SmolStr::new("__wr_metrics_get"),
+        vec![field_sample_metric_id],
+        span,
+    );
+    let field_sample_delta = lowerer.lower_binary_temp(
+        MirType::Integer,
+        BinaryOp::Sub,
+        field_samples_after,
+        Value::Local(field_samples_before),
+        span,
+    );
+    let record_hit_block = lowerer.new_block();
+    let skip_hit_block = lowerer.new_block();
+    let return_block = lowerer.new_block();
+    lowerer.set_terminator(Terminator::Branch {
+        cond: Value::Local(has_hit),
+        then_target: record_hit_block,
+        else_target: skip_hit_block,
+        span,
+    });
+    lowerer.current_block = record_hit_block;
+    let _ = lowerer.lower_call_temp(
+        MirType::Nil,
+        SmolStr::new("__wr_metrics_scene_trace_hit"),
+        vec![Value::Local(step_count), field_sample_delta],
+        span,
+    );
+    lowerer.set_terminator(Terminator::Jump {
+        target: return_block,
+        span,
+    });
+    lowerer.current_block = skip_hit_block;
+    lowerer.set_terminator(Terminator::Jump {
+        target: return_block,
+        span,
+    });
+    lowerer.current_block = return_block;
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(hit_value),
+        span,
+    });
+
+    MirFunction {
+        name: helper_name,
+        params: lowerer.params,
+        abi_params: vec![
+            PortableAbiType::Vec3,
+            PortableAbiType::Vec3,
+            PortableAbiType::F32,
+            PortableAbiType::F32,
+            PortableAbiType::F32,
+            PortableAbiType::I64,
+        ],
+        abi_return: PortableAbiType::Struct {
+            name: SmolStr::new("Hit3"),
+            class_id: type_tags
+                .get(&SmolStr::new("Hit3"))
+                .map(|id| id.0 as u32)
+                .unwrap_or_default(),
+            fields: portable_value_struct_abi("Hit3", _module, type_tags, &mut HashSet::new())
+                .and_then(|abi| match abi {
+                    PortableAbiType::Struct { fields, .. } => Some(fields),
+                    _ => None,
+                })
+                .unwrap_or_default(),
+        },
+        locals: lowerer.locals,
+        temps: lowerer.temps,
+        blocks: lowerer.blocks,
+        entry,
+        suspendable: false,
+    }
+}
+
+fn lower_shape_surface_helper(
+    shape: &hir::Shape,
+    module: &hir::Module,
+    type_tags: &HashMap<SmolStr, TypeTagId>,
+    class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
+    class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
+    function_names: &HashSet<SmolStr>,
+    field_names: &HashSet<SmolStr>,
+    shape_names: &HashSet<SmolStr>,
+    shape_graphs: &HashMap<SmolStr, hir::ShapeGraph>,
+    field_graphs: &HashMap<SmolStr, hir::FieldGraph>,
+    field_bodies: &HashMap<SmolStr, hir::Body>,
+    field_metadata: &HashMap<SmolStr, hir::FieldMetadata>,
+    result_functions: &HashSet<SmolStr>,
+    class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
+    interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
+) -> MirFunction {
+    let helper_name = SmolStr::new(format!("__wr_shape_surface_{}", shape.name));
+    let span = TextRange::empty(0.into());
+    let mut lowerer = FunctionLowerer::new(
+        helper_name.clone(),
+        type_tags,
+        class_fields,
+        class_field_defaults,
+        function_names,
+        field_names,
+        shape_names,
+        shape_graphs,
+        field_graphs,
+        field_bodies,
+        field_metadata,
+        result_functions,
+        class_method_ids,
+        interface_methods,
+        false,
+        None,
+    );
+
+    let hit = lowerer.new_local(
+        SmolStr::new("hit"),
+        false,
+        MirType::Named(SmolStr::new("Hit3")),
+    );
+    lowerer.declare_local(SmolStr::new("hit"), hit);
+    lowerer.params.push(hit);
+
+    let entry = lowerer.new_block();
+    lowerer.current_block = entry;
+    let feature_id_temp = lowerer.new_temp(MirType::Integer);
+    lowerer.push_stmt(MirStmt::Assign {
+        place: Place::Temp(feature_id_temp),
+        value: Rvalue::GetField {
+            base: Value::Local(hit),
+            field: SmolStr::new("feature_id"),
+            slot: lowerer.field_slot("Hit3", "feature_id"),
+        },
+        span,
+    });
+    let (_, surface) = lowerer.lower_shape_surface_selection(
+        &shape.graph.as_ref().expect("shape graph").root,
+        Value::Temp(feature_id_temp),
+        Value::Local(hit),
+        &mut vec![shape.name.clone()],
+        span,
+    );
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(surface),
+        span,
+    });
+
+    MirFunction {
+        name: helper_name,
+        params: lowerer.params,
+        abi_params: vec![portable_abi_from_type_ref(
+            Some(&hir::TypeRef {
+                name: SmolStr::new("Hit3"),
+                name_span: None,
+                args: Vec::new(),
+            }),
+            module,
+            type_tags,
+            &mut HashSet::new(),
+        )],
+        abi_return: portable_abi_from_type_ref(
+            Some(&hir::TypeRef {
+                name: SmolStr::new("Surface"),
+                name_span: None,
+                args: Vec::new(),
+            }),
+            module,
+            type_tags,
+            &mut HashSet::new(),
+        ),
+        locals: lowerer.locals,
+        temps: lowerer.temps,
+        blocks: lowerer.blocks,
+        entry,
+        suspendable: false,
+    }
+}
+
+fn lower_scene_distance_capture_helper(
+    module: &hir::Module,
+    type_tags: &HashMap<SmolStr, TypeTagId>,
+    class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
+    class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
+    function_names: &HashSet<SmolStr>,
+    field_names: &HashSet<SmolStr>,
+    shape_names: &HashSet<SmolStr>,
+    shape_graphs: &HashMap<SmolStr, hir::ShapeGraph>,
+    field_graphs: &HashMap<SmolStr, hir::FieldGraph>,
+    field_bodies: &HashMap<SmolStr, hir::Body>,
+    field_metadata: &HashMap<SmolStr, hir::FieldMetadata>,
+    result_functions: &HashSet<SmolStr>,
+    class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
+    interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
+    capture_type_name: &'static str,
+    helper_name: &'static str,
+) -> MirFunction {
+    let helper_name = SmolStr::new(helper_name);
+    let span = TextRange::empty(0.into());
+    let mut lowerer = FunctionLowerer::new(
+        helper_name.clone(),
+        type_tags,
+        class_fields,
+        class_field_defaults,
+        function_names,
+        field_names,
+        shape_names,
+        shape_graphs,
+        field_graphs,
+        field_bodies,
+        field_metadata,
+        result_functions,
+        class_method_ids,
+        interface_methods,
+        false,
+        None,
+    );
+
+    let capture = lowerer.new_local(
+        SmolStr::new("capture"),
+        false,
+        MirType::Named(SmolStr::new(capture_type_name)),
+    );
+    let point = lowerer.new_local(SmolStr::new("point"), false, MirType::Vec3);
+    lowerer.declare_local(SmolStr::new("capture"), capture);
+    lowerer.declare_local(SmolStr::new("point"), point);
+    lowerer.params.push(capture);
+    lowerer.params.push(point);
+
+    let entry = lowerer.new_block();
+    lowerer.current_block = entry;
+    let scene_id = lowerer.new_temp(MirType::Integer);
+    lowerer.push_stmt(MirStmt::Assign {
+        place: Place::Temp(scene_id),
+        value: Rvalue::GetField {
+            base: Value::Local(capture),
+            field: SmolStr::new("scene_id"),
+            slot: lowerer.field_slot(capture_type_name, "scene_id"),
+        },
+        span,
+    });
+
+    let result = lowerer.new_local(SmolStr::new("$scene_distance"), true, MirType::Float);
+    lowerer.assign_use(Place::Local(result), Value::Const(Literal::Float(0.0)), span);
+    let return_block = lowerer.new_block();
+    let mut dispatch_block = lowerer.new_block();
+    lowerer.set_terminator(Terminator::Jump {
+        target: dispatch_block,
+        span,
+    });
+
+    for (_, field) in module
+        .functions
+        .iter()
+        .filter(|(_, func)| matches!(func.role, FunctionRole::Field))
+    {
+        let match_block = lowerer.new_block();
+        let next_block = lowerer.new_block();
+        lowerer.current_block = dispatch_block;
+        let matched = lowerer.lower_binary_temp(
+            MirType::Boolean,
+            BinaryOp::Eq,
+            Value::Temp(scene_id),
+            Value::Const(Literal::Integer(stable_field_scene_capture_id(&field.name))),
+            span,
+        );
+        lowerer.set_terminator(Terminator::Branch {
+            cond: matched,
+            then_target: match_block,
+            else_target: next_block,
+            span,
+        });
+        lowerer.current_block = match_block;
+        let distance =
+            lowerer.lower_field_distance_call(&field.name, Value::Local(point), span);
+        lowerer.assign_use(Place::Local(result), distance, span);
+        lowerer.set_terminator(Terminator::Jump {
+            target: return_block,
+            span,
+        });
+        dispatch_block = next_block;
+    }
+
+    for (_, shape) in module.shapes.iter().filter(|(_, shape)| shape.graph.is_some()) {
+        let match_block = lowerer.new_block();
+        let next_block = lowerer.new_block();
+        lowerer.current_block = dispatch_block;
+        let matched = lowerer.lower_binary_temp(
+            MirType::Boolean,
+            BinaryOp::Eq,
+            Value::Temp(scene_id),
+            Value::Const(Literal::Integer(stable_shape_scene_capture_id(&shape.name))),
+            span,
+        );
+        lowerer.set_terminator(Terminator::Branch {
+            cond: matched,
+            then_target: match_block,
+            else_target: next_block,
+            span,
+        });
+        lowerer.current_block = match_block;
+        let distance =
+            lowerer.lower_shape_distance_call(&shape.name, Value::Local(point), span);
+        lowerer.assign_use(Place::Local(result), distance, span);
+        lowerer.set_terminator(Terminator::Jump {
+            target: return_block,
+            span,
+        });
+        dispatch_block = next_block;
+    }
+
+    lowerer.current_block = dispatch_block;
+    let invalid_scene_block = lowerer.new_block();
+    lowerer.set_terminator(Terminator::Jump {
+        target: invalid_scene_block,
+        span,
+    });
+    lowerer.current_block = invalid_scene_block;
+    let crash_temp = lowerer.new_temp(MirType::Unknown);
+    lowerer.push_stmt(MirStmt::Assign {
+        place: Place::Temp(crash_temp),
+        value: Rvalue::Crash {
+            value: Value::Const(Literal::String(SmolStr::new(
+                "distance_at requires a capture created by `capture`",
+            ))),
+        },
+        span,
+    });
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(Value::Temp(crash_temp)),
+        span,
+    });
+
+    lowerer.current_block = return_block;
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(Value::Local(result)),
+        span,
+    });
+
+    MirFunction {
+        name: helper_name,
+        params: lowerer.params,
+        abi_params: vec![
+            portable_abi_from_type_ref(
+                Some(&hir::TypeRef {
+                    name: SmolStr::new(capture_type_name),
+                    name_span: None,
+                    args: Vec::new(),
+                }),
+                module,
+                type_tags,
+                &mut HashSet::new(),
+            ),
+            PortableAbiType::Vec3,
+        ],
+        abi_return: PortableAbiType::F32,
+        locals: lowerer.locals,
+        temps: lowerer.temps,
+        blocks: lowerer.blocks,
+        entry,
+        suspendable: false,
+    }
+}
+
+fn lower_scene_normal_capture_helper(
+    module: &hir::Module,
+    type_tags: &HashMap<SmolStr, TypeTagId>,
+    class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
+    class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
+    function_names: &HashSet<SmolStr>,
+    field_names: &HashSet<SmolStr>,
+    shape_names: &HashSet<SmolStr>,
+    shape_graphs: &HashMap<SmolStr, hir::ShapeGraph>,
+    field_graphs: &HashMap<SmolStr, hir::FieldGraph>,
+    field_bodies: &HashMap<SmolStr, hir::Body>,
+    field_metadata: &HashMap<SmolStr, hir::FieldMetadata>,
+    result_functions: &HashSet<SmolStr>,
+    class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
+    interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
+    capture_type_name: &'static str,
+    helper_name: &'static str,
+) -> MirFunction {
+    let helper_name = SmolStr::new(helper_name);
+    let span = TextRange::empty(0.into());
+    let mut lowerer = FunctionLowerer::new(
+        helper_name.clone(),
+        type_tags,
+        class_fields,
+        class_field_defaults,
+        function_names,
+        field_names,
+        shape_names,
+        shape_graphs,
+        field_graphs,
+        field_bodies,
+        field_metadata,
+        result_functions,
+        class_method_ids,
+        interface_methods,
+        false,
+        None,
+    );
+
+    let capture = lowerer.new_local(
+        SmolStr::new("capture"),
+        false,
+        MirType::Named(SmolStr::new(capture_type_name)),
+    );
+    let point = lowerer.new_local(SmolStr::new("point"), false, MirType::Vec3);
+    lowerer.declare_local(SmolStr::new("capture"), capture);
+    lowerer.declare_local(SmolStr::new("point"), point);
+    lowerer.params.push(capture);
+    lowerer.params.push(point);
+
+    let entry = lowerer.new_block();
+    lowerer.current_block = entry;
+    let scene_id = lowerer.new_temp(MirType::Integer);
+    lowerer.push_stmt(MirStmt::Assign {
+        place: Place::Temp(scene_id),
+        value: Rvalue::GetField {
+            base: Value::Local(capture),
+            field: SmolStr::new("scene_id"),
+            slot: lowerer.field_slot(capture_type_name, "scene_id"),
+        },
+        span,
+    });
+    let result = lowerer.new_local(SmolStr::new("$scene_normal"), true, MirType::Vec3);
+    let default_normal = lowerer.lower_call_temp(
+        MirType::Vec3,
+        SmolStr::new("vec3"),
+        vec![
+            Value::Const(Literal::Float(0.0)),
+            Value::Const(Literal::Float(0.0)),
+            Value::Const(Literal::Float(1.0)),
+        ],
+        span,
+    );
+    lowerer.assign_use(Place::Local(result), default_normal, span);
+    let return_block = lowerer.new_block();
+    let mut dispatch_block = lowerer.new_block();
+    lowerer.set_terminator(Terminator::Jump {
+        target: dispatch_block,
+        span,
+    });
+
+    for (_, field) in module
+        .functions
+        .iter()
+        .filter(|(_, func)| matches!(func.role, FunctionRole::Field))
+    {
+        let match_block = lowerer.new_block();
+        let next_block = lowerer.new_block();
+        lowerer.current_block = dispatch_block;
+        let matched = lowerer.lower_binary_temp(
+            MirType::Boolean,
+            BinaryOp::Eq,
+            Value::Temp(scene_id),
+            Value::Const(Literal::Integer(stable_field_scene_capture_id(&field.name))),
+            span,
+        );
+        lowerer.set_terminator(Terminator::Branch {
+            cond: matched,
+            then_target: match_block,
+            else_target: next_block,
+            span,
+        });
+        lowerer.current_block = match_block;
+        let normal = lowerer.lower_field_normal_call(&field.name, Value::Local(point), span);
+        lowerer.assign_use(Place::Local(result), normal, span);
+        lowerer.set_terminator(Terminator::Jump {
+            target: return_block,
+            span,
+        });
+        dispatch_block = next_block;
+    }
+
+    for (_, shape) in module.shapes.iter().filter(|(_, shape)| shape.graph.is_some()) {
+        let match_block = lowerer.new_block();
+        let next_block = lowerer.new_block();
+        lowerer.current_block = dispatch_block;
+        let matched = lowerer.lower_binary_temp(
+            MirType::Boolean,
+            BinaryOp::Eq,
+            Value::Temp(scene_id),
+            Value::Const(Literal::Integer(stable_shape_scene_capture_id(&shape.name))),
+            span,
+        );
+        lowerer.set_terminator(Terminator::Branch {
+            cond: matched,
+            then_target: match_block,
+            else_target: next_block,
+            span,
+        });
+        lowerer.current_block = match_block;
+        let normal = lowerer.lower_shape_normal_call(&shape.name, Value::Local(point), span);
+        lowerer.assign_use(Place::Local(result), normal, span);
+        lowerer.set_terminator(Terminator::Jump {
+            target: return_block,
+            span,
+        });
+        dispatch_block = next_block;
+    }
+
+    lowerer.current_block = dispatch_block;
+    let invalid_scene_block = lowerer.new_block();
+    lowerer.set_terminator(Terminator::Jump {
+        target: invalid_scene_block,
+        span,
+    });
+    lowerer.current_block = invalid_scene_block;
+    let crash_temp = lowerer.new_temp(MirType::Unknown);
+    lowerer.push_stmt(MirStmt::Assign {
+        place: Place::Temp(crash_temp),
+        value: Rvalue::Crash {
+            value: Value::Const(Literal::String(SmolStr::new(
+                "normal_at requires a capture created by `capture`",
+            ))),
+        },
+        span,
+    });
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(Value::Temp(crash_temp)),
+        span,
+    });
+
+    lowerer.current_block = return_block;
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(Value::Local(result)),
+        span,
+    });
+
+    MirFunction {
+        name: helper_name,
+        params: lowerer.params,
+        abi_params: vec![
+            portable_abi_from_type_ref(
+                Some(&hir::TypeRef {
+                    name: SmolStr::new(capture_type_name),
+                    name_span: None,
+                    args: Vec::new(),
+                }),
+                module,
+                type_tags,
+                &mut HashSet::new(),
+            ),
+            PortableAbiType::Vec3,
+        ],
+        abi_return: PortableAbiType::Vec3,
+        locals: lowerer.locals,
+        temps: lowerer.temps,
+        blocks: lowerer.blocks,
+        entry,
+        suspendable: false,
+    }
+}
+
+fn lower_scene_trace_capture_helper(
+    module: &hir::Module,
+    type_tags: &HashMap<SmolStr, TypeTagId>,
+    class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
+    class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
+    function_names: &HashSet<SmolStr>,
+    field_names: &HashSet<SmolStr>,
+    shape_names: &HashSet<SmolStr>,
+    shape_graphs: &HashMap<SmolStr, hir::ShapeGraph>,
+    field_graphs: &HashMap<SmolStr, hir::FieldGraph>,
+    field_bodies: &HashMap<SmolStr, hir::Body>,
+    field_metadata: &HashMap<SmolStr, hir::FieldMetadata>,
+    result_functions: &HashSet<SmolStr>,
+    class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
+    interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
+) -> MirFunction {
+    let helper_name = SmolStr::new("__wr_scene_trace_capture");
+    let span = TextRange::empty(0.into());
+    let mut lowerer = FunctionLowerer::new(
+        helper_name.clone(),
+        type_tags,
+        class_fields,
+        class_field_defaults,
+        function_names,
+        field_names,
+        shape_names,
+        shape_graphs,
+        field_graphs,
+        field_bodies,
+        field_metadata,
+        result_functions,
+        class_method_ids,
+        interface_methods,
+        false,
+        None,
+    );
+
+    let capture = lowerer.new_local(
+        SmolStr::new("capture"),
+        false,
+        MirType::Named(SmolStr::new("ShapeCapture")),
+    );
+    let origin = lowerer.new_local(SmolStr::new("origin"), false, MirType::Vec3);
+    let direction = lowerer.new_local(SmolStr::new("direction"), false, MirType::Vec3);
+    let max_distance = lowerer.new_local(SmolStr::new("max_distance"), false, MirType::Float);
+    let min_step = lowerer.new_local(SmolStr::new("min_step"), false, MirType::Float);
+    let hit_epsilon = lowerer.new_local(SmolStr::new("hit_epsilon"), false, MirType::Float);
+    let max_steps = lowerer.new_local(SmolStr::new("max_steps"), false, MirType::Integer);
+    for (name, local) in [
+        (SmolStr::new("capture"), capture),
+        (SmolStr::new("origin"), origin),
+        (SmolStr::new("direction"), direction),
+        (SmolStr::new("max_distance"), max_distance),
+        (SmolStr::new("min_step"), min_step),
+        (SmolStr::new("hit_epsilon"), hit_epsilon),
+        (SmolStr::new("max_steps"), max_steps),
+    ] {
+        lowerer.declare_local(name, local);
+        lowerer.params.push(local);
+    }
+
+    let entry = lowerer.new_block();
+    lowerer.current_block = entry;
+    let root_feature_id = lowerer.new_temp(MirType::Integer);
+    lowerer.push_stmt(MirStmt::Assign {
+        place: Place::Temp(root_feature_id),
+        value: Rvalue::GetField {
+            base: Value::Local(capture),
+            field: SmolStr::new("root_feature_id"),
+            slot: lowerer.field_slot("ShapeCapture", "root_feature_id"),
+        },
+        span,
+    });
+    let invalid_capture_block = lowerer.new_block();
+    let shape_capture_block = lowerer.new_block();
+    let field_capture = lowerer.lower_binary_temp(
+        MirType::Boolean,
+        BinaryOp::Eq,
+        Value::Temp(root_feature_id),
+        Value::Const(Literal::Integer(0)),
+        span,
+    );
+    lowerer.set_terminator(Terminator::Branch {
+        cond: field_capture,
+        then_target: invalid_capture_block,
+        else_target: shape_capture_block,
+        span,
+    });
+
+    lowerer.current_block = invalid_capture_block;
+    let crash_temp = lowerer.new_temp(MirType::Unknown);
+    lowerer.push_stmt(MirStmt::Assign {
+        place: Place::Temp(crash_temp),
+        value: Rvalue::Crash {
+            value: Value::Const(Literal::String(SmolStr::new(
+                "trace_shape requires a shape capture",
+            ))),
+        },
+        span,
+    });
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(Value::Temp(crash_temp)),
+        span,
+    });
+
+    lowerer.current_block = shape_capture_block;
+    let result = lowerer.new_local(SmolStr::new("$scene_trace_result"), true, MirType::Named(SmolStr::new("Hit3")));
+    let default_hit = lowerer.build_default_hit(Value::Local(origin), span);
+    lowerer.assign_use(Place::Local(result), default_hit, span);
+    let return_block = lowerer.new_block();
+
+    let shapes: Vec<&hir::Shape> = module.shapes.iter().map(|(_, shape)| shape).collect();
+    let mut dispatch_block = lowerer.new_block();
+    lowerer.set_terminator(Terminator::Jump {
+        target: dispatch_block,
+        span,
+    });
+    for shape in shapes.iter().copied().filter(|shape| shape.graph.is_some()) {
+        let match_block = lowerer.new_block();
+        let next_block = lowerer.new_block();
+        lowerer.current_block = dispatch_block;
+        let matched = lowerer.lower_binary_temp(
+            MirType::Boolean,
+            BinaryOp::Eq,
+            Value::Temp(root_feature_id),
+            Value::Const(Literal::Integer(stable_shape_capture_id(&shape.name))),
+            span,
+        );
+        lowerer.set_terminator(Terminator::Branch {
+            cond: matched,
+            then_target: match_block,
+            else_target: next_block,
+            span,
+        });
+        lowerer.current_block = match_block;
+        let hit = lowerer.lower_call_temp(
+            MirType::Named(SmolStr::new("Hit3")),
+            SmolStr::new(format!("__wr_shape_trace_{}", shape.name)),
+            vec![
+                Value::Local(origin),
+                Value::Local(direction),
+                Value::Local(max_distance),
+                Value::Local(min_step),
+                Value::Local(hit_epsilon),
+                Value::Local(max_steps),
+            ],
+            span,
+        );
+        lowerer.assign_use(Place::Local(result), hit, span);
+        lowerer.set_terminator(Terminator::Jump {
+            target: return_block,
+            span,
+        });
+        dispatch_block = next_block;
+    }
+    lowerer.current_block = dispatch_block;
+    let invalid_scene_block = lowerer.new_block();
+    lowerer.set_terminator(Terminator::Jump {
+        target: invalid_scene_block,
+        span,
+    });
+    lowerer.current_block = invalid_scene_block;
+    let crash_temp = lowerer.new_temp(MirType::Unknown);
+    lowerer.push_stmt(MirStmt::Assign {
+        place: Place::Temp(crash_temp),
+        value: Rvalue::Crash {
+            value: Value::Const(Literal::String(SmolStr::new(
+                "trace_shape requires a capture created by `capture`",
+            ))),
+        },
+        span,
+    });
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(Value::Temp(crash_temp)),
+        span,
+    });
+
+    lowerer.current_block = return_block;
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(Value::Local(result)),
+        span,
+    });
+
+    MirFunction {
+        name: helper_name,
+        params: lowerer.params,
+        abi_params: vec![
+            portable_abi_from_type_ref(
+                Some(&hir::TypeRef {
+                    name: SmolStr::new("ShapeCapture"),
+                    name_span: None,
+                    args: Vec::new(),
+                }),
+                module,
+                type_tags,
+                &mut HashSet::new(),
+            ),
+            PortableAbiType::Vec3,
+            PortableAbiType::Vec3,
+            PortableAbiType::F32,
+            PortableAbiType::F32,
+            PortableAbiType::F32,
+            PortableAbiType::I64,
+        ],
+        abi_return: portable_abi_from_type_ref(
+            Some(&hir::TypeRef {
+                name: SmolStr::new("Hit3"),
+                name_span: None,
+                args: Vec::new(),
+            }),
+            module,
+            type_tags,
+            &mut HashSet::new(),
+        ),
+        locals: lowerer.locals,
+        temps: lowerer.temps,
+        blocks: lowerer.blocks,
+        entry,
+        suspendable: false,
+    }
+}
+
+fn lower_scene_surface_capture_helper(
+    module: &hir::Module,
+    type_tags: &HashMap<SmolStr, TypeTagId>,
+    class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
+    class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
+    function_names: &HashSet<SmolStr>,
+    field_names: &HashSet<SmolStr>,
+    shape_names: &HashSet<SmolStr>,
+    shape_graphs: &HashMap<SmolStr, hir::ShapeGraph>,
+    field_graphs: &HashMap<SmolStr, hir::FieldGraph>,
+    field_bodies: &HashMap<SmolStr, hir::Body>,
+    field_metadata: &HashMap<SmolStr, hir::FieldMetadata>,
+    result_functions: &HashSet<SmolStr>,
+    class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
+    interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
+) -> MirFunction {
+    let helper_name = SmolStr::new("__wr_scene_surface_capture");
+    let span = TextRange::empty(0.into());
+    let mut lowerer = FunctionLowerer::new(
+        helper_name.clone(),
+        type_tags,
+        class_fields,
+        class_field_defaults,
+        function_names,
+        field_names,
+        shape_names,
+        shape_graphs,
+        field_graphs,
+        field_bodies,
+        field_metadata,
+        result_functions,
+        class_method_ids,
+        interface_methods,
+        false,
+        None,
+    );
+
+    let capture = lowerer.new_local(
+        SmolStr::new("capture"),
+        false,
+        MirType::Named(SmolStr::new("ShapeCapture")),
+    );
+    let hit = lowerer.new_local(
+        SmolStr::new("hit"),
+        false,
+        MirType::Named(SmolStr::new("Hit3")),
+    );
+    lowerer.declare_local(SmolStr::new("capture"), capture);
+    lowerer.declare_local(SmolStr::new("hit"), hit);
+    lowerer.params.push(capture);
+    lowerer.params.push(hit);
+
+    let entry = lowerer.new_block();
+    lowerer.current_block = entry;
+    let root_feature_id = lowerer.new_temp(MirType::Integer);
+    lowerer.push_stmt(MirStmt::Assign {
+        place: Place::Temp(root_feature_id),
+        value: Rvalue::GetField {
+            base: Value::Local(capture),
+            field: SmolStr::new("root_feature_id"),
+            slot: lowerer.field_slot("ShapeCapture", "root_feature_id"),
+        },
+        span,
+    });
+    let invalid_capture_block = lowerer.new_block();
+    let shape_capture_block = lowerer.new_block();
+    let field_capture = lowerer.lower_binary_temp(
+        MirType::Boolean,
+        BinaryOp::Eq,
+        Value::Temp(root_feature_id),
+        Value::Const(Literal::Integer(0)),
+        span,
+    );
+    lowerer.set_terminator(Terminator::Branch {
+        cond: field_capture,
+        then_target: invalid_capture_block,
+        else_target: shape_capture_block,
+        span,
+    });
+
+    lowerer.current_block = invalid_capture_block;
+    let crash_temp = lowerer.new_temp(MirType::Unknown);
+    lowerer.push_stmt(MirStmt::Assign {
+        place: Place::Temp(crash_temp),
+        value: Rvalue::Crash {
+            value: Value::Const(Literal::String(SmolStr::new(
+                "surface_at requires a shape capture",
+            ))),
+        },
+        span,
+    });
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(Value::Temp(crash_temp)),
+        span,
+    });
+
+    lowerer.current_block = shape_capture_block;
+    let result = lowerer.new_local(
+        SmolStr::new("$scene_surface_result"),
+        true,
+        MirType::Named(SmolStr::new("Surface")),
+    );
+    let default_surface = lowerer.build_default_surface(span);
+    lowerer.assign_use(Place::Local(result), default_surface, span);
+    let return_block = lowerer.new_block();
+
+    let shapes: Vec<&hir::Shape> = module.shapes.iter().map(|(_, shape)| shape).collect();
+    let mut dispatch_block = lowerer.new_block();
+    lowerer.set_terminator(Terminator::Jump {
+        target: dispatch_block,
+        span,
+    });
+    for shape in shapes.iter().copied().filter(|shape| shape.graph.is_some()) {
+        let match_block = lowerer.new_block();
+        let next_block = lowerer.new_block();
+        lowerer.current_block = dispatch_block;
+        let matched = lowerer.lower_binary_temp(
+            MirType::Boolean,
+            BinaryOp::Eq,
+            Value::Temp(root_feature_id),
+            Value::Const(Literal::Integer(stable_shape_capture_id(&shape.name))),
+            span,
+        );
+        lowerer.set_terminator(Terminator::Branch {
+            cond: matched,
+            then_target: match_block,
+            else_target: next_block,
+            span,
+        });
+        lowerer.current_block = match_block;
+        let surface = lowerer.lower_call_temp(
+            MirType::Named(SmolStr::new("Surface")),
+            SmolStr::new(format!("__wr_shape_surface_{}", shape.name)),
+            vec![Value::Local(hit)],
+            span,
+        );
+        lowerer.assign_use(Place::Local(result), surface, span);
+        lowerer.set_terminator(Terminator::Jump {
+            target: return_block,
+            span,
+        });
+        dispatch_block = next_block;
+    }
+    lowerer.current_block = dispatch_block;
+    let invalid_scene_block = lowerer.new_block();
+    lowerer.set_terminator(Terminator::Jump {
+        target: invalid_scene_block,
+        span,
+    });
+    lowerer.current_block = invalid_scene_block;
+    let crash_temp = lowerer.new_temp(MirType::Unknown);
+    lowerer.push_stmt(MirStmt::Assign {
+        place: Place::Temp(crash_temp),
+        value: Rvalue::Crash {
+            value: Value::Const(Literal::String(SmolStr::new(
+                "surface_at requires a capture created by `capture`",
+            ))),
+        },
+        span,
+    });
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(Value::Temp(crash_temp)),
+        span,
+    });
+
+    lowerer.current_block = return_block;
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(Value::Local(result)),
+        span,
+    });
+
+    MirFunction {
+        name: helper_name,
+        params: lowerer.params,
+        abi_params: vec![
+            portable_abi_from_type_ref(
+                Some(&hir::TypeRef {
+                    name: SmolStr::new("ShapeCapture"),
+                    name_span: None,
+                    args: Vec::new(),
+                }),
+                module,
+                type_tags,
+                &mut HashSet::new(),
+            ),
+            portable_abi_from_type_ref(
+                Some(&hir::TypeRef {
+                    name: SmolStr::new("Hit3"),
+                    name_span: None,
+                    args: Vec::new(),
+                }),
+                module,
+                type_tags,
+                &mut HashSet::new(),
+            ),
+        ],
+        abi_return: portable_abi_from_type_ref(
+            Some(&hir::TypeRef {
+                name: SmolStr::new("Surface"),
+                name_span: None,
+                args: Vec::new(),
+            }),
+            module,
+            type_tags,
+            &mut HashSet::new(),
+        ),
+        locals: lowerer.locals,
+        temps: lowerer.temps,
+        blocks: lowerer.blocks,
+        entry,
+        suspendable: false,
+    }
+}
+
+fn lower_scene_trace_queries_helper(
+    _module: &hir::Module,
+    type_tags: &HashMap<SmolStr, TypeTagId>,
+    class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
+    class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
+    function_names: &HashSet<SmolStr>,
+    field_names: &HashSet<SmolStr>,
+    shape_names: &HashSet<SmolStr>,
+    shape_graphs: &HashMap<SmolStr, hir::ShapeGraph>,
+    field_graphs: &HashMap<SmolStr, hir::FieldGraph>,
+    field_bodies: &HashMap<SmolStr, hir::Body>,
+    field_metadata: &HashMap<SmolStr, hir::FieldMetadata>,
+    result_functions: &HashSet<SmolStr>,
+    class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
+    interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
+) -> MirFunction {
+    let helper_name = SmolStr::new("__wr_scene_trace_queries");
+    let span = TextRange::empty(0.into());
+    let mut lowerer = FunctionLowerer::new(
+        helper_name.clone(),
+        type_tags,
+        class_fields,
+        class_field_defaults,
+        function_names,
+        field_names,
+        shape_names,
+        shape_graphs,
+        field_graphs,
+        field_bodies,
+        field_metadata,
+        result_functions,
+        class_method_ids,
+        interface_methods,
+        false,
+        None,
+    );
+
+    let queries = lowerer.new_local(
+        SmolStr::new("queries"),
+        false,
+        MirType::Named(SmolStr::new("List")),
+    );
+    lowerer.declare_local(SmolStr::new("queries"), queries);
+    lowerer.params.push(queries);
+
+    let entry = lowerer.new_block();
+    lowerer.current_block = entry;
+    let len = lowerer.lower_call_temp(
+        MirType::Integer,
+        SmolStr::new("__wr_list_len"),
+        vec![Value::Local(queries)],
+        span,
+    );
+    let result = lowerer.lower_call_temp(
+        MirType::Named(SmolStr::new("List")),
+        SmolStr::new("__wr_list_new"),
+        vec![len.clone()],
+        span,
+    );
+    let index = lowerer.new_local(SmolStr::new("$query_index"), true, MirType::Integer);
+    lowerer.assign_use(Place::Local(index), Value::Const(Literal::Integer(0)), span);
+    let head = lowerer.new_block();
+    let body_block = lowerer.new_block();
+    let exit = lowerer.new_block();
+    lowerer.set_terminator(Terminator::Jump { target: head, span });
+
+    lowerer.current_block = head;
+    let within_bounds = lowerer.lower_binary_temp(
+        MirType::Boolean,
+        BinaryOp::Lt,
+        Value::Local(index),
+        len,
+        span,
+    );
+    lowerer.set_terminator(Terminator::Branch {
+        cond: within_bounds,
+        then_target: body_block,
+        else_target: exit,
+        span,
+    });
+
+    lowerer.current_block = body_block;
+    let query = lowerer.lower_call_temp(
+        MirType::Named(SmolStr::new("TraceQuery")),
+        SmolStr::new("__wr_list_get"),
+        vec![Value::Local(queries), Value::Local(index)],
+        span,
+    );
+    let capture = lowerer.new_temp(MirType::Named(SmolStr::new("ShapeCapture")));
+    lowerer.push_stmt(MirStmt::Assign {
+        place: Place::Temp(capture),
+        value: Rvalue::GetField {
+            base: query.clone(),
+            field: SmolStr::new("capture"),
+            slot: lowerer.field_slot("TraceQuery", "capture"),
+        },
+        span,
+    });
+    let origin = lowerer.new_temp(MirType::Vec3);
+    lowerer.push_stmt(MirStmt::Assign {
+        place: Place::Temp(origin),
+        value: Rvalue::GetField {
+            base: query.clone(),
+            field: SmolStr::new("origin"),
+            slot: lowerer.field_slot("TraceQuery", "origin"),
+        },
+        span,
+    });
+    let direction = lowerer.new_temp(MirType::Vec3);
+    lowerer.push_stmt(MirStmt::Assign {
+        place: Place::Temp(direction),
+        value: Rvalue::GetField {
+            base: query.clone(),
+            field: SmolStr::new("direction"),
+            slot: lowerer.field_slot("TraceQuery", "direction"),
+        },
+        span,
+    });
+    let max_distance = lowerer.new_temp(MirType::Float);
+    lowerer.push_stmt(MirStmt::Assign {
+        place: Place::Temp(max_distance),
+        value: Rvalue::GetField {
+            base: query.clone(),
+            field: SmolStr::new("max_distance"),
+            slot: lowerer.field_slot("TraceQuery", "max_distance"),
+        },
+        span,
+    });
+    let min_step = lowerer.new_temp(MirType::Float);
+    lowerer.push_stmt(MirStmt::Assign {
+        place: Place::Temp(min_step),
+        value: Rvalue::GetField {
+            base: query.clone(),
+            field: SmolStr::new("min_step"),
+            slot: lowerer.field_slot("TraceQuery", "min_step"),
+        },
+        span,
+    });
+    let hit_epsilon = lowerer.new_temp(MirType::Float);
+    lowerer.push_stmt(MirStmt::Assign {
+        place: Place::Temp(hit_epsilon),
+        value: Rvalue::GetField {
+            base: query.clone(),
+            field: SmolStr::new("hit_epsilon"),
+            slot: lowerer.field_slot("TraceQuery", "hit_epsilon"),
+        },
+        span,
+    });
+    let max_steps = lowerer.new_temp(MirType::Integer);
+    lowerer.push_stmt(MirStmt::Assign {
+        place: Place::Temp(max_steps),
+        value: Rvalue::GetField {
+            base: query,
+            field: SmolStr::new("max_steps"),
+            slot: lowerer.field_slot("TraceQuery", "max_steps"),
+        },
+        span,
+    });
+    let hit = lowerer.lower_call_temp(
+        MirType::Named(SmolStr::new("Hit3")),
+        SmolStr::new("__wr_scene_trace_capture"),
+        vec![
+            Value::Temp(capture),
+            Value::Temp(origin),
+            Value::Temp(direction),
+            Value::Temp(max_distance),
+            Value::Temp(min_step),
+            Value::Temp(hit_epsilon),
+            Value::Temp(max_steps),
+        ],
+        span,
+    );
+    let _ = lowerer.lower_call_temp(
+        MirType::Nil,
+        SmolStr::new("__wr_list_set"),
+        vec![result.clone(), Value::Local(index), hit],
+        span,
+    );
+    let next = lowerer.lower_binary_temp(
+        MirType::Integer,
+        BinaryOp::Add,
+        Value::Local(index),
+        Value::Const(Literal::Integer(1)),
+        span,
+    );
+    lowerer.assign_use(Place::Local(index), next, span);
+    lowerer.set_terminator(Terminator::Jump { target: head, span });
+
+    lowerer.current_block = exit;
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(result),
+        span,
+    });
+
+    MirFunction {
+        name: helper_name,
+        params: lowerer.params,
+        abi_params: vec![PortableAbiType::Value],
+        abi_return: PortableAbiType::Value,
+        locals: lowerer.locals,
+        temps: lowerer.temps,
+        blocks: lowerer.blocks,
+        entry,
+        suspendable: false,
+    }
+}
+
+fn lower_scene_surface_queries_helper(
+    _module: &hir::Module,
+    type_tags: &HashMap<SmolStr, TypeTagId>,
+    class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
+    class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
+    function_names: &HashSet<SmolStr>,
+    field_names: &HashSet<SmolStr>,
+    shape_names: &HashSet<SmolStr>,
+    shape_graphs: &HashMap<SmolStr, hir::ShapeGraph>,
+    field_graphs: &HashMap<SmolStr, hir::FieldGraph>,
+    field_bodies: &HashMap<SmolStr, hir::Body>,
+    field_metadata: &HashMap<SmolStr, hir::FieldMetadata>,
+    result_functions: &HashSet<SmolStr>,
+    class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
+    interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
+) -> MirFunction {
+    let helper_name = SmolStr::new("__wr_scene_surface_queries");
+    let span = TextRange::empty(0.into());
+    let mut lowerer = FunctionLowerer::new(
+        helper_name.clone(),
+        type_tags,
+        class_fields,
+        class_field_defaults,
+        function_names,
+        field_names,
+        shape_names,
+        shape_graphs,
+        field_graphs,
+        field_bodies,
+        field_metadata,
+        result_functions,
+        class_method_ids,
+        interface_methods,
+        false,
+        None,
+    );
+
+    let queries = lowerer.new_local(
+        SmolStr::new("queries"),
+        false,
+        MirType::Named(SmolStr::new("List")),
+    );
+    lowerer.declare_local(SmolStr::new("queries"), queries);
+    lowerer.params.push(queries);
+
+    let entry = lowerer.new_block();
+    lowerer.current_block = entry;
+    let len = lowerer.lower_call_temp(
+        MirType::Integer,
+        SmolStr::new("__wr_list_len"),
+        vec![Value::Local(queries)],
+        span,
+    );
+    let result = lowerer.lower_call_temp(
+        MirType::Named(SmolStr::new("List")),
+        SmolStr::new("__wr_list_new"),
+        vec![len.clone()],
+        span,
+    );
+    let index = lowerer.new_local(SmolStr::new("$query_index"), true, MirType::Integer);
+    lowerer.assign_use(Place::Local(index), Value::Const(Literal::Integer(0)), span);
+    let head = lowerer.new_block();
+    let body_block = lowerer.new_block();
+    let exit = lowerer.new_block();
+    lowerer.set_terminator(Terminator::Jump { target: head, span });
+
+    lowerer.current_block = head;
+    let within_bounds = lowerer.lower_binary_temp(
+        MirType::Boolean,
+        BinaryOp::Lt,
+        Value::Local(index),
+        len,
+        span,
+    );
+    lowerer.set_terminator(Terminator::Branch {
+        cond: within_bounds,
+        then_target: body_block,
+        else_target: exit,
+        span,
+    });
+
+    lowerer.current_block = body_block;
+    let query = lowerer.lower_call_temp(
+        MirType::Named(SmolStr::new("SurfaceQuery")),
+        SmolStr::new("__wr_list_get"),
+        vec![Value::Local(queries), Value::Local(index)],
+        span,
+    );
+    let capture = lowerer.new_temp(MirType::Named(SmolStr::new("ShapeCapture")));
+    lowerer.push_stmt(MirStmt::Assign {
+        place: Place::Temp(capture),
+        value: Rvalue::GetField {
+            base: query.clone(),
+            field: SmolStr::new("capture"),
+            slot: lowerer.field_slot("SurfaceQuery", "capture"),
+        },
+        span,
+    });
+    let hit = lowerer.new_temp(MirType::Named(SmolStr::new("Hit3")));
+    lowerer.push_stmt(MirStmt::Assign {
+        place: Place::Temp(hit),
+        value: Rvalue::GetField {
+            base: query,
+            field: SmolStr::new("hit"),
+            slot: lowerer.field_slot("SurfaceQuery", "hit"),
+        },
+        span,
+    });
+    let surface = lowerer.lower_call_temp(
+        MirType::Named(SmolStr::new("Surface")),
+        SmolStr::new("__wr_scene_surface_capture"),
+        vec![Value::Temp(capture), Value::Temp(hit)],
+        span,
+    );
+    let _ = lowerer.lower_call_temp(
+        MirType::Nil,
+        SmolStr::new("__wr_list_set"),
+        vec![result.clone(), Value::Local(index), surface],
+        span,
+    );
+    let next = lowerer.lower_binary_temp(
+        MirType::Integer,
+        BinaryOp::Add,
+        Value::Local(index),
+        Value::Const(Literal::Integer(1)),
+        span,
+    );
+    lowerer.assign_use(Place::Local(index), next, span);
+    lowerer.set_terminator(Terminator::Jump { target: head, span });
+
+    lowerer.current_block = exit;
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(result),
+        span,
+    });
+
+    MirFunction {
+        name: helper_name,
+        params: lowerer.params,
+        abi_params: vec![PortableAbiType::Value],
+        abi_return: PortableAbiType::Value,
+        locals: lowerer.locals,
+        temps: lowerer.temps,
+        blocks: lowerer.blocks,
+        entry,
+        suspendable: false,
+    }
+}
+
 struct LoopTarget {
     break_target: BlockId,
     continue_target: BlockId,
@@ -301,6 +2371,12 @@ struct FunctionLowerer {
     class_method_ids: HashMap<SmolStr, HashMap<SmolStr, u32>>,
     interface_methods: HashMap<SmolStr, HashSet<SmolStr>>,
     function_names: HashSet<SmolStr>,
+    field_names: HashSet<SmolStr>,
+    shape_names: HashSet<SmolStr>,
+    shape_graphs: HashMap<SmolStr, hir::ShapeGraph>,
+    field_graphs: HashMap<SmolStr, hir::FieldGraph>,
+    field_bodies: HashMap<SmolStr, hir::Body>,
+    field_metadata: HashMap<SmolStr, hir::FieldMetadata>,
     result_functions: HashSet<SmolStr>,
     returns_result: bool,
     type_info: Option<FunctionTypeInfo>,
@@ -315,6 +2391,12 @@ impl FunctionLowerer {
         class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
         class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
         function_names: &HashSet<SmolStr>,
+        field_names: &HashSet<SmolStr>,
+        shape_names: &HashSet<SmolStr>,
+        shape_graphs: &HashMap<SmolStr, hir::ShapeGraph>,
+        field_graphs: &HashMap<SmolStr, hir::FieldGraph>,
+        field_bodies: &HashMap<SmolStr, hir::Body>,
+        field_metadata: &HashMap<SmolStr, hir::FieldMetadata>,
         result_functions: &HashSet<SmolStr>,
         class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
         interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
@@ -338,6 +2420,12 @@ impl FunctionLowerer {
             class_method_ids: class_method_ids.clone(),
             interface_methods: interface_methods.clone(),
             function_names: function_names.clone(),
+            field_names: field_names.clone(),
+            shape_names: shape_names.clone(),
+            shape_graphs: shape_graphs.clone(),
+            field_graphs: field_graphs.clone(),
+            field_bodies: field_bodies.clone(),
+            field_metadata: field_metadata.clone(),
             result_functions: result_functions.clone(),
             returns_result,
             type_info: type_info.cloned(),
@@ -2197,6 +4285,24 @@ impl FunctionLowerer {
                 Value::Temp(temp)
             }
             Expr::Call { callee, args, .. } => {
+                if let Some(target) = self.parse_capture_builtin(body, expr_id) {
+                    return self.build_scene_capture_value(&target, span);
+                }
+                if let Some(mode) = self.parse_dispatch_backend_builtin(body, expr_id) {
+                    return self.build_dispatch_backend_value(mode, span);
+                }
+                if let Some(spec) = self.parse_field_query(body, expr_id) {
+                    return self.lower_field_query_call(body, span, &spec);
+                }
+                if let Some(spec) = self.parse_shape_query(body, expr_id) {
+                    return self.lower_shape_query_call(body, span, &spec);
+                }
+                if let Some(spec) = self.parse_field_batch_query(body, expr_id) {
+                    return self.lower_field_batch_query_call(body, span, &spec);
+                }
+                if let Some(spec) = self.parse_shape_batch_query(body, expr_id) {
+                    return self.lower_shape_batch_query_call(body, span, &spec);
+                }
                 if let Some(spec) = self.parse_dispatch_compute(body, expr_id) {
                     return self.lower_dispatch_compute_call(body, span, &spec);
                 }
@@ -2755,11 +4861,18 @@ impl FunctionLowerer {
                 let Expr::Variable(name) = &body.exprs[*callee] else {
                     return None;
                 };
-                let class_id = self.type_tags.get(name).copied()?;
-                let fields = self.class_fields.get(name).cloned().unwrap_or_default();
+                let class_name = builtin_record_by_function(name.as_str())
+                    .map(|record| SmolStr::new(record.name))
+                    .unwrap_or_else(|| name.clone());
+                let class_id = self.type_tags.get(&class_name).copied()?;
+                let fields = self
+                    .class_fields
+                    .get(&class_name)
+                    .cloned()
+                    .unwrap_or_default();
                 let field_defaults = self
                     .class_field_defaults
-                    .get(name)
+                    .get(&class_name)
                     .cloned()
                     .unwrap_or_else(|| vec![None; fields.len()]);
                 let mut field_values: Vec<Option<Value>> = vec![None; fields.len()];
@@ -2782,7 +4895,7 @@ impl FunctionLowerer {
                     }
                 }
                 Some(ClassTargetInfo {
-                    name: name.clone(),
+                    name: class_name,
                     class_id,
                     fields,
                     field_defaults,
@@ -2984,6 +5097,2988 @@ impl FunctionLowerer {
             weight,
             queue_cap,
         })
+    }
+
+    fn parse_field_query(
+        &self,
+        body: &hir::Body,
+        expr_id: hir::Idx<Expr>,
+    ) -> Option<FieldQuerySpec> {
+        let (callee, args) = match &body.exprs[expr_id] {
+            Expr::Call { callee, args, .. } => (callee, args),
+            _ => return None,
+        };
+        let Expr::Variable(name) = &body.exprs[*callee] else {
+            return None;
+        };
+        let kind = match name.as_str() {
+            "distance_at" => FieldQueryKind::Distance,
+            "normal_at" => FieldQueryKind::Normal,
+            _ => return None,
+        };
+
+        let mut capture = None;
+        let mut point = None;
+        for arg in args {
+            let hir::Arg::Named { name, value, .. } = arg else {
+                return None;
+            };
+            match name.as_str() {
+                "capture" => capture = Some(*value),
+                "point" => point = Some(*value),
+                _ => return None,
+            }
+        }
+
+        Some(FieldQuerySpec {
+            kind,
+            capture: capture?,
+            point: point?,
+        })
+    }
+
+    fn parse_capture_builtin(
+        &self,
+        body: &hir::Body,
+        expr_id: hir::Idx<Expr>,
+    ) -> Option<SmolStr> {
+        let (callee, args) = match &body.exprs[expr_id] {
+            Expr::Call { callee, args, .. } => (callee, args),
+            _ => return None,
+        };
+        let Expr::Variable(name) = &body.exprs[*callee] else {
+            return None;
+        };
+        if name.as_str() != "capture" {
+            return None;
+        }
+        let mut positional_target = None;
+        for arg in args {
+            match arg {
+                hir::Arg::Named { name, value, .. } => {
+                    if name.as_str() != "scene" {
+                        continue;
+                    }
+                    let Expr::Variable(target) = &body.exprs[*value] else {
+                        return None;
+                    };
+                    if self.shape_names.contains(target) || self.field_names.contains(target) {
+                        return Some(target.clone());
+                    }
+                    return None;
+                }
+                hir::Arg::Positional { value, .. } => {
+                    positional_target = Some(*value);
+                }
+            };
+        }
+        if let Some(value) = positional_target {
+            let Expr::Variable(target) = &body.exprs[value] else {
+                return None;
+            };
+            if self.shape_names.contains(target) || self.field_names.contains(target) {
+                return Some(target.clone());
+            }
+        }
+        None
+    }
+
+    fn parse_dispatch_backend_builtin(
+        &self,
+        body: &hir::Body,
+        expr_id: hir::Idx<Expr>,
+    ) -> Option<i64> {
+        let (callee, args) = match &body.exprs[expr_id] {
+            Expr::Call { callee, args, .. } => (callee, args),
+            _ => return None,
+        };
+        if !args.is_empty() {
+            return None;
+        }
+        let Expr::Variable(name) = &body.exprs[*callee] else {
+            return None;
+        };
+        match name.as_str() {
+            "dispatch_backend_cpu" => Some(0),
+            "dispatch_backend_virtual_gpu" => Some(1),
+            "dispatch_backend_auto" => Some(2),
+            _ => None,
+        }
+    }
+
+    fn parse_shape_query(
+        &self,
+        body: &hir::Body,
+        expr_id: hir::Idx<Expr>,
+    ) -> Option<ShapeQuerySpec> {
+        let (callee, args) = match &body.exprs[expr_id] {
+            Expr::Call { callee, args, .. } => (callee, args),
+            _ => return None,
+        };
+        let Expr::Variable(name) = &body.exprs[*callee] else {
+            return None;
+        };
+        let kind = match name.as_str() {
+            "trace_shape" => ShapeQueryKind::Trace,
+            "surface_at" => ShapeQueryKind::Surface,
+            _ => return None,
+        };
+
+        let mut capture = None;
+        let mut origin = None;
+        let mut direction = None;
+        let mut max_distance = None;
+        let mut min_step = None;
+        let mut hit_epsilon = None;
+        let mut max_steps = None;
+        let mut hit = None;
+
+        for arg in args {
+            let hir::Arg::Named { name, value, .. } = arg else {
+                return None;
+            };
+            match name.as_str() {
+                "capture" => capture = Some(*value),
+                "origin" => origin = Some(*value),
+                "direction" => direction = Some(*value),
+                "max_distance" => max_distance = Some(*value),
+                "min_step" => min_step = Some(*value),
+                "hit_epsilon" => hit_epsilon = Some(*value),
+                "max_steps" => max_steps = Some(*value),
+                "hit" => hit = Some(*value),
+                _ => return None,
+            }
+        }
+
+        Some(ShapeQuerySpec {
+            kind,
+            capture: capture?,
+            origin,
+            direction,
+            max_distance,
+            min_step,
+            hit_epsilon,
+            max_steps,
+            hit,
+        })
+    }
+
+    fn parse_shape_batch_query(
+        &self,
+        body: &hir::Body,
+        expr_id: hir::Idx<Expr>,
+    ) -> Option<ShapeBatchQuerySpec> {
+        let (callee, args) = match &body.exprs[expr_id] {
+            Expr::Call { callee, args, .. } => (callee, args),
+            _ => return None,
+        };
+        let Expr::Variable(name) = &body.exprs[*callee] else {
+            return None;
+        };
+        let kind = match name.as_str() {
+            "trace_shape_batch" => ShapeBatchQueryKind::Trace,
+            "surface_at_batch" => ShapeBatchQueryKind::Surface,
+            "occluded_batch" => ShapeBatchQueryKind::Occluded,
+            _ => return None,
+        };
+        let mut capture = None;
+        let mut items = None;
+        let mut backend = None;
+        for arg in args {
+            let hir::Arg::Named { name, value, .. } = arg else {
+                return None;
+            };
+            match name.as_str() {
+                "capture" => capture = Some(*value),
+                "rays" if matches!(kind, ShapeBatchQueryKind::Trace | ShapeBatchQueryKind::Occluded) => {
+                    items = Some(*value)
+                }
+                "hits" if matches!(kind, ShapeBatchQueryKind::Surface) => items = Some(*value),
+                "backend" => backend = Some(*value),
+                _ => return None,
+            }
+        }
+        Some(ShapeBatchQuerySpec {
+            kind,
+            capture: capture?,
+            items: items?,
+            backend: backend?,
+        })
+    }
+
+    fn parse_field_batch_query(
+        &self,
+        body: &hir::Body,
+        expr_id: hir::Idx<Expr>,
+    ) -> Option<FieldBatchQuerySpec> {
+        let (callee, args) = match &body.exprs[expr_id] {
+            Expr::Call { callee, args, .. } => (callee, args),
+            _ => return None,
+        };
+        let Expr::Variable(name) = &body.exprs[*callee] else {
+            return None;
+        };
+        let kind = match name.as_str() {
+            "distance_at_batch" => FieldBatchQueryKind::Distance,
+            "normal_at_batch" => FieldBatchQueryKind::Normal,
+            _ => return None,
+        };
+        let mut capture = None;
+        let mut items = None;
+        let mut backend = None;
+        for arg in args {
+            let hir::Arg::Named { name, value, .. } = arg else {
+                return None;
+            };
+            match name.as_str() {
+                "capture" => capture = Some(*value),
+                "points" => items = Some(*value),
+                "backend" => backend = Some(*value),
+                _ => return None,
+            }
+        }
+        Some(FieldBatchQuerySpec {
+            kind,
+            capture: capture?,
+            items: items?,
+            backend: backend?,
+        })
+    }
+
+    fn lower_field_query_call(
+        &mut self,
+        body: &hir::Body,
+        span: TextRange,
+        spec: &FieldQuerySpec,
+    ) -> Value {
+        let capture = self.lower_expr(body, spec.capture);
+        let point = self.lower_expr(body, spec.point);
+        let helper_name = match self.expr_type(spec.capture) {
+            MirType::Named(name) if name.as_str() == "ShapeCapture" => {
+                SmolStr::new("__wr_shape_distance_capture")
+            }
+            _ => SmolStr::new("__wr_field_distance_capture"),
+        };
+        let normal_helper_name = match self.expr_type(spec.capture) {
+            MirType::Named(name) if name.as_str() == "ShapeCapture" => {
+                SmolStr::new("__wr_shape_normal_capture")
+            }
+            _ => SmolStr::new("__wr_field_normal_capture"),
+        };
+        match spec.kind {
+            FieldQueryKind::Distance => self.lower_call_temp(
+                MirType::Float,
+                helper_name,
+                vec![capture, point],
+                span,
+            ),
+            FieldQueryKind::Normal => self.lower_call_temp(
+                MirType::Vec3,
+                normal_helper_name,
+                vec![capture, point],
+                span,
+            ),
+        }
+    }
+
+    fn lower_shape_query_call(
+        &mut self,
+        body: &hir::Body,
+        span: TextRange,
+        spec: &ShapeQuerySpec,
+    ) -> Value {
+        let capture = self.lower_expr(body, spec.capture);
+        match spec.kind {
+            ShapeQueryKind::Trace => {
+                let origin = self.lower_expr(body, spec.origin.expect("trace_shape missing origin"));
+                let direction =
+                    self.lower_expr(body, spec.direction.expect("trace_shape missing direction"));
+                let max_distance = self.lower_expr(
+                    body,
+                    spec.max_distance.expect("trace_shape missing max_distance"),
+                );
+                let min_step =
+                    self.lower_expr(body, spec.min_step.expect("trace_shape missing min_step"));
+                let hit_epsilon = self.lower_expr(
+                    body,
+                    spec.hit_epsilon.expect("trace_shape missing hit_epsilon"),
+                );
+                let max_steps =
+                    self.lower_expr(body, spec.max_steps.expect("trace_shape missing max_steps"));
+                self.lower_call_temp(
+                    MirType::Named(SmolStr::new("Hit3")),
+                    SmolStr::new("__wr_scene_trace_capture"),
+                    vec![capture, origin, direction, max_distance, min_step, hit_epsilon, max_steps],
+                    span,
+                )
+            }
+            ShapeQueryKind::Surface => {
+                let hit = self.lower_expr(body, spec.hit.expect("surface_at missing hit"));
+                self.lower_call_temp(
+                    MirType::Named(SmolStr::new("Surface")),
+                    SmolStr::new("__wr_scene_surface_capture"),
+                    vec![capture, hit],
+                    span,
+                )
+            }
+        }
+    }
+
+    fn lower_shape_batch_query_call(
+        &mut self,
+        body: &hir::Body,
+        span: TextRange,
+        spec: &ShapeBatchQuerySpec,
+    ) -> Value {
+        let capture = self.lower_expr(body, spec.capture);
+        let items = self.lower_expr(body, spec.items);
+        let backend_value = self.lower_expr(body, spec.backend);
+        let backend = self.lower_dispatch_backend_id(backend_value, span);
+        let result = self.new_local(
+            SmolStr::new(format!("$scene_batch_result{}", self.locals.len())),
+            true,
+            MirType::Named(SmolStr::new("List")),
+        );
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Local(result),
+            value: Rvalue::BuildList {
+                items: Vec::new(),
+                alloc: AllocKind::Escaping,
+            },
+            span,
+        });
+
+        let cpu_block = self.new_block();
+        let vgpu_block = self.new_block();
+        let backend_check_block = self.new_block();
+        let auto_check_block = self.new_block();
+        let invalid_backend_block = self.new_block();
+        let merge_block = self.new_block();
+        let is_vgpu = self.lower_binary_temp(
+            MirType::Boolean,
+            BinaryOp::Eq,
+            backend.clone(),
+            Value::Const(Literal::Integer(1)),
+            span,
+        );
+        self.set_terminator(Terminator::Branch {
+            cond: is_vgpu,
+            then_target: vgpu_block,
+            else_target: backend_check_block,
+            span,
+        });
+
+        self.current_block = backend_check_block;
+        let is_cpu = self.lower_binary_temp(
+            MirType::Boolean,
+            BinaryOp::Eq,
+            backend.clone(),
+            Value::Const(Literal::Integer(0)),
+            span,
+        );
+        let is_auto = self.lower_binary_temp(
+            MirType::Boolean,
+            BinaryOp::Eq,
+            backend.clone(),
+            Value::Const(Literal::Integer(2)),
+            span,
+        );
+        let cpu_or_auto = self.lower_binary_temp(
+            MirType::Boolean,
+            BinaryOp::Or,
+            is_cpu,
+            is_auto,
+            span,
+        );
+        self.set_terminator(Terminator::Branch {
+            cond: cpu_or_auto,
+            then_target: auto_check_block,
+            else_target: invalid_backend_block,
+            span,
+        });
+
+        self.current_block = auto_check_block;
+        let is_cpu = self.lower_binary_temp(
+            MirType::Boolean,
+            BinaryOp::Eq,
+            backend.clone(),
+            Value::Const(Literal::Integer(0)),
+            span,
+        );
+        self.set_terminator(Terminator::Branch {
+            cond: is_cpu,
+            then_target: cpu_block,
+            else_target: vgpu_block,
+            span,
+        });
+
+        self.current_block = invalid_backend_block;
+        let crash_temp = self.new_temp(MirType::Unknown);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(crash_temp),
+            value: Rvalue::Crash {
+                value: Value::Const(Literal::String(SmolStr::new(
+                    "scene batch dispatch backend must be cpu, virtual_gpu, or auto",
+                ))),
+            },
+            span,
+        });
+        self.set_terminator(Terminator::Return {
+            value: Some(Value::Temp(crash_temp)),
+            span,
+        });
+
+        self.current_block = cpu_block;
+        match spec.kind {
+            ShapeBatchQueryKind::Trace => self.lower_trace_shape_batch_loop(
+                items.clone(),
+                capture.clone(),
+                result,
+                span,
+                false,
+                merge_block,
+            ),
+            ShapeBatchQueryKind::Surface => self.lower_surface_batch_loop(
+                items.clone(),
+                capture.clone(),
+                result,
+                span,
+                false,
+                merge_block,
+            ),
+            ShapeBatchQueryKind::Occluded => self.lower_occluded_batch_loop(
+                items.clone(),
+                capture.clone(),
+                result,
+                span,
+                false,
+                merge_block,
+            ),
+        }
+
+        self.current_block = vgpu_block;
+        match spec.kind {
+            ShapeBatchQueryKind::Trace => self.lower_trace_shape_batch_loop(
+                items.clone(),
+                capture.clone(),
+                result,
+                span,
+                true,
+                merge_block,
+            ),
+            ShapeBatchQueryKind::Surface => self.lower_surface_batch_loop(
+                items.clone(),
+                capture.clone(),
+                result,
+                span,
+                true,
+                merge_block,
+            ),
+            ShapeBatchQueryKind::Occluded => self.lower_occluded_batch_loop(
+                items,
+                capture,
+                result,
+                span,
+                true,
+                merge_block,
+            ),
+        }
+
+        self.current_block = merge_block;
+        Value::Local(result)
+    }
+
+    fn lower_field_batch_query_call(
+        &mut self,
+        body: &hir::Body,
+        span: TextRange,
+        spec: &FieldBatchQuerySpec,
+    ) -> Value {
+        let capture = self.lower_expr(body, spec.capture);
+        let items = self.lower_expr(body, spec.items);
+        let backend_value = self.lower_expr(body, spec.backend);
+        let backend = self.lower_dispatch_backend_id(backend_value, span);
+        let result = self.new_local(
+            SmolStr::new(format!("$field_batch_result{}", self.locals.len())),
+            true,
+            MirType::Named(SmolStr::new("List")),
+        );
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Local(result),
+            value: Rvalue::BuildList {
+                items: Vec::new(),
+                alloc: AllocKind::Escaping,
+            },
+            span,
+        });
+
+        let cpu_block = self.new_block();
+        let vgpu_block = self.new_block();
+        let backend_check_block = self.new_block();
+        let auto_check_block = self.new_block();
+        let invalid_backend_block = self.new_block();
+        let merge_block = self.new_block();
+        let is_vgpu = self.lower_binary_temp(
+            MirType::Boolean,
+            BinaryOp::Eq,
+            backend.clone(),
+            Value::Const(Literal::Integer(1)),
+            span,
+        );
+        self.set_terminator(Terminator::Branch {
+            cond: is_vgpu,
+            then_target: vgpu_block,
+            else_target: backend_check_block,
+            span,
+        });
+
+        self.current_block = backend_check_block;
+        let is_cpu = self.lower_binary_temp(
+            MirType::Boolean,
+            BinaryOp::Eq,
+            backend.clone(),
+            Value::Const(Literal::Integer(0)),
+            span,
+        );
+        let is_auto = self.lower_binary_temp(
+            MirType::Boolean,
+            BinaryOp::Eq,
+            backend.clone(),
+            Value::Const(Literal::Integer(2)),
+            span,
+        );
+        let cpu_or_auto = self.lower_binary_temp(
+            MirType::Boolean,
+            BinaryOp::Or,
+            is_cpu,
+            is_auto,
+            span,
+        );
+        self.set_terminator(Terminator::Branch {
+            cond: cpu_or_auto,
+            then_target: auto_check_block,
+            else_target: invalid_backend_block,
+            span,
+        });
+
+        self.current_block = auto_check_block;
+        let is_cpu = self.lower_binary_temp(
+            MirType::Boolean,
+            BinaryOp::Eq,
+            backend.clone(),
+            Value::Const(Literal::Integer(0)),
+            span,
+        );
+        self.set_terminator(Terminator::Branch {
+            cond: is_cpu,
+            then_target: cpu_block,
+            else_target: vgpu_block,
+            span,
+        });
+
+        self.current_block = invalid_backend_block;
+        let crash_temp = self.new_temp(MirType::Unknown);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(crash_temp),
+            value: Rvalue::Crash {
+                value: Value::Const(Literal::String(SmolStr::new(
+                    "scene batch dispatch backend must be cpu, virtual_gpu, or auto",
+                ))),
+            },
+            span,
+        });
+        self.set_terminator(Terminator::Return {
+            value: Some(Value::Temp(crash_temp)),
+            span,
+        });
+
+        self.current_block = cpu_block;
+        self.lower_field_sample_batch_loop(
+            items.clone(),
+            capture.clone(),
+            result,
+            span,
+            false,
+            merge_block,
+            spec.kind,
+            matches!(self.expr_type(spec.capture), MirType::Named(name) if name.as_str() == "ShapeCapture"),
+        );
+
+        self.current_block = vgpu_block;
+        self.lower_field_sample_batch_loop(
+            items,
+            capture,
+            result,
+            span,
+            true,
+            merge_block,
+            spec.kind,
+            matches!(self.expr_type(spec.capture), MirType::Named(name) if name.as_str() == "ShapeCapture"),
+        );
+
+        self.current_block = merge_block;
+        Value::Local(result)
+    }
+
+    fn lower_trace_shape_batch_loop(
+        &mut self,
+        items: Value,
+        capture: Value,
+        result_local: LocalId,
+        span: TextRange,
+        use_virtual_gpu: bool,
+        merge_block: BlockId,
+    ) {
+        let len = self.lower_call_temp(
+            MirType::Integer,
+            SmolStr::new("__wr_list_len"),
+            vec![items.clone()],
+            span,
+        );
+        if use_virtual_gpu {
+            let _ = self.lower_call_temp(
+                MirType::Nil,
+                SmolStr::new("__wr_gpu_dispatch_begin"),
+                vec![
+                    len.clone(),
+                    Value::Const(Literal::Integer(1)),
+                    Value::Const(Literal::Integer(1)),
+                    Value::Const(Literal::Integer(1)),
+                    Value::Const(Literal::Integer(1)),
+                    Value::Const(Literal::Integer(1)),
+                    Value::Const(Literal::Nil),
+                ],
+                span,
+            );
+        }
+        let index = self.new_local(
+            SmolStr::new(format!("$trace_batch_index{}", self.locals.len())),
+            true,
+            MirType::Integer,
+        );
+        self.assign_use(Place::Local(index), Value::Const(Literal::Integer(0)), span);
+        let head = self.new_block();
+        let body_block = self.new_block();
+        let exit = self.new_block();
+        self.set_terminator(Terminator::Jump { target: head, span });
+        self.current_block = head;
+        let cond = self.lower_binary_temp(
+            MirType::Boolean,
+            BinaryOp::Lt,
+            Value::Local(index),
+            len,
+            span,
+        );
+        self.set_terminator(Terminator::Branch {
+            cond,
+            then_target: body_block,
+            else_target: exit,
+            span,
+        });
+        self.current_block = body_block;
+        if use_virtual_gpu {
+            let _ = self.lower_call_temp(
+                MirType::Nil,
+                SmolStr::new("__wr_gpu_dispatch_select_invocation"),
+                vec![Value::Local(index)],
+                span,
+            );
+        }
+        let ray = self.lower_call_temp(
+            MirType::Named(SmolStr::new("RayQuery")),
+            SmolStr::new("__wr_list_get"),
+            vec![items.clone(), Value::Local(index)],
+            span,
+        );
+        let origin = self.new_temp(MirType::Vec3);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(origin),
+            value: Rvalue::GetField {
+                base: ray.clone(),
+                field: SmolStr::new("origin"),
+                slot: self.field_slot("RayQuery", "origin"),
+            },
+            span,
+        });
+        let direction = self.new_temp(MirType::Vec3);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(direction),
+            value: Rvalue::GetField {
+                base: ray.clone(),
+                field: SmolStr::new("direction"),
+                slot: self.field_slot("RayQuery", "direction"),
+            },
+            span,
+        });
+        let max_distance = self.new_temp(MirType::Float);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(max_distance),
+            value: Rvalue::GetField {
+                base: ray.clone(),
+                field: SmolStr::new("max_distance"),
+                slot: self.field_slot("RayQuery", "max_distance"),
+            },
+            span,
+        });
+        let min_step = self.new_temp(MirType::Float);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(min_step),
+            value: Rvalue::GetField {
+                base: ray.clone(),
+                field: SmolStr::new("min_step"),
+                slot: self.field_slot("RayQuery", "min_step"),
+            },
+            span,
+        });
+        let hit_epsilon = self.new_temp(MirType::Float);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(hit_epsilon),
+            value: Rvalue::GetField {
+                base: ray.clone(),
+                field: SmolStr::new("hit_epsilon"),
+                slot: self.field_slot("RayQuery", "hit_epsilon"),
+            },
+            span,
+        });
+        let max_steps = self.new_temp(MirType::Integer);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(max_steps),
+            value: Rvalue::GetField {
+                base: ray,
+                field: SmolStr::new("max_steps"),
+                slot: self.field_slot("RayQuery", "max_steps"),
+            },
+            span,
+        });
+        let hit = self.lower_call_temp(
+            MirType::Named(SmolStr::new("Hit3")),
+            SmolStr::new("__wr_scene_trace_capture"),
+            vec![
+                capture.clone(),
+                Value::Temp(origin),
+                Value::Temp(direction),
+                Value::Temp(max_distance),
+                Value::Temp(min_step),
+                Value::Temp(hit_epsilon),
+                Value::Temp(max_steps),
+            ],
+            span,
+        );
+        let _ = self.lower_call_temp(
+            MirType::Nil,
+            SmolStr::new("__wr_list_push"),
+            vec![Value::Local(result_local), hit],
+            span,
+        );
+        let next = self.lower_binary_temp(
+            MirType::Integer,
+            BinaryOp::Add,
+            Value::Local(index),
+            Value::Const(Literal::Integer(1)),
+            span,
+        );
+        self.assign_use(Place::Local(index), next, span);
+        self.set_terminator(Terminator::Jump { target: head, span });
+        self.current_block = exit;
+        if use_virtual_gpu {
+            let _ = self.lower_call_temp(
+                MirType::Nil,
+                SmolStr::new("__wr_gpu_dispatch_end"),
+                Vec::new(),
+                span,
+            );
+        }
+        self.set_terminator(Terminator::Jump {
+            target: merge_block,
+            span,
+        });
+    }
+
+    fn lower_surface_batch_loop(
+        &mut self,
+        items: Value,
+        capture: Value,
+        result_local: LocalId,
+        span: TextRange,
+        use_virtual_gpu: bool,
+        merge_block: BlockId,
+    ) {
+        let len = self.lower_call_temp(
+            MirType::Integer,
+            SmolStr::new("__wr_list_len"),
+            vec![items.clone()],
+            span,
+        );
+        if use_virtual_gpu {
+            let _ = self.lower_call_temp(
+                MirType::Nil,
+                SmolStr::new("__wr_gpu_dispatch_begin"),
+                vec![
+                    len.clone(),
+                    Value::Const(Literal::Integer(1)),
+                    Value::Const(Literal::Integer(1)),
+                    Value::Const(Literal::Integer(1)),
+                    Value::Const(Literal::Integer(1)),
+                    Value::Const(Literal::Integer(1)),
+                    Value::Const(Literal::Nil),
+                ],
+                span,
+            );
+        }
+        let index = self.new_local(
+            SmolStr::new(format!("$surface_batch_index{}", self.locals.len())),
+            true,
+            MirType::Integer,
+        );
+        self.assign_use(Place::Local(index), Value::Const(Literal::Integer(0)), span);
+        let head = self.new_block();
+        let body_block = self.new_block();
+        let exit = self.new_block();
+        self.set_terminator(Terminator::Jump { target: head, span });
+        self.current_block = head;
+        let cond = self.lower_binary_temp(
+            MirType::Boolean,
+            BinaryOp::Lt,
+            Value::Local(index),
+            len,
+            span,
+        );
+        self.set_terminator(Terminator::Branch {
+            cond,
+            then_target: body_block,
+            else_target: exit,
+            span,
+        });
+        self.current_block = body_block;
+        if use_virtual_gpu {
+            let _ = self.lower_call_temp(
+                MirType::Nil,
+                SmolStr::new("__wr_gpu_dispatch_select_invocation"),
+                vec![Value::Local(index)],
+                span,
+            );
+        }
+        let hit = self.lower_call_temp(
+            MirType::Named(SmolStr::new("Hit3")),
+            SmolStr::new("__wr_list_get"),
+            vec![items.clone(), Value::Local(index)],
+            span,
+        );
+        let surface = self.lower_call_temp(
+            MirType::Named(SmolStr::new("Surface")),
+            SmolStr::new("__wr_scene_surface_capture"),
+            vec![capture.clone(), hit],
+            span,
+        );
+        let _ = self.lower_call_temp(
+            MirType::Nil,
+            SmolStr::new("__wr_list_push"),
+            vec![Value::Local(result_local), surface],
+            span,
+        );
+        let next = self.lower_binary_temp(
+            MirType::Integer,
+            BinaryOp::Add,
+            Value::Local(index),
+            Value::Const(Literal::Integer(1)),
+            span,
+        );
+        self.assign_use(Place::Local(index), next, span);
+        self.set_terminator(Terminator::Jump { target: head, span });
+        self.current_block = exit;
+        if use_virtual_gpu {
+            let _ = self.lower_call_temp(
+                MirType::Nil,
+                SmolStr::new("__wr_gpu_dispatch_end"),
+                Vec::new(),
+                span,
+            );
+        }
+        self.set_terminator(Terminator::Jump {
+            target: merge_block,
+            span,
+        });
+    }
+
+    fn lower_field_sample_batch_loop(
+        &mut self,
+        items: Value,
+        capture: Value,
+        result_local: LocalId,
+        span: TextRange,
+        use_virtual_gpu: bool,
+        merge_block: BlockId,
+        kind: FieldBatchQueryKind,
+        capture_is_shape: bool,
+    ) {
+        let len = self.lower_call_temp(
+            MirType::Integer,
+            SmolStr::new("__wr_list_len"),
+            vec![items.clone()],
+            span,
+        );
+        if use_virtual_gpu {
+            let _ = self.lower_call_temp(
+                MirType::Nil,
+                SmolStr::new("__wr_gpu_dispatch_begin"),
+                vec![
+                    len.clone(),
+                    Value::Const(Literal::Integer(1)),
+                    Value::Const(Literal::Integer(1)),
+                    Value::Const(Literal::Integer(1)),
+                    Value::Const(Literal::Integer(1)),
+                    Value::Const(Literal::Integer(1)),
+                    Value::Const(Literal::Nil),
+                ],
+                span,
+            );
+        }
+        let index = self.new_local(
+            SmolStr::new(format!("$field_batch_index{}", self.locals.len())),
+            true,
+            MirType::Integer,
+        );
+        self.assign_use(Place::Local(index), Value::Const(Literal::Integer(0)), span);
+        let head = self.new_block();
+        let body_block = self.new_block();
+        let exit = self.new_block();
+        self.set_terminator(Terminator::Jump { target: head, span });
+        self.current_block = head;
+        let cond = self.lower_binary_temp(
+            MirType::Boolean,
+            BinaryOp::Lt,
+            Value::Local(index),
+            len,
+            span,
+        );
+        self.set_terminator(Terminator::Branch {
+            cond,
+            then_target: body_block,
+            else_target: exit,
+            span,
+        });
+        self.current_block = body_block;
+        if use_virtual_gpu {
+            let _ = self.lower_call_temp(
+                MirType::Nil,
+                SmolStr::new("__wr_gpu_dispatch_select_invocation"),
+                vec![Value::Local(index)],
+                span,
+            );
+        }
+        let point_query = self.lower_call_temp(
+            MirType::Named(SmolStr::new("PointQuery")),
+            SmolStr::new("__wr_list_get"),
+            vec![items.clone(), Value::Local(index)],
+            span,
+        );
+        let point = self.new_temp(MirType::Vec3);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(point),
+            value: Rvalue::GetField {
+                base: point_query,
+                field: SmolStr::new("point"),
+                slot: self.field_slot("PointQuery", "point"),
+            },
+            span,
+        });
+        let result_value = match kind {
+            FieldBatchQueryKind::Distance => {
+                let distance = self.lower_call_temp(
+                    MirType::Float,
+                    SmolStr::new(if capture_is_shape {
+                        "__wr_shape_distance_capture"
+                    } else {
+                        "__wr_field_distance_capture"
+                    }),
+                    vec![capture.clone(), Value::Temp(point)],
+                    span,
+                );
+                self.build_distance_result_value(distance, span)
+            }
+            FieldBatchQueryKind::Normal => {
+                let normal = self.lower_call_temp(
+                    MirType::Vec3,
+                    SmolStr::new(if capture_is_shape {
+                        "__wr_shape_normal_capture"
+                    } else {
+                        "__wr_field_normal_capture"
+                    }),
+                    vec![capture.clone(), Value::Temp(point)],
+                    span,
+                );
+                self.build_normal_result_value(normal, span)
+            }
+        };
+        let _ = self.lower_call_temp(
+            MirType::Nil,
+            SmolStr::new("__wr_list_push"),
+            vec![Value::Local(result_local), result_value],
+            span,
+        );
+        let next = self.lower_binary_temp(
+            MirType::Integer,
+            BinaryOp::Add,
+            Value::Local(index),
+            Value::Const(Literal::Integer(1)),
+            span,
+        );
+        self.assign_use(Place::Local(index), next, span);
+        self.set_terminator(Terminator::Jump { target: head, span });
+        self.current_block = exit;
+        if use_virtual_gpu {
+            let _ = self.lower_call_temp(
+                MirType::Nil,
+                SmolStr::new("__wr_gpu_dispatch_end"),
+                Vec::new(),
+                span,
+            );
+        }
+        self.set_terminator(Terminator::Jump {
+            target: merge_block,
+            span,
+        });
+    }
+
+    fn lower_occluded_batch_loop(
+        &mut self,
+        items: Value,
+        capture: Value,
+        result_local: LocalId,
+        span: TextRange,
+        use_virtual_gpu: bool,
+        merge_block: BlockId,
+    ) {
+        let len = self.lower_call_temp(
+            MirType::Integer,
+            SmolStr::new("__wr_list_len"),
+            vec![items.clone()],
+            span,
+        );
+        if use_virtual_gpu {
+            let _ = self.lower_call_temp(
+                MirType::Nil,
+                SmolStr::new("__wr_gpu_dispatch_begin"),
+                vec![
+                    len.clone(),
+                    Value::Const(Literal::Integer(1)),
+                    Value::Const(Literal::Integer(1)),
+                    Value::Const(Literal::Integer(1)),
+                    Value::Const(Literal::Integer(1)),
+                    Value::Const(Literal::Integer(1)),
+                    Value::Const(Literal::Nil),
+                ],
+                span,
+            );
+        }
+        let index = self.new_local(
+            SmolStr::new(format!("$occluded_batch_index{}", self.locals.len())),
+            true,
+            MirType::Integer,
+        );
+        self.assign_use(Place::Local(index), Value::Const(Literal::Integer(0)), span);
+        let head = self.new_block();
+        let body_block = self.new_block();
+        let exit = self.new_block();
+        self.set_terminator(Terminator::Jump { target: head, span });
+        self.current_block = head;
+        let cond = self.lower_binary_temp(
+            MirType::Boolean,
+            BinaryOp::Lt,
+            Value::Local(index),
+            len,
+            span,
+        );
+        self.set_terminator(Terminator::Branch {
+            cond,
+            then_target: body_block,
+            else_target: exit,
+            span,
+        });
+        self.current_block = body_block;
+        if use_virtual_gpu {
+            let _ = self.lower_call_temp(
+                MirType::Nil,
+                SmolStr::new("__wr_gpu_dispatch_select_invocation"),
+                vec![Value::Local(index)],
+                span,
+            );
+        }
+        let ray = self.lower_call_temp(
+            MirType::Named(SmolStr::new("RayQuery")),
+            SmolStr::new("__wr_list_get"),
+            vec![items.clone(), Value::Local(index)],
+            span,
+        );
+        let origin = self.new_temp(MirType::Vec3);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(origin),
+            value: Rvalue::GetField {
+                base: ray.clone(),
+                field: SmolStr::new("origin"),
+                slot: self.field_slot("RayQuery", "origin"),
+            },
+            span,
+        });
+        let direction = self.new_temp(MirType::Vec3);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(direction),
+            value: Rvalue::GetField {
+                base: ray.clone(),
+                field: SmolStr::new("direction"),
+                slot: self.field_slot("RayQuery", "direction"),
+            },
+            span,
+        });
+        let max_distance = self.new_temp(MirType::Float);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(max_distance),
+            value: Rvalue::GetField {
+                base: ray.clone(),
+                field: SmolStr::new("max_distance"),
+                slot: self.field_slot("RayQuery", "max_distance"),
+            },
+            span,
+        });
+        let min_step = self.new_temp(MirType::Float);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(min_step),
+            value: Rvalue::GetField {
+                base: ray.clone(),
+                field: SmolStr::new("min_step"),
+                slot: self.field_slot("RayQuery", "min_step"),
+            },
+            span,
+        });
+        let hit_epsilon = self.new_temp(MirType::Float);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(hit_epsilon),
+            value: Rvalue::GetField {
+                base: ray.clone(),
+                field: SmolStr::new("hit_epsilon"),
+                slot: self.field_slot("RayQuery", "hit_epsilon"),
+            },
+            span,
+        });
+        let max_steps = self.new_temp(MirType::Integer);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(max_steps),
+            value: Rvalue::GetField {
+                base: ray,
+                field: SmolStr::new("max_steps"),
+                slot: self.field_slot("RayQuery", "max_steps"),
+            },
+            span,
+        });
+        let hit = self.lower_call_temp(
+            MirType::Named(SmolStr::new("Hit3")),
+            SmolStr::new("__wr_scene_trace_capture"),
+            vec![
+                capture.clone(),
+                Value::Temp(origin),
+                Value::Temp(direction),
+                Value::Temp(max_distance),
+                Value::Temp(min_step),
+                Value::Temp(hit_epsilon),
+                Value::Temp(max_steps),
+            ],
+            span,
+        );
+        let occlusion = self.build_occlusion_result_value(hit, span);
+        let _ = self.lower_call_temp(
+            MirType::Nil,
+            SmolStr::new("__wr_list_push"),
+            vec![Value::Local(result_local), occlusion],
+            span,
+        );
+        let next = self.lower_binary_temp(
+            MirType::Integer,
+            BinaryOp::Add,
+            Value::Local(index),
+            Value::Const(Literal::Integer(1)),
+            span,
+        );
+        self.assign_use(Place::Local(index), next, span);
+        self.set_terminator(Terminator::Jump { target: head, span });
+        self.current_block = exit;
+        if use_virtual_gpu {
+            let _ = self.lower_call_temp(
+                MirType::Nil,
+                SmolStr::new("__wr_gpu_dispatch_end"),
+                Vec::new(),
+                span,
+            );
+        }
+        self.set_terminator(Terminator::Jump {
+            target: merge_block,
+            span,
+        });
+    }
+
+    fn build_distance_result_value(&mut self, distance: Value, span: TextRange) -> Value {
+        let mut class = self.synthetic_class_target_info("DistanceResult");
+        Self::set_class_field_value(&mut class, "distance", distance);
+        self.build_class_instance(&class, span)
+    }
+
+    fn build_normal_result_value(&mut self, normal: Value, span: TextRange) -> Value {
+        let mut class = self.synthetic_class_target_info("NormalResult");
+        Self::set_class_field_value(&mut class, "normal", normal);
+        self.build_class_instance(&class, span)
+    }
+
+    fn build_occlusion_result_value(&mut self, hit: Value, span: TextRange) -> Value {
+        let hit_flag = self.new_temp(MirType::Boolean);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(hit_flag),
+            value: Rvalue::GetField {
+                base: hit.clone(),
+                field: SmolStr::new("hit"),
+                slot: self.field_slot("Hit3", "hit"),
+            },
+            span,
+        });
+        let distance = self.new_temp(MirType::Float);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(distance),
+            value: Rvalue::GetField {
+                base: hit.clone(),
+                field: SmolStr::new("distance"),
+                slot: self.field_slot("Hit3", "distance"),
+            },
+            span,
+        });
+        let steps = self.new_temp(MirType::Integer);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(steps),
+            value: Rvalue::GetField {
+                base: hit,
+                field: SmolStr::new("steps"),
+                slot: self.field_slot("Hit3", "steps"),
+            },
+            span,
+        });
+        let mut class = self.synthetic_class_target_info("OcclusionResult");
+        Self::set_class_field_value(&mut class, "occluded", Value::Temp(hit_flag));
+        Self::set_class_field_value(&mut class, "distance", Value::Temp(distance));
+        Self::set_class_field_value(&mut class, "steps", Value::Temp(steps));
+        self.build_class_instance(&class, span)
+    }
+
+    fn field_slot(&self, class_name: &str, field_name: &str) -> Option<u32> {
+        self.class_fields
+            .get(&SmolStr::new(class_name))
+            .and_then(|fields| fields.iter().position(|field| field.as_str() == field_name))
+            .map(|idx| idx as u32)
+    }
+
+    fn assign_use(&mut self, place: Place, value: Value, span: TextRange) {
+        self.push_stmt(MirStmt::Assign {
+            place,
+            value: Rvalue::Use(value),
+            span,
+        });
+    }
+
+    fn lower_binary_temp(
+        &mut self,
+        ty: MirType,
+        op: BinaryOp,
+        lhs: Value,
+        rhs: Value,
+        span: TextRange,
+    ) -> Value {
+        let temp = self.new_temp(ty);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(temp),
+            value: Rvalue::Binary { op, lhs, rhs },
+            span,
+        });
+        Value::Temp(temp)
+    }
+
+    fn lower_unary_temp(
+        &mut self,
+        ty: MirType,
+        op: hir::UnaryOp,
+        operand: Value,
+        span: TextRange,
+    ) -> Value {
+        let temp = self.new_temp(ty);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(temp),
+            value: Rvalue::Unary { op, operand },
+            span,
+        });
+        Value::Temp(temp)
+    }
+
+    fn lower_call_temp(
+        &mut self,
+        ty: MirType,
+        target: SmolStr,
+        args: Vec<Value>,
+        span: TextRange,
+    ) -> Value {
+        let temp = self.new_temp(ty);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(temp),
+            value: Rvalue::Call {
+                kind: CallKind::Sync,
+                target: CallTarget::Function(target),
+                args,
+            },
+            span,
+        });
+        Value::Temp(temp)
+    }
+
+    fn synthetic_class_target_info(&self, class_name: &str) -> ClassTargetInfo {
+        let name = SmolStr::new(class_name);
+        let fields = self.class_fields.get(&name).cloned().unwrap_or_default();
+        let field_defaults = self
+            .class_field_defaults
+            .get(&name)
+            .cloned()
+            .unwrap_or_else(|| vec![None; fields.len()]);
+        let field_values = vec![None; fields.len()];
+        let class_id = self.type_tags.get(&name).copied().unwrap_or(TypeTagId(0));
+        ClassTargetInfo {
+            name,
+            class_id,
+            fields,
+            field_defaults,
+            field_values,
+        }
+    }
+
+    fn set_class_field_value(class: &mut ClassTargetInfo, field_name: &str, value: Value) {
+        if let Some(idx) = class
+            .fields
+            .iter()
+            .position(|field| field.as_str() == field_name)
+        {
+            class.field_values[idx] = Some(value);
+        }
+    }
+
+    fn build_default_actor_handle(&mut self, span: TextRange) -> Value {
+        let mut class = self.synthetic_class_target_info("ActorHandle");
+        Self::set_class_field_value(&mut class, "id", Value::Const(Literal::Integer(0)));
+        Self::set_class_field_value(&mut class, "generation", Value::Const(Literal::Integer(0)));
+        self.build_class_instance(&class, span)
+    }
+
+    fn build_default_payload(&mut self, span: TextRange) -> Value {
+        let mut class = self.synthetic_class_target_info("Payload");
+        Self::set_class_field_value(&mut class, "entity_id", Value::Const(Literal::Integer(0)));
+        Self::set_class_field_value(&mut class, "material_id", Value::Const(Literal::Integer(0)));
+        let actor = self.build_default_actor_handle(span);
+        Self::set_class_field_value(&mut class, "actor", actor);
+        self.build_class_instance(&class, span)
+    }
+
+    fn build_default_surface(&mut self, span: TextRange) -> Value {
+        let zero = Value::Const(Literal::Float(0.0));
+        let black = self.lower_call_temp(
+            MirType::Vec3,
+            SmolStr::new("vec3"),
+            vec![zero.clone(), zero.clone(), zero.clone()],
+            span,
+        );
+        let mut class = self.synthetic_class_target_info("Surface");
+        for field in [
+            "roughness",
+            "metalness",
+            "clearcoat",
+            "clearcoat_roughness",
+            "sheen",
+        ] {
+            Self::set_class_field_value(&mut class, field, zero.clone());
+        }
+        Self::set_class_field_value(&mut class, "albedo", black.clone());
+        Self::set_class_field_value(&mut class, "emissive", black);
+        self.build_class_instance(&class, span)
+    }
+
+    fn build_default_hit(&mut self, origin: Value, span: TextRange) -> Value {
+        let zero = Value::Const(Literal::Float(0.0));
+        let mut class = self.synthetic_class_target_info("Hit3");
+        Self::set_class_field_value(&mut class, "hit", Value::Const(Literal::Boolean(false)));
+        Self::set_class_field_value(&mut class, "distance", zero.clone());
+        Self::set_class_field_value(&mut class, "position", origin);
+        let normal = self.lower_call_temp(
+            MirType::Vec3,
+            SmolStr::new("vec3"),
+            vec![
+                zero.clone(),
+                zero.clone(),
+                Value::Const(Literal::Float(1.0)),
+            ],
+            span,
+        );
+        Self::set_class_field_value(&mut class, "normal", normal);
+        Self::set_class_field_value(&mut class, "steps", Value::Const(Literal::Integer(0)));
+        Self::set_class_field_value(&mut class, "feature_id", Value::Const(Literal::Integer(0)));
+        let payload = self.build_default_payload(span);
+        Self::set_class_field_value(&mut class, "payload", payload);
+        self.build_class_instance(&class, span)
+    }
+
+    fn build_scene_capture_value(&mut self, shape_name: &SmolStr, span: TextRange) -> Value {
+        let is_field = self.field_names.contains(shape_name);
+        let mut class = self.synthetic_class_target_info(if is_field {
+            "FieldCapture"
+        } else {
+            "ShapeCapture"
+        });
+        Self::set_class_field_value(
+            &mut class,
+            "scene_id",
+            Value::Const(Literal::Integer(if is_field {
+                stable_field_scene_capture_id(shape_name)
+            } else {
+                stable_shape_scene_capture_id(shape_name)
+            })),
+        );
+        Self::set_class_field_value(&mut class, "epoch", Value::Const(Literal::Integer(0)));
+        Self::set_class_field_value(
+            &mut class,
+            "root_feature_id",
+            Value::Const(Literal::Integer(if is_field {
+                0
+            } else {
+                stable_shape_capture_id(shape_name)
+            })),
+        );
+        self.build_class_instance(&class, span)
+    }
+
+    fn build_dispatch_backend_value(&mut self, mode: i64, span: TextRange) -> Value {
+        let mut class = self.synthetic_class_target_info("DispatchBackend");
+        Self::set_class_field_value(&mut class, "id", Value::Const(Literal::Integer(mode)));
+        self.build_class_instance(&class, span)
+    }
+
+    fn lower_dispatch_backend_id(&mut self, backend: Value, span: TextRange) -> Value {
+        let temp = self.new_temp(MirType::Integer);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(temp),
+            value: Rvalue::GetField {
+                base: backend,
+                field: SmolStr::new("id"),
+                slot: self.field_slot("DispatchBackend", "id"),
+            },
+            span,
+        });
+        Value::Temp(temp)
+    }
+
+    fn lower_shape_payload_body_value(&mut self, payload: &hir::Body, span: TextRange) -> Value {
+        if payload.root_stmts.is_empty() {
+            return self.build_default_payload(span);
+        }
+        if payload.root_stmts.len() > 1 {
+            self.lower_stmt_block(payload, &payload.root_stmts[..payload.root_stmts.len() - 1]);
+        }
+        let last = *payload.root_stmts.last().expect("shape payload stmt");
+        match &payload.stmts[last] {
+            HirStmt::Expr(expr) => self.lower_expr(payload, *expr),
+            HirStmt::Return(Some(expr)) => self.lower_expr(payload, *expr),
+            _ => {
+                self.lower_stmt(payload, last);
+                self.build_default_payload(span)
+            }
+        }
+    }
+
+    fn shape_root_expr(&self, shape_name: &SmolStr) -> Option<hir::ShapeExpr> {
+        self.shape_graphs
+            .get(shape_name)
+            .map(|graph| graph.root.clone())
+    }
+
+    fn shape_root_provenance_expr(
+        &self,
+        shape_name: &SmolStr,
+    ) -> Option<hir::ShapeProvenanceExpr> {
+        self.shape_graphs
+            .get(shape_name)
+            .and_then(|graph| graph.provenance.clone())
+    }
+
+    fn field_root_expr(&self, field_name: &SmolStr) -> Option<hir::FieldExpr> {
+        self.field_graphs
+            .get(field_name)
+            .map(|graph| graph.root.clone())
+    }
+
+    fn field_body(&self, field_name: &SmolStr) -> Option<&hir::Body> {
+        self.field_bodies.get(field_name)
+    }
+
+    fn unprunable_support_lower_bound(&self) -> Value {
+        Value::Const(Literal::Float(-1_000_000.0))
+    }
+
+    fn lower_shape_support_lower_bound_expr(
+        &mut self,
+        expr: &hir::ShapeExpr,
+        point: Value,
+        span: TextRange,
+    ) -> Value {
+        match expr {
+            hir::ShapeExpr::Use { target } => {
+                let Some(root) = self.shape_root_expr(target) else {
+                    return self.unprunable_support_lower_bound();
+                };
+                self.lower_shape_support_lower_bound_expr(&root, point, span)
+            }
+            hir::ShapeExpr::Leaf(leaf) => {
+                self.lower_field_support_lower_bound_call(&leaf.field, point, span)
+            }
+            hir::ShapeExpr::Union { items, .. } => {
+                let mut iter = items.iter();
+                let Some(first) = iter.next() else {
+                    return self.unprunable_support_lower_bound();
+                };
+                let mut current =
+                    self.lower_shape_support_lower_bound_expr(first, point.clone(), span);
+                for item in iter {
+                    let rhs = self.lower_shape_support_lower_bound_expr(item, point.clone(), span);
+                    current = self.lower_call_temp(
+                        MirType::Float,
+                        SmolStr::new("field_union"),
+                        vec![current, rhs],
+                        span,
+                    );
+                }
+                current
+            }
+            hir::ShapeExpr::Intersection { items, .. } => {
+                let mut iter = items.iter();
+                let Some(first) = iter.next() else {
+                    return self.unprunable_support_lower_bound();
+                };
+                let mut current =
+                    self.lower_shape_support_lower_bound_expr(first, point.clone(), span);
+                for item in iter {
+                    let rhs = self.lower_shape_support_lower_bound_expr(item, point.clone(), span);
+                    current = self.lower_call_temp(
+                        MirType::Float,
+                        SmolStr::new("field_intersection"),
+                        vec![current, rhs],
+                        span,
+                    );
+                }
+                current
+            }
+            hir::ShapeExpr::Subtract { left, .. } => {
+                self.lower_shape_support_lower_bound_expr(left, point, span)
+            }
+        }
+    }
+
+    fn lower_field_support_lower_bound_call(
+        &mut self,
+        field: &SmolStr,
+        point: Value,
+        span: TextRange,
+    ) -> Value {
+        let Some(metadata) = self.field_metadata.get(field).cloned() else {
+            return self.unprunable_support_lower_bound();
+        };
+        if let Some(bounds) = self.lower_field_authored_bounds(&metadata, span) {
+            return self.lower_bounds_support_lower_bound_value(point, bounds, span);
+        }
+        if !Self::field_metadata_can_coarse_support_prune(&metadata) {
+            return self.unprunable_support_lower_bound();
+        }
+        let Some(root) = self.field_root_expr(field) else {
+            return self.unprunable_support_lower_bound();
+        };
+        let Some(body) = self.field_body(field).cloned() else {
+            return self.unprunable_support_lower_bound();
+        };
+        self.lower_field_support_lower_bound_expr(&root, &body, point, span)
+    }
+
+    fn field_metadata_can_coarse_support_prune(metadata: &hir::FieldMetadata) -> bool {
+        metadata.trace.can_coarse_support_pruning
+    }
+
+    fn lower_field_authored_bounds(
+        &mut self,
+        metadata: &hir::FieldMetadata,
+        span: TextRange,
+    ) -> Option<Value> {
+        if !matches!(metadata.trace.support, FieldSupport::Bounded)
+            || !matches!(metadata.trace.bounds, FieldBounds::Bounded)
+        {
+            return None;
+        }
+        if let Some(bounds) = metadata.authored_bounds.as_ref() {
+            return Some(self.lower_wrapped_body_value(bounds, span));
+        }
+        metadata.authored_support.as_ref().map(|support| {
+            let support_value = self.lower_wrapped_body_value(support, span);
+            self.lower_get_named_field(
+                support_value,
+                "Support3",
+                "bounds",
+                MirType::Named(SmolStr::new("Bounds3")),
+                span,
+            )
+        })
+    }
+
+    fn lower_bounds_support_lower_bound_value(
+        &mut self,
+        point: Value,
+        bounds: Value,
+        span: TextRange,
+    ) -> Value {
+        let min = self.lower_get_named_field(bounds.clone(), "Bounds3", "min", MirType::Vec3, span);
+        let max = self.lower_get_named_field(bounds, "Bounds3", "max", MirType::Vec3, span);
+        self.lower_bounds_box_support_lower_bound(point, min, max, span)
+    }
+
+    fn lower_field_support_lower_bound_expr(
+        &mut self,
+        expr: &hir::FieldExpr,
+        body: &hir::Body,
+        point: Value,
+        span: TextRange,
+    ) -> Value {
+        match expr {
+            hir::FieldExpr::Use { target } => {
+                self.lower_field_support_lower_bound_call(target, point, span)
+            }
+            hir::FieldExpr::Primitive { primitive, args } => {
+                self.lower_field_primitive_support_lower_bound(*primitive, args, body, point, span)
+            }
+            hir::FieldExpr::Union { items } => {
+                let mut iter = items.iter();
+                let Some(first) = iter.next() else {
+                    return self.unprunable_support_lower_bound();
+                };
+                let mut current =
+                    self.lower_field_support_lower_bound_expr(first, body, point.clone(), span);
+                for item in iter {
+                    let rhs =
+                        self.lower_field_support_lower_bound_expr(item, body, point.clone(), span);
+                    current = self.lower_call_temp(
+                        MirType::Float,
+                        SmolStr::new("field_union"),
+                        vec![current, rhs],
+                        span,
+                    );
+                }
+                current
+            }
+            hir::FieldExpr::Intersection { items } => {
+                let mut iter = items.iter();
+                let Some(first) = iter.next() else {
+                    return self.unprunable_support_lower_bound();
+                };
+                let mut current =
+                    self.lower_field_support_lower_bound_expr(first, body, point.clone(), span);
+                for item in iter {
+                    let rhs =
+                        self.lower_field_support_lower_bound_expr(item, body, point.clone(), span);
+                    current = self.lower_call_temp(
+                        MirType::Float,
+                        SmolStr::new("field_intersection"),
+                        vec![current, rhs],
+                        span,
+                    );
+                }
+                current
+            }
+            hir::FieldExpr::Subtract { left, .. } => {
+                self.lower_field_support_lower_bound_expr(left, body, point, span)
+            }
+            hir::FieldExpr::Transform {
+                transform,
+                body: inner,
+            } => {
+                if !self.field_wrapper_body_returns_named_call(transform, "vec3") {
+                    return self.unprunable_support_lower_bound();
+                }
+                let local_point = self.lower_wrapped_support_point(
+                    "field_transform_point",
+                    "transform",
+                    transform,
+                    point,
+                    span,
+                );
+                self.lower_field_support_lower_bound_expr(inner, body, local_point, span)
+            }
+            hir::FieldExpr::Repeat {
+                repeat,
+                body: inner,
+            } => {
+                let local_point = self.lower_wrapped_support_point(
+                    "field_repeat_point",
+                    "repeat",
+                    repeat,
+                    point,
+                    span,
+                );
+                self.lower_field_support_lower_bound_expr(inner, body, local_point, span)
+            }
+            hir::FieldExpr::Instance { .. } | hir::FieldExpr::Custom { .. } => {
+                self.unprunable_support_lower_bound()
+            }
+            hir::FieldExpr::Mirror {
+                mirror,
+                body: inner,
+            } => {
+                let local_point = self.lower_wrapped_support_point(
+                    "field_mirror_point",
+                    "mirror",
+                    mirror,
+                    point,
+                    span,
+                );
+                self.lower_field_support_lower_bound_expr(inner, body, local_point, span)
+            }
+        }
+    }
+
+    fn lower_wrapped_support_point(
+        &mut self,
+        callee_name: &str,
+        _arg_name: &str,
+        wrapped: &hir::Body,
+        point: Value,
+        span: TextRange,
+    ) -> Value {
+        let wrapper_value = self.lower_wrapped_body_value(wrapped, span);
+        self.lower_call_temp(
+            MirType::Vec3,
+            SmolStr::new(callee_name),
+            vec![wrapper_value, point],
+            span,
+        )
+    }
+
+    fn lower_wrapped_body_value(&mut self, body: &hir::Body, _span: TextRange) -> Value {
+        if body.root_stmts.is_empty() {
+            return Value::Const(Literal::Nil);
+        }
+        if body.root_stmts.len() > 1 {
+            self.lower_stmt_block(body, &body.root_stmts[..body.root_stmts.len() - 1]);
+        }
+        let last = *body.root_stmts.last().expect("wrapped body stmt");
+        match &body.stmts[last] {
+            HirStmt::Expr(expr) => self.lower_expr(body, *expr),
+            HirStmt::Return(Some(expr)) => self.lower_expr(body, *expr),
+            _ => {
+                self.lower_stmt(body, last);
+                Value::Const(Literal::Nil)
+            }
+        }
+    }
+
+    fn field_wrapper_body_returns_named_call(&self, body: &hir::Body, name: &str) -> bool {
+        let Some(expr) = self.field_wrapper_body_terminal_expr(body) else {
+            return false;
+        };
+        let Expr::Call { callee, .. } = &body.exprs[expr] else {
+            return false;
+        };
+        matches!(&body.exprs[*callee], Expr::Variable(callee_name) if callee_name == name)
+    }
+
+    fn field_wrapper_body_terminal_expr(&self, body: &hir::Body) -> Option<hir::Idx<Expr>> {
+        let stmt = *body.root_stmts.last()?;
+        match &body.stmts[stmt] {
+            HirStmt::Expr(expr) | HirStmt::Return(Some(expr)) => Some(*expr),
+            _ => None,
+        }
+    }
+
+    fn lower_field_primitive_support_lower_bound(
+        &mut self,
+        primitive: hir::FieldPrimitive,
+        args: &[hir::Arg],
+        body: &hir::Body,
+        point: Value,
+        span: TextRange,
+    ) -> Value {
+        match primitive {
+            hir::FieldPrimitive::Sphere => {
+                let Some(radius) = self.lower_field_named_arg_value(args, body, "radius") else {
+                    return self.unprunable_support_lower_bound();
+                };
+                self.lower_call_temp(
+                    MirType::Float,
+                    SmolStr::new("sphere"),
+                    vec![point, radius],
+                    span,
+                )
+            }
+            hir::FieldPrimitive::Box => {
+                let Some(half) = self.lower_field_named_arg_value(args, body, "half") else {
+                    return self.unprunable_support_lower_bound();
+                };
+                self.lower_call_temp(MirType::Float, SmolStr::new("box"), vec![point, half], span)
+            }
+            hir::FieldPrimitive::Capsule => {
+                let (Some(a), Some(b), Some(radius)) = (
+                    self.lower_field_named_arg_value(args, body, "a"),
+                    self.lower_field_named_arg_value(args, body, "b"),
+                    self.lower_field_named_arg_value(args, body, "radius"),
+                ) else {
+                    return self.unprunable_support_lower_bound();
+                };
+                let radius_vec = self.lower_vec3_splat(radius, span);
+                let min_ab = self.lower_call_temp(
+                    MirType::Vec3,
+                    SmolStr::new("min"),
+                    vec![a.clone(), b.clone()],
+                    span,
+                );
+                let max_ab =
+                    self.lower_call_temp(MirType::Vec3, SmolStr::new("max"), vec![a, b], span);
+                let min = self.lower_binary_temp(
+                    MirType::Vec3,
+                    BinaryOp::Sub,
+                    min_ab,
+                    radius_vec.clone(),
+                    span,
+                );
+                let max =
+                    self.lower_binary_temp(MirType::Vec3, BinaryOp::Add, max_ab, radius_vec, span);
+                self.lower_bounds_box_support_lower_bound(point, min, max, span)
+            }
+            hir::FieldPrimitive::Cylinder => {
+                let (Some(radius), Some(half_height)) = (
+                    self.lower_field_named_arg_value(args, body, "radius"),
+                    self.lower_field_named_arg_value(args, body, "half_height"),
+                ) else {
+                    return self.unprunable_support_lower_bound();
+                };
+                let min_radius = self.lower_binary_temp(
+                    MirType::Float,
+                    BinaryOp::Sub,
+                    Value::Const(Literal::Float(0.0)),
+                    radius.clone(),
+                    span,
+                );
+                let min_half_height = self.lower_binary_temp(
+                    MirType::Float,
+                    BinaryOp::Sub,
+                    Value::Const(Literal::Float(0.0)),
+                    half_height.clone(),
+                    span,
+                );
+                let min_radius_z = min_radius.clone();
+                let min = self.lower_call_temp(
+                    MirType::Vec3,
+                    SmolStr::new("vec3"),
+                    vec![min_radius, min_half_height, min_radius_z],
+                    span,
+                );
+                let radius_max = radius.clone();
+                let half_height_max = half_height.clone();
+                let radius_z = radius;
+                let max = self.lower_call_temp(
+                    MirType::Vec3,
+                    SmolStr::new("vec3"),
+                    vec![radius_max, half_height_max, radius_z],
+                    span,
+                );
+                self.lower_bounds_box_support_lower_bound(point, min, max, span)
+            }
+            hir::FieldPrimitive::Plane => self.unprunable_support_lower_bound(),
+            hir::FieldPrimitive::Torus => {
+                let (Some(major_radius), Some(minor_radius)) = (
+                    self.lower_field_named_arg_value(args, body, "major_radius"),
+                    self.lower_field_named_arg_value(args, body, "minor_radius"),
+                ) else {
+                    return self.unprunable_support_lower_bound();
+                };
+                let outer = self.lower_binary_temp(
+                    MirType::Float,
+                    BinaryOp::Add,
+                    major_radius.clone(),
+                    minor_radius.clone(),
+                    span,
+                );
+                let min_outer = self.lower_binary_temp(
+                    MirType::Float,
+                    BinaryOp::Sub,
+                    Value::Const(Literal::Float(0.0)),
+                    outer.clone(),
+                    span,
+                );
+                let min_minor = self.lower_binary_temp(
+                    MirType::Float,
+                    BinaryOp::Sub,
+                    Value::Const(Literal::Float(0.0)),
+                    minor_radius.clone(),
+                    span,
+                );
+                let min_outer_z = min_outer.clone();
+                let min = self.lower_call_temp(
+                    MirType::Vec3,
+                    SmolStr::new("vec3"),
+                    vec![min_outer, min_minor, min_outer_z],
+                    span,
+                );
+                let max_outer_z = outer.clone();
+                let max = self.lower_call_temp(
+                    MirType::Vec3,
+                    SmolStr::new("vec3"),
+                    vec![outer, minor_radius, max_outer_z],
+                    span,
+                );
+                self.lower_bounds_box_support_lower_bound(point, min, max, span)
+            }
+        }
+    }
+
+    fn lower_field_named_arg_value(
+        &mut self,
+        args: &[hir::Arg],
+        body: &hir::Body,
+        name: &str,
+    ) -> Option<Value> {
+        args.iter().find_map(|arg| match arg {
+            hir::Arg::Named {
+                name: arg_name,
+                value,
+                ..
+            } if arg_name.as_str() == name => Some(self.lower_expr(body, *value)),
+            _ => None,
+        })
+    }
+
+    fn lower_vec3_splat(&mut self, value: Value, span: TextRange) -> Value {
+        self.lower_call_temp(
+            MirType::Vec3,
+            SmolStr::new("vec3"),
+            vec![value.clone(), value.clone(), value],
+            span,
+        )
+    }
+
+    fn lower_bounds_box_support_lower_bound(
+        &mut self,
+        point: Value,
+        min: Value,
+        max: Value,
+        span: TextRange,
+    ) -> Value {
+        let center_sum =
+            self.lower_binary_temp(MirType::Vec3, BinaryOp::Add, min.clone(), max.clone(), span);
+        let center = self.lower_binary_temp(
+            MirType::Vec3,
+            BinaryOp::Mul,
+            center_sum,
+            Value::Const(Literal::Float(0.5)),
+            span,
+        );
+        let half_delta = self.lower_binary_temp(MirType::Vec3, BinaryOp::Sub, max, min, span);
+        let half = self.lower_binary_temp(
+            MirType::Vec3,
+            BinaryOp::Mul,
+            half_delta,
+            Value::Const(Literal::Float(0.5)),
+            span,
+        );
+        let local_point = self.lower_binary_temp(MirType::Vec3, BinaryOp::Sub, point, center, span);
+        self.lower_call_temp(
+            MirType::Float,
+            SmolStr::new("box"),
+            vec![local_point, half],
+            span,
+        )
+    }
+
+    fn lower_shape_distance_call(
+        &mut self,
+        shape: &SmolStr,
+        point: Value,
+        span: TextRange,
+    ) -> Value {
+        if !self.shape_names.contains(shape) {
+            return Value::Const(Literal::Float(1_000_000.0));
+        }
+        self.lower_call_temp(
+            MirType::Float,
+            SmolStr::new(format!("__wr_shape_distance_{shape}")),
+            vec![point],
+            span,
+        )
+    }
+
+    fn lower_shape_distance_expr(
+        &mut self,
+        expr: &hir::ShapeExpr,
+        point: Value,
+        span: TextRange,
+    ) -> Value {
+        match expr {
+            hir::ShapeExpr::Use { target } => self.lower_shape_distance_call(target, point, span),
+            hir::ShapeExpr::Leaf(leaf) => self.lower_field_distance_call(&leaf.field, point, span),
+            hir::ShapeExpr::Union { items, .. } => {
+                let mut iter = items.iter();
+                let Some(first) = iter.next() else {
+                    return Value::Const(Literal::Float(1_000_000.0));
+                };
+                let _ = self.lower_call_temp(
+                    MirType::Nil,
+                    SmolStr::new("__wr_metrics_scene_trace_candidate_branch"),
+                    vec![],
+                    span,
+                );
+                let mut current = self.lower_shape_distance_expr(first, point.clone(), span);
+                for item in iter {
+                    let _ = self.lower_call_temp(
+                        MirType::Nil,
+                        SmolStr::new("__wr_metrics_scene_trace_candidate_branch"),
+                        vec![],
+                        span,
+                    );
+                    let support_lower_bound =
+                        self.lower_shape_support_lower_bound_expr(item, point.clone(), span);
+                    let keep_pruned = self.lower_binary_temp(
+                        MirType::Boolean,
+                        BinaryOp::Ge,
+                        support_lower_bound,
+                        current.clone(),
+                        span,
+                    );
+                    let prune_block = self.new_block();
+                    let eval_block = self.new_block();
+                    let merge_block = self.new_block();
+                    let dist_local =
+                        self.new_local(SmolStr::new("$shape_union_dist"), true, MirType::Float);
+                    self.assign_use(Place::Local(dist_local), current, span);
+                    self.set_terminator(Terminator::Branch {
+                        cond: keep_pruned,
+                        then_target: prune_block,
+                        else_target: eval_block,
+                        span,
+                    });
+                    self.current_block = prune_block;
+                    let _ = self.lower_call_temp(
+                        MirType::Nil,
+                        SmolStr::new("__wr_metrics_scene_trace_support_pruned_branch"),
+                        vec![],
+                        span,
+                    );
+                    self.set_terminator(Terminator::Jump {
+                        target: merge_block,
+                        span,
+                    });
+                    self.current_block = eval_block;
+                    let rhs = self.lower_shape_distance_expr(item, point.clone(), span);
+                    let next = self.lower_call_temp(
+                        MirType::Float,
+                        SmolStr::new("field_union"),
+                        vec![Value::Local(dist_local), rhs],
+                        span,
+                    );
+                    self.assign_use(Place::Local(dist_local), next, span);
+                    self.set_terminator(Terminator::Jump {
+                        target: merge_block,
+                        span,
+                    });
+                    self.current_block = merge_block;
+                    current = Value::Local(dist_local);
+                }
+                current
+            }
+            hir::ShapeExpr::Intersection { items, .. } => {
+                let mut iter = items.iter();
+                let Some(first) = iter.next() else {
+                    return Value::Const(Literal::Float(1_000_000.0));
+                };
+                let _ = self.lower_call_temp(
+                    MirType::Nil,
+                    SmolStr::new("__wr_metrics_scene_trace_candidate_branch"),
+                    vec![],
+                    span,
+                );
+                let mut current = self.lower_shape_distance_expr(first, point.clone(), span);
+                for item in iter {
+                    let _ = self.lower_call_temp(
+                        MirType::Nil,
+                        SmolStr::new("__wr_metrics_scene_trace_candidate_branch"),
+                        vec![],
+                        span,
+                    );
+                    let rhs = self.lower_shape_distance_expr(item, point.clone(), span);
+                    current = self.lower_call_temp(
+                        MirType::Float,
+                        SmolStr::new("field_intersection"),
+                        vec![current, rhs],
+                        span,
+                    );
+                }
+                current
+            }
+            hir::ShapeExpr::Subtract { left, right, .. } => {
+                let _ = self.lower_call_temp(
+                    MirType::Nil,
+                    SmolStr::new("__wr_metrics_scene_trace_candidate_branch"),
+                    vec![],
+                    span,
+                );
+                let lhs = self.lower_shape_distance_expr(left, point.clone(), span);
+                let _ = self.lower_call_temp(
+                    MirType::Nil,
+                    SmolStr::new("__wr_metrics_scene_trace_candidate_branch"),
+                    vec![],
+                    span,
+                );
+                let rhs = self.lower_shape_distance_expr(right, point, span);
+                self.lower_call_temp(
+                    MirType::Float,
+                    SmolStr::new("field_subtract"),
+                    vec![lhs, rhs],
+                    span,
+                )
+            }
+        }
+    }
+
+    fn lower_shape_normal_call(&mut self, shape: &SmolStr, point: Value, span: TextRange) -> Value {
+        let dx = self.lower_shape_axis_difference(shape, point.clone(), [0.001, 0.0, 0.0], span);
+        let dy = self.lower_shape_axis_difference(shape, point.clone(), [0.0, 0.001, 0.0], span);
+        let dz = self.lower_shape_axis_difference(shape, point, [0.0, 0.0, 0.001], span);
+        let gradient =
+            self.lower_call_temp(MirType::Vec3, SmolStr::new("vec3"), vec![dx, dy, dz], span);
+        self.lower_call_temp(
+            MirType::Vec3,
+            SmolStr::new("normalize"),
+            vec![gradient],
+            span,
+        )
+    }
+
+    fn lower_shape_axis_difference(
+        &mut self,
+        shape: &SmolStr,
+        point: Value,
+        offset: [f64; 3],
+        span: TextRange,
+    ) -> Value {
+        let plus_point = self.lower_offset_point(point.clone(), offset, span);
+        let plus = self.lower_shape_distance_call(shape, plus_point, span);
+        let minus_point =
+            self.lower_offset_point(point, [-offset[0], -offset[1], -offset[2]], span);
+        let minus = self.lower_shape_distance_call(shape, minus_point, span);
+        self.lower_binary_temp(MirType::Float, BinaryOp::Sub, plus, minus, span)
+    }
+
+    fn lower_shape_feature_id_value(
+        &self,
+        _feature_path: &[SmolStr],
+        leaf_feature_id: u64,
+    ) -> Value {
+        Value::Const(Literal::Integer((leaf_feature_id & (i64::MAX as u64)) as i64))
+    }
+
+    fn lower_shape_merge_keep_current(
+        &mut self,
+        provenance: hir::ShapeMergeProvenancePolicy,
+        current_dist: Value,
+        next_dist: Value,
+        prefer_larger: bool,
+        _hit_epsilon: Value,
+        span: TextRange,
+    ) -> Value {
+        match provenance {
+            hir::ShapeMergeProvenancePolicy::Nearest => self.lower_binary_temp(
+                MirType::Boolean,
+                if prefer_larger {
+                    BinaryOp::Ge
+                } else {
+                    BinaryOp::Le
+                },
+                current_dist,
+                next_dist,
+                span,
+            ),
+            hir::ShapeMergeProvenancePolicy::Ordered => Value::Const(Literal::Boolean(true)),
+        }
+    }
+
+    fn lower_shape_payload_selection(
+        &mut self,
+        expr: &hir::ShapeExpr,
+        provenance: Option<&hir::ShapeProvenanceExpr>,
+        point: Value,
+        hit_epsilon: Value,
+        feature_path: &mut Vec<SmolStr>,
+        span: TextRange,
+    ) -> (Value, Value, Value) {
+        match expr {
+            hir::ShapeExpr::Use { target } => {
+                let Some(root) = self.shape_root_expr(target) else {
+                    return (
+                        Value::Const(Literal::Float(1_000_000.0)),
+                        self.build_default_payload(span),
+                        Value::Const(Literal::Integer(0)),
+                    );
+                };
+                let root_provenance = self.shape_root_provenance_expr(target);
+                feature_path.push(SmolStr::new(format!("use[{target}]")));
+                let result = self.lower_shape_payload_selection(
+                    &root,
+                    root_provenance.as_ref(),
+                    point,
+                    hit_epsilon.clone(),
+                    feature_path,
+                    span,
+                );
+                feature_path.pop();
+                result
+            }
+            hir::ShapeExpr::Leaf(leaf) => (
+                self.lower_field_distance_call(&leaf.field, point, span),
+                self.lower_shape_payload_body_value(&leaf.payload, span),
+                self.lower_shape_feature_id_value(feature_path, leaf.feature_id),
+            ),
+            hir::ShapeExpr::Union { items, .. } => {
+                let (merge_policy, provenance_items) = match provenance {
+                    Some(hir::ShapeProvenanceExpr::Union { provenance, items }) => {
+                        (*provenance, Some(items.as_slice()))
+                    }
+                    _ => (hir::ShapeMergeProvenancePolicy::Nearest, None),
+                };
+                let mut iter = items.iter();
+                let Some(first) = iter.next() else {
+                    return (
+                        Value::Const(Literal::Float(1_000_000.0)),
+                        self.build_default_payload(span),
+                        Value::Const(Literal::Integer(0)),
+                    );
+                };
+                feature_path.push(SmolStr::new("union[0]"));
+                let first_provenance = provenance_items.and_then(|items| items.first());
+                let (first_dist, first_payload, first_feature_id) =
+                    self.lower_shape_payload_selection(
+                        first,
+                        first_provenance,
+                        point.clone(),
+                        hit_epsilon.clone(),
+                        feature_path,
+                        span,
+                    );
+                feature_path.pop();
+                let dist_local = self.new_local(SmolStr::new("$shape_dist"), true, MirType::Float);
+                let payload_local = self.new_local(
+                    SmolStr::new("$shape_payload"),
+                    true,
+                    MirType::Named(SmolStr::new("Payload")),
+                );
+                let feature_id_local = self.new_local(
+                    SmolStr::new("$shape_feature_id"),
+                    true,
+                    MirType::Integer,
+                );
+                self.assign_use(Place::Local(dist_local), first_dist, span);
+                self.assign_use(Place::Local(payload_local), first_payload, span);
+                self.assign_use(Place::Local(feature_id_local), first_feature_id, span);
+                for (idx, item) in iter.enumerate().map(|(idx, item)| (idx + 1, item)) {
+                    feature_path.push(SmolStr::new(format!("union[{idx}]")));
+                    let next_provenance =
+                        provenance_items.and_then(|items| items.get(idx));
+                    let (next_dist, next_payload, next_feature_id) =
+                        self.lower_shape_payload_selection(
+                            item,
+                            next_provenance,
+                            point.clone(),
+                            hit_epsilon.clone(),
+                            feature_path,
+                            span,
+                        );
+                    feature_path.pop();
+                    match merge_policy {
+                        hir::ShapeMergeProvenancePolicy::Ordered => {
+                            let composed_dist = self.lower_call_temp(
+                                MirType::Float,
+                                SmolStr::new("field_union"),
+                                vec![Value::Local(dist_local), next_dist],
+                                span,
+                            );
+                            self.assign_use(Place::Local(dist_local), composed_dist, span);
+                        }
+                        hir::ShapeMergeProvenancePolicy::Nearest => {
+                            let keep_current = self.lower_shape_merge_keep_current(
+                                merge_policy,
+                                Value::Local(dist_local),
+                                next_dist.clone(),
+                                false,
+                                hit_epsilon.clone(),
+                                span,
+                            );
+                            let keep_block = self.new_block();
+                            let replace_block = self.new_block();
+                            let merge_block = self.new_block();
+                            self.set_terminator(Terminator::Branch {
+                                cond: keep_current,
+                                then_target: keep_block,
+                                else_target: replace_block,
+                                span,
+                            });
+                            self.current_block = keep_block;
+                            self.set_terminator(Terminator::Jump {
+                                target: merge_block,
+                                span,
+                            });
+                            self.current_block = replace_block;
+                            self.assign_use(Place::Local(dist_local), next_dist, span);
+                            self.assign_use(Place::Local(payload_local), next_payload, span);
+                            self.assign_use(Place::Local(feature_id_local), next_feature_id, span);
+                            self.set_terminator(Terminator::Jump {
+                                target: merge_block,
+                                span,
+                            });
+                            self.current_block = merge_block;
+                        }
+                    }
+                }
+                (
+                    Value::Local(dist_local),
+                    Value::Local(payload_local),
+                    Value::Local(feature_id_local),
+                )
+            }
+            hir::ShapeExpr::Intersection { items, .. } => {
+                let (merge_policy, provenance_items) = match provenance {
+                    Some(hir::ShapeProvenanceExpr::Intersection { provenance, items }) => {
+                        (*provenance, Some(items.as_slice()))
+                    }
+                    _ => (hir::ShapeMergeProvenancePolicy::Nearest, None),
+                };
+                let mut iter = items.iter();
+                let Some(first) = iter.next() else {
+                    return (
+                        Value::Const(Literal::Float(1_000_000.0)),
+                        self.build_default_payload(span),
+                        Value::Const(Literal::Integer(0)),
+                    );
+                };
+                feature_path.push(SmolStr::new("intersection[0]"));
+                let first_provenance = provenance_items.and_then(|items| items.first());
+                let (first_dist, first_payload, first_feature_id) =
+                    self.lower_shape_payload_selection(
+                        first,
+                        first_provenance,
+                        point.clone(),
+                        hit_epsilon.clone(),
+                        feature_path,
+                        span,
+                    );
+                feature_path.pop();
+                let dist_local = self.new_local(SmolStr::new("$shape_dist"), true, MirType::Float);
+                let payload_local = self.new_local(
+                    SmolStr::new("$shape_payload"),
+                    true,
+                    MirType::Named(SmolStr::new("Payload")),
+                );
+                let feature_id_local = self.new_local(
+                    SmolStr::new("$shape_feature_id"),
+                    true,
+                    MirType::Integer,
+                );
+                self.assign_use(Place::Local(dist_local), first_dist, span);
+                self.assign_use(Place::Local(payload_local), first_payload, span);
+                self.assign_use(Place::Local(feature_id_local), first_feature_id, span);
+                for (idx, item) in iter.enumerate().map(|(idx, item)| (idx + 1, item)) {
+                    feature_path.push(SmolStr::new(format!("intersection[{idx}]")));
+                    let next_provenance =
+                        provenance_items.and_then(|items| items.get(idx));
+                    let (next_dist, next_payload, next_feature_id) =
+                        self.lower_shape_payload_selection(
+                            item,
+                            next_provenance,
+                            point.clone(),
+                            hit_epsilon.clone(),
+                            feature_path,
+                            span,
+                        );
+                    feature_path.pop();
+                    match merge_policy {
+                        hir::ShapeMergeProvenancePolicy::Ordered => {
+                            let composed_dist = self.lower_call_temp(
+                                MirType::Float,
+                                SmolStr::new("field_intersection"),
+                                vec![Value::Local(dist_local), next_dist],
+                                span,
+                            );
+                            self.assign_use(Place::Local(dist_local), composed_dist, span);
+                        }
+                        hir::ShapeMergeProvenancePolicy::Nearest => {
+                            let keep_current = self.lower_shape_merge_keep_current(
+                                merge_policy,
+                                Value::Local(dist_local),
+                                next_dist.clone(),
+                                true,
+                                hit_epsilon.clone(),
+                                span,
+                            );
+                            let keep_block = self.new_block();
+                            let replace_block = self.new_block();
+                            let merge_block = self.new_block();
+                            self.set_terminator(Terminator::Branch {
+                                cond: keep_current,
+                                then_target: keep_block,
+                                else_target: replace_block,
+                                span,
+                            });
+                            self.current_block = keep_block;
+                            self.set_terminator(Terminator::Jump {
+                                target: merge_block,
+                                span,
+                            });
+                            self.current_block = replace_block;
+                            self.assign_use(Place::Local(dist_local), next_dist, span);
+                            self.assign_use(Place::Local(payload_local), next_payload, span);
+                            self.assign_use(Place::Local(feature_id_local), next_feature_id, span);
+                            self.set_terminator(Terminator::Jump {
+                                target: merge_block,
+                                span,
+                            });
+                            self.current_block = merge_block;
+                        }
+                    }
+                }
+                (
+                    Value::Local(dist_local),
+                    Value::Local(payload_local),
+                    Value::Local(feature_id_local),
+                )
+            }
+            hir::ShapeExpr::Subtract { left, right, .. } => {
+                let (subtract_policy, left_provenance, right_provenance) = match provenance {
+                    Some(hir::ShapeProvenanceExpr::Subtract {
+                        provenance,
+                        left,
+                        right,
+                    }) => (*provenance, Some(left.as_ref()), Some(right.as_ref())),
+                    _ => (hir::ShapeSubtractProvenancePolicy::Left, None, None),
+                };
+                feature_path.push(SmolStr::new("subtract[left]"));
+                let (left_dist, left_payload, left_feature_id) =
+                    self.lower_shape_payload_selection(
+                        left,
+                        left_provenance,
+                        point.clone(),
+                        hit_epsilon.clone(),
+                        feature_path,
+                        span,
+                    );
+                feature_path.pop();
+                feature_path.push(SmolStr::new("subtract[right]"));
+                let (right_dist, right_payload, right_feature_id) =
+                    self.lower_shape_payload_selection(
+                        right,
+                        right_provenance,
+                        point,
+                        hit_epsilon,
+                        feature_path,
+                        span,
+                    );
+                feature_path.pop();
+                let neg_right = self.lower_binary_temp(
+                    MirType::Float,
+                    BinaryOp::Sub,
+                    Value::Const(Literal::Float(0.0)),
+                    right_dist,
+                    span,
+                );
+                let choose_left = self.lower_binary_temp(
+                    MirType::Boolean,
+                    BinaryOp::Ge,
+                    left_dist.clone(),
+                    neg_right.clone(),
+                    span,
+                );
+                let dist_local = self.new_local(SmolStr::new("$shape_dist"), true, MirType::Float);
+                let payload_local = self.new_local(
+                    SmolStr::new("$shape_payload"),
+                    true,
+                    MirType::Named(SmolStr::new("Payload")),
+                );
+                let feature_id_local = self.new_local(
+                    SmolStr::new("$shape_feature_id"),
+                    true,
+                    MirType::Integer,
+                );
+                let left_block = self.new_block();
+                let right_block = self.new_block();
+                let merge_block = self.new_block();
+                self.set_terminator(Terminator::Branch {
+                    cond: choose_left,
+                    then_target: left_block,
+                    else_target: right_block,
+                    span,
+                });
+                self.current_block = left_block;
+                self.assign_use(Place::Local(dist_local), left_dist, span);
+                self.assign_use(Place::Local(payload_local), left_payload.clone(), span);
+                self.assign_use(
+                    Place::Local(feature_id_local),
+                    left_feature_id.clone(),
+                    span,
+                );
+                self.set_terminator(Terminator::Jump {
+                    target: merge_block,
+                    span,
+                });
+                self.current_block = right_block;
+                self.assign_use(Place::Local(dist_local), neg_right, span);
+                match subtract_policy {
+                    hir::ShapeSubtractProvenancePolicy::Left => {
+                        self.assign_use(Place::Local(payload_local), left_payload, span);
+                        self.assign_use(Place::Local(feature_id_local), left_feature_id, span);
+                    }
+                    hir::ShapeSubtractProvenancePolicy::Right => {
+                        self.assign_use(Place::Local(payload_local), right_payload, span);
+                        self.assign_use(Place::Local(feature_id_local), right_feature_id, span);
+                    }
+                }
+                self.set_terminator(Terminator::Jump {
+                    target: merge_block,
+                    span,
+                });
+                self.current_block = merge_block;
+                (
+                    Value::Local(dist_local),
+                    Value::Local(payload_local),
+                    Value::Local(feature_id_local),
+                )
+            }
+        }
+    }
+
+    fn lower_shape_surface_selection(
+        &mut self,
+        expr: &hir::ShapeExpr,
+        feature_id: Value,
+        hit: Value,
+        feature_path: &mut Vec<SmolStr>,
+        span: TextRange,
+    ) -> (Value, Value) {
+        match expr {
+            hir::ShapeExpr::Use { target } => {
+                let Some(root) = self.shape_root_expr(target) else {
+                    return (
+                        Value::Const(Literal::Boolean(false)),
+                        self.build_default_surface(span),
+                    );
+                };
+                feature_path.push(SmolStr::new(format!("use[{target}]")));
+                let result =
+                    self.lower_shape_surface_selection(&root, feature_id, hit, feature_path, span);
+                feature_path.pop();
+                result
+            }
+            hir::ShapeExpr::Leaf(leaf) => {
+                let leaf_feature_id = self.lower_shape_feature_id_value(feature_path, leaf.feature_id);
+                let matched = self.lower_binary_temp(
+                    MirType::Boolean,
+                    BinaryOp::Eq,
+                    feature_id,
+                    leaf_feature_id,
+                    span,
+                );
+                let surface_local = self.new_local(
+                    SmolStr::new("$shape_surface_leaf"),
+                    true,
+                    MirType::Named(SmolStr::new("Surface")),
+                );
+                let default_surface = self.build_default_surface(span);
+                self.assign_use(Place::Local(surface_local), default_surface, span);
+                let matched_block = self.new_block();
+                let miss_block = self.new_block();
+                let merge_block = self.new_block();
+                self.set_terminator(Terminator::Branch {
+                    cond: matched.clone(),
+                    then_target: matched_block,
+                    else_target: miss_block,
+                    span,
+                });
+                self.current_block = matched_block;
+                let surface = self.lower_call_temp(
+                    MirType::Named(SmolStr::new("Surface")),
+                    leaf.material.clone(),
+                    vec![hit],
+                    span,
+                );
+                self.assign_use(Place::Local(surface_local), surface, span);
+                self.set_terminator(Terminator::Jump {
+                    target: merge_block,
+                    span,
+                });
+                self.current_block = miss_block;
+                self.set_terminator(Terminator::Jump {
+                    target: merge_block,
+                    span,
+                });
+                self.current_block = merge_block;
+                (matched, Value::Local(surface_local))
+            }
+            hir::ShapeExpr::Union { items, .. } => {
+                let mut iter = items.iter();
+                let Some(first) = iter.next() else {
+                    return (
+                        Value::Const(Literal::Boolean(false)),
+                        self.build_default_surface(span),
+                    );
+                };
+                feature_path.push(SmolStr::new("union[0]"));
+                let result = self.lower_shape_surface_selection(
+                    first,
+                    feature_id.clone(),
+                    hit.clone(),
+                    feature_path,
+                    span,
+                );
+                feature_path.pop();
+                let (first_matched, first_surface) = result;
+                let matched_local =
+                    self.new_local(SmolStr::new("$shape_surface_match"), true, MirType::Boolean);
+                let surface_local = self.new_local(
+                    SmolStr::new("$shape_surface"),
+                    true,
+                    MirType::Named(SmolStr::new("Surface")),
+                );
+                self.assign_use(Place::Local(matched_local), first_matched, span);
+                self.assign_use(Place::Local(surface_local), first_surface, span);
+                for (idx, item) in iter.enumerate().map(|(idx, item)| (idx + 1, item)) {
+                    feature_path.push(SmolStr::new(format!("union[{idx}]")));
+                    let (next_matched, next_surface) = self.lower_shape_surface_selection(
+                        item,
+                        feature_id.clone(),
+                        hit.clone(),
+                        feature_path,
+                        span,
+                    );
+                    feature_path.pop();
+                    let already_matched = Value::Local(matched_local);
+                    let keep_current = already_matched.clone();
+                    let take_next = self.lower_unary_temp(
+                        MirType::Boolean,
+                        hir::UnaryOp::Not,
+                        already_matched,
+                        span,
+                    );
+                    let keep_block = self.new_block();
+                    let replace_block = self.new_block();
+                    let merge_block = self.new_block();
+                    self.set_terminator(Terminator::Branch {
+                        cond: keep_current,
+                        then_target: keep_block,
+                        else_target: replace_block,
+                        span,
+                    });
+                    self.current_block = keep_block;
+                    self.set_terminator(Terminator::Jump {
+                        target: merge_block,
+                        span,
+                    });
+                    self.current_block = replace_block;
+                    let matched_block = self.new_block();
+                    let miss_block = self.new_block();
+                    self.set_terminator(Terminator::Branch {
+                        cond: take_next,
+                        then_target: matched_block,
+                        else_target: miss_block,
+                        span,
+                    });
+                    self.current_block = matched_block;
+                    self.assign_use(Place::Local(matched_local), next_matched, span);
+                    self.assign_use(Place::Local(surface_local), next_surface, span);
+                    self.set_terminator(Terminator::Jump {
+                        target: merge_block,
+                        span,
+                    });
+                    self.current_block = miss_block;
+                    self.set_terminator(Terminator::Jump {
+                        target: merge_block,
+                        span,
+                    });
+                    self.current_block = merge_block;
+                }
+                (Value::Local(matched_local), Value::Local(surface_local))
+            }
+            hir::ShapeExpr::Intersection { items, .. } => {
+                let mut iter = items.iter();
+                let Some(first) = iter.next() else {
+                    return (
+                        Value::Const(Literal::Boolean(false)),
+                        self.build_default_surface(span),
+                    );
+                };
+                feature_path.push(SmolStr::new("intersection[0]"));
+                let result = self.lower_shape_surface_selection(
+                    first,
+                    feature_id.clone(),
+                    hit.clone(),
+                    feature_path,
+                    span,
+                );
+                feature_path.pop();
+                let (first_matched, first_surface) = result;
+                let matched_local =
+                    self.new_local(SmolStr::new("$shape_surface_match"), true, MirType::Boolean);
+                let surface_local = self.new_local(
+                    SmolStr::new("$shape_surface"),
+                    true,
+                    MirType::Named(SmolStr::new("Surface")),
+                );
+                self.assign_use(Place::Local(matched_local), first_matched, span);
+                self.assign_use(Place::Local(surface_local), first_surface, span);
+                for (idx, item) in iter.enumerate().map(|(idx, item)| (idx + 1, item)) {
+                    feature_path.push(SmolStr::new(format!("intersection[{idx}]")));
+                    let (next_matched, next_surface) = self.lower_shape_surface_selection(
+                        item,
+                        feature_id.clone(),
+                        hit.clone(),
+                        feature_path,
+                        span,
+                    );
+                    feature_path.pop();
+                    let already_matched = Value::Local(matched_local);
+                    let keep_current = already_matched.clone();
+                    let take_next = self.lower_unary_temp(
+                        MirType::Boolean,
+                        hir::UnaryOp::Not,
+                        already_matched,
+                        span,
+                    );
+                    let keep_block = self.new_block();
+                    let replace_block = self.new_block();
+                    let merge_block = self.new_block();
+                    self.set_terminator(Terminator::Branch {
+                        cond: keep_current,
+                        then_target: keep_block,
+                        else_target: replace_block,
+                        span,
+                    });
+                    self.current_block = keep_block;
+                    self.set_terminator(Terminator::Jump {
+                        target: merge_block,
+                        span,
+                    });
+                    self.current_block = replace_block;
+                    let matched_block = self.new_block();
+                    let miss_block = self.new_block();
+                    self.set_terminator(Terminator::Branch {
+                        cond: take_next,
+                        then_target: matched_block,
+                        else_target: miss_block,
+                        span,
+                    });
+                    self.current_block = matched_block;
+                    self.assign_use(Place::Local(matched_local), next_matched, span);
+                    self.assign_use(Place::Local(surface_local), next_surface, span);
+                    self.set_terminator(Terminator::Jump {
+                        target: merge_block,
+                        span,
+                    });
+                    self.current_block = miss_block;
+                    self.set_terminator(Terminator::Jump {
+                        target: merge_block,
+                        span,
+                    });
+                    self.current_block = merge_block;
+                }
+                (Value::Local(matched_local), Value::Local(surface_local))
+            }
+            hir::ShapeExpr::Subtract { left, right, .. } => {
+                feature_path.push(SmolStr::new("subtract[left]"));
+                let result = self.lower_shape_surface_selection(
+                    left,
+                    feature_id.clone(),
+                    hit.clone(),
+                    feature_path,
+                    span,
+                );
+                feature_path.pop();
+                let (left_matched, left_surface) = result;
+                let matched_local =
+                    self.new_local(SmolStr::new("$shape_surface_match"), true, MirType::Boolean);
+                let surface_local = self.new_local(
+                    SmolStr::new("$shape_surface"),
+                    true,
+                    MirType::Named(SmolStr::new("Surface")),
+                );
+                self.assign_use(Place::Local(matched_local), left_matched, span);
+                self.assign_use(Place::Local(surface_local), left_surface, span);
+                let already_matched = Value::Local(matched_local);
+                let keep_block = self.new_block();
+                let replace_block = self.new_block();
+                let merge_block = self.new_block();
+                self.set_terminator(Terminator::Branch {
+                    cond: already_matched.clone(),
+                    then_target: keep_block,
+                    else_target: replace_block,
+                    span,
+                });
+                self.current_block = keep_block;
+                self.set_terminator(Terminator::Jump {
+                    target: merge_block,
+                    span,
+                });
+                self.current_block = replace_block;
+                feature_path.push(SmolStr::new("subtract[right]"));
+                let result = self.lower_shape_surface_selection(
+                    right,
+                    feature_id,
+                    hit,
+                    feature_path,
+                    span,
+                );
+                feature_path.pop();
+                let (right_matched, right_surface) = result;
+                self.assign_use(Place::Local(matched_local), right_matched, span);
+                self.assign_use(Place::Local(surface_local), right_surface, span);
+                self.set_terminator(Terminator::Jump {
+                    target: merge_block,
+                    span,
+                });
+                self.current_block = merge_block;
+                (Value::Local(matched_local), Value::Local(surface_local))
+            }
+        }
+    }
+
+    fn lower_get_named_field(
+        &mut self,
+        base: Value,
+        type_name: &str,
+        field: &str,
+        ty: MirType,
+        span: TextRange,
+    ) -> Value {
+        let temp = self.new_temp(ty);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(temp),
+            value: Rvalue::GetField {
+                base,
+                field: SmolStr::new(field),
+                slot: self.field_slot(type_name, field),
+            },
+            span,
+        });
+        Value::Temp(temp)
+    }
+
+    fn lower_field_distance_call(
+        &mut self,
+        field: &SmolStr,
+        point: Value,
+        span: TextRange,
+    ) -> Value {
+        let _ = self.lower_call_temp(
+            MirType::Nil,
+            SmolStr::new("__wr_metrics_field_sample"),
+            vec![],
+            span,
+        );
+        let temp = self.new_temp(MirType::Float);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(temp),
+            value: Rvalue::Call {
+                kind: CallKind::Sync,
+                target: CallTarget::Function(field.clone()),
+                args: vec![point],
+            },
+            span,
+        });
+        Value::Temp(temp)
+    }
+
+    fn lower_field_normal_call(&mut self, field: &SmolStr, point: Value, span: TextRange) -> Value {
+        let dx = self.lower_field_axis_difference(field, point.clone(), [0.001, 0.0, 0.0], span);
+        let dy = self.lower_field_axis_difference(field, point.clone(), [0.0, 0.001, 0.0], span);
+        let dz = self.lower_field_axis_difference(field, point, [0.0, 0.0, 0.001], span);
+
+        let gradient = self.new_temp(MirType::Vec3);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(gradient),
+            value: Rvalue::Call {
+                kind: CallKind::Sync,
+                target: CallTarget::Function(SmolStr::new("vec3")),
+                args: vec![dx, dy, dz],
+            },
+            span,
+        });
+
+        let normal = self.new_temp(MirType::Vec3);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(normal),
+            value: Rvalue::Call {
+                kind: CallKind::Sync,
+                target: CallTarget::Function(SmolStr::new("normalize")),
+                args: vec![Value::Temp(gradient)],
+            },
+            span,
+        });
+        Value::Temp(normal)
+    }
+
+    fn lower_field_axis_difference(
+        &mut self,
+        field: &SmolStr,
+        point: Value,
+        offset: [f64; 3],
+        span: TextRange,
+    ) -> Value {
+        let plus_point = self.lower_offset_point(point.clone(), offset, span);
+        let plus = self.lower_field_distance_call(field, plus_point, span);
+        let minus_point =
+            self.lower_offset_point(point, [-offset[0], -offset[1], -offset[2]], span);
+        let minus = self.lower_field_distance_call(field, minus_point, span);
+        let diff = self.new_temp(MirType::Float);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(diff),
+            value: Rvalue::Binary {
+                op: BinaryOp::Sub,
+                lhs: plus,
+                rhs: minus,
+            },
+            span,
+        });
+        Value::Temp(diff)
+    }
+
+    fn lower_offset_point(&mut self, point: Value, offset: [f64; 3], span: TextRange) -> Value {
+        let offset_vec = self.new_temp(MirType::Vec3);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(offset_vec),
+            value: Rvalue::Call {
+                kind: CallKind::Sync,
+                target: CallTarget::Function(SmolStr::new("vec3")),
+                args: vec![
+                    Value::Const(Literal::Float(offset[0])),
+                    Value::Const(Literal::Float(offset[1])),
+                    Value::Const(Literal::Float(offset[2])),
+                ],
+            },
+            span,
+        });
+        let shifted = self.new_temp(MirType::Vec3);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(shifted),
+            value: Rvalue::Binary {
+                op: BinaryOp::Add,
+                lhs: point,
+                rhs: Value::Temp(offset_vec),
+            },
+            span,
+        });
+        Value::Temp(shifted)
     }
 
     fn parse_dispatch_compute(
@@ -3478,10 +8573,18 @@ impl FunctionLowerer {
                 )
             }
             Expr::Variable(name) if self.function_names.contains(name) => {
-                if name.as_str() == "assert" && values.len() == 1 {
-                    values.push(Value::Const(Literal::Nil));
+                let mut call_args = values;
+                if matches!(
+                    name.as_str(),
+                    "transform3_identity" | "compose_transform3" | "inverse_transform3"
+                ) && let Some(class_id) = self.type_tags.get(&SmolStr::new("Transform3"))
+                {
+                    call_args.insert(0, Value::Const(Literal::Integer(class_id.0 as i64)));
                 }
-                (CallTarget::Function(name.clone()), values)
+                if name.as_str() == "assert" && call_args.len() == 1 {
+                    call_args.push(Value::Const(Literal::Nil));
+                }
+                (CallTarget::Function(name.clone()), call_args)
             }
             _ => {
                 let callee_value = self.lower_expr(body, callee);
@@ -3526,11 +8629,15 @@ impl FunctionLowerer {
         callee: hir::Idx<Expr>,
     ) -> Option<(SmolStr, TypeTagId)> {
         match &body.exprs[callee] {
-            Expr::Variable(name) => self
-                .type_tags
-                .get(name)
-                .copied()
-                .map(|id| (name.clone(), id)),
+            Expr::Variable(name) => {
+                let class_name = builtin_record_by_function(name.as_str())
+                    .map(|record| SmolStr::new(record.name))
+                    .unwrap_or_else(|| name.clone());
+                self.type_tags
+                    .get(&class_name)
+                    .copied()
+                    .map(|id| (class_name, id))
+            }
             Expr::Member { object, member, .. } => {
                 let enum_name = match &body.exprs[*object] {
                     Expr::Variable(name) => Some(name.clone()),
@@ -3627,6 +8734,63 @@ struct ComputeDispatchSpec {
     workgroup_size_z: hir::Idx<Expr>,
     schedule: Option<hir::Idx<Expr>>,
     kernel_args: Vec<hir::Idx<Expr>>,
+}
+
+#[derive(Clone, Copy)]
+enum FieldQueryKind {
+    Distance,
+    Normal,
+}
+
+struct FieldQuerySpec {
+    kind: FieldQueryKind,
+    capture: hir::Idx<Expr>,
+    point: hir::Idx<Expr>,
+}
+
+#[derive(Clone, Copy)]
+enum ShapeQueryKind {
+    Trace,
+    Surface,
+}
+
+struct ShapeQuerySpec {
+    kind: ShapeQueryKind,
+    capture: hir::Idx<Expr>,
+    origin: Option<hir::Idx<Expr>>,
+    direction: Option<hir::Idx<Expr>>,
+    max_distance: Option<hir::Idx<Expr>>,
+    min_step: Option<hir::Idx<Expr>>,
+    hit_epsilon: Option<hir::Idx<Expr>>,
+    max_steps: Option<hir::Idx<Expr>>,
+    hit: Option<hir::Idx<Expr>>,
+}
+
+#[derive(Clone, Copy)]
+enum ShapeBatchQueryKind {
+    Trace,
+    Surface,
+    Occluded,
+}
+
+struct ShapeBatchQuerySpec {
+    kind: ShapeBatchQueryKind,
+    capture: hir::Idx<Expr>,
+    items: hir::Idx<Expr>,
+    backend: hir::Idx<Expr>,
+}
+
+#[derive(Clone, Copy)]
+enum FieldBatchQueryKind {
+    Distance,
+    Normal,
+}
+
+struct FieldBatchQuerySpec {
+    kind: FieldBatchQueryKind,
+    capture: hir::Idx<Expr>,
+    items: hir::Idx<Expr>,
+    backend: hir::Idx<Expr>,
 }
 
 fn pool_size_from_expr(body: &hir::Body, expr_id: hir::Idx<Expr>) -> Option<hir::PoolSize> {
@@ -3789,26 +8953,72 @@ fn portable_value_struct_abi(
     visiting: &mut HashSet<SmolStr>,
 ) -> Option<PortableAbiType> {
     let name = SmolStr::new(name);
-    let class = module.classes.iter().find_map(|(_, class)| {
-        (class.name == name && matches!(class.role, hir::ClassRole::Value)).then_some(class)
-    })?;
-    if !visiting.insert(class.name.clone()) {
+    if !visiting.insert(name.clone()) {
         return None;
     }
-    let fields = class
-        .fields
-        .iter()
-        .map(|field| PortableStructField {
-            name: field.name.clone(),
-            ty: portable_abi_from_type_ref(field.ty.as_ref(), module, type_tags, visiting),
-        })
-        .collect();
-    visiting.remove(&class.name);
+    let Some(class_id) = type_tags.get(&name).map(|id| id.0 as u32) else {
+        visiting.remove(&name);
+        return None;
+    };
+    let fields = if let Some(record) = builtin_record(name.as_str()) {
+        record
+            .fields
+            .iter()
+            .map(|field| PortableStructField {
+                name: SmolStr::new(field.name),
+                ty: portable_builtin_abi_from_type(field.ty, module, type_tags, visiting),
+            })
+            .collect::<Vec<_>>()
+    } else {
+        let Some(class) = module.classes.iter().find_map(|(_, class)| {
+            (class.name == name && matches!(class.role, hir::ClassRole::Value)).then_some(class)
+        }) else {
+            visiting.remove(&name);
+            return None;
+        };
+        class
+            .fields
+            .iter()
+            .map(|field| PortableStructField {
+                name: field.name.clone(),
+                ty: portable_abi_from_type_ref(field.ty.as_ref(), module, type_tags, visiting),
+            })
+            .collect::<Vec<_>>()
+    };
+    visiting.remove(&name);
     Some(PortableAbiType::Struct {
-        name: class.name.clone(),
-        class_id: type_tags.get(&class.name)?.0 as u32,
+        name,
+        class_id,
         fields,
     })
+}
+
+fn portable_builtin_abi_from_type(
+    ty: PortableBuiltinType,
+    module: &hir::Module,
+    type_tags: &HashMap<SmolStr, TypeTagId>,
+    visiting: &mut HashSet<SmolStr>,
+) -> PortableAbiType {
+    match ty {
+        PortableBuiltinType::Atom(atom) => match atom {
+            PortableBuiltinAtom::Bool => PortableAbiType::Bool,
+            PortableBuiltinAtom::I32 => PortableAbiType::I32,
+            PortableBuiltinAtom::U32 => PortableAbiType::U32,
+            PortableBuiltinAtom::I64 => PortableAbiType::I64,
+            PortableBuiltinAtom::U64 => PortableAbiType::U64,
+            PortableBuiltinAtom::F32 => PortableAbiType::F32,
+            PortableBuiltinAtom::Vec2 => PortableAbiType::Vec2,
+            PortableBuiltinAtom::Vec3 => PortableAbiType::Vec3,
+            PortableBuiltinAtom::Vec4 => PortableAbiType::Vec4,
+            PortableBuiltinAtom::Mat3 => PortableAbiType::Mat3,
+            PortableBuiltinAtom::Mat4 => PortableAbiType::Mat4,
+            PortableBuiltinAtom::Quat => PortableAbiType::Quat,
+        },
+        PortableBuiltinType::Named(name) => {
+            portable_value_struct_abi(name, module, type_tags, visiting)
+                .unwrap_or(PortableAbiType::Value)
+        }
+    }
 }
 
 fn build_interface_dispatch_functions(
@@ -3988,7 +9198,9 @@ fn builtin_function_names() -> Vec<SmolStr> {
         SmolStr::new("mat4_cols"),
         SmolStr::new("f32"),
         SmolStr::new("i32"),
+        SmolStr::new("i64"),
         SmolStr::new("u32"),
+        SmolStr::new("u64"),
         SmolStr::new("dot"),
         SmolStr::new("length"),
         SmolStr::new("normalize"),
@@ -4008,6 +9220,44 @@ fn builtin_function_names() -> Vec<SmolStr> {
         SmolStr::new("pow"),
         SmolStr::new("distance"),
         SmolStr::new("reflect"),
+        SmolStr::new("bounds2_center"),
+        SmolStr::new("bounds2_size"),
+        SmolStr::new("bounds3_center"),
+        SmolStr::new("bounds3_size"),
+        SmolStr::new("transform3_identity"),
+        SmolStr::new("transform_point"),
+        SmolStr::new("transform_vector"),
+        SmolStr::new("transform_normal"),
+        SmolStr::new("compose_transform3"),
+        SmolStr::new("inverse_transform3"),
+        SmolStr::new("field_transform_point"),
+        SmolStr::new("field_mirror_point"),
+        SmolStr::new("field_repeat_point"),
+        SmolStr::new("field_instance_point"),
+        SmolStr::new("repeat_point"),
+        SmolStr::new("sphere"),
+        SmolStr::new("box"),
+        SmolStr::new("capsule"),
+        SmolStr::new("cylinder"),
+        SmolStr::new("plane"),
+        SmolStr::new("torus"),
+        SmolStr::new("__wr_primitive_sphere"),
+        SmolStr::new("__wr_primitive_box"),
+        SmolStr::new("__wr_primitive_capsule"),
+        SmolStr::new("__wr_primitive_cylinder"),
+        SmolStr::new("__wr_primitive_plane"),
+        SmolStr::new("__wr_primitive_torus"),
+        SmolStr::new("field_union"),
+        SmolStr::new("field_intersection"),
+        SmolStr::new("field_subtract"),
+        SmolStr::new("__wr_field_distance_capture"),
+        SmolStr::new("__wr_field_normal_capture"),
+        SmolStr::new("__wr_shape_distance_capture"),
+        SmolStr::new("__wr_shape_normal_capture"),
+        SmolStr::new("__wr_scene_trace_capture"),
+        SmolStr::new("__wr_scene_surface_capture"),
+        SmolStr::new("__wr_scene_trace_queries"),
+        SmolStr::new("__wr_scene_surface_queries"),
         SmolStr::new("gpu_buffer_new"),
         SmolStr::new("gpu_buffer_len"),
         SmolStr::new("gpu_buffer_get"),
@@ -4077,6 +9327,27 @@ fn builtin_function_names() -> Vec<SmolStr> {
         SmolStr::new("__wr_metrics_get"),
         SmolStr::new("__wr_metrics_dropped_paused_id"),
         SmolStr::new("__wr_metrics_messages_dropped_id"),
+        SmolStr::new("__wr_metrics_scene_trace_id"),
+        SmolStr::new("__wr_metrics_field_sample_id"),
+        SmolStr::new("__wr_metrics_scene_trace_support_pruned_branch"),
+        SmolStr::new("__wr_metrics_scene_trace_candidate_branch"),
+        SmolStr::new("__wr_metrics_scene_trace_exact_path"),
+        SmolStr::new("__wr_metrics_scene_trace_conservative_path"),
+        SmolStr::new("__wr_metrics_scene_trace_hit"),
+        SmolStr::new("__wr_metrics_scene_trace_support_pruned_branch_id"),
+        SmolStr::new("__wr_metrics_scene_trace_candidate_branch_id"),
+        SmolStr::new("__wr_metrics_scene_trace_exact_path_id"),
+        SmolStr::new("__wr_metrics_scene_trace_conservative_path_id"),
+        SmolStr::new("__wr_metrics_scene_trace_hit_count_id"),
+        SmolStr::new("__wr_metrics_scene_trace_hit_steps_total_id"),
+        SmolStr::new("__wr_metrics_scene_trace_hit_field_samples_total_id"),
+        SmolStr::new("__wr_metrics_scene_trace_steps_le_1_id"),
+        SmolStr::new("__wr_metrics_scene_trace_steps_le_4_id"),
+        SmolStr::new("__wr_metrics_scene_trace_steps_le_8_id"),
+        SmolStr::new("__wr_metrics_scene_trace_steps_le_16_id"),
+        SmolStr::new("__wr_metrics_scene_trace_steps_gt_16_id"),
+        SmolStr::new("__wr_metrics_scene_trace"),
+        SmolStr::new("__wr_metrics_field_sample"),
         SmolStr::new("__wr_metrics_web_writev_calls_id"),
         SmolStr::new("__wr_metrics_web_sendfile_calls_id"),
         SmolStr::new("__wr_clock_ns"),
@@ -4251,6 +9522,46 @@ fn run() -> Nothing {
         assert_eq!(set_z, 2, "expected defaults for z in both instances");
         assert!(build_list >= 1, "expected BuildList for default list");
         assert!(build_map >= 1, "expected BuildMap for default map");
+    }
+
+    #[test]
+    fn test_capture_field_queries_lower_without_indirect_calls() {
+        let input = r#"field exact distance sphere_field(p: Vec3) -> F32 {
+    sphere(radius = 1.0)
+}
+
+fn run() -> Nothing {
+    scene = capture sphere_field
+    distance = distance_at(capture=scene, point=vec3(0.0, 0.0, 2.0))
+    normal = normal_at(capture=scene, point=vec3(0.0, 0.0, 2.0))
+}
+"#;
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = hir_lower::lower(root);
+        let (_type_errors, type_info) = typeck::check_module_with_info(&module);
+        let mir_module = lower_module_with_types(&module, &type_info);
+
+        let mut indirect_calls = Vec::new();
+        for func in &mir_module.functions {
+            for block in &func.blocks {
+                for stmt in &block.stmts {
+                    if let MirStmt::Assign {
+                        value: Rvalue::Call { target, .. },
+                        ..
+                    } = stmt
+                        && matches!(target, CallTarget::Indirect(_))
+                    {
+                        indirect_calls.push((func.name.clone(), target.clone()));
+                    }
+                }
+            }
+        }
+
+        assert!(
+            indirect_calls.is_empty(),
+            "unexpected indirect calls: {indirect_calls:?}"
+        );
     }
 
     #[test]

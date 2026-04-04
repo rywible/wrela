@@ -1,0 +1,265 @@
+use print_line from host/io
+
+field exact distance ground(p: Vec3) -> F32 {
+    plane(normal=vec3(0.0, 1.0, 0.0), offset=1.1)
+}
+
+field conservative distance left_form(p: Vec3) -> F32 {
+    center = p - vec3(-0.7, 0.0, 0.0)
+    pillar_abs = vec3(abs(center.x), abs(center.y), abs(center.z))
+    pillar_q = pillar_abs - vec3(0.44, 0.92, 0.44)
+    pillar_outside = length(max(pillar_q, vec3(0.0, 0.0, 0.0)))
+    pillar_inside = min(max(pillar_q.x, max(pillar_q.y, pillar_q.z)), 0.0)
+    pillar = pillar_outside + pillar_inside
+
+    cap_point = p - vec3(-0.7, 0.52, 0.0)
+    cap_abs = vec3(abs(cap_point.x), abs(cap_point.y), abs(cap_point.z))
+    cap_q = cap_abs - vec3(0.72, 0.30, 0.72)
+    cap_box_outside = length(max(cap_q, vec3(0.0, 0.0, 0.0)))
+    cap_box_inside = min(max(cap_q.x, max(cap_q.y, cap_q.z)), 0.0)
+    cap_box = cap_box_outside + cap_box_inside
+    cap_ball = length(cap_point) - 0.86
+
+    cap = field_intersection(left=cap_box, right=cap_ball)
+    cut_point = p - vec3(-0.7, 0.06, 0.0)
+    cutout = length(vec2(cut_point.x, cut_point.z)) - 0.24
+
+    body = field_union(left=pillar, right=cap)
+    return field_subtract(left=body, right=cutout)
+}
+
+field conservative distance right_form(p: Vec3) -> F32 {
+    center = p - vec3(0.85, -0.04, 0.0)
+    tower_abs = vec3(abs(center.x), abs(center.y), abs(center.z))
+    tower_q = tower_abs - vec3(0.32, 0.70, 0.32)
+    tower_outside = length(max(tower_q, vec3(0.0, 0.0, 0.0)))
+    tower_inside = min(max(tower_q.x, max(tower_q.y, tower_q.z)), 0.0)
+    tower = tower_outside + tower_inside
+
+    roof = length(p - vec3(0.85, 0.45, 0.0)) - 0.42
+
+    notch_point = p - vec3(0.85, 0.28, 0.0)
+    notch_abs = vec3(abs(notch_point.x), abs(notch_point.y), abs(notch_point.z))
+    notch_q = notch_abs - vec3(0.15, 0.18, 0.55)
+    notch_outside = length(max(notch_q, vec3(0.0, 0.0, 0.0)))
+    notch_inside = min(max(notch_q.x, max(notch_q.y, notch_q.z)), 0.0)
+    notch = notch_outside + notch_inside
+
+    core = field_intersection(left=tower, right=roof)
+    return field_subtract(left=core, right=notch)
+}
+
+field conservative distance scene(p: Vec3) -> F32 {
+    union {
+        provenance_policy = nearest
+        use left_form
+        use right_form
+        use ground
+    }
+}
+
+material boolean_surface(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(214.0, 176.0, 124.0),
+        roughness=0.28,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+material accent_surface(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(106.0, 150.0, 198.0),
+        roughness=0.18,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+material ground_surface(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(72.0, 78.0, 90.0),
+        roughness=0.98,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape left_shape {
+    field = left_form
+    material = boolean_surface
+    payload = Payload(
+        entity_id=u64(1),
+        material_id=u64(1),
+        actor=ActorHandle(id=u64(1), generation=u32(0))
+    )
+}
+
+shape right_shape {
+    field = right_form
+    material = accent_surface
+    payload = Payload(
+        entity_id=u64(2),
+        material_id=u64(2),
+        actor=ActorHandle(id=u64(1), generation=u32(0))
+    )
+}
+
+shape ground_shape {
+    field = ground
+    material = ground_surface
+    payload = Payload(
+        entity_id=u64(3),
+        material_id=u64(3),
+        actor=ActorHandle(id=u64(1), generation=u32(0))
+    )
+}
+
+shape scene_shape {
+    union {
+        provenance_policy = nearest
+        use left_shape
+        use right_shape
+        use ground_shape
+    }
+}
+
+fn compute_scene_surface(scene_capture: ShapeCapture, hit: Hit3) -> Surface {
+    return surface_at(capture=scene_capture, hit=hit)
+}
+
+fn compute_scene_hit(scene_capture: ShapeCapture, origin: Vec3, direction: Vec3) -> Hit3 {
+    return trace_shape(
+        capture=scene_capture,
+        origin=origin,
+        direction=direction,
+        max_distance=6.0,
+        min_step=0.1,
+        hit_epsilon=0.0008,
+        max_steps=192
+    )
+}
+
+fn compute_shadow_visibility(
+    scene_capture: ShapeCapture,
+    hit_position: Vec3,
+    hit_normal: Vec3,
+    light: Light
+) -> F32 {
+    shadow_origin = hit_position + hit_normal * 0.01
+    shadow_direction = normalize(light.position - shadow_origin)
+    shadow_limit = length(light.position - shadow_origin)
+    mutable total = 0.02
+    mutable step_count = 0
+    while total < shadow_limit and step_count < 96 {
+        sample_position = shadow_origin + shadow_direction * total
+        sampled_distance = distance_at(capture=scene_capture, point=sample_position)
+        if sampled_distance < 0.001 {
+            return 0.0
+        }
+        total += max(sampled_distance, 0.05)
+        step_count += 1
+    }
+    return 1.0
+}
+
+fn compute_scene_color(
+    scene_capture: ShapeCapture,
+    camera_position: Vec3,
+    light: Light,
+    ray_direction: Vec3
+) -> Vec3 {
+    hit = compute_scene_hit(
+        scene_capture=scene_capture,
+        origin=camera_position,
+        direction=ray_direction
+    )
+
+    if hit.hit {
+        surface = compute_scene_surface(scene_capture=scene_capture, hit=hit)
+        key_dir = normalize(light.position - hit.position)
+        fill_dir = normalize(vec3(-0.7, 0.4, 0.2))
+        view_dir = normalize(camera_position - hit.position)
+        half_dir = normalize(key_dir + view_dir)
+        distance_to_light = length(light.position - hit.position)
+        attenuation = clamp(1.0 - distance_to_light / light.range, 0.0, 1.0)
+        shadow = compute_shadow_visibility(
+            scene_capture=scene_capture,
+            hit_position=hit.position,
+            hit_normal=hit.normal,
+            light=light
+        )
+        diffuse = max(dot(hit.normal, key_dir), 0.0) * shadow
+        fill = 0.18 * max(dot(hit.normal, fill_dir), 0.0)
+        specular = pow(max(dot(hit.normal, half_dir), 0.0), 24.0) * 0.20
+        lighting = 0.10 + (0.94 * diffuse * attenuation) + (fill * 0.28)
+        return vec3(
+            clamp(surface.albedo.x * lighting * light.intensity.x + 260.0 * specular * (0.2 + surface.roughness * 0.8), 0.0, 255.0),
+            clamp(surface.albedo.y * lighting * light.intensity.y + 220.0 * specular * (0.2 + surface.roughness * 0.8), 0.0, 255.0),
+            clamp(surface.albedo.z * lighting * light.intensity.z + 190.0 * specular * (0.2 + surface.roughness * 0.8), 0.0, 255.0)
+        )
+    }
+
+    sky_t = 0.5 * (ray_direction.y + 1.0)
+    return vec3(10.0, 14.0, 22.0) * (1.0 - sky_t) + vec3(58.0, 84.0, 130.0) * sky_t
+}
+
+fn render_ppm() -> String {
+    width = 8
+    height = 8
+    aspect = f32(width) / f32(height)
+    camera_position = vec3(0.05, 0.12, 3.0)
+    forward = normalize(vec3(0.0, -0.02, -1.0))
+    world_up = vec3(0.0, 1.0, 0.0)
+    right = normalize(cross(forward, world_up))
+    up = normalize(cross(right, forward))
+    scene_capture = capture scene_shape
+    light = Light(
+        position=vec3(2.8, 3.4, 2.2),
+        direction=normalize(vec3(-0.8, -0.9, -0.9)),
+        intensity=vec3(1.0, 0.98, 0.94),
+        range=14.0
+    )
+
+    mutable ppm = "P3\n8 8\n255\n"
+    mutable y = 0
+    while y < height {
+        mutable x = 0
+        while x < width {
+            sample_u = (f32(x) + 0.5) / f32(width)
+            sample_v = (f32(y) + 0.5) / f32(height)
+            screen_x = (sample_u - 0.5) * 2.0 * aspect * 0.70
+            screen_y = (0.5 - sample_v) * 2.0 * 0.70
+            ray = normalize(forward + right * screen_x + up * screen_y)
+            shaded = compute_scene_color(
+                scene_capture=scene_capture,
+                camera_position=camera_position,
+                light=light,
+                ray_direction=ray
+            )
+            r = i32(clamp(shaded.x, 0.0, 255.0))
+            g = i32(clamp(shaded.y, 0.0, 255.0))
+            b = i32(clamp(shaded.z, 0.0, 255.0))
+
+            ppm += "{r} {g} {b}\n"
+            x += 1
+        }
+        y += 1
+    }
+
+    return ppm
+}
+
+fn run() -> Integer {
+    print_line(text=render_ppm())
+    return 0
+}

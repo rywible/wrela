@@ -276,6 +276,141 @@ fn test_portable_math_surface() -> Nothing {
     assert approx reflected.y ~= 1.0 within 0.0001
 }
 
+value SceneProbe {
+    surface: Surface
+    medium: Medium
+    hit: Hit3
+    contact: Contact
+    light: Light
+    support: Support3
+    camera: Camera
+    pose: Transform3
+}
+
+fn test_portable_builtin_records() -> Nothing {
+    handle = ActorHandle(id=u64(7), generation=u32(3))
+    payload = Payload(entity_id=u64(7), material_id=u64(11), actor=handle)
+    hit = Hit3(
+        hit=true,
+        distance=4.0,
+        position=vec3(1.0, 2.0, 3.0),
+        normal=vec3(0.0, 1.0, 0.0),
+        steps=0,
+        feature_id=u64(0),
+        payload=payload
+    )
+    surface = Surface(
+        albedo=vec3(0.25, 0.5, 0.75),
+        roughness=0.125,
+        metalness=0.25,
+        clearcoat=0.5,
+        clearcoat_roughness=0.75,
+        sheen=0.1,
+        emissive=vec3(1.0, 0.0, 2.0)
+    )
+    medium = Medium(
+        density=0.5,
+        emission=vec3(0.5, 0.25, 0.75),
+        anisotropy=-0.25
+    )
+    bounds = Bounds3(
+        min=vec3(0.0, 1.0, 2.0),
+        max=vec3(6.0, 7.0, 8.0)
+    )
+    support = Support3(bounds=bounds)
+    contact = Contact(
+        hit=true,
+        position=hit.position,
+        normal=hit.normal,
+        penetration=0.5,
+        payload=payload
+    )
+    light = Light(
+        position=vec3(2.0, 4.0, 6.0),
+        direction=vec3(0.0, -1.0, 0.0),
+        intensity=vec3(8.0, 6.0, 4.0),
+        range=12.0
+    )
+    camera = Camera(
+        position=vec3(0.0, 1.0, 2.0),
+        forward=vec3(0.0, 0.0, -1.0),
+        up=vec3(0.0, 1.0, 0.0),
+        vertical_fov_degrees=60.0
+    )
+    pose = Transform3(
+        matrix=mat4_identity(),
+        inverse=mat4_identity()
+    )
+    scene = SceneProbe(
+        surface=surface,
+        medium=medium,
+        hit=hit,
+        contact=contact,
+        light=light,
+        support=support,
+        camera=camera,
+        pose=pose
+    )
+
+    assert value scene.hit.payload.actor.id == 7
+    assert value scene.hit.payload.actor.generation == 3
+    assert approx scene.surface.roughness ~= 0.125 within 0.0001
+    assert approx scene.medium.anisotropy ~= -0.25 within 0.0001
+    assert value scene.support.bounds == bounds
+    assert value scene.pose == pose
+    assert value scene.contact.payload.material_id == 11
+    assert approx scene.light.range ~= 12.0 within 0.0001
+    assert approx scene.camera.vertical_fov_degrees ~= 60.0 within 0.0001
+}
+
+fn test_bounds_and_transform_helpers() -> Nothing {
+    bounds2_box = Bounds2(
+        min=vec2(1.0, 2.0),
+        max=vec2(5.0, 6.0)
+    )
+    bounds3_box = Bounds3(
+        min=vec3(0.0, 1.0, 2.0),
+        max=vec3(6.0, 7.0, 8.0)
+    )
+    ray = Ray3(
+        origin=vec3(1.0, 2.0, 3.0),
+        direction=normalize(vec3(0.0, 1.0, 0.0))
+    )
+    pose = Transform3(
+        matrix=mat4_identity(),
+        inverse=mat4_identity()
+    )
+
+    center2 = bounds2_center(bounds=bounds2_box)
+    size2 = bounds2_size(bounds=bounds2_box)
+    center3 = bounds3_center(bounds=bounds3_box)
+    size3 = bounds3_size(bounds=bounds3_box)
+    identity = transform3_identity()
+    composed = compose_transform3(
+        left=pose,
+        right=inverse_transform3(transform=identity)
+    )
+    point = transform_point(transform=composed, point=ray.origin)
+    vector = transform_vector(transform=composed, vector=ray.direction)
+    normal = transform_normal(transform=composed, normal=vec3(0.0, 1.0, 0.0))
+
+    assert approx center2.x ~= 3.0 within 0.0001
+    assert approx center2.y ~= 4.0 within 0.0001
+    assert approx size2.x ~= 4.0 within 0.0001
+    assert approx size2.y ~= 4.0 within 0.0001
+    assert approx center3.x ~= 3.0 within 0.0001
+    assert approx center3.y ~= 4.0 within 0.0001
+    assert approx center3.z ~= 5.0 within 0.0001
+    assert approx size3.x ~= 6.0 within 0.0001
+    assert approx size3.y ~= 6.0 within 0.0001
+    assert approx size3.z ~= 6.0 within 0.0001
+    assert approx point.x ~= 1.0 within 0.0001
+    assert approx point.y ~= 2.0 within 0.0001
+    assert approx point.z ~= 3.0 within 0.0001
+    assert approx vector.y ~= 1.0 within 0.0001
+    assert approx normal.y ~= 1.0 within 0.0001
+}
+
 fn test_vec_and_mat_arithmetic() -> Nothing {
     left = vec3(1.0, 2.0, 3.0)
     right = vec3(4.0, 5.0, 6.0)
@@ -368,6 +503,1260 @@ fn test_kernel_fn_dispatch_surface() -> Nothing {
     assert value gpu_buffer_get(buffer=output, index=1) == 2
     assert value gpu_buffer_get(buffer=output, index=2) == 3
     assert value gpu_buffer_get(buffer=output, index=3) == 4
+}
+
+field exact distance sphere_field(p: Vec3) -> F32 {
+    sphere(radius = 1.0)
+}
+
+field conservative distance shifted_sphere(p: Vec3) -> F32 {
+    return sphere(p=p - vec3(0.0, 0.0, 1.0), radius=1.0)
+}
+
+fn test_field_query_surface() -> Nothing {
+    sphere_capture = capture sphere_field
+    shifted_capture = capture shifted_sphere
+    sampled_distance = distance_at(capture=sphere_capture, point=vec3(0.0, 0.0, 2.0))
+    sampled_normal = normal_at(capture=sphere_capture, point=vec3(0.0, 0.0, 2.0))
+    shifted_distance = distance_at(capture=shifted_capture, point=vec3(0.0, 0.0, 3.0))
+
+    assert approx sampled_distance ~= 1.0 within 0.001
+    assert approx sampled_normal.x ~= 0.0 within 0.01
+    assert approx sampled_normal.y ~= 0.0 within 0.01
+    assert approx sampled_normal.z ~= 1.0 within 0.01
+    assert approx shifted_distance ~= 1.0 within 0.001
+}
+
+field conservative distance left_x(p: Vec3) -> F32 {
+    return p.x
+}
+
+field conservative distance left_y(p: Vec3) -> F32 {
+    return p.y
+}
+
+field conservative distance cap_z(p: Vec3) -> F32 {
+    return p.z
+}
+
+field conservative distance notch(p: Vec3) -> F32 {
+    return p.x - 0.5
+}
+
+field conservative distance composed(p: Vec3) -> F32 {
+    subtract {
+        provenance_policy = right
+        intersection {
+            provenance_policy = nearest
+            union {
+                provenance_policy = nearest
+                use left_x
+                use left_y
+            }
+            use cap_z
+        }
+        use notch
+    }
+}
+
+fn test_semantic_field_composition() -> Nothing {
+    composed_capture = capture composed
+    sample_a = distance_at(capture=composed_capture, point=vec3(1.0, 2.0, 3.0))
+    sample_b = distance_at(capture=composed_capture, point=vec3(-1.0, 2.0, 0.5))
+
+    assert approx sample_a ~= 3.0 within 0.001
+    assert approx sample_b ~= 1.5 within 0.001
+}
+
+material shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(1.0, 0.0, 0.0),
+        roughness=0.0,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape sphere_shape {
+    field = sphere_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(1),
+        material_id=u64(1),
+        actor=ActorHandle(id=u64(1), generation=u32(0))
+    )
+}
+
+fn render_ppm() -> String {
+    camera = Camera(
+        position=vec3(0.0, 0.0, 3.0),
+        forward=vec3(0.0, 0.0, -1.0),
+        up=vec3(0.0, 1.0, 0.0),
+        vertical_fov_degrees=60.0
+    )
+    light = Light(
+        position=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        intensity=vec3(255.0, 255.0, 255.0),
+        range=10.0
+    )
+    scene = capture sphere_shape
+
+    hit = trace_shape(
+        capture=scene,
+        origin=camera.position,
+        direction=camera.forward,
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    surface = surface_at(capture=scene, hit=hit)
+    to_light = normalize(light.position - hit.position)
+    ndotl = max(dot(hit.normal, to_light), 0.0)
+
+    r = i32(clamp(surface.albedo.x * ndotl * light.intensity.x + surface.emissive.x, 0.0, 255.0))
+    g = i32(clamp(surface.albedo.y * ndotl * light.intensity.y + surface.emissive.y, 0.0, 255.0))
+    b = i32(clamp(surface.albedo.z * ndotl * light.intensity.z + surface.emissive.z, 0.0, 255.0))
+
+    mutable ppm = "P3\n1 1\n255\n"
+    ppm += "{r} {g} {b}"
+    return ppm
+}
+
+fn test_host_raymarch_material_ppm() -> Nothing {
+    assert value render_ppm() == "P3\n1 1\n255\n255 0 0"
+}
+
+fn test_query_batch_records_and_snapshot_determinism() -> Nothing {
+    scene = capture sphere_shape
+    scene_again = capture sphere_shape
+    points = [
+        PointQuery(point=vec3(0.0, 0.0, 2.0)),
+        PointQuery(point=vec3(0.0, 0.0, 3.0)),
+        PointQuery(point=vec3(0.5, 0.0, 2.0))
+    ]
+    rays = [
+        RayQuery(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        ),
+        RayQuery(
+            origin=vec3(0.5, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
+    ]
+    shadow_rays = [
+        RayQuery(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        ),
+        RayQuery(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 1.0, 0.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
+    ]
+    cpu_distances = distance_at_batch(
+        capture=scene,
+        points=points,
+        backend=dispatch_backend_cpu()
+    )
+    vgpu_distances = distance_at_batch(
+        capture=scene,
+        points=points,
+        backend=dispatch_backend_virtual_gpu()
+    )
+    cpu_normals = normal_at_batch(
+        capture=scene,
+        points=points,
+        backend=dispatch_backend_cpu()
+    )
+    vgpu_normals = normal_at_batch(
+        capture=scene,
+        points=points,
+        backend=dispatch_backend_virtual_gpu()
+    )
+    cpu_hits = trace_shape_batch(
+        capture=scene,
+        rays=rays,
+        backend=dispatch_backend_cpu()
+    )
+    vgpu_hits = trace_shape_batch(
+        capture=scene,
+        rays=rays,
+        backend=dispatch_backend_virtual_gpu()
+    )
+    cpu_surfaces = surface_at_batch(
+        capture=scene,
+        hits=cpu_hits,
+        backend=dispatch_backend_auto()
+    )
+    vgpu_surfaces = surface_at_batch(
+        capture=scene,
+        hits=vgpu_hits,
+        backend=dispatch_backend_virtual_gpu()
+    )
+    cpu_occlusions = occluded_batch(
+        capture=scene,
+        rays=shadow_rays,
+        backend=dispatch_backend_cpu()
+    )
+    vgpu_occlusions = occluded_batch(
+        capture=scene,
+        rays=shadow_rays,
+        backend=dispatch_backend_virtual_gpu()
+    )
+
+    assert value scene.scene_id == scene_again.scene_id
+    assert value scene.root_feature_id == scene_again.root_feature_id
+    assert approx cpu_distances[0].distance ~= 1.0 within 0.001
+    assert approx cpu_distances[1].distance ~= 2.0 within 0.001
+    assert approx cpu_distances[2].distance ~= 1.0615 within 0.01
+    assert approx vgpu_distances[0].distance ~= cpu_distances[0].distance within 0.001
+    assert approx vgpu_distances[1].distance ~= cpu_distances[1].distance within 0.001
+    assert approx vgpu_distances[2].distance ~= cpu_distances[2].distance within 0.001
+    assert approx cpu_normals[0].normal.z ~= 1.0 within 0.01
+    assert approx vgpu_normals[0].normal.z ~= cpu_normals[0].normal.z within 0.01
+    assert value cpu_hits[0].hit == true
+    assert value cpu_hits[1].hit == true
+    assert value vgpu_hits[0].feature_id == cpu_hits[0].feature_id
+    assert value vgpu_hits[1].feature_id == cpu_hits[1].feature_id
+    assert approx cpu_surfaces[0].albedo.x ~= 1.0 within 0.001
+    assert approx vgpu_surfaces[0].albedo.x ~= cpu_surfaces[0].albedo.x within 0.001
+    assert value cpu_occlusions[0].occluded == true
+    assert value cpu_occlusions[1].occluded == false
+    assert value vgpu_occlusions[0].occluded == cpu_occlusions[0].occluded
+    assert value vgpu_occlusions[1].occluded == cpu_occlusions[1].occluded
+}
+
+field exact distance primitive_box(p: Vec3) -> F32 {
+    box(half = vec3(1.0, 2.0, 3.0))
+}
+
+field exact distance primitive_capsule(p: Vec3) -> F32 {
+    capsule(a = vec3(0.0, -1.0, 0.0), b = vec3(0.0, 1.0, 0.0), radius = 0.5)
+}
+
+field exact distance primitive_cylinder(p: Vec3) -> F32 {
+    cylinder(radius = 0.5, half_height = 1.0)
+}
+
+field exact distance primitive_plane(p: Vec3) -> F32 {
+    plane(normal = vec3(0.0, 1.0, 0.0), offset = 0.25)
+}
+
+field exact distance primitive_torus(p: Vec3) -> F32 {
+    torus(major_radius = 2.0, minor_radius = 0.5)
+}
+
+fn test_field_primitive_catalog() -> Nothing {
+    sphere_scene = capture sphere_field
+    box_scene = capture primitive_box
+    capsule_scene = capture primitive_capsule
+    cylinder_scene = capture primitive_cylinder
+    plane_scene = capture primitive_plane
+    torus_scene = capture primitive_torus
+    sphere_sample = distance_at(capture=sphere_scene, point=vec3(0.0, 0.0, 0.0))
+    box_sample = distance_at(capture=box_scene, point=vec3(0.0, 0.0, 0.0))
+    capsule_sample = distance_at(capture=capsule_scene, point=vec3(0.0, 0.0, 0.0))
+    cylinder_sample = distance_at(capture=cylinder_scene, point=vec3(0.0, 0.0, 0.0))
+    plane_sample = distance_at(capture=plane_scene, point=vec3(0.0, 0.0, 0.0))
+    torus_sample = distance_at(capture=torus_scene, point=vec3(2.0, 0.0, 0.0))
+
+    assert approx sphere_sample ~= -1.0 within 0.001
+    assert approx box_sample ~= -1.0 within 0.001
+    assert approx capsule_sample ~= -0.5 within 0.001
+    assert approx cylinder_sample ~= -0.5 within 0.001
+    assert approx plane_sample ~= 0.25 within 0.001
+    assert approx torus_sample ~= -0.5 within 0.001
+}
+
+field conservative distance repeat_box(p: Vec3) -> F32 {
+    repeat = vec3(2.0, 0.0, 0.0) {
+        box(half=vec3(0.5, 0.5, 0.5))
+    }
+}
+
+field conservative distance manual_box(p: Vec3) -> F32 {
+    repeated = vec3(
+        p.x - 2.0 * floor(p.x / 2.0 + 0.5),
+        p.y,
+        p.z
+    )
+    repeated_abs = vec3(abs(repeated.x), abs(repeated.y), abs(repeated.z))
+    q = repeated_abs - vec3(0.5, 0.5, 0.5)
+    outside = length(max(q, vec3(0.0, 0.0, 0.0)))
+    inside = min(max(q.x, max(q.y, q.z)), 0.0)
+    return outside + inside
+}
+
+fn test_repeat_wrapper_trace_steps() -> Nothing {
+    sample_before = __wr_metrics_get(__wr_metrics_field_sample_id())
+    repeat_scene = capture repeat_box
+    manual_scene = capture manual_box
+    mutable repeat_traveled = 0.0
+    mutable repeat_steps = 0
+    mutable repeat_hit = Hit3(
+        hit=false,
+        distance=0.0,
+        position=vec3(0.0, 0.0, 3.0),
+        normal=vec3(0.0, 0.0, 1.0),
+        steps=0,
+        feature_id=i64(0),
+        payload=Payload(
+            entity_id=u64(0),
+            material_id=u64(0),
+            actor=ActorHandle(id=u64(0), generation=u32(0))
+        )
+    )
+    while repeat_steps < 96 and repeat_traveled <= 6.0 {
+        rp = vec3(0.0, 0.0, 3.0) + vec3(0.0, 0.0, -1.0) * repeat_traveled
+        rd = distance_at(capture=repeat_scene, point=rp)
+        if abs(rd) <= 0.05 {
+            repeat_hit = Hit3(
+                hit=true,
+                distance=repeat_traveled,
+                position=rp,
+                normal=vec3(0.0, 0.0, 1.0),
+                steps=i64(repeat_steps + 1),
+                feature_id=i64(0),
+                payload=Payload(
+                    entity_id=u64(0),
+                    material_id=u64(0),
+                    actor=ActorHandle(id=u64(0), generation=u32(0))
+                )
+            )
+            break
+        }
+        rs = max(rd * 0.75, 0.05)
+        repeat_traveled += rs
+        repeat_steps += 1
+    }
+    manual_samples_before = __wr_metrics_get(__wr_metrics_field_sample_id())
+    repeat_hit_samples = manual_samples_before - sample_before
+    mutable manual_traveled = 0.0
+    mutable manual_steps = 0
+    mutable manual_hit = Hit3(
+        hit=false,
+        distance=0.0,
+        position=vec3(0.0, 0.0, 3.0),
+        normal=vec3(0.0, 0.0, 1.0),
+        steps=0,
+        feature_id=i64(0),
+        payload=Payload(
+            entity_id=u64(0),
+            material_id=u64(0),
+            actor=ActorHandle(id=u64(0), generation=u32(0))
+        )
+    )
+    while manual_steps < 96 and manual_traveled <= 6.0 {
+        mp = vec3(0.0, 0.0, 3.0) + vec3(0.0, 0.0, -1.0) * manual_traveled
+        md = distance_at(capture=manual_scene, point=mp)
+        if abs(md) <= 0.05 {
+            manual_hit = Hit3(
+                hit=true,
+                distance=manual_traveled,
+                position=mp,
+                normal=vec3(0.0, 0.0, 1.0),
+                steps=i64(manual_steps + 1),
+                feature_id=i64(0),
+                payload=Payload(
+                    entity_id=u64(0),
+                    material_id=u64(0),
+                    actor=ActorHandle(id=u64(0), generation=u32(0))
+                )
+            )
+            break
+        }
+        ms = max(md * 0.75, 0.05)
+        manual_traveled += ms
+        manual_steps += 1
+    }
+    manual_sample_delta = __wr_metrics_get(__wr_metrics_field_sample_id()) - manual_samples_before
+    manual_hit_samples = manual_sample_delta
+    assert value manual_samples_before - sample_before > 0
+    assert value manual_sample_delta > 0
+    assert value repeat_hit.hit == true
+    assert value manual_hit.hit == true
+    assert value repeat_hit.steps > 0
+    assert value manual_hit.steps > 0
+    assert value repeat_hit.steps <= manual_hit.steps
+    assert value repeat_hit_samples <= manual_hit_samples
+    assert value repeat_hit_samples <= manual_sample_delta
+}
+
+field conservative distance hinted_far_field(p: Vec3) -> F32 {
+    support = Support3(bounds=Bounds3(
+        min=vec3(8.0, -1.0, -1.0),
+        max=vec3(12.0, 1.0, 1.0)
+    ))
+    bounds = Bounds3(
+        min=vec3(8.0, -1.0, -1.0),
+        max=vec3(12.0, 1.0, 1.0)
+    )
+    return sphere(p=p - vec3(10.0, 0.0, 0.0), radius=0.5)
+}
+
+field conservative distance plain_far_field(p: Vec3) -> F32 {
+    return sphere(p=p - vec3(10.0, 0.0, 0.0), radius=0.5)
+}
+
+shape hinted_far_shape {
+    field = hinted_far_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(41),
+        material_id=u64(41),
+        actor=ActorHandle(id=u64(41), generation=u32(0))
+    )
+}
+
+shape plain_far_shape {
+    field = plain_far_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(42),
+        material_id=u64(42),
+        actor=ActorHandle(id=u64(42), generation=u32(0))
+    )
+}
+
+shape hinted_scene_shape {
+    union {
+        provenance_policy = nearest
+        use left_shape
+        use hinted_far_shape
+    }
+}
+
+shape plain_scene_shape {
+    union {
+        provenance_policy = nearest
+        use left_shape
+        use plain_far_shape
+    }
+}
+
+fn test_authored_support_bounds_prune_scene() -> Nothing {
+    hinted_pruned_before = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
+    hinted_scene = capture hinted_scene_shape
+    hinted_hit = trace_shape(
+        capture=hinted_scene,
+        origin=vec3(-0.8, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    hinted_pruned_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
+    plain_pruned_before = hinted_pruned_after
+    plain_scene = capture plain_scene_shape
+    plain_hit = trace_shape(
+        capture=plain_scene,
+        origin=vec3(-0.8, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    plain_pruned_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
+    hinted_surface = surface_at(capture=hinted_scene, hit=hinted_hit)
+    plain_surface = surface_at(capture=plain_scene, hit=plain_hit)
+
+    assert value hinted_hit.hit == true
+    assert value plain_hit.hit == true
+    assert value hinted_hit.feature_id == plain_hit.feature_id
+    assert approx hinted_hit.distance ~= plain_hit.distance within 0.0001
+    assert value hinted_surface.albedo.x == plain_surface.albedo.x
+    assert value hinted_pruned_after - hinted_pruned_before > 0
+    assert value plain_pruned_after - plain_pruned_before == 0
+}
+
+field exact distance left_orb(p: Vec3) -> F32 {
+    transform = vec3(-0.8, 0.0, 0.0) {
+        sphere(radius=0.65)
+    }
+}
+
+field exact distance right_orb(p: Vec3) -> F32 {
+    transform = vec3(0.8, 0.0, 0.0) {
+        sphere(radius=0.65)
+    }
+}
+
+shape left_shape {
+    field = left_orb
+    material = shade
+    payload = Payload(
+        entity_id=u64(31),
+        material_id=u64(31),
+        actor=ActorHandle(id=u64(31), generation=u32(0))
+    )
+}
+
+shape right_shape {
+    field = right_orb
+    material = shade
+    payload = Payload(
+        entity_id=u64(32),
+        material_id=u64(32),
+        actor=ActorHandle(id=u64(32), generation=u32(0))
+    )
+}
+
+shape scene_shape {
+    union {
+        provenance_policy = nearest
+        use left_shape
+        use right_shape
+    }
+}
+
+material body_surface(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(220.0, 180.0, 120.0),
+        roughness=0.35,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+material cutter_surface(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(100.0, 200.0, 120.0),
+        roughness=0.35,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+fn test_boolean_scene_metrics_are_queryable() -> Nothing {
+    candidate_before = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+    pruned_before = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
+    exact_before = __wr_metrics_get(__wr_metrics_scene_trace_exact_path_id())
+    conservative_before = __wr_metrics_get(__wr_metrics_scene_trace_conservative_path_id())
+    hit_count_before = __wr_metrics_get(__wr_metrics_scene_trace_hit_count_id())
+    hit_steps_before = __wr_metrics_get(__wr_metrics_scene_trace_hit_steps_total_id())
+    hit_samples_before = __wr_metrics_get(__wr_metrics_scene_trace_hit_field_samples_total_id())
+    field_samples_before = __wr_metrics_get(__wr_metrics_field_sample_id())
+    scene_capture = capture scene_shape
+    bucket_before = __wr_metrics_get(__wr_metrics_scene_trace_steps_le_1_id())
+        + __wr_metrics_get(__wr_metrics_scene_trace_steps_le_4_id())
+        + __wr_metrics_get(__wr_metrics_scene_trace_steps_le_8_id())
+        + __wr_metrics_get(__wr_metrics_scene_trace_steps_le_16_id())
+        + __wr_metrics_get(__wr_metrics_scene_trace_steps_gt_16_id())
+    left_hit = trace_shape(
+        capture=scene_capture,
+        origin=vec3(-0.8, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    right_hit = trace_shape(
+        capture=scene_capture,
+        origin=vec3(0.8, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    candidate_after = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+    pruned_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
+    exact_after = __wr_metrics_get(__wr_metrics_scene_trace_exact_path_id())
+    conservative_after = __wr_metrics_get(__wr_metrics_scene_trace_conservative_path_id())
+    hit_count_after = __wr_metrics_get(__wr_metrics_scene_trace_hit_count_id())
+    hit_steps_after = __wr_metrics_get(__wr_metrics_scene_trace_hit_steps_total_id())
+    hit_samples_after = __wr_metrics_get(__wr_metrics_scene_trace_hit_field_samples_total_id())
+    field_samples_after = __wr_metrics_get(__wr_metrics_field_sample_id())
+    bucket_after = __wr_metrics_get(__wr_metrics_scene_trace_steps_le_1_id())
+        + __wr_metrics_get(__wr_metrics_scene_trace_steps_le_4_id())
+        + __wr_metrics_get(__wr_metrics_scene_trace_steps_le_8_id())
+        + __wr_metrics_get(__wr_metrics_scene_trace_steps_le_16_id())
+        + __wr_metrics_get(__wr_metrics_scene_trace_steps_gt_16_id())
+
+    assert value left_hit.hit == true
+    assert value right_hit.hit == true
+    assert value candidate_after - candidate_before > 0
+    assert value pruned_after - pruned_before > 0
+    assert value exact_after - exact_before == 2
+    assert value conservative_after - conservative_before == 0
+    assert value hit_count_after - hit_count_before == 2
+    assert value hit_steps_after - hit_steps_before == left_hit.steps + right_hit.steps
+    assert value hit_samples_after - hit_samples_before == field_samples_after - field_samples_before
+    assert value bucket_after - bucket_before == 2
+}
+
+field exact distance body_shape_field(p: Vec3) -> F32 {
+    sphere(radius=0.8)
+}
+
+field exact distance cutter_shape_field(p: Vec3) -> F32 {
+    sphere(radius=0.5)
+}
+
+shape body_shape {
+    field = body_shape_field
+    material = body_surface
+    payload = Payload(
+        entity_id=u64(41),
+        material_id=u64(41),
+        actor=ActorHandle(id=u64(41), generation=u32(0))
+    )
+}
+
+shape cutter_shape {
+    field = cutter_shape_field
+    material = cutter_surface
+    payload = Payload(
+        entity_id=u64(42),
+        material_id=u64(42),
+        actor=ActorHandle(id=u64(42), generation=u32(0))
+    )
+}
+
+shape carved_shape {
+    subtract {
+        provenance_policy = right
+        use body_shape
+        use cutter_shape
+    }
+}
+
+shape carved_left_shape {
+    subtract {
+        provenance_policy = left
+        use body_shape
+        use cutter_shape
+    }
+}
+
+shape reversed_scene_shape {
+    union {
+        provenance_policy = nearest
+        use right_shape
+        use left_shape
+    }
+}
+
+field exact distance near_orb(p: Vec3) -> F32 {
+    transform = vec3(0.0, 0.0, 1.6) {
+        sphere(radius=0.45)
+    }
+}
+
+field exact distance far_orb(p: Vec3) -> F32 {
+    transform = vec3(0.0, 0.0, 0.9) {
+        sphere(radius=0.45)
+    }
+}
+
+shape near_shape {
+    field = near_orb
+    material = shade
+    payload = Payload(
+        entity_id=u64(61),
+        material_id=u64(61),
+        actor=ActorHandle(id=u64(61), generation=u32(0))
+    )
+}
+
+shape far_shape {
+    field = far_orb
+    material = shade
+    payload = Payload(
+        entity_id=u64(62),
+        material_id=u64(62),
+        actor=ActorHandle(id=u64(62), generation=u32(0))
+    )
+}
+
+shape nearest_scene_shape {
+    union {
+        provenance_policy = nearest
+        use far_shape
+        use near_shape
+    }
+}
+
+shape ordered_scene_shape {
+    union {
+        provenance_policy = ordered
+        use far_shape
+        use near_shape
+    }
+}
+
+shape overlap_scene_shape {
+    intersection {
+        provenance_policy = nearest
+        use near_shape
+        use far_shape
+    }
+}
+
+fn test_boolean_provenance_is_stable_across_order_and_subtract() -> Nothing {
+    scene_capture = capture scene_shape
+    reversed_scene_capture = capture reversed_scene_shape
+    carved_scene_capture = capture carved_shape
+    near_scene_capture = capture near_shape
+    far_scene_capture = capture far_shape
+    nearest_scene_capture = capture nearest_scene_shape
+    ordered_scene_capture = capture ordered_scene_shape
+    overlap_scene_capture = capture overlap_scene_shape
+    cutter_scene_capture = capture cutter_shape
+    body_scene_capture = capture body_shape
+    carved_left_scene_capture = capture carved_left_shape
+    left_hit = trace_shape(
+        capture=scene_capture,
+        origin=vec3(-0.8, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    right_hit = trace_shape(
+        capture=scene_capture,
+        origin=vec3(0.8, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    reversed_left_hit = trace_shape(
+        capture=reversed_scene_capture,
+        origin=vec3(-0.8, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    reversed_right_hit = trace_shape(
+        capture=reversed_scene_capture,
+        origin=vec3(0.8, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    carve_hit = trace_shape(
+        capture=carved_scene_capture,
+        origin=vec3(0.0, 0.0, 0.0),
+        direction=vec3(1.0, 0.0, 0.0),
+        max_distance=4.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    near_direct = trace_shape(
+        capture=near_scene_capture,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    far_direct = trace_shape(
+        capture=far_scene_capture,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    nearest_hit = trace_shape(
+        capture=nearest_scene_capture,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    ordered_hit = trace_shape(
+        capture=ordered_scene_capture,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    overlap_hit = trace_shape(
+        capture=overlap_scene_capture,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    cutter_hit = trace_shape(
+        capture=cutter_scene_capture,
+        origin=vec3(0.0, 0.0, 0.0),
+        direction=vec3(1.0, 0.0, 0.0),
+        max_distance=4.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    body_hit = trace_shape(
+        capture=body_scene_capture,
+        origin=vec3(0.0, 0.0, 0.0),
+        direction=vec3(1.0, 0.0, 0.0),
+        max_distance=4.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    carve_left_hit = trace_shape(
+        capture=carved_left_scene_capture,
+        origin=vec3(0.0, 0.0, 0.0),
+        direction=vec3(1.0, 0.0, 0.0),
+        max_distance=4.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+
+    assert value left_hit.hit == true
+    assert value right_hit.hit == true
+    assert value reversed_left_hit.hit == true
+    assert value reversed_right_hit.hit == true
+    assert value left_hit.payload.entity_id == u64(31)
+    assert value right_hit.payload.entity_id == u64(32)
+    assert value reversed_left_hit.payload.entity_id == u64(31)
+    assert value reversed_right_hit.payload.entity_id == u64(32)
+    assert value carve_hit.hit == true
+    assert value carve_hit.payload.entity_id == u64(42)
+    assert value carve_hit.payload.material_id == u64(42)
+    assert value near_direct.feature_id != u64(0)
+    assert value far_direct.feature_id != u64(0)
+    assert value nearest_hit.hit == true
+    assert value ordered_hit.hit == true
+    assert value overlap_hit.hit == true
+    assert value nearest_hit.payload.entity_id == u64(61)
+    assert value ordered_hit.payload.entity_id == u64(62)
+    assert value overlap_hit.payload.entity_id == u64(62)
+    assert value nearest_hit.feature_id == near_direct.feature_id
+    assert value ordered_hit.feature_id == far_direct.feature_id
+    assert value overlap_hit.feature_id == far_direct.feature_id
+    assert value carve_hit.feature_id == cutter_hit.feature_id
+    assert value carve_left_hit.hit == true
+    assert value carve_left_hit.payload.entity_id == u64(41)
+    assert value carve_left_hit.feature_id == body_hit.feature_id
+    assert approx surface_at(capture=carved_scene_capture, hit=carve_hit).albedo.y ~= 200.0 within 0.001
+    assert approx surface_at(capture=carved_left_scene_capture, hit=carve_left_hit).albedo.x ~= 220.0 within 0.001
+}
+
+field exact distance tie_left_field(p: Vec3) -> F32 {
+    sphere(radius=0.65)
+}
+
+field exact distance tie_right_field(p: Vec3) -> F32 {
+    sphere(radius=0.65)
+}
+
+field conservative distance wrapped_stack_field(p: Vec3) -> F32 {
+    mirror = vec3(1.0, 0.0, 0.0) {
+        repeat = vec3(2.0, 0.0, 0.0) {
+            transform = vec3(0.0, 0.0, 0.0) {
+                instance = Transform3(
+                    matrix=mat4_cols(
+                        vec4(1.0, 0.0, 0.0, 0.0),
+                        vec4(0.0, 1.0, 0.0, 0.0),
+                        vec4(0.0, 0.0, 1.0, 0.0),
+                        vec4(0.0, 0.0, 0.0, 1.0)
+                    ),
+                    inverse=mat4_cols(
+                        vec4(1.0, 0.0, 0.0, 0.0),
+                        vec4(0.0, 1.0, 0.0, 0.0),
+                        vec4(0.0, 0.0, 1.0, 0.0),
+                        vec4(0.0, 0.0, 0.0, 1.0)
+                    )
+                ) {
+                    sphere(radius=0.5)
+                }
+            }
+        }
+    }
+}
+
+field conservative distance wrapped_decoy_field(p: Vec3) -> F32 {
+    transform = vec3(4.0, 0.0, 0.0) {
+        sphere(radius=0.5)
+    }
+}
+
+material left_tie_surface(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(220.0, 60.0, 60.0),
+        roughness=0.25,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+material right_tie_surface(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(60.0, 120.0, 220.0),
+        roughness=0.25,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+material wrapped_stack_surface(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(180.0, 220.0, 120.0),
+        roughness=0.35,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape tie_left_shape {
+    field = tie_left_field
+    material = left_tie_surface
+    payload = Payload(
+        entity_id=u64(101),
+        material_id=u64(101),
+        actor=ActorHandle(id=u64(101), generation=u32(0))
+    )
+}
+
+shape tie_right_shape {
+    field = tie_right_field
+    material = right_tie_surface
+    payload = Payload(
+        entity_id=u64(202),
+        material_id=u64(202),
+        actor=ActorHandle(id=u64(202), generation=u32(0))
+    )
+}
+
+shape tie_union_shape {
+    union {
+        provenance_policy = nearest
+        use tie_left_shape
+        use tie_right_shape
+    }
+}
+
+shape tie_intersection_shape {
+    intersection {
+        provenance_policy = nearest
+        use tie_left_shape
+        use tie_right_shape
+    }
+}
+
+shape wrapped_stack_shape {
+    field = wrapped_stack_field
+    material = wrapped_stack_surface
+    payload = Payload(
+        entity_id=u64(303),
+        material_id=u64(303),
+        actor=ActorHandle(id=u64(303), generation=u32(0))
+    )
+}
+
+shape wrapped_decoy_shape {
+    field = wrapped_decoy_field
+    material = right_tie_surface
+    payload = Payload(
+        entity_id=u64(404),
+        material_id=u64(404),
+        actor=ActorHandle(id=u64(404), generation=u32(0))
+    )
+}
+
+shape wrapped_scene_shape {
+    union {
+        provenance_policy = nearest
+        use wrapped_decoy_shape
+        use wrapped_stack_shape
+    }
+}
+
+fn test_boolean_provenance_ties_and_wrapper_stack_stay_stable() -> Nothing {
+    tie_left_scene = capture tie_left_shape
+    tie_right_scene = capture tie_right_shape
+    tie_union_scene = capture tie_union_shape
+    tie_intersection_scene = capture tie_intersection_shape
+    wrapped_stack_scene = capture wrapped_stack_shape
+    wrapped_scene_capture = capture wrapped_scene_shape
+    tie_left_hit = trace_shape(
+        capture=tie_left_scene,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    tie_right_hit = trace_shape(
+        capture=tie_right_scene,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    tie_union_hit = trace_shape(
+        capture=tie_union_scene,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    tie_intersection_hit = trace_shape(
+        capture=tie_intersection_scene,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    wrapped_direct_hit = trace_shape(
+        capture=wrapped_stack_scene,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    wrapped_scene_hit = trace_shape(
+        capture=wrapped_scene_capture,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+
+    assert value tie_left_hit.hit == true
+    assert value tie_right_hit.hit == true
+    assert value tie_union_hit.hit == true
+    assert value tie_intersection_hit.hit == true
+    assert value tie_union_hit.payload.entity_id == u64(101)
+    assert value tie_intersection_hit.payload.entity_id == u64(101)
+    assert value tie_union_hit.feature_id == tie_left_hit.feature_id
+    assert value tie_intersection_hit.feature_id == tie_left_hit.feature_id
+    assert approx surface_at(capture=tie_union_scene, hit=tie_union_hit).albedo.x ~= 220.0 within 0.001
+    assert approx surface_at(capture=tie_intersection_scene, hit=tie_intersection_hit).albedo.x ~= 220.0 within 0.001
+    assert value wrapped_direct_hit.hit == true
+    assert value wrapped_scene_hit.hit == true
+    assert value wrapped_direct_hit.feature_id == wrapped_scene_hit.feature_id
+    assert value wrapped_direct_hit.payload.entity_id == wrapped_scene_hit.payload.entity_id
+    assert approx surface_at(capture=wrapped_scene_capture, hit=wrapped_scene_hit).albedo.z ~= 120.0 within 0.001
+}
+
+field exact distance authored_support_near_orb(p: Vec3) -> F32 {
+    sphere(radius=0.65)
+}
+
+field conservative distance authored_support_far_custom(p: Vec3) -> F32 {
+    support = Support3(bounds=Bounds3(
+        min=vec3(7.5, -1.0, -1.0),
+        max=vec3(8.5, 1.0, 1.0)
+    ))
+    bounds = Bounds3(
+        min=vec3(7.5, -1.0, -1.0),
+        max=vec3(8.5, 1.0, 1.0)
+    )
+    return length(p - vec3(8.0, 0.0, 0.0)) - 0.5
+}
+
+field conservative distance authored_support_far_plain(p: Vec3) -> F32 {
+    return length(p - vec3(8.0, 0.0, 0.0)) - 0.5
+}
+
+shape authored_support_near_shape {
+    field = authored_support_near_orb
+    material = shade
+    payload = Payload(
+        entity_id=u64(41),
+        material_id=u64(41),
+        actor=ActorHandle(id=u64(41), generation=u32(0))
+    )
+}
+
+shape authored_support_far_shape {
+    field = authored_support_far_custom
+    material = shade
+    payload = Payload(
+        entity_id=u64(42),
+        material_id=u64(42),
+        actor=ActorHandle(id=u64(42), generation=u32(0))
+    )
+}
+
+shape authored_plain_far_shape {
+    field = authored_support_far_plain
+    material = shade
+    payload = Payload(
+        entity_id=u64(43),
+        material_id=u64(43),
+        actor=ActorHandle(id=u64(43), generation=u32(0))
+    )
+}
+
+shape authored_support_scene {
+    union {
+        provenance_policy = nearest
+        use authored_support_near_shape
+        use authored_support_far_shape
+    }
+}
+
+shape authored_plain_scene {
+    union {
+        provenance_policy = nearest
+        use authored_support_near_shape
+        use authored_plain_far_shape
+    }
+}
+
+fn test_authored_support_prunes_custom_field_branches() -> Nothing {
+    pruned_before = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
+    candidate_before = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+    supported_scene_capture = capture authored_support_scene
+    supported_hit = trace_shape(
+        capture=supported_scene_capture,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    pruned_mid = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
+    candidate_mid = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+    plain_scene_capture = capture authored_plain_scene
+    plain_hit = trace_shape(
+        capture=plain_scene_capture,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    pruned_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
+    candidate_after = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+
+    assert value supported_hit.hit == true
+    assert value plain_hit.hit == true
+    assert value candidate_mid - candidate_before > 0
+    assert value candidate_after - candidate_mid > 0
+    assert value pruned_mid - pruned_before > 0
+    assert value pruned_after - pruned_mid == 0
+}
+
+field conservative distance translated_sphere(p: Vec3) -> F32 {
+    transform = vec3(2.0, 0.0, 0.0) {
+        sphere(radius=1.0)
+    }
+}
+
+field conservative distance mirrored_box(p: Vec3) -> F32 {
+    mirror = vec3(1.0, 0.0, 0.0) {
+        transform = vec3(1.0, 0.0, 0.0) {
+            box(half=vec3(0.5, 0.5, 0.5))
+        }
+    }
+}
+
+field exact distance repeated_sphere(p: Vec3) -> F32 {
+    repeat = vec3(2.0, 0.0, 0.0) {
+        sphere(radius=0.5)
+    }
+}
+
+field conservative distance instanced_sphere(p: Vec3) -> F32 {
+    instance = Transform3(
+        matrix=mat4_cols(
+            vec4(1.0, 0.0, 0.0, 0.0),
+            vec4(0.0, 1.0, 0.0, 0.0),
+            vec4(0.0, 0.0, 1.0, 0.0),
+            vec4(0.0, 0.0, 1.0, 1.0)
+        ),
+        inverse=mat4_cols(
+            vec4(1.0, 0.0, 0.0, 0.0),
+            vec4(0.0, 1.0, 0.0, 0.0),
+            vec4(0.0, 0.0, 1.0, 0.0),
+            vec4(0.0, 0.0, -1.0, 1.0)
+        )
+    ) {
+        sphere(radius=0.5)
+    }
+}
+
+fn test_structural_field_wrappers_affect_sampling() -> Nothing {
+    translated_scene = capture translated_sphere
+    mirrored_scene = capture mirrored_box
+    repeated_scene = capture repeated_sphere
+    instanced_scene = capture instanced_sphere
+    translated_sample = distance_at(capture=translated_scene, point=vec3(2.0, 0.0, 0.0))
+    mirrored_sample = distance_at(capture=mirrored_scene, point=vec3(-1.0, 0.0, 0.0))
+    repeated_sample = distance_at(capture=repeated_scene, point=vec3(2.0, 0.0, 0.0))
+    instanced_sample = distance_at(capture=instanced_scene, point=vec3(0.0, 0.0, 1.0))
+
+    assert approx translated_sample ~= -1.0 within 0.001
+    assert approx mirrored_sample ~= -0.5 within 0.001
+    assert approx repeated_sample ~= -0.5 within 0.001
+    assert approx instanced_sample ~= -0.5 within 0.001
 }
 
 // ------------------------------------------------------------

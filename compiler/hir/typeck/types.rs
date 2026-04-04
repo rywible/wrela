@@ -1,7 +1,11 @@
 use crate::hir::{
-    Arg, BinaryOp, Body, ClassRole, Expr, FieldDefault, Function, FunctionKind, FunctionLane,
-    FunctionRole, Idx, InterfaceMethodKind, Literal, Module, Pattern, Stmt, TypeRef, UnaryOp,
-    Visibility,
+    Arg, BinaryOp, Body, ClassRole, Expr, FieldBounds, FieldClass, FieldDefault, FieldExpr,
+    FieldGraph, FieldMetadata, FieldPrimitive, FieldSupport, Function, FunctionKind, FunctionLane,
+    FunctionRole, Idx, InterfaceMethodKind, Literal, Module, Pattern, Shape, ShapeExpr,
+    ShapeGraph, ShapeLeaf, Stmt, TypeRef, UnaryOp, Visibility,
+};
+use crate::portable::{
+    PortableBuiltinAtom, PortableBuiltinType, builtin_record, is_builtin_record_name,
 };
 use miette::{Diagnostic, SourceSpan};
 use rowan::TextRange;
@@ -51,16 +55,32 @@ fn portable_named_type(name: &str) -> Type {
 }
 
 fn is_portable_named_data_type_name(name: &str) -> bool {
-    matches!(name, "Bounds2" | "Bounds3" | "Ray3" | "Transform3")
+    is_builtin_record_name(name)
 }
 
 fn portable_named_field_type(name: &str, member: &str) -> Option<Type> {
-    match (name, member) {
-        ("Bounds2", "min" | "max") => Some(Type::Vec2),
-        ("Bounds3", "min" | "max") => Some(Type::Vec3),
-        ("Ray3", "origin" | "direction") => Some(Type::Vec3),
-        ("Transform3", "matrix" | "inverse") => Some(Type::Mat4),
-        _ => None,
+    let record = builtin_record(name)?;
+    let field = record.fields.iter().find(|field| field.name == member)?;
+    Some(portable_builtin_type_to_type(field.ty))
+}
+
+fn portable_builtin_type_to_type(ty: PortableBuiltinType) -> Type {
+    match ty {
+        PortableBuiltinType::Atom(atom) => match atom {
+            PortableBuiltinAtom::Bool => Type::Boolean,
+            PortableBuiltinAtom::I32 => Type::I32,
+            PortableBuiltinAtom::U32 => Type::U32,
+            PortableBuiltinAtom::I64 => Type::I64,
+            PortableBuiltinAtom::U64 => Type::U64,
+            PortableBuiltinAtom::F32 => Type::F32,
+            PortableBuiltinAtom::Vec2 => Type::Vec2,
+            PortableBuiltinAtom::Vec3 => Type::Vec3,
+            PortableBuiltinAtom::Vec4 => Type::Vec4,
+            PortableBuiltinAtom::Mat3 => Type::Mat3,
+            PortableBuiltinAtom::Mat4 => Type::Mat4,
+            PortableBuiltinAtom::Quat => Type::Quat,
+        },
+        PortableBuiltinType::Named(name) => portable_named_type(name),
     }
 }
 
@@ -175,6 +195,15 @@ pub enum TypeError {
     CaptureRequiresResult {
         #[label("capture here")]
         span: SourceSpan,
+    },
+
+    #[error("capture requires a top-level field or shape declaration")]
+    #[diagnostic(code(lang::ty::capture_target_scene))]
+    CaptureTargetMustBeFieldOrShape {
+        #[label("capture target here")]
+        span: SourceSpan,
+        #[help]
+        help: String,
     },
 
     #[error("ignore result requires a Result value")]
@@ -325,6 +354,71 @@ pub enum TypeError {
         help: String,
     },
 
+    #[error("'{query}' requires argument `field` to reference a top-level field declaration")]
+    #[diagnostic(code(lang::ty::field_query_target_must_be_field))]
+    FieldQueryTargetMustBeField {
+        query: SmolStr,
+        #[label("field target here")]
+        span: SourceSpan,
+        #[help]
+        help: String,
+    },
+
+    #[error("'{query}' requires argument `shape` to reference a top-level shape declaration")]
+    #[diagnostic(code(lang::ty::shape_query_target_must_be_shape))]
+    ShapeQueryTargetMustBeShape {
+        query: SmolStr,
+        #[label("shape target here")]
+        span: SourceSpan,
+        #[help]
+        help: String,
+    },
+
+    #[error("builtin value '{name}' cannot be constructed directly")]
+    #[diagnostic(code(lang::ty::opaque_builtin_construction_forbidden))]
+    OpaqueBuiltinConstructionForbidden {
+        name: SmolStr,
+        #[label("constructor call here")]
+        span: SourceSpan,
+        #[help]
+        help: String,
+    },
+
+    #[error("shape '{shape}' requires {binding} to reference a top-level {expected} declaration, found '{target}'")]
+    #[diagnostic(code(lang::ty::shape_binding_target_invalid))]
+    ShapeBindingTargetInvalid {
+        shape: SmolStr,
+        binding: &'static str,
+        expected: &'static str,
+        target: SmolStr,
+        #[label("invalid shape binding here")]
+        span: SourceSpan,
+        #[help]
+        help: String,
+    },
+
+    #[error("shape '{shape}' payload must evaluate to Payload (found '{found}')")]
+    #[diagnostic(code(lang::ty::shape_payload_type_forbidden))]
+    ShapePayloadTypeForbidden {
+        shape: SmolStr,
+        found: String,
+        #[label("payload binding here")]
+        span: SourceSpan,
+        #[help]
+        help: String,
+    },
+
+    #[error("shape '{shape}' forms a recursive composition cycle through '{target}'")]
+    #[diagnostic(code(lang::ty::shape_cycle_detected))]
+    ShapeCycleDetected {
+        shape: SmolStr,
+        target: SmolStr,
+        #[label("recursive shape composition here")]
+        span: SourceSpan,
+        #[help]
+        help: String,
+    },
+
     #[error("dispatch_compute requires `kernel fn`; '{callee}' is not portable-lane code")]
     #[diagnostic(code(lang::ty::dispatch_kernel_must_be_portable))]
     DispatchKernelMustBePortable {
@@ -339,6 +433,44 @@ pub enum TypeError {
         function: SmolStr,
         construct: String,
         #[label("non-portable construct here")]
+        span: SourceSpan,
+        #[help]
+        help: String,
+    },
+
+    #[error("exact field '{function}' cannot use {node}")]
+    #[diagnostic(code(lang::ty::field_exactness_capability_violation))]
+    FieldExactnessCapabilityViolation {
+        function: SmolStr,
+        node: String,
+        detail: String,
+        #[label("degrading node here")]
+        span: SourceSpan,
+        #[help]
+        help: String,
+    },
+
+    #[error("field '{field}' {clause} clause must evaluate to {expected} (found '{found}')")]
+    #[diagnostic(code(lang::ty::field_clause_type_forbidden))]
+    FieldClauseTypeForbidden {
+        field: SmolStr,
+        clause: &'static str,
+        expected: &'static str,
+        found: String,
+        #[label("clause value here")]
+        span: SourceSpan,
+        #[help]
+        help: String,
+    },
+
+    #[error("field '{field}' {clause} clause '{explicit}' conflicts with inferred {clause} '{inferred}'")]
+    #[diagnostic(code(lang::ty::field_clause_conflict))]
+    FieldClauseConflict {
+        field: SmolStr,
+        clause: &'static str,
+        explicit: String,
+        inferred: String,
+        #[label("clause here")]
         span: SourceSpan,
         #[help]
         help: String,
@@ -618,6 +750,7 @@ impl TypeError {
             TypeError::WhileConditionNotBoolean { span } => *span,
             TypeError::RequireMessageNotString { span } => *span,
             TypeError::CaptureRequiresResult { span } => *span,
+            TypeError::CaptureTargetMustBeFieldOrShape { span, .. } => *span,
             TypeError::IgnoreResultRequiresResult { span } => *span,
             TypeError::ArgumentCountMismatch { span, .. } => *span,
             TypeError::UnknownArgument { span, .. } => *span,
@@ -626,8 +759,17 @@ impl TypeError {
             TypeError::UnsupportedComputeFeature { span, .. } => *span,
             TypeError::PortableBoundaryTypeForbidden { span, .. } => *span,
             TypeError::PortableHostCallForbidden { span, .. } => *span,
+            TypeError::FieldQueryTargetMustBeField { span, .. } => *span,
+            TypeError::ShapeQueryTargetMustBeShape { span, .. } => *span,
+            TypeError::OpaqueBuiltinConstructionForbidden { span, .. } => *span,
+            TypeError::ShapeBindingTargetInvalid { span, .. } => *span,
+            TypeError::ShapePayloadTypeForbidden { span, .. } => *span,
+            TypeError::ShapeCycleDetected { span, .. } => *span,
             TypeError::DispatchKernelMustBePortable { span, .. } => *span,
             TypeError::PortableConstructForbidden { span, .. } => *span,
+            TypeError::FieldExactnessCapabilityViolation { span, .. } => *span,
+            TypeError::FieldClauseTypeForbidden { span, .. } => *span,
+            TypeError::FieldClauseConflict { span, .. } => *span,
             TypeError::TypeArgCountMismatch { span, .. } => *span,
             TypeError::MissingTypeArgs { span, .. } => *span,
             TypeError::BoundaryMissingTypeArgs { span, .. } => *span,
@@ -719,7 +861,22 @@ pub fn check_module_with_info(module: &Module) -> (Vec<TypeError>, TypeInfo) {
         );
     }
     validate_value_classes(module, &class_index, &mut errors);
-    validate_portable_lane_functions(module, &class_index, &mut errors);
+    validate_portable_lane_functions(
+        module,
+        &class_index,
+        &enum_index,
+        &interface_index,
+        &function_index,
+        &mut errors,
+    );
+    validate_shape_declarations(
+        module,
+        &class_index,
+        &enum_index,
+        &interface_index,
+        &function_index,
+        &mut errors,
+    );
     check_interface_conformance(&class_index, &interface_index, &mut errors);
     check_async_actor_usage(module, &info, &class_index, &mut errors);
     (errors, info)
@@ -1151,9 +1308,6 @@ fn supports_fixed_value_type(
         Type::Param(_) => false,
         Type::Array(inner, len) => *len > 0 && supports_fixed_value_type(inner, classes, visiting),
         Type::Named(name, args) => {
-            if args.is_empty() && is_portable_named_data_type_name(name.as_str()) {
-                return true;
-            }
             if !args.is_empty() {
                 return false;
             }
@@ -1180,6 +1334,9 @@ fn supports_fixed_value_type(
 fn validate_portable_lane_functions(
     module: &Module,
     classes: &ClassIndex,
+    enums: &EnumIndex,
+    interfaces: &InterfaceIndex,
+    functions: &FunctionIndex,
     errors: &mut Vec<TypeError>,
 ) {
     let top_level = portable_function_sets(module);
@@ -1187,12 +1344,47 @@ fn validate_portable_lane_functions(
         if !matches!(func.lane(), FunctionLane::Portable) {
             continue;
         }
-        validate_portable_function_boundary(func, classes, errors);
+        if matches!(func.role, FunctionRole::Field | FunctionRole::Shape) {
+            validate_field_boundary(func, errors);
+            if matches!(func.role, FunctionRole::Field) {
+                validate_field_clause_types(
+                    func,
+                    classes,
+                    enums,
+                    interfaces,
+                    functions,
+                    errors,
+                );
+                validate_field_graph_wrapper_types(
+                    func,
+                    classes,
+                    enums,
+                    interfaces,
+                    functions,
+                    errors,
+                );
+                validate_field_graph_exactness(
+                    func,
+                    &top_level,
+                    classes,
+                    enums,
+                    interfaces,
+                    functions,
+                    errors,
+                );
+            }
+        } else if matches!(func.role, FunctionRole::Material) {
+            validate_material_boundary(func, errors);
+        } else {
+            validate_portable_function_boundary(func, classes, errors);
+        }
         if let Some(body) = &func.body {
             validate_portable_block(
                 body,
                 &body.root_stmts,
                 &func.name,
+                func.role,
+                func.field.as_ref(),
                 &top_level,
                 classes,
                 errors,
@@ -1201,9 +1393,276 @@ fn validate_portable_lane_functions(
     }
 }
 
+fn validate_shape_declarations(
+    module: &Module,
+    classes: &ClassIndex,
+    enums: &EnumIndex,
+    interfaces: &InterfaceIndex,
+    functions: &FunctionIndex,
+    errors: &mut Vec<TypeError>,
+) {
+    let shape_names: HashSet<SmolStr> = module
+        .shapes
+        .iter()
+        .map(|(_, shape)| shape.name.clone())
+        .collect();
+    let field_names: HashSet<SmolStr> = module
+        .functions
+        .iter()
+        .filter(|(_, func)| matches!(func.role, FunctionRole::Field))
+        .map(|(_, func)| func.name.clone())
+        .collect();
+    let material_names: HashSet<SmolStr> = module
+        .functions
+        .iter()
+        .filter(|(_, func)| matches!(func.role, FunctionRole::Material))
+        .map(|(_, func)| func.name.clone())
+        .collect();
+    let shape_graphs: HashMap<SmolStr, &ShapeGraph> = module
+        .shapes
+        .iter()
+        .filter_map(|(_, shape)| shape.graph.as_ref().map(|graph| (shape.name.clone(), graph)))
+        .collect();
+    let top_level = portable_function_sets(module);
+
+    for (_, shape) in module.shapes.iter() {
+        let Some(graph) = &shape.graph else {
+            continue;
+        };
+        let mut stack = vec![shape.name.clone()];
+        validate_shape_expr(
+            &graph.root,
+            shape,
+            &shape_names,
+            &field_names,
+            &material_names,
+            &shape_graphs,
+            &top_level,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            &mut stack,
+            errors,
+        );
+    }
+}
+
+fn validate_shape_expr(
+    expr: &ShapeExpr,
+    shape: &Shape,
+    shape_names: &HashSet<SmolStr>,
+    field_names: &HashSet<SmolStr>,
+    material_names: &HashSet<SmolStr>,
+    shape_graphs: &HashMap<SmolStr, &ShapeGraph>,
+    top_level: &PortableFunctionSets,
+    classes: &ClassIndex,
+    enums: &EnumIndex,
+    interfaces: &InterfaceIndex,
+    functions: &FunctionIndex,
+    stack: &mut Vec<SmolStr>,
+    errors: &mut Vec<TypeError>,
+) {
+    match expr {
+        ShapeExpr::Use { target } => {
+            if !shape_names.contains(target) {
+                errors.push(TypeError::ShapeBindingTargetInvalid {
+                    shape: shape.name.clone(),
+                    binding: "`use`",
+                    expected: "shape",
+                    target: target.clone(),
+                    span: span_from_option_range(shape.name_span),
+                    help: "Compose shapes through other top-level `shape` declarations so the compiler can preserve scene structure and provenance.".to_string(),
+                });
+                return;
+            }
+            if stack.contains(target) {
+                errors.push(TypeError::ShapeCycleDetected {
+                    shape: shape.name.clone(),
+                    target: target.clone(),
+                    span: span_from_option_range(shape.name_span),
+                    help: "Break recursive shape composition by hoisting shared subgraphs into a DAG. Cyclic `shape use` edges cannot be lowered into the current trace/surface helpers.".to_string(),
+                });
+                return;
+            }
+            if let Some(target_graph) = shape_graphs.get(target) {
+                stack.push(target.clone());
+                validate_shape_expr(
+                    &target_graph.root,
+                    shape,
+                    shape_names,
+                    field_names,
+                    material_names,
+                    shape_graphs,
+                    top_level,
+                    classes,
+                    enums,
+                    interfaces,
+                    functions,
+                    stack,
+                    errors,
+                );
+                stack.pop();
+            }
+        }
+        ShapeExpr::Union { items, .. } | ShapeExpr::Intersection { items, .. } => {
+            for item in items {
+                validate_shape_expr(
+                    item,
+                    shape,
+                    shape_names,
+                    field_names,
+                    material_names,
+                    shape_graphs,
+                    top_level,
+                    classes,
+                    enums,
+                    interfaces,
+                    functions,
+                    stack,
+                    errors,
+                );
+            }
+        }
+        ShapeExpr::Subtract { left, right, .. } => {
+            validate_shape_expr(
+                left,
+                shape,
+                shape_names,
+                field_names,
+                material_names,
+                shape_graphs,
+                top_level,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                stack,
+                errors,
+            );
+            validate_shape_expr(
+                right,
+                shape,
+                shape_names,
+                field_names,
+                material_names,
+                shape_graphs,
+                top_level,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                stack,
+                errors,
+            );
+        }
+        ShapeExpr::Leaf(leaf) => {
+            if !field_names.contains(&leaf.field) {
+                errors.push(TypeError::ShapeBindingTargetInvalid {
+                    shape: shape.name.clone(),
+                    binding: "`field = ...`",
+                    expected: "field",
+                    target: leaf.field.clone(),
+                    span: span_from_option_range(shape.name_span),
+                    help: "Bind leaf geometry to a top-level `field` declaration so distance evaluation, exactness, and future bounds analysis stay compiler-visible.".to_string(),
+                });
+            }
+            if !material_names.contains(&leaf.material) {
+                errors.push(TypeError::ShapeBindingTargetInvalid {
+                    shape: shape.name.clone(),
+                    binding: "`material = ...`",
+                    expected: "material",
+                    target: leaf.material.clone(),
+                    span: span_from_option_range(shape.name_span),
+                    help: "Bind leaf shading to a top-level `material` declaration so trace-time provenance can flow directly into `surface_at`.".to_string(),
+                });
+            }
+            validate_shape_payload(
+                leaf,
+                shape,
+                top_level,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+            );
+        }
+    }
+}
+
+fn validate_shape_payload(
+    leaf: &ShapeLeaf,
+    shape: &Shape,
+    top_level: &PortableFunctionSets,
+    classes: &ClassIndex,
+    enums: &EnumIndex,
+    interfaces: &InterfaceIndex,
+    functions: &FunctionIndex,
+    errors: &mut Vec<TypeError>,
+) {
+    let body = &leaf.payload;
+    if body.root_stmts.is_empty() {
+        return;
+    }
+    validate_portable_block(
+        body,
+        &body.root_stmts,
+        &shape.name,
+        FunctionRole::Shape,
+        None,
+        top_level,
+        classes,
+        errors,
+    );
+
+    let Some(value_expr) = shape_payload_value_expr(body) else {
+        return;
+    };
+
+    let mut fn_info = FunctionTypeInfo::default();
+    let mut ctx = TypeContext::with_info(&mut fn_info);
+    ctx.set_function_lane(FunctionLane::Portable);
+    ctx.set_function_name(shape.name.clone());
+    ctx.enter_scope();
+    let found = infer_expr(
+        body,
+        value_expr,
+        &mut ctx,
+        classes,
+        enums,
+        interfaces,
+        functions,
+        errors,
+        false,
+        false,
+        false,
+    );
+    if found != portable_named_type("Payload") {
+        errors.push(TypeError::ShapePayloadTypeForbidden {
+            shape: shape.name.clone(),
+            found: type_label(&found),
+            span: span_from_range(body.expr_span(value_expr)),
+            help: "Shape payloads must evaluate to `Payload` so trace results carry a stable provenance ABI into hits, contacts, and future renderer backends.".to_string(),
+        });
+    }
+    ctx.exit_scope();
+}
+
+fn shape_payload_value_expr(body: &Body) -> Option<Idx<Expr>> {
+    let stmt = *body.root_stmts.last()?;
+    match &body.stmts[stmt] {
+        Stmt::Expr(expr) => Some(*expr),
+        Stmt::Return(Some(expr)) => Some(*expr),
+        _ => None,
+    }
+}
+
 struct PortableFunctionSets {
     all: HashSet<SmolStr>,
     portable: HashSet<SmolStr>,
+    materials: HashSet<SmolStr>,
+    field_classes: HashMap<SmolStr, FieldClass>,
 }
 
 fn portable_function_sets(module: &Module) -> PortableFunctionSets {
@@ -1216,6 +1675,8 @@ fn portable_function_sets(module: &Module) -> PortableFunctionSets {
 
     let mut all = HashSet::new();
     let mut portable = HashSet::new();
+    let mut materials = HashSet::new();
+    let mut field_classes = HashMap::new();
     for (idx, func) in module.functions.iter() {
         if method_ids.contains(&idx) {
             continue;
@@ -1224,9 +1685,606 @@ fn portable_function_sets(module: &Module) -> PortableFunctionSets {
         if matches!(func.lane(), FunctionLane::Portable) {
             portable.insert(func.name.clone());
         }
+        if matches!(func.role, FunctionRole::Material) {
+            materials.insert(func.name.clone());
+        }
+        if matches!(func.role, FunctionRole::Field | FunctionRole::Shape)
+            && let Some(field) = func.field.as_ref()
+        {
+            field_classes.insert(func.name.clone(), field.class);
+        }
     }
 
-    PortableFunctionSets { all, portable }
+    PortableFunctionSets {
+        all,
+        portable,
+        materials,
+        field_classes,
+    }
+}
+
+fn validate_field_boundary(func: &Function, errors: &mut Vec<TypeError>) {
+    if func.params.len() != 1 {
+        errors.push(TypeError::PortableConstructForbidden {
+            function: func.name.clone(),
+            construct: "a field parameter list that is not exactly `(p: Vec3)`".to_string(),
+            span: span_from_option_range(func.name_span),
+            help: "Field declarations currently take exactly one local-space sample point parameter: `p: Vec3`.".to_string(),
+        });
+    }
+    if let Some(param) = func.params.first() {
+        if param.name != "p" {
+            errors.push(TypeError::PortableConstructForbidden {
+                function: func.name.clone(),
+                construct: format!("field parameter '{}'", param.name),
+                span: span_from_option_range(param.name_span),
+                help: "Field declarations currently use a single local-space point parameter named `p`.".to_string(),
+            });
+        }
+        let found = param
+            .ty
+            .as_ref()
+            .map(type_from_ref)
+            .unwrap_or(Type::Unknown);
+        if found != Type::Vec3 {
+            errors.push(TypeError::PortableBoundaryTypeForbidden {
+                function: func.name.clone(),
+                site: format!("parameter '{}'", param.name),
+                found: type_label(&found),
+                span: param
+                    .ty
+                    .as_ref()
+                    .and_then(|ty| ty.name_span)
+                    .map(span_from_range)
+                    .unwrap_or_else(|| span_from_option_range(param.name_span)),
+                help: "Field declarations currently sample a single local-space point with signature `(p: Vec3) -> F32`.".to_string(),
+            });
+        }
+    }
+    let ret_ty = func
+        .ret_type
+        .as_ref()
+        .map(type_from_ref)
+        .unwrap_or(Type::Unknown);
+    if ret_ty != Type::F32 {
+        errors.push(TypeError::PortableBoundaryTypeForbidden {
+            function: func.name.clone(),
+            site: "return type".to_string(),
+            found: type_label(&ret_ty),
+            span: func
+                .ret_type
+                .as_ref()
+                .and_then(|ty| ty.name_span)
+                .map(span_from_range)
+                .unwrap_or_else(|| span_from_option_range(func.name_span)),
+            help: "Field declarations currently sample signed distance through the stable scalar ABI `(p: Vec3) -> F32`.".to_string(),
+        });
+    }
+}
+
+fn validate_field_graph_exactness(
+    func: &Function,
+    top_level: &PortableFunctionSets,
+    classes: &ClassIndex,
+    enums: &EnumIndex,
+    interfaces: &InterfaceIndex,
+    functions: &FunctionIndex,
+    errors: &mut Vec<TypeError>,
+) {
+    let Some(field) = func.field.as_ref() else {
+        return;
+    };
+    let Some(graph) = func.field_graph.as_ref() else {
+        return;
+    };
+    if matches!(field.class, FieldClass::Exact) {
+        if let Err(violation) = field_exactness_capability(
+            &graph.root,
+            func,
+            top_level,
+            classes,
+            enums,
+            interfaces,
+            functions,
+        ) {
+            errors.push(TypeError::FieldExactnessCapabilityViolation {
+                function: func.name.clone(),
+                node: violation.node,
+                detail: violation.detail.clone(),
+                span: span_from_option_range(func.name_span),
+                help: violation.help,
+            });
+        }
+    }
+    validate_field_authored_support_contract(func, graph, errors);
+}
+
+fn validate_field_graph_wrapper_types(
+    func: &Function,
+    classes: &ClassIndex,
+    enums: &EnumIndex,
+    interfaces: &InterfaceIndex,
+    functions: &FunctionIndex,
+    errors: &mut Vec<TypeError>,
+) {
+    let Some(graph) = func.field_graph.as_ref() else {
+        return;
+    };
+    validate_field_wrapper_expr_types(
+        &graph.root,
+        func,
+        classes,
+        enums,
+        interfaces,
+        functions,
+        errors,
+    );
+}
+
+fn validate_field_clause_types(
+    func: &Function,
+    classes: &ClassIndex,
+    enums: &EnumIndex,
+    interfaces: &InterfaceIndex,
+    functions: &FunctionIndex,
+    errors: &mut Vec<TypeError>,
+) {
+    let Some(field) = func.field.as_ref() else {
+        return;
+    };
+    if let Some(body) = field.authored_support.as_ref()
+        && let Some((expr_id, found)) =
+            infer_field_wrapper_body_type(body, func, classes, enums, interfaces, functions)
+        && let Err(error) = validate_support_clause_type(
+            &func.name,
+            &found,
+            span_from_range(body.expr_span(expr_id)),
+        )
+    {
+        errors.push(error);
+    }
+    if let Some(body) = field.authored_bounds.as_ref()
+        && let Some((expr_id, found)) =
+            infer_field_wrapper_body_type(body, func, classes, enums, interfaces, functions)
+        && let Err(error) = validate_bounds_clause_type(
+            &func.name,
+            &found,
+            span_from_range(body.expr_span(expr_id)),
+        )
+    {
+        errors.push(error);
+    }
+}
+
+fn validate_field_wrapper_expr_types(
+    expr: &FieldExpr,
+    func: &Function,
+    classes: &ClassIndex,
+    enums: &EnumIndex,
+    interfaces: &InterfaceIndex,
+    functions: &FunctionIndex,
+    errors: &mut Vec<TypeError>,
+) {
+    match expr {
+        FieldExpr::Use { .. } | FieldExpr::Primitive { .. } | FieldExpr::Custom { .. } => {}
+        FieldExpr::Union { items } | FieldExpr::Intersection { items } => {
+            for item in items {
+                validate_field_wrapper_expr_types(
+                    item, func, classes, enums, interfaces, functions, errors,
+                );
+            }
+        }
+        FieldExpr::Subtract { left, right } => {
+            validate_field_wrapper_expr_types(left, func, classes, enums, interfaces, functions, errors);
+            validate_field_wrapper_expr_types(
+                right, func, classes, enums, interfaces, functions, errors,
+            );
+        }
+        FieldExpr::Transform { transform, body } => {
+            if let Some((expr_id, ty)) =
+                infer_field_wrapper_body_type(transform, func, classes, enums, interfaces, functions)
+            {
+                if ty != Type::Vec3 && ty != portable_named_type("Transform3") {
+                    errors.push(TypeError::PortableBoundaryTypeForbidden {
+                        function: func.name.clone(),
+                        site: "field `transform` operand".to_string(),
+                        found: type_label(&ty),
+                        span: span_from_range(transform.expr_span(expr_id)),
+                        help: "`transform = ... { ... }` accepts only `Vec3` translation or `Transform3` in this slice.".to_string(),
+                    });
+                }
+            }
+            validate_field_wrapper_expr_types(body, func, classes, enums, interfaces, functions, errors);
+        }
+        FieldExpr::Mirror { body, .. } | FieldExpr::Repeat { body, .. } => {
+            validate_field_wrapper_expr_types(body, func, classes, enums, interfaces, functions, errors);
+        }
+        FieldExpr::Instance { instance, body } => {
+            if let Some((expr_id, ty)) =
+                infer_field_wrapper_body_type(instance, func, classes, enums, interfaces, functions)
+            {
+                if ty != portable_named_type("Transform3") {
+                    errors.push(TypeError::PortableBoundaryTypeForbidden {
+                        function: func.name.clone(),
+                        site: "field `instance` operand".to_string(),
+                        found: type_label(&ty),
+                        span: span_from_range(instance.expr_span(expr_id)),
+                        help: "`instance = ... { ... }` accepts only `Transform3` in this slice.".to_string(),
+                    });
+                }
+            }
+            validate_field_wrapper_expr_types(body, func, classes, enums, interfaces, functions, errors);
+        }
+    }
+}
+
+fn infer_field_wrapper_body_type(
+    body: &Body,
+    func: &Function,
+    classes: &ClassIndex,
+    enums: &EnumIndex,
+    interfaces: &InterfaceIndex,
+    functions: &FunctionIndex,
+) -> Option<(Idx<Expr>, Type)> {
+    let value_expr = field_wrapper_value_expr(body)?;
+    let mut local_errors = Vec::new();
+    let mut fn_info = FunctionTypeInfo::default();
+    let mut ctx = TypeContext::with_info(&mut fn_info);
+    ctx.set_function_lane(FunctionLane::Portable);
+    ctx.set_function_name(func.name.clone());
+    ctx.enter_scope();
+    let found = infer_expr(
+        body,
+        value_expr,
+        &mut ctx,
+        classes,
+        enums,
+        interfaces,
+        functions,
+        &mut local_errors,
+        false,
+        false,
+        false,
+    );
+    ctx.exit_scope();
+    if !local_errors.is_empty() || found == Type::Unknown {
+        return None;
+    }
+    Some((value_expr, found))
+}
+
+fn field_wrapper_value_expr(body: &Body) -> Option<Idx<Expr>> {
+    let stmt = *body.root_stmts.last()?;
+    match &body.stmts[stmt] {
+        Stmt::Expr(expr) => Some(*expr),
+        Stmt::Return(Some(expr)) => Some(*expr),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FieldExactnessViolation {
+    node: String,
+    detail: String,
+    help: String,
+}
+
+fn exactness_violation(node: &str, detail: impl Into<String>, help: impl Into<String>) -> FieldExactnessViolation {
+    FieldExactnessViolation {
+        node: node.to_string(),
+        detail: detail.into(),
+        help: help.into(),
+    }
+}
+
+fn field_exactness_capability(
+    expr: &FieldExpr,
+    func: &Function,
+    top_level: &PortableFunctionSets,
+    classes: &ClassIndex,
+    enums: &EnumIndex,
+    interfaces: &InterfaceIndex,
+    functions: &FunctionIndex,
+) -> Result<FieldClass, FieldExactnessViolation> {
+    let point_param = func.params.first().map(|param| &param.name);
+    match expr {
+        FieldExpr::Use { target } => match top_level.field_classes.get(target).copied() {
+            Some(FieldClass::Exact) => Ok(FieldClass::Exact),
+            Some(FieldClass::Conservative) => Err(exactness_violation(
+                "use",
+                format!("calling conservative field '{target}'"),
+                "Exact fields may only call other exact fields plus exact-preserving helpers in this phase.",
+            )),
+            None => Err(exactness_violation(
+                "use",
+                format!("calling non-field portable declaration '{target}'"),
+                "Field composition may only reuse exact field declarations, not arbitrary portable functions.",
+            )),
+        },
+        FieldExpr::Primitive { .. } => Ok(FieldClass::Exact),
+        FieldExpr::Custom { .. } => Err(exactness_violation(
+            "custom",
+            "custom field bodies remain opaque and conservative in this phase",
+            "Rewrite the body using semantic field operators so the compiler can preserve exactness and prune branches.",
+        )),
+        FieldExpr::Union { items } | FieldExpr::Intersection { items } => {
+            for item in items {
+                field_exactness_capability(item, func, top_level, classes, enums, interfaces, functions)?;
+            }
+            Ok(FieldClass::Exact)
+        }
+        FieldExpr::Subtract { left, right } => {
+            field_exactness_capability(left, func, top_level, classes, enums, interfaces, functions)?;
+            field_exactness_capability(right, func, top_level, classes, enums, interfaces, functions)?;
+            Ok(FieldClass::Exact)
+        }
+        FieldExpr::Transform { transform, body } => {
+            if point_param.is_some_and(|name| body_references_variable(transform, name)) {
+                return Err(exactness_violation(
+                    "transform",
+                    format!("transform operand references sample point '{}'", point_param.expect("point param")),
+                    "Exact field transforms must be point-independent. Use a constant or parameter-driven local-frame transform, or downgrade the field to `conservative` for warps.",
+                ));
+            }
+            let Some((_expr_id, ty)) =
+                infer_field_wrapper_body_type(transform, func, classes, enums, interfaces, functions)
+            else {
+                return Err(exactness_violation(
+                    "transform",
+                    "unable to infer the transform operand type",
+                    "Field transforms must use an explicit local-frame wrapper so the compiler can classify exactness.",
+                ));
+            };
+            if ty == Type::Vec3 {
+                field_exactness_capability(body, func, top_level, classes, enums, interfaces, functions)
+            } else if ty == portable_named_type("Transform3") {
+                Err(exactness_violation(
+                    "transform",
+                    "Transform3 transforms are conservative-only in this phase",
+                    "Use Vec3 translation for exact fields in this slice; Transform3 remains a conservative wrapper for later expansion.",
+                ))
+            } else {
+                Err(exactness_violation(
+                    "transform",
+                    format!("expected Vec3 translation or Transform3 operand, found '{}'", type_label(&ty)),
+                    "Field transforms currently accept either Vec3 translation or Transform3 operands.",
+                ))
+            }
+        }
+        FieldExpr::Repeat { repeat, body } => {
+            if point_param.is_some_and(|name| body_references_variable(repeat, name)) {
+                return Err(exactness_violation(
+                    "repeat",
+                    format!("repeat operand references sample point '{}'", point_param.expect("point param")),
+                    "Exact field repetition must be point-independent. Use a constant or parameter-driven period, or downgrade the field to `conservative` for warping repetition.",
+                ));
+            }
+            field_exactness_capability(body, func, top_level, classes, enums, interfaces, functions)
+        }
+        FieldExpr::Mirror { mirror, body } => {
+            if point_param.is_some_and(|name| body_references_variable(mirror, name)) {
+                return Err(exactness_violation(
+                    "mirror",
+                    format!("mirror operand references sample point '{}'", point_param.expect("point param")),
+                    "Exact field mirroring must be point-independent. Use a constant or parameter-driven mirror axis, or downgrade the field to `conservative` for warps.",
+                ));
+            }
+            field_exactness_capability(body, func, top_level, classes, enums, interfaces, functions)
+        }
+        FieldExpr::Instance { .. } => Err(exactness_violation(
+            "instance",
+            "instance composition is conservative-only in this phase",
+            "Use `repeat` or a translated exact field for exact fields; `instance` remains a conservative wrapper.",
+        )),
+    }
+}
+
+fn body_references_variable(body: &Body, name: &SmolStr) -> bool {
+    body.exprs
+        .iter()
+        .any(|(_, expr)| matches!(expr, Expr::Variable(found) if found == name))
+}
+
+fn validate_field_authored_support_contract(
+    func: &Function,
+    graph: &FieldGraph,
+    errors: &mut Vec<TypeError>,
+) {
+    let Some(field) = func.field.as_ref() else {
+        return;
+    };
+    let Some((explicit_support, explicit_bounds)) = authored_field_clause_metadata(field) else {
+        return;
+    };
+    let support_cause = field_support_conflict_source(&graph.root);
+    if graph.trace.support != FieldSupport::Unknown && explicit_support != graph.trace.support
+    {
+        errors.push(TypeError::FieldClauseConflict {
+            field: func.name.clone(),
+            clause: "support",
+            explicit: field_support_name(explicit_support),
+            inferred: field_support_name(graph.trace.support),
+            span: span_from_option_range(func.name_span),
+            help: match support_cause.as_deref() {
+                Some(cause) => format!(
+                    "Authored support must stay consistent with the compiler's inferred support contract. This field becomes {} because of {cause}.",
+                    field_support_name(graph.trace.support)
+                ),
+                None => "Authored support must stay consistent with the compiler's inferred support contract. Tighten the authored clause or rewrite the field graph.".to_string(),
+            },
+        });
+    }
+    if graph.trace.bounds != FieldBounds::Unknown && explicit_bounds != graph.trace.bounds
+    {
+        errors.push(TypeError::FieldClauseConflict {
+            field: func.name.clone(),
+            clause: "bounds",
+            explicit: field_bounds_name(explicit_bounds),
+            inferred: field_bounds_name(graph.trace.bounds),
+            span: span_from_option_range(func.name_span),
+            help: match support_cause.as_deref() {
+                Some(cause) => format!(
+                    "Authored bounds must stay consistent with the compiler's inferred bounds contract. This field becomes {} because of {cause}.",
+                    field_bounds_name(graph.trace.bounds)
+                ),
+                None => "Authored bounds must stay consistent with the compiler's inferred bounds contract. Tighten the authored clause or rewrite the field graph.".to_string(),
+            },
+        });
+    }
+}
+
+fn authored_field_clause_metadata(field: &FieldMetadata) -> Option<(FieldSupport, FieldBounds)> {
+    if field.authored_support.is_some() || field.authored_bounds.is_some() {
+        Some((FieldSupport::Bounded, FieldBounds::Bounded))
+    } else {
+        None
+    }
+}
+
+fn field_support_conflict_source(expr: &FieldExpr) -> Option<String> {
+    match expr {
+        FieldExpr::Use { target } => Some(format!("field reference '{target}'")),
+        FieldExpr::Primitive { primitive, .. } => Some(format!("primitive '{}'", field_primitive_name(*primitive))),
+        FieldExpr::Union { items } | FieldExpr::Intersection { items } => items
+            .iter()
+            .find_map(field_support_conflict_source),
+        FieldExpr::Subtract { left, right } => field_support_conflict_source(left)
+            .or_else(|| field_support_conflict_source(right)),
+        FieldExpr::Transform { body, .. } => field_support_conflict_source(body),
+        FieldExpr::Mirror { body, .. } => field_support_conflict_source(body),
+        FieldExpr::Repeat { .. } => Some("structural operator 'repeat'".to_string()),
+        FieldExpr::Instance { .. } => Some("structural operator 'instance'".to_string()),
+        FieldExpr::Custom { .. } => Some("custom field body".to_string()),
+    }
+}
+
+fn field_primitive_name(primitive: FieldPrimitive) -> &'static str {
+    match primitive {
+        FieldPrimitive::Sphere => "sphere",
+        FieldPrimitive::Box => "box",
+        FieldPrimitive::Capsule => "capsule",
+        FieldPrimitive::Cylinder => "cylinder",
+        FieldPrimitive::Plane => "plane",
+        FieldPrimitive::Torus => "torus",
+    }
+}
+
+fn field_support_name(support: FieldSupport) -> String {
+    match support {
+        FieldSupport::Unknown => "Unknown".to_string(),
+        FieldSupport::Bounded => "Bounded".to_string(),
+        FieldSupport::Periodic => "Periodic".to_string(),
+        FieldSupport::Unbounded => "Unbounded".to_string(),
+    }
+}
+
+fn field_bounds_name(bounds: FieldBounds) -> String {
+    match bounds {
+        FieldBounds::Unknown => "Unknown".to_string(),
+        FieldBounds::Bounded => "Bounded".to_string(),
+        FieldBounds::Unbounded => "Unbounded".to_string(),
+    }
+}
+
+fn validate_field_clause_type(
+    field: &SmolStr,
+    clause: &'static str,
+    expected: &'static str,
+    found: &Type,
+    span: SourceSpan,
+) -> Result<(), TypeError> {
+    let expected_ty = portable_named_type(expected);
+    if found == &expected_ty {
+        Ok(())
+    } else {
+        Err(TypeError::FieldClauseTypeForbidden {
+            field: field.clone(),
+            clause,
+            expected,
+            found: type_label(found),
+            span,
+            help: format!(
+                "`{clause} = ...` clauses must evaluate to {expected}; keep the clause data fixed-layout and explicit."
+            ),
+        })
+    }
+}
+
+pub(crate) fn validate_support_clause_type(
+    field: &SmolStr,
+    found: &Type,
+    span: SourceSpan,
+) -> Result<(), TypeError> {
+    validate_field_clause_type(field, "support", "Support3", found, span)
+}
+
+pub(crate) fn validate_bounds_clause_type(
+    field: &SmolStr,
+    found: &Type,
+    span: SourceSpan,
+) -> Result<(), TypeError> {
+    validate_field_clause_type(field, "bounds", "Bounds3", found, span)
+}
+
+fn validate_material_boundary(func: &Function, errors: &mut Vec<TypeError>) {
+    if func.params.len() != 1 {
+        errors.push(TypeError::PortableConstructForbidden {
+            function: func.name.clone(),
+            construct: "a material parameter list that is not exactly `(hit: Hit3)`".to_string(),
+            span: span_from_option_range(func.name_span),
+            help: "Material declarations currently take exactly one hit parameter: `(hit: Hit3) -> Surface`.".to_string(),
+        });
+    }
+    if let Some(param) = func.params.first() {
+        if param.name != "hit" {
+            errors.push(TypeError::PortableConstructForbidden {
+                function: func.name.clone(),
+                construct: format!("material parameter '{}'", param.name),
+                span: span_from_option_range(param.name_span),
+                help: "Material declarations currently use a single hit parameter named `hit`."
+                    .to_string(),
+            });
+        }
+        let found = param
+            .ty
+            .as_ref()
+            .map(type_from_ref)
+            .unwrap_or(Type::Unknown);
+        let expected = portable_named_type("Hit3");
+        if found != expected {
+            errors.push(TypeError::PortableBoundaryTypeForbidden {
+                function: func.name.clone(),
+                site: format!("parameter '{}'", param.name),
+                found: type_label(&found),
+                span: param
+                    .ty
+                    .as_ref()
+                    .and_then(|ty| ty.name_span)
+                    .map(span_from_range)
+                    .unwrap_or_else(|| span_from_option_range(param.name_span)),
+                help: "Material declarations currently sample a known hit with signature `(hit: Hit3) -> Surface`.".to_string(),
+            });
+        }
+    }
+    let ret_ty = func
+        .ret_type
+        .as_ref()
+        .map(type_from_ref)
+        .unwrap_or(Type::Unknown);
+    if ret_ty != portable_named_type("Surface") {
+        errors.push(TypeError::PortableBoundaryTypeForbidden {
+            function: func.name.clone(),
+            site: "return type".to_string(),
+            found: type_label(&ret_ty),
+            span: func
+                .ret_type
+                .as_ref()
+                .and_then(|ty| ty.name_span)
+                .map(span_from_range)
+                .unwrap_or_else(|| span_from_option_range(func.name_span)),
+            help: "Material declarations currently return `Surface` so the CPU reference path and future GPU backends share the same shading ABI.".to_string(),
+        });
+    }
 }
 
 fn validate_portable_function_boundary(
@@ -1323,9 +2381,6 @@ fn supports_portable_boundary_type(
             *len > 0 && supports_portable_boundary_type(inner, classes, visiting)
         }
         Type::Named(name, args) => {
-            if args.is_empty() && is_portable_named_data_type_name(name.as_str()) {
-                return true;
-            }
             if !args.is_empty() {
                 return false;
             }
@@ -1353,6 +2408,8 @@ fn validate_portable_block(
     body: &Body,
     stmts: &[Idx<Stmt>],
     function: &SmolStr,
+    current_role: FunctionRole,
+    current_field: Option<&FieldMetadata>,
     functions: &PortableFunctionSets,
     classes: &ClassIndex,
     errors: &mut Vec<TypeError>,
@@ -1360,7 +2417,16 @@ fn validate_portable_block(
     for stmt_id in stmts {
         match &body.stmts[*stmt_id] {
             Stmt::Expr(expr) => {
-                validate_portable_expr(body, *expr, function, functions, classes, errors);
+                validate_portable_expr(
+                    body,
+                    *expr,
+                    function,
+                    current_role,
+                    current_field,
+                    functions,
+                    classes,
+                    errors,
+                );
             }
             Stmt::Assert {
                 expr,
@@ -1368,20 +2434,74 @@ fn validate_portable_block(
                 tolerance,
                 ..
             } => {
-                validate_portable_expr(body, *expr, function, functions, classes, errors);
+                validate_portable_expr(
+                    body,
+                    *expr,
+                    function,
+                    current_role,
+                    current_field,
+                    functions,
+                    classes,
+                    errors,
+                );
                 if let Some(rhs) = rhs {
-                    validate_portable_expr(body, *rhs, function, functions, classes, errors);
+                    validate_portable_expr(
+                        body,
+                        *rhs,
+                        function,
+                        current_role,
+                        current_field,
+                        functions,
+                        classes,
+                        errors,
+                    );
                 }
                 if let Some(tolerance) = tolerance {
-                    validate_portable_expr(body, *tolerance, function, functions, classes, errors);
+                    validate_portable_expr(
+                        body,
+                        *tolerance,
+                        function,
+                        current_role,
+                        current_field,
+                        functions,
+                        classes,
+                        errors,
+                    );
                 }
             }
             Stmt::Require { condition, message } => {
-                validate_portable_expr(body, *condition, function, functions, classes, errors);
-                validate_portable_expr(body, *message, function, functions, classes, errors);
+                validate_portable_expr(
+                    body,
+                    *condition,
+                    function,
+                    current_role,
+                    current_field,
+                    functions,
+                    classes,
+                    errors,
+                );
+                validate_portable_expr(
+                    body,
+                    *message,
+                    function,
+                    current_role,
+                    current_field,
+                    functions,
+                    classes,
+                    errors,
+                );
             }
             Stmt::Let { value, .. } | Stmt::Assign { value, .. } => {
-                validate_portable_expr(body, *value, function, functions, classes, errors);
+                validate_portable_expr(
+                    body,
+                    *value,
+                    function,
+                    current_role,
+                    current_field,
+                    functions,
+                    classes,
+                    errors,
+                );
             }
             Stmt::Optimize { body: inner, .. } => {
                 errors.push(TypeError::PortableConstructForbidden {
@@ -1390,17 +2510,53 @@ fn validate_portable_block(
                     span: span_from_range(body.stmt_span(*stmt_id)),
                     help: "Keep portable kernels focused on deterministic data-parallel work; orchestration stays in the host lane.".to_string(),
                 });
-                validate_portable_block(body, inner, function, functions, classes, errors);
+                validate_portable_block(
+                    body,
+                    inner,
+                    function,
+                    current_role,
+                    current_field,
+                    functions,
+                    classes,
+                    errors,
+                );
             }
             Stmt::If {
                 condition,
                 then_branch,
                 else_branch,
             } => {
-                validate_portable_expr(body, *condition, function, functions, classes, errors);
-                validate_portable_block(body, then_branch, function, functions, classes, errors);
+                validate_portable_expr(
+                    body,
+                    *condition,
+                    function,
+                    current_role,
+                    current_field,
+                    functions,
+                    classes,
+                    errors,
+                );
+                validate_portable_block(
+                    body,
+                    then_branch,
+                    function,
+                    current_role,
+                    current_field,
+                    functions,
+                    classes,
+                    errors,
+                );
                 if let Some(branch) = else_branch {
-                    validate_portable_block(body, branch, function, functions, classes, errors);
+                    validate_portable_block(
+                        body,
+                        branch,
+                        function,
+                        current_role,
+                        current_field,
+                        functions,
+                        classes,
+                        errors,
+                    );
                 }
             }
             Stmt::For {
@@ -1408,23 +2564,77 @@ fn validate_portable_block(
                 body: inner,
                 ..
             } => {
-                validate_portable_expr(body, *iterable, function, functions, classes, errors);
-                validate_portable_block(body, inner, function, functions, classes, errors);
+                validate_portable_expr(
+                    body,
+                    *iterable,
+                    function,
+                    current_role,
+                    current_field,
+                    functions,
+                    classes,
+                    errors,
+                );
+                validate_portable_block(
+                    body,
+                    inner,
+                    function,
+                    current_role,
+                    current_field,
+                    functions,
+                    classes,
+                    errors,
+                );
             }
             Stmt::Match {
                 subject,
                 cases,
                 otherwise,
             } => {
-                validate_portable_expr(body, *subject, function, functions, classes, errors);
+                validate_portable_expr(
+                    body,
+                    *subject,
+                    function,
+                    current_role,
+                    current_field,
+                    functions,
+                    classes,
+                    errors,
+                );
                 for case in cases {
                     if let Some(guard) = case.guard {
-                        validate_portable_expr(body, guard, function, functions, classes, errors);
+                        validate_portable_expr(
+                            body,
+                            guard,
+                            function,
+                            current_role,
+                            current_field,
+                            functions,
+                            classes,
+                            errors,
+                        );
                     }
-                    validate_portable_block(body, &case.body, function, functions, classes, errors);
+                    validate_portable_block(
+                        body,
+                        &case.body,
+                        function,
+                        current_role,
+                        current_field,
+                        functions,
+                        classes,
+                        errors,
+                    );
                 }
                 if let Some(otherwise) = otherwise {
-                    validate_portable_block(body, otherwise, function, functions, classes, errors);
+                    validate_portable_block(
+                        body,
+                        otherwise,
+                        function,
+                        current_role,
+                        current_field,
+                        functions,
+                        classes,
+                        errors,
+                    );
                 }
             }
             Stmt::IgnoreResult { expr } => {
@@ -1434,7 +2644,16 @@ fn validate_portable_block(
                     span: span_from_range(body.stmt_span(*stmt_id)),
                     help: "Portable code should stay free of host-style result side channels; return portable data explicitly instead.".to_string(),
                 });
-                validate_portable_expr(body, *expr, function, functions, classes, errors);
+                validate_portable_expr(
+                    body,
+                    *expr,
+                    function,
+                    current_role,
+                    current_field,
+                    functions,
+                    classes,
+                    errors,
+                );
             }
             Stmt::Capture { value, .. } => {
                 errors.push(TypeError::PortableConstructForbidden {
@@ -1443,7 +2662,16 @@ fn validate_portable_block(
                     span: span_from_range(body.stmt_span(*stmt_id)),
                     help: "Captures belong in higher-level field/query semantics, not the kernel portability substrate.".to_string(),
                 });
-                validate_portable_expr(body, *value, function, functions, classes, errors);
+                validate_portable_expr(
+                    body,
+                    *value,
+                    function,
+                    current_role,
+                    current_field,
+                    functions,
+                    classes,
+                    errors,
+                );
             }
             Stmt::Defer { expr } => {
                 errors.push(TypeError::PortableConstructForbidden {
@@ -1452,18 +2680,54 @@ fn validate_portable_block(
                     span: span_from_range(body.stmt_span(*stmt_id)),
                     help: "Portable kernels cannot rely on host-style deferred cleanup. Pass handles in and keep execution order-independent.".to_string(),
                 });
-                validate_portable_expr(body, *expr, function, functions, classes, errors);
+                validate_portable_expr(
+                    body,
+                    *expr,
+                    function,
+                    current_role,
+                    current_field,
+                    functions,
+                    classes,
+                    errors,
+                );
             }
             Stmt::While {
                 condition,
                 body: inner,
             } => {
-                validate_portable_expr(body, *condition, function, functions, classes, errors);
-                validate_portable_block(body, inner, function, functions, classes, errors);
+                validate_portable_expr(
+                    body,
+                    *condition,
+                    function,
+                    current_role,
+                    current_field,
+                    functions,
+                    classes,
+                    errors,
+                );
+                validate_portable_block(
+                    body,
+                    inner,
+                    function,
+                    current_role,
+                    current_field,
+                    functions,
+                    classes,
+                    errors,
+                );
             }
             Stmt::Return(expr) => {
                 if let Some(expr) = expr {
-                    validate_portable_expr(body, *expr, function, functions, classes, errors);
+                    validate_portable_expr(
+                        body,
+                        *expr,
+                        function,
+                        current_role,
+                        current_field,
+                        functions,
+                        classes,
+                        errors,
+                    );
                 }
             }
             Stmt::Use { .. } | Stmt::Break | Stmt::Continue => {}
@@ -1475,6 +2739,8 @@ fn validate_portable_expr(
     body: &Body,
     expr_id: Idx<Expr>,
     function: &SmolStr,
+    current_role: FunctionRole,
+    current_field: Option<&FieldMetadata>,
     functions: &PortableFunctionSets,
     classes: &ClassIndex,
     errors: &mut Vec<TypeError>,
@@ -1496,11 +2762,38 @@ fn validate_portable_expr(
                 span: span_from_range(body.expr_span(expr_id)),
                 help: "Portable kernels cannot spawn host concurrency; dispatch from the host and keep kernel helpers synchronous.".to_string(),
             });
-            validate_portable_expr(body, *target, function, functions, classes, errors);
+            validate_portable_expr(
+                body,
+                *target,
+                function,
+                current_role,
+                current_field,
+                functions,
+                classes,
+                errors,
+            );
         }
         Expr::Binary { lhs, rhs, .. } => {
-            validate_portable_expr(body, *lhs, function, functions, classes, errors);
-            validate_portable_expr(body, *rhs, function, functions, classes, errors);
+            validate_portable_expr(
+                body,
+                *lhs,
+                function,
+                current_role,
+                current_field,
+                functions,
+                classes,
+                errors,
+            );
+            validate_portable_expr(
+                body,
+                *rhs,
+                function,
+                current_role,
+                current_field,
+                functions,
+                classes,
+                errors,
+            );
         }
         Expr::Unary { op, expr, .. } => {
             if let Some((construct, help)) = portable_unary_rejection(*op) {
@@ -1511,10 +2804,28 @@ fn validate_portable_expr(
                     help: help.to_string(),
                 });
             }
-            validate_portable_expr(body, *expr, function, functions, classes, errors);
+            validate_portable_expr(
+                body,
+                *expr,
+                function,
+                current_role,
+                current_field,
+                functions,
+                classes,
+                errors,
+            );
         }
         Expr::TypeApply { callee, .. } => {
-            validate_portable_expr(body, *callee, function, functions, classes, errors);
+            validate_portable_expr(
+                body,
+                *callee,
+                function,
+                current_role,
+                current_field,
+                functions,
+                classes,
+                errors,
+            );
         }
         Expr::Crash { expr } => {
             errors.push(TypeError::PortableConstructForbidden {
@@ -1523,27 +2834,90 @@ fn validate_portable_expr(
                 span: span_from_range(body.expr_span(expr_id)),
                 help: "Portable kernels should communicate failure through explicit host-side orchestration, not trap semantics.".to_string(),
             });
-            validate_portable_expr(body, *expr, function, functions, classes, errors);
+            validate_portable_expr(
+                body,
+                *expr,
+                function,
+                current_role,
+                current_field,
+                functions,
+                classes,
+                errors,
+            );
         }
         Expr::Call { callee, args, .. } => {
             validate_portable_call(
-                body, expr_id, callee, args, function, functions, classes, errors,
+                body,
+                expr_id,
+                callee,
+                args,
+                function,
+                current_role,
+                current_field,
+                functions,
+                classes,
+                errors,
             );
-            validate_portable_expr(body, *callee, function, functions, classes, errors);
+            validate_portable_expr(
+                body,
+                *callee,
+                function,
+                current_role,
+                current_field,
+                functions,
+                classes,
+                errors,
+            );
             for arg in args {
                 match arg {
                     Arg::Positional { value, .. } | Arg::Named { value, .. } => {
-                        validate_portable_expr(body, *value, function, functions, classes, errors);
+                        validate_portable_expr(
+                            body,
+                            *value,
+                            function,
+                            current_role,
+                            current_field,
+                            functions,
+                            classes,
+                            errors,
+                        );
                     }
                 }
             }
         }
         Expr::Member { object, .. } => {
-            validate_portable_expr(body, *object, function, functions, classes, errors);
+            validate_portable_expr(
+                body,
+                *object,
+                function,
+                current_role,
+                current_field,
+                functions,
+                classes,
+                errors,
+            );
         }
         Expr::Index { object, index, .. } => {
-            validate_portable_expr(body, *object, function, functions, classes, errors);
-            validate_portable_expr(body, *index, function, functions, classes, errors);
+            validate_portable_expr(
+                body,
+                *object,
+                function,
+                current_role,
+                current_field,
+                functions,
+                classes,
+                errors,
+            );
+            validate_portable_expr(
+                body,
+                *index,
+                function,
+                current_role,
+                current_field,
+                functions,
+                classes,
+                errors,
+            );
         }
         Expr::List(items) => {
             errors.push(TypeError::PortableConstructForbidden {
@@ -1553,7 +2927,16 @@ fn validate_portable_expr(
                 help: "Portable kernels cannot allocate dynamic lists. Use fixed-size arrays or buffers instead.".to_string(),
             });
             for item in items {
-                validate_portable_expr(body, *item, function, functions, classes, errors);
+                validate_portable_expr(
+                    body,
+                    *item,
+                    function,
+                    current_role,
+                    current_field,
+                    functions,
+                    classes,
+                    errors,
+                );
             }
         }
         Expr::Map(items) => {
@@ -1564,8 +2947,26 @@ fn validate_portable_expr(
                 help: "Portable kernels cannot allocate hash maps. Flatten the data into arrays, values, or buffers instead.".to_string(),
             });
             for (key, value) in items {
-                validate_portable_expr(body, *key, function, functions, classes, errors);
-                validate_portable_expr(body, *value, function, functions, classes, errors);
+                validate_portable_expr(
+                    body,
+                    *key,
+                    function,
+                    current_role,
+                    current_field,
+                    functions,
+                    classes,
+                    errors,
+                );
+                validate_portable_expr(
+                    body,
+                    *value,
+                    function,
+                    current_role,
+                    current_field,
+                    functions,
+                    classes,
+                    errors,
+                );
             }
         }
         Expr::StringInterp(parts) => {
@@ -1577,7 +2978,16 @@ fn validate_portable_expr(
             });
             for part in parts {
                 if let crate::hir::StringPart::Expr(expr) = part {
-                    validate_portable_expr(body, *expr, function, functions, classes, errors);
+                    validate_portable_expr(
+                        body,
+                        *expr,
+                        function,
+                        current_role,
+                        current_field,
+                        functions,
+                        classes,
+                        errors,
+                    );
                 }
             }
         }
@@ -1590,7 +3000,16 @@ fn validate_portable_expr(
                 span: span_from_range(body.expr_span(expr_id)),
                 help: "Portable kernels need a direct, backend-neutral call graph. Hoist helper logic into named functions instead.".to_string(),
             });
-            validate_portable_expr(body, *closure_body, function, functions, classes, errors);
+            validate_portable_expr(
+                body,
+                *closure_body,
+                function,
+                current_role,
+                current_field,
+                functions,
+                classes,
+                errors,
+            );
         }
     }
 }
@@ -1601,13 +3020,105 @@ fn validate_portable_call(
     callee: &Idx<Expr>,
     _args: &[Arg],
     function: &SmolStr,
+    current_role: FunctionRole,
+    current_field: Option<&FieldMetadata>,
     functions: &PortableFunctionSets,
     classes: &ClassIndex,
     errors: &mut Vec<TypeError>,
 ) {
     match &body.exprs[*callee] {
         Expr::Variable(name) => {
-            if is_portable_safe_builtin_call(name.as_str()) {
+            if let Some(current_field) = current_field {
+                if is_field_safe_builtin_call(name.as_str()) {
+                    if matches!(current_field.class, FieldClass::Exact)
+                        && matches!(
+                            field_builtin_exactness(name.as_str()),
+                            Some(FieldClass::Conservative)
+                        )
+                    {
+                        errors.push(TypeError::PortableConstructForbidden {
+                            function: function.clone(),
+                            construct: format!("calling conservative field builtin '{}'", name),
+                            span: span_from_range(body.expr_span(expr_id)),
+                            help: "Exact fields may only call exact-preserving structural helpers or other exact field declarations in this slice.".to_string(),
+                        });
+                    }
+                    return;
+                }
+                if is_portable_safe_builtin_call(name.as_str()) {
+                    errors.push(TypeError::PortableConstructForbidden {
+                        function: function.clone(),
+                        construct: format!("calling kernel-only builtin '{}'", name),
+                        span: span_from_range(body.expr_span(expr_id)),
+                        help: "Field declarations stay pure and spatial. GPU buffers, atomics, invocation IDs, and synchronization belong in `kernel fn`, not `field` bodies.".to_string(),
+                    });
+                    return;
+                }
+                if let Some(callee_class) = functions.field_classes.get(name).copied() {
+                    if matches!(current_field.class, FieldClass::Exact)
+                        && !matches!(callee_class, FieldClass::Exact)
+                    {
+                        errors.push(TypeError::PortableConstructForbidden {
+                            function: function.clone(),
+                            construct: format!("calling conservative field '{}'", name),
+                            span: span_from_range(body.expr_span(expr_id)),
+                            help: "Exact fields may only call other exact fields plus exact-preserving math intrinsics in this first slice.".to_string(),
+                        });
+                    }
+                    return;
+                }
+                if functions.portable.contains(name) {
+                    errors.push(TypeError::PortableConstructForbidden {
+                        function: function.clone(),
+                        construct: format!("calling non-field portable declaration '{}'", name),
+                        span: span_from_range(body.expr_span(expr_id)),
+                        help: "Field bodies may call other field declarations, value constructors, and pure math/geometry intrinsics. Portable kernel entry points stay separate.".to_string(),
+                    });
+                    return;
+                }
+            } else if matches!(current_role, FunctionRole::Material) {
+                if is_field_composition_builtin_call(name.as_str()) {
+                    errors.push(TypeError::PortableConstructForbidden {
+                        function: function.clone(),
+                        construct: format!("field composition helper '{}'", name),
+                        span: span_from_range(body.expr_span(expr_id)),
+                        help: "Field composition helpers belong inside `field` declarations so the compiler can keep scene structure visible for raymarch optimization.".to_string(),
+                    });
+                    return;
+                }
+                if is_field_safe_builtin_call(name.as_str()) {
+                    return;
+                }
+                if is_portable_safe_builtin_call(name.as_str()) {
+                    errors.push(TypeError::PortableConstructForbidden {
+                        function: function.clone(),
+                        construct: format!("calling kernel-only builtin '{}'", name),
+                        span: span_from_range(body.expr_span(expr_id)),
+                        help: "Material declarations stay pure and shading-focused. GPU buffers, invocation IDs, and synchronization belong in `kernel fn`, not `material` bodies.".to_string(),
+                    });
+                    return;
+                }
+                if functions.materials.contains(name) {
+                    return;
+                }
+                if functions.portable.contains(name) {
+                    errors.push(TypeError::PortableConstructForbidden {
+                        function: function.clone(),
+                        construct: format!("calling non-material portable declaration '{}'", name),
+                        span: span_from_range(body.expr_span(expr_id)),
+                        help: "Material declarations may call other materials, value constructors, and pure math/geometry intrinsics. Sampling fields and launching kernels stay outside the shading lane.".to_string(),
+                    });
+                    return;
+                }
+            } else if is_portable_safe_builtin_call(name.as_str()) {
+                return;
+            } else if is_field_composition_builtin_call(name.as_str()) {
+                errors.push(TypeError::PortableConstructForbidden {
+                    function: function.clone(),
+                    construct: format!("field composition helper '{}'", name),
+                    span: span_from_range(body.expr_span(expr_id)),
+                    help: "Field composition helpers belong inside `field` declarations so the compiler can keep scene structure visible for raymarch optimization.".to_string(),
+                });
                 return;
             }
             if functions.portable.contains(name) {
@@ -1729,6 +3240,19 @@ fn is_portable_safe_builtin_call(name: &str) -> bool {
             | "transform_normal"
             | "compose_transform3"
             | "inverse_transform3"
+            | "repeat_point"
+            | "sphere"
+            | "box"
+            | "capsule"
+            | "cylinder"
+            | "plane"
+            | "torus"
+            | "__wr_primitive_sphere"
+            | "__wr_primitive_box"
+            | "__wr_primitive_capsule"
+            | "__wr_primitive_cylinder"
+            | "__wr_primitive_plane"
+            | "__wr_primitive_torus"
             | "dot"
             | "length"
             | "normalize"
@@ -1770,6 +3294,77 @@ fn is_portable_safe_builtin_call(name: &str) -> bool {
     )
 }
 
+fn is_field_safe_builtin_call(name: &str) -> bool {
+    matches!(
+        name,
+        "vec2"
+            | "vec3"
+            | "vec4"
+            | "quat"
+            | "mat3_identity"
+            | "mat3_cols"
+            | "mat4_identity"
+            | "mat4_cols"
+            | "bounds2"
+            | "bounds3"
+            | "ray3"
+            | "transform3"
+            | "transform3_identity"
+            | "bounds2_center"
+            | "bounds2_size"
+            | "bounds3_center"
+            | "bounds3_size"
+            | "transform_point"
+            | "transform_vector"
+            | "transform_normal"
+            | "compose_transform3"
+            | "inverse_transform3"
+            | "field_transform_point"
+            | "field_mirror_point"
+            | "field_repeat_point"
+            | "field_instance_point"
+            | "sphere"
+            | "box"
+            | "capsule"
+            | "cylinder"
+            | "plane"
+            | "torus"
+            | "__wr_primitive_sphere"
+            | "__wr_primitive_box"
+            | "__wr_primitive_capsule"
+            | "__wr_primitive_cylinder"
+            | "__wr_primitive_plane"
+            | "__wr_primitive_torus"
+            | "field_union"
+            | "field_intersection"
+            | "field_subtract"
+            | "dot"
+            | "length"
+            | "normalize"
+            | "cross"
+            | "min"
+            | "max"
+            | "clamp"
+            | "mix"
+            | "abs"
+            | "sign"
+            | "floor"
+            | "ceil"
+            | "fract"
+            | "sin"
+            | "cos"
+            | "sqrt"
+            | "pow"
+            | "distance"
+            | "reflect"
+            | "f32"
+            | "i32"
+            | "i64"
+            | "u32"
+            | "u64"
+    )
+}
+
 fn is_host_only_builtin_call(name: &str) -> bool {
     name.starts_with("__wr_")
         || matches!(
@@ -1778,6 +3373,10 @@ fn is_host_only_builtin_call(name: &str) -> bool {
                 | "try_to_http_call"
                 | "dispatch_compute"
                 | "gpu_buffer_new"
+                | "distance_at"
+                | "normal_at"
+                | "trace_shape"
+                | "surface_at"
                 | "gpu_atomic_i32_new"
                 | "gpu_atomic_i32_drop"
                 | "gpu_atomic_u32_new"
@@ -1789,6 +3388,28 @@ fn is_host_only_builtin_call(name: &str) -> bool {
                 | "gpu_schedule_workgroup_shuffle"
                 | "gpu_schedule_round_robin_workgroups"
         )
+}
+
+fn is_field_composition_builtin_call(name: &str) -> bool {
+    matches!(
+        name,
+        "field_union"
+            | "field_intersection"
+            | "field_subtract"
+            | "field_transform_point"
+            | "field_mirror_point"
+            | "field_repeat_point"
+            | "field_instance_point"
+    )
+}
+
+fn field_builtin_exactness(name: &str) -> Option<FieldClass> {
+    match name {
+        "field_transform_point" => Some(FieldClass::Exact),
+        "field_instance_point" => Some(FieldClass::Conservative),
+        "field_mirror_point" | "field_repeat_point" => Some(FieldClass::Exact),
+        _ => None,
+    }
 }
 
 fn collect_boundary_missing_type_args(ty: &TypeRef, errors: &mut Vec<TypeError>) {

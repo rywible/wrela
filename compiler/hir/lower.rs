@@ -4,7 +4,7 @@ use crate::parser::kind::SyntaxKind;
 use crate::parser::{SyntaxNode, SyntaxToken};
 use rowan::{TextRange, TextSize};
 use smol_str::SmolStr;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub fn lower(root: ast::Root) -> Module {
     let mut ctx = LoweringContext::default();
@@ -19,6 +19,9 @@ pub fn lower_root_body(root: ast::Root) -> Option<Body> {
             ast::Stmt::FuncDef(_)
             | ast::Stmt::KernelDef(_)
             | ast::Stmt::SystemDef(_)
+            | ast::Stmt::FieldDecl(_)
+            | ast::Stmt::MaterialDecl(_)
+            | ast::Stmt::ShapeDecl(_)
             | ast::Stmt::ClassDef(_)
             | ast::Stmt::ValueDef(_)
             | ast::Stmt::EnumDef(_)
@@ -46,6 +49,7 @@ impl Module {
             classes: Arena::new(),
             enums: Arena::new(),
             interfaces: Arena::new(),
+            shapes: Arena::new(),
             uses: Vec::new(),
         }
     }
@@ -86,6 +90,18 @@ impl LoweringContext {
                     let func = self.lower_system_def(f);
                     self.module.functions.alloc(func);
                 }
+                ast::Stmt::FieldDecl(f) => {
+                    let func = self.lower_field_decl(f);
+                    self.module.functions.alloc(func);
+                }
+                ast::Stmt::MaterialDecl(f) => {
+                    let func = self.lower_material_decl(f);
+                    self.module.functions.alloc(func);
+                }
+                ast::Stmt::ShapeDecl(s) => {
+                    let shape = self.lower_shape_decl(s);
+                    self.module.shapes.alloc(shape);
+                }
                 ast::Stmt::ClassDef(c) => {
                     if self.class_is_interface(&c) {
                         let interface = self.lower_interface_from_class(c);
@@ -121,6 +137,18 @@ impl LoweringContext {
                             ast::Stmt::SystemDef(f) => {
                                 let func = self.lower_system_def(f);
                                 self.module.functions.alloc(func);
+                            }
+                            ast::Stmt::FieldDecl(f) => {
+                                let func = self.lower_field_decl(f);
+                                self.module.functions.alloc(func);
+                            }
+                            ast::Stmt::MaterialDecl(f) => {
+                                let func = self.lower_material_decl(f);
+                                self.module.functions.alloc(func);
+                            }
+                            ast::Stmt::ShapeDecl(s) => {
+                                let shape = self.lower_shape_decl(s);
+                                self.module.shapes.alloc(shape);
                             }
                             ast::Stmt::ClassDef(c) => {
                                 if self.class_is_interface(&c) {
@@ -161,7 +189,478 @@ impl LoweringContext {
                 }
             }
         }
+        self.finalize_field_metadata();
         std::mem::take(&mut self.module)
+    }
+
+    fn finalize_field_metadata(&mut self) {
+        let mut field_cache = HashMap::new();
+        let mut shape_cache = HashMap::new();
+        let mut visiting_fields = HashSet::new();
+        let mut visiting_shapes = HashSet::new();
+
+        for idx in 0..self.module.functions.len() {
+            let func_idx = Idx::new(idx);
+            let Some(field) = self.module.functions[func_idx].field.clone() else {
+                continue;
+            };
+            let Some(graph) = self.module.functions[func_idx].field_graph.clone() else {
+                continue;
+            };
+            let trace = self.field_graph_trace_metadata(
+                &graph.root,
+                self.field_point_param_name(func_idx).as_ref(),
+                &mut field_cache,
+                &mut shape_cache,
+                &mut visiting_fields,
+                &mut visiting_shapes,
+            );
+            let trace = match field.class {
+                FieldClass::Exact => trace,
+                FieldClass::Conservative => GraphTraceMetadata::conservative(
+                    trace.support,
+                    trace.bounds,
+                    trace.can_coarse_support_pruning,
+                ),
+            };
+            let execution_trace = self.apply_authored_field_support(trace, &field);
+            self.module.functions[func_idx].field = Some(FieldMetadata {
+                support: execution_trace.support,
+                bounds: execution_trace.bounds,
+                trace: execution_trace,
+                ..field
+            });
+            self.module.functions[func_idx].field_graph = Some(FieldGraph {
+                root: graph.root,
+                trace,
+            });
+        }
+
+        for idx in 0..self.module.shapes.len() {
+            let shape_idx = Idx::new(idx);
+            let Some(graph) = self.module.shapes[shape_idx].graph.clone() else {
+                continue;
+            };
+            let trace = self.shape_graph_trace_metadata(
+                &graph.root,
+                &mut field_cache,
+                &mut shape_cache,
+                &mut visiting_fields,
+                &mut visiting_shapes,
+            );
+            self.module.shapes[shape_idx].graph = Some(ShapeGraph {
+                root: graph.root,
+                provenance: graph.provenance,
+                trace,
+            });
+        }
+    }
+
+    fn field_graph_trace_metadata(
+        &self,
+        expr: &FieldExpr,
+        point_param: Option<&SmolStr>,
+        field_cache: &mut HashMap<SmolStr, GraphTraceMetadata>,
+        shape_cache: &mut HashMap<SmolStr, GraphTraceMetadata>,
+        visiting_fields: &mut HashSet<SmolStr>,
+        visiting_shapes: &mut HashSet<SmolStr>,
+    ) -> GraphTraceMetadata {
+        match expr {
+            FieldExpr::Use { target } => self.field_trace_for_target(
+                target,
+                None,
+                field_cache,
+                shape_cache,
+                visiting_fields,
+                visiting_shapes,
+            ),
+            FieldExpr::Primitive { primitive, .. } => {
+                self.field_primitive_trace_metadata(*primitive)
+            }
+            FieldExpr::Union { items } | FieldExpr::Intersection { items } => self
+                .combine_trace_metadata(items.iter().map(|item| {
+                    self.field_graph_trace_metadata(
+                        item,
+                        point_param,
+                        field_cache,
+                        shape_cache,
+                        visiting_fields,
+                        visiting_shapes,
+                    )
+                })),
+            FieldExpr::Subtract { left, right } => {
+                let left = self.field_graph_trace_metadata(
+                    left,
+                    point_param,
+                    field_cache,
+                    shape_cache,
+                    visiting_fields,
+                    visiting_shapes,
+                );
+                let right = self.field_graph_trace_metadata(
+                    right,
+                    point_param,
+                    field_cache,
+                    shape_cache,
+                    visiting_fields,
+                    visiting_shapes,
+                );
+                GraphTraceMetadata {
+                    class: left.combine_class(right),
+                    support: left.support,
+                    bounds: left.bounds,
+                    can_coarse_support_pruning: left.can_coarse_support_pruning,
+                }
+            }
+            FieldExpr::Transform { transform, body } => {
+                let body = self.field_graph_trace_metadata(
+                    body,
+                    point_param,
+                    field_cache,
+                    shape_cache,
+                    visiting_fields,
+                    visiting_shapes,
+                );
+                if point_param.is_some_and(|name| self.body_references_variable(transform, name)) {
+                    return GraphTraceMetadata::pessimistic();
+                }
+                if self.field_wrapper_body_returns_named_call(transform, "vec3") {
+                    GraphTraceMetadata {
+                        class: body.class,
+                        support: body.support,
+                        bounds: body.bounds,
+                        can_coarse_support_pruning: body.can_coarse_support_pruning,
+                    }
+                } else {
+                    GraphTraceMetadata::conservative(body.support, body.bounds, false)
+                }
+            }
+            FieldExpr::Mirror { mirror, body } => {
+                let body = self.field_graph_trace_metadata(
+                    body,
+                    point_param,
+                    field_cache,
+                    shape_cache,
+                    visiting_fields,
+                    visiting_shapes,
+                );
+                if point_param.is_some_and(|name| self.body_references_variable(mirror, name)) {
+                    return GraphTraceMetadata::pessimistic();
+                }
+                body
+            }
+            FieldExpr::Repeat { repeat, body } => {
+                let body = self.field_graph_trace_metadata(
+                    body,
+                    point_param,
+                    field_cache,
+                    shape_cache,
+                    visiting_fields,
+                    visiting_shapes,
+                );
+                if point_param.is_some_and(|name| self.body_references_variable(repeat, name)) {
+                    return GraphTraceMetadata::pessimistic();
+                }
+                GraphTraceMetadata {
+                    class: body.class,
+                    support: FieldSupport::Periodic,
+                    bounds: FieldBounds::Unbounded,
+                    can_coarse_support_pruning: body.can_coarse_support_pruning,
+                }
+            }
+            FieldExpr::Instance { body, .. } => {
+                let body = self.field_graph_trace_metadata(
+                    body,
+                    point_param,
+                    field_cache,
+                    shape_cache,
+                    visiting_fields,
+                    visiting_shapes,
+                );
+                GraphTraceMetadata::conservative(body.support, body.bounds, false)
+            }
+            FieldExpr::Custom { .. } => GraphTraceMetadata::pessimistic(),
+        }
+    }
+
+    fn field_primitive_trace_metadata(&self, primitive: FieldPrimitive) -> GraphTraceMetadata {
+        match primitive {
+            FieldPrimitive::Plane => {
+                GraphTraceMetadata::exact(FieldSupport::Unbounded, FieldBounds::Unbounded, false)
+            }
+            FieldPrimitive::Sphere
+            | FieldPrimitive::Box
+            | FieldPrimitive::Capsule
+            | FieldPrimitive::Cylinder
+            | FieldPrimitive::Torus => {
+                GraphTraceMetadata::exact(FieldSupport::Bounded, FieldBounds::Bounded, true)
+            }
+        }
+    }
+
+    fn field_wrapper_body_returns_named_call(&self, body: &Body, name: &str) -> bool {
+        let Some(expr) = self.field_wrapper_body_terminal_expr(body) else {
+            return false;
+        };
+        let Expr::Call { callee, .. } = &body.exprs[expr] else {
+            return false;
+        };
+        matches!(&body.exprs[*callee], Expr::Variable(callee_name) if callee_name == name)
+    }
+
+    fn field_wrapper_body_terminal_expr(&self, body: &Body) -> Option<Idx<Expr>> {
+        let stmt = *body.root_stmts.last()?;
+        match &body.stmts[stmt] {
+            Stmt::Expr(expr) | Stmt::Return(Some(expr)) => Some(*expr),
+            _ => None,
+        }
+    }
+
+    fn shape_graph_trace_metadata(
+        &self,
+        expr: &ShapeExpr,
+        field_cache: &mut HashMap<SmolStr, GraphTraceMetadata>,
+        shape_cache: &mut HashMap<SmolStr, GraphTraceMetadata>,
+        visiting_fields: &mut HashSet<SmolStr>,
+        visiting_shapes: &mut HashSet<SmolStr>,
+    ) -> GraphTraceMetadata {
+        match expr {
+            ShapeExpr::Use { target } => self.shape_trace_for_target(
+                target,
+                field_cache,
+                shape_cache,
+                visiting_fields,
+                visiting_shapes,
+            ),
+            ShapeExpr::Union { items, .. } | ShapeExpr::Intersection { items, .. } => self
+                .combine_trace_metadata(items.iter().map(|item| {
+                    self.shape_graph_trace_metadata(
+                        item,
+                        field_cache,
+                        shape_cache,
+                        visiting_fields,
+                        visiting_shapes,
+                    )
+                })),
+            ShapeExpr::Subtract { left, right, .. } => {
+                let left = self.shape_graph_trace_metadata(
+                    left,
+                    field_cache,
+                    shape_cache,
+                    visiting_fields,
+                    visiting_shapes,
+                );
+                let right = self.shape_graph_trace_metadata(
+                    right,
+                    field_cache,
+                    shape_cache,
+                    visiting_fields,
+                    visiting_shapes,
+                );
+                GraphTraceMetadata {
+                    class: left.combine_class(right),
+                    support: left.support,
+                    bounds: left.bounds,
+                    can_coarse_support_pruning: left.can_coarse_support_pruning,
+                }
+            }
+            ShapeExpr::Leaf(leaf) => self.field_trace_for_target(
+                &leaf.field,
+                None,
+                field_cache,
+                shape_cache,
+                visiting_fields,
+                visiting_shapes,
+            ),
+        }
+    }
+
+    fn field_trace_for_target(
+        &self,
+        target: &SmolStr,
+        _point_param: Option<&SmolStr>,
+        field_cache: &mut HashMap<SmolStr, GraphTraceMetadata>,
+        shape_cache: &mut HashMap<SmolStr, GraphTraceMetadata>,
+        visiting_fields: &mut HashSet<SmolStr>,
+        visiting_shapes: &mut HashSet<SmolStr>,
+    ) -> GraphTraceMetadata {
+        if let Some(metadata) = field_cache.get(target).copied() {
+            return metadata;
+        }
+        if !visiting_fields.insert(target.clone()) {
+            return GraphTraceMetadata::pessimistic();
+        }
+        let metadata = self
+            .module
+            .functions
+            .iter()
+            .find(|(_, func)| func.name == *target && matches!(func.role, FunctionRole::Field))
+            .and_then(|(idx, func)| {
+                let graph = func.field_graph.as_ref()?;
+                let graph_trace = self.field_graph_trace_metadata(
+                    &graph.root,
+                    self.field_point_param_name(idx).as_ref(),
+                    field_cache,
+                    shape_cache,
+                    visiting_fields,
+                    visiting_shapes,
+                );
+                let class = func
+                    .field
+                    .as_ref()
+                    .map(|field| field.class)
+                    .unwrap_or(FieldClass::Conservative);
+                Some(match class {
+                    FieldClass::Exact => graph_trace,
+                    FieldClass::Conservative => GraphTraceMetadata::conservative(
+                        graph_trace.support,
+                        graph_trace.bounds,
+                        graph_trace.can_coarse_support_pruning,
+                    ),
+                })
+            })
+            .or_else(|| {
+                Self::field_primitive_from_name(target)
+                    .map(|primitive| self.field_primitive_trace_metadata(primitive))
+            })
+            .unwrap_or_else(GraphTraceMetadata::pessimistic);
+        visiting_fields.remove(target);
+        field_cache.insert(target.clone(), metadata);
+        metadata
+    }
+
+    fn field_point_param_name(&self, func_idx: Idx<Function>) -> Option<SmolStr> {
+        self.module.functions[func_idx]
+            .params
+            .first()
+            .map(|param| param.name.clone())
+    }
+
+    fn body_references_variable(&self, body: &Body, name: &SmolStr) -> bool {
+        body.exprs
+            .iter()
+            .any(|(_, expr)| matches!(expr, Expr::Variable(found) if found == name))
+    }
+
+    fn shape_trace_for_target(
+        &self,
+        target: &SmolStr,
+        field_cache: &mut HashMap<SmolStr, GraphTraceMetadata>,
+        shape_cache: &mut HashMap<SmolStr, GraphTraceMetadata>,
+        visiting_fields: &mut HashSet<SmolStr>,
+        visiting_shapes: &mut HashSet<SmolStr>,
+    ) -> GraphTraceMetadata {
+        if let Some(metadata) = shape_cache.get(target).copied() {
+            return metadata;
+        }
+        if !visiting_shapes.insert(target.clone()) {
+            return GraphTraceMetadata::pessimistic();
+        }
+        let metadata = self
+            .module
+            .shapes
+            .iter()
+            .find(|(_, shape)| shape.name == *target)
+            .and_then(|(_, shape)| shape.graph.as_ref())
+            .map(|graph| {
+                self.shape_graph_trace_metadata(
+                    &graph.root,
+                    field_cache,
+                    shape_cache,
+                    visiting_fields,
+                    visiting_shapes,
+                )
+            })
+            .unwrap_or_else(GraphTraceMetadata::pessimistic);
+        visiting_shapes.remove(target);
+        shape_cache.insert(target.clone(), metadata);
+        metadata
+    }
+
+    fn combine_trace_metadata(
+        &self,
+        values: impl IntoIterator<Item = GraphTraceMetadata>,
+    ) -> GraphTraceMetadata {
+        let mut support_unknown = false;
+        let mut support_unbounded = false;
+        let mut support_periodic = false;
+        let mut support_bounded = false;
+        let mut bounds_unknown = false;
+        let mut bounds_unbounded = false;
+        let mut bounds_bounded = false;
+        let mut saw_value = false;
+        let mut exact = true;
+        for value in values {
+            saw_value = true;
+            match value.support {
+                FieldSupport::Unknown => support_unknown = true,
+                FieldSupport::Bounded => support_bounded = true,
+                FieldSupport::Periodic => support_periodic = true,
+                FieldSupport::Unbounded => support_unbounded = true,
+            }
+            match value.bounds {
+                FieldBounds::Unknown => bounds_unknown = true,
+                FieldBounds::Bounded => bounds_bounded = true,
+                FieldBounds::Unbounded => bounds_unbounded = true,
+            }
+            exact &= matches!(value.class, FieldClass::Exact);
+        }
+        if saw_value {
+            let support = if support_unknown {
+                FieldSupport::Unknown
+            } else if support_unbounded {
+                FieldSupport::Unbounded
+            } else if support_periodic {
+                FieldSupport::Periodic
+            } else if support_bounded {
+                FieldSupport::Bounded
+            } else {
+                FieldSupport::Unknown
+            };
+            let bounds = if bounds_unknown {
+                FieldBounds::Unknown
+            } else if bounds_unbounded {
+                FieldBounds::Unbounded
+            } else if bounds_bounded {
+                FieldBounds::Bounded
+            } else {
+                FieldBounds::Unknown
+            };
+            let can_coarse_support_pruning = !matches!(support, FieldSupport::Unknown)
+                && (matches!(bounds, FieldBounds::Bounded | FieldBounds::Unbounded)
+                    || matches!(support, FieldSupport::Periodic));
+            GraphTraceMetadata {
+                class: if exact {
+                    FieldClass::Exact
+                } else {
+                    FieldClass::Conservative
+                },
+                support,
+                bounds,
+                can_coarse_support_pruning,
+            }
+        } else {
+            GraphTraceMetadata::pessimistic()
+        }
+    }
+
+    fn apply_authored_field_support(
+        &self,
+        trace: GraphTraceMetadata,
+        field: &FieldMetadata,
+    ) -> GraphTraceMetadata {
+        if field.authored_support.is_none() && field.authored_bounds.is_none() {
+            return trace;
+        }
+        match trace.support {
+            FieldSupport::Unknown | FieldSupport::Bounded => GraphTraceMetadata {
+                support: FieldSupport::Bounded,
+                bounds: FieldBounds::Bounded,
+                can_coarse_support_pruning: true,
+                ..trace
+            },
+            FieldSupport::Periodic | FieldSupport::Unbounded => trace,
+        }
     }
 
     fn lower_func(&mut self, f: ast::FuncDef) -> Function {
@@ -170,7 +669,7 @@ impl LoweringContext {
         let name_span = f.name().map(|t| t.text_range());
         let visibility = visibility_for_node_default(f.syntax());
         let type_params = lower_func_type_params(f.syntax());
-        let params = f.params().map(|p| self.lower_param(p)).collect();
+        let params: Vec<_> = f.params().map(|p| self.lower_param(p)).collect();
         let ret_type = f.ret_type().map(|t| self.lower_type_ref(t));
 
         let mut body_ctx = BodyLoweringContext::new();
@@ -187,6 +686,8 @@ impl LoweringContext {
             visibility,
             kind: FunctionKind::Function,
             role: FunctionRole::Function,
+            field: None,
+            field_graph: None,
             system_metadata: None,
             type_params,
             params,
@@ -218,6 +719,8 @@ impl LoweringContext {
             visibility,
             kind: FunctionKind::Function,
             role: FunctionRole::System,
+            field: None,
+            field_graph: None,
             system_metadata: parse_system_metadata(f.syntax()),
             type_params,
             params,
@@ -249,11 +752,875 @@ impl LoweringContext {
             visibility,
             kind: FunctionKind::Function,
             role: FunctionRole::Kernel,
+            field: None,
+            field_graph: None,
             system_metadata: None,
             type_params,
             params,
             ret_type,
             body: Some(body_ctx.body),
+        }
+    }
+
+    fn lower_field_decl(&mut self, f: ast::FieldDecl) -> Function {
+        let name = f.name().map(|t| SmolStr::new(t.text())).unwrap_or_default();
+        let name_span = f.name().map(|t| t.text_range());
+        let visibility = visibility_for_node_default(f.syntax());
+        let params: Vec<_> = f.params().map(|p| self.lower_param(p)).collect();
+        let ret_type = f.ret_type().map(|t| self.lower_type_ref(t));
+        let authored_support = f
+            .support_clause()
+            .and_then(|clause| clause.value())
+            .map(|expr| self.lower_shape_payload(expr));
+        let authored_bounds = f
+            .bounds_clause()
+            .and_then(|clause| clause.value())
+            .map(|expr| self.lower_shape_payload(expr));
+        let field = Some(FieldMetadata {
+            class: match f.field_class().unwrap_or(ast::FieldClass::Exact) {
+                ast::FieldClass::Exact => FieldClass::Exact,
+                ast::FieldClass::Conservative => FieldClass::Conservative,
+            },
+            kind: match f.field_kind().unwrap_or(ast::FieldKind::Distance) {
+                ast::FieldKind::Distance => FieldKind::Distance,
+            },
+            support: FieldSupport::Unknown,
+            bounds: FieldBounds::Unknown,
+            trace: GraphTraceMetadata::pessimistic(),
+            authored_support,
+            authored_bounds,
+        });
+        let semantic_expr = f.semantic_expr();
+        let mut body_ctx = BodyLoweringContext::new();
+        let (field_graph, body) = if let Some(expr) = semantic_expr {
+            let graph = FieldGraph {
+                root: self.lower_field_expr(&mut body_ctx, expr),
+                trace: GraphTraceMetadata::pessimistic(),
+            };
+            let point_name = params
+                .first()
+                .map(|param| param.name.clone())
+                .unwrap_or_else(|| SmolStr::new("p"));
+            let span = body_ctx.empty_span();
+            let point_expr = body_ctx.alloc_expr(Expr::Variable(point_name), span);
+            let value = self.lower_field_graph_to_expr(&mut body_ctx, &graph.root, point_expr);
+            let stmt = body_ctx.alloc_stmt(Stmt::Return(Some(value)), span);
+            body_ctx.body.root_stmts.push(stmt);
+            (Some(graph), body_ctx.body)
+        } else {
+            for stmt in f.statements() {
+                let s = body_ctx.lower_stmt(stmt);
+                body_ctx.body.root_stmts.push(s);
+            }
+            Self::finalize_implicit_return(&mut body_ctx.body, ret_type.as_ref());
+            let body = body_ctx.body;
+            let field_graph = Some(FieldGraph {
+                root: FieldExpr::Custom { body: body.clone() },
+                trace: GraphTraceMetadata::pessimistic(),
+            });
+            (field_graph, body)
+        };
+
+        Function {
+            name,
+            name_span,
+            attributes: Vec::new(),
+            visibility,
+            kind: FunctionKind::Function,
+            role: FunctionRole::Field,
+            field,
+            field_graph,
+            system_metadata: None,
+            type_params: Vec::new(),
+            params,
+            ret_type,
+            body: Some(body),
+        }
+    }
+
+    fn lower_material_decl(&mut self, f: ast::MaterialDecl) -> Function {
+        let name = f.name().map(|t| SmolStr::new(t.text())).unwrap_or_default();
+        let name_span = f.name().map(|t| t.text_range());
+        let visibility = visibility_for_node_default(f.syntax());
+        let params = f.params().map(|p| self.lower_param(p)).collect();
+        let ret_type = f.ret_type().map(|t| self.lower_type_ref(t));
+
+        let mut body_ctx = BodyLoweringContext::new();
+        for stmt in f.statements() {
+            let s = body_ctx.lower_stmt(stmt);
+            body_ctx.body.root_stmts.push(s);
+        }
+        Self::finalize_implicit_return(&mut body_ctx.body, ret_type.as_ref());
+
+        Function {
+            name,
+            name_span,
+            attributes: Vec::new(),
+            visibility,
+            kind: FunctionKind::Function,
+            role: FunctionRole::Material,
+            field: None,
+            field_graph: None,
+            system_metadata: None,
+            type_params: Vec::new(),
+            params,
+            ret_type,
+            body: Some(body_ctx.body),
+        }
+    }
+
+    fn lower_shape_decl(&mut self, s: ast::ShapeDecl) -> Shape {
+        let name = s.name().map(|t| SmolStr::new(t.text())).unwrap_or_default();
+        let name_span = s.name().map(|t| t.text_range());
+        let visibility = visibility_for_node_default(s.syntax());
+        let graph = s.semantic_expr().map(|expr| {
+            let mut body_ctx = BodyLoweringContext::new();
+            let mut feature_path = vec![name.clone()];
+            let provenance = self.lower_shape_provenance_expr(&expr);
+            ShapeGraph {
+                root: self.lower_shape_expr(&mut body_ctx, expr, &mut feature_path),
+                provenance,
+                trace: GraphTraceMetadata::pessimistic(),
+            }
+        });
+
+        Shape {
+            name,
+            name_span,
+            visibility,
+            graph,
+        }
+    }
+
+    fn lower_shape_expr(
+        &mut self,
+        body_ctx: &mut BodyLoweringContext,
+        expr: ast::ShapeExpr,
+        feature_path: &mut Vec<SmolStr>,
+    ) -> ShapeExpr {
+        match expr {
+            ast::ShapeExpr::Use(use_expr) => ShapeExpr::Use {
+                target: use_expr
+                    .name()
+                    .map(|tok| SmolStr::new(tok.text()))
+                    .unwrap_or_default(),
+            },
+            ast::ShapeExpr::Union(union_expr) => ShapeExpr::Union {
+                items: union_expr
+                    .items()
+                    .enumerate()
+                    .map(|(idx, item)| {
+                        feature_path.push(SmolStr::new(format!("union[{idx}]")));
+                        let lowered = self.lower_shape_expr(body_ctx, item, feature_path);
+                        feature_path.pop();
+                        lowered
+                    })
+                    .collect(),
+            },
+            ast::ShapeExpr::Intersection(intersection_expr) => ShapeExpr::Intersection {
+                items: intersection_expr
+                    .items()
+                    .enumerate()
+                    .map(|(idx, item)| {
+                        feature_path.push(SmolStr::new(format!("intersection[{idx}]")));
+                        let lowered = self.lower_shape_expr(body_ctx, item, feature_path);
+                        feature_path.pop();
+                        lowered
+                    })
+                    .collect(),
+            },
+            ast::ShapeExpr::Subtract(subtract_expr) => {
+                let mut items = subtract_expr.items();
+                let left = items
+                    .next()
+                    .map(|item| {
+                        feature_path.push(SmolStr::new("subtract[left]"));
+                        let lowered = self.lower_shape_expr(body_ctx, item, feature_path);
+                        feature_path.pop();
+                        lowered
+                    })
+                    .unwrap_or_else(|| ShapeExpr::Use {
+                        target: SmolStr::new(""),
+                    });
+                let right = items
+                    .next()
+                    .map(|item| {
+                        feature_path.push(SmolStr::new("subtract[right]"));
+                        let lowered = self.lower_shape_expr(body_ctx, item, feature_path);
+                        feature_path.pop();
+                        lowered
+                    })
+                    .unwrap_or_else(|| ShapeExpr::Use {
+                        target: SmolStr::new(""),
+                    });
+                ShapeExpr::Subtract {
+                    left: Box::new(left),
+                    right: Box::new(right),
+                }
+            }
+            ast::ShapeExpr::Leaf(leaf_expr) => {
+                let field = leaf_expr
+                    .field()
+                    .and_then(|binding| binding.value())
+                    .map(|expr| self.lower_shape_name_expr(expr))
+                    .unwrap_or_default();
+                let material = leaf_expr
+                    .material()
+                    .and_then(|binding| binding.value())
+                    .map(|expr| self.lower_shape_name_expr(expr))
+                    .unwrap_or_default();
+                let payload = leaf_expr
+                    .payload()
+                    .and_then(|binding| binding.value())
+                    .map(|expr| self.lower_shape_payload(expr))
+                    .unwrap_or_else(Self::empty_body);
+                let feature_id = Self::shape_feature_id(feature_path);
+
+                ShapeExpr::Leaf(ShapeLeaf {
+                    field,
+                    material,
+                    payload,
+                    feature_id,
+                })
+            }
+        }
+    }
+
+    fn lower_shape_provenance_expr(&self, expr: &ast::ShapeExpr) -> Option<ShapeProvenanceExpr> {
+        match expr {
+            ast::ShapeExpr::Use(use_expr) => Some(ShapeProvenanceExpr::Use {
+                target: use_expr
+                    .name()
+                    .map(|tok| SmolStr::new(tok.text()))
+                    .unwrap_or_default(),
+            }),
+            ast::ShapeExpr::Union(union_expr) => Some(ShapeProvenanceExpr::Union {
+                provenance: Self::lower_shape_merge_provenance_policy(
+                    union_expr.provenance_policy(),
+                ),
+                items: union_expr
+                    .items()
+                    .filter_map(|item| self.lower_shape_provenance_expr(&item))
+                    .collect(),
+            }),
+            ast::ShapeExpr::Intersection(intersection_expr) => {
+                Some(ShapeProvenanceExpr::Intersection {
+                    provenance: Self::lower_shape_merge_provenance_policy(
+                        intersection_expr.provenance_policy(),
+                    ),
+                    items: intersection_expr
+                        .items()
+                        .filter_map(|item| self.lower_shape_provenance_expr(&item))
+                        .collect(),
+                })
+            }
+            ast::ShapeExpr::Subtract(subtract_expr) => {
+                let mut items = subtract_expr.items();
+                let left = items
+                    .next()
+                    .and_then(|item| self.lower_shape_provenance_expr(&item))
+                    .unwrap_or(ShapeProvenanceExpr::Leaf);
+                let right = items
+                    .next()
+                    .and_then(|item| self.lower_shape_provenance_expr(&item))
+                    .unwrap_or(ShapeProvenanceExpr::Leaf);
+                Some(ShapeProvenanceExpr::Subtract {
+                    provenance: Self::lower_shape_subtract_provenance_policy(
+                        subtract_expr.provenance_policy(),
+                    ),
+                    left: Box::new(left),
+                    right: Box::new(right),
+                })
+            }
+            ast::ShapeExpr::Leaf(_) => Some(ShapeProvenanceExpr::Leaf),
+        }
+    }
+
+    fn shape_feature_id(path: &[SmolStr]) -> u64 {
+        const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+        const FNV_PRIME: u64 = 0x100000001b3;
+
+        let mut hash = FNV_OFFSET;
+        for part in path {
+            for byte in part.as_bytes() {
+                hash ^= *byte as u64;
+                hash = hash.wrapping_mul(FNV_PRIME);
+            }
+            hash ^= b'/' as u64;
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+        hash & (i64::MAX as u64)
+    }
+
+    fn lower_shape_merge_provenance_policy(
+        policy: Option<SyntaxToken>,
+    ) -> ShapeMergeProvenancePolicy {
+        match policy.as_ref().map(|token| token.text()) {
+            Some("ordered") => ShapeMergeProvenancePolicy::Ordered,
+            _ => ShapeMergeProvenancePolicy::Nearest,
+        }
+    }
+
+    fn lower_shape_subtract_provenance_policy(
+        policy: Option<SyntaxToken>,
+    ) -> ShapeSubtractProvenancePolicy {
+        match policy.as_ref().map(|token| token.text()) {
+            Some("right") => ShapeSubtractProvenancePolicy::Right,
+            _ => ShapeSubtractProvenancePolicy::Left,
+        }
+    }
+
+    fn lower_shape_name_expr(&self, expr: ast::Expr) -> SmolStr {
+        match expr {
+            ast::Expr::Ident(ident) => ident
+                .name()
+                .map(|tok| SmolStr::new(tok.text()))
+                .unwrap_or_default(),
+            _ => SmolStr::new(expr.syntax().text().to_string()),
+        }
+    }
+
+    fn lower_shape_payload(&mut self, expr: ast::Expr) -> Body {
+        let mut body_ctx = BodyLoweringContext::new();
+        let value = match body_ctx.lower_expr(expr) {
+            Some(value) => value,
+            None => body_ctx.alloc_expr(Expr::Literal(Literal::Nil), body_ctx.empty_span()),
+        };
+        let span = body_ctx.empty_span();
+        let stmt = body_ctx.alloc_stmt(Stmt::Expr(value), span);
+        body_ctx.body.root_stmts.push(stmt);
+        body_ctx.body
+    }
+
+    fn lower_wrapped_field_body(&mut self, expr: ast::Expr) -> Body {
+        self.lower_shape_payload(expr)
+    }
+
+    fn wrapped_body_value_expr(body: &Body) -> Option<Idx<Expr>> {
+        let stmt = *body.root_stmts.last()?;
+        match &body.stmts[stmt] {
+            Stmt::Expr(expr) => Some(*expr),
+            Stmt::Return(Some(expr)) => Some(*expr),
+            _ => None,
+        }
+    }
+
+    fn clone_wrapped_body_expr(
+        &mut self,
+        source: &Body,
+        expr_id: Idx<Expr>,
+        body_ctx: &mut BodyLoweringContext,
+    ) -> Idx<Expr> {
+        let span = source.expr_span(expr_id);
+        let cloned = match &source.exprs[expr_id] {
+            Expr::Literal(literal) => Expr::Literal(literal.clone()),
+            Expr::Variable(name) => Expr::Variable(name.clone()),
+            Expr::Detach {
+                target,
+                size,
+                objective,
+            } => Expr::Detach {
+                target: self.clone_wrapped_body_expr(source, *target, body_ctx),
+                size: *size,
+                objective: *objective,
+            },
+            Expr::Binary {
+                lhs,
+                op,
+                rhs,
+                op_span,
+            } => Expr::Binary {
+                lhs: self.clone_wrapped_body_expr(source, *lhs, body_ctx),
+                op: *op,
+                rhs: self.clone_wrapped_body_expr(source, *rhs, body_ctx),
+                op_span: *op_span,
+            },
+            Expr::Unary { op, expr, op_span } => Expr::Unary {
+                op: *op,
+                expr: self.clone_wrapped_body_expr(source, *expr, body_ctx),
+                op_span: *op_span,
+            },
+            Expr::TypeApply { callee, type_args } => Expr::TypeApply {
+                callee: self.clone_wrapped_body_expr(source, *callee, body_ctx),
+                type_args: type_args.clone(),
+            },
+            Expr::Crash { expr } => Expr::Crash {
+                expr: self.clone_wrapped_body_expr(source, *expr, body_ctx),
+            },
+            Expr::Call {
+                callee,
+                args,
+                type_args,
+            } => Expr::Call {
+                callee: self.clone_wrapped_body_expr(source, *callee, body_ctx),
+                args: args
+                    .iter()
+                    .map(|arg| match arg {
+                        Arg::Positional { value, span } => Arg::Positional {
+                            value: self.clone_wrapped_body_expr(source, *value, body_ctx),
+                            span: *span,
+                        },
+                        Arg::Named {
+                            name,
+                            value,
+                            span,
+                            name_span,
+                        } => Arg::Named {
+                            name: name.clone(),
+                            value: self.clone_wrapped_body_expr(source, *value, body_ctx),
+                            span: *span,
+                            name_span: *name_span,
+                        },
+                    })
+                    .collect(),
+                type_args: type_args.clone(),
+            },
+            Expr::Member {
+                object,
+                member,
+                member_span,
+            } => Expr::Member {
+                object: self.clone_wrapped_body_expr(source, *object, body_ctx),
+                member: member.clone(),
+                member_span: *member_span,
+            },
+            Expr::Index {
+                object,
+                index,
+                index_span,
+            } => Expr::Index {
+                object: self.clone_wrapped_body_expr(source, *object, body_ctx),
+                index: self.clone_wrapped_body_expr(source, *index, body_ctx),
+                index_span: *index_span,
+            },
+            Expr::List(items) => Expr::List(
+                items
+                    .iter()
+                    .map(|item| self.clone_wrapped_body_expr(source, *item, body_ctx))
+                    .collect(),
+            ),
+            Expr::Map(items) => Expr::Map(
+                items
+                    .iter()
+                    .map(|(key, value)| {
+                        (
+                            self.clone_wrapped_body_expr(source, *key, body_ctx),
+                            self.clone_wrapped_body_expr(source, *value, body_ctx),
+                        )
+                    })
+                    .collect(),
+            ),
+            Expr::StringInterp(parts) => Expr::StringInterp(
+                parts
+                    .iter()
+                    .map(|part| match part {
+                        StringPart::Literal(text) => StringPart::Literal(text.clone()),
+                        StringPart::Expr(expr) => {
+                            StringPart::Expr(self.clone_wrapped_body_expr(source, *expr, body_ctx))
+                        }
+                    })
+                    .collect(),
+            ),
+            Expr::Closure { params, body } => Expr::Closure {
+                params: params.clone(),
+                body: self.clone_wrapped_body_expr(source, *body, body_ctx),
+            },
+        };
+        body_ctx.alloc_expr(cloned, span)
+    }
+
+    fn lower_field_wrapper_point(
+        &mut self,
+        body_ctx: &mut BodyLoweringContext,
+        helper_name: &str,
+        wrapper_param: &str,
+        wrapper_body: &Body,
+        point_expr: Idx<Expr>,
+    ) -> Idx<Expr> {
+        let Some(wrapper_expr) = Self::wrapped_body_value_expr(wrapper_body) else {
+            return point_expr;
+        };
+        let span = body_ctx.empty_span();
+        let wrapper_value = self.clone_wrapped_body_expr(wrapper_body, wrapper_expr, body_ctx);
+        let callee = body_ctx.alloc_expr(Expr::Variable(SmolStr::new(helper_name)), span);
+        body_ctx.alloc_expr(
+            Expr::Call {
+                callee,
+                type_args: Vec::new(),
+                args: vec![
+                    Arg::Named {
+                        name: SmolStr::new(wrapper_param),
+                        value: wrapper_value,
+                        span,
+                        name_span: span,
+                    },
+                    Arg::Named {
+                        name: SmolStr::new("point"),
+                        value: point_expr,
+                        span,
+                        name_span: span,
+                    },
+                ],
+            },
+            span,
+        )
+    }
+
+    fn empty_body() -> Body {
+        Body {
+            exprs: Arena::new(),
+            stmts: Arena::new(),
+            root_stmts: Vec::new(),
+            expr_spans: Vec::new(),
+            stmt_spans: Vec::new(),
+        }
+    }
+
+    fn lower_field_expr(
+        &mut self,
+        body_ctx: &mut BodyLoweringContext,
+        expr: ast::FieldExpr,
+    ) -> FieldExpr {
+        match expr {
+            ast::FieldExpr::Use(use_expr) => FieldExpr::Use {
+                target: use_expr
+                    .name()
+                    .map(|tok| SmolStr::new(tok.text()))
+                    .unwrap_or_default(),
+            },
+            ast::FieldExpr::Primitive(primitive_expr) => {
+                let primitive_name = primitive_expr
+                    .name()
+                    .map(|tok| tok.text().to_string())
+                    .unwrap_or_default();
+                let primitive = Self::field_primitive_from_name(&primitive_name)
+                    .unwrap_or(FieldPrimitive::Sphere);
+                let args = primitive_expr
+                    .args()
+                    .filter_map(|arg| body_ctx.lower_arg(arg))
+                    .collect();
+                FieldExpr::Primitive { primitive, args }
+            }
+            ast::FieldExpr::Union(union_expr) => FieldExpr::Union {
+                items: union_expr
+                    .items()
+                    .map(|item| self.lower_field_expr(body_ctx, item))
+                    .collect(),
+            },
+            ast::FieldExpr::Intersection(intersection_expr) => FieldExpr::Intersection {
+                items: intersection_expr
+                    .items()
+                    .map(|item| self.lower_field_expr(body_ctx, item))
+                    .collect(),
+            },
+            ast::FieldExpr::Subtract(subtract_expr) => {
+                let mut items = subtract_expr.items();
+                let left = items
+                    .next()
+                    .map(|item| self.lower_field_expr(body_ctx, item))
+                    .unwrap_or(FieldExpr::Custom {
+                        body: Body {
+                            exprs: Arena::new(),
+                            stmts: Arena::new(),
+                            root_stmts: Vec::new(),
+                            expr_spans: Vec::new(),
+                            stmt_spans: Vec::new(),
+                        },
+                    });
+                let right = items
+                    .next()
+                    .map(|item| self.lower_field_expr(body_ctx, item))
+                    .unwrap_or(FieldExpr::Custom {
+                        body: Body {
+                            exprs: Arena::new(),
+                            stmts: Arena::new(),
+                            root_stmts: Vec::new(),
+                            expr_spans: Vec::new(),
+                            stmt_spans: Vec::new(),
+                        },
+                    });
+                FieldExpr::Subtract {
+                    left: Box::new(left),
+                    right: Box::new(right),
+                }
+            }
+            ast::FieldExpr::Transform(transform_expr) => {
+                let transform = transform_expr
+                    .transform()
+                    .map(|expr| self.lower_wrapped_field_body(expr))
+                    .unwrap_or_else(Self::empty_body);
+                let body = transform_expr
+                    .body()
+                    .map(|item| self.lower_field_expr(body_ctx, item))
+                    .unwrap_or(FieldExpr::Custom {
+                        body: Self::empty_body(),
+                    });
+                FieldExpr::Transform {
+                    transform,
+                    body: Box::new(body),
+                }
+            }
+            ast::FieldExpr::Mirror(mirror_expr) => {
+                let mirror = mirror_expr
+                    .mirror()
+                    .map(|expr| self.lower_wrapped_field_body(expr))
+                    .unwrap_or_else(Self::empty_body);
+                let body = mirror_expr
+                    .body()
+                    .map(|item| self.lower_field_expr(body_ctx, item))
+                    .unwrap_or(FieldExpr::Custom {
+                        body: Self::empty_body(),
+                    });
+                FieldExpr::Mirror {
+                    mirror,
+                    body: Box::new(body),
+                }
+            }
+            ast::FieldExpr::Repeat(repeat_expr) => {
+                let repeat = repeat_expr
+                    .repeat()
+                    .map(|expr| self.lower_wrapped_field_body(expr))
+                    .unwrap_or_else(Self::empty_body);
+                let body = repeat_expr
+                    .body()
+                    .map(|item| self.lower_field_expr(body_ctx, item))
+                    .unwrap_or(FieldExpr::Custom {
+                        body: Self::empty_body(),
+                    });
+                FieldExpr::Repeat {
+                    repeat,
+                    body: Box::new(body),
+                }
+            }
+            ast::FieldExpr::Instance(instance_expr) => {
+                let instance = instance_expr
+                    .instance()
+                    .map(|expr| self.lower_wrapped_field_body(expr))
+                    .unwrap_or_else(Self::empty_body);
+                let body = instance_expr
+                    .body()
+                    .map(|item| self.lower_field_expr(body_ctx, item))
+                    .unwrap_or(FieldExpr::Custom {
+                        body: Self::empty_body(),
+                    });
+                FieldExpr::Instance {
+                    instance,
+                    body: Box::new(body),
+                }
+            }
+        }
+    }
+
+    fn lower_field_graph_to_expr(
+        &mut self,
+        body_ctx: &mut BodyLoweringContext,
+        expr: &FieldExpr,
+        point_expr: Idx<Expr>,
+    ) -> Idx<Expr> {
+        let span = body_ctx.empty_span();
+        match expr {
+            FieldExpr::Use { target } => {
+                let callee = body_ctx.alloc_expr(Expr::Variable(target.clone()), span);
+                body_ctx.alloc_expr(
+                    Expr::Call {
+                        callee,
+                        type_args: Vec::new(),
+                        args: vec![Arg::Named {
+                            name: SmolStr::new("p"),
+                            value: point_expr,
+                            span,
+                            name_span: span,
+                        }],
+                    },
+                    span,
+                )
+            }
+            FieldExpr::Primitive { primitive, args } => {
+                let callee = body_ctx.alloc_expr(
+                    Expr::Variable(SmolStr::new(Self::primitive_callee_name(*primitive))),
+                    span,
+                );
+                let mut call_args = vec![Arg::Named {
+                    name: SmolStr::new("p"),
+                    value: point_expr,
+                    span,
+                    name_span: span,
+                }];
+                call_args.extend(args.iter().cloned().filter(|arg| match arg {
+                    Arg::Named { name, .. } => name.as_str() != "p",
+                    _ => true,
+                }));
+                body_ctx.alloc_expr(
+                    Expr::Call {
+                        callee,
+                        type_args: Vec::new(),
+                        args: call_args,
+                    },
+                    span,
+                )
+            }
+            FieldExpr::Union { items } => {
+                let mut iter = items.iter();
+                let Some(first) = iter.next() else {
+                    return body_ctx.alloc_expr(Expr::Literal(Literal::Nil), span);
+                };
+                let mut current = self.lower_field_graph_to_expr(body_ctx, first, point_expr);
+                for item in iter {
+                    let rhs = self.lower_field_graph_to_expr(body_ctx, item, point_expr);
+                    let callee =
+                        body_ctx.alloc_expr(Expr::Variable(SmolStr::new("field_union")), span);
+                    current = body_ctx.alloc_expr(
+                        Expr::Call {
+                            callee,
+                            type_args: Vec::new(),
+                            args: vec![
+                                Arg::Named {
+                                    name: SmolStr::new("left"),
+                                    value: current,
+                                    span,
+                                    name_span: span,
+                                },
+                                Arg::Named {
+                                    name: SmolStr::new("right"),
+                                    value: rhs,
+                                    span,
+                                    name_span: span,
+                                },
+                            ],
+                        },
+                        span,
+                    );
+                }
+                current
+            }
+            FieldExpr::Intersection { items } => {
+                let mut iter = items.iter();
+                let Some(first) = iter.next() else {
+                    return body_ctx.alloc_expr(Expr::Literal(Literal::Nil), span);
+                };
+                let mut current = self.lower_field_graph_to_expr(body_ctx, first, point_expr);
+                for item in iter {
+                    let rhs = self.lower_field_graph_to_expr(body_ctx, item, point_expr);
+                    let callee = body_ctx
+                        .alloc_expr(Expr::Variable(SmolStr::new("field_intersection")), span);
+                    current = body_ctx.alloc_expr(
+                        Expr::Call {
+                            callee,
+                            type_args: Vec::new(),
+                            args: vec![
+                                Arg::Named {
+                                    name: SmolStr::new("left"),
+                                    value: current,
+                                    span,
+                                    name_span: span,
+                                },
+                                Arg::Named {
+                                    name: SmolStr::new("right"),
+                                    value: rhs,
+                                    span,
+                                    name_span: span,
+                                },
+                            ],
+                        },
+                        span,
+                    );
+                }
+                current
+            }
+            FieldExpr::Subtract { left, right } => {
+                let left = self.lower_field_graph_to_expr(body_ctx, left, point_expr);
+                let right = self.lower_field_graph_to_expr(body_ctx, right, point_expr);
+                let callee =
+                    body_ctx.alloc_expr(Expr::Variable(SmolStr::new("field_subtract")), span);
+                body_ctx.alloc_expr(
+                    Expr::Call {
+                        callee,
+                        type_args: Vec::new(),
+                        args: vec![
+                            Arg::Named {
+                                name: SmolStr::new("left"),
+                                value: left,
+                                span,
+                                name_span: span,
+                            },
+                            Arg::Named {
+                                name: SmolStr::new("right"),
+                                value: right,
+                                span,
+                                name_span: span,
+                            },
+                        ],
+                    },
+                    span,
+                )
+            }
+            FieldExpr::Transform { transform, body } => {
+                let local_point = self.lower_field_wrapper_point(
+                    body_ctx,
+                    "field_transform_point",
+                    "transform",
+                    transform,
+                    point_expr,
+                );
+                self.lower_field_graph_to_expr(body_ctx, body, local_point)
+            }
+            FieldExpr::Mirror { mirror, body } => {
+                let local_point = self.lower_field_wrapper_point(
+                    body_ctx,
+                    "field_mirror_point",
+                    "mirror",
+                    mirror,
+                    point_expr,
+                );
+                self.lower_field_graph_to_expr(body_ctx, body, local_point)
+            }
+            FieldExpr::Repeat { repeat, body } => {
+                let local_point = self.lower_field_wrapper_point(
+                    body_ctx,
+                    "field_repeat_point",
+                    "period",
+                    repeat,
+                    point_expr,
+                );
+                self.lower_field_graph_to_expr(body_ctx, body, local_point)
+            }
+            FieldExpr::Instance { instance, body } => {
+                let local_point = self.lower_field_wrapper_point(
+                    body_ctx,
+                    "field_instance_point",
+                    "instance",
+                    instance,
+                    point_expr,
+                );
+                self.lower_field_graph_to_expr(body_ctx, body, local_point)
+            }
+            FieldExpr::Custom { body } => {
+                let _ = body;
+                body_ctx.alloc_expr(Expr::Literal(Literal::Nil), span)
+            }
+        }
+    }
+
+    fn field_primitive_from_name(name: &str) -> Option<FieldPrimitive> {
+        match name {
+            "sphere" => Some(FieldPrimitive::Sphere),
+            "box" => Some(FieldPrimitive::Box),
+            "capsule" => Some(FieldPrimitive::Capsule),
+            "cylinder" => Some(FieldPrimitive::Cylinder),
+            "plane" => Some(FieldPrimitive::Plane),
+            "torus" => Some(FieldPrimitive::Torus),
+            _ => None,
+        }
+    }
+
+    fn primitive_callee_name(primitive: FieldPrimitive) -> &'static str {
+        match primitive {
+            FieldPrimitive::Sphere => "sphere",
+            FieldPrimitive::Box => "box",
+            FieldPrimitive::Capsule => "capsule",
+            FieldPrimitive::Cylinder => "cylinder",
+            FieldPrimitive::Plane => "plane",
+            FieldPrimitive::Torus => "torus",
         }
     }
 
@@ -472,6 +1839,8 @@ impl LoweringContext {
             visibility,
             kind: FunctionKind::Method,
             role: FunctionRole::Function,
+            field: None,
+            field_graph: None,
             system_metadata: None,
             type_params: Vec::new(),
             params,
@@ -1222,6 +2591,22 @@ impl BodyLoweringContext {
             ast::Expr::Ident(i) => {
                 let name = i.name().map(|t| SmolStr::new(t.text())).unwrap_or_default();
                 Expr::Variable(name)
+            }
+            ast::Expr::Capture(c) => {
+                let capture_span = c.syntax().text_range();
+                let target_expr = c.target()?;
+                let target = self.lower_expr(target_expr)?;
+                let callee = self.alloc_expr(Expr::Variable(SmolStr::new("capture")), capture_span);
+                Expr::Call {
+                    callee,
+                    args: vec![Arg::Named {
+                        name: SmolStr::new("scene"),
+                        value: target,
+                        span: capture_span,
+                        name_span: capture_span,
+                    }],
+                    type_args: Vec::new(),
+                }
             }
             ast::Expr::Bin(b) => {
                 let lhs = self.lower_expr(b.lhs()?)?;
@@ -2068,6 +3453,7 @@ kernel fn shade[T](value: Integer) -> Integer {
         assert_eq!(func.name, "shade");
         assert_eq!(func.role, FunctionRole::Kernel);
         assert_eq!(func.lane(), FunctionLane::Portable);
+        assert!(func.field.is_none());
         assert_eq!(func.type_params.len(), 1);
         assert_eq!(func.type_params[0].name, "T");
     }
@@ -2091,11 +3477,13 @@ system tick[stage=fixed, reads=[Clock], writes=[FrameClock]]() -> Nothing {
         assert_eq!(helper.name, "helper");
         assert_eq!(helper.role, FunctionRole::Function);
         assert_eq!(helper.lane(), FunctionLane::Host);
+        assert!(helper.field.is_none());
 
         let system = &module.functions[Idx::new(1)];
         assert_eq!(system.name, "tick");
         assert_eq!(system.role, FunctionRole::System);
         assert_eq!(system.lane(), FunctionLane::Host);
+        assert!(system.field.is_none());
         let metadata = system
             .system_metadata
             .as_ref()
@@ -2103,6 +3491,674 @@ system tick[stage=fixed, reads=[Clock], writes=[FrameClock]]() -> Nothing {
         assert_eq!(metadata.stage.as_deref(), Some("fixed"));
         assert_eq!(metadata.reads, vec![SmolStr::new("Clock")]);
         assert_eq!(metadata.writes, vec![SmolStr::new("FrameClock")]);
+    }
+
+    #[test]
+    fn test_lower_field_declaration_marks_portable_lane_and_metadata() {
+        let input = "\
+field conservative distance shell(center: F32) -> F32 {
+    return center
+}
+";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let field = &module.functions[Idx::new(0)];
+        assert_eq!(field.name, "shell");
+        assert_eq!(field.role, FunctionRole::Field);
+        assert_eq!(field.lane(), FunctionLane::Portable);
+        assert_eq!(
+            field.field.clone(),
+            Some(FieldMetadata {
+                class: FieldClass::Conservative,
+                kind: FieldKind::Distance,
+                support: FieldSupport::Unknown,
+                bounds: FieldBounds::Unknown,
+                trace: GraphTraceMetadata::pessimistic(),
+                authored_support: None,
+                authored_bounds: None,
+            })
+        );
+        assert_eq!(field.params.len(), 1);
+        assert_eq!(field.ret_type.as_ref().unwrap().name, "F32");
+    }
+
+    #[test]
+    fn test_lower_field_metadata_derives_support_and_bounds_from_graph() {
+        let input = "\
+field exact distance sphere(p: Vec3) -> F32 {
+    sphere(radius = 1.0)
+}
+
+field exact distance shifted(p: Vec3) -> F32 {
+    transform = vec3(1.0, 0.0, 0.0) {
+        use sphere
+    }
+}
+
+field exact distance ground(p: Vec3) -> F32 {
+    plane(normal = vec3(0.0, 1.0, 0.0), offset = 0.0)
+}
+
+field exact distance mirrored(p: Vec3) -> F32 {
+    mirror = vec3(0.0, 1.0, 0.0) {
+        use sphere
+    }
+}
+
+field exact distance repeated(p: Vec3) -> F32 {
+    repeat = vec3(2.0, 0.0, 0.0) {
+        use sphere
+    }
+}
+
+field conservative distance instanced(p: Vec3) -> F32 {
+    instance = vec3(0.0, 0.0, 1.0) {
+        use sphere
+    }
+}
+";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let field = |name: &str| {
+            module
+                .functions
+                .iter()
+                .find(|(_, func)| func.name == name)
+                .map(|(_, func)| func)
+                .expect("field function")
+        };
+
+        assert_eq!(
+            field("sphere").field.clone(),
+            Some(FieldMetadata {
+                class: FieldClass::Exact,
+                kind: FieldKind::Distance,
+                support: FieldSupport::Bounded,
+                bounds: FieldBounds::Bounded,
+                trace: GraphTraceMetadata::exact(FieldSupport::Bounded, FieldBounds::Bounded, true,),
+                authored_support: None,
+                authored_bounds: None,
+            })
+        );
+        assert_eq!(
+            field("shifted").field.clone(),
+            Some(FieldMetadata {
+                class: FieldClass::Exact,
+                kind: FieldKind::Distance,
+                support: FieldSupport::Bounded,
+                bounds: FieldBounds::Bounded,
+                trace: GraphTraceMetadata::exact(FieldSupport::Bounded, FieldBounds::Bounded, true,),
+                authored_support: None,
+                authored_bounds: None,
+            })
+        );
+        assert_eq!(
+            field("ground").field.clone(),
+            Some(FieldMetadata {
+                class: FieldClass::Exact,
+                kind: FieldKind::Distance,
+                support: FieldSupport::Unbounded,
+                bounds: FieldBounds::Unbounded,
+                trace: GraphTraceMetadata::exact(
+                    FieldSupport::Unbounded,
+                    FieldBounds::Unbounded,
+                    false,
+                ),
+                authored_support: None,
+                authored_bounds: None,
+            })
+        );
+        assert_eq!(
+            field("mirrored").field.clone(),
+            Some(FieldMetadata {
+                class: FieldClass::Exact,
+                kind: FieldKind::Distance,
+                support: FieldSupport::Bounded,
+                bounds: FieldBounds::Bounded,
+                trace: GraphTraceMetadata::exact(FieldSupport::Bounded, FieldBounds::Bounded, true,),
+                authored_support: None,
+                authored_bounds: None,
+            })
+        );
+        assert_eq!(
+            field("repeated").field.clone(),
+            Some(FieldMetadata {
+                class: FieldClass::Exact,
+                kind: FieldKind::Distance,
+                support: FieldSupport::Periodic,
+                bounds: FieldBounds::Unbounded,
+                trace: GraphTraceMetadata::exact(
+                    FieldSupport::Periodic,
+                    FieldBounds::Unbounded,
+                    true,
+                ),
+                authored_support: None,
+                authored_bounds: None,
+            })
+        );
+        assert_eq!(
+            field("instanced").field.clone(),
+            Some(FieldMetadata {
+                class: FieldClass::Conservative,
+                kind: FieldKind::Distance,
+                support: FieldSupport::Bounded,
+                bounds: FieldBounds::Bounded,
+                trace: GraphTraceMetadata::conservative(
+                    FieldSupport::Bounded,
+                    FieldBounds::Bounded,
+                    false,
+                ),
+                authored_support: None,
+                authored_bounds: None,
+            })
+        );
+    }
+
+    #[test]
+    fn test_lower_field_metadata_resolves_forward_field_references() {
+        let input = "\
+field exact distance shifted(p: Vec3) -> F32 {
+    transform = vec3(1.0, 0.0, 0.0) {
+        use sphere
+    }
+}
+
+field exact distance sphere(p: Vec3) -> F32 {
+    sphere(radius = 1.0)
+}
+";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let shifted = module
+            .functions
+            .iter()
+            .find(|(_, func)| func.name == "shifted")
+            .map(|(_, func)| func)
+            .expect("shifted field");
+        assert_eq!(
+            shifted.field.clone(),
+            Some(FieldMetadata {
+                class: FieldClass::Exact,
+                kind: FieldKind::Distance,
+                support: FieldSupport::Bounded,
+                bounds: FieldBounds::Bounded,
+                trace: GraphTraceMetadata::exact(
+                    FieldSupport::Bounded,
+                    FieldBounds::Bounded,
+                    true,
+                ),
+                authored_support: None,
+                authored_bounds: None,
+            })
+        );
+        assert_eq!(
+            shifted.field_graph.as_ref().expect("field graph").trace,
+            GraphTraceMetadata::exact(FieldSupport::Bounded, FieldBounds::Bounded, true)
+        );
+    }
+
+    #[test]
+    fn test_lower_field_metadata_uses_authored_support_for_custom_fields() {
+        let input = "\
+field conservative distance boxed(p: Vec3) -> F32 {
+    support = Support3(bounds=Bounds3(
+        min=vec3(-1.0, -1.0, -1.0),
+        max=vec3(1.0, 1.0, 1.0)
+    ))
+    bounds = Bounds3(
+        min=vec3(-1.0, -1.0, -1.0),
+        max=vec3(1.0, 1.0, 1.0)
+    )
+    return length(p) - 0.5
+}
+";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let field = module
+            .functions
+            .iter()
+            .find(|(_, func)| func.name == "boxed")
+            .map(|(_, func)| func)
+            .expect("field");
+        assert_eq!(
+            field.field,
+            Some(FieldMetadata {
+                class: FieldClass::Conservative,
+                kind: FieldKind::Distance,
+                support: FieldSupport::Bounded,
+                bounds: FieldBounds::Bounded,
+                trace: GraphTraceMetadata::conservative(
+                    FieldSupport::Bounded,
+                    FieldBounds::Bounded,
+                    true,
+                ),
+                authored_support: field
+                    .field
+                    .as_ref()
+                    .and_then(|metadata| metadata.authored_support.clone()),
+                authored_bounds: field
+                    .field
+                    .as_ref()
+                    .and_then(|metadata| metadata.authored_bounds.clone()),
+            })
+        );
+        let metadata = field.field.as_ref().expect("field metadata");
+        assert!(
+            metadata.authored_support.is_some(),
+            "expected authored support body"
+        );
+        assert!(
+            metadata.authored_bounds.is_some(),
+            "expected authored bounds body"
+        );
+        match &field.field_graph.as_ref().expect("field graph").root {
+            FieldExpr::Custom { .. } => {}
+            other => panic!("expected custom field graph, got {other:?}"),
+        }
+        assert_eq!(
+            field.field_graph.as_ref().expect("field graph").trace,
+            GraphTraceMetadata::pessimistic(),
+            "expected the inferred field graph trace to remain available for validation"
+        );
+    }
+
+    #[test]
+    fn test_lower_field_metadata_preserves_authored_support_and_bounds_clauses() {
+        let input = "\
+field conservative distance hinted(p: Vec3) -> F32 {
+    support = Support3(bounds=Bounds3(
+        min=vec3(-1.0, -1.0, -1.0),
+        max=vec3(1.0, 1.0, 1.0)
+    ))
+    bounds = Bounds3(
+        min=vec3(-2.0, -2.0, -2.0),
+        max=vec3(2.0, 2.0, 2.0)
+    )
+    return sphere(radius = 1.0)
+}
+";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let field = module
+            .functions
+            .iter()
+            .find(|(_, func)| func.name == "hinted")
+            .map(|(_, func)| func)
+            .expect("field function");
+        let metadata = field.field.clone().expect("field metadata");
+        assert!(
+            metadata.authored_support.is_some(),
+            "expected authored support clause"
+        );
+        assert!(
+            metadata.authored_bounds.is_some(),
+            "expected authored bounds clause"
+        );
+        assert!(
+            metadata.trace.can_coarse_support_pruning,
+            "expected authored support/bounds clauses to keep pruning enabled"
+        );
+        assert_eq!(metadata.class, FieldClass::Conservative);
+        assert_eq!(
+            field.field_graph.as_ref().expect("field graph").trace,
+            GraphTraceMetadata::pessimistic(),
+            "expected the inferred field graph trace to remain available for validation"
+        );
+    }
+
+    #[test]
+    fn test_lower_semantic_field_declaration_preserves_graph_and_emits_helper_calls() {
+        let input = "\
+field exact distance scene(p: Vec3) -> F32 {
+    union {
+        use sphere
+        subtract {
+            use sphere
+            use sphere
+        }
+    }
+}
+";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let field = &module.functions[Idx::new(0)];
+        let graph = field
+            .field_graph
+            .as_ref()
+            .expect("semantic field graph should be preserved");
+        assert_eq!(
+            graph.trace,
+            GraphTraceMetadata::exact(FieldSupport::Bounded, FieldBounds::Bounded, true)
+        );
+        match &graph.root {
+            FieldExpr::Union { items } => {
+                assert_eq!(items.len(), 2);
+                match &items[0] {
+                    FieldExpr::Use { target } => assert_eq!(target, "sphere"),
+                    other => panic!("expected first union item to be use, got: {other:?}"),
+                }
+                match &items[1] {
+                    FieldExpr::Subtract { left, right } => {
+                        match &**left {
+                            FieldExpr::Use { target } => assert_eq!(target, "sphere"),
+                            other => panic!("expected subtract lhs to be use, got: {other:?}"),
+                        }
+                        match &**right {
+                            FieldExpr::Use { target } => assert_eq!(target, "sphere"),
+                            other => panic!("expected subtract rhs to be use, got: {other:?}"),
+                        }
+                    }
+                    other => panic!("expected second union item to be subtract, got: {other:?}"),
+                }
+            }
+            other => panic!("expected union field graph root, got: {other:?}"),
+        }
+
+        let body = field
+            .body
+            .as_ref()
+            .expect("semantic field should lower to a body");
+        assert_eq!(body.root_stmts.len(), 1);
+        let Stmt::Return(Some(ret_expr)) = &body.stmts[body.root_stmts[0]] else {
+            panic!("expected return stmt in semantic field body");
+        };
+        let Expr::Call { callee, args, .. } = &body.exprs[*ret_expr] else {
+            panic!("expected call expression returned from semantic field");
+        };
+        assert_eq!(args.len(), 2);
+        let Expr::Variable(name) = &body.exprs[*callee] else {
+            panic!("expected union helper callee");
+        };
+        assert_eq!(name, "field_union");
+    }
+
+    #[test]
+    fn test_lower_semantic_field_wrappers_preserve_graph_structure() {
+        let input = "\
+field exact distance scene(p: Vec3) -> F32 {
+    transform = vec3(1, 0, 0) {
+                mirror = vec3(0, 1, 0) {
+            repeat = vec3(2, 2, 2) {
+                instance = vec3(0, 0, 1) {
+                    use sphere
+                }
+            }
+        }
+    }
+}
+";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let field = &module.functions[Idx::new(0)];
+        let graph = field
+            .field_graph
+            .as_ref()
+            .expect("semantic field graph should be preserved");
+        let FieldExpr::Transform { transform, body } = &graph.root else {
+            panic!("expected transform field graph root");
+        };
+        assert_eq!(transform.root_stmts.len(), 1);
+        let Stmt::Expr(_) = &transform.stmts[transform.root_stmts[0]] else {
+            panic!("expected transform wrapper body to be a single expr stmt");
+        };
+
+        let FieldExpr::Mirror {
+            mirror,
+            body: mirror_body,
+        } = &**body
+        else {
+            panic!("expected mirror field graph body");
+        };
+        assert_eq!(mirror.root_stmts.len(), 1);
+        let Stmt::Expr(_) = &mirror.stmts[mirror.root_stmts[0]] else {
+            panic!("expected mirror wrapper body to be a single expr stmt");
+        };
+
+        let FieldExpr::Repeat {
+            repeat,
+            body: repeat_body,
+        } = &**mirror_body
+        else {
+            panic!("expected repeat field graph body");
+        };
+        assert_eq!(repeat.root_stmts.len(), 1);
+        let Stmt::Expr(_) = &repeat.stmts[repeat.root_stmts[0]] else {
+            panic!("expected repeat wrapper body to be a single expr stmt");
+        };
+
+        let FieldExpr::Instance {
+            instance,
+            body: instance_body,
+        } = &**repeat_body
+        else {
+            panic!("expected instance field graph body");
+        };
+        assert_eq!(instance.root_stmts.len(), 1);
+        let Stmt::Expr(_) = &instance.stmts[instance.root_stmts[0]] else {
+            panic!("expected instance wrapper body to be a single expr stmt");
+        };
+
+        match &**instance_body {
+            FieldExpr::Use { target } => assert_eq!(target, "sphere"),
+            other => panic!("expected inner use field after wrapper chain, got: {other:?}"),
+        }
+
+        let body = field
+            .body
+            .as_ref()
+            .expect("wrapper field should still lower to a body");
+        assert_eq!(body.root_stmts.len(), 1);
+        let Stmt::Return(Some(ret_expr)) = &body.stmts[body.root_stmts[0]] else {
+            panic!("expected return stmt in wrapper field body");
+        };
+        let Expr::Call { .. } = &body.exprs[*ret_expr] else {
+            panic!("expected lowered wrapper field body to still return an expression call");
+        };
+    }
+
+    #[test]
+    fn test_lower_legacy_field_declaration_keeps_custom_field_graph() {
+        let input = "\
+field exact distance sphere(p: F32) -> F32 {
+    return p
+}
+";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let field = &module.functions[Idx::new(0)];
+        match &field
+            .field_graph
+            .as_ref()
+            .expect("legacy field should still have a field graph")
+            .root
+        {
+            FieldExpr::Custom { .. } => {}
+            other => panic!("expected custom field graph for legacy body, got: {other:?}"),
+        }
+        assert_eq!(
+            field
+                .field_graph
+                .as_ref()
+                .expect("legacy field should still have a field graph")
+                .trace,
+            GraphTraceMetadata::pessimistic()
+        );
+        assert_eq!(
+            field.field.clone(),
+            Some(FieldMetadata {
+                class: FieldClass::Exact,
+                kind: FieldKind::Distance,
+                support: FieldSupport::Unknown,
+                bounds: FieldBounds::Unknown,
+                trace: GraphTraceMetadata::pessimistic(),
+                authored_support: None,
+                authored_bounds: None,
+            })
+        );
+    }
+
+    #[test]
+    fn test_lower_shape_metadata_derives_trace_from_fields_and_shapes() {
+        let input = "\
+field exact distance sphere_field(p: Vec3) -> F32 {
+    sphere(radius = 1.0)
+}
+
+shape sphere_shape {
+    field = sphere_field
+    material = surface
+    payload = Payload(entity_id=u64(1), material_id=u64(2), actor=ActorHandle(id=u64(3), generation=u32(0)))
+}
+
+shape scene_shape {
+    union {
+        use sphere_shape
+        use sphere_shape
+    }
+}
+";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let shape = |name: &str| {
+            module
+                .shapes
+                .iter()
+                .find(|(_, shape)| shape.name == name)
+                .map(|(_, shape)| shape)
+                .expect("shape")
+        };
+
+        assert_eq!(
+            shape("sphere_shape")
+                .graph
+                .as_ref()
+                .expect("shape graph")
+                .trace,
+            GraphTraceMetadata::exact(FieldSupport::Bounded, FieldBounds::Bounded, true)
+        );
+        assert_eq!(
+            shape("scene_shape")
+                .graph
+                .as_ref()
+                .expect("shape graph")
+                .trace,
+            GraphTraceMetadata::exact(FieldSupport::Bounded, FieldBounds::Bounded, true)
+        );
+    }
+
+    #[test]
+    fn test_lower_shape_boolean_provenance_policies_are_preserved() {
+        let input = "\
+shape union_shape {
+    union {
+        provenance_policy = nearest
+        use left_shape
+        use right_shape
+    }
+}
+
+shape intersection_shape {
+    intersection {
+        provenance_policy = ordered
+        use left_shape
+        use right_shape
+    }
+}
+
+shape subtract_shape {
+    subtract {
+        provenance_policy = right
+        use left_shape
+        use cutter_shape
+    }
+}
+";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+
+        let union = module
+            .shapes
+            .iter()
+            .find(|(_, shape)| shape.name == "union_shape")
+            .map(|(_, shape)| shape)
+            .expect("union shape");
+        let union_graph = union.graph.as_ref().expect("union graph");
+        match union_graph.provenance.as_ref().expect("union provenance") {
+            ShapeProvenanceExpr::Union { provenance, items } => {
+                assert_eq!(*provenance, ShapeMergeProvenancePolicy::Nearest);
+                assert_eq!(items.len(), 2);
+            }
+            other => panic!("expected union provenance tree, got {other:?}"),
+        }
+
+        let intersection = module
+            .shapes
+            .iter()
+            .find(|(_, shape)| shape.name == "intersection_shape")
+            .map(|(_, shape)| shape)
+            .expect("intersection shape");
+        let intersection_graph = intersection.graph.as_ref().expect("intersection graph");
+        match intersection_graph
+            .provenance
+            .as_ref()
+            .expect("intersection provenance")
+        {
+            ShapeProvenanceExpr::Intersection { provenance, items } => {
+                assert_eq!(*provenance, ShapeMergeProvenancePolicy::Ordered);
+                assert_eq!(items.len(), 2);
+            }
+            other => panic!("expected intersection provenance tree, got {other:?}"),
+        }
+
+        let subtract = module
+            .shapes
+            .iter()
+            .find(|(_, shape)| shape.name == "subtract_shape")
+            .map(|(_, shape)| shape)
+            .expect("subtract shape");
+        let subtract_graph = subtract.graph.as_ref().expect("subtract graph");
+        match subtract_graph.provenance.as_ref().expect("subtract provenance") {
+            ShapeProvenanceExpr::Subtract {
+                provenance,
+                left,
+                right,
+            } => {
+                assert_eq!(*provenance, ShapeSubtractProvenancePolicy::Right);
+                assert!(matches!(left.as_ref(), ShapeProvenanceExpr::Use { .. }));
+                assert!(matches!(right.as_ref(), ShapeProvenanceExpr::Use { .. }));
+            }
+            other => panic!("expected subtract provenance tree, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_lower_material_declaration_marks_portable_lane() {
+        let input = "\
+material surface(hit: Hit3) -> Surface {
+    return hit
+}
+";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let material = &module.functions[Idx::new(0)];
+        assert_eq!(material.name, "surface");
+        assert_eq!(material.role, FunctionRole::Material);
+        assert_eq!(material.lane(), FunctionLane::Portable);
+        assert!(material.field.is_none());
+        assert_eq!(material.params.len(), 1);
+        assert_eq!(material.params[0].name, "hit");
+        assert_eq!(material.ret_type.as_ref().unwrap().name, "Surface");
     }
 
     #[test]

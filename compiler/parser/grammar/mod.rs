@@ -14,7 +14,7 @@ pub fn root(p: &mut Parser) {
             break;
         }
         let cursor = p.cursor_pos();
-        parse_statement(p);
+        parse_root_statement(p);
         if p.cursor_pos() == cursor {
             // Ensure forward progress to avoid infinite loops on unexpected tokens.
             p.error();
@@ -29,6 +29,10 @@ pub(crate) fn parse_statement(p: &mut Parser) {
     }
     if p.at(SyntaxKind::PrivateKw) {
         parse_private_block(p);
+        return;
+    }
+    if p.at_ident_text("shape") {
+        func::shape_decl(p);
         return;
     }
     if p.at(SyntaxKind::ResourceKw) {
@@ -85,6 +89,25 @@ pub(crate) fn parse_statement(p: &mut Parser) {
             p.expect_stmt_boundary();
         }
     }
+}
+
+fn parse_root_statement(p: &mut Parser) {
+    if func::attributed_func_or_check_def(p) {
+        return;
+    }
+    if p.at_ident_text("field") {
+        func::field_decl(p);
+        return;
+    }
+    if p.at_ident_text("material") {
+        func::material_decl(p);
+        return;
+    }
+    if p.at_ident_text("shape") {
+        func::shape_decl(p);
+        return;
+    }
+    parse_statement(p);
 }
 
 fn parse_assert(p: &mut Parser) {
@@ -747,6 +770,22 @@ fn parse_private_block(p: &mut Parser) {
     let m = p.start();
     p.expect(SyntaxKind::PrivateKw);
     expect_block_intro(p, "expected '{' after 'private'");
-    parse_block(p);
+    if p.at(SyntaxKind::LBrace) {
+        p.bump();
+        while !p.at(SyntaxKind::RBrace) && !p.is_at_eof() {
+            p.consume_trivia();
+            if p.at(SyntaxKind::RBrace) || p.is_at_eof() {
+                break;
+            }
+            let cursor = p.cursor_pos();
+            parse_root_statement(p);
+            if p.cursor_pos() == cursor {
+                p.error();
+            }
+        }
+        p.expect(SyntaxKind::RBrace);
+    } else {
+        p.error_with_message_no_bump("expected '{' after 'private'");
+    }
     m.complete(p, SyntaxKind::PrivateBlock);
 }

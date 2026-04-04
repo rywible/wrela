@@ -28,24 +28,71 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
     }
     for node in root.descendants() {
         match node.kind() {
-            SyntaxKind::FuncDef | SyntaxKind::KernelDef | SyntaxKind::SystemDef => {
-                if !has_token(&node, SyntaxKind::Ident) {
+            kind if is_function_like_definition(kind) => {
+                if kind == SyntaxKind::FieldDecl || kind == SyntaxKind::MaterialDecl {
+                    let (name_message, return_message, name_present, has_return_type) = if kind
+                        == SyntaxKind::FieldDecl
+                    {
+                        let field = ast::FieldDecl::cast(node.clone());
+                        let name_present = field.as_ref().and_then(|field| field.name()).is_some();
+                        let has_return_type =
+                            field.as_ref().and_then(|field| field.ret_type()).is_some();
+                        (
+                            "field declaration requires a name",
+                            "field requires an explicit return type",
+                            name_present,
+                            has_return_type,
+                        )
+                    } else {
+                        let material = ast::MaterialDecl::cast(node.clone());
+                        let name_present = material
+                            .as_ref()
+                            .and_then(|material| material.name())
+                            .is_some();
+                        let has_return_type = material
+                            .as_ref()
+                            .and_then(|material| material.ret_type())
+                            .is_some();
+                        (
+                            "material declaration requires a name",
+                            "material requires an explicit return type",
+                            name_present,
+                            has_return_type,
+                        )
+                    };
+                    if !name_present {
+                        errors.push(ValidationError {
+                            kind: ValidationDiagKind::AstRule,
+                            message: name_message.to_string(),
+                            span: span_for_node(&node),
+                        });
+                    }
+                    let has_arrow = has_token(&node, SyntaxKind::Arrow);
+                    if !has_arrow || !has_return_type {
+                        errors.push(ValidationError {
+                            kind: ValidationDiagKind::AstRule,
+                            message: return_message.to_string(),
+                            span: span_for_node(&node),
+                        });
+                    }
+                } else if !has_token(&node, SyntaxKind::Ident) {
                     errors.push(ValidationError {
                         kind: ValidationDiagKind::AstRule,
                         message: "function definition requires a name".to_string(),
                         span: span_for_node(&node),
                     });
-                }
-                let has_arrow = has_token(&node, SyntaxKind::Arrow);
-                let has_return_type = node
-                    .children()
-                    .any(|child| child.kind() == SyntaxKind::TypeRef);
-                if !has_arrow || !has_return_type {
-                    errors.push(ValidationError {
-                        kind: ValidationDiagKind::AstRule,
-                        message: "function requires an explicit return type".to_string(),
-                        span: span_for_node(&node),
-                    });
+                } else {
+                    let has_arrow = has_token(&node, SyntaxKind::Arrow);
+                    let has_return_type = node
+                        .children()
+                        .any(|child| child.kind() == SyntaxKind::TypeRef);
+                    if !has_arrow || !has_return_type {
+                        errors.push(ValidationError {
+                            kind: ValidationDiagKind::AstRule,
+                            message: "function requires an explicit return type".to_string(),
+                            span: span_for_node(&node),
+                        });
+                    }
                 }
             }
             SyntaxKind::ClassDef
@@ -256,27 +303,25 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                         span: span_for_node(&node),
                     });
                 } else if parent_kind == Some(SyntaxKind::Root) {
-                    for child in node.children() {
-                        if child.kind() == SyntaxKind::Block {
-                            for stmt in child.children() {
-                                if !matches!(
-                                    stmt.kind(),
-                                    SyntaxKind::ClassDef
-                                        | SyntaxKind::ResourceDef
-                                        | SyntaxKind::EventDef
-                                        | SyntaxKind::FuncDef
-                                        | SyntaxKind::KernelDef
-                                        | SyntaxKind::SystemDef
-                                ) {
-                                    errors.push(ValidationError {
-                                        kind: ValidationDiagKind::AstRule,
-                                        message: "private blocks at the top level may only \
-contain functions and classes"
-                                            .to_string(),
-                                        span: span_for_node(&stmt),
-                                    });
-                                }
-                            }
+                    for stmt in node.children() {
+                        if !matches!(
+                            stmt.kind(),
+                            SyntaxKind::ClassDef
+                                | SyntaxKind::ResourceDef
+                                | SyntaxKind::EventDef
+                                | SyntaxKind::FuncDef
+                                | SyntaxKind::KernelDef
+                                | SyntaxKind::FieldDecl
+                                | SyntaxKind::MaterialDecl
+                                | SyntaxKind::SystemDef
+                        ) {
+                            errors.push(ValidationError {
+                                kind: ValidationDiagKind::AstRule,
+                                message: "private blocks at the top level may only \
+contain functions, fields, materials, and classes"
+                                    .to_string(),
+                                span: span_for_node(&stmt),
+                            });
                         }
                     }
                 } else if matches!(
@@ -467,15 +512,8 @@ fn field_default_is_allowed(expr: ast::Expr) -> bool {
 }
 
 fn is_in_function(node: &SyntaxNode) -> bool {
-    node.ancestors().any(|ancestor| {
-        matches!(
-            ancestor.kind(),
-            SyntaxKind::FuncDef
-                | SyntaxKind::KernelDef
-                | SyntaxKind::SystemDef
-                | SyntaxKind::MethodDef
-        )
-    })
+    node.ancestors()
+        .any(|ancestor| is_function_like_body_container(ancestor.kind()))
 }
 
 fn is_in_loop(node: &SyntaxNode) -> bool {
@@ -501,6 +539,21 @@ fn has_token(node: &SyntaxNode, kind: SyntaxKind) -> bool {
     node.children_with_tokens()
         .filter_map(|it| it.into_token())
         .any(|token| token.kind() == kind)
+}
+
+fn is_function_like_definition(kind: SyntaxKind) -> bool {
+    matches!(
+        kind,
+        SyntaxKind::FuncDef
+            | SyntaxKind::KernelDef
+            | SyntaxKind::SystemDef
+            | SyntaxKind::FieldDecl
+            | SyntaxKind::MaterialDecl
+    )
+}
+
+fn is_function_like_body_container(kind: SyntaxKind) -> bool {
+    is_function_like_definition(kind) || kind == SyntaxKind::MethodDef
 }
 
 #[cfg(test)]
@@ -595,6 +648,38 @@ fn shade() -> String {
     }
 
     #[test]
+    fn test_return_inside_field_declaration_is_allowed() {
+        let text = "\
+field exact distance sphere(p: F32) -> F32 {
+    return p
+}
+";
+        let root = parse(text);
+        let errors = validate(&root);
+        assert!(
+            !errors
+                .iter()
+                .any(|e| e.message == "return is only valid inside functions")
+        );
+    }
+
+    #[test]
+    fn test_return_inside_material_declaration_is_allowed() {
+        let text = "\
+material surface(hit: Hit3) -> Surface {
+    return hit
+}
+";
+        let root = parse(text);
+        let errors = validate(&root);
+        assert!(
+            !errors
+                .iter()
+                .any(|e| e.message == "return is only valid inside functions")
+        );
+    }
+
+    #[test]
     fn test_return_type_required() {
         let text = "\
 fn f() {
@@ -607,6 +692,52 @@ fn f() {
             errors
                 .iter()
                 .any(|e| e.message == "function requires an explicit return type")
+        );
+    }
+
+    #[test]
+    fn test_field_declaration_requires_name_and_return_type() {
+        let text = "\
+field exact distance (p: F32) {
+    return p
+}
+";
+        let root = parse(text);
+        let errors = validate(&root);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message == "field declaration requires a name"),
+            "expected field name validation error, got: {errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message == "field requires an explicit return type"),
+            "expected field return-type validation error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_material_declaration_requires_name_and_return_type() {
+        let text = "\
+material (hit: Hit3) {
+    return hit
+}
+";
+        let root = parse(text);
+        let errors = validate(&root);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message == "material declaration requires a name"),
+            "expected material name validation error, got: {errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message == "material requires an explicit return type"),
+            "expected material return-type validation error, got: {errors:?}"
         );
     }
 
@@ -682,6 +813,20 @@ class Foo {
 private {
     kernel fn shade() -> Nothing {
         return nothing
+    }
+}
+";
+        let root = parse(text);
+        let errors = validate(&root);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_private_block_top_level_allows_material_declarations() {
+        let text = "\
+private {
+    material surface(hit: Hit3) -> Surface {
+        return hit
     }
 }
 ";

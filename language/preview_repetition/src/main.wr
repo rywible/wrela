@@ -1,0 +1,288 @@
+use print_line from host/io
+
+field conservative distance ground(p: Vec3) -> F32 {
+    plane(normal=vec3(0.0, 1.0, 0.0), offset=1.0)
+}
+
+field conservative distance window_frame(p: Vec3) -> F32 {
+    return box(p=p, half=vec3(0.43, 0.88, 0.22))
+}
+
+field conservative distance window_void(p: Vec3) -> F32 {
+    transform = vec3(0.0, -0.08, 0.0) {
+        box(p=p, half=vec3(0.20, 0.48, 0.14))
+    }
+}
+
+field conservative distance window_cap(p: Vec3) -> F32 {
+    transform = vec3(0.0, 0.70, 0.0) {
+        box(p=p, half=vec3(0.30, 0.10, 0.18))
+    }
+}
+
+field conservative distance repeated_window(p: Vec3) -> F32 {
+    repeat = vec3(1.35, 0.0, 0.0) {
+        union {
+            provenance_policy = nearest
+            subtract {
+                provenance_policy = right
+                use window_frame
+                use window_void
+            }
+            use window_cap
+        }
+    }
+}
+
+field conservative distance beam_cell(p: Vec3) -> F32 {
+    transform = vec3(0.0, 0.92, 0.0) {
+        box(p=p, half=vec3(0.49, 0.08, 0.16))
+    }
+}
+
+field conservative distance repeated_beam(p: Vec3) -> F32 {
+    repeat = vec3(1.35, 0.0, 0.0) {
+        use beam_cell
+    }
+}
+
+field conservative distance facade_bounds(p: Vec3) -> F32 {
+    local = p - vec3(0.0, -0.04, 0.0)
+    abs_local = vec3(abs(local.x), abs(local.y), abs(local.z))
+    q = abs_local - vec3(4.2, 2.0, 0.34)
+    outside = length(max(q, vec3(0.0, 0.0, 0.0)))
+    inside = min(max(q.x, max(q.y, q.z)), 0.0)
+    return outside + inside
+}
+
+field conservative distance bounded_window(p: Vec3) -> F32 {
+    intersection {
+        provenance_policy = nearest
+        use repeated_window
+        use facade_bounds
+    }
+}
+
+field conservative distance bounded_beam(p: Vec3) -> F32 {
+    intersection {
+        provenance_policy = nearest
+        use repeated_beam
+        use facade_bounds
+    }
+}
+
+field conservative distance scene(p: Vec3) -> F32 {
+    union {
+        provenance_policy = nearest
+        use bounded_window
+        use bounded_beam
+        use ground
+    }
+}
+
+material frame_surface(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(180.0, 150.0, 104.0),
+        roughness=0.22,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+material beam_surface(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(124.0, 164.0, 198.0),
+        roughness=0.28,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+material ground_surface(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(66.0, 74.0, 86.0),
+        roughness=0.98,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape frame_shape {
+    field = bounded_window
+    material = frame_surface
+    payload = Payload(
+        entity_id=u64(1),
+        material_id=u64(1),
+        actor=ActorHandle(id=u64(1), generation=u32(0))
+    )
+}
+
+shape beam_shape {
+    field = bounded_beam
+    material = beam_surface
+    payload = Payload(
+        entity_id=u64(2),
+        material_id=u64(2),
+        actor=ActorHandle(id=u64(1), generation=u32(0))
+    )
+}
+
+shape ground_shape {
+    field = ground
+    material = ground_surface
+    payload = Payload(
+        entity_id=u64(3),
+        material_id=u64(3),
+        actor=ActorHandle(id=u64(1), generation=u32(0))
+    )
+}
+
+shape scene_shape {
+    union {
+        provenance_policy = nearest
+        use frame_shape
+        use beam_shape
+        use ground_shape
+    }
+}
+
+fn compute_scene_surface(scene_capture: ShapeCapture, hit: Hit3) -> Surface {
+    return surface_at(capture=scene_capture, hit=hit)
+}
+
+fn compute_scene_hit(scene_capture: ShapeCapture, origin: Vec3, direction: Vec3) -> Hit3 {
+    return trace_shape(
+        capture=scene_capture,
+        origin=origin,
+        direction=direction,
+        max_distance=14.0,
+        min_step=0.04,
+        hit_epsilon=0.0009,
+        max_steps=112
+    )
+}
+
+fn compute_shadow_visibility(
+    scene_capture: ShapeCapture,
+    hit_position: Vec3,
+    hit_normal: Vec3,
+    light: Light
+) -> F32 {
+    shadow_origin = hit_position + hit_normal * 0.01
+    shadow_direction = normalize(light.position - shadow_origin)
+    shadow_limit = length(light.position - shadow_origin)
+    shadow_hit = trace_shape(
+        capture=scene_capture,
+        origin=shadow_origin,
+        direction=shadow_direction,
+        max_distance=shadow_limit,
+        min_step=0.06,
+        hit_epsilon=0.0012,
+        max_steps=40
+    )
+    if shadow_hit.hit {
+        return 0.0
+    }
+    return 1.0
+}
+
+fn compute_scene_color(
+    scene_capture: ShapeCapture,
+    camera_position: Vec3,
+    light: Light,
+    ray_direction: Vec3
+) -> Vec3 {
+    hit = compute_scene_hit(
+        scene_capture=scene_capture,
+        origin=camera_position,
+        direction=ray_direction
+    )
+
+    if hit.hit {
+        surface = compute_scene_surface(scene_capture=scene_capture, hit=hit)
+        key_dir = normalize(light.position - hit.position)
+        fill_dir = normalize(vec3(-0.55, 0.42, 0.28))
+        view_dir = normalize(camera_position - hit.position)
+        half_dir = normalize(key_dir + view_dir)
+        distance_to_light = length(light.position - hit.position)
+        attenuation = clamp(1.0 - distance_to_light / light.range, 0.0, 1.0)
+        shadow = compute_shadow_visibility(
+            scene_capture=scene_capture,
+            hit_position=hit.position,
+            hit_normal=hit.normal,
+            light=light
+        )
+        diffuse = max(dot(hit.normal, key_dir), 0.0) * shadow
+        fill = 0.16 * max(dot(hit.normal, fill_dir), 0.0)
+        specular = pow(max(dot(hit.normal, half_dir), 0.0), 28.0) * 0.16
+        lighting = 0.07 + (0.90 * diffuse * attenuation) + (fill * 0.20)
+        return vec3(
+            clamp(surface.albedo.x * lighting * light.intensity.x + 230.0 * specular * (0.2 + surface.roughness * 0.8), 0.0, 255.0),
+            clamp(surface.albedo.y * lighting * light.intensity.y + 210.0 * specular * (0.2 + surface.roughness * 0.8), 0.0, 255.0),
+            clamp(surface.albedo.z * lighting * light.intensity.z + 185.0 * specular * (0.2 + surface.roughness * 0.8), 0.0, 255.0)
+        )
+    }
+
+    sky_t = 0.5 * (ray_direction.y + 1.0)
+    return vec3(8.0, 10.0, 16.0) * (1.0 - sky_t) + vec3(58.0, 84.0, 130.0) * sky_t
+}
+
+fn render_ppm() -> String {
+    width = 48
+    height = 48
+    aspect = f32(width) / f32(height)
+    camera_position = vec3(0.2, 0.45, 4.35)
+    forward = normalize(vec3(-0.10, -0.03, -1.0))
+    world_up = vec3(0.0, 1.0, 0.0)
+    right = normalize(cross(forward, world_up))
+    up = normalize(cross(right, forward))
+    scene_capture = capture scene_shape
+    light = Light(
+        position=vec3(-2.0, 3.2, 2.6),
+        direction=normalize(vec3(0.8, -0.85, -0.9)),
+        intensity=vec3(0.98, 0.98, 1.0),
+        range=18.0
+    )
+
+    mutable ppm = "P3\n48 48\n255\n"
+    mutable y = 0
+    while y < height {
+        mutable x = 0
+        while x < width {
+            sample_u = (f32(x) + 0.5) / f32(width)
+            sample_v = (f32(y) + 0.5) / f32(height)
+            screen_x = (sample_u - 0.5) * 2.0 * aspect * 0.76
+            screen_y = (0.5 - sample_v) * 2.0 * 0.76
+            ray = normalize(forward + right * screen_x + up * screen_y)
+            shaded = compute_scene_color(
+                scene_capture=scene_capture,
+                camera_position=camera_position,
+                light=light,
+                ray_direction=ray
+            )
+            r = i32(clamp(shaded.x, 0.0, 255.0))
+            g = i32(clamp(shaded.y, 0.0, 255.0))
+            b = i32(clamp(shaded.z, 0.0, 255.0))
+
+            ppm += "{r} {g} {b}\n"
+            x += 1
+        }
+        y += 1
+    }
+
+    return ppm
+}
+
+fn run() -> Integer {
+    print_line(text=render_ppm())
+    return 0
+}

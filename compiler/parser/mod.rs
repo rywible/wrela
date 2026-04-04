@@ -1187,12 +1187,12 @@ fn f() -> Nothing {
             _ => panic!("Expected function definition"),
         };
         assert!(func.statements().count() >= 2);
-        let call_stmt = match func.statements().next().unwrap() {
-            Stmt::Expr(expr) => expr,
-            _ => panic!("Expected expression statement"),
+        let assign_stmt = match func.statements().next().unwrap() {
+            Stmt::VarAssign(assign) => assign,
+            _ => panic!("Expected assignment statement"),
         };
         assert!(matches!(
-            call_stmt.expr(),
+            assign_stmt.value(),
             Some(Expr::Bin(_)) | Some(Expr::Call(_))
         ));
     }
@@ -1393,6 +1393,526 @@ kernel fn shade() -> Nothing {
             .map(|token| token.text().to_string())
             .collect();
         assert_eq!(attrs, vec!["serial".to_string()]);
+    }
+
+    #[test]
+    fn test_field_declarations_parse_and_attach_to_ast() {
+        use ast::{AstNode, FieldClass, FieldKind, Stmt};
+        let text = "\
+field exact distance sphere(p: F32) -> F32 {
+    return p
+}
+field conservative distance shell(center: F32) -> F32 {
+    return center
+}
+";
+        let (_node, errors) = parse_with_errors(text);
+        assert!(errors.is_empty(), "{errors:?}");
+
+        let node = parse(text);
+        let root = ast::Root::cast(node).unwrap();
+        let fields: Vec<_> = root.statements().collect();
+        assert_eq!(fields.len(), 2);
+
+        let first = match &fields[0] {
+            Stmt::FieldDecl(field) => field,
+            _ => panic!("Expected field declaration"),
+        };
+        assert_eq!(first.name().unwrap().text(), "sphere");
+        assert!(matches!(first.field_class(), Some(FieldClass::Exact)));
+        assert!(matches!(first.field_kind(), Some(FieldKind::Distance)));
+        assert_eq!(first.params().count(), 1);
+
+        let second = match &fields[1] {
+            Stmt::FieldDecl(field) => field,
+            _ => panic!("Expected field declaration"),
+        };
+        assert_eq!(second.name().unwrap().text(), "shell");
+        assert!(matches!(
+            second.field_class(),
+            Some(FieldClass::Conservative)
+        ));
+        assert!(matches!(second.field_kind(), Some(FieldKind::Distance)));
+    }
+
+    #[test]
+    fn test_field_support_and_bounds_clauses_parse_as_explicit_ast() {
+        use ast::{AstNode, FieldExpr, Stmt};
+        let text = "\
+field conservative distance scene(p: Vec3) -> F32 {
+    support = Support3(bounds = Bounds3(min = vec3(-1.0, -1.0, -1.0), max = vec3(1.0, 1.0, 1.0)))
+    bounds = Bounds3(min = vec3(-2.0, -2.0, -2.0), max = vec3(2.0, 2.0, 2.0))
+    sphere(radius = 1)
+}
+";
+        let (_node, errors) = parse_with_errors(text);
+        assert!(errors.is_empty(), "{errors:?}");
+
+        let node = parse(text);
+        let root = ast::Root::cast(node).unwrap();
+        let field = match root.statements().next() {
+            Some(Stmt::FieldDecl(field)) => field,
+            _ => panic!("Expected field declaration"),
+        };
+        assert!(field.support_clause().is_some(), "expected support clause");
+        assert!(field.bounds_clause().is_some(), "expected bounds clause");
+        let expr = field
+            .semantic_expr()
+            .expect("expected semantic field expression");
+        let FieldExpr::Primitive(primitive) = expr else {
+            panic!("expected primitive field expression");
+        };
+        assert_eq!(primitive.name().unwrap().text(), "sphere");
+    }
+
+    #[test]
+    fn test_semantic_field_composition_parses_as_explicit_ast() {
+        use ast::{AstNode, FieldExpr, Stmt};
+        let text = "\
+field exact distance scene(p: Vec3) -> F32 {
+    union {
+        use cube
+        subtract {
+            use body
+            use hole
+        }
+    }
+}
+";
+        let (_node, errors) = parse_with_errors(text);
+        assert!(errors.is_empty(), "{errors:?}");
+
+        let node = parse(text);
+        let root = ast::Root::cast(node).unwrap();
+        let field = match root.statements().next() {
+            Some(Stmt::FieldDecl(field)) => field,
+            _ => panic!("Expected field declaration"),
+        };
+        assert_eq!(field.name().unwrap().text(), "scene");
+        let expr = field
+            .semantic_expr()
+            .expect("expected semantic field expression");
+        let FieldExpr::Union(union) = expr else {
+            panic!("expected union field expression");
+        };
+        let items: Vec<_> = union.items().collect();
+        assert_eq!(items.len(), 2);
+        match &items[0] {
+            FieldExpr::Use(use_expr) => {
+                assert_eq!(use_expr.name().unwrap().text(), "cube");
+            }
+            _ => panic!("expected first union item to be use"),
+        }
+        match &items[1] {
+            FieldExpr::Subtract(subtract) => {
+                let lhs = subtract.lhs().expect("expected subtract lhs");
+                let rhs = subtract.rhs().expect("expected subtract rhs");
+                match lhs {
+                    FieldExpr::Use(use_expr) => {
+                        assert_eq!(use_expr.name().unwrap().text(), "body");
+                    }
+                    _ => panic!("expected subtract lhs to be use"),
+                }
+                match rhs {
+                    FieldExpr::Use(use_expr) => {
+                        assert_eq!(use_expr.name().unwrap().text(), "hole");
+                    }
+                    _ => panic!("expected subtract rhs to be use"),
+                }
+            }
+            _ => panic!("expected second union item to be subtract"),
+        }
+    }
+
+    #[test]
+    fn test_field_boolean_provenance_policy_parse_as_explicit_ast() {
+        use ast::{AstNode, FieldExpr, Stmt};
+        let text = "\
+field conservative distance composed(p: Vec3) -> F32 {
+    subtract {
+        provenance_policy = right
+        intersection {
+            provenance_policy = nearest
+            union {
+                provenance_policy = nearest
+                use left_x
+                use left_y
+            }
+            use cap_z
+        }
+        use notch
+    }
+}
+";
+        let (_node, errors) = parse_with_errors(text);
+        assert!(errors.is_empty(), "{errors:?}");
+
+        let node = parse(text);
+        let root = ast::Root::cast(node).unwrap();
+        let field = match root.statements().next() {
+            Some(Stmt::FieldDecl(field)) => field,
+            _ => panic!("Expected field declaration"),
+        };
+        let subtract = match field
+            .semantic_expr()
+            .expect("expected subtract field expression")
+        {
+            FieldExpr::Subtract(subtract) => subtract,
+            _ => panic!("expected subtract field expression"),
+        };
+        assert_eq!(
+            subtract
+                .provenance_policy()
+                .expect("expected subtract provenance policy")
+                .text(),
+            "right"
+        );
+        let lhs = subtract.lhs().expect("expected subtract lhs");
+        let FieldExpr::Intersection(intersection) = lhs else {
+            panic!("expected subtract lhs to be intersection");
+        };
+        assert_eq!(
+            intersection
+                .provenance_policy()
+                .expect("expected intersection provenance policy")
+                .text(),
+            "nearest"
+        );
+        let intersection_items: Vec<_> = intersection.items().collect();
+        assert_eq!(intersection_items.len(), 2);
+        let FieldExpr::Union(union) = &intersection_items[0] else {
+            panic!("expected first intersection item to be union");
+        };
+        assert_eq!(
+            union
+                .provenance_policy()
+                .expect("expected union provenance policy")
+                .text(),
+            "nearest"
+        );
+        assert_eq!(union.items().count(), 2);
+    }
+
+    #[test]
+    fn test_field_structural_operators_parse_as_explicit_ast() {
+        use ast::{AstNode, FieldExpr, Stmt};
+        let text = "\
+field exact distance scene(p: Vec3) -> F32 {
+    transform = vec3(1, 0, 0) {
+        mirror = vec3(0, 1, 0) {
+            repeat = vec3(2, 2, 2) {
+                instance = vec3(0, 0, 1) {
+                    use cube
+                }
+            }
+        }
+    }
+}
+";
+        let (_node, errors) = parse_with_errors(text);
+        assert!(errors.is_empty(), "{errors:?}");
+
+        let node = parse(text);
+        let root = ast::Root::cast(node).unwrap();
+        let field = match root.statements().next() {
+            Some(Stmt::FieldDecl(field)) => field,
+            _ => panic!("Expected field declaration"),
+        };
+        let expr = field
+            .semantic_expr()
+            .expect("expected semantic field expression");
+        let FieldExpr::Transform(transform) = expr else {
+            panic!("expected transform field expression");
+        };
+        assert!(transform.transform().is_some());
+
+        let mirror = transform.body().expect("expected nested mirror body");
+        let FieldExpr::Mirror(mirror) = mirror else {
+            panic!("expected mirror field expression");
+        };
+        assert!(mirror.mirror().is_some());
+
+        let repeat = mirror.body().expect("expected nested repeat body");
+        let FieldExpr::Repeat(repeat) = repeat else {
+            panic!("expected repeat field expression");
+        };
+        assert!(repeat.repeat().is_some());
+
+        let instance = repeat.body().expect("expected nested instance body");
+        let FieldExpr::Instance(instance) = instance else {
+            panic!("expected instance field expression");
+        };
+        assert!(instance.instance().is_some());
+
+        let inner = instance.body().expect("expected inner use field");
+        let FieldExpr::Use(use_expr) = inner else {
+            panic!("expected inner use field expression");
+        };
+        assert_eq!(use_expr.name().unwrap().text(), "cube");
+    }
+
+    #[test]
+    fn test_field_primitive_expression_parses_as_explicit_ast() {
+        use ast::{Arg, AstNode, Expr, FieldExpr, Stmt};
+        let text = "\
+field exact distance sphere(p: Vec3) -> F32 {
+    sphere(radius = 1)
+}
+";
+        let (_node, errors) = parse_with_errors(text);
+        assert!(errors.is_empty(), "{errors:?}");
+
+        let node = parse(text);
+        let root = ast::Root::cast(node).unwrap();
+        let field = match root.statements().next() {
+            Some(Stmt::FieldDecl(field)) => field,
+            _ => panic!("Expected field declaration"),
+        };
+        let expr = field
+            .semantic_expr()
+            .expect("expected primitive field expression");
+        let FieldExpr::Primitive(primitive) = expr else {
+            panic!("expected primitive field expression");
+        };
+        assert_eq!(primitive.name().unwrap().text(), "sphere");
+        let args: Vec<_> = primitive.args().collect();
+        assert_eq!(args.len(), 1);
+        match &args[0] {
+            Arg::Named(named) => {
+                assert_eq!(named.name().unwrap().text(), "radius");
+                let value = named.value().expect("named arg value");
+                match value {
+                    Expr::Literal(_) => {}
+                    _ => panic!("expected radius binding to be a literal expression"),
+                }
+            }
+            _ => panic!("expected radius arg to be named"),
+        }
+    }
+
+    #[test]
+    fn test_legacy_field_body_still_parses_as_statement_block() {
+        use ast::{AstNode, Stmt};
+        let text = "\
+field exact distance sphere(p: F32) -> F32 {
+    return p
+}
+";
+        let (_node, errors) = parse_with_errors(text);
+        assert!(errors.is_empty(), "{errors:?}");
+
+        let node = parse(text);
+        let root = ast::Root::cast(node).unwrap();
+        let field = match root.statements().next() {
+            Some(Stmt::FieldDecl(field)) => field,
+            _ => panic!("Expected field declaration"),
+        };
+        assert!(field.semantic_expr().is_none());
+        assert_eq!(field.statements().count(), 1);
+    }
+
+    #[test]
+    fn test_shape_leaf_and_composition_parse_as_explicit_ast() {
+        use ast::{AstNode, Expr, ShapeExpr, Stmt};
+        let text = "\
+shape cube_shape {
+    field = cube
+    material = cube_surface
+    payload = Payload(id = 1)
+}
+
+shape scene_shape {
+    union {
+        use cube_shape
+        use ground_shape
+    }
+}
+";
+        let (_node, errors) = parse_with_errors(text);
+        assert!(errors.is_empty(), "{errors:?}");
+
+        let node = parse(text);
+        let root = ast::Root::cast(node).unwrap();
+        let mut statements = root.statements();
+
+        let leaf_shape = match statements.next().expect("first statement") {
+            Stmt::ShapeDecl(shape) => shape,
+            _ => panic!("expected shape declaration"),
+        };
+        assert_eq!(leaf_shape.name().unwrap().text(), "cube_shape");
+        let leaf = match leaf_shape
+            .semantic_expr()
+            .expect("expected leaf shape expr")
+        {
+            ShapeExpr::Leaf(leaf) => leaf,
+            _ => panic!("expected leaf shape expr"),
+        };
+        let field = leaf.field().expect("expected field binding");
+        match field.value().expect("field binding value") {
+            Expr::Ident(expr) => assert_eq!(expr.name().unwrap().text(), "cube"),
+            _ => panic!("expected field binding value to be ident"),
+        }
+        let material = leaf.material().expect("expected material binding");
+        match material.value().expect("material binding value") {
+            Expr::Ident(expr) => assert_eq!(expr.name().unwrap().text(), "cube_surface"),
+            _ => panic!("expected material binding value to be ident"),
+        }
+        let payload = leaf.payload().expect("expected payload binding");
+        match payload.value().expect("payload binding value") {
+            Expr::Call(call) => assert_eq!(call.name().unwrap().text(), "Payload"),
+            _ => panic!("expected payload binding value to be call"),
+        }
+
+        let scene_shape = match statements.next().expect("second statement") {
+            Stmt::ShapeDecl(shape) => shape,
+            _ => panic!("expected shape declaration"),
+        };
+        assert_eq!(scene_shape.name().unwrap().text(), "scene_shape");
+        let union = match scene_shape
+            .semantic_expr()
+            .expect("expected union shape expr")
+        {
+            ShapeExpr::Union(union) => union,
+            _ => panic!("expected union shape expr"),
+        };
+        let items: Vec<_> = union.items().collect();
+        assert_eq!(items.len(), 2);
+        match &items[0] {
+            ShapeExpr::Use(use_expr) => {
+                assert_eq!(use_expr.name().unwrap().text(), "cube_shape");
+            }
+            _ => panic!("expected first union item to be use"),
+        }
+        match &items[1] {
+            ShapeExpr::Use(use_expr) => {
+                assert_eq!(use_expr.name().unwrap().text(), "ground_shape");
+            }
+            _ => panic!("expected second union item to be use"),
+        }
+    }
+
+    #[test]
+    fn test_shape_boolean_provenance_policy_parse_as_explicit_ast() {
+        use ast::{AstNode, ShapeExpr, Stmt};
+        let text = "\
+shape union_shape {
+    union {
+        provenance_policy = nearest
+        use left_shape
+        use right_shape
+    }
+}
+
+shape intersection_shape {
+    intersection {
+        provenance_policy = ordered
+        use left_shape
+        use right_shape
+    }
+}
+
+shape subtract_shape {
+    subtract {
+        provenance_policy = right
+        use left_shape
+        use cutter_shape
+    }
+}
+";
+        let (_node, errors) = parse_with_errors(text);
+        assert!(errors.is_empty(), "{errors:?}");
+
+        let node = parse(text);
+        let root = ast::Root::cast(node).unwrap();
+        let mut statements = root.statements();
+
+        let union_shape = match statements.next().expect("first statement") {
+            Stmt::ShapeDecl(shape) => shape,
+            _ => panic!("expected union shape declaration"),
+        };
+        let union = match union_shape
+            .semantic_expr()
+            .expect("expected union shape expr")
+        {
+            ShapeExpr::Union(union) => union,
+            _ => panic!("expected union shape expr"),
+        };
+        assert_eq!(
+            union
+                .provenance_policy()
+                .expect("expected union provenance policy")
+                .text(),
+            "nearest"
+        );
+        assert_eq!(union.items().count(), 2);
+
+        let intersection_shape = match statements.next().expect("second statement") {
+            Stmt::ShapeDecl(shape) => shape,
+            _ => panic!("expected intersection shape declaration"),
+        };
+        let intersection = match intersection_shape
+            .semantic_expr()
+            .expect("expected intersection shape expr")
+        {
+            ShapeExpr::Intersection(intersection) => intersection,
+            _ => panic!("expected intersection shape expr"),
+        };
+        assert_eq!(
+            intersection
+                .provenance_policy()
+                .expect("expected intersection provenance policy")
+                .text(),
+            "ordered"
+        );
+        assert_eq!(intersection.items().count(), 2);
+
+        let subtract_shape = match statements.next().expect("third statement") {
+            Stmt::ShapeDecl(shape) => shape,
+            _ => panic!("expected subtract shape declaration"),
+        };
+        let subtract = match subtract_shape
+            .semantic_expr()
+            .expect("expected subtract shape expr")
+        {
+            ShapeExpr::Subtract(subtract) => subtract,
+            _ => panic!("expected subtract shape expr"),
+        };
+        assert_eq!(
+            subtract
+                .provenance_policy()
+                .expect("expected subtract provenance policy")
+                .text(),
+            "right"
+        );
+        assert_eq!(subtract.items().count(), 2);
+    }
+
+    #[test]
+    fn test_material_declarations_parse_and_attach_to_ast() {
+        use ast::{AstNode, Stmt};
+        let text = "\
+material surface(hit: Hit3) -> Surface {
+    return hit
+}
+";
+        let (_node, errors) = parse_with_errors(text);
+        assert!(errors.is_empty(), "{errors:?}");
+
+        let node = parse(text);
+        let root = ast::Root::cast(node).unwrap();
+        let materials: Vec<_> = root.statements().collect();
+        assert_eq!(materials.len(), 1);
+
+        let material = match &materials[0] {
+            Stmt::MaterialDecl(material) => material,
+            _ => panic!("Expected material declaration"),
+        };
+        assert_eq!(material.name().unwrap().text(), "surface");
+        assert_eq!(material.params().count(), 1);
+        assert_eq!(
+            material.ret_type().unwrap().name().unwrap().text(),
+            "Surface"
+        );
     }
 
     #[test]

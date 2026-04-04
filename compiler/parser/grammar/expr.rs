@@ -1,6 +1,6 @@
 use super::types;
-use crate::parser::ast::is_name_like_label_token;
 use crate::parser::Parser;
+use crate::parser::ast::is_name_like_label_token;
 use crate::parser::kind::SyntaxKind;
 
 pub fn expr(p: &mut Parser) {
@@ -74,6 +74,7 @@ fn lhs(p: &mut Parser) -> Option<crate::parser::CompletedMarker> {
             Some(m.complete(p, SyntaxKind::PrefixExpr))
         }
         SyntaxKind::CrashKw => parse_crash(p, m),
+        SyntaxKind::CaptureKw => parse_capture_expr(p, m),
         SyntaxKind::DetachKw | SyntaxKind::SpawnKw => parse_detach(p, m),
         SyntaxKind::Ident => {
             if p.at_ident_text("it") || p.at_ident_text("its") {
@@ -166,6 +167,19 @@ fn parse_crash(p: &mut Parser, m: crate::parser::Marker) -> Option<crate::parser
         p.error_with_message_no_bump("expected '(' after crash");
     }
     Some(m.complete(p, SyntaxKind::CrashExpr))
+}
+
+fn parse_capture_expr(
+    p: &mut Parser,
+    m: crate::parser::Marker,
+) -> Option<crate::parser::CompletedMarker> {
+    p.expect(SyntaxKind::CaptureKw);
+    if !matches!(p.peek(), SyntaxKind::Ident | SyntaxKind::SelfKw | SyntaxKind::LParen) {
+        p.error_with_message_no_bump("expected scene target after 'capture'");
+        return Some(m.complete(p, SyntaxKind::CaptureExpr));
+    }
+    expr_binding_power(p, 23);
+    Some(m.complete(p, SyntaxKind::CaptureExpr))
 }
 
 fn parse_postfixes(

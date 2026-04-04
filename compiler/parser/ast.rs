@@ -47,6 +47,9 @@ pub enum Stmt {
     FuncDef(FuncDef),
     KernelDef(KernelDef),
     SystemDef(SystemDef),
+    FieldDecl(FieldDecl),
+    MaterialDecl(MaterialDecl),
+    ShapeDecl(ShapeDecl),
     StyleProfileDef(StyleProfileDef),
     GeneratorProfileDef(GeneratorProfileDef),
     QualityProfileDef(QualityProfileDef),
@@ -81,6 +84,9 @@ impl AstNode for Stmt {
                 | SyntaxKind::FuncDef
                 | SyntaxKind::KernelDef
                 | SyntaxKind::SystemDef
+                | SyntaxKind::FieldDecl
+                | SyntaxKind::MaterialDecl
+                | SyntaxKind::ShapeDecl
                 | SyntaxKind::StyleProfileDef
                 | SyntaxKind::GeneratorProfileDef
                 | SyntaxKind::QualityProfileDef
@@ -113,6 +119,9 @@ impl AstNode for Stmt {
             SyntaxKind::FuncDef => FuncDef::cast(node).map(Stmt::FuncDef),
             SyntaxKind::KernelDef => KernelDef::cast(node).map(Stmt::KernelDef),
             SyntaxKind::SystemDef => SystemDef::cast(node).map(Stmt::SystemDef),
+            SyntaxKind::FieldDecl => FieldDecl::cast(node).map(Stmt::FieldDecl),
+            SyntaxKind::MaterialDecl => MaterialDecl::cast(node).map(Stmt::MaterialDecl),
+            SyntaxKind::ShapeDecl => ShapeDecl::cast(node).map(Stmt::ShapeDecl),
             SyntaxKind::StyleProfileDef => StyleProfileDef::cast(node).map(Stmt::StyleProfileDef),
             SyntaxKind::GeneratorProfileDef => {
                 GeneratorProfileDef::cast(node).map(Stmt::GeneratorProfileDef)
@@ -154,6 +163,9 @@ impl AstNode for Stmt {
             Stmt::FuncDef(it) => it.syntax(),
             Stmt::KernelDef(it) => it.syntax(),
             Stmt::SystemDef(it) => it.syntax(),
+            Stmt::FieldDecl(it) => it.syntax(),
+            Stmt::MaterialDecl(it) => it.syntax(),
+            Stmt::ShapeDecl(it) => it.syntax(),
             Stmt::StyleProfileDef(it) => it.syntax(),
             Stmt::GeneratorProfileDef(it) => it.syntax(),
             Stmt::QualityProfileDef(it) => it.syntax(),
@@ -365,10 +377,7 @@ impl AstNode for PrivateBlock {
 
 impl PrivateBlock {
     pub fn statements(&self) -> impl Iterator<Item = Stmt> {
-        self.0
-            .children()
-            .filter(|node| node.kind() == SyntaxKind::Block)
-            .flat_map(|block| block.children().filter_map(Stmt::cast))
+        self.0.children().filter_map(Stmt::cast)
     }
 }
 
@@ -885,6 +894,966 @@ macro_rules! impl_function_like_def {
 
 impl_function_like_def!(SystemDef, SyntaxKind::SystemDef);
 impl_function_like_def!(KernelDef, SyntaxKind::KernelDef);
+
+pub enum FieldClass {
+    Exact,
+    Conservative,
+}
+
+pub enum FieldKind {
+    Distance,
+}
+
+pub enum FieldExpr {
+    Use(FieldUseExpr),
+    Primitive(FieldPrimitiveExpr),
+    Union(FieldUnionExpr),
+    Intersection(FieldIntersectionExpr),
+    Subtract(FieldSubtractExpr),
+    Transform(FieldTransformExpr),
+    Mirror(FieldMirrorExpr),
+    Repeat(FieldRepeatExpr),
+    Instance(FieldInstanceExpr),
+}
+
+impl AstNode for FieldExpr {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        matches!(
+            kind,
+            SyntaxKind::FieldUseExpr
+                | SyntaxKind::FieldPrimitiveExpr
+                | SyntaxKind::FieldUnionExpr
+                | SyntaxKind::FieldIntersectionExpr
+                | SyntaxKind::FieldSubtractExpr
+                | SyntaxKind::FieldTransformExpr
+                | SyntaxKind::FieldMirrorExpr
+                | SyntaxKind::FieldRepeatExpr
+                | SyntaxKind::FieldInstanceExpr
+        )
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        match node.kind() {
+            SyntaxKind::FieldUseExpr => FieldUseExpr::cast(node).map(FieldExpr::Use),
+            SyntaxKind::FieldPrimitiveExpr => {
+                FieldPrimitiveExpr::cast(node).map(FieldExpr::Primitive)
+            }
+            SyntaxKind::FieldUnionExpr => FieldUnionExpr::cast(node).map(FieldExpr::Union),
+            SyntaxKind::FieldIntersectionExpr => {
+                FieldIntersectionExpr::cast(node).map(FieldExpr::Intersection)
+            }
+            SyntaxKind::FieldSubtractExpr => FieldSubtractExpr::cast(node).map(FieldExpr::Subtract),
+            SyntaxKind::FieldTransformExpr => {
+                FieldTransformExpr::cast(node).map(FieldExpr::Transform)
+            }
+            SyntaxKind::FieldMirrorExpr => FieldMirrorExpr::cast(node).map(FieldExpr::Mirror),
+            SyntaxKind::FieldRepeatExpr => FieldRepeatExpr::cast(node).map(FieldExpr::Repeat),
+            SyntaxKind::FieldInstanceExpr => FieldInstanceExpr::cast(node).map(FieldExpr::Instance),
+            _ => None,
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        match self {
+            FieldExpr::Use(it) => it.syntax(),
+            FieldExpr::Primitive(it) => it.syntax(),
+            FieldExpr::Union(it) => it.syntax(),
+            FieldExpr::Intersection(it) => it.syntax(),
+            FieldExpr::Subtract(it) => it.syntax(),
+            FieldExpr::Transform(it) => it.syntax(),
+            FieldExpr::Mirror(it) => it.syntax(),
+            FieldExpr::Repeat(it) => it.syntax(),
+            FieldExpr::Instance(it) => it.syntax(),
+        }
+    }
+}
+
+pub struct FieldDecl(SyntaxNode);
+impl AstNode for FieldDecl {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::FieldDecl
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(FieldDecl(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl FieldDecl {
+    fn block(&self) -> Option<Block> {
+        self.0.children().filter_map(Block::cast).next()
+    }
+
+    pub fn support_clause(&self) -> Option<FieldSupportClause> {
+        self.block().and_then(|block| {
+            block
+                .0
+                .children()
+                .filter_map(FieldSupportClause::cast)
+                .next()
+        })
+    }
+
+    pub fn bounds_clause(&self) -> Option<FieldBoundsClause> {
+        self.block().and_then(|block| {
+            block
+                .0
+                .children()
+                .filter_map(FieldBoundsClause::cast)
+                .next()
+        })
+    }
+
+    pub fn field_class(&self) -> Option<FieldClass> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .find_map(|token| match token.text() {
+                "exact" => Some(FieldClass::Exact),
+                "conservative" => Some(FieldClass::Conservative),
+                _ => None,
+            })
+    }
+
+    pub fn field_kind(&self) -> Option<FieldKind> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .find_map(|token| match token.text() {
+                "distance" => Some(FieldKind::Distance),
+                _ => None,
+            })
+    }
+
+    pub fn name(&self) -> Option<SyntaxToken> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .filter(|it| it.kind() == SyntaxKind::Ident)
+            .nth(3)
+    }
+
+    pub fn params(&self) -> impl Iterator<Item = Param> {
+        self.0
+            .children()
+            .filter(|it| it.kind() == SyntaxKind::ParamList)
+            .flat_map(|node| node.children())
+            .filter_map(Param::cast)
+    }
+
+    pub fn ret_type(&self) -> Option<TypeRef> {
+        self.0.children().filter_map(TypeRef::cast).next()
+    }
+
+    pub fn semantic_expr(&self) -> Option<FieldExpr> {
+        self.block()
+            .and_then(|block| block.0.children().filter_map(FieldExpr::cast).next())
+    }
+
+    pub fn statements(&self) -> impl Iterator<Item = Stmt> {
+        self.block().into_iter().flat_map(|b| {
+            b.0.children()
+                .filter_map(Stmt::cast)
+                .collect::<Vec<_>>()
+                .into_iter()
+        })
+    }
+
+    pub fn implicit_return_expr(&self) -> Option<StmtExpr> {
+        let mut last = None;
+        for stmt in self.statements() {
+            last = Some(stmt);
+        }
+        match last {
+            Some(Stmt::Expr(expr)) => Some(expr),
+            _ => None,
+        }
+    }
+}
+
+pub struct FieldSupportClause(SyntaxNode);
+impl AstNode for FieldSupportClause {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::FieldSupportClause
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(FieldSupportClause(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl FieldSupportClause {
+    pub fn value(&self) -> Option<Expr> {
+        self.0.children().filter_map(Expr::cast).next()
+    }
+}
+
+pub struct FieldBoundsClause(SyntaxNode);
+impl AstNode for FieldBoundsClause {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::FieldBoundsClause
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(FieldBoundsClause(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl FieldBoundsClause {
+    pub fn value(&self) -> Option<Expr> {
+        self.0.children().filter_map(Expr::cast).next()
+    }
+}
+
+pub struct FieldUseExpr(SyntaxNode);
+impl AstNode for FieldUseExpr {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::FieldUseExpr
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(FieldUseExpr(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl FieldUseExpr {
+    pub fn name(&self) -> Option<SyntaxToken> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .find(|it| it.kind() == SyntaxKind::Ident)
+    }
+}
+
+pub struct FieldPrimitiveExpr(SyntaxNode);
+impl AstNode for FieldPrimitiveExpr {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::FieldPrimitiveExpr
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(FieldPrimitiveExpr(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl FieldPrimitiveExpr {
+    pub fn name(&self) -> Option<SyntaxToken> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .find(|it| it.kind() == SyntaxKind::Ident)
+    }
+
+    pub fn args(&self) -> impl Iterator<Item = Arg> {
+        let mut seen_name = false;
+        self.0.children().filter_map(move |node| {
+            if !seen_name && node.kind() == SyntaxKind::IdentExpr {
+                seen_name = true;
+                return None;
+            }
+            if let Some(named) = NamedArg::cast(node.clone()) {
+                return Some(Arg::Named(named));
+            }
+            Expr::cast(node).map(Arg::Positional)
+        })
+    }
+}
+
+pub struct FieldUnionExpr(SyntaxNode);
+impl AstNode for FieldUnionExpr {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::FieldUnionExpr
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(FieldUnionExpr(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl FieldUnionExpr {
+    pub fn provenance_policy_clause(&self) -> Option<FieldProvenancePolicyClause> {
+        self.0
+            .children()
+            .filter_map(Block::cast)
+            .next()
+            .into_iter()
+            .flat_map(|b| {
+                b.0.children()
+                    .filter_map(FieldProvenancePolicyClause::cast)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+            })
+            .next()
+    }
+
+    pub fn provenance_policy(&self) -> Option<SyntaxToken> {
+        self.provenance_policy_clause()
+            .and_then(|clause| clause.value())
+    }
+
+    pub fn items(&self) -> impl Iterator<Item = FieldExpr> {
+        self.0
+            .children()
+            .filter_map(Block::cast)
+            .next()
+            .into_iter()
+            .flat_map(|b| {
+                b.0.children()
+                    .filter_map(FieldExpr::cast)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+            })
+    }
+}
+
+pub struct FieldIntersectionExpr(SyntaxNode);
+impl AstNode for FieldIntersectionExpr {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::FieldIntersectionExpr
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(FieldIntersectionExpr(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl FieldIntersectionExpr {
+    pub fn provenance_policy_clause(&self) -> Option<FieldProvenancePolicyClause> {
+        self.0
+            .children()
+            .filter_map(Block::cast)
+            .next()
+            .into_iter()
+            .flat_map(|b| {
+                b.0.children()
+                    .filter_map(FieldProvenancePolicyClause::cast)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+            })
+            .next()
+    }
+
+    pub fn provenance_policy(&self) -> Option<SyntaxToken> {
+        self.provenance_policy_clause()
+            .and_then(|clause| clause.value())
+    }
+
+    pub fn items(&self) -> impl Iterator<Item = FieldExpr> {
+        self.0
+            .children()
+            .filter_map(Block::cast)
+            .next()
+            .into_iter()
+            .flat_map(|b| {
+                b.0.children()
+                    .filter_map(FieldExpr::cast)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+            })
+    }
+}
+
+pub struct FieldSubtractExpr(SyntaxNode);
+impl AstNode for FieldSubtractExpr {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::FieldSubtractExpr
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(FieldSubtractExpr(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl FieldSubtractExpr {
+    pub fn provenance_policy_clause(&self) -> Option<FieldProvenancePolicyClause> {
+        self.0
+            .children()
+            .filter_map(Block::cast)
+            .next()
+            .into_iter()
+            .flat_map(|b| {
+                b.0.children()
+                    .filter_map(FieldProvenancePolicyClause::cast)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+            })
+            .next()
+    }
+
+    pub fn provenance_policy(&self) -> Option<SyntaxToken> {
+        self.provenance_policy_clause()
+            .and_then(|clause| clause.value())
+    }
+
+    pub fn lhs(&self) -> Option<FieldExpr> {
+        self.items().next()
+    }
+
+    pub fn rhs(&self) -> Option<FieldExpr> {
+        self.items().nth(1)
+    }
+
+    pub fn items(&self) -> impl Iterator<Item = FieldExpr> {
+        self.0
+            .children()
+            .filter_map(Block::cast)
+            .next()
+            .into_iter()
+            .flat_map(|b| {
+                b.0.children()
+                    .filter_map(FieldExpr::cast)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+            })
+    }
+}
+
+pub struct FieldProvenancePolicyClause(SyntaxNode);
+impl AstNode for FieldProvenancePolicyClause {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::FieldProvenancePolicyClause
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(FieldProvenancePolicyClause(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl FieldProvenancePolicyClause {
+    pub fn value(&self) -> Option<SyntaxToken> {
+        self.0.children_with_tokens().find_map(|element| {
+            let token = element.into_token()?;
+            if token.kind() == SyntaxKind::Ident {
+                Some(token)
+            } else {
+                None
+            }
+        })
+    }
+}
+
+macro_rules! impl_field_wrapped_expr {
+    ($name:ident, $kind:expr, $keyword_method:ident) => {
+        pub struct $name(SyntaxNode);
+        impl AstNode for $name {
+            fn can_cast(kind: SyntaxKind) -> bool {
+                kind == $kind
+            }
+            fn cast(node: SyntaxNode) -> Option<Self> {
+                if Self::can_cast(node.kind()) {
+                    Some($name(node))
+                } else {
+                    None
+                }
+            }
+            fn syntax(&self) -> &SyntaxNode {
+                &self.0
+            }
+        }
+
+        impl $name {
+            pub fn $keyword_method(&self) -> Option<Expr> {
+                self.0.children().filter_map(Expr::cast).next()
+            }
+
+            pub fn body(&self) -> Option<FieldExpr> {
+                self.0
+                    .children()
+                    .filter_map(Block::cast)
+                    .next()
+                    .and_then(|block| block.0.children().filter_map(FieldExpr::cast).next())
+            }
+        }
+    };
+}
+
+impl_field_wrapped_expr!(
+    FieldTransformExpr,
+    SyntaxKind::FieldTransformExpr,
+    transform
+);
+impl_field_wrapped_expr!(FieldMirrorExpr, SyntaxKind::FieldMirrorExpr, mirror);
+impl_field_wrapped_expr!(FieldRepeatExpr, SyntaxKind::FieldRepeatExpr, repeat);
+impl_field_wrapped_expr!(FieldInstanceExpr, SyntaxKind::FieldInstanceExpr, instance);
+
+pub struct MaterialDecl(SyntaxNode);
+impl AstNode for MaterialDecl {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::MaterialDecl
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(MaterialDecl(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl MaterialDecl {
+    pub fn name(&self) -> Option<SyntaxToken> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .filter(|it| it.kind() == SyntaxKind::Ident)
+            .nth(1)
+    }
+
+    pub fn params(&self) -> impl Iterator<Item = Param> {
+        self.0
+            .children()
+            .filter(|it| it.kind() == SyntaxKind::ParamList)
+            .flat_map(|node| node.children())
+            .filter_map(Param::cast)
+    }
+
+    pub fn ret_type(&self) -> Option<TypeRef> {
+        self.0.children().filter_map(TypeRef::cast).next()
+    }
+
+    pub fn statements(&self) -> impl Iterator<Item = Stmt> {
+        self.0
+            .children()
+            .filter_map(Block::cast)
+            .next()
+            .into_iter()
+            .flat_map(|b| {
+                b.0.children()
+                    .filter_map(Stmt::cast)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+            })
+    }
+
+    pub fn implicit_return_expr(&self) -> Option<StmtExpr> {
+        let mut last = None;
+        for stmt in self.statements() {
+            last = Some(stmt);
+        }
+        match last {
+            Some(Stmt::Expr(expr)) => Some(expr),
+            _ => None,
+        }
+    }
+}
+
+pub enum ShapeExpr {
+    Use(ShapeUseExpr),
+    Union(ShapeUnionExpr),
+    Intersection(ShapeIntersectionExpr),
+    Subtract(ShapeSubtractExpr),
+    Leaf(ShapeLeafExpr),
+}
+
+impl AstNode for ShapeExpr {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        matches!(
+            kind,
+            SyntaxKind::ShapeUseExpr
+                | SyntaxKind::ShapeUnionExpr
+                | SyntaxKind::ShapeIntersectionExpr
+                | SyntaxKind::ShapeSubtractExpr
+                | SyntaxKind::ShapeLeafExpr
+        )
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        match node.kind() {
+            SyntaxKind::ShapeUseExpr => ShapeUseExpr::cast(node).map(ShapeExpr::Use),
+            SyntaxKind::ShapeUnionExpr => ShapeUnionExpr::cast(node).map(ShapeExpr::Union),
+            SyntaxKind::ShapeIntersectionExpr => {
+                ShapeIntersectionExpr::cast(node).map(ShapeExpr::Intersection)
+            }
+            SyntaxKind::ShapeSubtractExpr => ShapeSubtractExpr::cast(node).map(ShapeExpr::Subtract),
+            SyntaxKind::ShapeLeafExpr => ShapeLeafExpr::cast(node).map(ShapeExpr::Leaf),
+            _ => None,
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        match self {
+            ShapeExpr::Use(it) => it.syntax(),
+            ShapeExpr::Union(it) => it.syntax(),
+            ShapeExpr::Intersection(it) => it.syntax(),
+            ShapeExpr::Subtract(it) => it.syntax(),
+            ShapeExpr::Leaf(it) => it.syntax(),
+        }
+    }
+}
+
+pub struct ShapeDecl(SyntaxNode);
+impl AstNode for ShapeDecl {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::ShapeDecl
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(ShapeDecl(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl ShapeDecl {
+    pub fn name(&self) -> Option<SyntaxToken> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .filter(|it| it.kind() == SyntaxKind::Ident)
+            .nth(1)
+    }
+
+    pub fn semantic_expr(&self) -> Option<ShapeExpr> {
+        self.0
+            .children()
+            .filter_map(Block::cast)
+            .next()
+            .and_then(|block| block.0.children().filter_map(ShapeExpr::cast).next())
+    }
+}
+
+pub struct ShapeUseExpr(SyntaxNode);
+impl AstNode for ShapeUseExpr {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::ShapeUseExpr
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(ShapeUseExpr(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl ShapeUseExpr {
+    pub fn name(&self) -> Option<SyntaxToken> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .find(|it| it.kind() == SyntaxKind::Ident)
+    }
+}
+
+pub struct ShapeUnionExpr(SyntaxNode);
+impl AstNode for ShapeUnionExpr {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::ShapeUnionExpr
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(ShapeUnionExpr(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl ShapeUnionExpr {
+    fn block(&self) -> Option<Block> {
+        self.0.children().filter_map(Block::cast).next()
+    }
+
+    pub fn provenance_policy_clause(&self) -> Option<ShapeProvenancePolicyClause> {
+        self.block().and_then(|block| {
+            block
+                .0
+                .children()
+                .filter_map(ShapeProvenancePolicyClause::cast)
+                .next()
+        })
+    }
+
+    pub fn provenance_policy(&self) -> Option<SyntaxToken> {
+        self.provenance_policy_clause().and_then(|clause| clause.value())
+    }
+
+    pub fn items(&self) -> impl Iterator<Item = ShapeExpr> {
+        self.block()
+            .into_iter()
+            .flat_map(|b| {
+                b.0.children()
+                    .filter_map(ShapeExpr::cast)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+            })
+    }
+}
+
+pub struct ShapeIntersectionExpr(SyntaxNode);
+impl AstNode for ShapeIntersectionExpr {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::ShapeIntersectionExpr
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(ShapeIntersectionExpr(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl ShapeIntersectionExpr {
+    fn block(&self) -> Option<Block> {
+        self.0.children().filter_map(Block::cast).next()
+    }
+
+    pub fn provenance_policy_clause(&self) -> Option<ShapeProvenancePolicyClause> {
+        self.block().and_then(|block| {
+            block
+                .0
+                .children()
+                .filter_map(ShapeProvenancePolicyClause::cast)
+                .next()
+        })
+    }
+
+    pub fn provenance_policy(&self) -> Option<SyntaxToken> {
+        self.provenance_policy_clause().and_then(|clause| clause.value())
+    }
+
+    pub fn items(&self) -> impl Iterator<Item = ShapeExpr> {
+        self.block()
+            .into_iter()
+            .flat_map(|b| {
+                b.0.children()
+                    .filter_map(ShapeExpr::cast)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+            })
+    }
+}
+
+pub struct ShapeSubtractExpr(SyntaxNode);
+impl AstNode for ShapeSubtractExpr {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::ShapeSubtractExpr
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(ShapeSubtractExpr(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl ShapeSubtractExpr {
+    fn block(&self) -> Option<Block> {
+        self.0.children().filter_map(Block::cast).next()
+    }
+
+    pub fn provenance_policy_clause(&self) -> Option<ShapeProvenancePolicyClause> {
+        self.block().and_then(|block| {
+            block
+                .0
+                .children()
+                .filter_map(ShapeProvenancePolicyClause::cast)
+                .next()
+        })
+    }
+
+    pub fn provenance_policy(&self) -> Option<SyntaxToken> {
+        self.provenance_policy_clause().and_then(|clause| clause.value())
+    }
+
+    pub fn lhs(&self) -> Option<ShapeExpr> {
+        self.items().next()
+    }
+
+    pub fn rhs(&self) -> Option<ShapeExpr> {
+        self.items().nth(1)
+    }
+
+    pub fn items(&self) -> impl Iterator<Item = ShapeExpr> {
+        self.block()
+            .into_iter()
+            .flat_map(|b| {
+                b.0.children()
+                    .filter_map(ShapeExpr::cast)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+            })
+    }
+}
+
+pub struct ShapeProvenancePolicyClause(SyntaxNode);
+impl AstNode for ShapeProvenancePolicyClause {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::ShapeProvenancePolicyClause
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(ShapeProvenancePolicyClause(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl ShapeProvenancePolicyClause {
+    pub fn value(&self) -> Option<SyntaxToken> {
+        declaration_clause_value_token(&self.0)
+    }
+}
+
+pub struct ShapeLeafExpr(SyntaxNode);
+impl AstNode for ShapeLeafExpr {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::ShapeLeafExpr
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(ShapeLeafExpr(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl ShapeLeafExpr {
+    fn bindings(&self) -> Option<Block> {
+        self.0.children().filter_map(Block::cast).next()
+    }
+
+    pub fn field(&self) -> Option<ShapeFieldBinding> {
+        self.bindings().and_then(|block| {
+            block
+                .0
+                .children()
+                .filter_map(ShapeFieldBinding::cast)
+                .next()
+        })
+    }
+
+    pub fn material(&self) -> Option<ShapeMaterialBinding> {
+        self.bindings().and_then(|block| {
+            block
+                .0
+                .children()
+                .filter_map(ShapeMaterialBinding::cast)
+                .next()
+        })
+    }
+
+    pub fn payload(&self) -> Option<ShapePayloadBinding> {
+        self.bindings().and_then(|block| {
+            block
+                .0
+                .children()
+                .filter_map(ShapePayloadBinding::cast)
+                .next()
+        })
+    }
+}
+
+macro_rules! impl_shape_binding {
+    ($name:ident, $kind:expr) => {
+        pub struct $name(SyntaxNode);
+        impl AstNode for $name {
+            fn can_cast(kind: SyntaxKind) -> bool {
+                kind == $kind
+            }
+            fn cast(node: SyntaxNode) -> Option<Self> {
+                if Self::can_cast(node.kind()) {
+                    Some($name(node))
+                } else {
+                    None
+                }
+            }
+            fn syntax(&self) -> &SyntaxNode {
+                &self.0
+            }
+        }
+
+        impl $name {
+            pub fn value(&self) -> Option<Expr> {
+                self.0.children().filter_map(Expr::cast).next()
+            }
+        }
+    };
+}
+
+impl_shape_binding!(ShapeFieldBinding, SyntaxKind::ShapeFieldBinding);
+impl_shape_binding!(ShapeMaterialBinding, SyntaxKind::ShapeMaterialBinding);
+impl_shape_binding!(ShapePayloadBinding, SyntaxKind::ShapePayloadBinding);
+
 macro_rules! impl_profiled_spec_def {
     (
         $def_name:ident,
@@ -1568,6 +2537,7 @@ impl Block {
 pub enum Expr {
     Literal(LiteralExpr),
     Ident(IdentExpr),
+    Capture(CaptureExpr),
     TypeApply(TypeApplyExpr),
     Index(IndexExpr),
     Prefix(PrefixExpr),
@@ -1588,6 +2558,7 @@ impl AstNode for Expr {
             kind,
             SyntaxKind::LiteralExpr
                 | SyntaxKind::IdentExpr
+                | SyntaxKind::CaptureExpr
                 | SyntaxKind::TypeApplyExpr
                 | SyntaxKind::IndexExpr
                 | SyntaxKind::PrefixExpr
@@ -1606,6 +2577,7 @@ impl AstNode for Expr {
         match node.kind() {
             SyntaxKind::LiteralExpr => LiteralExpr::cast(node).map(Expr::Literal),
             SyntaxKind::IdentExpr => IdentExpr::cast(node).map(Expr::Ident),
+            SyntaxKind::CaptureExpr => CaptureExpr::cast(node).map(Expr::Capture),
             SyntaxKind::TypeApplyExpr => TypeApplyExpr::cast(node).map(Expr::TypeApply),
             SyntaxKind::IndexExpr => IndexExpr::cast(node).map(Expr::Index),
             SyntaxKind::PrefixExpr => PrefixExpr::cast(node).map(Expr::Prefix),
@@ -1625,6 +2597,7 @@ impl AstNode for Expr {
         match self {
             Expr::Literal(it) => it.syntax(),
             Expr::Ident(it) => it.syntax(),
+            Expr::Capture(it) => it.syntax(),
             Expr::TypeApply(it) => it.syntax(),
             Expr::Index(it) => it.syntax(),
             Expr::Prefix(it) => it.syntax(),
@@ -1691,6 +2664,29 @@ impl IdentExpr {
 
     pub fn is_self(&self) -> bool {
         self.name().is_some_and(|it| it.text() == "self")
+    }
+}
+
+pub struct CaptureExpr(SyntaxNode);
+impl AstNode for CaptureExpr {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::CaptureExpr
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(CaptureExpr(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl CaptureExpr {
+    pub fn target(&self) -> Option<Expr> {
+        self.0.children().filter_map(Expr::cast).next()
     }
 }
 
@@ -1848,6 +2844,13 @@ impl AstNode for CallExpr {
 }
 
 impl CallExpr {
+    pub fn name(&self) -> Option<SyntaxToken> {
+        match self.callee()? {
+            Expr::Ident(ident) => ident.name(),
+            _ => None,
+        }
+    }
+
     pub fn callee(&self) -> Option<Expr> {
         self.0.children().filter_map(Expr::cast).next()
     }
@@ -2464,6 +3467,45 @@ private {
     }
 
     #[test]
+    fn capture_expr_parses_as_expression() {
+        let source = r#"
+fn run() -> Nothing {
+    scene = capture world
+}
+"#;
+        let syntax = parser::parse(source);
+        let root = Root::cast(syntax).expect("root");
+        let func = root
+            .statements()
+            .find_map(|stmt| match stmt {
+                Stmt::FuncDef(func) => Some(func),
+                _ => None,
+            })
+            .expect("function");
+        let assign = func
+            .statements()
+            .find_map(|stmt| match stmt {
+                Stmt::VarAssign(assign) => Some(assign),
+                _ => None,
+            })
+            .expect("assignment");
+        let value = assign.value().expect("assignment value");
+        let capture = match value {
+            Expr::Capture(capture) => capture,
+            _ => panic!("expected capture expression"),
+        };
+        let op = capture
+            .syntax()
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .find(|token| token.kind() == SyntaxKind::CaptureKw)
+            .expect("capture keyword");
+        assert_eq!(op.text(), "capture");
+        let inner = capture.target().expect("capture target");
+        assert!(matches!(inner, Expr::Ident(_)));
+    }
+
+    #[test]
     fn implicit_return_and_self_expr_contract() {
         let source = r#"
 fn read(self_value: Integer) -> Integer {
@@ -2482,5 +3524,131 @@ fn read(self_value: Integer) -> Integer {
             .expect("expected implicit return candidate");
         let expr = trailing.expr().expect("expected trailing expression");
         assert!(expr.is_self(), "expected trailing expression to be self");
+    }
+
+    #[test]
+    fn field_primitive_expr_accessors_expose_name_and_args() {
+        let source = r#"
+field exact distance sphere(p: Vec3) -> F32 {
+    sphere(center = p, radius = 1)
+}
+"#;
+        let syntax = parser::parse(source);
+        let root = Root::cast(syntax).expect("root");
+        let field = match root.statements().next().expect("statement") {
+            Stmt::FieldDecl(field) => field,
+            _ => panic!("expected field declaration"),
+        };
+        let expr = field.semantic_expr().expect("expected semantic field expr");
+        let FieldExpr::Primitive(primitive) = expr else {
+            panic!("expected primitive field expression");
+        };
+        assert_eq!(primitive.name().expect("primitive name").text(), "sphere");
+        let args: Vec<_> = primitive.args().collect();
+        assert_eq!(args.len(), 2);
+    }
+
+    #[test]
+    fn field_decl_accessors_expose_support_and_bounds_clauses() {
+        let source = r#"
+field conservative distance shell(p: Vec3) -> F32 {
+    support = Support3(bounds=Bounds3(
+        min=vec3(-2.0, -2.0, -2.0),
+        max=vec3(2.0, 2.0, 2.0)
+    ))
+    bounds = Bounds3(
+        min=vec3(-1.0, -1.0, -1.0),
+        max=vec3(1.0, 1.0, 1.0)
+    )
+    sphere(radius=1.0)
+}
+"#;
+        let syntax = parser::parse(source);
+        let root = Root::cast(syntax).expect("root");
+        let field = match root.statements().next().expect("statement") {
+            Stmt::FieldDecl(field) => field,
+            _ => panic!("expected field declaration"),
+        };
+        assert!(field.support_clause().is_some(), "expected support clause");
+        assert!(field.bounds_clause().is_some(), "expected bounds clause");
+        assert!(
+            field.semantic_expr().is_some(),
+            "expected semantic field expression"
+        );
+    }
+
+    #[test]
+    fn field_support_and_bounds_clauses_are_exposed() {
+        let source = r#"
+field conservative distance scene(p: Vec3) -> F32 {
+    support = Support3(bounds = Bounds3(min = vec3(-1.0, -1.0, -1.0), max = vec3(1.0, 1.0, 1.0)))
+    bounds = Bounds3(min = vec3(-2.0, -2.0, -2.0), max = vec3(2.0, 2.0, 2.0))
+    sphere(radius = 1)
+}
+"#;
+        let syntax = parser::parse(source);
+        let root = Root::cast(syntax).expect("root");
+        let field = match root.statements().next().expect("statement") {
+            Stmt::FieldDecl(field) => field,
+            _ => panic!("expected field declaration"),
+        };
+        assert!(field.support_clause().is_some(), "expected support clause");
+        assert!(field.bounds_clause().is_some(), "expected bounds clause");
+        assert_eq!(
+            field
+                .semantic_expr()
+                .and_then(|expr| match expr {
+                    FieldExpr::Primitive(primitive) =>
+                        primitive.name().map(|tok| tok.text().to_string()),
+                    _ => None,
+                })
+                .as_deref(),
+            Some("sphere")
+        );
+    }
+
+    #[test]
+    fn shape_decl_accessors_expose_leaf_and_union() {
+        let source = r#"
+shape cube_shape {
+    field = cube
+    material = cube_surface
+    payload = Payload(id = 1)
+}
+
+shape scene_shape {
+    union {
+        use cube_shape
+        use ground_shape
+    }
+}
+"#;
+        let syntax = parser::parse(source);
+        let root = Root::cast(syntax).expect("root");
+        let mut statements = root.statements();
+
+        let leaf = match statements.next().expect("first statement") {
+            Stmt::ShapeDecl(shape) => shape,
+            _ => panic!("expected shape declaration"),
+        };
+        assert_eq!(leaf.name().expect("shape name").text(), "cube_shape");
+        let leaf_expr = match leaf.semantic_expr().expect("leaf expr") {
+            ShapeExpr::Leaf(leaf) => leaf,
+            _ => panic!("expected leaf shape expression"),
+        };
+        assert!(leaf_expr.field().is_some(), "expected field binding");
+        assert!(leaf_expr.material().is_some(), "expected material binding");
+        assert!(leaf_expr.payload().is_some(), "expected payload binding");
+
+        let union = match statements.next().expect("second statement") {
+            Stmt::ShapeDecl(shape) => shape,
+            _ => panic!("expected shape declaration"),
+        };
+        assert_eq!(union.name().expect("shape name").text(), "scene_shape");
+        let union_expr = match union.semantic_expr().expect("union expr") {
+            ShapeExpr::Union(union) => union,
+            _ => panic!("expected union shape expression"),
+        };
+        assert_eq!(union_expr.items().count(), 2);
     }
 }

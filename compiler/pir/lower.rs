@@ -7,6 +7,7 @@ use crate::hir::{
     Arg, AssignOp, BinaryOp, Body, ClassRole, Expr, Function, FunctionLane, Idx, Literal, Module,
     Stmt, TypeRef,
 };
+use crate::portable;
 use rowan::TextRange;
 use smol_str::SmolStr;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -16,10 +17,10 @@ use thiserror::Error;
 pub enum PirLowerError {
     #[error("portable entry '{name}' was not found")]
     MissingEntry { name: SmolStr },
-    #[error("portable entry '{name}' must be declared with `kernel fn`")]
+    #[error("portable entry '{name}' must be declared in the portable lane")]
     EntryNotPortable { name: SmolStr },
     #[error(
-        "portable function '{caller}' calls host-lane function '{callee}'; portable lowering only accepts `kernel fn` call graphs"
+        "portable function '{caller}' calls host-lane function '{callee}'; portable lowering only accepts portable call graphs"
     )]
     NonPortableCallee {
         caller: SmolStr,
@@ -45,10 +46,7 @@ pub enum PirLowerError {
         span: TextRange,
     },
     #[error("unsupported call target in function '{function}'")]
-    UnsupportedCallTarget {
-        function: SmolStr,
-        span: TextRange,
-    },
+    UnsupportedCallTarget { function: SmolStr, span: TextRange },
     #[error("unknown call target '{callee}' in function '{function}'")]
     UnknownCallTarget {
         function: SmolStr,
@@ -83,10 +81,7 @@ pub enum PirLowerError {
         span: TextRange,
     },
     #[error("missing expression type information in function '{function}'")]
-    MissingExprType {
-        function: SmolStr,
-        span: TextRange,
-    },
+    MissingExprType { function: SmolStr, span: TextRange },
 }
 
 pub fn lower_portable_entry_by_name(
@@ -119,7 +114,10 @@ pub fn lower_portable_function(
             name: entry_function.name.clone(),
         }]);
     }
-    let value_types = collect_value_types(module);
+    let value_types = match collect_value_types(module) {
+        Ok(value_types) => value_types,
+        Err(errors) => return Err(errors),
+    };
     let functions_by_name = portable_top_level_function_indices(module);
     let mut lowerer = PortableLowerer {
         module,
@@ -140,34 +138,10 @@ pub fn lower_portable_function(
     }
 }
 
-fn collect_value_types(module: &Module) -> HashMap<SmolStr, PirStructType> {
-    module
-        .classes
-        .iter()
-        .filter_map(|(_, class)| {
-            (class.role == ClassRole::Value).then(|| {
-                let fields = class
-                    .fields
-                    .iter()
-                    .map(|field| PirStructField {
-                        name: field.name.clone(),
-                        ty: field
-                            .ty
-                            .as_ref()
-                            .and_then(|ty| lower_type_ref(ty, module, &mut HashSet::new()).ok())
-                            .unwrap_or(PirType::Nothing),
-                    })
-                    .collect::<Vec<_>>();
-                (
-                    class.name.clone(),
-                    PirStructType {
-                        name: class.name.clone(),
-                        fields,
-                    },
-                )
-            })
-        })
-        .collect()
+fn collect_value_types(
+    module: &Module,
+) -> Result<HashMap<SmolStr, PirStructType>, Vec<PirLowerError>> {
+    ValueTypeResolver::new(module).collect_all()
 }
 
 fn portable_top_level_function_indices(module: &Module) -> HashMap<SmolStr, Idx<Function>> {
@@ -204,6 +178,175 @@ struct PortableLowerer<'a> {
     errors: Vec<PirLowerError>,
 }
 
+struct ValueTypeResolver<'a> {
+    module: &'a Module,
+    cache: HashMap<SmolStr, PirStructType>,
+    visiting: HashSet<SmolStr>,
+    errors: Vec<PirLowerError>,
+}
+
+impl<'a> ValueTypeResolver<'a> {
+    fn new(module: &'a Module) -> Self {
+        Self {
+            module,
+            cache: HashMap::new(),
+            visiting: HashSet::new(),
+            errors: Vec::new(),
+        }
+    }
+
+    fn collect_all(mut self) -> Result<HashMap<SmolStr, PirStructType>, Vec<PirLowerError>> {
+        for record in portable::builtin_records() {
+            let _ = self.ensure_named(record.name);
+        }
+        for (_idx, class) in self.module.classes.iter() {
+            if class.role == ClassRole::Value {
+                let _ = self.ensure_named(&class.name);
+            }
+        }
+        if self.errors.is_empty() {
+            Ok(self.cache)
+        } else {
+            Err(self.errors)
+        }
+    }
+
+    fn ensure_named(&mut self, name: &str) -> Option<PirStructType> {
+        let name = SmolStr::new(name);
+        if let Some(layout) = self.cache.get(&name).cloned() {
+            return Some(layout);
+        }
+        if !self.visiting.insert(name.clone()) {
+            self.errors.push(PirLowerError::NonPortableType {
+                context: "recursive value type".to_string(),
+                ty: name.to_string(),
+            });
+            return None;
+        }
+
+        let resolved = if let Some(record) = portable::builtin_record(name.as_str()) {
+            self.build_builtin_record(record)
+        } else if let Some(class) = self.module.classes.iter().find_map(|(_, class)| {
+            (class.name == name && class.role == ClassRole::Value).then_some(class)
+        }) {
+            self.build_user_value_class(class)
+        } else {
+            self.errors.push(PirLowerError::NonPortableType {
+                context: "type reference".to_string(),
+                ty: name.to_string(),
+            });
+            None
+        };
+
+        self.visiting.remove(&name);
+        if let Some(layout) = resolved {
+            self.cache.insert(name.clone(), layout.clone());
+            Some(layout)
+        } else {
+            None
+        }
+    }
+
+    fn build_builtin_record(
+        &mut self,
+        record: &portable::PortableBuiltinRecord,
+    ) -> Option<PirStructType> {
+        let mut fields = Vec::with_capacity(record.fields.len());
+        for field in record.fields {
+            let ty = self.lower_portable_builtin_type(field.ty)?;
+            fields.push(PirStructField {
+                name: SmolStr::new(field.name),
+                ty,
+            });
+        }
+        Some(PirStructType {
+            name: SmolStr::new(record.name),
+            fields,
+        })
+    }
+
+    fn build_user_value_class(&mut self, class: &crate::hir::Class) -> Option<PirStructType> {
+        let mut fields = Vec::with_capacity(class.fields.len());
+        for field in &class.fields {
+            let Some(field_ty) = field.ty.as_ref() else {
+                self.errors.push(PirLowerError::NonPortableType {
+                    context: format!("field '{}.{}'", class.name, field.name),
+                    ty: "<missing>".to_string(),
+                });
+                return None;
+            };
+            let ty = self.lower_type_ref(field_ty)?;
+            fields.push(PirStructField {
+                name: field.name.clone(),
+                ty,
+            });
+        }
+        Some(PirStructType {
+            name: class.name.clone(),
+            fields,
+        })
+    }
+
+    fn lower_portable_builtin_type(
+        &mut self,
+        ty: portable::PortableBuiltinType,
+    ) -> Option<PirType> {
+        match ty {
+            portable::PortableBuiltinType::Atom(atom) => Some(match atom {
+                portable::PortableBuiltinAtom::Bool => PirType::Bool,
+                portable::PortableBuiltinAtom::I32 => PirType::I32,
+                portable::PortableBuiltinAtom::U32 => PirType::U32,
+                portable::PortableBuiltinAtom::I64 => PirType::I64,
+                portable::PortableBuiltinAtom::U64 => PirType::U64,
+                portable::PortableBuiltinAtom::F32 => PirType::F32,
+                portable::PortableBuiltinAtom::Vec2 => PirType::Vec2,
+                portable::PortableBuiltinAtom::Vec3 => PirType::Vec3,
+                portable::PortableBuiltinAtom::Vec4 => PirType::Vec4,
+                portable::PortableBuiltinAtom::Mat3 => PirType::Mat3,
+                portable::PortableBuiltinAtom::Mat4 => PirType::Mat4,
+                portable::PortableBuiltinAtom::Quat => PirType::Quat,
+            }),
+            portable::PortableBuiltinType::Named(name) => {
+                self.ensure_named(name).map(PirType::Struct)
+            }
+        }
+    }
+
+    fn lower_type_ref(&mut self, ty: &TypeRef) -> Option<PirType> {
+        match ty.name.as_str() {
+            "Nothing" => Some(PirType::Nothing),
+            "Bool" | "Boolean" => Some(PirType::Bool),
+            "Integer" => Some(PirType::I64),
+            "I32" => Some(PirType::I32),
+            "U32" => Some(PirType::U32),
+            "I64" => Some(PirType::I64),
+            "U64" => Some(PirType::U64),
+            "Float" | "F32" => Some(PirType::F32),
+            "Vec2" => Some(PirType::Vec2),
+            "Vec3" => Some(PirType::Vec3),
+            "Vec4" => Some(PirType::Vec4),
+            "Mat3" => Some(PirType::Mat3),
+            "Mat4" => Some(PirType::Mat4),
+            "Quat" => Some(PirType::Quat),
+            "Array" => match ty.args.as_slice() {
+                [inner, len] => {
+                    let len = len.name.parse::<usize>().ok()?;
+                    let inner = self.lower_type_ref(inner)?;
+                    Some(PirType::Array(Box::new(inner), len))
+                }
+                _ => {
+                    self.errors.push(PirLowerError::NonPortableType {
+                        context: "type reference".to_string(),
+                        ty: "Array".to_string(),
+                    });
+                    None
+                }
+            },
+            name => self.ensure_named(name).map(PirType::Struct),
+        }
+    }
+}
+
 impl<'a> PortableLowerer<'a> {
     fn lower_function_recursive(&mut self, function_idx: Idx<Function>) {
         if self.lowered.contains_key(&function_idx.into_raw()) {
@@ -230,7 +373,7 @@ impl<'a> PortableLowerer<'a> {
                 let ty = param
                     .ty
                     .as_ref()
-                    .map(|ty| lower_type_ref(ty, self.module, &mut HashSet::new()))
+                    .map(|ty| lower_type_ref(ty, &self.value_types))
                     .transpose()
                     .map(|ty| ty.unwrap_or(PirType::Nothing));
                 ty.map(|ty| PirParam {
@@ -242,7 +385,7 @@ impl<'a> PortableLowerer<'a> {
         let ret = function
             .ret_type
             .as_ref()
-            .map(|ty| lower_type_ref(ty, self.module, &mut HashSet::new()))
+            .map(|ty| lower_type_ref(ty, &self.value_types))
             .transpose()
             .map(|ty| ty.unwrap_or(PirType::Nothing));
 
@@ -257,7 +400,6 @@ impl<'a> PortableLowerer<'a> {
         let (pir_body, callees) = {
             let mut fn_lowerer = FunctionLowerer {
                 parent: self,
-                function_idx,
                 function,
                 fn_info,
                 body,
@@ -286,7 +428,6 @@ impl<'a> PortableLowerer<'a> {
 
 struct FunctionLowerer<'a, 'b> {
     parent: &'a mut PortableLowerer<'b>,
-    function_idx: Idx<Function>,
     function: &'b Function,
     fn_info: &'b FunctionTypeInfo,
     body: &'b Body,
@@ -323,10 +464,7 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                     });
                 }
                 Stmt::Assign {
-                    name,
-                    op,
-                    value,
-                    ..
+                    name, op, value, ..
                 } => {
                     let lowered = match op {
                         AssignOp::Assign => self.lower_expr(*value)?,
@@ -386,11 +524,13 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                     out.push(PirStmt::Return { value, span });
                 }
                 _ => {
-                    self.parent.errors.push(PirLowerError::UnsupportedStatement {
-                        function: self.function.name.clone(),
-                        kind: stmt_kind(stmt),
-                        span,
-                    });
+                    self.parent
+                        .errors
+                        .push(PirLowerError::UnsupportedStatement {
+                            function: self.function.name.clone(),
+                            kind: stmt_kind(stmt),
+                            span,
+                        });
                     return None;
                 }
             }
@@ -404,7 +544,8 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
         match expr {
             Expr::Literal(literal) => {
                 let ty = self.expr_type(expr_id, span)?;
-                let value = literal_to_value(literal, &ty).map_err(|err| self.parent.errors.push(err));
+                let value =
+                    literal_to_value(literal, &ty).map_err(|err| self.parent.errors.push(err));
                 value.ok().map(PirExpr::Literal)
             }
             Expr::Variable(name) => {
@@ -459,21 +600,25 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                         ty,
                     }),
                     _ => {
-                        self.parent.errors.push(PirLowerError::UnsupportedExpression {
-                            function: self.function.name.clone(),
-                            kind: "list literal",
-                            span,
-                        });
+                        self.parent
+                            .errors
+                            .push(PirLowerError::UnsupportedExpression {
+                                function: self.function.name.clone(),
+                                kind: "list literal",
+                                span,
+                            });
                         None
                     }
                 }
             }
             _ => {
-                self.parent.errors.push(PirLowerError::UnsupportedExpression {
-                    function: self.function.name.clone(),
-                    kind: expr_kind(expr),
-                    span,
-                });
+                self.parent
+                    .errors
+                    .push(PirLowerError::UnsupportedExpression {
+                        function: self.function.name.clone(),
+                        kind: expr_kind(expr),
+                        span,
+                    });
                 None
             }
         }
@@ -487,13 +632,58 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
         span: TextRange,
     ) -> Option<PirExpr> {
         let Expr::Variable(callee_name) = &self.body.exprs[callee_id] else {
-            self.parent.errors.push(PirLowerError::UnsupportedCallTarget {
-                function: self.function.name.clone(),
-                span,
-            });
+            self.parent
+                .errors
+                .push(PirLowerError::UnsupportedCallTarget {
+                    function: self.function.name.clone(),
+                    span,
+                });
             return None;
         };
         let ty = self.expr_type(expr_id, span)?;
+
+        if let Some(record) = portable::builtin_record(callee_name.as_str())
+            .or_else(|| portable::builtin_record_by_function(callee_name.as_str()))
+        {
+            let field_names = record
+                .fields
+                .iter()
+                .map(|field| SmolStr::new(field.name))
+                .collect::<Vec<_>>();
+            let lowered_args = self.lower_ordered_args(callee_name, args, &field_names, span)?;
+            let fields = record
+                .fields
+                .iter()
+                .map(|field| SmolStr::new(field.name))
+                .zip(lowered_args)
+                .collect::<Vec<_>>();
+            return Some(PirExpr::StructLiteral {
+                name: SmolStr::new(record.name),
+                fields,
+                ty,
+            });
+        }
+
+        if let Some(layout) = self.parent.value_types.get(callee_name) {
+            let layout = layout.clone();
+            let field_names = layout
+                .fields
+                .iter()
+                .map(|field| field.name.clone())
+                .collect::<Vec<_>>();
+            let lowered_args = self.lower_ordered_args(callee_name, args, &field_names, span)?;
+            let fields = layout
+                .fields
+                .iter()
+                .map(|field| field.name.clone())
+                .zip(lowered_args)
+                .collect::<Vec<_>>();
+            return Some(PirExpr::StructLiteral {
+                name: layout.name,
+                fields,
+                ty,
+            });
+        }
 
         if let Some(function_idx) = self.parent.functions_by_name.get(callee_name) {
             let function_idx = *function_idx;
@@ -511,12 +701,7 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                 .iter()
                 .map(|param| param.name.clone())
                 .collect::<Vec<_>>();
-            let lowered_args = self.lower_ordered_args(
-                callee_name,
-                args,
-                &param_names,
-                span,
-            )?;
+            let lowered_args = self.lower_ordered_args(callee_name, args, &param_names, span)?;
             self.callees.insert(function_idx);
             return Some(PirExpr::Call {
                 target: PirCallTarget::Function(callee_name.clone()),
@@ -525,40 +710,9 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
             });
         }
 
-        if let Some(layout) = self.parent.value_types.get(callee_name) {
-            let layout = layout.clone();
-            let field_names = layout
-                .fields
-                .iter()
-                .map(|field| field.name.clone())
-                .collect::<Vec<_>>();
-            let ordered = self.lower_ordered_args(
-                callee_name,
-                args,
-                &field_names,
-                span,
-            )?;
-            let fields = layout
-                .fields
-                .iter()
-                .map(|field| field.name.clone())
-                .zip(ordered)
-                .collect::<Vec<_>>();
-            return Some(PirExpr::StructLiteral {
-                name: callee_name.clone(),
-                fields,
-                ty,
-            });
-        }
-
         if let Some(intrinsic) = intrinsic_from_name(callee_name.as_str()) {
             let param_names = intrinsic_param_names(intrinsic);
-            let lowered_args = self.lower_ordered_args(
-                callee_name,
-                args,
-                &param_names,
-                span,
-            )?;
+            let lowered_args = self.lower_ordered_args(callee_name, args, &param_names, span)?;
             return Some(PirExpr::Call {
                 target: PirCallTarget::Intrinsic(intrinsic),
                 args: lowered_args,
@@ -585,12 +739,14 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
             if args.is_empty() {
                 return Some(Vec::new());
             }
-            self.parent.errors.push(PirLowerError::UnknownNamedArgument {
-                function: self.function.name.clone(),
-                callee: callee_name.clone(),
-                arg: SmolStr::new("<extra-arg>"),
-                span,
-            });
+            self.parent
+                .errors
+                .push(PirLowerError::UnknownNamedArgument {
+                    function: self.function.name.clone(),
+                    callee: callee_name.clone(),
+                    arg: SmolStr::new("<extra-arg>"),
+                    span,
+                });
             return None;
         }
 
@@ -600,39 +756,42 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
             match arg {
                 Arg::Positional { value, .. } => {
                     if next_positional >= ordered.len() {
-                        self.parent.errors.push(PirLowerError::UnknownNamedArgument {
-                            function: self.function.name.clone(),
-                            callee: callee_name.clone(),
-                            arg: SmolStr::new("<extra-arg>"),
-                            span,
-                        });
+                        self.parent
+                            .errors
+                            .push(PirLowerError::UnknownNamedArgument {
+                                function: self.function.name.clone(),
+                                callee: callee_name.clone(),
+                                arg: SmolStr::new("<extra-arg>"),
+                                span,
+                            });
                         return None;
                     }
                     ordered[next_positional] = self.lower_expr(*value);
                     next_positional += 1;
                 }
                 Arg::Named {
-                    name,
-                    value,
-                    span,
-                    ..
+                    name, value, span, ..
                 } => {
                     let Some(index) = params.iter().position(|param| param == name) else {
-                        self.parent.errors.push(PirLowerError::UnknownNamedArgument {
-                            function: self.function.name.clone(),
-                            callee: callee_name.clone(),
-                            arg: name.clone(),
-                            span: *span,
-                        });
+                        self.parent
+                            .errors
+                            .push(PirLowerError::UnknownNamedArgument {
+                                function: self.function.name.clone(),
+                                callee: callee_name.clone(),
+                                arg: name.clone(),
+                                span: *span,
+                            });
                         return None;
                     };
                     if ordered[index].is_some() {
-                        self.parent.errors.push(PirLowerError::DuplicateNamedArgument {
-                            function: self.function.name.clone(),
-                            callee: callee_name.clone(),
-                            arg: name.clone(),
-                            span: *span,
-                        });
+                        self.parent
+                            .errors
+                            .push(PirLowerError::DuplicateNamedArgument {
+                                function: self.function.name.clone(),
+                                callee: callee_name.clone(),
+                                arg: name.clone(),
+                                span: *span,
+                            });
                         return None;
                     }
                     ordered[index] = self.lower_expr(*value);
@@ -665,7 +824,7 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
             });
             return None;
         };
-        match lower_type(ty, self.parent.module, &self.parent.value_types) {
+        match lower_type(ty, &self.parent.value_types) {
             Ok(ty) => Some(ty),
             Err(err) => {
                 self.parent.errors.push(err);
@@ -683,7 +842,7 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
             });
             return None;
         };
-        match lower_type(ty, self.parent.module, &self.parent.value_types) {
+        match lower_type(ty, &self.parent.value_types) {
             Ok(ty) => Some(ty),
             Err(err) => {
                 self.parent.errors.push(err);
@@ -695,7 +854,6 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
 
 fn lower_type(
     ty: &Type,
-    module: &Module,
     value_types: &HashMap<SmolStr, PirStructType>,
 ) -> Result<PirType, PirLowerError> {
     match ty {
@@ -715,7 +873,7 @@ fn lower_type(
         Type::Mat4 => Ok(PirType::Mat4),
         Type::Quat => Ok(PirType::Quat),
         Type::Array(inner, len) => Ok(PirType::Array(
-            Box::new(lower_type(inner, module, value_types)?),
+            Box::new(lower_type(inner, value_types)?),
             *len,
         )),
         Type::Named(name, _) => value_types
@@ -735,8 +893,7 @@ fn lower_type(
 
 fn lower_type_ref(
     ty: &TypeRef,
-    module: &Module,
-    visiting: &mut HashSet<SmolStr>,
+    value_types: &HashMap<SmolStr, PirStructType>,
 ) -> Result<PirType, PirLowerError> {
     match ty.name.as_str() {
         "Nothing" => Ok(PirType::Nothing),
@@ -754,64 +911,33 @@ fn lower_type_ref(
         "Mat4" => Ok(PirType::Mat4),
         "Quat" => Ok(PirType::Quat),
         "Array" => match ty.args.as_slice() {
-            [inner, len] => Ok(PirType::Array(
-                Box::new(lower_type_ref(inner, module, visiting)?),
-                len.name.parse::<usize>().unwrap_or(0),
-            )),
+            [inner, len] => {
+                let len =
+                    len.name
+                        .parse::<usize>()
+                        .map_err(|_| PirLowerError::NonPortableType {
+                            context: "type reference".to_string(),
+                            ty: len.name.to_string(),
+                        })?;
+                Ok(PirType::Array(
+                    Box::new(lower_type_ref(inner, value_types)?),
+                    len,
+                ))
+            }
             _ => Err(PirLowerError::NonPortableType {
                 context: "type reference".to_string(),
                 ty: "Array".to_string(),
             }),
         },
-        name => lower_value_type_ref(name, module, visiting).map(PirType::Struct),
+        name => value_types
+            .get(name)
+            .cloned()
+            .map(PirType::Struct)
+            .ok_or_else(|| PirLowerError::NonPortableType {
+                context: "type reference".to_string(),
+                ty: name.to_string(),
+            }),
     }
-}
-
-fn lower_value_type_ref(
-    name: &str,
-    module: &Module,
-    visiting: &mut HashSet<SmolStr>,
-) -> Result<PirStructType, PirLowerError> {
-    let name = SmolStr::new(name);
-    let Some(class) = module
-        .classes
-        .iter()
-        .find_map(|(_, class)| (class.name == name && class.role == ClassRole::Value).then_some(class))
-    else {
-        return Err(PirLowerError::NonPortableType {
-            context: "type reference".to_string(),
-            ty: name.to_string(),
-        });
-    };
-    if !visiting.insert(class.name.clone()) {
-        return Err(PirLowerError::NonPortableType {
-            context: "recursive value type".to_string(),
-            ty: class.name.to_string(),
-        });
-    }
-    let fields = class
-        .fields
-        .iter()
-        .map(|field| {
-            let ty = field
-                .ty
-                .as_ref()
-                .ok_or_else(|| PirLowerError::NonPortableType {
-                    context: format!("field '{}.{}'", class.name, field.name),
-                    ty: "<missing>".to_string(),
-                })
-                .and_then(|ty| lower_type_ref(ty, module, visiting))?;
-            Ok(PirStructField {
-                name: field.name.clone(),
-                ty,
-            })
-        })
-        .collect::<Result<Vec<_>, PirLowerError>>()?;
-    visiting.remove(&class.name);
-    Ok(PirStructType {
-        name: class.name.clone(),
-        fields,
-    })
 }
 
 fn literal_to_value(literal: &Literal, ty: &PirType) -> Result<PirValue, PirLowerError> {
@@ -850,6 +976,35 @@ fn intrinsic_from_name(name: &str) -> Option<PirIntrinsic> {
         "mat3_cols" => Some(PirIntrinsic::Mat3Cols),
         "mat4_identity" => Some(PirIntrinsic::Mat4Identity),
         "mat4_cols" => Some(PirIntrinsic::Mat4Cols),
+        "bounds2_center" => Some(PirIntrinsic::Bounds2Center),
+        "bounds2_size" => Some(PirIntrinsic::Bounds2Size),
+        "bounds3_center" => Some(PirIntrinsic::Bounds3Center),
+        "bounds3_size" => Some(PirIntrinsic::Bounds3Size),
+        "transform3_identity" => Some(PirIntrinsic::Transform3Identity),
+        "transform_point" => Some(PirIntrinsic::TransformPoint),
+        "transform_vector" => Some(PirIntrinsic::TransformVector),
+        "transform_normal" => Some(PirIntrinsic::TransformNormal),
+        "compose_transform3" => Some(PirIntrinsic::ComposeTransform3),
+        "inverse_transform3" => Some(PirIntrinsic::InverseTransform3),
+        "field_transform_point" => Some(PirIntrinsic::FieldTransformPoint),
+        "field_instance_point" => Some(PirIntrinsic::FieldInstancePoint),
+        "field_mirror_point" => Some(PirIntrinsic::FieldMirrorPoint),
+        "field_repeat_point" => Some(PirIntrinsic::FieldRepeatPoint),
+        "sphere" => Some(PirIntrinsic::Sphere),
+        "box" => Some(PirIntrinsic::Box),
+        "capsule" => Some(PirIntrinsic::Capsule),
+        "cylinder" => Some(PirIntrinsic::Cylinder),
+        "plane" => Some(PirIntrinsic::Plane),
+        "torus" => Some(PirIntrinsic::Torus),
+        "__wr_primitive_sphere" => Some(PirIntrinsic::Sphere),
+        "__wr_primitive_box" => Some(PirIntrinsic::Box),
+        "__wr_primitive_capsule" => Some(PirIntrinsic::Capsule),
+        "__wr_primitive_cylinder" => Some(PirIntrinsic::Cylinder),
+        "__wr_primitive_plane" => Some(PirIntrinsic::Plane),
+        "__wr_primitive_torus" => Some(PirIntrinsic::Torus),
+        "field_union" => Some(PirIntrinsic::FieldUnion),
+        "field_intersection" => Some(PirIntrinsic::FieldIntersection),
+        "field_subtract" => Some(PirIntrinsic::FieldSubtract),
         "dot" => Some(PirIntrinsic::Dot),
         "length" => Some(PirIntrinsic::Length),
         "normalize" => Some(PirIntrinsic::Normalize),
@@ -891,11 +1046,7 @@ fn intrinsic_param_names(intrinsic: PirIntrinsic) -> Vec<SmolStr> {
         | PirIntrinsic::Cos
         | PirIntrinsic::Sqrt => vec![SmolStr::new("value")],
         PirIntrinsic::Vec2 => vec![SmolStr::new("x"), SmolStr::new("y")],
-        PirIntrinsic::Vec3 => vec![
-            SmolStr::new("x"),
-            SmolStr::new("y"),
-            SmolStr::new("z"),
-        ],
+        PirIntrinsic::Vec3 => vec![SmolStr::new("x"), SmolStr::new("y"), SmolStr::new("z")],
         PirIntrinsic::Vec4 | PirIntrinsic::Quat => vec![
             SmolStr::new("x"),
             SmolStr::new("y"),
@@ -903,17 +1054,57 @@ fn intrinsic_param_names(intrinsic: PirIntrinsic) -> Vec<SmolStr> {
             SmolStr::new("w"),
         ],
         PirIntrinsic::Mat3Identity | PirIntrinsic::Mat4Identity => Vec::new(),
-        PirIntrinsic::Mat3Cols => vec![
-            SmolStr::new("c0"),
-            SmolStr::new("c1"),
-            SmolStr::new("c2"),
-        ],
+        PirIntrinsic::Mat3Cols => vec![SmolStr::new("c0"), SmolStr::new("c1"), SmolStr::new("c2")],
         PirIntrinsic::Mat4Cols => vec![
             SmolStr::new("c0"),
             SmolStr::new("c1"),
             SmolStr::new("c2"),
             SmolStr::new("c3"),
         ],
+        PirIntrinsic::Bounds2Center
+        | PirIntrinsic::Bounds2Size
+        | PirIntrinsic::Bounds3Center
+        | PirIntrinsic::Bounds3Size => vec![SmolStr::new("bounds")],
+        PirIntrinsic::Transform3Identity => Vec::new(),
+        PirIntrinsic::TransformPoint => vec![SmolStr::new("transform"), SmolStr::new("point")],
+        PirIntrinsic::TransformVector => vec![SmolStr::new("transform"), SmolStr::new("vector")],
+        PirIntrinsic::TransformNormal => vec![SmolStr::new("transform"), SmolStr::new("normal")],
+        PirIntrinsic::ComposeTransform3 => vec![SmolStr::new("left"), SmolStr::new("right")],
+        PirIntrinsic::InverseTransform3 => vec![SmolStr::new("transform")],
+        PirIntrinsic::FieldTransformPoint => {
+            vec![SmolStr::new("transform"), SmolStr::new("point")]
+        }
+        PirIntrinsic::FieldInstancePoint => {
+            vec![SmolStr::new("instance"), SmolStr::new("point")]
+        }
+        PirIntrinsic::FieldMirrorPoint => vec![SmolStr::new("mirror"), SmolStr::new("point")],
+        PirIntrinsic::FieldRepeatPoint => vec![SmolStr::new("period"), SmolStr::new("point")],
+        PirIntrinsic::Sphere => vec![SmolStr::new("p"), SmolStr::new("radius")],
+        PirIntrinsic::Box => vec![SmolStr::new("p"), SmolStr::new("half")],
+        PirIntrinsic::Capsule => vec![
+            SmolStr::new("p"),
+            SmolStr::new("a"),
+            SmolStr::new("b"),
+            SmolStr::new("radius"),
+        ],
+        PirIntrinsic::Cylinder => vec![
+            SmolStr::new("p"),
+            SmolStr::new("radius"),
+            SmolStr::new("half_height"),
+        ],
+        PirIntrinsic::Plane => vec![
+            SmolStr::new("p"),
+            SmolStr::new("normal"),
+            SmolStr::new("offset"),
+        ],
+        PirIntrinsic::Torus => vec![
+            SmolStr::new("p"),
+            SmolStr::new("major_radius"),
+            SmolStr::new("minor_radius"),
+        ],
+        PirIntrinsic::FieldUnion
+        | PirIntrinsic::FieldIntersection
+        | PirIntrinsic::FieldSubtract => vec![SmolStr::new("left"), SmolStr::new("right")],
         PirIntrinsic::Dot
         | PirIntrinsic::Cross
         | PirIntrinsic::Min

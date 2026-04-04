@@ -7,6 +7,9 @@ use crate::hir::{
 };
 use crate::parser;
 use crate::parser::ast::AstNode;
+use crate::portable::{
+    is_builtin_helper_function, is_builtin_record_function, is_builtin_record_name,
+};
 use miette::SourceSpan;
 use rowan::TextRange;
 use smol_str::SmolStr;
@@ -35,6 +38,7 @@ pub struct ProjectProvenance {
     pub function_owner_path_by_id: HashMap<usize, PathBuf>,
     pub function_owner_span_by_id: HashMap<usize, TextRange>,
     pub function_owner_path_by_name: HashMap<SmolStr, PathBuf>,
+    pub shape_owner_path_by_name: HashMap<SmolStr, PathBuf>,
     pub class_owner_path_by_name: HashMap<SmolStr, PathBuf>,
     pub enum_owner_path_by_name: HashMap<SmolStr, PathBuf>,
     pub interface_owner_path_by_name: HashMap<SmolStr, PathBuf>,
@@ -350,10 +354,13 @@ pub fn load_project_with_roots(
         classes: Default::default(),
         enums: Default::default(),
         interfaces: Default::default(),
+        shapes: Default::default(),
         uses: Vec::new(),
     };
 
     let mut function_origins: HashMap<SmolStr, (SmolStr, Option<TextRange>, PathBuf, String)> =
+        HashMap::new();
+    let mut shape_origins: HashMap<SmolStr, (SmolStr, Option<TextRange>, PathBuf, String)> =
         HashMap::new();
     let mut class_origins: HashMap<SmolStr, (SmolStr, Option<TextRange>, PathBuf, String)> =
         HashMap::new();
@@ -404,6 +411,45 @@ pub fn load_project_with_roots(
                     (
                         module.name.clone(),
                         func.name_span,
+                        module.path.clone(),
+                        module.source.clone(),
+                    ),
+                );
+            }
+        }
+        for (_, shape) in module.module.shapes.iter() {
+            if let Some((prev_mod, prev_span, prev_path, prev_src)) = shape_origins.get(&shape.name)
+            {
+                loader.errors.push(ProjectError {
+                    kind: ProjectDiagKind::LoadError,
+                    path: module.path.clone(),
+                    source: module.source.clone(),
+                    message: format!(
+                        "duplicate shape '{}' (already defined in module '{}')",
+                        shape.name, prev_mod
+                    ),
+                    span: span_from_range(
+                        shape
+                            .name_span
+                            .unwrap_or_else(|| TextRange::empty(0.into())),
+                    ),
+                });
+                loader.errors.push(ProjectError {
+                    kind: ProjectDiagKind::LoadError,
+                    path: prev_path.clone(),
+                    source: prev_src.clone(),
+                    message: format!(
+                        "previous definition of '{}' in module '{}'",
+                        shape.name, prev_mod
+                    ),
+                    span: span_from_range(prev_span.unwrap_or_else(|| TextRange::empty(0.into()))),
+                });
+            } else {
+                shape_origins.insert(
+                    shape.name.clone(),
+                    (
+                        module.name.clone(),
+                        shape.name_span,
                         module.path.clone(),
                         module.source.clone(),
                     ),
@@ -564,6 +610,12 @@ pub fn load_project_with_roots(
                 .function_owner_path_by_name
                 .entry(func.name.clone())
                 .or_insert_with(|| module.path.clone());
+        }
+        for (_, shape) in module.module.shapes.iter() {
+            merged.shapes.alloc(shape.clone());
+            provenance
+                .shape_owner_path_by_name
+                .insert(shape.name.clone(), module.path.clone());
         }
         for (_, class) in module.module.classes.iter() {
             let mut new_class = class.clone();
@@ -788,7 +840,7 @@ impl ProjectLoader {
                     kind: ProjectDiagKind::LoadError,
                         path: module.path.clone(),
                         source: module.source.clone(),
-                        message: "top-level executable statements are not allowed; only class/func/use are allowed at the top level"
+                        message: "top-level executable statements are not allowed; only class/field/func/use declarations are allowed at the top level"
                             .to_string(),
                         span: span_from_range(body.stmt_span(*first)),
                     });
@@ -920,6 +972,12 @@ impl ProjectLoader {
                 locals.insert(interface.name.clone());
                 if matches!(interface.visibility, Visibility::Public) {
                     exports.insert(interface.name.clone());
+                }
+            }
+            for (_, shape) in module.module.shapes.iter() {
+                locals.insert(shape.name.clone());
+                if matches!(shape.visibility, Visibility::Public) {
+                    exports.insert(shape.name.clone());
                 }
             }
             public_exports.insert(name.clone(), exports);
@@ -1888,6 +1946,19 @@ fn effect_for_builtin_symbol(name: &str) -> FunctionEffect {
         | "dispatch_compute"
         | "workgroup_barrier"
         | "storage_barrier" => FunctionEffect::HostWrite,
+        "capture"
+        | "distance_at"
+        | "normal_at"
+        | "trace_shape"
+        | "surface_at"
+        | "trace_shape_batch"
+        | "surface_at_batch"
+        | "distance_at_batch"
+        | "normal_at_batch"
+        | "occluded_batch"
+        | "dispatch_backend_cpu"
+        | "dispatch_backend_virtual_gpu"
+        | "dispatch_backend_auto" => FunctionEffect::HostRead,
         "gpu_schedule_deterministic"
         | "gpu_schedule_reverse"
         | "gpu_schedule_shuffle"
@@ -2245,7 +2316,16 @@ fn is_host_only_portable_builtin_symbol(name: &str) -> bool {
             name,
             "try_to_call_external"
                 | "try_to_http_call"
+                | "capture"
                 | "dispatch_compute"
+                | "trace_shape_batch"
+                | "surface_at_batch"
+                | "distance_at_batch"
+                | "normal_at_batch"
+                | "occluded_batch"
+                | "dispatch_backend_cpu"
+                | "dispatch_backend_virtual_gpu"
+                | "dispatch_backend_auto"
                 | "gpu_buffer_new"
                 | "gpu_atomic_i32_new"
                 | "gpu_atomic_i32_drop"
@@ -3176,6 +3256,7 @@ fn canonical_stdlib_module_name(module_name: &str) -> Option<&'static str> {
         "fs" => Some("host/fs"),
         "io" => Some("host/io"),
         "log" => Some("host/log"),
+        "metrics" => Some("metrics"),
         "time" => Some("host/time"),
         _ => None,
     }
@@ -3238,6 +3319,8 @@ fn make_main_wrapper() -> crate::hir::Function {
         visibility: Visibility::Private,
         kind: FunctionKind::Function,
         role: FunctionRole::Function,
+        field: None,
+        field_graph: None,
         system_metadata: None,
         type_params: Vec::new(),
         params: Vec::new(),
@@ -3563,6 +3646,9 @@ fn collect_type_names(
 }
 
 fn is_builtin_type_name(name: &SmolStr) -> bool {
+    if is_builtin_record_name(name.as_str()) {
+        return true;
+    }
     matches!(
         name.as_str(),
         "Integer"
@@ -3579,10 +3665,6 @@ fn is_builtin_type_name(name: &SmolStr) -> bool {
             | "Mat3"
             | "Mat4"
             | "Quat"
-            | "Bounds2"
-            | "Bounds3"
-            | "Ray3"
-            | "Transform3"
             | "GpuBuffer"
             | "GpuAtomicI32"
             | "GpuAtomicU32"
@@ -3615,6 +3697,12 @@ fn record_used(used: &mut HashMap<SmolStr, TextRange>, name: SmolStr, span: Text
 }
 
 fn is_builtin_value_name(name: &SmolStr) -> bool {
+    if is_builtin_record_name(name.as_str())
+        || is_builtin_record_function(name.as_str())
+        || is_builtin_helper_function(name.as_str())
+    {
+        return true;
+    }
     matches!(
         name.as_str(),
         "__wr_assert_err"
@@ -3627,20 +3715,19 @@ fn is_builtin_value_name(name: &SmolStr) -> bool {
             | "mat3_cols"
             | "mat4_identity"
             | "mat4_cols"
-            | "bounds2"
-            | "bounds3"
-            | "ray3"
-            | "transform3"
             | "transform3_identity"
-            | "bounds2_center"
-            | "bounds2_size"
-            | "bounds3_center"
-            | "bounds3_size"
             | "transform_point"
             | "transform_vector"
             | "transform_normal"
             | "compose_transform3"
             | "inverse_transform3"
+            | "field_transform_point"
+            | "field_mirror_point"
+            | "field_repeat_point"
+            | "field_instance_point"
+            | "field_union"
+            | "field_intersection"
+            | "field_subtract"
             | "dot"
             | "length"
             | "normalize"
@@ -3662,7 +3749,9 @@ fn is_builtin_value_name(name: &SmolStr) -> bool {
             | "reflect"
             | "f32"
             | "i32"
+            | "i64"
             | "u32"
+            | "u64"
             | "gpu_buffer_new"
             | "gpu_buffer_len"
             | "gpu_buffer_get"
@@ -3691,6 +3780,25 @@ fn is_builtin_value_name(name: &SmolStr) -> bool {
             | "num_workgroups"
             | "workgroup_size"
             | "dispatch_compute"
+            | "capture"
+            | "distance_at"
+            | "normal_at"
+            | "trace_shape"
+            | "surface_at"
+            | "trace_shape_batch"
+            | "surface_at_batch"
+            | "distance_at_batch"
+            | "normal_at_batch"
+            | "occluded_batch"
+            | "dispatch_backend_cpu"
+            | "dispatch_backend_virtual_gpu"
+            | "dispatch_backend_auto"
+            | "sphere"
+            | "box"
+            | "capsule"
+            | "cylinder"
+            | "plane"
+            | "torus"
             | "__wr_list_push"
             | "__wr_list_get"
             | "__wr_list_set"
@@ -3725,6 +3833,20 @@ fn is_builtin_value_name(name: &SmolStr) -> bool {
             | "__wr_metrics_get"
             | "__wr_metrics_dropped_paused_id"
             | "__wr_metrics_messages_dropped_id"
+            | "__wr_metrics_scene_trace_id"
+            | "__wr_metrics_field_sample_id"
+            | "__wr_metrics_scene_trace_support_pruned_branch_id"
+            | "__wr_metrics_scene_trace_candidate_branch_id"
+            | "__wr_metrics_scene_trace_exact_path_id"
+            | "__wr_metrics_scene_trace_conservative_path_id"
+            | "__wr_metrics_scene_trace_hit_count_id"
+            | "__wr_metrics_scene_trace_hit_steps_total_id"
+            | "__wr_metrics_scene_trace_hit_field_samples_total_id"
+            | "__wr_metrics_scene_trace_steps_le_1_id"
+            | "__wr_metrics_scene_trace_steps_le_4_id"
+            | "__wr_metrics_scene_trace_steps_le_8_id"
+            | "__wr_metrics_scene_trace_steps_le_16_id"
+            | "__wr_metrics_scene_trace_steps_gt_16_id"
             | "__wr_clock_ns"
             | "__wr_sleep_ms"
             | "__wr_bytes_from_string"
@@ -3777,6 +3899,13 @@ fn is_builtin_value_name(name: &SmolStr) -> bool {
             | "__wr_db_explain_global_route_lookup"
             | "__wr_external_call"
             | "__wr_http_call"
+            | "__wr_metrics_scene_trace"
+            | "__wr_metrics_field_sample"
+            | "__wr_metrics_scene_trace_support_pruned_branch"
+            | "__wr_metrics_scene_trace_candidate_branch"
+            | "__wr_metrics_scene_trace_exact_path"
+            | "__wr_metrics_scene_trace_conservative_path"
+            | "__wr_metrics_scene_trace_hit"
             | "__wr_metrics_web_writev_calls_id"
             | "__wr_metrics_web_sendfile_calls_id"
             | "__wr_web_parse_json_text"
@@ -4227,7 +4356,7 @@ mod tests {
         );
         assert_eq!(canonical_stdlib_module_name("parse"), Some("data/parse"));
         assert_eq!(canonical_stdlib_module_name("env"), Some("host/env"));
-        assert_eq!(canonical_stdlib_module_name("metrics"), None);
+        assert_eq!(canonical_stdlib_module_name("metrics"), Some("metrics"));
     }
 
     #[test]

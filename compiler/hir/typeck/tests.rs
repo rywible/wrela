@@ -4,6 +4,7 @@ mod tests {
     use crate::hir::lower::lower;
     use crate::parser::ast::AstNode;
     use crate::parser::{ast, parse};
+    use miette::SourceSpan;
 
     fn check_source(input: &str) -> Vec<TypeError> {
         let node = parse(input);
@@ -375,6 +376,1498 @@ fn f() -> Nothing {
     assert approx size.x ~= 2.0 within 0.001
     assert approx moved.z ~= 3.0 within 0.001
     assert approx normal.y ~= 1.0 within 0.001
+}
+"#;
+        let errors = check_source(input);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_field_query_builtins_typecheck_on_host() {
+        let input = r#"field conservative distance sphere(p: Vec3) -> F32 {
+    return length(p) - 1.0
+}
+
+fn f() -> Nothing {
+    scene = capture sphere
+    distance = distance_at(capture=scene, point=vec3(1.0, 2.0, 3.0))
+    normal = normal_at(capture=scene, point=vec3(1.0, 2.0, 3.0))
+    assert approx distance ~= 0.0 within 0.001
+    assert approx normal.x ~= 0.0 within 0.001
+}
+"#;
+        let errors = check_source(input);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_scene_capture_and_capture_queries_typecheck_on_host() {
+        let input = r#"field exact distance sphere_field(p: Vec3) -> F32 {
+    sphere(radius=1.0)
+}
+
+shape scene_shape {
+    field = sphere_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(1),
+        material_id=u64(2),
+        actor=ActorHandle(id=u64(3), generation=u32(0))
+    )
+}
+
+material shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(1.0, 0.0, 0.0),
+        roughness=0.5,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+fn f() -> Nothing {
+    scene = capture scene_shape
+    distance = distance_at(capture=scene, point=vec3(1.0, 2.0, 3.0))
+    normal = normal_at(capture=scene, point=vec3(1.0, 2.0, 3.0))
+    hit = trace_shape(
+        capture=scene,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    surface = surface_at(capture=scene, hit=hit)
+    assert approx distance ~= 0.0 within 0.001
+    assert approx normal.x ~= 0.0 within 0.001
+    assert approx surface.albedo.x ~= 1.0 within 0.001
+}
+"#;
+        let errors = check_source(input);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_field_query_builtins_are_rejected_in_portable_lane() {
+        let input = r#"field conservative distance sphere(p: Vec3) -> F32 {
+    return length(p) - 1.0
+}
+
+kernel fn run_kernel() -> Nothing {
+    scene = capture sphere
+    distance = distance_at(capture=scene, point=vec3(1.0, 2.0, 3.0))
+    normal = normal_at(capture=scene, point=vec3(1.0, 2.0, 3.0))
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::PortableHostCallForbidden { callee, .. }
+                    if callee.as_str() == "distance_at"
+            )),
+            "expected PortableHostCallForbidden(distance_at), got: {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::PortableHostCallForbidden { callee, .. }
+                    if callee.as_str() == "normal_at"
+            )),
+            "expected PortableHostCallForbidden(normal_at), got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_capture_requires_top_level_field_or_shape_target() {
+        let input = r#"fn helper(p: Vec3) -> F32 {
+    return length(p)
+}
+
+fn f() -> Nothing {
+    scene = capture helper
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::CaptureTargetMustBeFieldOrShape { .. }
+            )),
+            "expected CaptureTargetMustBeFieldOrShape, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_shape_queries_typecheck_on_host() {
+        let input = r#"field exact distance sphere_field(p: Vec3) -> F32 {
+    sphere(radius=1.0)
+}
+
+material shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(1.0, 0.0, 0.0),
+        roughness=0.5,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape scene_shape {
+    field = sphere_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(1),
+        material_id=u64(2),
+        actor=ActorHandle(id=u64(3), generation=u32(0))
+    )
+}
+
+fn run() -> Nothing {
+    scene = capture scene_shape
+    hit = trace_shape(
+        capture=scene,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    surface = surface_at(capture=scene, hit=hit)
+    assert approx surface.albedo.x ~= 1.0 within 0.001
+}
+"#;
+        let errors = check_source(input);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_shape_queries_reject_field_captures() {
+        let input = r#"field exact distance sphere_field(p: Vec3) -> F32 {
+    sphere(radius=1.0)
+}
+
+fn run() -> Nothing {
+    hit = trace_shape(
+        capture=capture sphere_field,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::ShapeQueryTargetMustBeShape { query, .. }
+                    if query.as_str() == "trace_shape"
+            )),
+            "expected ShapeQueryTargetMustBeShape(trace_shape), got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_shape_queries_reject_stored_field_capture_variables() {
+        let input = r#"field exact distance sphere_field(p: Vec3) -> F32 {
+    sphere(radius=1.0)
+}
+
+fn run() -> Nothing {
+    scene = capture sphere_field
+    hit = trace_shape(
+        capture=scene,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::ShapeQueryTargetMustBeShape { query, .. }
+                    if query.as_str() == "trace_shape"
+            )),
+            "expected stored field capture rejection, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_batch_scene_queries_typecheck_on_host() {
+        let input = r#"field exact distance sphere_field(p: Vec3) -> F32 {
+    sphere(radius=1.0)
+}
+
+material shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(1.0, 0.0, 0.0),
+        roughness=0.5,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape scene_shape {
+    field = sphere_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(1),
+        material_id=u64(2),
+        actor=ActorHandle(id=u64(3), generation=u32(0))
+    )
+}
+
+fn run() -> Nothing {
+    scene = capture scene_shape
+    rays = [
+        RayQuery(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
+    ]
+    points = [PointQuery(point=vec3(0.0, 0.0, 2.0))]
+    hits = trace_shape_batch(
+        capture=scene,
+        rays=rays,
+        backend=dispatch_backend_cpu()
+    )
+    surfaces = surface_at_batch(
+        capture=scene,
+        hits=hits,
+        backend=dispatch_backend_auto()
+    )
+    distances = distance_at_batch(
+        capture=scene,
+        points=points,
+        backend=dispatch_backend_cpu()
+    )
+    normals = normal_at_batch(
+        capture=scene,
+        points=points,
+        backend=dispatch_backend_virtual_gpu()
+    )
+    occlusion = occluded_batch(
+        capture=scene,
+        rays=rays,
+        backend=dispatch_backend_virtual_gpu()
+    )
+    assert value hits[0].hit == true
+    assert approx surfaces[0].albedo.x ~= 1.0 within 0.001
+    assert approx distances[0].distance ~= 1.0 within 0.001
+    assert approx normals[0].normal.z ~= 1.0 within 0.001
+    assert value occlusion[0].occluded == true
+}
+"#;
+        let errors = check_source(input);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_batch_scene_queries_reject_raw_integer_backends() {
+        let input = r#"field exact distance sphere_field(p: Vec3) -> F32 {
+    sphere(radius=1.0)
+}
+
+shape scene_shape {
+    field = sphere_field
+    material = shade
+    payload = Payload()
+}
+
+material shade(hit: Hit3) -> Surface {
+    return Surface()
+}
+
+fn run() -> Nothing {
+    scene = capture scene_shape
+    points = [PointQuery(point=vec3(0.0, 0.0, 2.0))]
+    _ = distance_at_batch(capture=scene, points=points, backend=99)
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::ArgumentTypeMismatch { name, expected, found, .. }
+                    if name.as_str() == "backend"
+                        && expected == "DispatchBackend"
+                        && found == "Integer"
+            )),
+            "expected backend type mismatch, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_capture_boundary_types_are_opaque() {
+        let input = r#"fn run() -> Nothing {
+    _ = FieldCapture(scene_id=u64(1), epoch=u64(0), root_feature_id=u64(0))
+    _ = DispatchBackend(id=i64(0))
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::OpaqueBuiltinConstructionForbidden { name, .. }
+                    if name.as_str() == "FieldCapture"
+            )),
+            "expected opaque FieldCapture constructor rejection, got: {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::OpaqueBuiltinConstructionForbidden { name, .. }
+                    if name.as_str() == "DispatchBackend"
+            )),
+            "expected opaque DispatchBackend constructor rejection, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_shape_leaf_requires_field_and_material_targets() {
+        let input = r#"fn helper(p: Vec3) -> F32 {
+    return length(p)
+}
+
+fn bad_material(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(1.0, 0.0, 0.0),
+        roughness=0.5,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape broken_shape {
+    field = helper
+    material = bad_material
+    payload = Payload(
+        entity_id=u64(1),
+        material_id=u64(2),
+        actor=ActorHandle(id=u64(3), generation=u32(0))
+    )
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::ShapeBindingTargetInvalid { shape, binding, expected, target, .. }
+                    if shape.as_str() == "broken_shape"
+                        && *binding == "`field = ...`"
+                        && *expected == "field"
+                        && target.as_str() == "helper"
+            )),
+            "expected field binding rejection, got: {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::ShapeBindingTargetInvalid { shape, binding, expected, target, .. }
+                    if shape.as_str() == "broken_shape"
+                        && *binding == "`material = ...`"
+                        && *expected == "material"
+                        && target.as_str() == "bad_material"
+            )),
+            "expected material binding rejection, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_shape_payload_requires_payload_type() {
+        let input = r#"field exact distance sphere_field(p: Vec3) -> F32 {
+    sphere(radius=1.0)
+}
+
+material shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(1.0, 0.0, 0.0),
+        roughness=0.5,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape broken_shape {
+    field = sphere_field
+    material = shade
+    payload = u64(7)
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::ShapePayloadTypeForbidden { shape, found, .. }
+                    if shape.as_str() == "broken_shape" && found == "U64"
+            )),
+            "expected payload type rejection, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_shape_use_cycles_are_rejected() {
+        let input = r#"field exact distance sphere_field(p: Vec3) -> F32 {
+    sphere(radius=1.0)
+}
+
+material shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(1.0, 0.0, 0.0),
+        roughness=0.5,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape leaf_shape {
+    field = sphere_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(1),
+        material_id=u64(2),
+        actor=ActorHandle(id=u64(3), generation=u32(0))
+    )
+}
+
+shape first_shape {
+    union {
+        use leaf_shape
+        use second_shape
+    }
+}
+
+shape second_shape {
+    union {
+        use leaf_shape
+        use first_shape
+    }
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::ShapeCycleDetected { shape, target, .. }
+                    if shape.as_str() == "first_shape" && target.as_str() == "first_shape"
+            )),
+            "expected recursive shape cycle rejection, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_field_declarations_require_single_vec3_p_and_f32_return() {
+        let input = r#"field exact distance sphere(center: F32) -> Integer {
+    return 0
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::PortableConstructForbidden { function, construct, .. }
+                    if function.as_str() == "sphere"
+                        && construct.contains("field parameter")
+            )),
+            "expected field parameter rejection, got: {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::PortableBoundaryTypeForbidden { function, site, .. }
+                    if function.as_str() == "sphere"
+                        && site.as_str() == "return type"
+            )),
+            "expected field return type rejection, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_exact_field_rejects_conservative_field_calls() {
+        let input = r#"field conservative distance shell(p: Vec3) -> F32 {
+    return length(p)
+}
+
+field exact distance sphere(p: Vec3) -> F32 {
+    use shell
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::FieldExactnessCapabilityViolation { function, node, detail, .. }
+                    if function.as_str() == "sphere"
+                        && node.as_str() == "use"
+                        && detail.contains("conservative field 'shell'")
+            )),
+            "expected exact field exactness rejection, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_exact_field_allows_semantic_field_composition() {
+        let input = r#"field exact distance orb(p: Vec3) -> F32 {
+    sphere(radius=1.0)
+}
+
+field exact distance frame(p: Vec3) -> F32 {
+    box(half=vec3(1.1, 1.1, 1.1))
+}
+
+field exact distance cap(p: Vec3) -> F32 {
+    plane(normal=vec3(0.0, 0.0, 1.0), offset=0.0)
+}
+
+field exact distance notch(p: Vec3) -> F32 {
+    torus(major_radius=1.5, minor_radius=0.25)
+}
+
+field exact distance sculpted(p: Vec3) -> F32 {
+    subtract {
+        intersection {
+            union {
+                use orb
+                use frame
+            }
+            use cap
+        }
+        use notch
+    }
+}
+"#;
+        let errors = check_source(input);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_exact_field_allows_mirror_and_repeat_but_rejects_transform_and_instance() {
+        let input = r#"field exact distance source(p: Vec3) -> F32 {
+    sphere(radius=1.0)
+}
+
+field exact distance mirrored(p: Vec3) -> F32 {
+    mirror = vec3(0.0, 1.0, 0.0) {
+        use source
+    }
+}
+
+field exact distance repeated(p: Vec3) -> F32 {
+    repeat = vec3(2.0, 0.0, 0.0) {
+        use source
+    }
+}
+
+field exact distance shifted(p: Vec3) -> F32 {
+    transform = vec3(1.0, 0.0, 0.0) {
+        use source
+    }
+}
+
+field exact distance instanced(p: Vec3) -> F32 {
+    instance = transform3_identity() {
+        use source
+    }
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::FieldExactnessCapabilityViolation { function, node, detail, .. }
+                    if function.as_str() == "instanced"
+                        && node.as_str() == "instance"
+                        && detail.contains("instance composition is conservative-only")
+            )),
+            "expected exact field instance rejection, got: {errors:?}"
+        );
+        assert!(
+            !errors.iter().any(|err| matches!(
+                err,
+                TypeError::FieldExactnessCapabilityViolation { function, node, .. }
+                    if function.as_str() == "shifted"
+                        && node.as_str() == "transform"
+            )),
+            "translation transform should stay exact-preserving, got: {errors:?}"
+        );
+        assert!(
+            !errors.iter().any(|err| matches!(
+                err,
+                TypeError::FieldExactnessCapabilityViolation { function, node, .. }
+                    if function.as_str() == "mirrored"
+                        && node.as_str() == "mirror"
+            )),
+            "mirror should stay exact-preserving, got: {errors:?}"
+        );
+        assert!(
+            !errors.iter().any(|err| matches!(
+                err,
+                TypeError::FieldExactnessCapabilityViolation { function, node, .. }
+                    if function.as_str() == "repeated"
+                        && node.as_str() == "repeat"
+            )),
+            "repeat should stay exact-preserving, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_exact_field_transform3_is_conservative_only() {
+        let input = r#"field exact distance source(p: Vec3) -> F32 {
+    sphere(radius=1.0)
+}
+
+field exact distance transformed(p: Vec3) -> F32 {
+    transform = transform3_identity() {
+        use source
+    }
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::FieldExactnessCapabilityViolation { function, node, detail, .. }
+                    if function.as_str() == "transformed"
+                        && node.as_str() == "transform"
+                        && detail.contains("Transform3 transforms are conservative-only")
+            )),
+            "expected Transform3 exactness rejection, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_exact_field_rejects_point_dependent_wrapper_operands() {
+        let input = r#"field exact distance source(p: Vec3) -> F32 {
+    sphere(radius=1.0)
+}
+
+field exact distance warped_transform(p: Vec3) -> F32 {
+    transform = p {
+        use source
+    }
+}
+
+field exact distance warped_mirror(p: Vec3) -> F32 {
+    mirror = p {
+        use source
+    }
+}
+
+field exact distance warped_repeat(p: Vec3) -> F32 {
+    repeat = p {
+        use source
+    }
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::FieldExactnessCapabilityViolation { function, node, detail, .. }
+                    if function.as_str() == "warped_transform"
+                        && node.as_str() == "transform"
+                        && detail.contains("references sample point")
+            )),
+            "expected transform sample-point rejection, got: {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::FieldExactnessCapabilityViolation { function, node, detail, .. }
+                    if function.as_str() == "warped_mirror"
+                        && node.as_str() == "mirror"
+                        && detail.contains("references sample point")
+            )),
+            "expected mirror sample-point rejection, got: {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::FieldExactnessCapabilityViolation { function, node, detail, .. }
+                    if function.as_str() == "warped_repeat"
+                        && node.as_str() == "repeat"
+                        && detail.contains("references sample point")
+            )),
+            "expected repeat sample-point rejection, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_field_transform_wrapper_requires_vec3_or_transform3() {
+        let input = r#"field conservative distance bad_transform(p: Vec3) -> F32 {
+    transform = i32(7) {
+        sphere(radius=1.0)
+    }
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::PortableBoundaryTypeForbidden { function, site, found, .. }
+                    if function.as_str() == "bad_transform"
+                        && site.as_str() == "field `transform` operand"
+                        && found.as_str() == "I32"
+            )),
+            "expected invalid transform wrapper operand rejection, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_field_instance_wrapper_requires_transform3() {
+        let input = r#"field conservative distance bad_instance(p: Vec3) -> F32 {
+    instance = vec3(0.0, 0.0, 1.0) {
+        sphere(radius=1.0)
+    }
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::PortableBoundaryTypeForbidden { function, site, found, .. }
+                    if function.as_str() == "bad_instance"
+                        && site.as_str() == "field `instance` operand"
+                        && found.as_str() == "Vec3"
+            )),
+            "expected invalid instance wrapper operand rejection, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_exact_field_rejects_custom_field_bodies() {
+        let input = r#"field exact distance suspect(p: Vec3) -> F32 {
+    return sin(value=p.x)
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::FieldExactnessCapabilityViolation { function, node, detail, .. }
+                    if function.as_str() == "suspect"
+                        && node.as_str() == "custom"
+                        && detail.contains("custom field bodies remain opaque")
+            )),
+            "expected exact custom field rejection, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_field_support_clause_type_helper_requires_support3() {
+        let err = validate_support_clause_type(
+            &SmolStr::new("scene"),
+            &Type::Vec3,
+            SourceSpan::from((0usize, 1usize)),
+        )
+        .expect_err("support clause should reject non-Support3 types");
+        assert!(matches!(
+            err,
+            TypeError::FieldClauseTypeForbidden { field, clause, expected, found, .. }
+                if field.as_str() == "scene"
+                    && clause == "support"
+                    && expected == "Support3"
+                    && found == "Vec3"
+        ));
+    }
+
+    #[test]
+    fn test_field_bounds_clause_type_helper_requires_bounds3() {
+        let err = validate_bounds_clause_type(
+            &SmolStr::new("scene"),
+            &Type::F32,
+            SourceSpan::from((0usize, 1usize)),
+        )
+        .expect_err("bounds clause should reject non-Bounds3 types");
+        assert!(matches!(
+            err,
+            TypeError::FieldClauseTypeForbidden { field, clause, expected, found, .. }
+                if field.as_str() == "scene"
+                    && clause == "bounds"
+                    && expected == "Bounds3"
+                    && found == "F32"
+        ));
+    }
+
+    #[test]
+    fn test_field_support_clause_rejects_non_support3_source_values() {
+        let input = r#"field conservative distance bad(p: Vec3) -> F32 {
+    support = vec3(1.0, 2.0, 3.0)
+    sphere(radius=1.0)
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::FieldClauseTypeForbidden { field, clause, expected, found, .. }
+                    if field.as_str() == "bad"
+                        && *clause == "support"
+                        && *expected == "Support3"
+                        && found == "Vec3"
+            )),
+            "expected support clause type rejection, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_field_bounds_clause_rejects_non_bounds3_source_values() {
+        let input = r#"field conservative distance bad(p: Vec3) -> F32 {
+    bounds = 1.0
+    sphere(radius=1.0)
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::FieldClauseTypeForbidden { field, clause, expected, found, .. }
+                    if field.as_str() == "bad"
+                        && *clause == "bounds"
+                        && *expected == "Bounds3"
+                        && found == "Float"
+            )),
+            "expected bounds clause type rejection, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_field_support_metadata_conflict_reports_clause_mismatch() {
+        let input = r#"field exact distance ground(p: Vec3) -> F32 {
+    support = Support3(bounds=Bounds3(
+        min=vec3(-1.0, -1.0, -1.0),
+        max=vec3(1.0, 1.0, 1.0)
+    ))
+    bounds = Bounds3(
+        min=vec3(-1.0, -1.0, -1.0),
+        max=vec3(1.0, 1.0, 1.0)
+    )
+    plane(normal=vec3(0.0, 1.0, 0.0), offset=0.0)
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::FieldClauseConflict { field, clause, explicit, inferred, help, .. }
+                    if field.as_str() == "ground"
+                        && *clause == "support"
+                        && explicit == "Bounded"
+                        && inferred == "Unbounded"
+                        && help.contains("primitive 'plane'")
+            )),
+            "expected authored support conflict to be reported, got: {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::FieldClauseConflict { field, clause, explicit, inferred, help, .. }
+                    if field.as_str() == "ground"
+                        && *clause == "bounds"
+                        && explicit == "Bounded"
+                        && inferred == "Unbounded"
+                        && help.contains("primitive 'plane'")
+            )),
+            "expected authored bounds conflict to be reported, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_conservative_field_support_metadata_conflict_reports_clause_mismatch() {
+        let input = r#"field conservative distance ground(p: Vec3) -> F32 {
+    support = Support3(bounds=Bounds3(
+        min=vec3(-1.0, -1.0, -1.0),
+        max=vec3(1.0, 1.0, 1.0)
+    ))
+    bounds = Bounds3(
+        min=vec3(-1.0, -1.0, -1.0),
+        max=vec3(1.0, 1.0, 1.0)
+    )
+    plane(normal=vec3(0.0, 1.0, 0.0), offset=0.0)
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::FieldClauseConflict { field, clause, explicit, inferred, help, .. }
+                    if field.as_str() == "ground"
+                        && *clause == "support"
+                        && explicit == "Bounded"
+                        && inferred == "Unbounded"
+                        && help.contains("primitive 'plane'")
+            )),
+            "expected conservative support conflict to be reported, got: {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::FieldClauseConflict { field, clause, explicit, inferred, help, .. }
+                    if field.as_str() == "ground"
+                        && *clause == "bounds"
+                        && explicit == "Bounded"
+                        && inferred == "Unbounded"
+                        && help.contains("primitive 'plane'")
+            )),
+            "expected conservative bounds conflict to be reported, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_portable_functions_reject_field_composition_helpers() {
+        let input = r#"kernel fn helper() -> F32 {
+    return field_union(left=1.0, right=2.0)
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::PortableConstructForbidden { function, construct, .. }
+                    if function.as_str() == "helper"
+                        && construct.contains("field composition helper 'field_union'")
+            )),
+            "expected field-composition helper rejection outside field declarations, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_material_declarations_reject_field_composition_helpers() {
+        let input = r#"material surface(hit: Hit3) -> Surface {
+    rough = field_union(left=0.25, right=0.5)
+    return Surface(
+        albedo=vec3(rough, rough, rough),
+        roughness=rough,
+        metalness=0.1,
+        clearcoat=0.25,
+        clearcoat_roughness=0.3,
+        sheen=0.15,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::PortableConstructForbidden { function, construct, .. }
+                    if function.as_str() == "surface"
+                        && construct.contains("field composition helper 'field_union'")
+            )),
+            "expected field-composition helper rejection in material, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_field_declarations_reject_kernel_only_builtins() {
+        let input = r#"field conservative distance sphere(p: Vec3) -> F32 {
+    gid = global_invocation_id()
+    return f32(gid[0])
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::PortableConstructForbidden { function, construct, .. }
+                    if function.as_str() == "sphere"
+                        && construct.contains("kernel-only builtin 'global_invocation_id'")
+            )),
+            "expected kernel-only builtin rejection in field, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_material_declarations_require_hit3_and_surface_return() {
+        let input = r#"material surface(hit: Vec3) -> Integer {
+    return 0
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::PortableBoundaryTypeForbidden { function, site, .. }
+                    if function.as_str() == "surface"
+                        && site.as_str() == "parameter 'hit'"
+            )),
+            "expected material parameter type rejection, got: {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::PortableBoundaryTypeForbidden { function, site, .. }
+                    if function.as_str() == "surface" && site.as_str() == "return type"
+            )),
+            "expected material return type rejection, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_material_declarations_accept_hit3_and_surface_return() {
+        let input = r#"material surface(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.2, 0.4, 0.6),
+        roughness=0.5,
+        metalness=0.1,
+        clearcoat=0.25,
+        clearcoat_roughness=0.3,
+        sheen=0.15,
+        emissive=vec3(1.0, 0.0, 0.0)
+    )
+}
+"#;
+        let errors = check_source(input);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_material_declarations_reject_kernel_only_builtins() {
+        let input = r#"material surface(hit: Hit3) -> Surface {
+    gid = global_invocation_id()
+    return Surface(
+        albedo=vec3(f32(gid[0]), 0.0, 0.0),
+        roughness=0.5,
+        metalness=0.1,
+        clearcoat=0.25,
+        clearcoat_roughness=0.3,
+        sheen=0.15,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::PortableConstructForbidden { function, construct, .. }
+                    if function.as_str() == "surface"
+                        && construct.contains("kernel-only builtin 'global_invocation_id'")
+            )),
+            "expected kernel-only builtin rejection in material, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_material_declarations_reject_non_material_portable_calls() {
+        let input = r#"kernel fn helper() -> I32 {
+    return i32(7)
+}
+
+material surface(hit: Hit3) -> Surface {
+    seed = helper()
+    return Surface(
+        albedo=vec3(f32(seed), 0.0, 0.0),
+        roughness=0.5,
+        metalness=0.1,
+        clearcoat=0.25,
+        clearcoat_roughness=0.3,
+        sheen=0.15,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::PortableConstructForbidden { function, construct, .. }
+                    if function.as_str() == "surface"
+                        && construct.contains("non-material portable declaration 'helper'")
+            )),
+            "expected non-material portable declaration rejection in material, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_shape_leaf_requires_top_level_field_binding() {
+        let input = r#"material shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(1.0, 0.0, 0.0),
+        roughness=0.0,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape bad_shape {
+    field = missing_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(1),
+        material_id=u64(1),
+        actor=ActorHandle(id=u64(1), generation=u32(0))
+    )
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::ShapeBindingTargetInvalid { shape, binding, expected, target, .. }
+                    if shape.as_str() == "bad_shape"
+                        && *binding == "`field = ...`"
+                        && *expected == "field"
+                        && target.as_str() == "missing_field"
+            )),
+            "expected invalid shape field binding error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_shape_leaf_requires_top_level_material_binding() {
+        let input = r#"field exact distance sphere(p: Vec3) -> F32 {
+    sphere(radius = 1.0)
+}
+
+shape bad_shape {
+    field = sphere
+    material = missing_material
+    payload = Payload(
+        entity_id=u64(1),
+        material_id=u64(1),
+        actor=ActorHandle(id=u64(1), generation=u32(0))
+    )
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::ShapeBindingTargetInvalid { shape, binding, expected, target, .. }
+                    if shape.as_str() == "bad_shape"
+                        && *binding == "`material = ...`"
+                        && *expected == "material"
+                        && target.as_str() == "missing_material"
+            )),
+            "expected invalid shape material binding error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_shape_payload_must_evaluate_to_payload() {
+        let input = r#"field exact distance sphere(p: Vec3) -> F32 {
+    sphere(radius = 1.0)
+}
+
+material shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(1.0, 0.0, 0.0),
+        roughness=0.0,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape bad_shape {
+    field = sphere
+    material = shade
+    payload = i32(7)
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::ShapePayloadTypeForbidden { shape, found, .. }
+                    if shape.as_str() == "bad_shape" && found.as_str() == "I32"
+            )),
+            "expected invalid shape payload error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_shape_composition_rejects_cycles() {
+        let input = r#"field exact distance sphere(p: Vec3) -> F32 {
+    sphere(radius = 1.0)
+}
+
+material shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(1.0, 0.0, 0.0),
+        roughness=0.0,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape leaf_shape {
+    field = sphere
+    material = shade
+    payload = Payload(
+        entity_id=u64(1),
+        material_id=u64(1),
+        actor=ActorHandle(id=u64(1), generation=u32(0))
+    )
+}
+
+shape recursive_shape {
+    union {
+        use recursive_shape
+        use leaf_shape
+    }
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::ShapeCycleDetected { shape, target, .. }
+                    if shape.as_str() == "recursive_shape"
+                        && target.as_str() == "recursive_shape"
+            )),
+            "expected shape cycle error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_shape_boolean_provenance_policies_typecheck() {
+        let input = r#"field exact distance left_field(p: Vec3) -> F32 {
+    sphere(radius = 1.0)
+}
+
+field exact distance right_field(p: Vec3) -> F32 {
+    sphere(radius = 0.5)
+}
+
+material shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(1.0, 0.0, 0.0),
+        roughness=0.0,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape left_shape {
+    field = left_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(1),
+        material_id=u64(1),
+        actor=ActorHandle(id=u64(1), generation=u32(0))
+    )
+}
+
+shape right_shape {
+    field = right_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(2),
+        material_id=u64(2),
+        actor=ActorHandle(id=u64(2), generation=u32(0))
+    )
+}
+
+shape union_shape {
+    union {
+        provenance_policy = nearest
+        use left_shape
+        use right_shape
+    }
+}
+
+shape intersection_shape {
+    intersection {
+        provenance_policy = ordered
+        use left_shape
+        use right_shape
+    }
+}
+
+shape subtract_shape {
+    subtract {
+        provenance_policy = right
+        use left_shape
+        use right_shape
+    }
+}
+"#;
+        let errors = check_source(input);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_field_boolean_provenance_policies_typecheck() {
+        let input = r#"field conservative distance composed(p: Vec3) -> F32 {
+    subtract {
+        provenance_policy = right
+        intersection {
+            provenance_policy = nearest
+            union {
+                provenance_policy = nearest
+                use left_x
+                use left_y
+            }
+            use cap_z
+        }
+        use notch
+    }
+}
+
+field exact distance left_x(p: Vec3) -> F32 {
+    sphere(radius = 1.0)
+}
+
+field exact distance left_y(p: Vec3) -> F32 {
+    sphere(radius = 1.0)
+}
+
+field exact distance cap_z(p: Vec3) -> F32 {
+    sphere(radius = 1.0)
+}
+
+field exact distance notch(p: Vec3) -> F32 {
+    sphere(radius = 1.0)
+}
+
+material shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(1.0, 0.0, 0.0),
+        roughness=0.0,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+"#;
+        let errors = check_source(input);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_host_functions_can_call_material_declarations() {
+        let input = r#"material shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.2, 0.4, 0.6),
+        roughness=0.5,
+        metalness=0.1,
+        clearcoat=0.25,
+        clearcoat_roughness=0.3,
+        sheen=0.15,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+fn run() -> Nothing {
+    handle = ActorHandle(id=u64(1), generation=u32(0))
+    payload = Payload(entity_id=u64(2), material_id=u64(3), actor=handle)
+    hit = Hit3(
+        hit=true,
+        distance=1.25,
+        position=vec3(0.0, 0.0, 1.0),
+        normal=vec3(0.0, 0.0, 1.0),
+        steps=0,
+        feature_id=u64(0),
+        payload=payload
+    )
+    surface = shade(hit=hit)
+    assert approx surface.albedo.x ~= 0.2 within 0.001
+    assert approx surface.albedo.y ~= 0.4 within 0.001
+}
+"#;
+        let errors = check_source(input);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_builtin_portable_record_constructors_and_nested_fields_typecheck() {
+        let input = r#"kernel fn portable_entry() -> U64 {
+    handle = ActorHandle(id=u64(9), generation=u32(2))
+    payload = Payload(entity_id=u64(7), material_id=u64(11), actor=handle)
+    hit = Hit3(
+        hit=true,
+        distance=4.25,
+        position=vec3(1.0, 2.0, 3.0),
+        normal=normalize(vec3(0.0, 2.0, 0.0)),
+        steps=0,
+        feature_id=u64(0),
+        payload=payload
+    )
+    surface = Surface(
+        albedo=vec3(0.2, 0.4, 0.6),
+        roughness=0.5,
+        metalness=0.1,
+        clearcoat=0.25,
+        clearcoat_roughness=0.3,
+        sheen=0.15,
+        emissive=vec3(1.0, 0.0, 0.0)
+    )
+    medium = Medium(density=0.2, emission=surface.emissive, anisotropy=0.0)
+    support = Support3(bounds=Bounds3(
+        min=vec3(-1.0, -1.0, -1.0),
+        max=vec3(1.0, 1.0, 1.0)
+    ))
+    camera = Camera(
+        position=hit.position,
+        forward=vec3(0.0, 0.0, -1.0),
+        up=vec3(0.0, 1.0, 0.0),
+        vertical_fov_degrees=55.0
+    )
+    contact = Contact(
+        hit=hit.hit,
+        position=hit.position,
+        normal=hit.normal,
+        penetration=0.0,
+        payload=hit.payload
+    )
+    light = Light(
+        position=camera.position,
+        direction=camera.forward,
+        intensity=surface.emissive,
+        range=25.0
+    )
+    assert approx medium.emission.x ~= 1.0 within 0.001
+    assert approx support.bounds.max.y ~= 1.0 within 0.001
+    assert approx light.direction.z ~= -1.0 within 0.001
+    assert approx contact.normal.y ~= 1.0 within 0.001
+    return hit.payload.actor.id
 }
 "#;
         let errors = check_source(input);

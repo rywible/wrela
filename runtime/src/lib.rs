@@ -19,7 +19,9 @@ mod virtual_gpu;
 pub mod wasm_runtime;
 mod web;
 
-pub(crate) use data::{arena, bytes, class, iter, list, map, math, object, result, string, value};
+pub(crate) use data::{
+    arena, bytes, class, iter, list, map, math, object, portable, result, string, value,
+};
 pub(crate) use kernel::{actor, config, diagnostics, metrics};
 
 use data::object::drop_object;
@@ -1358,9 +1360,21 @@ fn cast_to_i32_value(val: Value) -> Value {
         .unwrap_or(Value::nil())
 }
 
+fn cast_to_i64_value(val: Value) -> Value {
+    numeric_value_f64(val)
+        .map(|value| Value::from_int(value as i64))
+        .unwrap_or(Value::nil())
+}
+
 fn cast_to_u32_value(val: Value) -> Value {
     numeric_value_f64(val)
         .map(|value| Value::from_int(value as u32 as i64))
+        .unwrap_or(Value::nil())
+}
+
+fn cast_to_u64_value(val: Value) -> Value {
+    numeric_value_f64(val)
+        .map(|value| Value::from_int((value.max(0.0) as u64) as i64))
         .unwrap_or(Value::nil())
 }
 
@@ -1688,8 +1702,18 @@ pub extern "C" fn wr_cast_i32(val: Value) -> Value {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn wr_cast_i64(val: Value) -> Value {
+    cast_to_i64_value(val)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn wr_cast_u32(val: Value) -> Value {
     cast_to_u32_value(val)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_cast_u64(val: Value) -> Value {
+    cast_to_u64_value(val)
 }
 
 #[unsafe(no_mangle)]
@@ -2094,6 +2118,133 @@ pub extern "C" fn wr_mat4_mul_scalar(mat: Value, scalar: Value) -> Value {
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_mat4_div_scalar(mat: Value, scalar: Value) -> Value {
     math::mat4_div_scalar(mat, scalar)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_bounds2_center(bounds: Value) -> Value {
+    portable::bounds2_center(bounds)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_bounds2_size(bounds: Value) -> Value {
+    portable::bounds2_size(bounds)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_bounds3_center(bounds: Value) -> Value {
+    portable::bounds3_center(bounds)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_bounds3_size(bounds: Value) -> Value {
+    portable::bounds3_size(bounds)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_transform_point(transform: Value, point: Value) -> Value {
+    portable::transform_point(transform, point)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_field_transform_point(transform: Value, point: Value) -> Value {
+    portable::field_transform_point(transform, point)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_field_instance_point(instance: Value, point: Value) -> Value {
+    portable::field_instance_point(instance, point)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_field_mirror_point(mirror: Value, point: Value) -> Value {
+    portable::field_mirror_point(mirror, point)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_field_repeat_point(period: Value, point: Value) -> Value {
+    portable::field_repeat_point(period, point)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_transform_vector(transform: Value, vector: Value) -> Value {
+    portable::transform_vector(transform, vector)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_transform_normal(transform: Value, normal: Value) -> Value {
+    portable::transform_normal(transform, normal)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_transform3_identity(class_id: Value) -> Value {
+    portable::transform3_identity(int_value(class_id).unwrap_or_default().max(0) as u32)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_compose_transform3(class_id: Value, left: Value, right: Value) -> Value {
+    portable::compose_transform3(
+        int_value(class_id).unwrap_or_default().max(0) as u32,
+        left,
+        right,
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_inverse_transform3(class_id: Value, transform: Value) -> Value {
+    portable::inverse_transform3(
+        int_value(class_id).unwrap_or_default().max(0) as u32,
+        transform,
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_field_union(left: Value, right: Value) -> Value {
+    portable::field_union(left, right)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_field_intersection(left: Value, right: Value) -> Value {
+    portable::field_intersection(left, right)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_field_subtract(left: Value, right: Value) -> Value {
+    portable::field_subtract(left, right)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_repeat_point(point: Value, period: Value) -> Value {
+    portable::repeat_point(point, period)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_sphere(point: Value, radius: Value) -> Value {
+    portable::sphere(point, radius)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_box(point: Value, half: Value) -> Value {
+    portable::box_sdf(point, half)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_capsule(point: Value, a: Value, b: Value, radius: Value) -> Value {
+    portable::capsule(point, a, b, radius)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_cylinder(point: Value, radius: Value, half_height: Value) -> Value {
+    portable::cylinder(point, radius, half_height)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_plane(point: Value, normal: Value, offset: Value) -> Value {
+    portable::plane(point, normal, offset)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_torus(point: Value, major_radius: Value, minor_radius: Value) -> Value {
+    portable::torus(point, major_radius, minor_radius)
 }
 
 #[unsafe(no_mangle)]
@@ -2610,6 +2761,50 @@ pub extern "C" fn wr_metrics_get(id_val: Value) -> Value {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn wr_metrics_scene_trace() -> Value {
+    metrics::inc_scene_trace();
+    Value::nil()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_metrics_field_sample() -> Value {
+    metrics::inc_field_sample();
+    Value::nil()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_metrics_scene_trace_support_pruned_branch() -> Value {
+    metrics::inc_scene_trace_support_pruned_branch();
+    Value::nil()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_metrics_scene_trace_candidate_branch() -> Value {
+    metrics::inc_scene_trace_candidate_branch();
+    Value::nil()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_metrics_scene_trace_exact_path() -> Value {
+    metrics::inc_scene_trace_exact_path();
+    Value::nil()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_metrics_scene_trace_conservative_path() -> Value {
+    metrics::inc_scene_trace_conservative_path();
+    Value::nil()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_metrics_scene_trace_hit(steps_val: Value, field_samples_val: Value) -> Value {
+    let steps = int_value(steps_val).unwrap_or(0).max(0) as u64;
+    let field_samples = int_value(field_samples_val).unwrap_or(0).max(0) as u64;
+    metrics::inc_scene_trace_hit(steps, field_samples);
+    Value::nil()
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn wr_metrics_dropped_paused_id() -> Value {
     Value::from_int(metrics::METRIC_MESSAGES_DROPPED_PAUSED as i64)
 }
@@ -2617,6 +2812,76 @@ pub extern "C" fn wr_metrics_dropped_paused_id() -> Value {
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_metrics_messages_dropped_id() -> Value {
     Value::from_int(metrics::METRIC_MESSAGES_DROPPED as i64)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_metrics_scene_trace_id() -> Value {
+    Value::from_int(metrics::METRIC_SCENE_TRACE as i64)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_metrics_field_sample_id() -> Value {
+    Value::from_int(metrics::METRIC_FIELD_SAMPLE as i64)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_metrics_scene_trace_support_pruned_branch_id() -> Value {
+    Value::from_int(metrics::METRIC_SCENE_TRACE_SUPPORT_PRUNED_BRANCH as i64)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_metrics_scene_trace_candidate_branch_id() -> Value {
+    Value::from_int(metrics::METRIC_SCENE_TRACE_CANDIDATE_BRANCH as i64)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_metrics_scene_trace_exact_path_id() -> Value {
+    Value::from_int(metrics::METRIC_SCENE_TRACE_EXACT_PATH as i64)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_metrics_scene_trace_conservative_path_id() -> Value {
+    Value::from_int(metrics::METRIC_SCENE_TRACE_CONSERVATIVE_PATH as i64)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_metrics_scene_trace_hit_count_id() -> Value {
+    Value::from_int(metrics::METRIC_SCENE_TRACE_HIT_COUNT as i64)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_metrics_scene_trace_hit_steps_total_id() -> Value {
+    Value::from_int(metrics::METRIC_SCENE_TRACE_HIT_STEPS_TOTAL as i64)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_metrics_scene_trace_hit_field_samples_total_id() -> Value {
+    Value::from_int(metrics::METRIC_SCENE_TRACE_HIT_FIELD_SAMPLES_TOTAL as i64)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_metrics_scene_trace_steps_le_1_id() -> Value {
+    Value::from_int(metrics::METRIC_SCENE_TRACE_STEPS_LE_1 as i64)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_metrics_scene_trace_steps_le_4_id() -> Value {
+    Value::from_int(metrics::METRIC_SCENE_TRACE_STEPS_LE_4 as i64)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_metrics_scene_trace_steps_le_8_id() -> Value {
+    Value::from_int(metrics::METRIC_SCENE_TRACE_STEPS_LE_8 as i64)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_metrics_scene_trace_steps_le_16_id() -> Value {
+    Value::from_int(metrics::METRIC_SCENE_TRACE_STEPS_LE_16 as i64)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_metrics_scene_trace_steps_gt_16_id() -> Value {
+    Value::from_int(metrics::METRIC_SCENE_TRACE_STEPS_GT_16 as i64)
 }
 
 #[unsafe(no_mangle)]

@@ -68,6 +68,20 @@ pub const METRIC_WEB_SENDFILE_FALLBACK: u32 = 56;
 pub const METRIC_REACTOR_BATCH_DRAIN_TOTAL: u32 = 57;
 pub const METRIC_REACTOR_BATCH_DRAIN_SAMPLES: u32 = 58;
 pub const METRIC_SCHED_READY_OVERFLOW_FALLBACK: u32 = 59;
+pub const METRIC_SCENE_TRACE: u32 = 60;
+pub const METRIC_FIELD_SAMPLE: u32 = 61;
+pub const METRIC_SCENE_TRACE_SUPPORT_PRUNED_BRANCH: u32 = 62;
+pub const METRIC_SCENE_TRACE_CANDIDATE_BRANCH: u32 = 63;
+pub const METRIC_SCENE_TRACE_EXACT_PATH: u32 = 64;
+pub const METRIC_SCENE_TRACE_CONSERVATIVE_PATH: u32 = 65;
+pub const METRIC_SCENE_TRACE_HIT_COUNT: u32 = 66;
+pub const METRIC_SCENE_TRACE_HIT_STEPS_TOTAL: u32 = 67;
+pub const METRIC_SCENE_TRACE_HIT_FIELD_SAMPLES_TOTAL: u32 = 68;
+pub const METRIC_SCENE_TRACE_STEPS_LE_1: u32 = 69;
+pub const METRIC_SCENE_TRACE_STEPS_LE_4: u32 = 70;
+pub const METRIC_SCENE_TRACE_STEPS_LE_8: u32 = 71;
+pub const METRIC_SCENE_TRACE_STEPS_LE_16: u32 = 72;
+pub const METRIC_SCENE_TRACE_STEPS_GT_16: u32 = 73;
 const METRIC_COUNT: usize = 96;
 const LATENCY_BUCKETS: [u64; 12] = [
     1_000,
@@ -301,7 +315,7 @@ fn maybe_dump_metrics() {
         format!("{{{body}}}")
     };
     let data = format!(
-        "{{\"messages_sent\":{},\"messages_dropped\":{},\"pending_resolved\":{},\"pending_dropped\":{},\"mailbox_high_water\":{},\"rc_inc\":{},\"rc_dec\":{},\"alloc_list\":{},\"alloc_map\":{},\"alloc_string\":{},\"alloc_bytes\":{},\"alloc_result\":{},\"alloc_pending\":{},\"mailbox_enqueue_ok\":{},\"mailbox_enqueue_fail\":{},\"mailbox_dequeue\":{},\"sched_dispatched\":{},\"sched_skipped_no_credit\":{},\"sched_profile_switch\":{},\"sched_starvation_violation\":{},\"sched_cross_shard_migration\":{},\"abi_typed_lane\":{},\"abi_boxed_lane\":{},\"queue_cas_retry_total\":{},\"mailbox_wake_coalesced_count\":{},\"mailbox_rescue_wake_count\":{},\"sched_local_dispatch_count\":{},\"sched_global_dispatch_count\":{},\"sched_plan_recompute_count\":{},\"sched_steal_attempts\":{},\"sched_steal_success\":{},\"sched_migration_blocked_hysteresis\":{},\"sched_migration_blocked_cooldown\":{},\"sched_ready_overflow_fallback\":{},\"message_build_noargs_count\":{},\"message_build_args_count\":{},\"message_instance_rc_skipped_count\":{},\"message_instance_is_arena_count\":{},\"actor_spawn_instance_is_ptr_count\":{},\"actor_spawn_instance_not_ptr_count\":{},\"actor_spawn_instance_promoted_count\":{},\"actor_spawn_instance_type_id\":{},\"actor_method_panic_count\":{},\"actor_method_missing_count\":{},\"actor_arena_lock_count\":{},\"mailbox_batch_reserve_success\":{},\"mailbox_batch_reserve_failed\":{},\"queue_enqueue_p99_ns\":{},\"queue_dequeue_p99_ns\":{},\"queue_age_p99_ns\":{},\"sched_dispatch_loop_ns_p99\":{},\"queue_burst_drain_avg\":{:.2},\"function_coverage\":{}}}",
+        "{{\"messages_sent\":{},\"messages_dropped\":{},\"pending_resolved\":{},\"pending_dropped\":{},\"mailbox_high_water\":{},\"rc_inc\":{},\"rc_dec\":{},\"alloc_list\":{},\"alloc_map\":{},\"alloc_string\":{},\"alloc_bytes\":{},\"alloc_result\":{},\"alloc_pending\":{},\"mailbox_enqueue_ok\":{},\"mailbox_enqueue_fail\":{},\"mailbox_dequeue\":{},\"sched_dispatched\":{},\"sched_skipped_no_credit\":{},\"sched_profile_switch\":{},\"sched_starvation_violation\":{},\"sched_cross_shard_migration\":{},\"abi_typed_lane\":{},\"abi_boxed_lane\":{},\"queue_cas_retry_total\":{},\"mailbox_wake_coalesced_count\":{},\"mailbox_rescue_wake_count\":{},\"sched_local_dispatch_count\":{},\"sched_global_dispatch_count\":{},\"sched_plan_recompute_count\":{},\"sched_steal_attempts\":{},\"sched_steal_success\":{},\"sched_migration_blocked_hysteresis\":{},\"sched_migration_blocked_cooldown\":{},\"sched_ready_overflow_fallback\":{},\"scene_trace\":{},\"field_sample\":{},\"message_build_noargs_count\":{},\"message_build_args_count\":{},\"message_instance_rc_skipped_count\":{},\"message_instance_is_arena_count\":{},\"actor_spawn_instance_is_ptr_count\":{},\"actor_spawn_instance_not_ptr_count\":{},\"actor_spawn_instance_promoted_count\":{},\"actor_spawn_instance_type_id\":{},\"actor_method_panic_count\":{},\"actor_method_missing_count\":{},\"actor_arena_lock_count\":{},\"mailbox_batch_reserve_success\":{},\"mailbox_batch_reserve_failed\":{},\"queue_enqueue_p99_ns\":{},\"queue_dequeue_p99_ns\":{},\"queue_age_p99_ns\":{},\"sched_dispatch_loop_ns_p99\":{},\"queue_burst_drain_avg\":{:.2},\"function_coverage\":{}}}",
         get(METRIC_MESSAGES_SENT),
         get(METRIC_MESSAGES_DROPPED),
         get(METRIC_PENDING_RESOLVED),
@@ -336,6 +350,8 @@ fn maybe_dump_metrics() {
         get(METRIC_SCHED_MIGRATION_BLOCKED_HYSTERESIS),
         get(METRIC_SCHED_MIGRATION_BLOCKED_COOLDOWN),
         get(METRIC_SCHED_READY_OVERFLOW_FALLBACK),
+        get(METRIC_SCENE_TRACE),
+        get(METRIC_FIELD_SAMPLE),
         get(METRIC_MESSAGE_BUILD_NOARGS),
         get(METRIC_MESSAGE_BUILD_ARGS),
         get(METRIC_MESSAGE_INSTANCE_RC_SKIPPED),
@@ -474,6 +490,30 @@ pub fn inc_sched_migration_blocked_cooldown() {
 }
 pub fn inc_sched_ready_overflow_fallback() {
     bump(METRIC_SCHED_READY_OVERFLOW_FALLBACK)
+}
+pub fn inc_scene_trace() {
+    bump(METRIC_SCENE_TRACE)
+}
+pub fn inc_field_sample() {
+    bump(METRIC_FIELD_SAMPLE)
+}
+pub fn inc_scene_trace_support_pruned_branch() {
+    bump(METRIC_SCENE_TRACE_SUPPORT_PRUNED_BRANCH)
+}
+pub fn inc_scene_trace_candidate_branch() {
+    bump(METRIC_SCENE_TRACE_CANDIDATE_BRANCH)
+}
+pub fn inc_scene_trace_exact_path() {
+    bump(METRIC_SCENE_TRACE_EXACT_PATH)
+}
+pub fn inc_scene_trace_conservative_path() {
+    bump(METRIC_SCENE_TRACE_CONSERVATIVE_PATH)
+}
+pub fn inc_scene_trace_hit(steps: u64, field_samples: u64) {
+    bump(METRIC_SCENE_TRACE_HIT_COUNT);
+    bump_by(METRIC_SCENE_TRACE_HIT_STEPS_TOTAL, steps);
+    bump_by(METRIC_SCENE_TRACE_HIT_FIELD_SAMPLES_TOTAL, field_samples);
+    bump(scene_trace_steps_bucket_id(steps));
 }
 pub fn inc_message_build_noargs() {
     bump(METRIC_MESSAGE_BUILD_NOARGS)
@@ -615,6 +655,16 @@ pub fn update_mailbox_high_water(len: usize) {
     }
 }
 
+fn scene_trace_steps_bucket_id(steps: u64) -> u32 {
+    match steps {
+        0 | 1 => METRIC_SCENE_TRACE_STEPS_LE_1,
+        2..=4 => METRIC_SCENE_TRACE_STEPS_LE_4,
+        5..=8 => METRIC_SCENE_TRACE_STEPS_LE_8,
+        9..=16 => METRIC_SCENE_TRACE_STEPS_LE_16,
+        _ => METRIC_SCENE_TRACE_STEPS_GT_16,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -631,5 +681,62 @@ mod tests {
         assert_eq!(metrics_get_raw(METRIC_SCHED_READY_OVERFLOW_FALLBACK), 1);
         reset();
         assert_eq!(metrics_get_raw(METRIC_SCHED_READY_OVERFLOW_FALLBACK), 0);
+    }
+
+    #[test]
+    fn scene_trace_and_field_sample_metrics_track_and_reset() {
+        let _guard = test_lock().lock().expect("metrics test lock");
+        if !is_enabled() {
+            return;
+        }
+        reset();
+        assert_eq!(metrics_get_raw(METRIC_SCENE_TRACE), 0);
+        assert_eq!(metrics_get_raw(METRIC_FIELD_SAMPLE), 0);
+        inc_scene_trace();
+        inc_scene_trace();
+        inc_field_sample();
+        assert_eq!(metrics_get_raw(METRIC_SCENE_TRACE), 2);
+        assert_eq!(metrics_get_raw(METRIC_FIELD_SAMPLE), 1);
+        reset();
+        assert_eq!(metrics_get_raw(METRIC_SCENE_TRACE), 0);
+        assert_eq!(metrics_get_raw(METRIC_FIELD_SAMPLE), 0);
+    }
+
+    #[test]
+    fn scene_trace_policy_metrics_track_and_reset() {
+        let _guard = test_lock().lock().expect("metrics test lock");
+        if !is_enabled() {
+            return;
+        }
+        reset();
+        inc_scene_trace_support_pruned_branch();
+        inc_scene_trace_candidate_branch();
+        inc_scene_trace_candidate_branch();
+        inc_scene_trace_exact_path();
+        inc_scene_trace_conservative_path();
+        inc_scene_trace_hit(6, 3);
+        assert_eq!(metrics_get_raw(METRIC_SCENE_TRACE_SUPPORT_PRUNED_BRANCH), 1);
+        assert_eq!(metrics_get_raw(METRIC_SCENE_TRACE_CANDIDATE_BRANCH), 2);
+        assert_eq!(metrics_get_raw(METRIC_SCENE_TRACE_EXACT_PATH), 1);
+        assert_eq!(metrics_get_raw(METRIC_SCENE_TRACE_CONSERVATIVE_PATH), 1);
+        assert_eq!(metrics_get_raw(METRIC_SCENE_TRACE_HIT_COUNT), 1);
+        assert_eq!(metrics_get_raw(METRIC_SCENE_TRACE_HIT_STEPS_TOTAL), 6);
+        assert_eq!(
+            metrics_get_raw(METRIC_SCENE_TRACE_HIT_FIELD_SAMPLES_TOTAL),
+            3
+        );
+        assert_eq!(metrics_get_raw(METRIC_SCENE_TRACE_STEPS_LE_8), 1);
+        reset();
+        assert_eq!(metrics_get_raw(METRIC_SCENE_TRACE_SUPPORT_PRUNED_BRANCH), 0);
+        assert_eq!(metrics_get_raw(METRIC_SCENE_TRACE_CANDIDATE_BRANCH), 0);
+        assert_eq!(metrics_get_raw(METRIC_SCENE_TRACE_EXACT_PATH), 0);
+        assert_eq!(metrics_get_raw(METRIC_SCENE_TRACE_CONSERVATIVE_PATH), 0);
+        assert_eq!(metrics_get_raw(METRIC_SCENE_TRACE_HIT_COUNT), 0);
+        assert_eq!(metrics_get_raw(METRIC_SCENE_TRACE_HIT_STEPS_TOTAL), 0);
+        assert_eq!(
+            metrics_get_raw(METRIC_SCENE_TRACE_HIT_FIELD_SAMPLES_TOTAL),
+            0
+        );
+        assert_eq!(metrics_get_raw(METRIC_SCENE_TRACE_STEPS_LE_8), 0);
     }
 }

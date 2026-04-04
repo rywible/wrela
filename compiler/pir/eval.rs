@@ -1,21 +1,23 @@
 use super::ir::{
-    PirBlock, PirCallTarget, PirExpr, PirFunction, PirIntrinsic, PirModule, PirStmt, PirType,
-    PirValue,
+    PirBlock, PirCallTarget, PirExpr, PirFunction, PirIntrinsic, PirModule, PirStmt,
+    PirStructValue, PirType, PirValue,
 };
 use crate::hir::{BinaryOp, UnaryOp};
 use smol_str::SmolStr;
 use std::collections::HashMap;
 use thiserror::Error;
 use wrela_runtime::{
-    Value as RuntimeValue, wr_mat3_add, wr_mat3_component, wr_mat3_div_scalar,
-    wr_mat3_from_columns, wr_mat3_identity, wr_mat3_mul_mat3, wr_mat3_mul_scalar,
-    wr_mat3_mul_vec3, wr_mat3_sub, wr_mat4_add, wr_mat4_component, wr_mat4_div_scalar,
-    wr_mat4_from_columns, wr_mat4_identity, wr_mat4_mul_mat4, wr_mat4_mul_scalar,
-    wr_mat4_mul_vec4, wr_mat4_sub, wr_quat_new, wr_vec2_new, wr_vec3_new, wr_vec4_new,
-    wr_vec_abs, wr_vec_add, wr_vec_ceil, wr_vec_clamp, wr_vec_component, wr_vec_cos, wr_vec_cross,
-    wr_vec_distance, wr_vec_div, wr_vec_dot, wr_vec_floor, wr_vec_fract, wr_vec_length,
-    wr_vec_max, wr_vec_min, wr_vec_mix, wr_vec_mul, wr_vec_normalize, wr_vec_pow, wr_vec_reflect,
-    wr_vec_sign, wr_vec_sin, wr_vec_sqrt, wr_vec_sub,
+    Value as RuntimeValue, wr_box, wr_capsule, wr_cylinder, wr_field_intersection,
+    wr_field_mirror_point, wr_field_repeat_point, wr_field_subtract, wr_field_union, wr_mat3_add,
+    wr_mat3_component, wr_mat3_div_scalar, wr_mat3_from_columns, wr_mat3_identity,
+    wr_mat3_mul_mat3, wr_mat3_mul_scalar, wr_mat3_mul_vec3, wr_mat3_sub, wr_mat4_add,
+    wr_mat4_component, wr_mat4_div_scalar, wr_mat4_from_columns, wr_mat4_identity,
+    wr_mat4_mul_mat4, wr_mat4_mul_scalar, wr_mat4_mul_vec4, wr_mat4_sub, wr_plane, wr_quat_new,
+    wr_sphere, wr_torus, wr_vec_abs, wr_vec_add, wr_vec_ceil, wr_vec_clamp, wr_vec_component,
+    wr_vec_cos, wr_vec_cross, wr_vec_distance, wr_vec_div, wr_vec_dot, wr_vec_floor, wr_vec_fract,
+    wr_vec_length, wr_vec_max, wr_vec_min, wr_vec_mix, wr_vec_mul, wr_vec_normalize, wr_vec_pow,
+    wr_vec_reflect, wr_vec_sign, wr_vec_sin, wr_vec_sqrt, wr_vec_sub, wr_vec2_new, wr_vec3_new,
+    wr_vec4_new,
 };
 
 #[derive(Debug, Error, Clone, PartialEq)]
@@ -33,10 +35,7 @@ pub enum PirExecError {
     #[error("unknown local '{name}'")]
     UnknownLocal { name: SmolStr },
     #[error("type mismatch: expected {expected}, found {found}")]
-    TypeMismatch {
-        expected: String,
-        found: String,
-    },
+    TypeMismatch { expected: String, found: String },
     #[error("unsupported operation: {message}")]
     UnsupportedOperation { message: String },
     #[error("index out of bounds")]
@@ -76,10 +75,13 @@ fn execute_function_inner(
     let mut scopes = vec![HashMap::new()];
     for (param, value) in function.params.iter().zip(args) {
         ensure_matches_type(&value, &param.ty)?;
-        scopes
-            .last_mut()
-            .expect("scope")
-            .insert(param.name.clone(), Variable { value, mutable: false });
+        scopes.last_mut().expect("scope").insert(
+            param.name.clone(),
+            Variable {
+                value,
+                mutable: false,
+            },
+        );
     }
 
     match execute_block(module, &function.body, &mut scopes)? {
@@ -108,10 +110,13 @@ fn execute_block(
             } => {
                 let value = execute_expr(module, value, scopes)?;
                 ensure_matches_type(&value, ty)?;
-                scopes
-                    .last_mut()
-                    .expect("scope")
-                    .insert(name.clone(), Variable { value, mutable: *mutable });
+                scopes.last_mut().expect("scope").insert(
+                    name.clone(),
+                    Variable {
+                        value,
+                        mutable: *mutable,
+                    },
+                );
             }
             PirStmt::Assign { name, value, .. } => {
                 let value = execute_expr(module, value, scopes)?;
@@ -208,13 +213,15 @@ fn execute_expr(
                 .map(|item| execute_expr(module, item, scopes))
                 .collect::<Result<Vec<_>, _>>()?,
         )),
-        PirExpr::StructLiteral { fields, ty, .. } => Ok(PirValue::Struct(super::ir::PirStructValue {
-            ty: ty.clone(),
-            fields: fields
-                .iter()
-                .map(|(name, expr)| Ok((name.clone(), execute_expr(module, expr, scopes)?)))
-                .collect::<Result<Vec<_>, _>>()?,
-        })),
+        PirExpr::StructLiteral { fields, ty, .. } => {
+            Ok(PirValue::Struct(super::ir::PirStructValue {
+                ty: ty.clone(),
+                fields: fields
+                    .iter()
+                    .map(|(name, expr)| Ok((name.clone(), execute_expr(module, expr, scopes)?)))
+                    .collect::<Result<Vec<_>, _>>()?,
+            }))
+        }
     }
 }
 
@@ -362,11 +369,19 @@ fn eval_mul(lhs: PirValue, rhs: PirValue) -> Result<PirValue, PirExecError> {
         | (PirValue::Vec4(_), PirValue::F32(_))
         | (PirValue::Quat(_), PirValue::F32(_)) => eval_runtime_vec_binary(lhs, rhs, wr_vec_mul),
         (PirValue::Mat3(_), PirValue::Vec3(_)) => eval_runtime_mat3_vec(lhs, rhs),
-        (PirValue::Mat3(_), PirValue::Mat3(_)) => eval_runtime_mat3_binary(lhs, rhs, wr_mat3_mul_mat3),
-        (PirValue::Mat3(_), PirValue::F32(_)) => eval_runtime_mat3_scalar(lhs, rhs, wr_mat3_mul_scalar),
+        (PirValue::Mat3(_), PirValue::Mat3(_)) => {
+            eval_runtime_mat3_binary(lhs, rhs, wr_mat3_mul_mat3)
+        }
+        (PirValue::Mat3(_), PirValue::F32(_)) => {
+            eval_runtime_mat3_scalar(lhs, rhs, wr_mat3_mul_scalar)
+        }
         (PirValue::Mat4(_), PirValue::Vec4(_)) => eval_runtime_mat4_vec(lhs, rhs),
-        (PirValue::Mat4(_), PirValue::Mat4(_)) => eval_runtime_mat4_binary(lhs, rhs, wr_mat4_mul_mat4),
-        (PirValue::Mat4(_), PirValue::F32(_)) => eval_runtime_mat4_scalar(lhs, rhs, wr_mat4_mul_scalar),
+        (PirValue::Mat4(_), PirValue::Mat4(_)) => {
+            eval_runtime_mat4_binary(lhs, rhs, wr_mat4_mul_mat4)
+        }
+        (PirValue::Mat4(_), PirValue::F32(_)) => {
+            eval_runtime_mat4_scalar(lhs, rhs, wr_mat4_mul_scalar)
+        }
         _ => Err(PirExecError::UnsupportedOperation {
             message: "mul is not implemented for these operands".to_string(),
         }),
@@ -388,8 +403,12 @@ fn eval_div(lhs: PirValue, rhs: PirValue) -> Result<PirValue, PirExecError> {
         | (PirValue::Vec3(_), PirValue::F32(_))
         | (PirValue::Vec4(_), PirValue::F32(_))
         | (PirValue::Quat(_), PirValue::F32(_)) => eval_runtime_vec_binary(lhs, rhs, wr_vec_div),
-        (PirValue::Mat3(_), PirValue::F32(_)) => eval_runtime_mat3_scalar(lhs, rhs, wr_mat3_div_scalar),
-        (PirValue::Mat4(_), PirValue::F32(_)) => eval_runtime_mat4_scalar(lhs, rhs, wr_mat4_div_scalar),
+        (PirValue::Mat3(_), PirValue::F32(_)) => {
+            eval_runtime_mat3_scalar(lhs, rhs, wr_mat3_div_scalar)
+        }
+        (PirValue::Mat4(_), PirValue::F32(_)) => {
+            eval_runtime_mat4_scalar(lhs, rhs, wr_mat4_div_scalar)
+        }
         _ => Err(PirExecError::UnsupportedOperation {
             message: "div is not implemented for these operands".to_string(),
         }),
@@ -485,14 +504,19 @@ fn eval_member(value: PirValue, member: &SmolStr) -> Result<PirValue, PirExecErr
         PirValue::Vec2(value) => vec_member(&value, member),
         PirValue::Vec3(value) => vec_member(&value, member),
         PirValue::Vec4(value) | PirValue::Quat(value) => vec_member(&value, member),
-        PirValue::Struct(value) => value
-            .field(member)
-            .cloned()
-            .ok_or_else(|| PirExecError::UnsupportedOperation {
-                message: format!("struct field '{}' was not found", member),
-            }),
+        PirValue::Struct(value) => {
+            value
+                .field(member)
+                .cloned()
+                .ok_or_else(|| PirExecError::UnsupportedOperation {
+                    message: format!("struct field '{}' was not found", member),
+                })
+        }
         other => Err(PirExecError::UnsupportedOperation {
-            message: format!("member access is not implemented for {}", value_label(&other)),
+            message: format!(
+                "member access is not implemented for {}",
+                value_label(&other)
+            ),
         }),
     }
 }
@@ -524,7 +548,10 @@ fn vec_member<const N: usize>(
 fn eval_index(base: PirValue, index: PirValue) -> Result<PirValue, PirExecError> {
     let index = value_to_index(&index)?;
     match base {
-        PirValue::Array(items) => items.get(index).cloned().ok_or(PirExecError::IndexOutOfBounds),
+        PirValue::Array(items) => items
+            .get(index)
+            .cloned()
+            .ok_or(PirExecError::IndexOutOfBounds),
         other => Err(PirExecError::UnsupportedOperation {
             message: format!("indexing is not implemented for {}", value_label(&other)),
         }),
@@ -567,9 +594,12 @@ fn eval_intrinsic(
             }),
         },
         PirIntrinsic::Vec4 => match args.as_slice() {
-            [PirValue::F32(x), PirValue::F32(y), PirValue::F32(z), PirValue::F32(w)] => {
-                Ok(PirValue::Vec4([*x, *y, *z, *w]))
-            }
+            [
+                PirValue::F32(x),
+                PirValue::F32(y),
+                PirValue::F32(z),
+                PirValue::F32(w),
+            ] => Ok(PirValue::Vec4([*x, *y, *z, *w])),
             values => Err(PirExecError::TypeMismatch {
                 expected: "Vec4 args".to_string(),
                 found: values
@@ -580,9 +610,12 @@ fn eval_intrinsic(
             }),
         },
         PirIntrinsic::Quat => match args.as_slice() {
-            [PirValue::F32(x), PirValue::F32(y), PirValue::F32(z), PirValue::F32(w)] => {
-                Ok(PirValue::Quat([*x, *y, *z, *w]))
-            }
+            [
+                PirValue::F32(x),
+                PirValue::F32(y),
+                PirValue::F32(z),
+                PirValue::F32(w),
+            ] => Ok(PirValue::Quat([*x, *y, *z, *w])),
             values => Err(PirExecError::TypeMismatch {
                 expected: "Quat args".to_string(),
                 found: values
@@ -611,6 +644,31 @@ fn eval_intrinsic(
             ),
             ty,
         )?),
+        PirIntrinsic::Bounds2Center => eval_bounds_center(args, 2),
+        PirIntrinsic::Bounds2Size => eval_bounds_size(args, 2),
+        PirIntrinsic::Bounds3Center => eval_bounds_center(args, 3),
+        PirIntrinsic::Bounds3Size => eval_bounds_size(args, 3),
+        PirIntrinsic::Transform3Identity => eval_transform3_identity(ty),
+        PirIntrinsic::TransformPoint => eval_transform_point(args),
+        PirIntrinsic::TransformVector => eval_transform_vector(args),
+        PirIntrinsic::TransformNormal => eval_transform_normal(args),
+        PirIntrinsic::ComposeTransform3 => eval_compose_transform3(args, ty),
+        PirIntrinsic::InverseTransform3 => eval_inverse_transform3(args, ty),
+        PirIntrinsic::FieldTransformPoint => eval_field_transform_point(args),
+        PirIntrinsic::FieldInstancePoint => eval_field_transform_point(args),
+        PirIntrinsic::FieldMirrorPoint => runtime_binary_intrinsic(args, ty, wr_field_mirror_point),
+        PirIntrinsic::FieldRepeatPoint => runtime_binary_intrinsic(args, ty, wr_field_repeat_point),
+        PirIntrinsic::Sphere => runtime_binary_intrinsic(args, ty, wr_sphere),
+        PirIntrinsic::Box => runtime_binary_intrinsic(args, ty, wr_box),
+        PirIntrinsic::Capsule => runtime_quaternary_intrinsic(args, ty, wr_capsule),
+        PirIntrinsic::Cylinder => runtime_ternary_intrinsic(args, ty, wr_cylinder),
+        PirIntrinsic::Plane => runtime_ternary_intrinsic(args, ty, wr_plane),
+        PirIntrinsic::Torus => runtime_ternary_intrinsic(args, ty, wr_torus),
+        PirIntrinsic::FieldUnion => runtime_binary_intrinsic(args, ty, wr_field_union),
+        PirIntrinsic::FieldIntersection => {
+            runtime_binary_intrinsic(args, ty, wr_field_intersection)
+        }
+        PirIntrinsic::FieldSubtract => runtime_binary_intrinsic(args, ty, wr_field_subtract),
         PirIntrinsic::Dot => runtime_binary_intrinsic(args, ty, wr_vec_dot),
         PirIntrinsic::Length => runtime_unary_intrinsic(args, ty, wr_vec_length),
         PirIntrinsic::Normalize => runtime_unary_intrinsic(args, ty, wr_vec_normalize),
@@ -630,6 +688,214 @@ fn eval_intrinsic(
         PirIntrinsic::Pow => runtime_binary_intrinsic(args, ty, wr_vec_pow),
         PirIntrinsic::Distance => runtime_binary_intrinsic(args, ty, wr_vec_distance),
         PirIntrinsic::Reflect => runtime_binary_intrinsic(args, ty, wr_vec_reflect),
+    }
+}
+
+fn eval_bounds_center(args: Vec<PirValue>, dims: usize) -> Result<PirValue, PirExecError> {
+    let bounds = expect_bounds_arg(&args, "bounds_center")?;
+    match dims {
+        2 => {
+            let min = expect_vec2_field(bounds, "min")?;
+            let max = expect_vec2_field(bounds, "max")?;
+            Ok(PirValue::Vec2([
+                (min[0] + max[0]) * 0.5,
+                (min[1] + max[1]) * 0.5,
+            ]))
+        }
+        3 => {
+            let min = expect_vec3_field(bounds, "min")?;
+            let max = expect_vec3_field(bounds, "max")?;
+            Ok(PirValue::Vec3([
+                (min[0] + max[0]) * 0.5,
+                (min[1] + max[1]) * 0.5,
+                (min[2] + max[2]) * 0.5,
+            ]))
+        }
+        _ => Err(PirExecError::UnsupportedOperation {
+            message: format!("unsupported bounds arity {dims}"),
+        }),
+    }
+}
+
+fn eval_bounds_size(args: Vec<PirValue>, dims: usize) -> Result<PirValue, PirExecError> {
+    let bounds = expect_bounds_arg(&args, "bounds_size")?;
+    match dims {
+        2 => {
+            let min = expect_vec2_field(bounds, "min")?;
+            let max = expect_vec2_field(bounds, "max")?;
+            Ok(PirValue::Vec2([max[0] - min[0], max[1] - min[1]]))
+        }
+        3 => {
+            let min = expect_vec3_field(bounds, "min")?;
+            let max = expect_vec3_field(bounds, "max")?;
+            Ok(PirValue::Vec3([
+                max[0] - min[0],
+                max[1] - min[1],
+                max[2] - min[2],
+            ]))
+        }
+        _ => Err(PirExecError::UnsupportedOperation {
+            message: format!("unsupported bounds arity {dims}"),
+        }),
+    }
+}
+
+fn eval_transform3_identity(ty: &PirType) -> Result<PirValue, PirExecError> {
+    let identity = [
+        1.0, 0.0, 0.0, 0.0, //
+        0.0, 1.0, 0.0, 0.0, //
+        0.0, 0.0, 1.0, 0.0, //
+        0.0, 0.0, 0.0, 1.0,
+    ];
+    build_transform3_value(ty, identity, identity)
+}
+
+fn eval_transform_point(args: Vec<PirValue>) -> Result<PirValue, PirExecError> {
+    let (transform, point) = expect_transform_and_vec3_args(&args, "transform_point")?;
+    let matrix = expect_mat4_field(transform, "matrix")?;
+    let result = mul_mat4_vec4(matrix, [point[0], point[1], point[2], 1.0]);
+    Ok(PirValue::Vec3([result[0], result[1], result[2]]))
+}
+
+fn eval_field_transform_point(args: Vec<PirValue>) -> Result<PirValue, PirExecError> {
+    match args.as_slice() {
+        [PirValue::Vec3(translation), PirValue::Vec3(point)] => Ok(PirValue::Vec3([
+            point[0] - translation[0],
+            point[1] - translation[1],
+            point[2] - translation[2],
+        ])),
+        [PirValue::Struct(transform), PirValue::Vec3(point)] => {
+            let inverse = expect_mat4_field(transform, "inverse")?;
+            let result = mul_mat4_vec4(inverse, [point[0], point[1], point[2], 1.0]);
+            Ok(PirValue::Vec3([result[0], result[1], result[2]]))
+        }
+        [left, right] => Err(PirExecError::TypeMismatch {
+            expected: "Vec3 or Transform3, Vec3".to_string(),
+            found: format!("{}, {}", value_label(left), value_label(right)),
+        }),
+        values => Err(PirExecError::ArityMismatch {
+            name: SmolStr::new("field_transform_point"),
+            expected: 2,
+            found: values.len(),
+        }),
+    }
+}
+
+fn eval_transform_vector(args: Vec<PirValue>) -> Result<PirValue, PirExecError> {
+    let (transform, vector) = expect_transform_and_vec3_args(&args, "transform_vector")?;
+    let matrix = expect_mat4_field(transform, "matrix")?;
+    let result = mul_mat4_vec4(matrix, [vector[0], vector[1], vector[2], 0.0]);
+    Ok(PirValue::Vec3([result[0], result[1], result[2]]))
+}
+
+fn eval_transform_normal(args: Vec<PirValue>) -> Result<PirValue, PirExecError> {
+    let (transform, normal) = expect_transform_and_vec3_args(&args, "transform_normal")?;
+    let inverse = expect_mat4_field(transform, "inverse")?;
+    let result = mul_mat4_vec4(
+        transpose_mat4(inverse),
+        [normal[0], normal[1], normal[2], 0.0],
+    );
+    Ok(PirValue::Vec3(normalize_vec3([
+        result[0], result[1], result[2],
+    ])))
+}
+
+fn eval_compose_transform3(args: Vec<PirValue>, ty: &PirType) -> Result<PirValue, PirExecError> {
+    match args.as_slice() {
+        [PirValue::Struct(left), PirValue::Struct(right)] => {
+            let left_matrix = expect_mat4_field(left, "matrix")?;
+            let left_inverse = expect_mat4_field(left, "inverse")?;
+            let right_matrix = expect_mat4_field(right, "matrix")?;
+            let right_inverse = expect_mat4_field(right, "inverse")?;
+            build_transform3_value(
+                ty,
+                mul_mat4(left_matrix, right_matrix),
+                mul_mat4(right_inverse, left_inverse),
+            )
+        }
+        [left, right] => Err(PirExecError::TypeMismatch {
+            expected: "Transform3, Transform3".to_string(),
+            found: format!("{}, {}", value_label(left), value_label(right)),
+        }),
+        values => Err(PirExecError::ArityMismatch {
+            name: SmolStr::new("compose_transform3"),
+            expected: 2,
+            found: values.len(),
+        }),
+    }
+}
+
+fn eval_inverse_transform3(args: Vec<PirValue>, ty: &PirType) -> Result<PirValue, PirExecError> {
+    let transform = expect_transform3_arg(&args, "inverse_transform3")?;
+    let matrix = expect_mat4_field(transform, "matrix")?;
+    let inverse = expect_mat4_field(transform, "inverse")?;
+    build_transform3_value(ty, inverse, matrix)
+}
+
+fn build_transform3_value(
+    ty: &PirType,
+    matrix: [f32; 16],
+    inverse: [f32; 16],
+) -> Result<PirValue, PirExecError> {
+    Ok(PirValue::Struct(PirStructValue {
+        ty: ty.clone(),
+        fields: vec![
+            (SmolStr::new("matrix"), PirValue::Mat4(matrix)),
+            (SmolStr::new("inverse"), PirValue::Mat4(inverse)),
+        ],
+    }))
+}
+
+fn mul_mat4(left: [f32; 16], right: [f32; 16]) -> [f32; 16] {
+    let mut out = [0.0; 16];
+    for column in 0..4 {
+        for row in 0..4 {
+            out[column * 4 + row] = left[row] * right[column * 4]
+                + left[4 + row] * right[column * 4 + 1]
+                + left[8 + row] * right[column * 4 + 2]
+                + left[12 + row] * right[column * 4 + 3];
+        }
+    }
+    out
+}
+
+fn mul_mat4_vec4(matrix: [f32; 16], vector: [f32; 4]) -> [f32; 4] {
+    [
+        matrix[0] * vector[0]
+            + matrix[4] * vector[1]
+            + matrix[8] * vector[2]
+            + matrix[12] * vector[3],
+        matrix[1] * vector[0]
+            + matrix[5] * vector[1]
+            + matrix[9] * vector[2]
+            + matrix[13] * vector[3],
+        matrix[2] * vector[0]
+            + matrix[6] * vector[1]
+            + matrix[10] * vector[2]
+            + matrix[14] * vector[3],
+        matrix[3] * vector[0]
+            + matrix[7] * vector[1]
+            + matrix[11] * vector[2]
+            + matrix[15] * vector[3],
+    ]
+}
+
+fn transpose_mat4(matrix: [f32; 16]) -> [f32; 16] {
+    let mut out = [0.0; 16];
+    for column in 0..4 {
+        for row in 0..4 {
+            out[row * 4 + column] = matrix[column * 4 + row];
+        }
+    }
+    out
+}
+
+fn normalize_vec3(vector: [f32; 3]) -> [f32; 3] {
+    let length = (vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]).sqrt();
+    if length == 0.0 {
+        [0.0, 0.0, 0.0]
+    } else {
+        [vector[0] / length, vector[1] / length, vector[2] / length]
     }
 }
 
@@ -674,7 +940,10 @@ fn runtime_binary_intrinsic(
 ) -> Result<PirValue, PirExecError> {
     match args.as_slice() {
         [left, right] => runtime_value_to_pir(
-            f(runtime_value_from_pir(left)?, runtime_value_from_pir(right)?),
+            f(
+                runtime_value_from_pir(left)?,
+                runtime_value_from_pir(right)?,
+            ),
             ty,
         ),
         values => Err(PirExecError::ArityMismatch {
@@ -707,13 +976,132 @@ fn runtime_ternary_intrinsic(
     }
 }
 
+fn runtime_quaternary_intrinsic(
+    args: Vec<PirValue>,
+    ty: &PirType,
+    f: extern "C" fn(RuntimeValue, RuntimeValue, RuntimeValue, RuntimeValue) -> RuntimeValue,
+) -> Result<PirValue, PirExecError> {
+    match args.as_slice() {
+        [a, b, c, d] => runtime_value_to_pir(
+            f(
+                runtime_value_from_pir(a)?,
+                runtime_value_from_pir(b)?,
+                runtime_value_from_pir(c)?,
+                runtime_value_from_pir(d)?,
+            ),
+            ty,
+        ),
+        values => Err(PirExecError::ArityMismatch {
+            name: SmolStr::new("intrinsic"),
+            expected: 4,
+            found: values.len(),
+        }),
+    }
+}
+
+fn expect_transform3_arg<'a>(
+    args: &'a [PirValue],
+    name: &str,
+) -> Result<&'a PirStructValue, PirExecError> {
+    match args {
+        [PirValue::Struct(value)] => Ok(value),
+        [value] => Err(PirExecError::TypeMismatch {
+            expected: format!("{name} expects Transform3"),
+            found: value_label(value),
+        }),
+        values => Err(PirExecError::ArityMismatch {
+            name: SmolStr::new(name),
+            expected: 1,
+            found: values.len(),
+        }),
+    }
+}
+
+fn expect_bounds_arg<'a>(
+    args: &'a [PirValue],
+    name: &str,
+) -> Result<&'a PirStructValue, PirExecError> {
+    match args {
+        [PirValue::Struct(value)] => Ok(value),
+        [value] => Err(PirExecError::TypeMismatch {
+            expected: format!("{name} expects bounds struct"),
+            found: value_label(value),
+        }),
+        values => Err(PirExecError::ArityMismatch {
+            name: SmolStr::new(name),
+            expected: 1,
+            found: values.len(),
+        }),
+    }
+}
+
+fn expect_transform_and_vec3_args<'a>(
+    args: &'a [PirValue],
+    name: &str,
+) -> Result<(&'a PirStructValue, &'a [f32; 3]), PirExecError> {
+    match args {
+        [PirValue::Struct(transform), PirValue::Vec3(value)] => Ok((transform, value)),
+        [left, right] => Err(PirExecError::TypeMismatch {
+            expected: format!("{name} expects Transform3 and Vec3"),
+            found: format!("{}, {}", value_label(left), value_label(right)),
+        }),
+        values => Err(PirExecError::ArityMismatch {
+            name: SmolStr::new(name),
+            expected: 2,
+            found: values.len(),
+        }),
+    }
+}
+
+fn expect_vec2_field(value: &PirStructValue, field: &str) -> Result<[f32; 2], PirExecError> {
+    match value.field(field) {
+        Some(PirValue::Vec2(vector)) => Ok(*vector),
+        Some(other) => Err(PirExecError::TypeMismatch {
+            expected: format!("{field}: Vec2"),
+            found: value_label(other),
+        }),
+        None => Err(PirExecError::UnsupportedOperation {
+            message: format!("missing field '{field}'"),
+        }),
+    }
+}
+
+fn expect_vec3_field(value: &PirStructValue, field: &str) -> Result<[f32; 3], PirExecError> {
+    match value.field(field) {
+        Some(PirValue::Vec3(vector)) => Ok(*vector),
+        Some(other) => Err(PirExecError::TypeMismatch {
+            expected: format!("{field}: Vec3"),
+            found: value_label(other),
+        }),
+        None => Err(PirExecError::UnsupportedOperation {
+            message: format!("missing field '{field}'"),
+        }),
+    }
+}
+
+fn expect_mat4_field(value: &PirStructValue, field: &str) -> Result<[f32; 16], PirExecError> {
+    match value.field(field) {
+        Some(PirValue::Mat4(matrix)) => Ok(*matrix),
+        Some(other) => Err(PirExecError::TypeMismatch {
+            expected: format!("{field}: Mat4"),
+            found: value_label(other),
+        }),
+        None => Err(PirExecError::UnsupportedOperation {
+            message: format!("missing field '{field}'"),
+        }),
+    }
+}
+
 fn eval_runtime_vec_binary(
     lhs: PirValue,
     rhs: PirValue,
     f: extern "C" fn(RuntimeValue, RuntimeValue) -> RuntimeValue,
 ) -> Result<PirValue, PirExecError> {
     let ty = lhs.ty().clone();
-    runtime_value_to_pir(f(runtime_value_from_pir(&lhs)?, runtime_value_from_pir(&rhs)?), &ty)
+    runtime_value_to_pir(
+        f(runtime_value_from_pir(&lhs)?, runtime_value_from_pir(&rhs)?),
+        &ty,
+    )
 }
 
 fn eval_runtime_mat3_binary(
@@ -721,7 +1109,10 @@ fn eval_runtime_mat3_binary(
     rhs: PirValue,
     f: extern "C" fn(RuntimeValue, RuntimeValue) -> RuntimeValue,
 ) -> Result<PirValue, PirExecError> {
-    runtime_value_to_pir(f(runtime_value_from_pir(&lhs)?, runtime_value_from_pir(&rhs)?), &PirType::Mat3)
+    runtime_value_to_pir(
+        f(runtime_value_from_pir(&lhs)?, runtime_value_from_pir(&rhs)?),
+        &PirType::Mat3,
+    )
 }
 
 fn eval_runtime_mat4_binary(
@@ -729,7 +1120,10 @@ fn eval_runtime_mat4_binary(
     rhs: PirValue,
     f: extern "C" fn(RuntimeValue, RuntimeValue) -> RuntimeValue,
 ) -> Result<PirValue, PirExecError> {
-    runtime_value_to_pir(f(runtime_value_from_pir(&lhs)?, runtime_value_from_pir(&rhs)?), &PirType::Mat4)
+    runtime_value_to_pir(
+        f(runtime_value_from_pir(&lhs)?, runtime_value_from_pir(&rhs)?),
+        &PirType::Mat4,
+    )
 }
 
 fn eval_runtime_mat3_vec(lhs: PirValue, rhs: PirValue) -> Result<PirValue, PirExecError> {
@@ -751,7 +1145,10 @@ fn eval_runtime_mat3_scalar(
     rhs: PirValue,
     f: extern "C" fn(RuntimeValue, RuntimeValue) -> RuntimeValue,
 ) -> Result<PirValue, PirExecError> {
-    runtime_value_to_pir(f(runtime_value_from_pir(&lhs)?, runtime_value_from_pir(&rhs)?), &PirType::Mat3)
+    runtime_value_to_pir(
+        f(runtime_value_from_pir(&lhs)?, runtime_value_from_pir(&rhs)?),
+        &PirType::Mat3,
+    )
 }
 
 fn eval_runtime_mat4_scalar(
@@ -759,7 +1156,10 @@ fn eval_runtime_mat4_scalar(
     rhs: PirValue,
     f: extern "C" fn(RuntimeValue, RuntimeValue) -> RuntimeValue,
 ) -> Result<PirValue, PirExecError> {
-    runtime_value_to_pir(f(runtime_value_from_pir(&lhs)?, runtime_value_from_pir(&rhs)?), &PirType::Mat4)
+    runtime_value_to_pir(
+        f(runtime_value_from_pir(&lhs)?, runtime_value_from_pir(&rhs)?),
+        &PirType::Mat4,
+    )
 }
 
 fn runtime_value_from_pir(value: &PirValue) -> Result<RuntimeValue, PirExecError> {

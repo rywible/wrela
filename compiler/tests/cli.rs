@@ -6982,7 +6982,10 @@ fn cli_test_json_naming_warning_paths_point_to_original_spec_files() {
     )
     .expect("write main");
     write_fixture_file(
-        dir.path().join("tests").join("spec").join("counter_test.wr"),
+        dir.path()
+            .join("tests")
+            .join("spec")
+            .join("counter_test.wr"),
         r#"class Counter {
     count: Integer
 }

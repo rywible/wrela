@@ -3808,11 +3808,25 @@ fn runtime_fn_cast_i32(
     runtime_fn_symbol(module, runtime, "wr_cast_i32", &[types::I64], &[types::I64])
 }
 
+fn runtime_fn_cast_i64(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    runtime_fn_symbol(module, runtime, "wr_cast_i64", &[types::I64], &[types::I64])
+}
+
 fn runtime_fn_cast_u32(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
 ) -> Result<cranelift_module::FuncId, CodegenError> {
     runtime_fn_symbol(module, runtime, "wr_cast_u32", &[types::I64], &[types::I64])
+}
+
+fn runtime_fn_cast_u64(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    runtime_fn_symbol(module, runtime, "wr_cast_u64", &[types::I64], &[types::I64])
 }
 
 fn runtime_fn_math_unary(
@@ -3847,6 +3861,56 @@ fn runtime_fn_math_ternary(
         runtime,
         symbol,
         &[types::I64, types::I64, types::I64],
+        &[types::I64],
+    )
+}
+
+fn runtime_fn_value_unary(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+    symbol: &'static str,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    runtime_fn_symbol(module, runtime, symbol, &[types::I64], &[types::I64])
+}
+
+fn runtime_fn_value_binary(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+    symbol: &'static str,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    runtime_fn_symbol(
+        module,
+        runtime,
+        symbol,
+        &[types::I64, types::I64],
+        &[types::I64],
+    )
+}
+
+fn runtime_fn_value_ternary(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+    symbol: &'static str,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    runtime_fn_symbol(
+        module,
+        runtime,
+        symbol,
+        &[types::I64, types::I64, types::I64],
+        &[types::I64],
+    )
+}
+
+fn runtime_fn_value_quaternary(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+    symbol: &'static str,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    runtime_fn_symbol(
+        module,
+        runtime,
+        symbol,
+        &[types::I64, types::I64, types::I64, types::I64],
         &[types::I64],
     )
 }
@@ -4006,6 +4070,96 @@ fn runtime_builtin_func_id(
         "pow" => Some(runtime_fn_math_binary(module, runtime, "wr_vec_pow")?),
         "distance" => Some(runtime_fn_math_binary(module, runtime, "wr_vec_distance")?),
         "reflect" => Some(runtime_fn_math_binary(module, runtime, "wr_vec_reflect")?),
+        "bounds2_center" => Some(runtime_fn_value_unary(
+            module,
+            runtime,
+            "wr_bounds2_center",
+        )?),
+        "bounds2_size" => Some(runtime_fn_value_unary(module, runtime, "wr_bounds2_size")?),
+        "bounds3_center" => Some(runtime_fn_value_unary(
+            module,
+            runtime,
+            "wr_bounds3_center",
+        )?),
+        "bounds3_size" => Some(runtime_fn_value_unary(module, runtime, "wr_bounds3_size")?),
+        "transform3_identity" => Some(runtime_fn_value_unary(
+            module,
+            runtime,
+            "wr_transform3_identity",
+        )?),
+        "repeat_point" => Some(runtime_fn_value_binary(module, runtime, "wr_repeat_point")?),
+        "transform_point" => Some(runtime_fn_value_binary(
+            module,
+            runtime,
+            "wr_transform_point",
+        )?),
+        "field_transform_point" => Some(runtime_fn_value_binary(
+            module,
+            runtime,
+            "wr_field_transform_point",
+        )?),
+        "field_instance_point" => Some(runtime_fn_value_binary(
+            module,
+            runtime,
+            "wr_field_instance_point",
+        )?),
+        "field_mirror_point" => Some(runtime_fn_value_binary(
+            module,
+            runtime,
+            "wr_field_mirror_point",
+        )?),
+        "field_repeat_point" => Some(runtime_fn_value_binary(
+            module,
+            runtime,
+            "wr_field_repeat_point",
+        )?),
+        "transform_vector" => Some(runtime_fn_value_binary(
+            module,
+            runtime,
+            "wr_transform_vector",
+        )?),
+        "transform_normal" => Some(runtime_fn_value_binary(
+            module,
+            runtime,
+            "wr_transform_normal",
+        )?),
+        "compose_transform3" => Some(runtime_fn_value_ternary(
+            module,
+            runtime,
+            "wr_compose_transform3",
+        )?),
+        "inverse_transform3" => Some(runtime_fn_value_binary(
+            module,
+            runtime,
+            "wr_inverse_transform3",
+        )?),
+        "sphere" | "__wr_primitive_sphere" => {
+            Some(runtime_fn_value_binary(module, runtime, "wr_sphere")?)
+        }
+        "box" | "__wr_primitive_box" => Some(runtime_fn_value_binary(module, runtime, "wr_box")?),
+        "capsule" | "__wr_primitive_capsule" => {
+            Some(runtime_fn_value_quaternary(module, runtime, "wr_capsule")?)
+        }
+        "cylinder" | "__wr_primitive_cylinder" => {
+            Some(runtime_fn_value_ternary(module, runtime, "wr_cylinder")?)
+        }
+        "plane" | "__wr_primitive_plane" => {
+            Some(runtime_fn_value_ternary(module, runtime, "wr_plane")?)
+        }
+        "torus" | "__wr_primitive_torus" => {
+            Some(runtime_fn_value_ternary(module, runtime, "wr_torus")?)
+        }
+        "field_union" => Some(runtime_fn_value_binary(module, runtime, "wr_field_union")?),
+        "field_intersection" => Some(runtime_fn_value_binary(
+            module,
+            runtime,
+            "wr_field_intersection",
+        )?),
+        "field_subtract" => Some(runtime_fn_value_binary(
+            module,
+            runtime,
+            "wr_field_subtract",
+        )?),
         "gpu_buffer_new" => Some(runtime_fn_gpu_buffer_new(module, runtime)?),
         "gpu_buffer_len" => Some(runtime_fn_gpu_buffer_len(module, runtime)?),
         "gpu_buffer_get" => Some(runtime_fn_gpu_buffer_get(module, runtime)?),
@@ -4134,7 +4288,9 @@ fn runtime_builtin_func_id(
         "__wr_gpu_dispatch_end" => Some(runtime_fn_gpu_dispatch_end(module, runtime)?),
         "f32" => Some(runtime_fn_cast_f32(module, runtime)?),
         "i32" => Some(runtime_fn_cast_i32(module, runtime)?),
+        "i64" => Some(runtime_fn_cast_i64(module, runtime)?),
         "u32" => Some(runtime_fn_cast_u32(module, runtime)?),
+        "u64" => Some(runtime_fn_cast_u64(module, runtime)?),
         "assert_value_equality" => Some(runtime_fn_assert_value_equality(module, runtime)?),
         "__wr_map_new" => Some(runtime_fn_map_new(module, runtime)?),
         "__wr_map_new_local" => Some(runtime_fn_map_new_local(module, runtime)?),
@@ -4154,6 +4310,76 @@ fn runtime_builtin_func_id(
         "__wr_bytes_to_string" => Some(runtime_fn_bytes_to_string(module, runtime)?),
         "__wr_bytes_to_list" => Some(runtime_fn_bytes_to_list(module, runtime)?),
         "__wr_bytes_len" => Some(runtime_fn_bytes_len(module, runtime)?),
+        "__wr_metrics_get" => Some(runtime_fn_metrics_get(module, runtime)?),
+        "__wr_metrics_dropped_paused_id" => {
+            Some(runtime_fn_metrics_dropped_paused_id(module, runtime)?)
+        }
+        "__wr_metrics_messages_dropped_id" => {
+            Some(runtime_fn_metrics_messages_dropped_id(module, runtime)?)
+        }
+        "__wr_metrics_scene_trace" => Some(runtime_fn_metrics_scene_trace(module, runtime)?),
+        "__wr_metrics_field_sample" => Some(runtime_fn_metrics_field_sample(module, runtime)?),
+        "__wr_metrics_scene_trace_support_pruned_branch" => Some(
+            runtime_fn_metrics_scene_trace_support_pruned_branch(module, runtime)?,
+        ),
+        "__wr_metrics_scene_trace_candidate_branch" => Some(
+            runtime_fn_metrics_scene_trace_candidate_branch(module, runtime)?,
+        ),
+        "__wr_metrics_scene_trace_exact_path" => {
+            Some(runtime_fn_metrics_scene_trace_exact_path(module, runtime)?)
+        }
+        "__wr_metrics_scene_trace_conservative_path" => Some(
+            runtime_fn_metrics_scene_trace_conservative_path(module, runtime)?,
+        ),
+        "__wr_metrics_scene_trace_hit" => {
+            Some(runtime_fn_metrics_scene_trace_hit(module, runtime)?)
+        }
+        "__wr_metrics_scene_trace_id" => Some(runtime_fn_metrics_scene_trace_id(module, runtime)?),
+        "__wr_metrics_field_sample_id" => {
+            Some(runtime_fn_metrics_field_sample_id(module, runtime)?)
+        }
+        "__wr_metrics_scene_trace_support_pruned_branch_id" => Some(
+            runtime_fn_metrics_scene_trace_support_pruned_branch_id(module, runtime)?,
+        ),
+        "__wr_metrics_scene_trace_candidate_branch_id" => Some(
+            runtime_fn_metrics_scene_trace_candidate_branch_id(module, runtime)?,
+        ),
+        "__wr_metrics_scene_trace_exact_path_id" => Some(
+            runtime_fn_metrics_scene_trace_exact_path_id(module, runtime)?,
+        ),
+        "__wr_metrics_scene_trace_conservative_path_id" => Some(
+            runtime_fn_metrics_scene_trace_conservative_path_id(module, runtime)?,
+        ),
+        "__wr_metrics_scene_trace_hit_count_id" => Some(
+            runtime_fn_metrics_scene_trace_hit_count_id(module, runtime)?,
+        ),
+        "__wr_metrics_scene_trace_hit_steps_total_id" => Some(
+            runtime_fn_metrics_scene_trace_hit_steps_total_id(module, runtime)?,
+        ),
+        "__wr_metrics_scene_trace_hit_field_samples_total_id" => Some(
+            runtime_fn_metrics_scene_trace_hit_field_samples_total_id(module, runtime)?,
+        ),
+        "__wr_metrics_scene_trace_steps_le_1_id" => Some(
+            runtime_fn_metrics_scene_trace_steps_le_1_id(module, runtime)?,
+        ),
+        "__wr_metrics_scene_trace_steps_le_4_id" => Some(
+            runtime_fn_metrics_scene_trace_steps_le_4_id(module, runtime)?,
+        ),
+        "__wr_metrics_scene_trace_steps_le_8_id" => Some(
+            runtime_fn_metrics_scene_trace_steps_le_8_id(module, runtime)?,
+        ),
+        "__wr_metrics_scene_trace_steps_le_16_id" => Some(
+            runtime_fn_metrics_scene_trace_steps_le_16_id(module, runtime)?,
+        ),
+        "__wr_metrics_scene_trace_steps_gt_16_id" => Some(
+            runtime_fn_metrics_scene_trace_steps_gt_16_id(module, runtime)?,
+        ),
+        "__wr_metrics_web_writev_calls_id" => {
+            Some(runtime_fn_metrics_web_writev_calls_id(module, runtime)?)
+        }
+        "__wr_metrics_web_sendfile_calls_id" => {
+            Some(runtime_fn_metrics_web_sendfile_calls_id(module, runtime)?)
+        }
         _ => None,
     };
     Ok(func_id)
@@ -4670,6 +4896,182 @@ fn runtime_fn_metrics_messages_dropped_id(
 ) -> Result<cranelift_module::FuncId, CodegenError> {
     let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
     runtime.get_func(module, "wr_metrics_messages_dropped_id", sig)
+}
+
+fn runtime_fn_metrics_scene_trace(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(module, "wr_metrics_scene_trace", sig)
+}
+
+fn runtime_fn_metrics_field_sample(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(module, "wr_metrics_field_sample", sig)
+}
+
+fn runtime_fn_metrics_scene_trace_support_pruned_branch(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(module, "wr_metrics_scene_trace_support_pruned_branch", sig)
+}
+
+fn runtime_fn_metrics_scene_trace_candidate_branch(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(module, "wr_metrics_scene_trace_candidate_branch", sig)
+}
+
+fn runtime_fn_metrics_scene_trace_exact_path(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(module, "wr_metrics_scene_trace_exact_path", sig)
+}
+
+fn runtime_fn_metrics_scene_trace_conservative_path(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(module, "wr_metrics_scene_trace_conservative_path", sig)
+}
+
+fn runtime_fn_metrics_scene_trace_hit(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[types::I64, types::I64], &[types::I64]);
+    runtime.get_func(module, "wr_metrics_scene_trace_hit", sig)
+}
+
+fn runtime_fn_metrics_scene_trace_id(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(module, "wr_metrics_scene_trace_id", sig)
+}
+
+fn runtime_fn_metrics_field_sample_id(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(module, "wr_metrics_field_sample_id", sig)
+}
+
+fn runtime_fn_metrics_scene_trace_support_pruned_branch_id(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(
+        module,
+        "wr_metrics_scene_trace_support_pruned_branch_id",
+        sig,
+    )
+}
+
+fn runtime_fn_metrics_scene_trace_candidate_branch_id(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(module, "wr_metrics_scene_trace_candidate_branch_id", sig)
+}
+
+fn runtime_fn_metrics_scene_trace_exact_path_id(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(module, "wr_metrics_scene_trace_exact_path_id", sig)
+}
+
+fn runtime_fn_metrics_scene_trace_conservative_path_id(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(module, "wr_metrics_scene_trace_conservative_path_id", sig)
+}
+
+fn runtime_fn_metrics_scene_trace_hit_count_id(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(module, "wr_metrics_scene_trace_hit_count_id", sig)
+}
+
+fn runtime_fn_metrics_scene_trace_hit_steps_total_id(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(module, "wr_metrics_scene_trace_hit_steps_total_id", sig)
+}
+
+fn runtime_fn_metrics_scene_trace_hit_field_samples_total_id(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(
+        module,
+        "wr_metrics_scene_trace_hit_field_samples_total_id",
+        sig,
+    )
+}
+
+fn runtime_fn_metrics_scene_trace_steps_le_1_id(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(module, "wr_metrics_scene_trace_steps_le_1_id", sig)
+}
+
+fn runtime_fn_metrics_scene_trace_steps_le_4_id(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(module, "wr_metrics_scene_trace_steps_le_4_id", sig)
+}
+
+fn runtime_fn_metrics_scene_trace_steps_le_8_id(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(module, "wr_metrics_scene_trace_steps_le_8_id", sig)
+}
+
+fn runtime_fn_metrics_scene_trace_steps_le_16_id(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(module, "wr_metrics_scene_trace_steps_le_16_id", sig)
+}
+
+fn runtime_fn_metrics_scene_trace_steps_gt_16_id(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(module, "wr_metrics_scene_trace_steps_gt_16_id", sig)
 }
 
 fn runtime_fn_metrics_web_writev_calls_id(

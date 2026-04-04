@@ -15,3 +15,73 @@ fn get_dropped_paused_id() -> Integer {
 fn get_messages_dropped_id() -> Integer {
     return __wr_metrics_messages_dropped_id()
 }
+
+// Metric id for scene trace calls.
+fn get_scene_trace_id() -> Integer {
+    return __wr_metrics_scene_trace_id()
+}
+
+// Metric id for field sample calls.
+fn get_field_sample_id() -> Integer {
+    return __wr_metrics_field_sample_id()
+}
+
+// Metric id for support-pruned branches.
+fn get_scene_trace_support_pruned_branch_id() -> Integer {
+    return __wr_metrics_scene_trace_support_pruned_branch_id()
+}
+
+// Metric id for candidate branches visited.
+fn get_scene_trace_candidate_branch_id() -> Integer {
+    return __wr_metrics_scene_trace_candidate_branch_id()
+}
+
+// Metric id for exact-path traces.
+fn get_scene_trace_exact_path_id() -> Integer {
+    return __wr_metrics_scene_trace_exact_path_id()
+}
+
+// Metric id for conservative-path traces.
+fn get_scene_trace_conservative_path_id() -> Integer {
+    return __wr_metrics_scene_trace_conservative_path_id()
+}
+
+// Metric id for successful hits.
+fn get_scene_trace_hit_count_id() -> Integer {
+    return __wr_metrics_scene_trace_hit_count_id()
+}
+
+// Metric id for total steps on successful hits.
+fn get_scene_trace_hit_steps_total_id() -> Integer {
+    return __wr_metrics_scene_trace_hit_steps_total_id()
+}
+
+// Metric id for total field samples on successful hits.
+fn get_scene_trace_hit_field_samples_total_id() -> Integer {
+    return __wr_metrics_scene_trace_hit_field_samples_total_id()
+}
+
+// Metric id for hit step histogram buckets.
+fn get_scene_trace_steps_le_1_id() -> Integer {
+    return __wr_metrics_scene_trace_steps_le_1_id()
+}
+
+// Metric id for hit step histogram buckets.
+fn get_scene_trace_steps_le_4_id() -> Integer {
+    return __wr_metrics_scene_trace_steps_le_4_id()
+}
+
+// Metric id for hit step histogram buckets.
+fn get_scene_trace_steps_le_8_id() -> Integer {
+    return __wr_metrics_scene_trace_steps_le_8_id()
+}
+
+// Metric id for hit step histogram buckets.
+fn get_scene_trace_steps_le_16_id() -> Integer {
+    return __wr_metrics_scene_trace_steps_le_16_id()
+}
+
+// Metric id for hit step histogram buckets.
+fn get_scene_trace_steps_gt_16_id() -> Integer {
+    return __wr_metrics_scene_trace_steps_gt_16_id()
+}

@@ -1,8 +1,8 @@
 #![allow(unused_assignments)]
 
 use crate::hir::{
-    Body, Class, Expr, Function, FunctionKind, Idx, InterfaceMethodKind, MatchCase, Module,
-    Pattern, Stmt, TypeRef,
+    Body, Class, Expr, Function, FunctionKind, FunctionRole, Idx, InterfaceMethodKind, MatchCase,
+    Module, Pattern, Stmt, TypeRef,
 };
 use crate::hir::{Type, TypeInfo};
 use miette::{Diagnostic, SourceSpan};
@@ -307,44 +307,61 @@ impl<'a> Checker<'a> {
         let is_bypass = is_bypass_name(func.name.as_str());
 
         if !is_bypass {
-            let kind = function_kind_label(func.kind);
+            let kind = match func.role {
+                FunctionRole::Field => "field",
+                FunctionRole::Material => "material",
+                _ => function_kind_label(func.kind),
+            };
             self.check_snake(kind, &func.name, func.name_span);
 
-            match func.kind {
-                FunctionKind::Function | FunctionKind::Method | FunctionKind::Derived => {
-                    if !is_verb_led(func.name.as_str()) {
-                        self.errors.push(NamingError::VerbLedRequired {
+            match func.role {
+                FunctionRole::Field | FunctionRole::Material => {
+                    if is_verb_led(func.name.as_str()) {
+                        self.errors.push(NamingError::NounOnlyRequired {
                             kind,
                             name: func.name.clone(),
                             span: span_from_option(func.name_span),
                         });
                     }
                 }
-                FunctionKind::Check => {
-                    let name = func.name.as_str();
-                    let has_subject_predicate = name.contains("_is_") || name.contains("_has_");
-                    if !has_subject_predicate || starts_with_is_or_has(name) {
-                        self.errors.push(NamingError::TopLevelCheckName {
-                            name: func.name.clone(),
-                            span: span_from_option(func.name_span),
-                        });
+                _ => match func.kind {
+                    FunctionKind::Function | FunctionKind::Method | FunctionKind::Derived => {
+                        if !is_verb_led(func.name.as_str()) {
+                            self.errors.push(NamingError::VerbLedRequired {
+                                kind,
+                                name: func.name.clone(),
+                                span: span_from_option(func.name_span),
+                            });
+                        }
                     }
-                }
-                FunctionKind::CheckMethod => {
-                    if !starts_with_is_or_has(func.name.as_str()) {
-                        self.errors.push(NamingError::MemberCheckPrefix {
-                            name: func.name.clone(),
-                            span: span_from_option(func.name_span),
-                        });
+                    FunctionKind::Check => {
+                        let name = func.name.as_str();
+                        let has_subject_predicate = name.contains("_is_") || name.contains("_has_");
+                        if !has_subject_predicate || starts_with_is_or_has(name) {
+                            self.errors.push(NamingError::TopLevelCheckName {
+                                name: func.name.clone(),
+                                span: span_from_option(func.name_span),
+                            });
+                        }
                     }
-                }
+                    FunctionKind::CheckMethod => {
+                        if !starts_with_is_or_has(func.name.as_str()) {
+                            self.errors.push(NamingError::MemberCheckPrefix {
+                                name: func.name.clone(),
+                                span: span_from_option(func.name_span),
+                            });
+                        }
+                    }
+                },
             }
         }
 
         self.check_params(Some(func_id), &func.params, "parameter");
         if let Some(ret) = &func.ret_type {
             self.check_result_error_type_names(ret);
-            self.check_return_name_rules(func, ret, is_class_scope);
+            if !matches!(func.role, FunctionRole::Field | FunctionRole::Material) {
+                self.check_return_name_rules(func, ret, is_class_scope);
+            }
         }
 
         if let Some(body) = &func.body {
@@ -1248,6 +1265,20 @@ mod tests {
                 .iter()
                 .any(|err| matches!(err, NamingError::SnakeCaseRequired { kind, name, .. } if *kind == "function" && name == "helperThing"))
         );
+    }
+
+    #[test]
+    fn enforces_material_snake_and_noun_only() {
+        let errors = naming_errors(
+            "material render_surface(hit: Hit3) -> Surface {\n    return Surface(albedo=vec3(0.2, 0.4, 0.6), roughness=0.5, metalness=0.1, clearcoat=0.25, clearcoat_roughness=0.3, sheen=0.15, emissive=vec3(1.0, 0.0, 0.0))\n}\n",
+        );
+        assert!(errors.iter().any(|err| {
+            matches!(
+                err,
+                NamingError::NounOnlyRequired { kind, name, .. }
+                    if *kind == "material" && name == "render_surface"
+            )
+        }));
     }
 
     #[test]

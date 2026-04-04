@@ -1372,6 +1372,7 @@ fn clone_small_hot_functions(module: &mut MirModule, graph: &CallGraph) {
     for func in &module.functions {
         func_map.insert(func.name.clone(), func.clone());
     }
+    let mut available_names: HashSet<SmolStr> = func_map.keys().cloned().collect();
     let mut cloned = Vec::new();
     let mut clone_names: HashMap<(SmolStr, SmolStr), SmolStr> = HashMap::new();
     let mut counter = 0usize;
@@ -1397,20 +1398,52 @@ fn clone_small_hot_functions(module: &mut MirModule, graph: &CallGraph) {
                     continue;
                 }
                 let key = (func.name.clone(), name.clone());
-                let clone_name = clone_names.entry(key).or_insert_with(|| {
-                    counter += 1;
-                    SmolStr::new(format!("{}__clone{}", name, counter))
-                });
-                if !func_map.contains_key(clone_name) {
+                let (clone_name, needs_clone) = match clone_names.entry(key) {
+                    std::collections::hash_map::Entry::Occupied(entry) => {
+                        (entry.get().clone(), false)
+                    }
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        let clone_name = loop {
+                            counter += 1;
+                            let candidate = SmolStr::new(format!(
+                                "{}__clone{}_{}",
+                                name,
+                                counter,
+                                sanitize_clone_context(&func.name)
+                            ));
+                            if available_names.insert(candidate.clone()) {
+                                break candidate;
+                            }
+                        };
+                        entry.insert(clone_name.clone());
+                        (clone_name, true)
+                    }
+                };
+                if needs_clone {
                     let mut clone = callee.clone();
                     clone.name = clone_name.clone();
                     cloned.push(clone);
                 }
-                *target = CallTarget::Function(clone_name.clone());
+                *target = CallTarget::Function(clone_name);
             }
         }
     }
     module.functions.extend(cloned);
+}
+
+fn sanitize_clone_context(name: &SmolStr) -> String {
+    let mut out = String::with_capacity(name.len());
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push('_');
+        }
+    }
+    while out.contains("__") {
+        out = out.replace("__", "_");
+    }
+    out.trim_matches('_').to_string()
 }
 
 fn is_small_function(func: &MirFunction) -> bool {
@@ -4412,5 +4445,272 @@ fn run() -> Integer {
             .iter()
             .any(|f| f.name.as_str().contains("small__clone"));
         assert!(has_clone, "expected cloned function");
+    }
+
+    #[test]
+    fn clone_names_skip_existing_symbols() {
+        let span = TextRange::default();
+        let small = MirFunction {
+            name: "small".into(),
+            params: vec![],
+            abi_params: vec![],
+            abi_return: PortableAbiType::Value,
+            locals: vec![],
+            temps: vec![Temp {
+                ty: MirType::Unknown,
+            }],
+            blocks: vec![BasicBlock {
+                stmts: vec![Stmt::Assign {
+                    place: Place::Temp(TempId(0)),
+                    value: Rvalue::Use(Value::Const(Literal::Integer(1))),
+                    span,
+                }],
+                terminator: Terminator::Return {
+                    value: Some(Value::Temp(TempId(0))),
+                    span,
+                },
+            }],
+            entry: BlockId(0),
+            suspendable: false,
+        };
+        let reserved = MirFunction {
+            name: "small__clone1".into(),
+            params: vec![],
+            abi_params: vec![],
+            abi_return: PortableAbiType::Value,
+            locals: vec![],
+            temps: vec![Temp {
+                ty: MirType::Unknown,
+            }],
+            blocks: vec![BasicBlock {
+                stmts: vec![Stmt::Assign {
+                    place: Place::Temp(TempId(0)),
+                    value: Rvalue::Use(Value::Const(Literal::Integer(2))),
+                    span,
+                }],
+                terminator: Terminator::Return {
+                    value: Some(Value::Temp(TempId(0))),
+                    span,
+                },
+            }],
+            entry: BlockId(0),
+            suspendable: false,
+        };
+        let caller = MirFunction {
+            name: "main".into(),
+            params: vec![],
+            abi_params: vec![],
+            abi_return: PortableAbiType::Value,
+            locals: vec![],
+            temps: vec![
+                Temp {
+                    ty: MirType::Unknown,
+                },
+                Temp {
+                    ty: MirType::Unknown,
+                },
+                Temp {
+                    ty: MirType::Unknown,
+                },
+            ],
+            blocks: vec![BasicBlock {
+                stmts: vec![
+                    Stmt::Assign {
+                        place: Place::Temp(TempId(0)),
+                        value: Rvalue::Call {
+                            kind: CallKind::Sync,
+                            target: CallTarget::Function("small".into()),
+                            args: vec![],
+                        },
+                        span,
+                    },
+                    Stmt::Assign {
+                        place: Place::Temp(TempId(1)),
+                        value: Rvalue::Call {
+                            kind: CallKind::Sync,
+                            target: CallTarget::Function("small".into()),
+                            args: vec![],
+                        },
+                        span,
+                    },
+                    Stmt::Assign {
+                        place: Place::Temp(TempId(2)),
+                        value: Rvalue::Call {
+                            kind: CallKind::Sync,
+                            target: CallTarget::Function("small__clone1".into()),
+                            args: vec![],
+                        },
+                        span,
+                    },
+                ],
+                terminator: Terminator::Return {
+                    value: Some(Value::Temp(TempId(2))),
+                    span,
+                },
+            }],
+            entry: BlockId(0),
+            suspendable: false,
+        };
+        let mut module = MirModule {
+            functions: vec![caller, reserved, small],
+            type_tags: vec![],
+            classes: vec![],
+        };
+
+        run_module_passes(&mut module);
+
+        assert!(module.functions.iter().any(|f| f.name == "small__clone1"));
+        assert!(
+            module
+                .functions
+                .iter()
+                .any(|f| f.name == "small__clone1_main")
+        );
+        assert!(
+            !module.functions.iter().any(|f| f.name == "small__clone2"),
+            "unexpected extra clone name"
+        );
+    }
+
+    #[test]
+    fn repeated_calls_in_same_caller_only_create_one_clone() {
+        let span = TextRange::default();
+        let small = MirFunction {
+            name: "small".into(),
+            params: vec![],
+            abi_params: vec![],
+            abi_return: PortableAbiType::Value,
+            locals: vec![],
+            temps: vec![Temp {
+                ty: MirType::Unknown,
+            }],
+            blocks: vec![BasicBlock {
+                stmts: vec![Stmt::Assign {
+                    place: Place::Temp(TempId(0)),
+                    value: Rvalue::Use(Value::Const(Literal::Integer(1))),
+                    span,
+                }],
+                terminator: Terminator::Return {
+                    value: Some(Value::Temp(TempId(0))),
+                    span,
+                },
+            }],
+            entry: BlockId(0),
+            suspendable: false,
+        };
+        let caller = MirFunction {
+            name: "main".into(),
+            params: vec![],
+            abi_params: vec![],
+            abi_return: PortableAbiType::Value,
+            locals: vec![],
+            temps: vec![
+                Temp {
+                    ty: MirType::Unknown,
+                },
+                Temp {
+                    ty: MirType::Unknown,
+                },
+            ],
+            blocks: vec![BasicBlock {
+                stmts: vec![
+                    Stmt::Assign {
+                        place: Place::Temp(TempId(0)),
+                        value: Rvalue::Call {
+                            kind: CallKind::Sync,
+                            target: CallTarget::Function("small".into()),
+                            args: vec![],
+                        },
+                        span,
+                    },
+                    Stmt::Assign {
+                        place: Place::Temp(TempId(1)),
+                        value: Rvalue::Call {
+                            kind: CallKind::Sync,
+                            target: CallTarget::Function("small".into()),
+                            args: vec![],
+                        },
+                        span,
+                    },
+                ],
+                terminator: Terminator::Return {
+                    value: Some(Value::Temp(TempId(1))),
+                    span,
+                },
+            }],
+            entry: BlockId(0),
+            suspendable: false,
+        };
+        let helper = MirFunction {
+            name: "helper".into(),
+            params: vec![],
+            abi_params: vec![],
+            abi_return: PortableAbiType::Value,
+            locals: vec![],
+            temps: vec![Temp {
+                ty: MirType::Unknown,
+            }],
+            blocks: vec![BasicBlock {
+                stmts: vec![Stmt::Assign {
+                    place: Place::Temp(TempId(0)),
+                    value: Rvalue::Call {
+                        kind: CallKind::Sync,
+                        target: CallTarget::Function("small".into()),
+                        args: vec![],
+                    },
+                    span,
+                }],
+                terminator: Terminator::Return {
+                    value: Some(Value::Temp(TempId(0))),
+                    span,
+                },
+            }],
+            entry: BlockId(0),
+            suspendable: false,
+        };
+        let mut module = MirModule {
+            functions: vec![caller, helper, small],
+            type_tags: vec![],
+            classes: vec![],
+        };
+
+        run_module_passes(&mut module);
+
+        let clone_names = module
+            .functions
+            .iter()
+            .filter(|func| func.name.as_str().starts_with("small__clone"))
+            .map(|func| func.name.clone())
+            .collect::<Vec<_>>();
+        assert!(
+            !clone_names.is_empty(),
+            "expected at least one cloned small function"
+        );
+        let unique_clone_names = clone_names.iter().cloned().collect::<HashSet<_>>();
+        assert_eq!(unique_clone_names.len(), clone_names.len());
+
+        let main = module
+            .functions
+            .iter()
+            .find(|func| func.name == "main")
+            .expect("main function");
+        let cloned_targets = main
+            .blocks
+            .iter()
+            .flat_map(|block| block.stmts.iter())
+            .filter_map(|stmt| match stmt {
+                Stmt::Assign {
+                    value:
+                        Rvalue::Call {
+                            target: CallTarget::Function(name),
+                            ..
+                        },
+                    ..
+                } => Some(name.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(cloned_targets.len(), 2);
+        assert_eq!(cloned_targets[0], cloned_targets[1]);
     }
 }
