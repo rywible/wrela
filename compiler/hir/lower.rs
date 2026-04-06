@@ -20,6 +20,8 @@ pub fn lower_root_body(root: ast::Root) -> Option<Body> {
             | ast::Stmt::KernelDef(_)
             | ast::Stmt::SystemDef(_)
             | ast::Stmt::FieldDecl(_)
+            | ast::Stmt::RadianceDecl(_)
+            | ast::Stmt::VolumeDecl(_)
             | ast::Stmt::MaterialDecl(_)
             | ast::Stmt::ShapeDecl(_)
             | ast::Stmt::ClassDef(_)
@@ -94,6 +96,14 @@ impl LoweringContext {
                     let func = self.lower_field_decl(f);
                     self.module.functions.alloc(func);
                 }
+                ast::Stmt::RadianceDecl(f) => {
+                    let func = self.lower_radiance_decl(f);
+                    self.module.functions.alloc(func);
+                }
+                ast::Stmt::VolumeDecl(f) => {
+                    let func = self.lower_volume_decl(f);
+                    self.module.functions.alloc(func);
+                }
                 ast::Stmt::MaterialDecl(f) => {
                     let func = self.lower_material_decl(f);
                     self.module.functions.alloc(func);
@@ -140,6 +150,14 @@ impl LoweringContext {
                             }
                             ast::Stmt::FieldDecl(f) => {
                                 let func = self.lower_field_decl(f);
+                                self.module.functions.alloc(func);
+                            }
+                            ast::Stmt::RadianceDecl(f) => {
+                                let func = self.lower_radiance_decl(f);
+                                self.module.functions.alloc(func);
+                            }
+                            ast::Stmt::VolumeDecl(f) => {
+                                let func = self.lower_volume_decl(f);
                                 self.module.functions.alloc(func);
                             }
                             ast::Stmt::MaterialDecl(f) => {
@@ -217,11 +235,10 @@ impl LoweringContext {
             );
             let trace = match field.class {
                 FieldClass::Exact => trace,
-                FieldClass::Conservative => GraphTraceMetadata::conservative(
-                    trace.support,
-                    trace.bounds,
-                    trace.can_coarse_support_pruning,
-                ),
+                FieldClass::Conservative => GraphTraceMetadata {
+                    class: FieldClass::Conservative,
+                    ..trace
+                },
             };
             let execution_trace = self.apply_authored_field_support(trace, &field);
             self.module.functions[func_idx].field = Some(FieldMetadata {
@@ -310,9 +327,98 @@ impl LoweringContext {
                     support: left.support,
                     bounds: left.bounds,
                     can_coarse_support_pruning: left.can_coarse_support_pruning,
+                    smooth_op_count: left.smooth_op_count + right.smooth_op_count,
+                    deform_op_count: left.deform_op_count + right.deform_op_count,
                 }
             }
-            FieldExpr::Transform { transform, body } => {
+            FieldExpr::Translate { translate, body } => {
+                let body = self.field_graph_trace_metadata(
+                    body,
+                    point_param,
+                    field_cache,
+                    shape_cache,
+                    visiting_fields,
+                    visiting_shapes,
+                );
+                if point_param.is_some_and(|name| self.body_references_variable(translate, name)) {
+                    return GraphTraceMetadata::pessimistic();
+                }
+                if self.field_wrapper_body_returns_named_call(translate, "vec3") {
+                    GraphTraceMetadata {
+                        class: body.class,
+                        ..body
+                    }
+                } else {
+                    GraphTraceMetadata {
+                        class: FieldClass::Conservative,
+                        support: body.support,
+                        bounds: body.bounds,
+                        can_coarse_support_pruning: false,
+                        smooth_op_count: body.smooth_op_count,
+                        deform_op_count: body.deform_op_count,
+                    }
+                }
+            }
+            FieldExpr::Rotate { rotate, body } => {
+                let body = self.field_graph_trace_metadata(
+                    body,
+                    point_param,
+                    field_cache,
+                    shape_cache,
+                    visiting_fields,
+                    visiting_shapes,
+                );
+                if point_param.is_some_and(|name| self.body_references_variable(rotate, name)) {
+                    return GraphTraceMetadata::pessimistic();
+                }
+                if self.field_wrapper_body_returns_named_call(rotate, "vec3") {
+                    GraphTraceMetadata {
+                        class: body.class,
+                        ..body
+                    }
+                } else {
+                    GraphTraceMetadata {
+                        class: FieldClass::Conservative,
+                        support: body.support,
+                        bounds: body.bounds,
+                        can_coarse_support_pruning: false,
+                        smooth_op_count: body.smooth_op_count,
+                        deform_op_count: body.deform_op_count,
+                    }
+                }
+            }
+            FieldExpr::UniformScale { scale, body } => {
+                let body = self.field_graph_trace_metadata(
+                    body,
+                    point_param,
+                    field_cache,
+                    shape_cache,
+                    visiting_fields,
+                    visiting_shapes,
+                );
+                if point_param.is_some_and(|name| self.body_references_variable(scale, name)) {
+                    return GraphTraceMetadata::pessimistic();
+                }
+                if self
+                    .field_wrapper_body_numeric_literal(scale)
+                    .is_some_and(|value| value > 0.0)
+                {
+                    GraphTraceMetadata {
+                        class: body.class,
+                        ..body
+                    }
+                } else {
+                    GraphTraceMetadata {
+                        class: FieldClass::Conservative,
+                        support: body.support,
+                        bounds: body.bounds,
+                        can_coarse_support_pruning: false,
+                        smooth_op_count: body.smooth_op_count,
+                        deform_op_count: body.deform_op_count,
+                    }
+                }
+            }
+            FieldExpr::AffineTransform { transform, body } => {
                 let body = self.field_graph_trace_metadata(
                     body,
                     point_param,
@@ -324,18 +430,16 @@ impl LoweringContext {
                 if point_param.is_some_and(|name| self.body_references_variable(transform, name)) {
                     return GraphTraceMetadata::pessimistic();
                 }
-                if self.field_wrapper_body_returns_named_call(transform, "vec3") {
-                    GraphTraceMetadata {
-                        class: body.class,
-                        support: body.support,
-                        bounds: body.bounds,
-                        can_coarse_support_pruning: body.can_coarse_support_pruning,
-                    }
-                } else {
-                    GraphTraceMetadata::conservative(body.support, body.bounds, false)
+                GraphTraceMetadata {
+                    class: FieldClass::Conservative,
+                    support: body.support,
+                    bounds: body.bounds,
+                    can_coarse_support_pruning: false,
+                    smooth_op_count: body.smooth_op_count,
+                    deform_op_count: body.deform_op_count + 1,
                 }
             }
-            FieldExpr::Mirror { mirror, body } => {
+            FieldExpr::Warp { warp, body } => {
                 let body = self.field_graph_trace_metadata(
                     body,
                     point_param,
@@ -344,12 +448,19 @@ impl LoweringContext {
                     visiting_fields,
                     visiting_shapes,
                 );
-                if point_param.is_some_and(|name| self.body_references_variable(mirror, name)) {
+                if point_param.is_some_and(|name| self.body_references_variable(warp, name)) {
                     return GraphTraceMetadata::pessimistic();
                 }
-                body
+                GraphTraceMetadata {
+                    class: FieldClass::Conservative,
+                    support: body.support,
+                    bounds: body.bounds,
+                    can_coarse_support_pruning: false,
+                    smooth_op_count: body.smooth_op_count,
+                    deform_op_count: body.deform_op_count + 1,
+                }
             }
-            FieldExpr::Repeat { repeat, body } => {
+            FieldExpr::RepeatLinear { repeat, body } => {
                 let body = self.field_graph_trace_metadata(
                     body,
                     point_param,
@@ -361,14 +472,27 @@ impl LoweringContext {
                 if point_param.is_some_and(|name| self.body_references_variable(repeat, name)) {
                     return GraphTraceMetadata::pessimistic();
                 }
-                GraphTraceMetadata {
-                    class: body.class,
-                    support: FieldSupport::Periodic,
-                    bounds: FieldBounds::Unbounded,
-                    can_coarse_support_pruning: body.can_coarse_support_pruning,
+                if self.field_wrapper_body_returns_named_call(repeat, "vec3") {
+                    GraphTraceMetadata {
+                        class: body.class,
+                        support: FieldSupport::Periodic,
+                        bounds: FieldBounds::Unbounded,
+                        can_coarse_support_pruning: body.can_coarse_support_pruning,
+                        smooth_op_count: body.smooth_op_count,
+                        deform_op_count: body.deform_op_count,
+                    }
+                } else {
+                    GraphTraceMetadata {
+                        class: FieldClass::Conservative,
+                        support: FieldSupport::Periodic,
+                        bounds: FieldBounds::Unbounded,
+                        can_coarse_support_pruning: false,
+                        smooth_op_count: body.smooth_op_count,
+                        deform_op_count: body.deform_op_count,
+                    }
                 }
             }
-            FieldExpr::Instance { body, .. } => {
+            FieldExpr::RepeatGrid { repeat, body } => {
                 let body = self.field_graph_trace_metadata(
                     body,
                     point_param,
@@ -377,9 +501,275 @@ impl LoweringContext {
                     visiting_fields,
                     visiting_shapes,
                 );
-                GraphTraceMetadata::conservative(body.support, body.bounds, false)
+                if point_param.is_some_and(|name| self.body_references_variable(repeat, name)) {
+                    return GraphTraceMetadata::pessimistic();
+                }
+                if self.field_wrapper_body_returns_named_call(repeat, "vec3") {
+                    GraphTraceMetadata {
+                        class: body.class,
+                        support: FieldSupport::Periodic,
+                        bounds: FieldBounds::Unbounded,
+                        can_coarse_support_pruning: body.can_coarse_support_pruning,
+                        smooth_op_count: body.smooth_op_count,
+                        deform_op_count: body.deform_op_count,
+                    }
+                } else {
+                    GraphTraceMetadata {
+                        class: FieldClass::Conservative,
+                        support: FieldSupport::Periodic,
+                        bounds: FieldBounds::Unbounded,
+                        can_coarse_support_pruning: false,
+                        smooth_op_count: body.smooth_op_count,
+                        deform_op_count: body.deform_op_count,
+                    }
+                }
+            }
+            FieldExpr::RadialRepeat { radial, body } => {
+                let body = self.field_graph_trace_metadata(
+                    body,
+                    point_param,
+                    field_cache,
+                    shape_cache,
+                    visiting_fields,
+                    visiting_shapes,
+                );
+                if point_param.is_some_and(|name| self.body_references_variable(radial, name)) {
+                    return GraphTraceMetadata::pessimistic();
+                }
+                GraphTraceMetadata {
+                    class: FieldClass::Conservative,
+                    support: FieldSupport::Periodic,
+                    bounds: FieldBounds::Unbounded,
+                    can_coarse_support_pruning: false,
+                    smooth_op_count: body.smooth_op_count,
+                    deform_op_count: body.deform_op_count + 1,
+                }
+            }
+            FieldExpr::MirrorArray { mirror, body } => {
+                let body = self.field_graph_trace_metadata(
+                    body,
+                    point_param,
+                    field_cache,
+                    shape_cache,
+                    visiting_fields,
+                    visiting_shapes,
+                );
+                if point_param.is_some_and(|name| self.body_references_variable(mirror, name)) {
+                    return GraphTraceMetadata::pessimistic();
+                }
+                if self.field_wrapper_body_returns_named_call(mirror, "vec3") {
+                    GraphTraceMetadata {
+                        class: body.class,
+                        ..body
+                    }
+                } else {
+                    GraphTraceMetadata {
+                        class: FieldClass::Conservative,
+                        support: body.support,
+                        bounds: body.bounds,
+                        can_coarse_support_pruning: false,
+                        smooth_op_count: body.smooth_op_count,
+                        deform_op_count: body.deform_op_count,
+                    }
+                }
+            }
+            FieldExpr::InstanceArray { instance, body } => {
+                let body = self.field_graph_trace_metadata(
+                    body,
+                    point_param,
+                    field_cache,
+                    shape_cache,
+                    visiting_fields,
+                    visiting_shapes,
+                );
+                if point_param.is_some_and(|name| self.body_references_variable(instance, name)) {
+                    return GraphTraceMetadata::pessimistic();
+                }
+                GraphTraceMetadata {
+                    class: FieldClass::Conservative,
+                    support: body.support,
+                    bounds: body.bounds,
+                    can_coarse_support_pruning: false,
+                    smooth_op_count: body.smooth_op_count,
+                    deform_op_count: body.deform_op_count + 1,
+                }
+            }
+            FieldExpr::SmoothUnion { smoothing, items } => {
+                let body = self.combine_trace_metadata(items.iter().map(|item| {
+                    self.field_graph_trace_metadata(
+                        item,
+                        point_param,
+                        field_cache,
+                        shape_cache,
+                        visiting_fields,
+                        visiting_shapes,
+                    )
+                }));
+                if point_param.is_some_and(|name| self.body_references_variable(smoothing, name)) {
+                    return GraphTraceMetadata::pessimistic();
+                }
+                GraphTraceMetadata {
+                    class: FieldClass::Conservative,
+                    support: body.support,
+                    bounds: body.bounds,
+                    can_coarse_support_pruning: body.can_coarse_support_pruning,
+                    smooth_op_count: body.smooth_op_count + 1,
+                    deform_op_count: body.deform_op_count,
+                }
+            }
+            FieldExpr::SmoothIntersection { smoothing, items } => {
+                let body = self.combine_trace_metadata(items.iter().map(|item| {
+                    self.field_graph_trace_metadata(
+                        item,
+                        point_param,
+                        field_cache,
+                        shape_cache,
+                        visiting_fields,
+                        visiting_shapes,
+                    )
+                }));
+                if point_param.is_some_and(|name| self.body_references_variable(smoothing, name)) {
+                    return GraphTraceMetadata::pessimistic();
+                }
+                GraphTraceMetadata {
+                    class: FieldClass::Conservative,
+                    support: body.support,
+                    bounds: body.bounds,
+                    can_coarse_support_pruning: body.can_coarse_support_pruning,
+                    smooth_op_count: body.smooth_op_count + 1,
+                    deform_op_count: body.deform_op_count,
+                }
+            }
+            FieldExpr::SmoothSubtract {
+                smoothing,
+                left,
+                right,
+            } => {
+                let left = self.field_graph_trace_metadata(
+                    left,
+                    point_param,
+                    field_cache,
+                    shape_cache,
+                    visiting_fields,
+                    visiting_shapes,
+                );
+                let right = self.field_graph_trace_metadata(
+                    right,
+                    point_param,
+                    field_cache,
+                    shape_cache,
+                    visiting_fields,
+                    visiting_shapes,
+                );
+                if point_param.is_some_and(|name| self.body_references_variable(smoothing, name)) {
+                    return GraphTraceMetadata::pessimistic();
+                }
+                GraphTraceMetadata {
+                    class: FieldClass::Conservative,
+                    support: left.support,
+                    bounds: left.bounds,
+                    can_coarse_support_pruning: left.can_coarse_support_pruning,
+                    smooth_op_count: left.smooth_op_count + right.smooth_op_count + 1,
+                    deform_op_count: left.deform_op_count + right.deform_op_count,
+                }
+            }
+            FieldExpr::Bend { bend, body }
+            | FieldExpr::Twist { twist: bend, body }
+            | FieldExpr::Taper { taper: bend, body }
+            | FieldExpr::Displace {
+                displace: bend,
+                body,
+            } => {
+                let body = self.field_graph_trace_metadata(
+                    body,
+                    point_param,
+                    field_cache,
+                    shape_cache,
+                    visiting_fields,
+                    visiting_shapes,
+                );
+                if point_param.is_some_and(|name| self.body_references_variable(bend, name)) {
+                    return GraphTraceMetadata::pessimistic();
+                }
+                GraphTraceMetadata {
+                    class: FieldClass::Conservative,
+                    support: body.support,
+                    bounds: body.bounds,
+                    can_coarse_support_pruning: false,
+                    smooth_op_count: body.smooth_op_count,
+                    deform_op_count: body.deform_op_count + 1,
+                }
+            }
+            FieldExpr::Extrude { height, profile } => {
+                if point_param.is_some_and(|name| self.body_references_variable(height, name)) {
+                    return GraphTraceMetadata::pessimistic();
+                }
+                let profile = self.profile_trace_metadata(profile);
+                GraphTraceMetadata {
+                    class: if self
+                        .field_wrapper_body_numeric_literal(height)
+                        .is_some_and(|value| value > 0.0)
+                    {
+                        profile.class
+                    } else {
+                        FieldClass::Conservative
+                    },
+                    support: FieldSupport::Bounded,
+                    bounds: FieldBounds::Bounded,
+                    can_coarse_support_pruning: true,
+                    smooth_op_count: profile.smooth_op_count,
+                    deform_op_count: profile.deform_op_count,
+                }
+            }
+            FieldExpr::Revolve { profile } => {
+                let profile = self.profile_trace_metadata(profile);
+                GraphTraceMetadata {
+                    class: FieldClass::Conservative,
+                    support: FieldSupport::Bounded,
+                    bounds: FieldBounds::Bounded,
+                    can_coarse_support_pruning: true,
+                    smooth_op_count: profile.smooth_op_count,
+                    deform_op_count: profile.deform_op_count,
+                }
+            }
+            FieldExpr::Sweep { path, profile } => {
+                if point_param.is_some_and(|name| self.body_references_variable(path, name)) {
+                    return GraphTraceMetadata::pessimistic();
+                }
+                let profile = self.profile_trace_metadata(profile);
+                GraphTraceMetadata {
+                    class: FieldClass::Conservative,
+                    support: FieldSupport::Bounded,
+                    bounds: FieldBounds::Bounded,
+                    can_coarse_support_pruning: true,
+                    smooth_op_count: profile.smooth_op_count,
+                    deform_op_count: profile.deform_op_count,
+                }
+            }
+            FieldExpr::Loft { height, from, to } => {
+                if point_param.is_some_and(|name| self.body_references_variable(height, name)) {
+                    return GraphTraceMetadata::pessimistic();
+                }
+                let from = self.profile_trace_metadata(from);
+                let to = self.profile_trace_metadata(to);
+                GraphTraceMetadata {
+                    class: FieldClass::Conservative,
+                    support: FieldSupport::Bounded,
+                    bounds: FieldBounds::Bounded,
+                    can_coarse_support_pruning: true,
+                    smooth_op_count: from.smooth_op_count + to.smooth_op_count,
+                    deform_op_count: from.deform_op_count + to.deform_op_count,
+                }
             }
             FieldExpr::Custom { .. } => GraphTraceMetadata::pessimistic(),
+        }
+    }
+
+    fn profile_trace_metadata(&self, expr: &ProfileExpr) -> GraphTraceMetadata {
+        match expr {
+            ProfileExpr::Primitive { .. } => {
+                GraphTraceMetadata::exact(FieldSupport::Bounded, FieldBounds::Bounded, true)
+            }
         }
     }
 
@@ -392,8 +782,19 @@ impl LoweringContext {
             | FieldPrimitive::Box
             | FieldPrimitive::Capsule
             | FieldPrimitive::Cylinder
-            | FieldPrimitive::Torus => {
+            | FieldPrimitive::Torus
+            | FieldPrimitive::RoundedBox
+            | FieldPrimitive::CappedCone
+            | FieldPrimitive::BoxFrame
+            | FieldPrimitive::TrianglePrism
+            | FieldPrimitive::HexPrism => {
                 GraphTraceMetadata::exact(FieldSupport::Bounded, FieldBounds::Bounded, true)
+            }
+            FieldPrimitive::Ellipsoid => {
+                GraphTraceMetadata::conservative(FieldSupport::Bounded, FieldBounds::Bounded, true)
+            }
+            FieldPrimitive::Cone | FieldPrimitive::Slab => {
+                GraphTraceMetadata::exact(FieldSupport::Unbounded, FieldBounds::Unbounded, false)
             }
         }
     }
@@ -412,6 +813,42 @@ impl LoweringContext {
         let stmt = *body.root_stmts.last()?;
         match &body.stmts[stmt] {
             Stmt::Expr(expr) | Stmt::Return(Some(expr)) => Some(*expr),
+            _ => None,
+        }
+    }
+
+    fn field_wrapper_body_numeric_literal(&self, body: &Body) -> Option<f64> {
+        let expr_id = self.field_wrapper_body_terminal_expr(body)?;
+        self.field_wrapper_numeric_literal(body, expr_id)
+    }
+
+    fn field_wrapper_numeric_literal(&self, body: &Body, expr_id: Idx<Expr>) -> Option<f64> {
+        match &body.exprs[expr_id] {
+            Expr::Literal(Literal::Integer(value)) => Some(*value as f64),
+            Expr::Literal(Literal::Float(value)) => Some(*value),
+            Expr::Unary {
+                op: UnaryOp::Neg,
+                expr,
+                ..
+            } => self
+                .field_wrapper_numeric_literal(body, *expr)
+                .map(|value| -value),
+            Expr::Call { callee, args, .. } => {
+                let Expr::Variable(name) = &body.exprs[*callee] else {
+                    return None;
+                };
+                if name.as_str() != "f32" && name.as_str() != "to_f32" {
+                    return None;
+                }
+                let [arg] = args.as_slice() else {
+                    return None;
+                };
+                match arg {
+                    Arg::Positional { value, .. } | Arg::Named { value, .. } => {
+                        self.field_wrapper_numeric_literal(body, *value)
+                    }
+                }
+            }
             _ => None,
         }
     }
@@ -462,6 +899,8 @@ impl LoweringContext {
                     support: left.support,
                     bounds: left.bounds,
                     can_coarse_support_pruning: left.can_coarse_support_pruning,
+                    smooth_op_count: left.smooth_op_count + right.smooth_op_count,
+                    deform_op_count: left.deform_op_count + right.deform_op_count,
                 }
             }
             ShapeExpr::Leaf(leaf) => self.field_trace_for_target(
@@ -512,11 +951,10 @@ impl LoweringContext {
                     .unwrap_or(FieldClass::Conservative);
                 Some(match class {
                     FieldClass::Exact => graph_trace,
-                    FieldClass::Conservative => GraphTraceMetadata::conservative(
-                        graph_trace.support,
-                        graph_trace.bounds,
-                        graph_trace.can_coarse_support_pruning,
-                    ),
+                    FieldClass::Conservative => GraphTraceMetadata {
+                        class: FieldClass::Conservative,
+                        ..graph_trace
+                    },
                 })
             })
             .or_else(|| {
@@ -590,8 +1028,12 @@ impl LoweringContext {
         let mut bounds_bounded = false;
         let mut saw_value = false;
         let mut exact = true;
+        let mut smooth_op_count = 0;
+        let mut deform_op_count = 0;
         for value in values {
             saw_value = true;
+            smooth_op_count += value.smooth_op_count;
+            deform_op_count += value.deform_op_count;
             match value.support {
                 FieldSupport::Unknown => support_unknown = true,
                 FieldSupport::Bounded => support_bounded = true,
@@ -638,6 +1080,8 @@ impl LoweringContext {
                 support,
                 bounds,
                 can_coarse_support_pruning,
+                smooth_op_count,
+                deform_op_count,
             }
         } else {
             GraphTraceMetadata::pessimistic()
@@ -838,6 +1282,68 @@ impl LoweringContext {
         }
     }
 
+    fn lower_radiance_decl(&mut self, f: ast::RadianceDecl) -> Function {
+        let name = f.name().map(|t| SmolStr::new(t.text())).unwrap_or_default();
+        let name_span = f.name().map(|t| t.text_range());
+        let visibility = visibility_for_node_default(f.syntax());
+        let params = f.params().map(|p| self.lower_param(p)).collect();
+        let ret_type = f.ret_type().map(|t| self.lower_type_ref(t));
+
+        let mut body_ctx = BodyLoweringContext::new();
+        for stmt in f.statements() {
+            let s = body_ctx.lower_stmt(stmt);
+            body_ctx.body.root_stmts.push(s);
+        }
+        Self::finalize_implicit_return(&mut body_ctx.body, ret_type.as_ref());
+
+        Function {
+            name,
+            name_span,
+            attributes: Vec::new(),
+            visibility,
+            kind: FunctionKind::Function,
+            role: FunctionRole::Radiance,
+            field: None,
+            field_graph: None,
+            system_metadata: None,
+            type_params: Vec::new(),
+            params,
+            ret_type,
+            body: Some(body_ctx.body),
+        }
+    }
+
+    fn lower_volume_decl(&mut self, f: ast::VolumeDecl) -> Function {
+        let name = f.name().map(|t| SmolStr::new(t.text())).unwrap_or_default();
+        let name_span = f.name().map(|t| t.text_range());
+        let visibility = visibility_for_node_default(f.syntax());
+        let params = f.params().map(|p| self.lower_param(p)).collect();
+        let ret_type = f.ret_type().map(|t| self.lower_type_ref(t));
+
+        let mut body_ctx = BodyLoweringContext::new();
+        for stmt in f.statements() {
+            let s = body_ctx.lower_stmt(stmt);
+            body_ctx.body.root_stmts.push(s);
+        }
+        Self::finalize_implicit_return(&mut body_ctx.body, ret_type.as_ref());
+
+        Function {
+            name,
+            name_span,
+            attributes: Vec::new(),
+            visibility,
+            kind: FunctionKind::Function,
+            role: FunctionRole::Volume,
+            field: None,
+            field_graph: None,
+            system_metadata: None,
+            type_params: Vec::new(),
+            params,
+            ret_type,
+            body: Some(body_ctx.body),
+        }
+    }
+
     fn lower_material_decl(&mut self, f: ast::MaterialDecl) -> Function {
         let name = f.name().map(|t| SmolStr::new(t.text())).unwrap_or_default();
         let name_span = f.name().map(|t| t.text_range());
@@ -969,6 +1475,14 @@ impl LoweringContext {
                     .and_then(|binding| binding.value())
                     .map(|expr| self.lower_shape_name_expr(expr))
                     .unwrap_or_default();
+                let radiance = leaf_expr
+                    .radiance()
+                    .and_then(|binding| binding.value())
+                    .map(|expr| self.lower_shape_name_expr(expr));
+                let volume = leaf_expr
+                    .volume()
+                    .and_then(|binding| binding.value())
+                    .map(|expr| self.lower_shape_name_expr(expr));
                 let payload = leaf_expr
                     .payload()
                     .and_then(|binding| binding.value())
@@ -979,6 +1493,8 @@ impl LoweringContext {
                 ShapeExpr::Leaf(ShapeLeaf {
                     field,
                     material,
+                    radiance,
+                    volume,
                     payload,
                     feature_id,
                 })
@@ -1293,6 +1809,11 @@ impl LoweringContext {
                     .name()
                     .map(|tok| tok.text().to_string())
                     .unwrap_or_default();
+                if Self::is_profile_primitive_name(&primitive_name) {
+                    return FieldExpr::Custom {
+                        body: Self::empty_body(),
+                    };
+                }
                 let primitive = Self::field_primitive_from_name(&primitive_name)
                     .unwrap_or(FieldPrimitive::Sphere);
                 let args = primitive_expr
@@ -1344,69 +1865,349 @@ impl LoweringContext {
                     right: Box::new(right),
                 }
             }
-            ast::FieldExpr::Transform(transform_expr) => {
-                let transform = transform_expr
-                    .transform()
-                    .map(|expr| self.lower_wrapped_field_body(expr))
+            ast::FieldExpr::SmoothUnion(expr) => FieldExpr::SmoothUnion {
+                smoothing: expr
+                    .smoothing()
+                    .map(|value| self.lower_wrapped_field_body(value))
+                    .unwrap_or_else(Self::empty_body),
+                items: expr
+                    .items()
+                    .map(|item| self.lower_field_expr(body_ctx, item))
+                    .collect(),
+            },
+            ast::FieldExpr::SmoothIntersection(expr) => FieldExpr::SmoothIntersection {
+                smoothing: expr
+                    .smoothing()
+                    .map(|value| self.lower_wrapped_field_body(value))
+                    .unwrap_or_else(Self::empty_body),
+                items: expr
+                    .items()
+                    .map(|item| self.lower_field_expr(body_ctx, item))
+                    .collect(),
+            },
+            ast::FieldExpr::SmoothSubtract(expr) => {
+                let mut items = expr.items();
+                let left = items
+                    .next()
+                    .map(|item| self.lower_field_expr(body_ctx, item))
+                    .unwrap_or(FieldExpr::Custom {
+                        body: Self::empty_body(),
+                    });
+                let right = items
+                    .next()
+                    .map(|item| self.lower_field_expr(body_ctx, item))
+                    .unwrap_or(FieldExpr::Custom {
+                        body: Self::empty_body(),
+                    });
+                FieldExpr::SmoothSubtract {
+                    smoothing: expr
+                        .smoothing()
+                        .map(|value| self.lower_wrapped_field_body(value))
+                        .unwrap_or_else(Self::empty_body),
+                    left: Box::new(left),
+                    right: Box::new(right),
+                }
+            }
+            ast::FieldExpr::Translate(expr) => {
+                let translate = expr
+                    .translate()
+                    .map(|value| self.lower_wrapped_field_body(value))
                     .unwrap_or_else(Self::empty_body);
-                let body = transform_expr
+                let body = expr
                     .body()
                     .map(|item| self.lower_field_expr(body_ctx, item))
                     .unwrap_or(FieldExpr::Custom {
                         body: Self::empty_body(),
                     });
-                FieldExpr::Transform {
+                FieldExpr::Translate {
+                    translate,
+                    body: Box::new(body),
+                }
+            }
+            ast::FieldExpr::Rotate(expr) => {
+                let rotate = expr
+                    .rotate()
+                    .map(|value| self.lower_wrapped_field_body(value))
+                    .unwrap_or_else(Self::empty_body);
+                let body = expr
+                    .body()
+                    .map(|item| self.lower_field_expr(body_ctx, item))
+                    .unwrap_or(FieldExpr::Custom {
+                        body: Self::empty_body(),
+                    });
+                FieldExpr::Rotate {
+                    rotate,
+                    body: Box::new(body),
+                }
+            }
+            ast::FieldExpr::UniformScale(expr) => {
+                let scale = expr
+                    .uniform_scale()
+                    .map(|value| self.lower_wrapped_field_body(value))
+                    .unwrap_or_else(Self::empty_body);
+                let body = expr
+                    .body()
+                    .map(|item| self.lower_field_expr(body_ctx, item))
+                    .unwrap_or(FieldExpr::Custom {
+                        body: Self::empty_body(),
+                    });
+                FieldExpr::UniformScale {
+                    scale,
+                    body: Box::new(body),
+                }
+            }
+            ast::FieldExpr::AffineTransform(expr) => {
+                let transform = expr
+                    .affine_transform()
+                    .map(|value| self.lower_wrapped_field_body(value))
+                    .unwrap_or_else(Self::empty_body);
+                let body = expr
+                    .body()
+                    .map(|item| self.lower_field_expr(body_ctx, item))
+                    .unwrap_or(FieldExpr::Custom {
+                        body: Self::empty_body(),
+                    });
+                FieldExpr::AffineTransform {
                     transform,
                     body: Box::new(body),
                 }
             }
-            ast::FieldExpr::Mirror(mirror_expr) => {
-                let mirror = mirror_expr
-                    .mirror()
-                    .map(|expr| self.lower_wrapped_field_body(expr))
+            ast::FieldExpr::Warp(expr) => {
+                let warp = expr
+                    .warp()
+                    .map(|value| self.lower_wrapped_field_body(value))
                     .unwrap_or_else(Self::empty_body);
-                let body = mirror_expr
+                let body = expr
                     .body()
                     .map(|item| self.lower_field_expr(body_ctx, item))
                     .unwrap_or(FieldExpr::Custom {
                         body: Self::empty_body(),
                     });
-                FieldExpr::Mirror {
-                    mirror,
+                FieldExpr::Warp {
+                    warp,
                     body: Box::new(body),
                 }
             }
-            ast::FieldExpr::Repeat(repeat_expr) => {
-                let repeat = repeat_expr
-                    .repeat()
-                    .map(|expr| self.lower_wrapped_field_body(expr))
+            ast::FieldExpr::RepeatLinear(expr) => {
+                let repeat = expr
+                    .repeat_linear()
+                    .map(|value| self.lower_wrapped_field_body(value))
                     .unwrap_or_else(Self::empty_body);
-                let body = repeat_expr
+                let body = expr
                     .body()
                     .map(|item| self.lower_field_expr(body_ctx, item))
                     .unwrap_or(FieldExpr::Custom {
                         body: Self::empty_body(),
                     });
-                FieldExpr::Repeat {
+                FieldExpr::RepeatLinear {
                     repeat,
                     body: Box::new(body),
                 }
             }
-            ast::FieldExpr::Instance(instance_expr) => {
-                let instance = instance_expr
-                    .instance()
-                    .map(|expr| self.lower_wrapped_field_body(expr))
+            ast::FieldExpr::RepeatGrid(expr) => {
+                let repeat = expr
+                    .repeat_grid()
+                    .map(|value| self.lower_wrapped_field_body(value))
                     .unwrap_or_else(Self::empty_body);
-                let body = instance_expr
+                let body = expr
                     .body()
                     .map(|item| self.lower_field_expr(body_ctx, item))
                     .unwrap_or(FieldExpr::Custom {
                         body: Self::empty_body(),
                     });
-                FieldExpr::Instance {
+                FieldExpr::RepeatGrid {
+                    repeat,
+                    body: Box::new(body),
+                }
+            }
+            ast::FieldExpr::RadialRepeat(expr) => {
+                let radial = expr
+                    .radial_repeat()
+                    .map(|value| self.lower_wrapped_field_body(value))
+                    .unwrap_or_else(Self::empty_body);
+                let body = expr
+                    .body()
+                    .map(|item| self.lower_field_expr(body_ctx, item))
+                    .unwrap_or(FieldExpr::Custom {
+                        body: Self::empty_body(),
+                    });
+                FieldExpr::RadialRepeat {
+                    radial,
+                    body: Box::new(body),
+                }
+            }
+            ast::FieldExpr::MirrorArray(expr) => {
+                let mirror = expr
+                    .mirror_array()
+                    .map(|value| self.lower_wrapped_field_body(value))
+                    .unwrap_or_else(Self::empty_body);
+                let body = expr
+                    .body()
+                    .map(|item| self.lower_field_expr(body_ctx, item))
+                    .unwrap_or(FieldExpr::Custom {
+                        body: Self::empty_body(),
+                    });
+                FieldExpr::MirrorArray {
+                    mirror,
+                    body: Box::new(body),
+                }
+            }
+            ast::FieldExpr::InstanceArray(expr) => {
+                let instance = expr
+                    .instance_array()
+                    .map(|value| self.lower_wrapped_field_body(value))
+                    .unwrap_or_else(Self::empty_body);
+                let body = expr
+                    .body()
+                    .map(|item| self.lower_field_expr(body_ctx, item))
+                    .unwrap_or(FieldExpr::Custom {
+                        body: Self::empty_body(),
+                    });
+                FieldExpr::InstanceArray {
                     instance,
                     body: Box::new(body),
                 }
+            }
+            ast::FieldExpr::Bend(expr) => {
+                let bend = expr
+                    .bend()
+                    .map(|value| self.lower_wrapped_field_body(value))
+                    .unwrap_or_else(Self::empty_body);
+                let body = expr
+                    .body()
+                    .map(|item| self.lower_field_expr(body_ctx, item))
+                    .unwrap_or(FieldExpr::Custom {
+                        body: Self::empty_body(),
+                    });
+                FieldExpr::Bend {
+                    bend,
+                    body: Box::new(body),
+                }
+            }
+            ast::FieldExpr::Twist(expr) => {
+                let twist = expr
+                    .twist()
+                    .map(|value| self.lower_wrapped_field_body(value))
+                    .unwrap_or_else(Self::empty_body);
+                let body = expr
+                    .body()
+                    .map(|item| self.lower_field_expr(body_ctx, item))
+                    .unwrap_or(FieldExpr::Custom {
+                        body: Self::empty_body(),
+                    });
+                FieldExpr::Twist {
+                    twist,
+                    body: Box::new(body),
+                }
+            }
+            ast::FieldExpr::Taper(expr) => {
+                let taper = expr
+                    .taper()
+                    .map(|value| self.lower_wrapped_field_body(value))
+                    .unwrap_or_else(Self::empty_body);
+                let body = expr
+                    .body()
+                    .map(|item| self.lower_field_expr(body_ctx, item))
+                    .unwrap_or(FieldExpr::Custom {
+                        body: Self::empty_body(),
+                    });
+                FieldExpr::Taper {
+                    taper,
+                    body: Box::new(body),
+                }
+            }
+            ast::FieldExpr::Displace(expr) => {
+                let displace = expr
+                    .displace()
+                    .map(|value| self.lower_wrapped_field_body(value))
+                    .unwrap_or_else(Self::empty_body);
+                let body = expr
+                    .body()
+                    .map(|item| self.lower_field_expr(body_ctx, item))
+                    .unwrap_or(FieldExpr::Custom {
+                        body: Self::empty_body(),
+                    });
+                FieldExpr::Displace {
+                    displace,
+                    body: Box::new(body),
+                }
+            }
+            ast::FieldExpr::Extrude(expr) => FieldExpr::Extrude {
+                height: expr
+                    .height()
+                    .map(|value| self.lower_wrapped_field_body(value))
+                    .unwrap_or_else(Self::empty_body),
+                profile: expr
+                    .profile()
+                    .map(|profile| self.lower_profile_expr(body_ctx, profile))
+                    .unwrap_or(ProfileExpr::Primitive {
+                        primitive: ProfilePrimitive::Circle2,
+                        args: Vec::new(),
+                    }),
+            },
+            ast::FieldExpr::Revolve(expr) => FieldExpr::Revolve {
+                profile: expr
+                    .profile()
+                    .map(|profile| self.lower_profile_expr(body_ctx, profile))
+                    .unwrap_or(ProfileExpr::Primitive {
+                        primitive: ProfilePrimitive::Circle2,
+                        args: Vec::new(),
+                    }),
+            },
+            ast::FieldExpr::Sweep(expr) => FieldExpr::Sweep {
+                path: expr
+                    .path()
+                    .map(|value| self.lower_wrapped_field_body(value))
+                    .unwrap_or_else(Self::empty_body),
+                profile: expr
+                    .profile()
+                    .map(|profile| self.lower_profile_expr(body_ctx, profile))
+                    .unwrap_or(ProfileExpr::Primitive {
+                        primitive: ProfilePrimitive::Circle2,
+                        args: Vec::new(),
+                    }),
+            },
+            ast::FieldExpr::Loft(expr) => FieldExpr::Loft {
+                height: expr
+                    .height()
+                    .map(|value| self.lower_wrapped_field_body(value))
+                    .unwrap_or_else(Self::empty_body),
+                from: expr
+                    .from_profile()
+                    .map(|profile| self.lower_profile_expr(body_ctx, profile))
+                    .unwrap_or(ProfileExpr::Primitive {
+                        primitive: ProfilePrimitive::Circle2,
+                        args: Vec::new(),
+                    }),
+                to: expr
+                    .to_profile()
+                    .map(|profile| self.lower_profile_expr(body_ctx, profile))
+                    .unwrap_or(ProfileExpr::Primitive {
+                        primitive: ProfilePrimitive::Circle2,
+                        args: Vec::new(),
+                    }),
+            },
+        }
+    }
+
+    fn lower_profile_expr(
+        &mut self,
+        body_ctx: &mut BodyLoweringContext,
+        expr: ast::ProfileExpr,
+    ) -> ProfileExpr {
+        match expr {
+            ast::ProfileExpr::Primitive(primitive_expr) => {
+                let primitive_name = primitive_expr
+                    .name()
+                    .map(|tok| tok.text().to_string())
+                    .unwrap_or_default();
+                let primitive = Self::profile_primitive_from_name(&primitive_name)
+                    .unwrap_or(ProfilePrimitive::Circle2);
+                let args = primitive_expr
+                    .args()
+                    .filter_map(|arg| body_ctx.lower_arg(arg))
+                    .collect();
+                ProfileExpr::Primitive { primitive, args }
             }
         }
     }
@@ -1554,51 +2355,613 @@ impl LoweringContext {
                     span,
                 )
             }
-            FieldExpr::Transform { transform, body } => {
+            FieldExpr::Translate { translate, body } => {
                 let local_point = self.lower_field_wrapper_point(
                     body_ctx,
-                    "field_transform_point",
+                    "field_translate_point",
+                    "translate",
+                    translate,
+                    point_expr,
+                );
+                self.lower_field_graph_to_expr(body_ctx, body, local_point)
+            }
+            FieldExpr::Rotate { rotate, body } => {
+                let local_point = self.lower_field_wrapper_point(
+                    body_ctx,
+                    "field_rotate_point",
+                    "rotate",
+                    rotate,
+                    point_expr,
+                );
+                self.lower_field_graph_to_expr(body_ctx, body, local_point)
+            }
+            FieldExpr::UniformScale { scale, body } => {
+                let local_point = self.lower_field_wrapper_point(
+                    body_ctx,
+                    "field_uniform_scale_point",
+                    "scale",
+                    scale,
+                    point_expr,
+                );
+                let scaled = self.lower_field_graph_to_expr(body_ctx, body, local_point);
+                let scale_expr =
+                    Self::wrapped_body_value_expr(scale).expect("uniform scale expression");
+                let scale_value = self.clone_wrapped_body_expr(scale, scale_expr, body_ctx);
+                let callee = body_ctx.alloc_expr(Expr::Variable(SmolStr::new("abs")), span);
+                let abs_scale = body_ctx.alloc_expr(
+                    Expr::Call {
+                        callee,
+                        type_args: Vec::new(),
+                        args: vec![Arg::Named {
+                            name: SmolStr::new("value"),
+                            value: scale_value,
+                            span,
+                            name_span: span,
+                        }],
+                    },
+                    span,
+                );
+                body_ctx.alloc_expr(
+                    Expr::Binary {
+                        lhs: scaled,
+                        op: BinaryOp::Mul,
+                        rhs: abs_scale,
+                        op_span: span,
+                    },
+                    span,
+                )
+            }
+            FieldExpr::AffineTransform { transform, body } => {
+                let local_point = self.lower_field_wrapper_point(
+                    body_ctx,
+                    "field_affine_transform_point",
                     "transform",
                     transform,
                     point_expr,
                 );
                 self.lower_field_graph_to_expr(body_ctx, body, local_point)
             }
-            FieldExpr::Mirror { mirror, body } => {
+            FieldExpr::Warp { warp, body } => {
                 let local_point = self.lower_field_wrapper_point(
                     body_ctx,
-                    "field_mirror_point",
+                    "field_warp_point",
+                    "warp",
+                    warp,
+                    point_expr,
+                );
+                self.lower_field_graph_to_expr(body_ctx, body, local_point)
+            }
+            FieldExpr::RepeatLinear { repeat, body } => {
+                let local_point = self.lower_field_wrapper_point(
+                    body_ctx,
+                    "field_repeat_linear_point",
+                    "repeat",
+                    repeat,
+                    point_expr,
+                );
+                self.lower_field_graph_to_expr(body_ctx, body, local_point)
+            }
+            FieldExpr::RepeatGrid { repeat, body } => {
+                let local_point = self.lower_field_wrapper_point(
+                    body_ctx,
+                    "field_repeat_grid_point",
+                    "repeat",
+                    repeat,
+                    point_expr,
+                );
+                self.lower_field_graph_to_expr(body_ctx, body, local_point)
+            }
+            FieldExpr::RadialRepeat { radial, body } => {
+                let local_point = self.lower_field_wrapper_point(
+                    body_ctx,
+                    "field_radial_repeat_point",
+                    "radial",
+                    radial,
+                    point_expr,
+                );
+                self.lower_field_graph_to_expr(body_ctx, body, local_point)
+            }
+            FieldExpr::MirrorArray { mirror, body } => {
+                let local_point = self.lower_field_wrapper_point(
+                    body_ctx,
+                    "field_mirror_array_point",
                     "mirror",
                     mirror,
                     point_expr,
                 );
                 self.lower_field_graph_to_expr(body_ctx, body, local_point)
             }
-            FieldExpr::Repeat { repeat, body } => {
+            FieldExpr::InstanceArray { instance, body } => {
                 let local_point = self.lower_field_wrapper_point(
                     body_ctx,
-                    "field_repeat_point",
-                    "period",
-                    repeat,
-                    point_expr,
-                );
-                self.lower_field_graph_to_expr(body_ctx, body, local_point)
-            }
-            FieldExpr::Instance { instance, body } => {
-                let local_point = self.lower_field_wrapper_point(
-                    body_ctx,
-                    "field_instance_point",
+                    "field_instance_array_point",
                     "instance",
                     instance,
                     point_expr,
                 );
                 self.lower_field_graph_to_expr(body_ctx, body, local_point)
             }
+            FieldExpr::SmoothUnion { smoothing, items } => {
+                let Some(first) = items.first() else {
+                    return body_ctx.alloc_expr(Expr::Literal(Literal::Nil), span);
+                };
+                let smoothing_expr = Self::wrapped_body_value_expr(smoothing)
+                    .expect("smooth union smoothing expression");
+                let smoothing_value =
+                    self.clone_wrapped_body_expr(smoothing, smoothing_expr, body_ctx);
+                let mut current = self.lower_field_graph_to_expr(body_ctx, first, point_expr);
+                for item in items.iter().skip(1) {
+                    let rhs = self.lower_field_graph_to_expr(body_ctx, item, point_expr);
+                    let callee = body_ctx
+                        .alloc_expr(Expr::Variable(SmolStr::new("field_smooth_union")), span);
+                    current = body_ctx.alloc_expr(
+                        Expr::Call {
+                            callee,
+                            type_args: Vec::new(),
+                            args: vec![
+                                Arg::Named {
+                                    name: SmolStr::new("smoothing"),
+                                    value: smoothing_value,
+                                    span,
+                                    name_span: span,
+                                },
+                                Arg::Named {
+                                    name: SmolStr::new("left"),
+                                    value: current,
+                                    span,
+                                    name_span: span,
+                                },
+                                Arg::Named {
+                                    name: SmolStr::new("right"),
+                                    value: rhs,
+                                    span,
+                                    name_span: span,
+                                },
+                            ],
+                        },
+                        span,
+                    );
+                }
+                current
+            }
+            FieldExpr::SmoothIntersection { smoothing, items } => {
+                let Some(first) = items.first() else {
+                    return body_ctx.alloc_expr(Expr::Literal(Literal::Nil), span);
+                };
+                let smoothing_expr = Self::wrapped_body_value_expr(smoothing)
+                    .expect("smooth intersection smoothing expression");
+                let smoothing_value =
+                    self.clone_wrapped_body_expr(smoothing, smoothing_expr, body_ctx);
+                let mut current = self.lower_field_graph_to_expr(body_ctx, first, point_expr);
+                for item in items.iter().skip(1) {
+                    let rhs = self.lower_field_graph_to_expr(body_ctx, item, point_expr);
+                    let callee = body_ctx.alloc_expr(
+                        Expr::Variable(SmolStr::new("field_smooth_intersection")),
+                        span,
+                    );
+                    current = body_ctx.alloc_expr(
+                        Expr::Call {
+                            callee,
+                            type_args: Vec::new(),
+                            args: vec![
+                                Arg::Named {
+                                    name: SmolStr::new("smoothing"),
+                                    value: smoothing_value,
+                                    span,
+                                    name_span: span,
+                                },
+                                Arg::Named {
+                                    name: SmolStr::new("left"),
+                                    value: current,
+                                    span,
+                                    name_span: span,
+                                },
+                                Arg::Named {
+                                    name: SmolStr::new("right"),
+                                    value: rhs,
+                                    span,
+                                    name_span: span,
+                                },
+                            ],
+                        },
+                        span,
+                    );
+                }
+                current
+            }
+            FieldExpr::SmoothSubtract {
+                smoothing,
+                left,
+                right,
+            } => {
+                let smoothing_expr = Self::wrapped_body_value_expr(smoothing)
+                    .expect("smooth subtract smoothing expression");
+                let smoothing_value =
+                    self.clone_wrapped_body_expr(smoothing, smoothing_expr, body_ctx);
+                let left = self.lower_field_graph_to_expr(body_ctx, left, point_expr);
+                let right = self.lower_field_graph_to_expr(body_ctx, right, point_expr);
+                let callee = body_ctx
+                    .alloc_expr(Expr::Variable(SmolStr::new("field_smooth_subtract")), span);
+                body_ctx.alloc_expr(
+                    Expr::Call {
+                        callee,
+                        type_args: Vec::new(),
+                        args: vec![
+                            Arg::Named {
+                                name: SmolStr::new("smoothing"),
+                                value: smoothing_value,
+                                span,
+                                name_span: span,
+                            },
+                            Arg::Named {
+                                name: SmolStr::new("left"),
+                                value: left,
+                                span,
+                                name_span: span,
+                            },
+                            Arg::Named {
+                                name: SmolStr::new("right"),
+                                value: right,
+                                span,
+                                name_span: span,
+                            },
+                        ],
+                    },
+                    span,
+                )
+            }
+            FieldExpr::Bend { bend, body } => {
+                let local_point = self.lower_field_wrapper_point(
+                    body_ctx,
+                    "field_bend_point",
+                    "bend",
+                    bend,
+                    point_expr,
+                );
+                self.lower_field_graph_to_expr(body_ctx, body, local_point)
+            }
+            FieldExpr::Twist { twist, body } => {
+                let local_point = self.lower_field_wrapper_point(
+                    body_ctx,
+                    "field_twist_point",
+                    "twist",
+                    twist,
+                    point_expr,
+                );
+                self.lower_field_graph_to_expr(body_ctx, body, local_point)
+            }
+            FieldExpr::Taper { taper, body } => {
+                let local_point = self.lower_field_wrapper_point(
+                    body_ctx,
+                    "field_taper_point",
+                    "taper",
+                    taper,
+                    point_expr,
+                );
+                self.lower_field_graph_to_expr(body_ctx, body, local_point)
+            }
+            FieldExpr::Displace { displace, body } => {
+                let local_point = self.lower_field_wrapper_point(
+                    body_ctx,
+                    "field_displace_point",
+                    "displace",
+                    displace,
+                    point_expr,
+                );
+                self.lower_field_graph_to_expr(body_ctx, body, local_point)
+            }
+            FieldExpr::Extrude { height, profile } => {
+                let height_expr =
+                    Self::wrapped_body_value_expr(height).expect("extrude height expression");
+                let height_value = self.clone_wrapped_body_expr(height, height_expr, body_ctx);
+                let y = self.lower_member_expr(body_ctx, point_expr, "y");
+                let point_x = self.lower_member_expr(body_ctx, point_expr, "x");
+                let point_z = self.lower_member_expr(body_ctx, point_expr, "z");
+                let profile_point = self.lower_vec2_expr(body_ctx, point_x, point_z);
+                let profile_distance =
+                    self.lower_profile_expr_to_distance(body_ctx, profile, profile_point);
+                let abs_height = self.lower_scalar_call(body_ctx, "abs", "value", height_value);
+                let half_height_value = self.lower_float_literal(body_ctx, 0.5);
+                let half_height = body_ctx.alloc_expr(
+                    Expr::Binary {
+                        lhs: abs_height,
+                        op: BinaryOp::Mul,
+                        rhs: half_height_value,
+                        op_span: span,
+                    },
+                    span,
+                );
+                let abs_y = self.lower_scalar_call(body_ctx, "abs", "value", y);
+                let axial = body_ctx.alloc_expr(
+                    Expr::Binary {
+                        lhs: abs_y,
+                        op: BinaryOp::Sub,
+                        rhs: half_height,
+                        op_span: span,
+                    },
+                    span,
+                );
+                self.lower_profile_cap_distance(body_ctx, profile_distance, axial)
+            }
+            FieldExpr::Revolve { profile } => {
+                let point_x = self.lower_member_expr(body_ctx, point_expr, "x");
+                let point_z = self.lower_member_expr(body_ctx, point_expr, "z");
+                let radial_point = self.lower_vec2_expr(body_ctx, point_x, point_z);
+                let radial = self.lower_scalar_call(body_ctx, "length", "value", radial_point);
+                let point_y = self.lower_member_expr(body_ctx, point_expr, "y");
+                let profile_point = self.lower_vec2_expr(body_ctx, radial, point_y);
+                self.lower_profile_expr_to_distance(body_ctx, profile, profile_point)
+            }
+            FieldExpr::Sweep { path, profile } => {
+                let path_expr = Self::wrapped_body_value_expr(path).expect("sweep path expression");
+                let path_value = self.clone_wrapped_body_expr(path, path_expr, body_ctx);
+                let coords = self.lower_named_call_expr(
+                    body_ctx,
+                    "field_sweep_coords",
+                    vec![("path", path_value), ("point", point_expr)],
+                );
+                let coords_x = self.lower_member_expr(body_ctx, coords, "x");
+                let coords_y = self.lower_member_expr(body_ctx, coords, "y");
+                let profile_point = self.lower_vec2_expr(body_ctx, coords_x, coords_y);
+                let profile_distance =
+                    self.lower_profile_expr_to_distance(body_ctx, profile, profile_point);
+                let coords_z = self.lower_member_expr(body_ctx, coords, "z");
+                let path_length = self.lower_scalar_call(body_ctx, "length", "value", path_value);
+                let half_factor = self.lower_float_literal(body_ctx, 0.5);
+                let half_length = body_ctx.alloc_expr(
+                    Expr::Binary {
+                        lhs: path_length,
+                        op: BinaryOp::Mul,
+                        rhs: half_factor,
+                        op_span: span,
+                    },
+                    span,
+                );
+                let abs_z = self.lower_scalar_call(body_ctx, "abs", "value", coords_z);
+                let axial = body_ctx.alloc_expr(
+                    Expr::Binary {
+                        lhs: abs_z,
+                        op: BinaryOp::Sub,
+                        rhs: half_length,
+                        op_span: span,
+                    },
+                    span,
+                );
+                self.lower_profile_cap_distance(body_ctx, profile_distance, axial)
+            }
+            FieldExpr::Loft { height, from, to } => {
+                let height_expr =
+                    Self::wrapped_body_value_expr(height).expect("loft height expression");
+                let height_value = self.clone_wrapped_body_expr(height, height_expr, body_ctx);
+                let abs_height = self.lower_scalar_call(body_ctx, "abs", "value", height_value);
+                let half_height_factor = self.lower_float_literal(body_ctx, 0.5);
+                let half_height = body_ctx.alloc_expr(
+                    Expr::Binary {
+                        lhs: abs_height,
+                        op: BinaryOp::Mul,
+                        rhs: half_height_factor,
+                        op_span: span,
+                    },
+                    span,
+                );
+                let min_safe_height = self.lower_float_literal(body_ctx, 0.0001);
+                let safe_height = self.lower_binary_call(
+                    body_ctx,
+                    "max",
+                    ("left", abs_height),
+                    ("right", min_safe_height),
+                );
+                let y = self.lower_member_expr(body_ctx, point_expr, "y");
+                let point_x = self.lower_member_expr(body_ctx, point_expr, "x");
+                let point_z = self.lower_member_expr(body_ctx, point_expr, "z");
+                let profile_point = self.lower_vec2_expr(body_ctx, point_x, point_z);
+                let from_distance =
+                    self.lower_profile_expr_to_distance(body_ctx, from, profile_point);
+                let to_distance = self.lower_profile_expr_to_distance(body_ctx, to, profile_point);
+                let y_plus_half = body_ctx.alloc_expr(
+                    Expr::Binary {
+                        lhs: y,
+                        op: BinaryOp::Add,
+                        rhs: half_height,
+                        op_span: span,
+                    },
+                    span,
+                );
+                let unclamped_t = body_ctx.alloc_expr(
+                    Expr::Binary {
+                        lhs: y_plus_half,
+                        op: BinaryOp::Div,
+                        rhs: safe_height,
+                        op_span: span,
+                    },
+                    span,
+                );
+                let t_min = self.lower_float_literal(body_ctx, 0.0);
+                let t_max = self.lower_float_literal(body_ctx, 1.0);
+                let t = self.lower_ternary_call(
+                    body_ctx,
+                    "clamp",
+                    ("value", unclamped_t),
+                    ("min", t_min),
+                    ("max", t_max),
+                );
+                let mixed = self.lower_ternary_call(
+                    body_ctx,
+                    "mix",
+                    ("value", from_distance),
+                    ("other", to_distance),
+                    ("t", t),
+                );
+                let abs_y = self.lower_scalar_call(body_ctx, "abs", "value", y);
+                let axial = body_ctx.alloc_expr(
+                    Expr::Binary {
+                        lhs: abs_y,
+                        op: BinaryOp::Sub,
+                        rhs: half_height,
+                        op_span: span,
+                    },
+                    span,
+                );
+                self.lower_profile_cap_distance(body_ctx, mixed, axial)
+            }
             FieldExpr::Custom { body } => {
                 let _ = body;
                 body_ctx.alloc_expr(Expr::Literal(Literal::Nil), span)
             }
         }
+    }
+
+    fn lower_profile_expr_to_distance(
+        &mut self,
+        body_ctx: &mut BodyLoweringContext,
+        expr: &ProfileExpr,
+        point_expr: Idx<Expr>,
+    ) -> Idx<Expr> {
+        match expr {
+            ProfileExpr::Primitive { primitive, args } => {
+                let callee = body_ctx.alloc_expr(
+                    Expr::Variable(SmolStr::new(Self::profile_primitive_callee_name(
+                        *primitive,
+                    ))),
+                    body_ctx.empty_span(),
+                );
+                let mut call_args = vec![Arg::Named {
+                    name: SmolStr::new("p"),
+                    value: point_expr,
+                    span: body_ctx.empty_span(),
+                    name_span: body_ctx.empty_span(),
+                }];
+                call_args.extend(args.iter().cloned().filter(|arg| match arg {
+                    Arg::Named { name, .. } => name.as_str() != "p",
+                    _ => true,
+                }));
+                body_ctx.alloc_expr(
+                    Expr::Call {
+                        callee,
+                        type_args: Vec::new(),
+                        args: call_args,
+                    },
+                    body_ctx.empty_span(),
+                )
+            }
+        }
+    }
+
+    fn lower_profile_cap_distance(
+        &mut self,
+        body_ctx: &mut BodyLoweringContext,
+        profile_distance: Idx<Expr>,
+        axial_distance: Idx<Expr>,
+    ) -> Idx<Expr> {
+        let span = body_ctx.empty_span();
+        let d = self.lower_vec2_expr(body_ctx, profile_distance, axial_distance);
+        let zero_x = self.lower_float_literal(body_ctx, 0.0);
+        let zero_y = self.lower_float_literal(body_ctx, 0.0);
+        let zero = self.lower_vec2_expr(body_ctx, zero_x, zero_y);
+        let outside = self.lower_binary_call(body_ctx, "max", ("left", d), ("right", zero));
+        let d_x = self.lower_member_expr(body_ctx, d, "x");
+        let d_y = self.lower_member_expr(body_ctx, d, "y");
+        let max_xy = self.lower_binary_call(body_ctx, "max", ("left", d_x), ("right", d_y));
+        let inside_cap = self.lower_float_literal(body_ctx, 0.0);
+        let inside =
+            self.lower_binary_call(body_ctx, "min", ("left", max_xy), ("right", inside_cap));
+        let outside_len = self.lower_scalar_call(body_ctx, "length", "value", outside);
+        body_ctx.alloc_expr(
+            Expr::Binary {
+                lhs: inside,
+                op: BinaryOp::Add,
+                rhs: outside_len,
+                op_span: span,
+            },
+            span,
+        )
+    }
+
+    fn lower_named_call_expr(
+        &mut self,
+        body_ctx: &mut BodyLoweringContext,
+        callee_name: &str,
+        args: Vec<(&str, Idx<Expr>)>,
+    ) -> Idx<Expr> {
+        let span = body_ctx.empty_span();
+        let callee = body_ctx.alloc_expr(Expr::Variable(SmolStr::new(callee_name)), span);
+        body_ctx.alloc_expr(
+            Expr::Call {
+                callee,
+                type_args: Vec::new(),
+                args: args
+                    .into_iter()
+                    .map(|(name, value)| Arg::Named {
+                        name: SmolStr::new(name),
+                        value,
+                        span,
+                        name_span: span,
+                    })
+                    .collect(),
+            },
+            span,
+        )
+    }
+
+    fn lower_scalar_call(
+        &mut self,
+        body_ctx: &mut BodyLoweringContext,
+        callee_name: &str,
+        arg_name: &str,
+        value: Idx<Expr>,
+    ) -> Idx<Expr> {
+        self.lower_named_call_expr(body_ctx, callee_name, vec![(arg_name, value)])
+    }
+
+    fn lower_binary_call(
+        &mut self,
+        body_ctx: &mut BodyLoweringContext,
+        callee_name: &str,
+        a: (&str, Idx<Expr>),
+        b: (&str, Idx<Expr>),
+    ) -> Idx<Expr> {
+        self.lower_named_call_expr(body_ctx, callee_name, vec![a, b])
+    }
+
+    fn lower_ternary_call(
+        &mut self,
+        body_ctx: &mut BodyLoweringContext,
+        callee_name: &str,
+        a: (&str, Idx<Expr>),
+        b: (&str, Idx<Expr>),
+        c: (&str, Idx<Expr>),
+    ) -> Idx<Expr> {
+        self.lower_named_call_expr(body_ctx, callee_name, vec![a, b, c])
+    }
+
+    fn lower_member_expr(
+        &mut self,
+        body_ctx: &mut BodyLoweringContext,
+        object: Idx<Expr>,
+        member: &str,
+    ) -> Idx<Expr> {
+        let span = body_ctx.empty_span();
+        body_ctx.alloc_expr(
+            Expr::Member {
+                object,
+                member: SmolStr::new(member),
+                member_span: span,
+            },
+            span,
+        )
+    }
+
+    fn lower_vec2_expr(
+        &mut self,
+        body_ctx: &mut BodyLoweringContext,
+        x: Idx<Expr>,
+        y: Idx<Expr>,
+    ) -> Idx<Expr> {
+        self.lower_named_call_expr(body_ctx, "vec2", vec![("x", x), ("y", y)])
+    }
+
+    fn lower_float_literal(&mut self, body_ctx: &mut BodyLoweringContext, value: f64) -> Idx<Expr> {
+        body_ctx.alloc_expr(Expr::Literal(Literal::Float(value)), body_ctx.empty_span())
     }
 
     fn field_primitive_from_name(name: &str) -> Option<FieldPrimitive> {
@@ -1609,6 +2972,40 @@ impl LoweringContext {
             "cylinder" => Some(FieldPrimitive::Cylinder),
             "plane" => Some(FieldPrimitive::Plane),
             "torus" => Some(FieldPrimitive::Torus),
+            "rounded_box" => Some(FieldPrimitive::RoundedBox),
+            "ellipsoid" => Some(FieldPrimitive::Ellipsoid),
+            "cone" => Some(FieldPrimitive::Cone),
+            "capped_cone" => Some(FieldPrimitive::CappedCone),
+            "box_frame" => Some(FieldPrimitive::BoxFrame),
+            "slab" => Some(FieldPrimitive::Slab),
+            "triangle_prism" => Some(FieldPrimitive::TrianglePrism),
+            "hex_prism" => Some(FieldPrimitive::HexPrism),
+            _ => None,
+        }
+    }
+
+    fn is_profile_primitive_name(name: &str) -> bool {
+        matches!(
+            name,
+            "circle2"
+                | "rect2"
+                | "rounded_rect2"
+                | "capsule2"
+                | "segment2"
+                | "polygon2"
+                | "polyline2"
+        )
+    }
+
+    fn profile_primitive_from_name(name: &str) -> Option<ProfilePrimitive> {
+        match name {
+            "circle2" => Some(ProfilePrimitive::Circle2),
+            "rect2" => Some(ProfilePrimitive::Rect2),
+            "rounded_rect2" => Some(ProfilePrimitive::RoundedRect2),
+            "capsule2" => Some(ProfilePrimitive::Capsule2),
+            "segment2" => Some(ProfilePrimitive::Segment2),
+            "polygon2" => Some(ProfilePrimitive::Polygon2),
+            "polyline2" => Some(ProfilePrimitive::Polyline2),
             _ => None,
         }
     }
@@ -1621,6 +3018,26 @@ impl LoweringContext {
             FieldPrimitive::Cylinder => "cylinder",
             FieldPrimitive::Plane => "plane",
             FieldPrimitive::Torus => "torus",
+            FieldPrimitive::RoundedBox => "rounded_box",
+            FieldPrimitive::Ellipsoid => "ellipsoid",
+            FieldPrimitive::Cone => "cone",
+            FieldPrimitive::CappedCone => "capped_cone",
+            FieldPrimitive::BoxFrame => "box_frame",
+            FieldPrimitive::Slab => "slab",
+            FieldPrimitive::TrianglePrism => "triangle_prism",
+            FieldPrimitive::HexPrism => "hex_prism",
+        }
+    }
+
+    fn profile_primitive_callee_name(primitive: ProfilePrimitive) -> &'static str {
+        match primitive {
+            ProfilePrimitive::Circle2 => "circle2",
+            ProfilePrimitive::Rect2 => "rect2",
+            ProfilePrimitive::RoundedRect2 => "rounded_rect2",
+            ProfilePrimitive::Capsule2 => "capsule2",
+            ProfilePrimitive::Segment2 => "segment2",
+            ProfilePrimitive::Polygon2 => "polygon2",
+            ProfilePrimitive::Polyline2 => "polyline2",
         }
     }
 
@@ -3531,7 +4948,13 @@ field exact distance sphere(p: Vec3) -> F32 {
 }
 
 field exact distance shifted(p: Vec3) -> F32 {
-    transform = vec3(1.0, 0.0, 0.0) {
+    translate = vec3(1.0, 0.0, 0.0) {
+        use sphere
+    }
+}
+
+field exact distance scaled_literal(p: Vec3) -> F32 {
+    uniform_scale = 2.0 {
         use sphere
     }
 }
@@ -3540,20 +4963,24 @@ field exact distance ground(p: Vec3) -> F32 {
     plane(normal = vec3(0.0, 1.0, 0.0), offset = 0.0)
 }
 
+field conservative distance squashed(p: Vec3) -> F32 {
+    ellipsoid(radii = vec3(1.0, 0.5, 0.75))
+}
+
 field exact distance mirrored(p: Vec3) -> F32 {
-    mirror = vec3(0.0, 1.0, 0.0) {
+    mirror_array = vec3(0.0, 1.0, 0.0) {
         use sphere
     }
 }
 
 field exact distance repeated(p: Vec3) -> F32 {
-    repeat = vec3(2.0, 0.0, 0.0) {
+    repeat_grid = vec3(2.0, 0.0, 0.0) {
         use sphere
     }
 }
 
 field conservative distance instanced(p: Vec3) -> F32 {
-    instance = vec3(0.0, 0.0, 1.0) {
+    instance_array = vec3(0.0, 0.0, 1.0) {
         use sphere
     }
 }
@@ -3595,6 +5022,18 @@ field conservative distance instanced(p: Vec3) -> F32 {
             })
         );
         assert_eq!(
+            field("scaled_literal").field.clone(),
+            Some(FieldMetadata {
+                class: FieldClass::Exact,
+                kind: FieldKind::Distance,
+                support: FieldSupport::Bounded,
+                bounds: FieldBounds::Bounded,
+                trace: GraphTraceMetadata::exact(FieldSupport::Bounded, FieldBounds::Bounded, true,),
+                authored_support: None,
+                authored_bounds: None,
+            })
+        );
+        assert_eq!(
             field("ground").field.clone(),
             Some(FieldMetadata {
                 class: FieldClass::Exact,
@@ -3605,6 +5044,22 @@ field conservative distance instanced(p: Vec3) -> F32 {
                     FieldSupport::Unbounded,
                     FieldBounds::Unbounded,
                     false,
+                ),
+                authored_support: None,
+                authored_bounds: None,
+            })
+        );
+        assert_eq!(
+            field("squashed").field.clone(),
+            Some(FieldMetadata {
+                class: FieldClass::Conservative,
+                kind: FieldKind::Distance,
+                support: FieldSupport::Bounded,
+                bounds: FieldBounds::Bounded,
+                trace: GraphTraceMetadata::conservative(
+                    FieldSupport::Bounded,
+                    FieldBounds::Bounded,
+                    true,
                 ),
                 authored_support: None,
                 authored_bounds: None,
@@ -3645,11 +5100,14 @@ field conservative distance instanced(p: Vec3) -> F32 {
                 kind: FieldKind::Distance,
                 support: FieldSupport::Bounded,
                 bounds: FieldBounds::Bounded,
-                trace: GraphTraceMetadata::conservative(
-                    FieldSupport::Bounded,
-                    FieldBounds::Bounded,
-                    false,
-                ),
+                trace: GraphTraceMetadata {
+                    class: FieldClass::Conservative,
+                    support: FieldSupport::Bounded,
+                    bounds: FieldBounds::Bounded,
+                    can_coarse_support_pruning: false,
+                    smooth_op_count: 0,
+                    deform_op_count: 1,
+                },
                 authored_support: None,
                 authored_bounds: None,
             })
@@ -3660,7 +5118,7 @@ field conservative distance instanced(p: Vec3) -> F32 {
     fn test_lower_field_metadata_resolves_forward_field_references() {
         let input = "\
 field exact distance shifted(p: Vec3) -> F32 {
-    transform = vec3(1.0, 0.0, 0.0) {
+    translate = vec3(1.0, 0.0, 0.0) {
         use sphere
     }
 }
@@ -3685,11 +5143,7 @@ field exact distance sphere(p: Vec3) -> F32 {
                 kind: FieldKind::Distance,
                 support: FieldSupport::Bounded,
                 bounds: FieldBounds::Bounded,
-                trace: GraphTraceMetadata::exact(
-                    FieldSupport::Bounded,
-                    FieldBounds::Bounded,
-                    true,
-                ),
+                trace: GraphTraceMetadata::exact(FieldSupport::Bounded, FieldBounds::Bounded, true,),
                 authored_support: None,
                 authored_bounds: None,
             })
@@ -3882,10 +5336,10 @@ field exact distance scene(p: Vec3) -> F32 {
     fn test_lower_semantic_field_wrappers_preserve_graph_structure() {
         let input = "\
 field exact distance scene(p: Vec3) -> F32 {
-    transform = vec3(1, 0, 0) {
-                mirror = vec3(0, 1, 0) {
-            repeat = vec3(2, 2, 2) {
-                instance = vec3(0, 0, 1) {
+    translate = vec3(1, 0, 0) {
+        mirror_array = vec3(0, 1, 0) {
+            repeat_grid = vec3(2, 2, 2) {
+                instance_array = vec3(0, 0, 1) {
                     use sphere
                 }
             }
@@ -3901,48 +5355,48 @@ field exact distance scene(p: Vec3) -> F32 {
             .field_graph
             .as_ref()
             .expect("semantic field graph should be preserved");
-        let FieldExpr::Transform { transform, body } = &graph.root else {
-            panic!("expected transform field graph root");
+        let FieldExpr::Translate { translate, body } = &graph.root else {
+            panic!("expected translate field graph root");
         };
-        assert_eq!(transform.root_stmts.len(), 1);
-        let Stmt::Expr(_) = &transform.stmts[transform.root_stmts[0]] else {
-            panic!("expected transform wrapper body to be a single expr stmt");
+        assert_eq!(translate.root_stmts.len(), 1);
+        let Stmt::Expr(_) = &translate.stmts[translate.root_stmts[0]] else {
+            panic!("expected translate wrapper body to be a single expr stmt");
         };
 
-        let FieldExpr::Mirror {
+        let FieldExpr::MirrorArray {
             mirror,
             body: mirror_body,
         } = &**body
         else {
-            panic!("expected mirror field graph body");
+            panic!("expected mirror array field graph body");
         };
         assert_eq!(mirror.root_stmts.len(), 1);
         let Stmt::Expr(_) = &mirror.stmts[mirror.root_stmts[0]] else {
-            panic!("expected mirror wrapper body to be a single expr stmt");
+            panic!("expected mirror array wrapper body to be a single expr stmt");
         };
 
-        let FieldExpr::Repeat {
+        let FieldExpr::RepeatGrid {
             repeat,
             body: repeat_body,
         } = &**mirror_body
         else {
-            panic!("expected repeat field graph body");
+            panic!("expected repeat grid field graph body");
         };
         assert_eq!(repeat.root_stmts.len(), 1);
         let Stmt::Expr(_) = &repeat.stmts[repeat.root_stmts[0]] else {
-            panic!("expected repeat wrapper body to be a single expr stmt");
+            panic!("expected repeat grid wrapper body to be a single expr stmt");
         };
 
-        let FieldExpr::Instance {
+        let FieldExpr::InstanceArray {
             instance,
             body: instance_body,
         } = &**repeat_body
         else {
-            panic!("expected instance field graph body");
+            panic!("expected instance array field graph body");
         };
         assert_eq!(instance.root_stmts.len(), 1);
         let Stmt::Expr(_) = &instance.stmts[instance.root_stmts[0]] else {
-            panic!("expected instance wrapper body to be a single expr stmt");
+            panic!("expected instance array wrapper body to be a single expr stmt");
         };
 
         match &**instance_body {
@@ -4127,7 +5581,11 @@ shape subtract_shape {
             .map(|(_, shape)| shape)
             .expect("subtract shape");
         let subtract_graph = subtract.graph.as_ref().expect("subtract graph");
-        match subtract_graph.provenance.as_ref().expect("subtract provenance") {
+        match subtract_graph
+            .provenance
+            .as_ref()
+            .expect("subtract provenance")
+        {
             ShapeProvenanceExpr::Subtract {
                 provenance,
                 left,

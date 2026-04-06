@@ -191,9 +191,18 @@ fn infer_list(
             Some(_) => return Type::Unknown,
         }
     }
-    element_type
-        .map(|ty| Type::List(Box::new(ty)))
-        .unwrap_or(Type::Unknown)
+    let Some(element_type) = element_type else {
+        return if ctx.in_portable_lane() {
+            Type::Array(Box::new(Type::Unknown), 0)
+        } else {
+            Type::Unknown
+        };
+    };
+    if ctx.in_portable_lane() {
+        Type::Array(Box::new(element_type), items.len())
+    } else {
+        Type::List(Box::new(element_type))
+    }
 }
 
 fn infer_map(

@@ -174,7 +174,10 @@ fn parse_capture_expr(
     m: crate::parser::Marker,
 ) -> Option<crate::parser::CompletedMarker> {
     p.expect(SyntaxKind::CaptureKw);
-    if !matches!(p.peek(), SyntaxKind::Ident | SyntaxKind::SelfKw | SyntaxKind::LParen) {
+    if !matches!(
+        p.peek(),
+        SyntaxKind::Ident | SyntaxKind::SelfKw | SyntaxKind::LParen
+    ) {
         p.error_with_message_no_bump("expected scene target after 'capture'");
         return Some(m.complete(p, SyntaxKind::CaptureExpr));
     }

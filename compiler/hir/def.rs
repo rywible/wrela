@@ -55,6 +55,8 @@ pub enum FunctionRole {
     Kernel,
     System,
     Field,
+    Radiance,
+    Volume,
     Shape,
     Material,
 }
@@ -93,6 +95,33 @@ pub enum FieldPrimitive {
     Cylinder,
     Plane,
     Torus,
+    RoundedBox,
+    Ellipsoid,
+    Cone,
+    CappedCone,
+    BoxFrame,
+    Slab,
+    TrianglePrism,
+    HexPrism,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfilePrimitive {
+    Circle2,
+    Rect2,
+    RoundedRect2,
+    Capsule2,
+    Segment2,
+    Polygon2,
+    Polyline2,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProfileExpr {
+    Primitive {
+        primitive: ProfilePrimitive,
+        args: Vec<Arg>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -112,6 +141,8 @@ pub struct GraphTraceMetadata {
     pub support: FieldSupport,
     pub bounds: FieldBounds,
     pub can_coarse_support_pruning: bool,
+    pub smooth_op_count: u32,
+    pub deform_op_count: u32,
 }
 
 impl GraphTraceMetadata {
@@ -121,6 +152,8 @@ impl GraphTraceMetadata {
             support: FieldSupport::Unknown,
             bounds: FieldBounds::Unknown,
             can_coarse_support_pruning: false,
+            smooth_op_count: 0,
+            deform_op_count: 0,
         }
     }
 
@@ -134,6 +167,8 @@ impl GraphTraceMetadata {
             support,
             bounds,
             can_coarse_support_pruning,
+            smooth_op_count: 0,
+            deform_op_count: 0,
         }
     }
 
@@ -147,6 +182,8 @@ impl GraphTraceMetadata {
             support,
             bounds,
             can_coarse_support_pruning,
+            smooth_op_count: 0,
+            deform_op_count: 0,
         }
     }
 
@@ -155,6 +192,18 @@ impl GraphTraceMetadata {
             (FieldClass::Exact, FieldClass::Exact) => FieldClass::Exact,
             _ => FieldClass::Conservative,
         }
+    }
+
+    pub const fn with_march_cost(mut self, smooth_op_count: u32, deform_op_count: u32) -> Self {
+        self.smooth_op_count = smooth_op_count;
+        self.deform_op_count = deform_op_count;
+        self
+    }
+
+    pub const fn add_march_cost(mut self, smooth_op_count: u32, deform_op_count: u32) -> Self {
+        self.smooth_op_count += smooth_op_count;
+        self.deform_op_count += deform_op_count;
+        self
     }
 }
 
@@ -183,21 +232,90 @@ pub enum FieldExpr {
         left: Box<FieldExpr>,
         right: Box<FieldExpr>,
     },
-    Transform {
+    Translate {
+        translate: Body,
+        body: Box<FieldExpr>,
+    },
+    Rotate {
+        rotate: Body,
+        body: Box<FieldExpr>,
+    },
+    UniformScale {
+        scale: Body,
+        body: Box<FieldExpr>,
+    },
+    AffineTransform {
         transform: Body,
         body: Box<FieldExpr>,
     },
-    Mirror {
-        mirror: Body,
+    Warp {
+        warp: Body,
         body: Box<FieldExpr>,
     },
-    Repeat {
+    RepeatLinear {
         repeat: Body,
         body: Box<FieldExpr>,
     },
-    Instance {
+    RepeatGrid {
+        repeat: Body,
+        body: Box<FieldExpr>,
+    },
+    RadialRepeat {
+        radial: Body,
+        body: Box<FieldExpr>,
+    },
+    MirrorArray {
+        mirror: Body,
+        body: Box<FieldExpr>,
+    },
+    InstanceArray {
         instance: Body,
         body: Box<FieldExpr>,
+    },
+    SmoothUnion {
+        smoothing: Body,
+        items: Vec<FieldExpr>,
+    },
+    SmoothIntersection {
+        smoothing: Body,
+        items: Vec<FieldExpr>,
+    },
+    SmoothSubtract {
+        smoothing: Body,
+        left: Box<FieldExpr>,
+        right: Box<FieldExpr>,
+    },
+    Bend {
+        bend: Body,
+        body: Box<FieldExpr>,
+    },
+    Twist {
+        twist: Body,
+        body: Box<FieldExpr>,
+    },
+    Taper {
+        taper: Body,
+        body: Box<FieldExpr>,
+    },
+    Displace {
+        displace: Body,
+        body: Box<FieldExpr>,
+    },
+    Extrude {
+        height: Body,
+        profile: ProfileExpr,
+    },
+    Revolve {
+        profile: ProfileExpr,
+    },
+    Sweep {
+        path: Body,
+        profile: ProfileExpr,
+    },
+    Loft {
+        height: Body,
+        from: ProfileExpr,
+        to: ProfileExpr,
     },
     Custom {
         body: Body,
@@ -215,6 +333,8 @@ pub struct ShapeGraph {
 pub struct ShapeLeaf {
     pub field: SmolStr,
     pub material: SmolStr,
+    pub radiance: Option<SmolStr>,
+    pub volume: Option<SmolStr>,
     pub payload: Body,
     pub feature_id: u64,
 }
@@ -324,6 +444,8 @@ impl Function {
             FunctionRole::Function | FunctionRole::System => FunctionLane::Host,
             FunctionRole::Kernel
             | FunctionRole::Field
+            | FunctionRole::Radiance
+            | FunctionRole::Volume
             | FunctionRole::Shape
             | FunctionRole::Material => FunctionLane::Portable,
         }

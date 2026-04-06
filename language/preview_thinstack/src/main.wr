@@ -4,129 +4,147 @@ field exact distance ground(p: Vec3) -> F32 {
     plane(normal=vec3(0.0, 1.0, 0.0), offset=1.0)
 }
 
-field conservative distance slab_0(p: Vec3) -> F32 {
-    local = p - vec3(-0.34, -0.74, 0.0)
-    abs_local = vec3(abs(local.x), abs(local.y), abs(local.z))
-    q = abs_local - vec3(1.02, 0.05, 0.72)
-    outside = length(max(q, vec3(0.0, 0.0, 0.0)))
-    inside = min(max(q.x, max(q.y, q.z)), 0.0)
-    return outside + inside
+field conservative distance torso(p: Vec3) -> F32 {
+    loft = f32(1.24) {
+        from rounded_rect2(half = vec2(0.24, 0.18), radius = 0.10)
+        to rounded_rect2(half = vec2(0.36, 0.26), radius = 0.12)
+    }
 }
 
-field conservative distance slab_1(p: Vec3) -> F32 {
-    local = p - vec3(-0.22, -0.50, 0.02)
-    abs_local = vec3(abs(local.x), abs(local.y), abs(local.z))
-    q = abs_local - vec3(0.94, 0.045, 0.66)
-    outside = length(max(q, vec3(0.0, 0.0, 0.0)))
-    inside = min(max(q.x, max(q.y, q.z)), 0.0)
-    return outside + inside
+field conservative distance hips(p: Vec3) -> F32 {
+    translate = vec3(0.0, -0.58, 0.0) {
+        extrude = f32(0.34) {
+            rounded_rect2(half = vec2(0.34, 0.18), radius = 0.08)
+        }
+    }
 }
 
-field conservative distance slab_2(p: Vec3) -> F32 {
-    local = p - vec3(-0.10, -0.26, -0.02)
-    abs_local = vec3(abs(local.x), abs(local.y), abs(local.z))
-    q = abs_local - vec3(0.84, 0.040, 0.60)
-    outside = length(max(q, vec3(0.0, 0.0, 0.0)))
-    inside = min(max(q.x, max(q.y, q.z)), 0.0)
-    return outside + inside
+field conservative distance head(p: Vec3) -> F32 {
+    translate = vec3(0.0, 0.94, 0.0) {
+        revolve {
+            circle2(radius = 0.28)
+        }
+    }
 }
 
-field conservative distance slab_3(p: Vec3) -> F32 {
-    local = p - vec3(0.04, -0.02, 0.03)
-    abs_local = vec3(abs(local.x), abs(local.y), abs(local.z))
-    q = abs_local - vec3(0.74, 0.035, 0.54)
-    outside = length(max(q, vec3(0.0, 0.0, 0.0)))
-    inside = min(max(q.x, max(q.y, q.z)), 0.0)
-    return outside + inside
+field conservative distance shoulder_shell(p: Vec3) -> F32 {
+    translate = vec3(0.0, 0.28, 0.0) {
+        extrude = f32(0.28) {
+            capsule2(a = vec2(-0.34, 0.0), b = vec2(0.34, 0.0), radius = 0.15)
+        }
+    }
 }
 
-field conservative distance slab_4(p: Vec3) -> F32 {
-    local = p - vec3(0.18, 0.22, -0.02)
-    abs_local = vec3(abs(local.x), abs(local.y), abs(local.z))
-    q = abs_local - vec3(0.64, 0.032, 0.48)
-    outside = length(max(q, vec3(0.0, 0.0, 0.0)))
-    inside = min(max(q.x, max(q.y, q.z)), 0.0)
-    return outside + inside
+field conservative distance leg_column(p: Vec3) -> F32 {
+    sweep = vec3(0.0, 0.94, 0.0) {
+        circle2(radius = 0.09)
+    }
 }
 
-field conservative distance slab_5(p: Vec3) -> F32 {
-    local = p - vec3(0.30, 0.46, 0.02)
-    abs_local = vec3(abs(local.x), abs(local.y), abs(local.z))
-    q = abs_local - vec3(0.54, 0.028, 0.42)
-    outside = length(max(q, vec3(0.0, 0.0, 0.0)))
-    inside = min(max(q.x, max(q.y, q.z)), 0.0)
-    return outside + inside
+field conservative distance arms(p: Vec3) -> F32 {
+    translate = vec3(0.0, 0.12, 0.0) {
+        mirror_array = vec3(1.0, 0.0, 0.0) {
+            translate = vec3(0.46, 0.0, 0.0) {
+                sweep = vec3(0.72, 0.0, 0.0) {
+                    circle2(radius = 0.07)
+                }
+            }
+        }
+    }
 }
 
-field conservative distance spine(p: Vec3) -> F32 {
-    local = p - vec3(0.58, 0.0, 0.38)
-    abs_local = vec3(abs(local.x), abs(local.y), abs(local.z))
-    q = abs_local - vec3(0.08, 1.05, 0.06)
-    outside = length(max(q, vec3(0.0, 0.0, 0.0)))
-    inside = min(max(q.x, max(q.y, q.z)), 0.0)
-    return outside + inside
+field conservative distance legs(p: Vec3) -> F32 {
+    mirror_array = vec3(1.0, 0.0, 0.0) {
+        translate = vec3(0.18, -1.04, 0.0) {
+            use leg_column
+        }
+    }
 }
 
-field conservative distance slabs(p: Vec3) -> F32 {
+field conservative distance body_cluster(p: Vec3) -> F32 {
     union {
         provenance_policy = nearest
-        use slab_0
-        use slab_1
-        use slab_2
-        use slab_3
-        use slab_4
-        use slab_5
+        use torso
+        use hips
+        use legs
+        use shoulder_shell
     }
 }
 
 field conservative distance scene(p: Vec3) -> F32 {
     union {
         provenance_policy = nearest
-        use slabs
-        use spine
+        use body_cluster
+        use head
+        use arms
         use ground
     }
 }
 
+radiance field scene_radiance(p: Vec3, direction: Vec3, feature_id: U64) -> Vec3 {
+    sky_t = clamp(0.5 + direction.y * 0.5, 0.0, 1.0)
+    silhouette = clamp(0.22 - abs(p.x) * 0.14 - abs(p.y - 0.9) * 0.10, 0.0, 0.22) / 0.22
+    feature_bias = clamp(f32(feature_id), 0.0, 1.0)
+    return vec3(8.0, 10.0, 16.0) * (1.0 - sky_t)
+        + vec3(58.0, 84.0, 130.0) * sky_t
+        + vec3(10.0, 9.0, 12.0) * silhouette * (0.35 + 0.65 * feature_bias)
+}
+
+volume field scene_volume(p: Vec3, surface_distance: F32) -> Medium {
+    torso_band = clamp((0.9 - abs(p.y)) * 0.5, 0.0, 0.5) / 0.5
+    near_surface = clamp((0.14 - abs(surface_distance)) * 6.0, 0.0, 1.0)
+    density = clamp(0.014 + torso_band * 0.025 + near_surface * 0.016, 0.0, 0.10)
+    return Medium(
+        density=density,
+        emission=vec3(2.5, 3.5, 5.5) * density + vec3(0.0, 0.01, 0.02) * near_surface,
+        anisotropy=0.12
+    )
+}
+
 material slab_surface(hit: Hit3) -> Surface {
+    slab_band = clamp(abs(hit.local_position.y) * 0.35 + abs(hit.local_normal.x) * 0.25, 0.0, 1.0)
     return Surface(
-        albedo=vec3(210.0, 168.0, 118.0),
-        roughness=0.26,
-        metalness=0.0,
-        clearcoat=0.0,
-        clearcoat_roughness=0.0,
-        sheen=0.0,
+        albedo=vec3(196.0, 156.0, 108.0) + vec3(20.0, 14.0, 10.0) * slab_band,
+        roughness=0.18 + slab_band * 0.18,
+        metalness=0.08 + clamp(hit.local_normal.z, 0.0, 1.0) * 0.12,
+        clearcoat=0.12 + clamp(hit.local_normal.y, 0.0, 1.0) * 0.18,
+        clearcoat_roughness=0.08 + abs(hit.local_position.x) * 0.10,
+        sheen=0.04 + abs(hit.local_normal.x) * 0.14,
         emissive=vec3(0.0, 0.0, 0.0)
     )
 }
 
 material spine_surface(hit: Hit3) -> Surface {
+    crest = clamp(0.5 + hit.local_position.y * 0.45 + abs(hit.local_normal.x) * 0.2, 0.0, 1.0)
     return Surface(
-        albedo=vec3(100.0, 132.0, 190.0),
-        roughness=0.18,
-        metalness=0.0,
-        clearcoat=0.0,
-        clearcoat_roughness=0.0,
-        sheen=0.0,
-        emissive=vec3(0.0, 0.0, 0.0)
+        albedo=vec3(92.0, 126.0, 182.0) + vec3(12.0, 16.0, 22.0) * crest,
+        roughness=0.12 + abs(hit.local_position.z) * 0.12,
+        metalness=0.18 + crest * 0.16,
+        clearcoat=0.18 + crest * 0.18,
+        clearcoat_roughness=0.10 + (1.0 - crest) * 0.12,
+        sheen=0.08 + abs(hit.local_normal.y) * 0.16,
+        emissive=vec3(2.0, 2.4, 4.2) * clamp(hit.local_normal.y, 0.0, 1.0)
     )
 }
 
 material ground_surface(hit: Hit3) -> Surface {
+    dust = clamp(abs(hit.local_position.x) * 0.18 + abs(hit.local_position.z) * 0.18, 0.0, 1.0)
     return Surface(
-        albedo=vec3(72.0, 78.0, 90.0),
-        roughness=0.98,
+        albedo=vec3(66.0, 74.0, 86.0) + vec3(8.0, 7.0, 6.0) * dust,
+        roughness=0.90 + dust * 0.08,
         metalness=0.0,
-        clearcoat=0.0,
-        clearcoat_roughness=0.0,
-        sheen=0.0,
+        clearcoat=0.03,
+        clearcoat_roughness=0.22,
+        sheen=0.02,
         emissive=vec3(0.0, 0.0, 0.0)
     )
 }
 
 shape slabs_shape {
-    field = slabs
+    field = body_cluster
     material = slab_surface
+    radiance = scene_radiance
+    volume = scene_volume
     payload = Payload(
         entity_id=u64(1),
         material_id=u64(1),
@@ -135,8 +153,10 @@ shape slabs_shape {
 }
 
 shape spine_shape {
-    field = spine
+    field = head
     material = spine_surface
+    radiance = scene_radiance
+    volume = scene_volume
     payload = Payload(
         entity_id=u64(2),
         material_id=u64(2),
@@ -144,12 +164,26 @@ shape spine_shape {
     )
 }
 
+shape displace_shape {
+    field = arms
+    material = slab_surface
+    radiance = scene_radiance
+    volume = scene_volume
+    payload = Payload(
+        entity_id=u64(4),
+        material_id=u64(4),
+        actor=ActorHandle(id=u64(1), generation=u32(0))
+    )
+}
+
 shape ground_shape {
     field = ground
     material = ground_surface
+    radiance = scene_radiance
+    volume = scene_volume
     payload = Payload(
-        entity_id=u64(3),
-        material_id=u64(3),
+        entity_id=u64(5),
+        material_id=u64(5),
         actor=ActorHandle(id=u64(1), generation=u32(0))
     )
 }
@@ -159,6 +193,7 @@ shape scene_shape {
         provenance_policy = nearest
         use slabs_shape
         use spine_shape
+        use displace_shape
         use ground_shape
     }
 }
@@ -175,7 +210,7 @@ fn compute_scene_hit(scene_capture: ShapeCapture, origin: Vec3, direction: Vec3)
         max_distance=14.0,
         min_step=0.04,
         hit_epsilon=0.0008,
-        max_steps=112
+        max_steps=88
     )
 }
 
@@ -195,12 +230,28 @@ fn compute_shadow_visibility(
         max_distance=shadow_limit,
         min_step=0.06,
         hit_epsilon=0.0012,
-        max_steps=40
+        max_steps=24
     )
     if shadow_hit.hit {
         return 0.0
     }
     return 1.0
+}
+
+fn compute_ambient_occlusion(
+    scene_capture: ShapeCapture,
+    hit_position: Vec3,
+    hit_normal: Vec3
+) -> F32 {
+    sample_a = distance_at(capture=scene_capture, point=hit_position + hit_normal * 0.06)
+    sample_b = distance_at(capture=scene_capture, point=hit_position + hit_normal * 0.14)
+    sample_c = distance_at(capture=scene_capture, point=hit_position + hit_normal * 0.30)
+    occlusion = clamp(
+        (0.06 - sample_a) * 1.4 + (0.14 - sample_b) * 1.0 + (0.30 - sample_c) * 0.8,
+        0.0,
+        1.0
+    )
+    return 1.0 - occlusion * 0.80
 }
 
 fn compute_scene_color(
@@ -217,36 +268,61 @@ fn compute_scene_color(
 
     if hit.hit {
         surface = compute_scene_surface(scene_capture=scene_capture, hit=hit)
+        radiance = radiance_at(
+            capture=scene_capture,
+            point=hit.position,
+            direction=ray_direction
+        )
+        medium = medium_at(capture=scene_capture, point=hit.position)
         key_dir = normalize(light.position - hit.position)
         fill_dir = normalize(vec3(-0.5, 0.42, 0.25))
         view_dir = normalize(camera_position - hit.position)
         half_dir = normalize(key_dir + view_dir)
         distance_to_light = length(light.position - hit.position)
         attenuation = clamp(1.0 - distance_to_light / light.range, 0.0, 1.0)
+        ao = compute_ambient_occlusion(
+            scene_capture=scene_capture,
+            hit_position=hit.position,
+            hit_normal=hit.normal
+        )
         shadow = compute_shadow_visibility(
             scene_capture=scene_capture,
             hit_position=hit.position,
             hit_normal=hit.normal,
             light=light
         )
-        diffuse = max(dot(hit.normal, key_dir), 0.0) * shadow
-        fill = 0.22 * max(dot(hit.normal, fill_dir), 0.0)
-        specular = pow(max(dot(hit.normal, half_dir), 0.0), 26.0) * 0.17
-        lighting = 0.11 + (0.90 * diffuse * attenuation) + (fill * 0.26)
-        return vec3(
-            clamp(surface.albedo.x * lighting * light.intensity.x + 240.0 * specular * (0.2 + surface.roughness * 0.8), 0.0, 255.0),
-            clamp(surface.albedo.y * lighting * light.intensity.y + 214.0 * specular * (0.2 + surface.roughness * 0.8), 0.0, 255.0),
-            clamp(surface.albedo.z * lighting * light.intensity.z + 188.0 * specular * (0.2 + surface.roughness * 0.8), 0.0, 255.0)
+        ndotl = max(dot(hit.normal, key_dir), 0.0)
+        ndotv = max(dot(hit.normal, view_dir), 0.0)
+        ndoth = max(dot(hit.normal, half_dir), 0.0)
+        diffuse = ndotl * shadow
+        fill = 0.22 * max(dot(hit.normal, fill_dir), 0.0) * ao
+        specular = pow(ndoth, mix(58.0, 9.0, clamp(surface.roughness, 0.0, 1.0))) * (0.16 + surface.metalness * 0.34 + surface.clearcoat * 0.36)
+        sheen = surface.sheen * pow(1.0 - ndotv, 3.0) * 20.0
+        lighting = (0.11 + (0.90 * diffuse * attenuation) + (fill * 0.26)) * ao
+        direct = vec3(
+            clamp(surface.albedo.x * lighting * light.intensity.x + 240.0 * specular + sheen * 0.7, 0.0, 255.0),
+            clamp(surface.albedo.y * lighting * light.intensity.y + 214.0 * specular + sheen * 0.5, 0.0, 255.0),
+            clamp(surface.albedo.z * lighting * light.intensity.z + 188.0 * specular + sheen * 0.4, 0.0, 255.0)
         )
+        fog_strength = clamp(medium.density * distance_to_light * 0.18 + (1.0 - ao) * 0.12, 0.0, 0.58)
+        fog_color = medium.emission + radiance * 0.22
+        return mix(direct + surface.emissive + radiance * 0.20, fog_color, fog_strength)
     }
 
-    sky_t = 0.5 * (ray_direction.y + 1.0)
-    return vec3(8.0, 10.0, 16.0) * (1.0 - sky_t) + vec3(58.0, 84.0, 130.0) * sky_t
+    miss_point = camera_position + ray_direction * 4.0
+    miss_radiance = radiance_at(
+        capture=scene_capture,
+        point=miss_point,
+        direction=ray_direction
+    )
+    miss_medium = medium_at(capture=scene_capture, point=miss_point)
+    miss_fog = clamp(miss_medium.density * 2.9, 0.0, 0.44)
+    return mix(miss_radiance, miss_medium.emission + miss_radiance * 0.24, miss_fog)
 }
 
 fn render_ppm() -> String {
-    width = 48
-    height = 48
+    width = 40
+    height = 40
     aspect = f32(width) / f32(height)
     camera_position = vec3(-0.15, 0.55, 4.4)
     forward = normalize(vec3(0.10, -0.10, -1.0))
@@ -261,7 +337,7 @@ fn render_ppm() -> String {
         range=18.0
     )
 
-    mutable ppm = "P3\n48 48\n255\n"
+    mutable ppm = "P3\n40 40\n255\n"
     mutable y = 0
     while y < height {
         mutable x = 0

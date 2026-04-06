@@ -4093,6 +4093,48 @@ fn runtime_builtin_func_id(
             runtime,
             "wr_transform_point",
         )?),
+        "translate" | "field_translate_point" => {
+            Some(runtime_fn_value_binary(module, runtime, "wr_translate")?)
+        }
+        "rotate" | "field_rotate_point" => {
+            Some(runtime_fn_value_binary(module, runtime, "wr_rotate")?)
+        }
+        "uniform_scale" | "field_uniform_scale_point" => Some(runtime_fn_value_binary(
+            module,
+            runtime,
+            "wr_uniform_scale",
+        )?),
+        "affine_transform" | "field_affine_transform_point" => Some(runtime_fn_value_binary(
+            module,
+            runtime,
+            "wr_affine_transform",
+        )?),
+        "warp" | "field_warp_point" => Some(runtime_fn_value_binary(module, runtime, "wr_warp")?),
+        "repeat_linear" | "field_repeat_linear_point" => Some(runtime_fn_value_binary(
+            module,
+            runtime,
+            "wr_repeat_linear",
+        )?),
+        "repeat_grid" | "field_repeat_grid_point" => {
+            Some(runtime_fn_value_binary(module, runtime, "wr_repeat_grid")?)
+        }
+        "radial_repeat" | "field_radial_repeat_point" => Some(runtime_fn_value_binary(
+            module,
+            runtime,
+            "wr_radial_repeat",
+        )?),
+        "mirror_array" | "field_mirror_array_point" => {
+            Some(runtime_fn_value_binary(module, runtime, "wr_mirror_array")?)
+        }
+        "instance_array" | "field_instance_array_point" => Some(runtime_fn_value_binary(
+            module,
+            runtime,
+            "wr_instance_array",
+        )?),
+        "field_bend_point" => Some(runtime_fn_value_binary(module, runtime, "wr_bend")?),
+        "field_twist_point" => Some(runtime_fn_value_binary(module, runtime, "wr_twist")?),
+        "field_taper_point" => Some(runtime_fn_value_binary(module, runtime, "wr_taper")?),
+        "field_displace_point" => Some(runtime_fn_value_binary(module, runtime, "wr_displace")?),
         "field_transform_point" => Some(runtime_fn_value_binary(
             module,
             runtime,
@@ -4113,6 +4155,32 @@ fn runtime_builtin_func_id(
             runtime,
             "wr_field_repeat_point",
         )?),
+        "field_sweep_coords" => Some(runtime_fn_value_binary(
+            module,
+            runtime,
+            "wr_field_sweep_coords",
+        )?),
+        "field_profile_vertices_bounds4" => Some(runtime_fn_value_unary(
+            module,
+            runtime,
+            "wr_field_profile_vertices_bounds4",
+        )?),
+        "rounded_box" => Some(runtime_fn_value_ternary(module, runtime, "wr_rounded_box")?),
+        "ellipsoid" => Some(runtime_fn_value_binary(module, runtime, "wr_ellipsoid")?),
+        "cone" => Some(runtime_fn_value_ternary(module, runtime, "wr_cone")?),
+        "capped_cone" => Some(runtime_fn_value_quaternary(
+            module,
+            runtime,
+            "wr_capped_cone",
+        )?),
+        "box_frame" => Some(runtime_fn_value_ternary(module, runtime, "wr_box_frame")?),
+        "slab" => Some(runtime_fn_value_binary(module, runtime, "wr_slab")?),
+        "triangle_prism" => Some(runtime_fn_value_ternary(
+            module,
+            runtime,
+            "wr_triangle_prism",
+        )?),
+        "hex_prism" => Some(runtime_fn_value_ternary(module, runtime, "wr_hex_prism")?),
         "transform_vector" => Some(runtime_fn_value_binary(
             module,
             runtime,
@@ -4149,6 +4217,32 @@ fn runtime_builtin_func_id(
         "torus" | "__wr_primitive_torus" => {
             Some(runtime_fn_value_ternary(module, runtime, "wr_torus")?)
         }
+        "circle2" => Some(runtime_fn_value_binary(module, runtime, "wr_circle2")?),
+        "rect2" => Some(runtime_fn_value_binary(module, runtime, "wr_rect2")?),
+        "rounded_rect2" => Some(runtime_fn_value_ternary(
+            module,
+            runtime,
+            "wr_rounded_rect2",
+        )?),
+        "capsule2" => Some(runtime_fn_value_quaternary(module, runtime, "wr_capsule2")?),
+        "segment2" => Some(runtime_fn_value_ternary(module, runtime, "wr_segment2")?),
+        "polygon2" => Some(runtime_fn_value_binary(module, runtime, "wr_polygon2")?),
+        "polyline2" => Some(runtime_fn_value_binary(module, runtime, "wr_polyline2")?),
+        "smooth_union" | "field_smooth_union" => Some(runtime_fn_value_ternary(
+            module,
+            runtime,
+            "wr_smooth_union",
+        )?),
+        "smooth_intersection" | "field_smooth_intersection" => Some(runtime_fn_value_ternary(
+            module,
+            runtime,
+            "wr_smooth_intersection",
+        )?),
+        "smooth_subtract" | "field_smooth_subtract" => Some(runtime_fn_value_ternary(
+            module,
+            runtime,
+            "wr_smooth_subtract",
+        )?),
         "field_union" => Some(runtime_fn_value_binary(module, runtime, "wr_field_union")?),
         "field_intersection" => Some(runtime_fn_value_binary(
             module,
@@ -4160,6 +4254,10 @@ fn runtime_builtin_func_id(
             runtime,
             "wr_field_subtract",
         )?),
+        "bend" => Some(runtime_fn_value_binary(module, runtime, "wr_bend")?),
+        "twist" => Some(runtime_fn_value_binary(module, runtime, "wr_twist")?),
+        "taper" => Some(runtime_fn_value_binary(module, runtime, "wr_taper")?),
+        "displace" => Some(runtime_fn_value_binary(module, runtime, "wr_displace")?),
         "gpu_buffer_new" => Some(runtime_fn_gpu_buffer_new(module, runtime)?),
         "gpu_buffer_len" => Some(runtime_fn_gpu_buffer_len(module, runtime)?),
         "gpu_buffer_get" => Some(runtime_fn_gpu_buffer_get(module, runtime)?),
@@ -4319,6 +4417,12 @@ fn runtime_builtin_func_id(
         }
         "__wr_metrics_scene_trace" => Some(runtime_fn_metrics_scene_trace(module, runtime)?),
         "__wr_metrics_field_sample" => Some(runtime_fn_metrics_field_sample(module, runtime)?),
+        "__wr_metrics_scene_trace_blend_cost" => {
+            Some(runtime_fn_metrics_scene_trace_blend_cost(module, runtime)?)
+        }
+        "__wr_metrics_scene_trace_deformation_cost" => Some(
+            runtime_fn_metrics_scene_trace_deformation_cost(module, runtime)?,
+        ),
         "__wr_metrics_scene_trace_support_pruned_branch" => Some(
             runtime_fn_metrics_scene_trace_support_pruned_branch(module, runtime)?,
         ),
@@ -4373,6 +4477,12 @@ fn runtime_builtin_func_id(
         ),
         "__wr_metrics_scene_trace_steps_gt_16_id" => Some(
             runtime_fn_metrics_scene_trace_steps_gt_16_id(module, runtime)?,
+        ),
+        "__wr_metrics_scene_trace_blend_cost_id" => Some(
+            runtime_fn_metrics_scene_trace_blend_cost_id(module, runtime)?,
+        ),
+        "__wr_metrics_scene_trace_deformation_cost_id" => Some(
+            runtime_fn_metrics_scene_trace_deformation_cost_id(module, runtime)?,
         ),
         "__wr_metrics_web_writev_calls_id" => {
             Some(runtime_fn_metrics_web_writev_calls_id(module, runtime)?)
@@ -4914,6 +5024,22 @@ fn runtime_fn_metrics_field_sample(
     runtime.get_func(module, "wr_metrics_field_sample", sig)
 }
 
+fn runtime_fn_metrics_scene_trace_blend_cost(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(module, "wr_metrics_scene_trace_blend_cost", sig)
+}
+
+fn runtime_fn_metrics_scene_trace_deformation_cost(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(module, "wr_metrics_scene_trace_deformation_cost", sig)
+}
+
 fn runtime_fn_metrics_scene_trace_support_pruned_branch(
     module: &mut ObjectModule,
     runtime: &mut RuntimeRegistry,
@@ -5072,6 +5198,22 @@ fn runtime_fn_metrics_scene_trace_steps_gt_16_id(
 ) -> Result<cranelift_module::FuncId, CodegenError> {
     let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
     runtime.get_func(module, "wr_metrics_scene_trace_steps_gt_16_id", sig)
+}
+
+fn runtime_fn_metrics_scene_trace_blend_cost_id(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(module, "wr_metrics_scene_trace_blend_cost_id", sig)
+}
+
+fn runtime_fn_metrics_scene_trace_deformation_cost_id(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let sig = RuntimeRegistry::runtime_sig(module, &[], &[types::I64]);
+    runtime.get_func(module, "wr_metrics_scene_trace_deformation_cost_id", sig)
 }
 
 fn runtime_fn_metrics_web_writev_calls_id(

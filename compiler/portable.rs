@@ -168,12 +168,10 @@ const SURFACE_QUERY_FIELDS: &[PortableBuiltinField] = &[
     },
 ];
 
-const POINT_QUERY_FIELDS: &[PortableBuiltinField] = &[
-    PortableBuiltinField {
-        name: "point",
-        ty: TyAtom(Atom::Vec3),
-    },
-];
+const POINT_QUERY_FIELDS: &[PortableBuiltinField] = &[PortableBuiltinField {
+    name: "point",
+    ty: TyAtom(Atom::Vec3),
+}];
 
 const RAY_QUERY_FIELDS: &[PortableBuiltinField] = &[
     PortableBuiltinField {
@@ -290,6 +288,18 @@ const HIT3_FIELDS: &[PortableBuiltinField] = &[
     PortableBuiltinField {
         name: "normal",
         ty: TyAtom(Atom::Vec3),
+    },
+    PortableBuiltinField {
+        name: "local_position",
+        ty: TyAtom(Atom::Vec3),
+    },
+    PortableBuiltinField {
+        name: "local_normal",
+        ty: TyAtom(Atom::Vec3),
+    },
+    PortableBuiltinField {
+        name: "shading_frame",
+        ty: TyNamed("Transform3"),
     },
     PortableBuiltinField {
         name: "steps",
@@ -524,7 +534,31 @@ pub const BUILTIN_HELPER_FUNCTIONS: &[&str] = &[
     "compose_transform3",
     "inverse_transform3",
     "capture",
-    "repeat_point",
+    "circle2",
+    "rect2",
+    "rounded_rect2",
+    "capsule2",
+    "segment2",
+    "polygon2",
+    "polyline2",
+    "field_translate_point",
+    "field_rotate_point",
+    "field_uniform_scale_point",
+    "field_affine_transform_point",
+    "field_warp_point",
+    "field_repeat_linear_point",
+    "field_repeat_grid_point",
+    "field_radial_repeat_point",
+    "field_mirror_array_point",
+    "field_instance_array_point",
+    "field_sweep_coords",
+    "field_smooth_union",
+    "field_smooth_intersection",
+    "field_smooth_subtract",
+    "field_bend_point",
+    "field_twist_point",
+    "field_taper_point",
+    "field_displace_point",
     "field_union",
     "field_intersection",
     "field_subtract",
@@ -534,12 +568,28 @@ pub const BUILTIN_HELPER_FUNCTIONS: &[&str] = &[
     "__wr_shape_normal_capture",
     "__wr_scene_trace_capture",
     "__wr_scene_surface_capture",
+    "__wr_scene_radiance_capture",
+    "__wr_scene_medium_capture",
     "__wr_scene_trace_queries",
     "__wr_scene_surface_queries",
 ];
 
-pub const BUILTIN_FIELD_PRIMITIVE_FUNCTIONS: &[&str] =
-    &["sphere", "box", "capsule", "cylinder", "plane", "torus"];
+pub const BUILTIN_FIELD_PRIMITIVE_FUNCTIONS: &[&str] = &[
+    "sphere",
+    "box",
+    "capsule",
+    "cylinder",
+    "plane",
+    "torus",
+    "rounded_box",
+    "ellipsoid",
+    "cone",
+    "capped_cone",
+    "box_frame",
+    "slab",
+    "triangle_prism",
+    "hex_prism",
+];
 
 pub fn builtin_records() -> &'static [PortableBuiltinRecord] {
     BUILTIN_RECORDS

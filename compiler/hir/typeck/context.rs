@@ -620,6 +620,14 @@ fn builtin_function_is_portable(name: &str) -> bool {
             | "cylinder"
             | "plane"
             | "torus"
+            | "circle2"
+            | "rect2"
+            | "rounded_rect2"
+            | "capsule2"
+            | "segment2"
+            | "polygon2"
+            | "polyline2"
+            | "field_sweep_coords"
             | "__wr_primitive_sphere"
             | "__wr_primitive_box"
             | "__wr_primitive_capsule"
@@ -2938,6 +2946,403 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
+            SmolStr::new("rounded_box"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("p"), Type::Vec3),
+                    (SmolStr::new("half"), Type::Vec3),
+                    (SmolStr::new("radius"), Type::F32),
+                ],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("__wr_primitive_rounded_box"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("p"), Type::Vec3),
+                    (SmolStr::new("half"), Type::Vec3),
+                    (SmolStr::new("radius"), Type::F32),
+                ],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("circle2"),
+            FunctionSig {
+                params: vec![(SmolStr::new("p"), Type::Vec2), (SmolStr::new("radius"), Type::F32)],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("rect2"),
+            FunctionSig {
+                params: vec![(SmolStr::new("p"), Type::Vec2), (SmolStr::new("half"), Type::Vec2)],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("rounded_rect2"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("p"), Type::Vec2),
+                    (SmolStr::new("half"), Type::Vec2),
+                    (SmolStr::new("radius"), Type::F32),
+                ],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("capsule2"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("p"), Type::Vec2),
+                    (SmolStr::new("a"), Type::Vec2),
+                    (SmolStr::new("b"), Type::Vec2),
+                    (SmolStr::new("radius"), Type::F32),
+                ],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("segment2"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("p"), Type::Vec2),
+                    (SmolStr::new("a"), Type::Vec2),
+                    (SmolStr::new("b"), Type::Vec2),
+                ],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("polygon2"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("p"), Type::Vec2),
+                    (SmolStr::new("vertices"), Type::List(Box::new(Type::Vec2))),
+                ],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("polyline2"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("p"), Type::Vec2),
+                    (SmolStr::new("vertices"), Type::List(Box::new(Type::Vec2))),
+                ],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("ellipsoid"),
+            FunctionSig {
+                params: vec![(SmolStr::new("p"), Type::Vec3), (SmolStr::new("radii"), Type::Vec3)],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("circle2"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("p"), Type::Vec2),
+                    (SmolStr::new("radius"), Type::F32),
+                ],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("rect2"),
+            FunctionSig {
+                params: vec![(SmolStr::new("p"), Type::Vec2), (SmolStr::new("half"), Type::Vec2)],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("rounded_rect2"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("p"), Type::Vec2),
+                    (SmolStr::new("half"), Type::Vec2),
+                    (SmolStr::new("radius"), Type::F32),
+                ],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("capsule2"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("p"), Type::Vec2),
+                    (SmolStr::new("a"), Type::Vec2),
+                    (SmolStr::new("b"), Type::Vec2),
+                    (SmolStr::new("radius"), Type::F32),
+                ],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("segment2"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("p"), Type::Vec2),
+                    (SmolStr::new("a"), Type::Vec2),
+                    (SmolStr::new("b"), Type::Vec2),
+                ],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("polygon2"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("p"), Type::Vec2),
+                    (SmolStr::new("vertices"), Type::List(Box::new(Type::Vec2))),
+                ],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("polyline2"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("p"), Type::Vec2),
+                    (SmolStr::new("vertices"), Type::List(Box::new(Type::Vec2))),
+                ],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("__wr_primitive_ellipsoid"),
+            FunctionSig {
+                params: vec![(SmolStr::new("p"), Type::Vec3), (SmolStr::new("radii"), Type::Vec3)],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("cone"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("p"), Type::Vec3),
+                    (SmolStr::new("radius"), Type::F32),
+                    (SmolStr::new("half_height"), Type::F32),
+                ],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("__wr_primitive_cone"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("p"), Type::Vec3),
+                    (SmolStr::new("radius"), Type::F32),
+                    (SmolStr::new("half_height"), Type::F32),
+                ],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("capped_cone"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("p"), Type::Vec3),
+                    (SmolStr::new("radius_bottom"), Type::F32),
+                    (SmolStr::new("radius_top"), Type::F32),
+                    (SmolStr::new("half_height"), Type::F32),
+                ],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("__wr_primitive_capped_cone"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("p"), Type::Vec3),
+                    (SmolStr::new("radius_bottom"), Type::F32),
+                    (SmolStr::new("radius_top"), Type::F32),
+                    (SmolStr::new("half_height"), Type::F32),
+                ],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("box_frame"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("p"), Type::Vec3),
+                    (SmolStr::new("half"), Type::Vec3),
+                    (SmolStr::new("thickness"), Type::F32),
+                ],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("__wr_primitive_box_frame"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("p"), Type::Vec3),
+                    (SmolStr::new("half"), Type::Vec3),
+                    (SmolStr::new("thickness"), Type::F32),
+                ],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("slab"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("p"), Type::Vec3),
+                    (SmolStr::new("thickness"), Type::F32),
+                ],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("__wr_primitive_slab"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("p"), Type::Vec3),
+                    (SmolStr::new("thickness"), Type::F32),
+                ],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("triangle_prism"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("p"), Type::Vec3),
+                    (SmolStr::new("half"), Type::Vec2),
+                    (SmolStr::new("half_height"), Type::F32),
+                ],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("__wr_primitive_triangle_prism"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("p"), Type::Vec3),
+                    (SmolStr::new("half"), Type::Vec2),
+                    (SmolStr::new("half_height"), Type::F32),
+                ],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("hex_prism"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("p"), Type::Vec3),
+                    (SmolStr::new("half"), Type::Vec2),
+                    (SmolStr::new("half_height"), Type::F32),
+                ],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("__wr_primitive_hex_prism"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("p"), Type::Vec3),
+                    (SmolStr::new("half"), Type::Vec2),
+                    (SmolStr::new("half_height"), Type::F32),
+                ],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
             SmolStr::new("field_union"),
             FunctionSig {
                 params: vec![
@@ -2977,10 +3382,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("field_transform_point"),
+            SmolStr::new("field_translate_point"),
             FunctionSig {
                 params: vec![
-                    (SmolStr::new("transform"), Type::Unknown),
+                    (SmolStr::new("translate"), Type::Vec3),
                     (SmolStr::new("point"), Type::Vec3),
                 ],
                 ret: Type::Vec3,
@@ -2990,7 +3395,98 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("field_mirror_point"),
+            SmolStr::new("field_rotate_point"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("rotate"), Type::Vec3),
+                    (SmolStr::new("point"), Type::Vec3),
+                ],
+                ret: Type::Vec3,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("field_uniform_scale_point"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("scale"), Type::F32),
+                    (SmolStr::new("point"), Type::Vec3),
+                ],
+                ret: Type::Vec3,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("field_affine_transform_point"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("transform"), portable_named_type("Transform3")),
+                    (SmolStr::new("point"), Type::Vec3),
+                ],
+                ret: Type::Vec3,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("field_warp_point"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("warp"), Type::Vec3),
+                    (SmolStr::new("point"), Type::Vec3),
+                ],
+                ret: Type::Vec3,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("field_repeat_linear_point"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("repeat"), Type::Vec3),
+                    (SmolStr::new("point"), Type::Vec3),
+                ],
+                ret: Type::Vec3,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("field_repeat_grid_point"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("repeat"), Type::Vec3),
+                    (SmolStr::new("point"), Type::Vec3),
+                ],
+                ret: Type::Vec3,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("field_radial_repeat_point"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("radial"), Type::Vec3),
+                    (SmolStr::new("point"), Type::Vec3),
+                ],
+                ret: Type::Vec3,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("field_mirror_array_point"),
             FunctionSig {
                 params: vec![
                     (SmolStr::new("mirror"), Type::Vec3),
@@ -3003,10 +3499,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("field_repeat_point"),
+            SmolStr::new("field_instance_array_point"),
             FunctionSig {
                 params: vec![
-                    (SmolStr::new("period"), Type::Vec3),
+                    (SmolStr::new("instance"), portable_named_type("Transform3")),
                     (SmolStr::new("point"), Type::Vec3),
                 ],
                 ret: Type::Vec3,
@@ -3016,10 +3512,104 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("field_instance_point"),
+            SmolStr::new("field_sweep_coords"),
             FunctionSig {
                 params: vec![
-                    (SmolStr::new("instance"), Type::Unknown),
+                    (SmolStr::new("path"), Type::Vec3),
+                    (SmolStr::new("point"), Type::Vec3),
+                ],
+                ret: Type::Vec3,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("field_smooth_union"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("smoothing"), Type::F32),
+                    (SmolStr::new("left"), Type::F32),
+                    (SmolStr::new("right"), Type::F32),
+                ],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("field_smooth_intersection"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("smoothing"), Type::F32),
+                    (SmolStr::new("left"), Type::F32),
+                    (SmolStr::new("right"), Type::F32),
+                ],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("field_smooth_subtract"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("smoothing"), Type::F32),
+                    (SmolStr::new("left"), Type::F32),
+                    (SmolStr::new("right"), Type::F32),
+                ],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("field_bend_point"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("bend"), Type::Vec3),
+                    (SmolStr::new("point"), Type::Vec3),
+                ],
+                ret: Type::Vec3,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("field_twist_point"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("twist"), Type::Vec3),
+                    (SmolStr::new("point"), Type::Vec3),
+                ],
+                ret: Type::Vec3,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("field_taper_point"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("taper"), Type::Vec3),
+                    (SmolStr::new("point"), Type::Vec3),
+                ],
+                ret: Type::Vec3,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("field_displace_point"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("displace"), Type::Vec3),
                     (SmolStr::new("point"), Type::Vec3),
                 ],
                 ret: Type::Vec3,
@@ -3080,6 +3670,33 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("hit"), portable_named_type("Hit3")),
                 ],
                 ret: portable_named_type("Surface"),
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("radiance_at"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("capture"), portable_named_type("ShapeCapture")),
+                    (SmolStr::new("point"), Type::Vec3),
+                    (SmolStr::new("direction"), Type::Vec3),
+                ],
+                ret: Type::Vec3,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("medium_at"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("capture"), portable_named_type("ShapeCapture")),
+                    (SmolStr::new("point"), Type::Vec3),
+                ],
+                ret: portable_named_type("Medium"),
                 kind: FunctionKind::Function,
                 type_params: Vec::new(),
                 type_param_bounds: Vec::new(),

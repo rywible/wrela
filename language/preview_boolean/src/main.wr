@@ -4,99 +4,144 @@ field exact distance ground(p: Vec3) -> F32 {
     plane(normal=vec3(0.0, 1.0, 0.0), offset=1.1)
 }
 
-field conservative distance left_form(p: Vec3) -> F32 {
-    center = p - vec3(-0.7, 0.0, 0.0)
-    pillar_abs = vec3(abs(center.x), abs(center.y), abs(center.z))
-    pillar_q = pillar_abs - vec3(0.44, 0.92, 0.44)
-    pillar_outside = length(max(pillar_q, vec3(0.0, 0.0, 0.0)))
-    pillar_inside = min(max(pillar_q.x, max(pillar_q.y, pillar_q.z)), 0.0)
-    pillar = pillar_outside + pillar_inside
-
-    cap_point = p - vec3(-0.7, 0.52, 0.0)
-    cap_abs = vec3(abs(cap_point.x), abs(cap_point.y), abs(cap_point.z))
-    cap_q = cap_abs - vec3(0.72, 0.30, 0.72)
-    cap_box_outside = length(max(cap_q, vec3(0.0, 0.0, 0.0)))
-    cap_box_inside = min(max(cap_q.x, max(cap_q.y, cap_q.z)), 0.0)
-    cap_box = cap_box_outside + cap_box_inside
-    cap_ball = length(cap_point) - 0.86
-
-    cap = field_intersection(left=cap_box, right=cap_ball)
-    cut_point = p - vec3(-0.7, 0.06, 0.0)
-    cutout = length(vec2(cut_point.x, cut_point.z)) - 0.24
-
-    body = field_union(left=pillar, right=cap)
-    return field_subtract(left=body, right=cutout)
+field exact distance wall_panel(p: Vec3) -> F32 {
+    extrude = f32(0.36) {
+        rounded_rect2(half = vec2(1.45, 1.08), radius = 0.12)
+    }
 }
 
-field conservative distance right_form(p: Vec3) -> F32 {
-    center = p - vec3(0.85, -0.04, 0.0)
-    tower_abs = vec3(abs(center.x), abs(center.y), abs(center.z))
-    tower_q = tower_abs - vec3(0.32, 0.70, 0.32)
-    tower_outside = length(max(tower_q, vec3(0.0, 0.0, 0.0)))
-    tower_inside = min(max(tower_q.x, max(tower_q.y, tower_q.z)), 0.0)
-    tower = tower_outside + tower_inside
+field exact distance door_cut(p: Vec3) -> F32 {
+    translate = vec3(0.0, -0.34, 0.0) {
+        extrude = f32(0.52) {
+            rect2(half = vec2(0.34, 0.60))
+        }
+    }
+}
 
-    roof = length(p - vec3(0.85, 0.45, 0.0)) - 0.42
+field exact distance arch_cut(p: Vec3) -> F32 {
+    translate = vec3(0.0, 0.28, 0.0) {
+        extrude = f32(0.52) {
+            circle2(radius = 0.34)
+        }
+    }
+}
 
-    notch_point = p - vec3(0.85, 0.28, 0.0)
-    notch_abs = vec3(abs(notch_point.x), abs(notch_point.y), abs(notch_point.z))
-    notch_q = notch_abs - vec3(0.15, 0.18, 0.55)
-    notch_outside = length(max(notch_q, vec3(0.0, 0.0, 0.0)))
-    notch_inside = min(max(notch_q.x, max(notch_q.y, notch_q.z)), 0.0)
-    notch = notch_outside + notch_inside
+field conservative distance relief_cut(p: Vec3) -> F32 {
+    translate = vec3(0.78, 0.10, 0.0) {
+        extrude = f32(0.52) {
+            polygon2(vertices = [
+                vec2(-0.16, -0.48),
+                vec2(0.24, -0.18),
+                vec2(0.18, 0.40),
+                vec2(-0.22, 0.28)
+            ])
+        }
+    }
+}
 
-    core = field_intersection(left=tower, right=roof)
-    return field_subtract(left=core, right=notch)
+field conservative distance arch_wall(p: Vec3) -> F32 {
+    subtract {
+        provenance_policy = left
+        use wall_panel
+        union {
+            provenance_policy = nearest
+            use door_cut
+            use arch_cut
+            use relief_cut
+        }
+    }
+}
+
+field conservative distance lintel(p: Vec3) -> F32 {
+    translate = vec3(0.0, 0.74, 0.0) {
+        sweep = vec3(1.95, 0.0, 0.0) {
+            rect2(half = vec2(0.10, 0.10))
+        }
+    }
+}
+
+field conservative distance brace(p: Vec3) -> F32 {
+    translate = vec3(0.0, 0.18, 0.0) {
+        sweep = vec3(1.7, 0.0, 0.0) {
+            segment2(a = vec2(-0.20, 0.0), b = vec2(0.20, 0.0))
+        }
+    }
 }
 
 field conservative distance scene(p: Vec3) -> F32 {
     union {
         provenance_policy = nearest
-        use left_form
-        use right_form
+        use arch_wall
+        use lintel
+        use brace
         use ground
     }
 }
 
+radiance field scene_radiance(p: Vec3, direction: Vec3, feature_id: U64) -> Vec3 {
+    sky_t = clamp(0.5 + direction.y * 0.5, 0.0, 1.0)
+    carve = clamp(0.24 - abs(p.x) * 0.18 - abs(p.y) * 0.10, 0.0, 0.24) / 0.24
+    feature_bias = clamp(f32(feature_id), 0.0, 1.0)
+    return vec3(12.0, 14.0, 22.0) * (1.0 - sky_t)
+        + vec3(54.0, 82.0, 124.0) * sky_t
+        + vec3(14.0, 8.0, 4.0) * carve * (0.3 + 0.7 * feature_bias)
+}
+
+volume field scene_volume(p: Vec3, surface_distance: F32) -> Medium {
+    doorway = clamp(0.24 - abs(p.x) * 0.16, 0.0, 0.24) / 0.24
+    near_surface = clamp((0.12 - abs(surface_distance)) * 6.0, 0.0, 1.0)
+    density = clamp(0.012 + doorway * 0.018 + near_surface * 0.016, 0.0, 0.08)
+    return Medium(
+        density=density,
+        emission=vec3(3.0, 3.5, 5.0) * density + vec3(0.0, 0.01, 0.02) * near_surface,
+        anisotropy=0.08
+    )
+}
+
 material boolean_surface(hit: Hit3) -> Surface {
+    panel = clamp(abs(hit.local_position.x) * 0.35 + abs(hit.local_position.y) * 0.2, 0.0, 1.0)
     return Surface(
-        albedo=vec3(214.0, 176.0, 124.0),
-        roughness=0.28,
-        metalness=0.0,
-        clearcoat=0.0,
-        clearcoat_roughness=0.0,
-        sheen=0.0,
+        albedo=vec3(196.0, 160.0, 112.0) + vec3(24.0, 18.0, 12.0) * panel,
+        roughness=0.18 + panel * 0.18,
+        metalness=0.10 + clamp(hit.local_normal.z, 0.0, 1.0) * 0.10,
+        clearcoat=0.10 + clamp(hit.local_normal.y, 0.0, 1.0) * 0.18,
+        clearcoat_roughness=0.08 + abs(hit.local_position.x) * 0.10,
+        sheen=0.04 + abs(hit.local_normal.x) * 0.12,
         emissive=vec3(0.0, 0.0, 0.0)
     )
 }
 
 material accent_surface(hit: Hit3) -> Surface {
+    rib = clamp(abs(hit.local_position.x) * 0.5 + abs(hit.local_normal.y) * 0.4, 0.0, 1.0)
     return Surface(
-        albedo=vec3(106.0, 150.0, 198.0),
-        roughness=0.18,
-        metalness=0.0,
-        clearcoat=0.0,
-        clearcoat_roughness=0.0,
-        sheen=0.0,
-        emissive=vec3(0.0, 0.0, 0.0)
+        albedo=vec3(92.0, 136.0, 186.0) + vec3(14.0, 18.0, 20.0) * rib,
+        roughness=0.12 + abs(hit.local_position.y) * 0.12,
+        metalness=0.14 + rib * 0.22,
+        clearcoat=0.18 + rib * 0.18,
+        clearcoat_roughness=0.10 + (1.0 - rib) * 0.14,
+        sheen=0.08 + abs(hit.local_normal.x) * 0.18,
+        emissive=vec3(2.5, 3.0, 4.5) * clamp(hit.local_normal.y, 0.0, 1.0)
     )
 }
 
 material ground_surface(hit: Hit3) -> Surface {
+    dust = clamp(abs(hit.local_position.x) * 0.18 + abs(hit.local_position.z) * 0.18, 0.0, 1.0)
     return Surface(
-        albedo=vec3(72.0, 78.0, 90.0),
-        roughness=0.98,
+        albedo=vec3(66.0, 74.0, 86.0) + vec3(8.0, 7.0, 6.0) * dust,
+        roughness=0.90 + dust * 0.08,
         metalness=0.0,
-        clearcoat=0.0,
-        clearcoat_roughness=0.0,
-        sheen=0.0,
+        clearcoat=0.03,
+        clearcoat_roughness=0.22,
+        sheen=0.02,
         emissive=vec3(0.0, 0.0, 0.0)
     )
 }
 
 shape left_shape {
-    field = left_form
+    field = arch_wall
     material = boolean_surface
+    radiance = scene_radiance
+    volume = scene_volume
     payload = Payload(
         entity_id=u64(1),
         material_id=u64(1),
@@ -105,8 +150,10 @@ shape left_shape {
 }
 
 shape right_shape {
-    field = right_form
+    field = brace
     material = accent_surface
+    radiance = scene_radiance
+    volume = scene_volume
     payload = Payload(
         entity_id=u64(2),
         material_id=u64(2),
@@ -114,9 +161,23 @@ shape right_shape {
     )
 }
 
+shape bridge_shape {
+    field = lintel
+    material = accent_surface
+    radiance = scene_radiance
+    volume = scene_volume
+    payload = Payload(
+        entity_id=u64(4),
+        material_id=u64(4),
+        actor=ActorHandle(id=u64(1), generation=u32(0))
+    )
+}
+
 shape ground_shape {
     field = ground
     material = ground_surface
+    radiance = scene_radiance
+    volume = scene_volume
     payload = Payload(
         entity_id=u64(3),
         material_id=u64(3),
@@ -129,6 +190,7 @@ shape scene_shape {
         provenance_policy = nearest
         use left_shape
         use right_shape
+        use bridge_shape
         use ground_shape
     }
 }
@@ -145,7 +207,7 @@ fn compute_scene_hit(scene_capture: ShapeCapture, origin: Vec3, direction: Vec3)
         max_distance=6.0,
         min_step=0.1,
         hit_epsilon=0.0008,
-        max_steps=192
+        max_steps=96
     )
 }
 
@@ -160,7 +222,7 @@ fn compute_shadow_visibility(
     shadow_limit = length(light.position - shadow_origin)
     mutable total = 0.02
     mutable step_count = 0
-    while total < shadow_limit and step_count < 96 {
+    while total < shadow_limit and step_count < 32 {
         sample_position = shadow_origin + shadow_direction * total
         sampled_distance = distance_at(capture=scene_capture, point=sample_position)
         if sampled_distance < 0.001 {
@@ -170,6 +232,22 @@ fn compute_shadow_visibility(
         step_count += 1
     }
     return 1.0
+}
+
+fn compute_ambient_occlusion(
+    scene_capture: ShapeCapture,
+    hit_position: Vec3,
+    hit_normal: Vec3
+) -> F32 {
+    sample_a = distance_at(capture=scene_capture, point=hit_position + hit_normal * 0.05)
+    sample_b = distance_at(capture=scene_capture, point=hit_position + hit_normal * 0.12)
+    sample_c = distance_at(capture=scene_capture, point=hit_position + hit_normal * 0.24)
+    occlusion = clamp(
+        (0.05 - sample_a) * 1.7 + (0.12 - sample_b) * 1.1 + (0.24 - sample_c) * 0.9,
+        0.0,
+        1.0
+    )
+    return 1.0 - occlusion * 0.82
 }
 
 fn compute_scene_color(
@@ -186,31 +264,59 @@ fn compute_scene_color(
 
     if hit.hit {
         surface = compute_scene_surface(scene_capture=scene_capture, hit=hit)
+        radiance = radiance_at(
+            capture=scene_capture,
+            point=hit.position,
+            direction=ray_direction
+        )
+        medium = medium_at(capture=scene_capture, point=hit.position)
         key_dir = normalize(light.position - hit.position)
         fill_dir = normalize(vec3(-0.7, 0.4, 0.2))
         view_dir = normalize(camera_position - hit.position)
         half_dir = normalize(key_dir + view_dir)
         distance_to_light = length(light.position - hit.position)
         attenuation = clamp(1.0 - distance_to_light / light.range, 0.0, 1.0)
+        ao = compute_ambient_occlusion(
+            scene_capture=scene_capture,
+            hit_position=hit.position,
+            hit_normal=hit.normal
+        )
         shadow = compute_shadow_visibility(
             scene_capture=scene_capture,
             hit_position=hit.position,
             hit_normal=hit.normal,
             light=light
         )
-        diffuse = max(dot(hit.normal, key_dir), 0.0) * shadow
-        fill = 0.18 * max(dot(hit.normal, fill_dir), 0.0)
-        specular = pow(max(dot(hit.normal, half_dir), 0.0), 24.0) * 0.20
-        lighting = 0.10 + (0.94 * diffuse * attenuation) + (fill * 0.28)
-        return vec3(
-            clamp(surface.albedo.x * lighting * light.intensity.x + 260.0 * specular * (0.2 + surface.roughness * 0.8), 0.0, 255.0),
-            clamp(surface.albedo.y * lighting * light.intensity.y + 220.0 * specular * (0.2 + surface.roughness * 0.8), 0.0, 255.0),
-            clamp(surface.albedo.z * lighting * light.intensity.z + 190.0 * specular * (0.2 + surface.roughness * 0.8), 0.0, 255.0)
+        ndotl = max(dot(hit.normal, key_dir), 0.0)
+        ndotv = max(dot(hit.normal, view_dir), 0.0)
+        ndoth = max(dot(hit.normal, half_dir), 0.0)
+        diffuse = ndotl * shadow
+        fill = 0.18 * max(dot(hit.normal, fill_dir), 0.0) * ao
+        spec_power = mix(60.0, 10.0, clamp(surface.roughness, 0.0, 1.0))
+        fresnel = pow(1.0 - ndotv, 5.0)
+        specular = pow(ndoth, spec_power) * (0.16 + surface.metalness * 0.36 + surface.clearcoat * 0.34)
+        sheen = surface.sheen * pow(1.0 - ndotv, 3.0) * 24.0
+        lighting = (0.10 + (0.94 * diffuse * attenuation) + (fill * 0.28)) * ao
+        direct = vec3(
+            clamp(surface.albedo.x * lighting * light.intensity.x + 260.0 * specular + sheen * 0.7, 0.0, 255.0),
+            clamp(surface.albedo.y * lighting * light.intensity.y + 220.0 * specular + sheen * 0.5, 0.0, 255.0),
+            clamp(surface.albedo.z * lighting * light.intensity.z + 190.0 * specular + sheen * 0.4, 0.0, 255.0)
         )
+        fog_strength = clamp(medium.density * distance_to_light * 0.18 + (1.0 - ao) * 0.12, 0.0, 0.55)
+        fog_color = medium.emission + radiance * 0.22
+        lit = direct + surface.emissive + radiance * (0.24 + fresnel * 0.18)
+        return mix(lit, fog_color, fog_strength)
     }
 
-    sky_t = 0.5 * (ray_direction.y + 1.0)
-    return vec3(10.0, 14.0, 22.0) * (1.0 - sky_t) + vec3(58.0, 84.0, 130.0) * sky_t
+    miss_point = camera_position + ray_direction * 4.0
+    miss_radiance = radiance_at(
+        capture=scene_capture,
+        point=miss_point,
+        direction=ray_direction
+    )
+    miss_medium = medium_at(capture=scene_capture, point=miss_point)
+    miss_fog = clamp(miss_medium.density * 2.8, 0.0, 0.42)
+    return mix(miss_radiance, miss_medium.emission + miss_radiance * 0.24, miss_fog)
 }
 
 fn render_ppm() -> String {

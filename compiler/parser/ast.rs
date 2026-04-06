@@ -48,6 +48,8 @@ pub enum Stmt {
     KernelDef(KernelDef),
     SystemDef(SystemDef),
     FieldDecl(FieldDecl),
+    RadianceDecl(RadianceDecl),
+    VolumeDecl(VolumeDecl),
     MaterialDecl(MaterialDecl),
     ShapeDecl(ShapeDecl),
     StyleProfileDef(StyleProfileDef),
@@ -85,6 +87,8 @@ impl AstNode for Stmt {
                 | SyntaxKind::KernelDef
                 | SyntaxKind::SystemDef
                 | SyntaxKind::FieldDecl
+                | SyntaxKind::RadianceDecl
+                | SyntaxKind::VolumeDecl
                 | SyntaxKind::MaterialDecl
                 | SyntaxKind::ShapeDecl
                 | SyntaxKind::StyleProfileDef
@@ -120,6 +124,8 @@ impl AstNode for Stmt {
             SyntaxKind::KernelDef => KernelDef::cast(node).map(Stmt::KernelDef),
             SyntaxKind::SystemDef => SystemDef::cast(node).map(Stmt::SystemDef),
             SyntaxKind::FieldDecl => FieldDecl::cast(node).map(Stmt::FieldDecl),
+            SyntaxKind::RadianceDecl => RadianceDecl::cast(node).map(Stmt::RadianceDecl),
+            SyntaxKind::VolumeDecl => VolumeDecl::cast(node).map(Stmt::VolumeDecl),
             SyntaxKind::MaterialDecl => MaterialDecl::cast(node).map(Stmt::MaterialDecl),
             SyntaxKind::ShapeDecl => ShapeDecl::cast(node).map(Stmt::ShapeDecl),
             SyntaxKind::StyleProfileDef => StyleProfileDef::cast(node).map(Stmt::StyleProfileDef),
@@ -164,6 +170,8 @@ impl AstNode for Stmt {
             Stmt::KernelDef(it) => it.syntax(),
             Stmt::SystemDef(it) => it.syntax(),
             Stmt::FieldDecl(it) => it.syntax(),
+            Stmt::RadianceDecl(it) => it.syntax(),
+            Stmt::VolumeDecl(it) => it.syntax(),
             Stmt::MaterialDecl(it) => it.syntax(),
             Stmt::ShapeDecl(it) => it.syntax(),
             Stmt::StyleProfileDef(it) => it.syntax(),
@@ -910,10 +918,27 @@ pub enum FieldExpr {
     Union(FieldUnionExpr),
     Intersection(FieldIntersectionExpr),
     Subtract(FieldSubtractExpr),
-    Transform(FieldTransformExpr),
-    Mirror(FieldMirrorExpr),
-    Repeat(FieldRepeatExpr),
-    Instance(FieldInstanceExpr),
+    SmoothUnion(FieldSmoothUnionExpr),
+    SmoothIntersection(FieldSmoothIntersectionExpr),
+    SmoothSubtract(FieldSmoothSubtractExpr),
+    Translate(FieldTranslateExpr),
+    Rotate(FieldRotateExpr),
+    UniformScale(FieldUniformScaleExpr),
+    AffineTransform(FieldAffineTransformExpr),
+    Warp(FieldWarpExpr),
+    RepeatLinear(FieldRepeatLinearExpr),
+    RepeatGrid(FieldRepeatGridExpr),
+    RadialRepeat(FieldRadialRepeatExpr),
+    MirrorArray(FieldMirrorArrayExpr),
+    InstanceArray(FieldInstanceArrayExpr),
+    Bend(FieldBendExpr),
+    Twist(FieldTwistExpr),
+    Taper(FieldTaperExpr),
+    Displace(FieldDisplaceExpr),
+    Extrude(FieldExtrudeExpr),
+    Revolve(FieldRevolveExpr),
+    Sweep(FieldSweepExpr),
+    Loft(FieldLoftExpr),
 }
 
 impl AstNode for FieldExpr {
@@ -925,10 +950,27 @@ impl AstNode for FieldExpr {
                 | SyntaxKind::FieldUnionExpr
                 | SyntaxKind::FieldIntersectionExpr
                 | SyntaxKind::FieldSubtractExpr
-                | SyntaxKind::FieldTransformExpr
-                | SyntaxKind::FieldMirrorExpr
-                | SyntaxKind::FieldRepeatExpr
-                | SyntaxKind::FieldInstanceExpr
+                | SyntaxKind::FieldSmoothUnionExpr
+                | SyntaxKind::FieldSmoothIntersectionExpr
+                | SyntaxKind::FieldSmoothSubtractExpr
+                | SyntaxKind::FieldTranslateExpr
+                | SyntaxKind::FieldRotateExpr
+                | SyntaxKind::FieldUniformScaleExpr
+                | SyntaxKind::FieldAffineTransformExpr
+                | SyntaxKind::FieldWarpExpr
+                | SyntaxKind::FieldRepeatLinearExpr
+                | SyntaxKind::FieldRepeatGridExpr
+                | SyntaxKind::FieldRadialRepeatExpr
+                | SyntaxKind::FieldMirrorArrayExpr
+                | SyntaxKind::FieldInstanceArrayExpr
+                | SyntaxKind::FieldBendExpr
+                | SyntaxKind::FieldTwistExpr
+                | SyntaxKind::FieldTaperExpr
+                | SyntaxKind::FieldDisplaceExpr
+                | SyntaxKind::FieldExtrudeExpr
+                | SyntaxKind::FieldRevolveExpr
+                | SyntaxKind::FieldSweepExpr
+                | SyntaxKind::FieldLoftExpr
         )
     }
     fn cast(node: SyntaxNode) -> Option<Self> {
@@ -942,12 +984,49 @@ impl AstNode for FieldExpr {
                 FieldIntersectionExpr::cast(node).map(FieldExpr::Intersection)
             }
             SyntaxKind::FieldSubtractExpr => FieldSubtractExpr::cast(node).map(FieldExpr::Subtract),
-            SyntaxKind::FieldTransformExpr => {
-                FieldTransformExpr::cast(node).map(FieldExpr::Transform)
+            SyntaxKind::FieldSmoothUnionExpr => {
+                FieldSmoothUnionExpr::cast(node).map(FieldExpr::SmoothUnion)
             }
-            SyntaxKind::FieldMirrorExpr => FieldMirrorExpr::cast(node).map(FieldExpr::Mirror),
-            SyntaxKind::FieldRepeatExpr => FieldRepeatExpr::cast(node).map(FieldExpr::Repeat),
-            SyntaxKind::FieldInstanceExpr => FieldInstanceExpr::cast(node).map(FieldExpr::Instance),
+            SyntaxKind::FieldSmoothIntersectionExpr => {
+                FieldSmoothIntersectionExpr::cast(node).map(FieldExpr::SmoothIntersection)
+            }
+            SyntaxKind::FieldSmoothSubtractExpr => {
+                FieldSmoothSubtractExpr::cast(node).map(FieldExpr::SmoothSubtract)
+            }
+            SyntaxKind::FieldTranslateExpr => {
+                FieldTranslateExpr::cast(node).map(FieldExpr::Translate)
+            }
+            SyntaxKind::FieldRotateExpr => FieldRotateExpr::cast(node).map(FieldExpr::Rotate),
+            SyntaxKind::FieldUniformScaleExpr => {
+                FieldUniformScaleExpr::cast(node).map(FieldExpr::UniformScale)
+            }
+            SyntaxKind::FieldAffineTransformExpr => {
+                FieldAffineTransformExpr::cast(node).map(FieldExpr::AffineTransform)
+            }
+            SyntaxKind::FieldWarpExpr => FieldWarpExpr::cast(node).map(FieldExpr::Warp),
+            SyntaxKind::FieldRepeatLinearExpr => {
+                FieldRepeatLinearExpr::cast(node).map(FieldExpr::RepeatLinear)
+            }
+            SyntaxKind::FieldRepeatGridExpr => {
+                FieldRepeatGridExpr::cast(node).map(FieldExpr::RepeatGrid)
+            }
+            SyntaxKind::FieldRadialRepeatExpr => {
+                FieldRadialRepeatExpr::cast(node).map(FieldExpr::RadialRepeat)
+            }
+            SyntaxKind::FieldMirrorArrayExpr => {
+                FieldMirrorArrayExpr::cast(node).map(FieldExpr::MirrorArray)
+            }
+            SyntaxKind::FieldInstanceArrayExpr => {
+                FieldInstanceArrayExpr::cast(node).map(FieldExpr::InstanceArray)
+            }
+            SyntaxKind::FieldBendExpr => FieldBendExpr::cast(node).map(FieldExpr::Bend),
+            SyntaxKind::FieldTwistExpr => FieldTwistExpr::cast(node).map(FieldExpr::Twist),
+            SyntaxKind::FieldTaperExpr => FieldTaperExpr::cast(node).map(FieldExpr::Taper),
+            SyntaxKind::FieldDisplaceExpr => FieldDisplaceExpr::cast(node).map(FieldExpr::Displace),
+            SyntaxKind::FieldExtrudeExpr => FieldExtrudeExpr::cast(node).map(FieldExpr::Extrude),
+            SyntaxKind::FieldRevolveExpr => FieldRevolveExpr::cast(node).map(FieldExpr::Revolve),
+            SyntaxKind::FieldSweepExpr => FieldSweepExpr::cast(node).map(FieldExpr::Sweep),
+            SyntaxKind::FieldLoftExpr => FieldLoftExpr::cast(node).map(FieldExpr::Loft),
             _ => None,
         }
     }
@@ -958,12 +1037,70 @@ impl AstNode for FieldExpr {
             FieldExpr::Union(it) => it.syntax(),
             FieldExpr::Intersection(it) => it.syntax(),
             FieldExpr::Subtract(it) => it.syntax(),
-            FieldExpr::Transform(it) => it.syntax(),
-            FieldExpr::Mirror(it) => it.syntax(),
-            FieldExpr::Repeat(it) => it.syntax(),
-            FieldExpr::Instance(it) => it.syntax(),
+            FieldExpr::SmoothUnion(it) => it.syntax(),
+            FieldExpr::SmoothIntersection(it) => it.syntax(),
+            FieldExpr::SmoothSubtract(it) => it.syntax(),
+            FieldExpr::Translate(it) => it.syntax(),
+            FieldExpr::Rotate(it) => it.syntax(),
+            FieldExpr::UniformScale(it) => it.syntax(),
+            FieldExpr::AffineTransform(it) => it.syntax(),
+            FieldExpr::Warp(it) => it.syntax(),
+            FieldExpr::RepeatLinear(it) => it.syntax(),
+            FieldExpr::RepeatGrid(it) => it.syntax(),
+            FieldExpr::RadialRepeat(it) => it.syntax(),
+            FieldExpr::MirrorArray(it) => it.syntax(),
+            FieldExpr::InstanceArray(it) => it.syntax(),
+            FieldExpr::Bend(it) => it.syntax(),
+            FieldExpr::Twist(it) => it.syntax(),
+            FieldExpr::Taper(it) => it.syntax(),
+            FieldExpr::Displace(it) => it.syntax(),
+            FieldExpr::Extrude(it) => it.syntax(),
+            FieldExpr::Revolve(it) => it.syntax(),
+            FieldExpr::Sweep(it) => it.syntax(),
+            FieldExpr::Loft(it) => it.syntax(),
         }
     }
+}
+
+pub enum ProfileExpr {
+    Primitive(FieldPrimitiveExpr),
+}
+
+impl AstNode for ProfileExpr {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::FieldPrimitiveExpr
+    }
+
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        let primitive = FieldPrimitiveExpr::cast(node)?;
+        let name = primitive.name()?.text().to_string();
+        if is_profile_primitive_name(&name) {
+            Some(ProfileExpr::Primitive(primitive))
+        } else {
+            None
+        }
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        match self {
+            ProfileExpr::Primitive(it) => it.syntax(),
+        }
+    }
+}
+
+impl ProfileExpr {
+    pub fn primitive(&self) -> &FieldPrimitiveExpr {
+        match self {
+            ProfileExpr::Primitive(primitive) => primitive,
+        }
+    }
+}
+
+fn is_profile_primitive_name(name: &str) -> bool {
+    matches!(
+        name,
+        "circle2" | "rect2" | "rounded_rect2" | "capsule2" | "segment2" | "polygon2" | "polyline2"
+    )
 }
 
 pub struct FieldDecl(SyntaxNode);
@@ -1061,6 +1198,70 @@ impl FieldDecl {
                 .collect::<Vec<_>>()
                 .into_iter()
         })
+    }
+
+    pub fn implicit_return_expr(&self) -> Option<StmtExpr> {
+        let mut last = None;
+        for stmt in self.statements() {
+            last = Some(stmt);
+        }
+        match last {
+            Some(Stmt::Expr(expr)) => Some(expr),
+            _ => None,
+        }
+    }
+}
+
+pub struct RadianceDecl(SyntaxNode);
+impl AstNode for RadianceDecl {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::RadianceDecl
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(RadianceDecl(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl RadianceDecl {
+    pub fn name(&self) -> Option<SyntaxToken> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .filter(|it| it.kind() == SyntaxKind::Ident)
+            .nth(2)
+    }
+
+    pub fn params(&self) -> impl Iterator<Item = Param> {
+        self.0
+            .children()
+            .filter(|it| it.kind() == SyntaxKind::ParamList)
+            .flat_map(|node| node.children())
+            .filter_map(Param::cast)
+    }
+
+    pub fn ret_type(&self) -> Option<TypeRef> {
+        self.0.children().filter_map(TypeRef::cast).next()
+    }
+
+    pub fn statements(&self) -> impl Iterator<Item = Stmt> {
+        self.0
+            .children()
+            .filter_map(Block::cast)
+            .next()
+            .into_iter()
+            .flat_map(|b| {
+                b.0.children()
+                    .filter_map(Stmt::cast)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+            })
     }
 
     pub fn implicit_return_expr(&self) -> Option<StmtExpr> {
@@ -1384,6 +1585,29 @@ impl FieldProvenancePolicyClause {
     }
 }
 
+pub struct FieldSmoothingClause(SyntaxNode);
+impl AstNode for FieldSmoothingClause {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::FieldSmoothingClause
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(FieldSmoothingClause(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl FieldSmoothingClause {
+    pub fn value(&self) -> Option<Expr> {
+        self.0.children().filter_map(Expr::cast).next()
+    }
+}
+
 macro_rules! impl_field_wrapped_expr {
     ($name:ident, $kind:expr, $keyword_method:ident) => {
         pub struct $name(SyntaxNode);
@@ -1419,14 +1643,246 @@ macro_rules! impl_field_wrapped_expr {
     };
 }
 
+macro_rules! impl_field_smooth_expr {
+    ($name:ident, $kind:expr) => {
+        pub struct $name(SyntaxNode);
+        impl AstNode for $name {
+            fn can_cast(kind: SyntaxKind) -> bool {
+                kind == $kind
+            }
+            fn cast(node: SyntaxNode) -> Option<Self> {
+                if Self::can_cast(node.kind()) {
+                    Some($name(node))
+                } else {
+                    None
+                }
+            }
+            fn syntax(&self) -> &SyntaxNode {
+                &self.0
+            }
+        }
+
+        impl $name {
+            fn block(&self) -> Option<Block> {
+                self.0.children().filter_map(Block::cast).next()
+            }
+
+            pub fn smoothing_clause(&self) -> Option<FieldSmoothingClause> {
+                self.block().and_then(|block| {
+                    block
+                        .0
+                        .children()
+                        .filter_map(FieldSmoothingClause::cast)
+                        .next()
+                })
+            }
+
+            pub fn smoothing(&self) -> Option<Expr> {
+                self.smoothing_clause().and_then(|clause| clause.value())
+            }
+
+            pub fn items(&self) -> impl Iterator<Item = FieldExpr> {
+                self.block().into_iter().flat_map(|b| {
+                    b.0.children()
+                        .filter_map(FieldExpr::cast)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                })
+            }
+        }
+    };
+}
+
 impl_field_wrapped_expr!(
-    FieldTransformExpr,
-    SyntaxKind::FieldTransformExpr,
-    transform
+    FieldTranslateExpr,
+    SyntaxKind::FieldTranslateExpr,
+    translate
 );
-impl_field_wrapped_expr!(FieldMirrorExpr, SyntaxKind::FieldMirrorExpr, mirror);
-impl_field_wrapped_expr!(FieldRepeatExpr, SyntaxKind::FieldRepeatExpr, repeat);
-impl_field_wrapped_expr!(FieldInstanceExpr, SyntaxKind::FieldInstanceExpr, instance);
+impl_field_wrapped_expr!(FieldRotateExpr, SyntaxKind::FieldRotateExpr, rotate);
+impl_field_wrapped_expr!(
+    FieldUniformScaleExpr,
+    SyntaxKind::FieldUniformScaleExpr,
+    uniform_scale
+);
+impl_field_wrapped_expr!(
+    FieldAffineTransformExpr,
+    SyntaxKind::FieldAffineTransformExpr,
+    affine_transform
+);
+impl_field_wrapped_expr!(FieldWarpExpr, SyntaxKind::FieldWarpExpr, warp);
+impl_field_wrapped_expr!(
+    FieldRepeatLinearExpr,
+    SyntaxKind::FieldRepeatLinearExpr,
+    repeat_linear
+);
+impl_field_wrapped_expr!(
+    FieldRepeatGridExpr,
+    SyntaxKind::FieldRepeatGridExpr,
+    repeat_grid
+);
+impl_field_wrapped_expr!(
+    FieldRadialRepeatExpr,
+    SyntaxKind::FieldRadialRepeatExpr,
+    radial_repeat
+);
+impl_field_wrapped_expr!(
+    FieldMirrorArrayExpr,
+    SyntaxKind::FieldMirrorArrayExpr,
+    mirror_array
+);
+impl_field_wrapped_expr!(
+    FieldInstanceArrayExpr,
+    SyntaxKind::FieldInstanceArrayExpr,
+    instance_array
+);
+impl_field_wrapped_expr!(FieldBendExpr, SyntaxKind::FieldBendExpr, bend);
+impl_field_wrapped_expr!(FieldTwistExpr, SyntaxKind::FieldTwistExpr, twist);
+impl_field_wrapped_expr!(FieldTaperExpr, SyntaxKind::FieldTaperExpr, taper);
+impl_field_wrapped_expr!(FieldDisplaceExpr, SyntaxKind::FieldDisplaceExpr, displace);
+impl_field_wrapped_expr!(FieldExtrudeExpr, SyntaxKind::FieldExtrudeExpr, height);
+impl_field_wrapped_expr!(FieldSweepExpr, SyntaxKind::FieldSweepExpr, path);
+impl FieldExtrudeExpr {
+    pub fn profile(&self) -> Option<ProfileExpr> {
+        self.0
+            .children()
+            .filter_map(Block::cast)
+            .next()
+            .and_then(|block| block.0.children().filter_map(ProfileExpr::cast).next())
+    }
+}
+
+impl FieldSweepExpr {
+    pub fn profile(&self) -> Option<ProfileExpr> {
+        self.0
+            .children()
+            .filter_map(Block::cast)
+            .next()
+            .and_then(|block| block.0.children().filter_map(ProfileExpr::cast).next())
+    }
+}
+
+pub struct FieldRevolveExpr(SyntaxNode);
+impl AstNode for FieldRevolveExpr {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::FieldRevolveExpr
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(FieldRevolveExpr(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl FieldRevolveExpr {
+    pub fn profile(&self) -> Option<ProfileExpr> {
+        self.0
+            .children()
+            .filter_map(Block::cast)
+            .next()
+            .and_then(|block| block.0.children().filter_map(ProfileExpr::cast).next())
+    }
+}
+
+pub struct FieldLoftExpr(SyntaxNode);
+impl AstNode for FieldLoftExpr {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::FieldLoftExpr
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(FieldLoftExpr(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl FieldLoftExpr {
+    pub fn height(&self) -> Option<Expr> {
+        self.0.children().filter_map(Expr::cast).next()
+    }
+
+    fn block(&self) -> Option<Block> {
+        self.0.children().filter_map(Block::cast).next()
+    }
+
+    pub fn from_profile(&self) -> Option<ProfileExpr> {
+        self.block()
+            .and_then(|block| block.0.children().filter_map(ProfileExpr::cast).next())
+    }
+
+    pub fn to_profile(&self) -> Option<ProfileExpr> {
+        self.block()
+            .and_then(|block| block.0.children().filter_map(ProfileExpr::cast).nth(1))
+    }
+}
+impl_field_smooth_expr!(FieldSmoothUnionExpr, SyntaxKind::FieldSmoothUnionExpr);
+impl_field_smooth_expr!(
+    FieldSmoothIntersectionExpr,
+    SyntaxKind::FieldSmoothIntersectionExpr
+);
+
+pub struct FieldSmoothSubtractExpr(SyntaxNode);
+impl AstNode for FieldSmoothSubtractExpr {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::FieldSmoothSubtractExpr
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(FieldSmoothSubtractExpr(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl FieldSmoothSubtractExpr {
+    fn block(&self) -> Option<Block> {
+        self.0.children().filter_map(Block::cast).next()
+    }
+
+    pub fn smoothing_clause(&self) -> Option<FieldSmoothingClause> {
+        self.block().and_then(|block| {
+            block
+                .0
+                .children()
+                .filter_map(FieldSmoothingClause::cast)
+                .next()
+        })
+    }
+
+    pub fn smoothing(&self) -> Option<Expr> {
+        self.smoothing_clause().and_then(|clause| clause.value())
+    }
+
+    pub fn lhs(&self) -> Option<FieldExpr> {
+        self.items().next()
+    }
+
+    pub fn rhs(&self) -> Option<FieldExpr> {
+        self.items().nth(1)
+    }
+
+    pub fn items(&self) -> impl Iterator<Item = FieldExpr> {
+        self.block().into_iter().flat_map(|b| {
+            b.0.children()
+                .filter_map(FieldExpr::cast)
+                .collect::<Vec<_>>()
+                .into_iter()
+        })
+    }
+}
 
 pub struct MaterialDecl(SyntaxNode);
 impl AstNode for MaterialDecl {
@@ -1452,6 +1908,70 @@ impl MaterialDecl {
             .filter_map(|it| it.into_token())
             .filter(|it| it.kind() == SyntaxKind::Ident)
             .nth(1)
+    }
+
+    pub fn params(&self) -> impl Iterator<Item = Param> {
+        self.0
+            .children()
+            .filter(|it| it.kind() == SyntaxKind::ParamList)
+            .flat_map(|node| node.children())
+            .filter_map(Param::cast)
+    }
+
+    pub fn ret_type(&self) -> Option<TypeRef> {
+        self.0.children().filter_map(TypeRef::cast).next()
+    }
+
+    pub fn statements(&self) -> impl Iterator<Item = Stmt> {
+        self.0
+            .children()
+            .filter_map(Block::cast)
+            .next()
+            .into_iter()
+            .flat_map(|b| {
+                b.0.children()
+                    .filter_map(Stmt::cast)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+            })
+    }
+
+    pub fn implicit_return_expr(&self) -> Option<StmtExpr> {
+        let mut last = None;
+        for stmt in self.statements() {
+            last = Some(stmt);
+        }
+        match last {
+            Some(Stmt::Expr(expr)) => Some(expr),
+            _ => None,
+        }
+    }
+}
+
+pub struct VolumeDecl(SyntaxNode);
+impl AstNode for VolumeDecl {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::VolumeDecl
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(VolumeDecl(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl VolumeDecl {
+    pub fn name(&self) -> Option<SyntaxToken> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .filter(|it| it.kind() == SyntaxKind::Ident)
+            .nth(2)
     }
 
     pub fn params(&self) -> impl Iterator<Item = Param> {
@@ -1628,18 +2148,17 @@ impl ShapeUnionExpr {
     }
 
     pub fn provenance_policy(&self) -> Option<SyntaxToken> {
-        self.provenance_policy_clause().and_then(|clause| clause.value())
+        self.provenance_policy_clause()
+            .and_then(|clause| clause.value())
     }
 
     pub fn items(&self) -> impl Iterator<Item = ShapeExpr> {
-        self.block()
-            .into_iter()
-            .flat_map(|b| {
-                b.0.children()
-                    .filter_map(ShapeExpr::cast)
-                    .collect::<Vec<_>>()
-                    .into_iter()
-            })
+        self.block().into_iter().flat_map(|b| {
+            b.0.children()
+                .filter_map(ShapeExpr::cast)
+                .collect::<Vec<_>>()
+                .into_iter()
+        })
     }
 }
 
@@ -1676,18 +2195,17 @@ impl ShapeIntersectionExpr {
     }
 
     pub fn provenance_policy(&self) -> Option<SyntaxToken> {
-        self.provenance_policy_clause().and_then(|clause| clause.value())
+        self.provenance_policy_clause()
+            .and_then(|clause| clause.value())
     }
 
     pub fn items(&self) -> impl Iterator<Item = ShapeExpr> {
-        self.block()
-            .into_iter()
-            .flat_map(|b| {
-                b.0.children()
-                    .filter_map(ShapeExpr::cast)
-                    .collect::<Vec<_>>()
-                    .into_iter()
-            })
+        self.block().into_iter().flat_map(|b| {
+            b.0.children()
+                .filter_map(ShapeExpr::cast)
+                .collect::<Vec<_>>()
+                .into_iter()
+        })
     }
 }
 
@@ -1724,7 +2242,8 @@ impl ShapeSubtractExpr {
     }
 
     pub fn provenance_policy(&self) -> Option<SyntaxToken> {
-        self.provenance_policy_clause().and_then(|clause| clause.value())
+        self.provenance_policy_clause()
+            .and_then(|clause| clause.value())
     }
 
     pub fn lhs(&self) -> Option<ShapeExpr> {
@@ -1736,14 +2255,12 @@ impl ShapeSubtractExpr {
     }
 
     pub fn items(&self) -> impl Iterator<Item = ShapeExpr> {
-        self.block()
-            .into_iter()
-            .flat_map(|b| {
-                b.0.children()
-                    .filter_map(ShapeExpr::cast)
-                    .collect::<Vec<_>>()
-                    .into_iter()
-            })
+        self.block().into_iter().flat_map(|b| {
+            b.0.children()
+                .filter_map(ShapeExpr::cast)
+                .collect::<Vec<_>>()
+                .into_iter()
+        })
     }
 }
 
@@ -1812,6 +2329,26 @@ impl ShapeLeafExpr {
         })
     }
 
+    pub fn radiance(&self) -> Option<ShapeRadianceBinding> {
+        self.bindings().and_then(|block| {
+            block
+                .0
+                .children()
+                .filter_map(ShapeRadianceBinding::cast)
+                .next()
+        })
+    }
+
+    pub fn volume(&self) -> Option<ShapeVolumeBinding> {
+        self.bindings().and_then(|block| {
+            block
+                .0
+                .children()
+                .filter_map(ShapeVolumeBinding::cast)
+                .next()
+        })
+    }
+
     pub fn payload(&self) -> Option<ShapePayloadBinding> {
         self.bindings().and_then(|block| {
             block
@@ -1852,6 +2389,8 @@ macro_rules! impl_shape_binding {
 
 impl_shape_binding!(ShapeFieldBinding, SyntaxKind::ShapeFieldBinding);
 impl_shape_binding!(ShapeMaterialBinding, SyntaxKind::ShapeMaterialBinding);
+impl_shape_binding!(ShapeRadianceBinding, SyntaxKind::ShapeRadianceBinding);
+impl_shape_binding!(ShapeVolumeBinding, SyntaxKind::ShapeVolumeBinding);
 impl_shape_binding!(ShapePayloadBinding, SyntaxKind::ShapePayloadBinding);
 
 macro_rules! impl_profiled_spec_def {
@@ -3650,5 +4189,57 @@ shape scene_shape {
             _ => panic!("expected union shape expression"),
         };
         assert_eq!(union_expr.items().count(), 2);
+    }
+
+    #[test]
+    fn radiance_and_volume_decls_and_shape_leaf_bindings_are_first_class() {
+        let source = r#"
+radiance field emit_sky(direction: Vec3, time: F32) -> Vec3 {
+    return direction
+}
+
+volume field accumulate_fog(p: Vec3, density: F32) -> Medium {
+    return Medium(density = density, emission = vec3(0.0, 0.0, 0.0), anisotropy = 0.0)
+}
+
+shape scene_shape {
+    field = cube
+    material = cube_surface
+    radiance = emit_sky
+    volume = accumulate_fog
+    payload = Payload(id = 1)
+}
+"#;
+        let syntax = parser::parse(source);
+        let root = Root::cast(syntax).expect("root");
+        let mut statements = root.statements();
+
+        let radiance = match statements.next().expect("first statement") {
+            Stmt::RadianceDecl(radiance) => radiance,
+            _ => panic!("expected radiance declaration"),
+        };
+        assert_eq!(radiance.name().expect("radiance name").text(), "emit_sky");
+        assert!(
+            radiance.ret_type().is_some(),
+            "expected radiance return type"
+        );
+
+        let volume = match statements.next().expect("second statement") {
+            Stmt::VolumeDecl(volume) => volume,
+            _ => panic!("expected volume declaration"),
+        };
+        assert_eq!(volume.name().expect("volume name").text(), "accumulate_fog");
+        assert!(volume.ret_type().is_some(), "expected volume return type");
+
+        let shape = match statements.next().expect("third statement") {
+            Stmt::ShapeDecl(shape) => shape,
+            _ => panic!("expected shape declaration"),
+        };
+        let leaf_expr = match shape.semantic_expr().expect("shape expr") {
+            ShapeExpr::Leaf(leaf) => leaf,
+            _ => panic!("expected leaf shape expression"),
+        };
+        assert!(leaf_expr.radiance().is_some(), "expected radiance binding");
+        assert!(leaf_expr.volume().is_some(), "expected volume binding");
     }
 }

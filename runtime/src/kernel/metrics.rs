@@ -82,6 +82,8 @@ pub const METRIC_SCENE_TRACE_STEPS_LE_4: u32 = 70;
 pub const METRIC_SCENE_TRACE_STEPS_LE_8: u32 = 71;
 pub const METRIC_SCENE_TRACE_STEPS_LE_16: u32 = 72;
 pub const METRIC_SCENE_TRACE_STEPS_GT_16: u32 = 73;
+pub const METRIC_SCENE_TRACE_BLEND_COST: u32 = 74;
+pub const METRIC_SCENE_TRACE_DEFORMATION_COST: u32 = 75;
 const METRIC_COUNT: usize = 96;
 const LATENCY_BUCKETS: [u64; 12] = [
     1_000,
@@ -116,6 +118,7 @@ static ACTOR_SPAWN_INSTANCE_TYPE_ID: AtomicU64 = AtomicU64::new(0);
 static METRICS_DUMP_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
 static DUMP_HOOK_INSTALLED: OnceLock<()> = OnceLock::new();
 static METRICS_ENABLED: OnceLock<bool> = OnceLock::new();
+static FUNCTION_COVERAGE_ENABLED: OnceLock<bool> = OnceLock::new();
 static FUNCTION_COVERAGE: OnceLock<Mutex<HashMap<u64, u64>>> = OnceLock::new();
 
 #[cfg(test)]
@@ -141,6 +144,11 @@ pub fn is_enabled() -> bool {
 
 fn function_coverage() -> &'static Mutex<HashMap<u64, u64>> {
     FUNCTION_COVERAGE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[inline(always)]
+fn function_coverage_enabled() -> bool {
+    *FUNCTION_COVERAGE_ENABLED.get_or_init(|| metrics_dump_path().is_some())
 }
 
 #[inline(always)]
@@ -315,7 +323,7 @@ fn maybe_dump_metrics() {
         format!("{{{body}}}")
     };
     let data = format!(
-        "{{\"messages_sent\":{},\"messages_dropped\":{},\"pending_resolved\":{},\"pending_dropped\":{},\"mailbox_high_water\":{},\"rc_inc\":{},\"rc_dec\":{},\"alloc_list\":{},\"alloc_map\":{},\"alloc_string\":{},\"alloc_bytes\":{},\"alloc_result\":{},\"alloc_pending\":{},\"mailbox_enqueue_ok\":{},\"mailbox_enqueue_fail\":{},\"mailbox_dequeue\":{},\"sched_dispatched\":{},\"sched_skipped_no_credit\":{},\"sched_profile_switch\":{},\"sched_starvation_violation\":{},\"sched_cross_shard_migration\":{},\"abi_typed_lane\":{},\"abi_boxed_lane\":{},\"queue_cas_retry_total\":{},\"mailbox_wake_coalesced_count\":{},\"mailbox_rescue_wake_count\":{},\"sched_local_dispatch_count\":{},\"sched_global_dispatch_count\":{},\"sched_plan_recompute_count\":{},\"sched_steal_attempts\":{},\"sched_steal_success\":{},\"sched_migration_blocked_hysteresis\":{},\"sched_migration_blocked_cooldown\":{},\"sched_ready_overflow_fallback\":{},\"scene_trace\":{},\"field_sample\":{},\"message_build_noargs_count\":{},\"message_build_args_count\":{},\"message_instance_rc_skipped_count\":{},\"message_instance_is_arena_count\":{},\"actor_spawn_instance_is_ptr_count\":{},\"actor_spawn_instance_not_ptr_count\":{},\"actor_spawn_instance_promoted_count\":{},\"actor_spawn_instance_type_id\":{},\"actor_method_panic_count\":{},\"actor_method_missing_count\":{},\"actor_arena_lock_count\":{},\"mailbox_batch_reserve_success\":{},\"mailbox_batch_reserve_failed\":{},\"queue_enqueue_p99_ns\":{},\"queue_dequeue_p99_ns\":{},\"queue_age_p99_ns\":{},\"sched_dispatch_loop_ns_p99\":{},\"queue_burst_drain_avg\":{:.2},\"function_coverage\":{}}}",
+        "{{\"messages_sent\":{},\"messages_dropped\":{},\"pending_resolved\":{},\"pending_dropped\":{},\"mailbox_high_water\":{},\"rc_inc\":{},\"rc_dec\":{},\"alloc_list\":{},\"alloc_map\":{},\"alloc_string\":{},\"alloc_bytes\":{},\"alloc_result\":{},\"alloc_pending\":{},\"mailbox_enqueue_ok\":{},\"mailbox_enqueue_fail\":{},\"mailbox_dequeue\":{},\"sched_dispatched\":{},\"sched_skipped_no_credit\":{},\"sched_profile_switch\":{},\"sched_starvation_violation\":{},\"sched_cross_shard_migration\":{},\"abi_typed_lane\":{},\"abi_boxed_lane\":{},\"queue_cas_retry_total\":{},\"mailbox_wake_coalesced_count\":{},\"mailbox_rescue_wake_count\":{},\"sched_local_dispatch_count\":{},\"sched_global_dispatch_count\":{},\"sched_plan_recompute_count\":{},\"sched_steal_attempts\":{},\"sched_steal_success\":{},\"sched_migration_blocked_hysteresis\":{},\"sched_migration_blocked_cooldown\":{},\"sched_ready_overflow_fallback\":{},\"scene_trace\":{},\"field_sample\":{},\"scene_trace_blend_cost\":{},\"scene_trace_deformation_cost\":{},\"message_build_noargs_count\":{},\"message_build_args_count\":{},\"message_instance_rc_skipped_count\":{},\"message_instance_is_arena_count\":{},\"actor_spawn_instance_is_ptr_count\":{},\"actor_spawn_instance_not_ptr_count\":{},\"actor_spawn_instance_promoted_count\":{},\"actor_spawn_instance_type_id\":{},\"actor_method_panic_count\":{},\"actor_method_missing_count\":{},\"actor_arena_lock_count\":{},\"mailbox_batch_reserve_success\":{},\"mailbox_batch_reserve_failed\":{},\"queue_enqueue_p99_ns\":{},\"queue_dequeue_p99_ns\":{},\"queue_age_p99_ns\":{},\"sched_dispatch_loop_ns_p99\":{},\"queue_burst_drain_avg\":{:.2},\"function_coverage\":{}}}",
         get(METRIC_MESSAGES_SENT),
         get(METRIC_MESSAGES_DROPPED),
         get(METRIC_PENDING_RESOLVED),
@@ -352,6 +360,8 @@ fn maybe_dump_metrics() {
         get(METRIC_SCHED_READY_OVERFLOW_FALLBACK),
         get(METRIC_SCENE_TRACE),
         get(METRIC_FIELD_SAMPLE),
+        get(METRIC_SCENE_TRACE_BLEND_COST),
+        get(METRIC_SCENE_TRACE_DEFORMATION_COST),
         get(METRIC_MESSAGE_BUILD_NOARGS),
         get(METRIC_MESSAGE_BUILD_ARGS),
         get(METRIC_MESSAGE_INSTANCE_RC_SKIPPED),
@@ -376,7 +386,7 @@ fn maybe_dump_metrics() {
 }
 
 pub fn coverage_hit(function_id: u64) {
-    if !enabled() {
+    if !enabled() || !function_coverage_enabled() {
         return;
     }
     let mut coverage = function_coverage().lock().expect("function coverage lock");
@@ -514,6 +524,12 @@ pub fn inc_scene_trace_hit(steps: u64, field_samples: u64) {
     bump_by(METRIC_SCENE_TRACE_HIT_STEPS_TOTAL, steps);
     bump_by(METRIC_SCENE_TRACE_HIT_FIELD_SAMPLES_TOTAL, field_samples);
     bump(scene_trace_steps_bucket_id(steps));
+}
+pub fn inc_scene_trace_blend_cost() {
+    bump(METRIC_SCENE_TRACE_BLEND_COST)
+}
+pub fn inc_scene_trace_deformation_cost() {
+    bump(METRIC_SCENE_TRACE_DEFORMATION_COST)
 }
 pub fn inc_message_build_noargs() {
     bump(METRIC_MESSAGE_BUILD_NOARGS)
@@ -738,5 +754,22 @@ mod tests {
             0
         );
         assert_eq!(metrics_get_raw(METRIC_SCENE_TRACE_STEPS_LE_8), 0);
+    }
+
+    #[test]
+    fn blend_and_deformation_metrics_track_and_reset() {
+        let _guard = test_lock().lock().expect("metrics test lock");
+        if !is_enabled() {
+            return;
+        }
+        reset();
+        inc_scene_trace_blend_cost();
+        inc_scene_trace_blend_cost();
+        inc_scene_trace_deformation_cost();
+        assert_eq!(metrics_get_raw(METRIC_SCENE_TRACE_BLEND_COST), 2);
+        assert_eq!(metrics_get_raw(METRIC_SCENE_TRACE_DEFORMATION_COST), 1);
+        reset();
+        assert_eq!(metrics_get_raw(METRIC_SCENE_TRACE_BLEND_COST), 0);
+        assert_eq!(metrics_get_raw(METRIC_SCENE_TRACE_DEFORMATION_COST), 0);
     }
 }

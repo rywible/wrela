@@ -7,17 +7,22 @@ use smol_str::SmolStr;
 use std::collections::HashMap;
 use thiserror::Error;
 use wrela_runtime::{
-    Value as RuntimeValue, wr_box, wr_capsule, wr_cylinder, wr_field_intersection,
-    wr_field_mirror_point, wr_field_repeat_point, wr_field_subtract, wr_field_union, wr_mat3_add,
-    wr_mat3_component, wr_mat3_div_scalar, wr_mat3_from_columns, wr_mat3_identity,
-    wr_mat3_mul_mat3, wr_mat3_mul_scalar, wr_mat3_mul_vec3, wr_mat3_sub, wr_mat4_add,
-    wr_mat4_component, wr_mat4_div_scalar, wr_mat4_from_columns, wr_mat4_identity,
-    wr_mat4_mul_mat4, wr_mat4_mul_scalar, wr_mat4_mul_vec4, wr_mat4_sub, wr_plane, wr_quat_new,
-    wr_sphere, wr_torus, wr_vec_abs, wr_vec_add, wr_vec_ceil, wr_vec_clamp, wr_vec_component,
-    wr_vec_cos, wr_vec_cross, wr_vec_distance, wr_vec_div, wr_vec_dot, wr_vec_floor, wr_vec_fract,
-    wr_vec_length, wr_vec_max, wr_vec_min, wr_vec_mix, wr_vec_mul, wr_vec_normalize, wr_vec_pow,
-    wr_vec_reflect, wr_vec_sign, wr_vec_sin, wr_vec_sqrt, wr_vec_sub, wr_vec2_new, wr_vec3_new,
-    wr_vec4_new,
+    Value as RuntimeValue, wr_bend, wr_box, wr_box_frame, wr_capped_cone, wr_capsule, wr_capsule2,
+    wr_circle2, wr_cone, wr_cylinder, wr_displace, wr_ellipsoid, wr_field_intersection,
+    wr_field_mirror_point, wr_field_repeat_point, wr_field_subtract, wr_field_sweep_coords,
+    wr_field_union, wr_hex_prism, wr_list_new_local, wr_list_push, wr_mat3_add, wr_mat3_component,
+    wr_mat3_div_scalar, wr_mat3_from_columns, wr_mat3_identity, wr_mat3_mul_mat3,
+    wr_mat3_mul_scalar, wr_mat3_mul_vec3, wr_mat3_sub, wr_mat4_add, wr_mat4_component,
+    wr_mat4_div_scalar, wr_mat4_from_columns, wr_mat4_identity, wr_mat4_mul_mat4,
+    wr_mat4_mul_scalar, wr_mat4_mul_vec4, wr_mat4_sub, wr_mirror_array, wr_plane, wr_polygon2,
+    wr_polyline2, wr_quat_new, wr_radial_repeat, wr_rect2, wr_repeat_grid, wr_repeat_linear,
+    wr_rotate, wr_rounded_box, wr_rounded_rect2, wr_segment2, wr_slab, wr_smooth_intersection,
+    wr_smooth_subtract, wr_smooth_union, wr_sphere, wr_taper, wr_torus, wr_translate,
+    wr_triangle_prism, wr_twist, wr_uniform_scale, wr_vec_abs, wr_vec_add, wr_vec_ceil,
+    wr_vec_clamp, wr_vec_component, wr_vec_cos, wr_vec_cross, wr_vec_distance, wr_vec_div,
+    wr_vec_dot, wr_vec_floor, wr_vec_fract, wr_vec_length, wr_vec_max, wr_vec_min, wr_vec_mix,
+    wr_vec_mul, wr_vec_normalize, wr_vec_pow, wr_vec_reflect, wr_vec_sign, wr_vec_sin, wr_vec_sqrt,
+    wr_vec_sub, wr_vec2_new, wr_vec3_new, wr_vec4_new, wr_warp,
 };
 
 #[derive(Debug, Error, Clone, PartialEq)]
@@ -654,21 +659,56 @@ fn eval_intrinsic(
         PirIntrinsic::TransformNormal => eval_transform_normal(args),
         PirIntrinsic::ComposeTransform3 => eval_compose_transform3(args, ty),
         PirIntrinsic::InverseTransform3 => eval_inverse_transform3(args, ty),
+        PirIntrinsic::Translate => runtime_binary_intrinsic(args, ty, wr_translate),
+        PirIntrinsic::Rotate => runtime_binary_intrinsic(args, ty, wr_rotate),
+        PirIntrinsic::UniformScale => runtime_binary_intrinsic(args, ty, wr_uniform_scale),
+        PirIntrinsic::AffineTransform => eval_field_transform_point(args),
+        PirIntrinsic::Warp => runtime_binary_intrinsic(args, ty, wr_warp),
+        PirIntrinsic::RepeatLinear => runtime_binary_intrinsic(args, ty, wr_repeat_linear),
+        PirIntrinsic::RepeatGrid => runtime_binary_intrinsic(args, ty, wr_repeat_grid),
+        PirIntrinsic::RadialRepeat => runtime_binary_intrinsic(args, ty, wr_radial_repeat),
+        PirIntrinsic::MirrorArray => runtime_binary_intrinsic(args, ty, wr_mirror_array),
+        PirIntrinsic::InstanceArray => eval_field_transform_point(args),
         PirIntrinsic::FieldTransformPoint => eval_field_transform_point(args),
         PirIntrinsic::FieldInstancePoint => eval_field_transform_point(args),
         PirIntrinsic::FieldMirrorPoint => runtime_binary_intrinsic(args, ty, wr_field_mirror_point),
         PirIntrinsic::FieldRepeatPoint => runtime_binary_intrinsic(args, ty, wr_field_repeat_point),
+        PirIntrinsic::FieldSweepCoords => runtime_binary_intrinsic(args, ty, wr_field_sweep_coords),
+        PirIntrinsic::RoundedBox => runtime_ternary_intrinsic(args, ty, wr_rounded_box),
+        PirIntrinsic::Circle2 => runtime_binary_intrinsic(args, ty, wr_circle2),
+        PirIntrinsic::Rect2 => runtime_binary_intrinsic(args, ty, wr_rect2),
+        PirIntrinsic::RoundedRect2 => runtime_ternary_intrinsic(args, ty, wr_rounded_rect2),
+        PirIntrinsic::Capsule2 => runtime_quaternary_intrinsic(args, ty, wr_capsule2),
+        PirIntrinsic::Segment2 => runtime_ternary_intrinsic(args, ty, wr_segment2),
+        PirIntrinsic::Polygon2 => eval_polygon_or_polyline(args, ty, true),
+        PirIntrinsic::Polyline2 => eval_polygon_or_polyline(args, ty, false),
+        PirIntrinsic::Ellipsoid => runtime_binary_intrinsic(args, ty, wr_ellipsoid),
+        PirIntrinsic::Cone => runtime_ternary_intrinsic(args, ty, wr_cone),
+        PirIntrinsic::CappedCone => runtime_quaternary_intrinsic(args, ty, wr_capped_cone),
+        PirIntrinsic::BoxFrame => runtime_ternary_intrinsic(args, ty, wr_box_frame),
+        PirIntrinsic::Slab => runtime_binary_intrinsic(args, ty, wr_slab),
+        PirIntrinsic::TrianglePrism => runtime_ternary_intrinsic(args, ty, wr_triangle_prism),
+        PirIntrinsic::HexPrism => runtime_ternary_intrinsic(args, ty, wr_hex_prism),
         PirIntrinsic::Sphere => runtime_binary_intrinsic(args, ty, wr_sphere),
         PirIntrinsic::Box => runtime_binary_intrinsic(args, ty, wr_box),
         PirIntrinsic::Capsule => runtime_quaternary_intrinsic(args, ty, wr_capsule),
         PirIntrinsic::Cylinder => runtime_ternary_intrinsic(args, ty, wr_cylinder),
         PirIntrinsic::Plane => runtime_ternary_intrinsic(args, ty, wr_plane),
         PirIntrinsic::Torus => runtime_ternary_intrinsic(args, ty, wr_torus),
+        PirIntrinsic::SmoothUnion => runtime_ternary_intrinsic(args, ty, wr_smooth_union),
+        PirIntrinsic::SmoothIntersection => {
+            runtime_ternary_intrinsic(args, ty, wr_smooth_intersection)
+        }
+        PirIntrinsic::SmoothSubtract => runtime_ternary_intrinsic(args, ty, wr_smooth_subtract),
         PirIntrinsic::FieldUnion => runtime_binary_intrinsic(args, ty, wr_field_union),
         PirIntrinsic::FieldIntersection => {
             runtime_binary_intrinsic(args, ty, wr_field_intersection)
         }
         PirIntrinsic::FieldSubtract => runtime_binary_intrinsic(args, ty, wr_field_subtract),
+        PirIntrinsic::Bend => runtime_binary_intrinsic(args, ty, wr_bend),
+        PirIntrinsic::Twist => runtime_binary_intrinsic(args, ty, wr_twist),
+        PirIntrinsic::Taper => runtime_binary_intrinsic(args, ty, wr_taper),
+        PirIntrinsic::Displace => runtime_binary_intrinsic(args, ty, wr_displace),
         PirIntrinsic::Dot => runtime_binary_intrinsic(args, ty, wr_vec_dot),
         PirIntrinsic::Length => runtime_unary_intrinsic(args, ty, wr_vec_length),
         PirIntrinsic::Normalize => runtime_unary_intrinsic(args, ty, wr_vec_normalize),
@@ -689,6 +729,46 @@ fn eval_intrinsic(
         PirIntrinsic::Distance => runtime_binary_intrinsic(args, ty, wr_vec_distance),
         PirIntrinsic::Reflect => runtime_binary_intrinsic(args, ty, wr_vec_reflect),
     }
+}
+
+fn eval_polygon_or_polyline(
+    args: Vec<PirValue>,
+    ty: &PirType,
+    closed: bool,
+) -> Result<PirValue, PirExecError> {
+    let [point, vertices] = args.as_slice() else {
+        return Err(PirExecError::ArityMismatch {
+            name: if closed {
+                SmolStr::new("polygon2")
+            } else {
+                SmolStr::new("polyline2")
+            },
+            expected: 2,
+            found: args.len(),
+        });
+    };
+    let runtime_point = runtime_value_from_pir(point)?;
+    let runtime_vertices = match vertices {
+        PirValue::Array(items) => {
+            let list = wr_list_new_local(items.len());
+            for item in items {
+                let value = runtime_value_from_pir(item)?;
+                wr_list_push(list, value);
+            }
+            list
+        }
+        _ => {
+            return Err(PirExecError::UnsupportedOperation {
+                message: "polygon2/polyline2 expect an array of Vec2 vertices".to_string(),
+            });
+        }
+    };
+    let sampled = if closed {
+        wr_polygon2(runtime_point, runtime_vertices)
+    } else {
+        wr_polyline2(runtime_point, runtime_vertices)
+    };
+    runtime_value_to_pir(sampled, ty)
 }
 
 fn eval_bounds_center(args: Vec<PirValue>, dims: usize) -> Result<PirValue, PirExecError> {

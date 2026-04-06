@@ -17,10 +17,52 @@ fn load_module_from_source(source: &str) -> hir::Module {
     project.module
 }
 
+fn repo_root() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("compiler crate should have repo parent")
+        .to_path_buf()
+}
+
+fn load_project_module(project_root: &str) -> hir::Module {
+    let entry_path = repo_root().join(project_root).join("src").join("main.wr");
+    let project = load_project(&entry_path).expect("load project");
+    project.module
+}
+
 fn lower_inline_module_from_source(source: &str) -> hir::Module {
     let node = parse(source);
     let root = ast::Root::cast(node).expect("root");
     hir_lower::lower(root)
+}
+
+fn collect_indirect_calls(module: &hir::Module) -> Vec<(smol_str::SmolStr, mir::CallTarget)> {
+    let (_type_errors, type_info) = hir::typeck::check_module_with_info(module);
+    let check_ir = hir::checkir::extract_module(module);
+    let mut mir_module = mir::lower::lower_module_with_types(module, &type_info);
+    let analysis = mir::analysis::analyze_module(&mir_module);
+    for func in &mut mir_module.functions {
+        let types = analysis.type_map.function(&func.name);
+        mir::opt::run_function_passes_with_types(func, types);
+    }
+    let _ = mir::opt::run_module_passes_with_rulepack(&mut mir_module, Some(&check_ir));
+
+    let mut indirect_calls = Vec::new();
+    for func in &mir_module.functions {
+        for block in &func.blocks {
+            for stmt in &block.stmts {
+                if let mir::Stmt::Assign {
+                    value: mir::Rvalue::Call { target, .. },
+                    ..
+                } = stmt
+                    && matches!(target, mir::CallTarget::Indirect(_))
+                {
+                    indirect_calls.push((func.name.clone(), target.clone()));
+                }
+            }
+        }
+    }
+    indirect_calls
 }
 
 fn expected_int_exit(value: i64) -> i32 {
@@ -44,6 +86,21 @@ fn compile_and_run_native_module(
     module: hir::Module,
     executable_name: &str,
 ) -> std::process::Output {
+    compile_and_run_native_module_impl(module, executable_name, false)
+}
+
+fn compile_and_run_native_module_with_indirect_calls(
+    module: hir::Module,
+    executable_name: &str,
+) -> std::process::Output {
+    compile_and_run_native_module_impl(module, executable_name, true)
+}
+
+fn compile_and_run_native_module_impl(
+    module: hir::Module,
+    executable_name: &str,
+    allow_indirect_calls: bool,
+) -> std::process::Output {
     let semantic = hir::semantic::check_module(&module);
     assert!(
         semantic.errors.is_empty(),
@@ -63,6 +120,27 @@ fn compile_and_run_native_module(
     let _ = mir::opt::run_module_passes_with_rulepack(&mut mir_module, Some(&check_ir));
     let mir_errors = mir::validate::validate_module(&mir_module);
     assert!(mir_errors.is_empty(), "mir errors: {mir_errors:?}");
+    if !allow_indirect_calls {
+        let mut indirect_calls = Vec::new();
+        for func in &mir_module.functions {
+            for block in &func.blocks {
+                for stmt in &block.stmts {
+                    if let mir::Stmt::Assign {
+                        value: mir::Rvalue::Call { target, .. },
+                        ..
+                    } = stmt
+                        && matches!(target, mir::CallTarget::Indirect(_))
+                    {
+                        indirect_calls.push((func.name.clone(), target.clone()));
+                    }
+                }
+            }
+        }
+        assert!(
+            indirect_calls.is_empty(),
+            "unexpected indirect calls before native codegen: {indirect_calls:?}"
+        );
+    }
 
     let dir = tempfile::tempdir().expect("tempdir");
     let out = dir.path().join(executable_name);
@@ -91,6 +169,23 @@ fn run() -> Integer {
     let output = compile_and_run_native_source(source, "wr_v2_numeric_range_smoke");
     let expected = expected_int_exit(106);
     assert_eq!(output.status.code().unwrap_or(-1), expected);
+}
+
+#[test]
+fn preview_projects_lower_without_indirect_calls() {
+    for project_root in [
+        "language/preview",
+        "language/preview_boolean",
+        "language/preview_repetition",
+        "language/preview_thinstack",
+    ] {
+        let module = load_project_module(project_root);
+        let indirect_calls = collect_indirect_calls(&module);
+        assert!(
+            indirect_calls.is_empty(),
+            "unexpected indirect calls for {project_root}: {indirect_calls:?}"
+        );
+    }
 }
 
 #[test]
@@ -760,6 +855,7 @@ fn main() -> Integer {
         distance=f32(4.0),
         position=vec3(1.0, 2.0, 3.0),
         normal=vec3(0.0, 1.0, 0.0),
+        shading_frame=transform3_identity(),
         steps=0,
         feature_id=u64(0),
         payload=payload
@@ -915,27 +1011,27 @@ fn native_v2_structural_field_wrappers_affect_sampling() {
     }
     let source = r#"
 field conservative distance translated_sphere(p: Vec3) -> F32 {
-    transform = vec3(2.0, 0.0, 0.0) {
+    translate = vec3(2.0, 0.0, 0.0) {
         sphere(radius=1.0)
     }
 }
 
 field conservative distance mirrored_box(p: Vec3) -> F32 {
-    mirror = vec3(1.0, 0.0, 0.0) {
-        transform = vec3(1.0, 0.0, 0.0) {
+    mirror_array = vec3(1.0, 0.0, 0.0) {
+        translate = vec3(1.0, 0.0, 0.0) {
             box(half=vec3(0.5, 0.5, 0.5))
         }
     }
 }
 
 field exact distance repeated_sphere(p: Vec3) -> F32 {
-    repeat = vec3(2.0, 0.0, 0.0) {
+    repeat_linear = vec3(2.0, 0.0, 0.0) {
         sphere(radius=0.5)
     }
 }
 
 field conservative distance instanced_sphere(p: Vec3) -> F32 {
-    instance = Transform3(
+    instance_array = Transform3(
         matrix=mat4_cols(
             vec4(1.0, 0.0, 0.0, 0.0),
             vec4(0.0, 1.0, 0.0, 0.0),
@@ -1093,6 +1189,209 @@ fn main() -> Integer {
 }
 
 #[test]
+fn native_v2_phase6_construction_operators_sample_correctly() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = r#"
+field exact distance extruded_disc(p: Vec3) -> F32 {
+    extrude = f32(1.6) {
+        circle2(radius = 0.75)
+    }
+}
+
+field conservative distance revolved_orb(p: Vec3) -> F32 {
+    revolve {
+        circle2(radius = 0.5)
+    }
+}
+
+field conservative distance swept_beam(p: Vec3) -> F32 {
+    sweep = vec3(0.0, 1.6, 0.0) {
+        circle2(radius = 0.15)
+    }
+}
+
+field conservative distance lofted_form(p: Vec3) -> F32 {
+    loft = f32(1.2) {
+        from rect2(half = vec2(0.25, 0.18))
+        to rounded_rect2(half = vec2(0.42, 0.28), radius = 0.08)
+    }
+}
+
+field exact distance polygon_plate(p: Vec3) -> F32 {
+    extrude = f32(0.4) {
+        polygon2(vertices = [
+            vec2(-0.4, -0.3),
+            vec2(0.5, -0.2),
+            vec2(0.3, 0.4),
+            vec2(-0.3, 0.35)
+        ])
+    }
+}
+
+field conservative distance capsule_rib(p: Vec3) -> F32 {
+    extrude = f32(0.18) {
+        capsule2(a = vec2(-0.24, 0.0), b = vec2(0.24, 0.0), radius = 0.06)
+    }
+}
+
+field conservative distance segment_strip(p: Vec3) -> F32 {
+    extrude = f32(0.12) {
+        segment2(a = vec2(-0.28, 0.0), b = vec2(0.28, 0.0))
+    }
+}
+
+field conservative distance polyline_strip(p: Vec3) -> F32 {
+    extrude = f32(0.16) {
+        polyline2(vertices = [
+            vec2(-0.28, -0.10),
+            vec2(0.0, 0.14),
+            vec2(0.28, -0.10)
+        ])
+    }
+}
+
+fn main() -> Integer {
+    disc_scene = capture extruded_disc
+    orb_scene = capture revolved_orb
+    beam_scene = capture swept_beam
+    loft_scene = capture lofted_form
+    plate_scene = capture polygon_plate
+
+    disc_center = distance_at(capture=disc_scene, point=vec3(0.0, 0.0, 0.0))
+    orb_center = distance_at(capture=orb_scene, point=vec3(0.0, 0.0, 0.0))
+    beam_center = distance_at(capture=beam_scene, point=vec3(0.0, 0.0, 0.0))
+    loft_center = distance_at(capture=loft_scene, point=vec3(0.0, 0.0, 0.0))
+    plate_center = distance_at(capture=plate_scene, point=vec3(0.05, 0.0, 0.05))
+    disc_outside = distance_at(capture=disc_scene, point=vec3(0.0, 1.2, 0.0))
+    beam_outside = distance_at(capture=beam_scene, point=vec3(0.45, 0.0, 0.0))
+
+    assert approx disc_center ~= -0.75 within 0.001
+    assert approx orb_center ~= -0.5 within 0.001
+    assert approx beam_center ~= -0.15 within 0.001
+    assert value loft_center < 0.0
+    assert value plate_center <= 0.0
+    assert value disc_outside > 0.0
+    assert value beam_outside > 0.0
+    return 0
+}
+"#;
+
+    let output = compile_and_run_native_module_with_indirect_calls(
+        lower_inline_module_from_source(source),
+        "wr_v2_phase6_construction_operators_sample_correctly",
+    );
+    let expected = expected_int_exit(0);
+    assert_eq!(
+        output.status.code().unwrap_or(-1),
+        expected,
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn native_v2_phase6_constructed_fields_enable_support_pruning() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = r#"
+field exact distance near_disc(p: Vec3) -> F32 {
+    extrude = f32(1.2) {
+        circle2(radius = 0.55)
+    }
+}
+
+field conservative distance far_loft(p: Vec3) -> F32 {
+    translate = vec3(9.5, 0.0, 0.0) {
+        loft = f32(1.4) {
+            from circle2(radius = 0.32)
+            to rounded_rect2(half = vec2(0.50, 0.32), radius = 0.08)
+        }
+    }
+}
+
+material warm_surface(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(1.0, 0.7, 0.4),
+        roughness=0.2,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape near_shape {
+    field = near_disc
+    material = warm_surface
+    payload = Payload(
+        entity_id=u64(1),
+        material_id=u64(1),
+        actor=ActorHandle(id=u64(1), generation=u32(0))
+    )
+}
+
+shape far_shape {
+    field = far_loft
+    material = warm_surface
+    payload = Payload(
+        entity_id=u64(2),
+        material_id=u64(2),
+        actor=ActorHandle(id=u64(2), generation=u32(0))
+    )
+}
+
+shape scene_shape {
+    union {
+        provenance_policy = nearest
+        use near_shape
+        use far_shape
+    }
+}
+
+fn main() -> Integer {
+    pruned_before = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
+    candidates_before = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+    scene_capture = capture scene_shape
+    hit = trace_shape(
+        capture=scene_capture,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    pruned_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
+    candidates_after = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+
+    if hit.hit != true { return 1 }
+    if hit.payload.material_id != u64(1) { return 2 }
+    if pruned_after - pruned_before <= 0 { return 3 }
+    if candidates_after - candidates_before < 2 { return 4 }
+    return 0
+}
+"#;
+
+    let output = compile_and_run_native_module_with_indirect_calls(
+        lower_inline_module_from_source(source),
+        "wr_v2_phase6_constructed_fields_enable_support_pruning",
+    );
+    let expected = expected_int_exit(0);
+    assert_eq!(
+        output.status.code().unwrap_or(-1),
+        expected,
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn native_v2_host_raymarch_material_ppm_smoke() {
     if std::env::var("WR_SKIP_NATIVE").is_ok() {
         return;
@@ -1187,7 +1486,7 @@ fn native_v2_repeat_wrapper_does_not_regress_trace_steps() {
     }
     let source = r#"
 field conservative distance repeat_box(p: Vec3) -> F32 {
-    repeat = vec3(2.0, 0.0, 0.0) {
+    repeat_linear = vec3(2.0, 0.0, 0.0) {
         box(half=vec3(0.5, 0.5, 0.5))
     }
 }
@@ -1216,6 +1515,7 @@ fn main() -> Integer {
         distance=0.0,
         position=vec3(0.0, 0.0, 3.0),
         normal=vec3(0.0, 0.0, 1.0),
+        shading_frame=transform3_identity(),
         steps=0,
         feature_id=i64(0),
         payload=Payload(
@@ -1233,6 +1533,7 @@ fn main() -> Integer {
                 distance=repeat_traveled,
                 position=rp,
                 normal=vec3(0.0, 0.0, 1.0),
+                shading_frame=transform3_identity(),
                 steps=i64(repeat_steps + 1),
                 feature_id=i64(0),
                 payload=Payload(
@@ -1256,6 +1557,7 @@ fn main() -> Integer {
         distance=0.0,
         position=vec3(0.0, 0.0, 3.0),
         normal=vec3(0.0, 0.0, 1.0),
+        shading_frame=transform3_identity(),
         steps=0,
         feature_id=i64(0),
         payload=Payload(
@@ -1273,6 +1575,7 @@ fn main() -> Integer {
                 distance=manual_traveled,
                 position=mp,
                 normal=vec3(0.0, 0.0, 1.0),
+                shading_frame=transform3_identity(),
                 steps=i64(manual_steps + 1),
                 feature_id=i64(0),
                 payload=Payload(
@@ -1463,7 +1766,7 @@ fn native_v2_exact_trace_metrics_track_hits() {
     }
     let source = r#"
 field exact distance orb(p: Vec3) -> F32 {
-    transform = vec3(0.8, 0.0, 0.0) {
+    translate = vec3(0.8, 0.0, 0.0) {
         sphere(radius=0.65)
     }
 }
@@ -1515,6 +1818,8 @@ fn main() -> Integer {
     )
     field_samples_after_trace = __wr_metrics_get(__wr_metrics_field_sample_id())
     surface = surface_at(capture=orb_scene, hit=hit)
+    local_frame = inverse_transform3(transform=hit.shading_frame)
+    local_origin = transform_point(transform=local_frame, point=hit.position)
 
     exact_after = __wr_metrics_get(__wr_metrics_scene_trace_exact_path_id())
     conservative_after = __wr_metrics_get(__wr_metrics_scene_trace_conservative_path_id())
@@ -1530,6 +1835,9 @@ fn main() -> Integer {
 
     assert value hit.hit == true
     assert value hit.payload.material_id == u64(22)
+    assert approx local_origin.x ~= 0.0 within 0.001
+    assert approx local_origin.y ~= 0.0 within 0.001
+    assert approx local_origin.z ~= 0.0 within 0.001
     assert approx surface.albedo.x ~= 32.0 within 0.001
     assert approx surface.albedo.z ~= 255.0 within 0.001
     assert value exact_after - exact_before == 1
@@ -1808,13 +2116,13 @@ fn native_v2_shape_provenance_tracks_boolean_winners() {
     }
     let source = r#"
 field exact distance left_orb(p: Vec3) -> F32 {
-    transform = vec3(-0.8, 0.0, 0.0) {
+    translate = vec3(-0.8, 0.0, 0.0) {
         sphere(radius=0.65)
     }
 }
 
 field exact distance right_orb(p: Vec3) -> F32 {
-    transform = vec3(0.8, 0.0, 0.0) {
+    translate = vec3(0.8, 0.0, 0.0) {
         sphere(radius=0.65)
     }
 }
@@ -1828,13 +2136,13 @@ field exact distance cutter(p: Vec3) -> F32 {
 }
 
 field exact distance near_orb(p: Vec3) -> F32 {
-    transform = vec3(0.0, 0.0, 1.6) {
+    translate = vec3(0.0, 0.0, 1.6) {
         sphere(radius=0.45)
     }
 }
 
 field exact distance far_orb(p: Vec3) -> F32 {
-    transform = vec3(0.0, 0.0, 0.9) {
+    translate = vec3(0.0, 0.0, 0.9) {
         sphere(radius=0.45)
     }
 }
@@ -2176,9 +2484,13 @@ fn main() -> Integer {
         source,
         "wr_v2_shape_provenance_tracks_boolean_winners",
     );
-    assert_eq!(output.status.code().unwrap_or(-1), 0, "stdout={}\nstderr={}",
+    assert_eq!(
+        output.status.code().unwrap_or(-1),
+        0,
+        "stdout={}\nstderr={}",
         String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr));
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -2196,10 +2508,10 @@ field exact distance tie_right_field(p: Vec3) -> F32 {
 }
 
 field conservative distance wrapped_stack(p: Vec3) -> F32 {
-    mirror = vec3(1.0, 0.0, 0.0) {
-        repeat = vec3(2.0, 0.0, 0.0) {
-            transform = vec3(0.0, 0.0, 0.0) {
-                instance = Transform3(
+    mirror_array = vec3(1.0, 0.0, 0.0) {
+        repeat_linear = vec3(2.0, 0.0, 0.0) {
+            translate = vec3(0.0, 0.0, 0.0) {
+                instance_array = Transform3(
                     matrix=mat4_cols(
                         vec4(1.0, 0.0, 0.0, 0.0),
                         vec4(0.0, 1.0, 0.0, 0.0),
@@ -2221,7 +2533,7 @@ field conservative distance wrapped_stack(p: Vec3) -> F32 {
 }
 
 field conservative distance wrapped_decoy(p: Vec3) -> F32 {
-    transform = vec3(4.0, 0.0, 0.0) {
+    translate = vec3(4.0, 0.0, 0.0) {
         sphere(radius=0.5)
     }
 }
@@ -2826,7 +3138,8 @@ fn main() -> Integer {
     return 0
 }
 "#;
-    let (errors, _info) = hir::typeck::check_module_with_info(&lower_inline_module_from_source(source));
+    let (errors, _info) =
+        hir::typeck::check_module_with_info(&lower_inline_module_from_source(source));
     assert!(
         errors.iter().any(|err| matches!(
             err,
@@ -2850,7 +3163,8 @@ fn main() -> Integer {
     return 0
 }
 "#;
-    let (errors, _info) = hir::typeck::check_module_with_info(&lower_inline_module_from_source(source));
+    let (errors, _info) =
+        hir::typeck::check_module_with_info(&lower_inline_module_from_source(source));
     assert!(
         errors.iter().any(|err| matches!(
             err,
@@ -2858,6 +3172,40 @@ fn main() -> Integer {
                 if name.as_str() == "FieldCapture"
         )),
         "expected forged capture constructor rejection, got: {errors:?}"
+    );
+}
+
+#[test]
+fn native_v2_phase7_queries_require_shape_capture_smoke() {
+    let source = r#"
+field exact distance sphere_field(p: Vec3) -> F32 {
+    sphere(radius = 1.0)
+}
+
+fn main() -> Integer {
+    scene = capture sphere_field
+    _ = radiance_at(
+        capture=scene,
+        point=vec3(0.0, 0.0, 0.0),
+        direction=vec3(0.0, 0.0, -1.0)
+    )
+    _ = medium_at(capture=scene, point=vec3(0.0, 0.0, 0.0))
+    return 0
+}
+"#;
+    let (errors, _info) =
+        hir::typeck::check_module_with_info(&lower_inline_module_from_source(source));
+    let rejection_count = errors
+        .iter()
+        .filter(|err| matches!(
+            err,
+            hir::typeck::TypeError::ShapeQueryTargetMustBeShape { query, .. }
+                if query.as_str() == "radiance_at" || query.as_str() == "medium_at"
+        ))
+        .count();
+    assert_eq!(
+        rejection_count, 2,
+        "expected radiance_at and medium_at field capture rejection, got: {errors:?}"
     );
 }
 
@@ -2887,7 +3235,8 @@ fn main() -> Integer {
     return 0
 }
 "#;
-    let (errors, _info) = hir::typeck::check_module_with_info(&lower_inline_module_from_source(source));
+    let (errors, _info) =
+        hir::typeck::check_module_with_info(&lower_inline_module_from_source(source));
     assert!(
         errors.iter().any(|err| matches!(
             err,
@@ -2897,5 +3246,352 @@ fn main() -> Integer {
                     && found == "Integer"
         )),
         "expected raw backend integer rejection, got: {errors:?}"
+    );
+}
+
+#[test]
+fn native_v2_phase5_smooth_and_deformation_cost_regression() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = r#"
+field conservative distance control_field(p: Vec3) -> F32 {
+    rounded_box(half=vec3(0.60, 0.48, 0.36), radius=0.10)
+}
+
+field conservative distance smooth_left(p: Vec3) -> F32 {
+    translate = vec3(-0.55, 0.0, 0.0) {
+        use control_field
+    }
+}
+
+field conservative distance smooth_right(p: Vec3) -> F32 {
+    translate = vec3(0.55, 0.0, 0.0) {
+        ellipsoid(radii=vec3(0.58, 0.38, 0.46))
+    }
+}
+
+field conservative distance smooth_scene_field(p: Vec3) -> F32 {
+    smooth_union {
+        smoothing = f32(0.18)
+        use smooth_left
+        use smooth_right
+    }
+}
+
+field conservative distance deform_source(p: Vec3) -> F32 {
+    slab(thickness=0.18)
+}
+
+field conservative distance bend_field(p: Vec3) -> F32 {
+    bend = vec3(0.0, 0.30, 0.0) {
+        use deform_source
+    }
+}
+
+field conservative distance twist_field(p: Vec3) -> F32 {
+    twist = vec3(0.0, 0.30, 0.0) {
+        use deform_source
+    }
+}
+
+field conservative distance taper_field(p: Vec3) -> F32 {
+    taper = vec3(0.0, 0.20, 0.0) {
+        use deform_source
+    }
+}
+
+field conservative distance displace_field(p: Vec3) -> F32 {
+    displace = vec3(0.06, 0.0, 0.0) {
+        use deform_source
+    }
+}
+
+material shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(1.0, 0.0, 0.0),
+        roughness=0.0,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape control_shape {
+    field = control_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(1),
+        material_id=u64(1),
+        actor=ActorHandle(id=u64(1), generation=u32(0))
+    )
+}
+
+shape smooth_shape {
+    field = smooth_scene_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(2),
+        material_id=u64(2),
+        actor=ActorHandle(id=u64(1), generation=u32(0))
+    )
+}
+
+shape bend_shape {
+    field = bend_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(3),
+        material_id=u64(3),
+        actor=ActorHandle(id=u64(1), generation=u32(0))
+    )
+}
+
+shape twist_shape {
+    field = twist_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(4),
+        material_id=u64(4),
+        actor=ActorHandle(id=u64(1), generation=u32(0))
+    )
+}
+
+shape taper_shape {
+    field = taper_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(5),
+        material_id=u64(5),
+        actor=ActorHandle(id=u64(1), generation=u32(0))
+    )
+}
+
+shape displace_shape {
+    field = displace_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(6),
+        material_id=u64(6),
+        actor=ActorHandle(id=u64(1), generation=u32(0))
+    )
+}
+
+fn main() -> Integer {
+    control_before = __wr_metrics_get(__wr_metrics_field_sample_id())
+    control_capture = capture control_shape
+    control_hit = trace_shape(
+        capture=control_capture,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    control_after = __wr_metrics_get(__wr_metrics_field_sample_id())
+
+    smooth_before = control_after
+    smooth_capture = capture smooth_shape
+    smooth_hit = trace_shape(
+        capture=smooth_capture,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    smooth_after = __wr_metrics_get(__wr_metrics_field_sample_id())
+
+    deform_before = smooth_after
+    deform_capture = capture bend_shape
+    bend_hit = trace_shape(
+        capture=deform_capture,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    twist_capture = capture twist_shape
+    twist_hit = trace_shape(
+        capture=twist_capture,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    taper_capture = capture taper_shape
+    taper_hit = trace_shape(
+        capture=taper_capture,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    displace_capture = capture displace_shape
+    displace_hit = trace_shape(
+        capture=displace_capture,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    deform_after = __wr_metrics_get(__wr_metrics_field_sample_id())
+
+    control_samples = control_after - control_before
+    smooth_samples = smooth_after - smooth_before
+    deform_samples = deform_after - deform_before
+
+    assert value control_hit.hit == true
+    assert value smooth_hit.hit == true
+    assert value bend_hit.hit == true
+    assert value twist_hit.hit == true
+    assert value taper_hit.hit == true
+    assert value displace_hit.hit == true
+    assert value smooth_samples > control_samples
+    assert value deform_samples > control_samples
+    assert value deform_samples >= smooth_samples
+    return 0
+}
+"#;
+
+    let output = compile_and_run_native_inline_source(
+        source,
+        "wr_v2_phase5_smooth_and_deformation_cost_regression",
+    );
+    let expected = expected_int_exit(0);
+    assert_eq!(
+        output.status.code().unwrap_or(-1),
+        expected,
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn native_v2_phase7_radiance_and_volume_surface_smoke() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = r#"
+field exact distance phase7_shell(p: Vec3) -> F32 {
+    sphere(radius = 0.45)
+}
+
+radiance field phase7_radiance(p: Vec3, direction: Vec3, feature_id: U64) -> Vec3 {
+    sky_t = clamp(0.5 + direction.y * 0.5, 0.0, 1.0)
+    feature_bias = clamp(f32(feature_id), 0.0, 1.0)
+    point_bias = clamp(0.2 - abs(p.z), 0.0, 0.2) * 5.0
+    return vec3(0.10, 0.18, 0.28) * (1.0 - sky_t)
+        + vec3(0.36, 0.54, 0.82) * sky_t
+        + vec3(0.08, 0.04, 0.02) * point_bias * feature_bias
+}
+
+volume field phase7_volume(p: Vec3, surface_distance: F32) -> Medium {
+    surface_bias = clamp(0.2 - abs(surface_distance), 0.0, 0.2) * 0.4
+    density = clamp(0.08 + abs(p.y) * 0.02 + abs(p.x) * 0.01 + surface_bias, 0.0, 0.16)
+    return Medium(
+        density=density,
+        emission=vec3(0.06, 0.08, 0.10) * density + vec3(0.0, 0.01, 0.02) * surface_bias,
+        anisotropy=0.12
+    )
+}
+
+material phase7_surface(hit: Hit3) -> Surface {
+    ridge = clamp(abs(hit.local_position.y) * 0.8 + abs(hit.local_normal.x) * 0.2, 0.0, 1.0)
+    return Surface(
+        albedo=vec3(0.26, 0.34, 0.44) + vec3(0.08, 0.06, 0.04) * ridge,
+        roughness=0.16 + ridge * 0.18,
+        metalness=0.12 + clamp(hit.local_normal.z, 0.0, 1.0) * 0.18,
+        clearcoat=0.14 + clamp(hit.local_normal.y, 0.0, 1.0) * 0.16,
+        clearcoat_roughness=0.08 + abs(hit.local_position.x) * 0.12,
+        sheen=0.06 + abs(hit.local_normal.x) * 0.10,
+        emissive=vec3(0.04, 0.02, 0.01) * clamp(hit.local_normal.z, 0.0, 1.0)
+    )
+}
+
+shape phase7_scene_shape {
+    field = phase7_shell
+    material = phase7_surface
+    radiance = phase7_radiance
+    volume = phase7_volume
+    payload = Payload(
+        entity_id=u64(901),
+        material_id=u64(901),
+        actor=ActorHandle(id=u64(901), generation=u32(0))
+    )
+}
+
+fn compute_ambient_occlusion(scene_capture: ShapeCapture, hit_position: Vec3, hit_normal: Vec3) -> F32 {
+    sample_a = distance_at(capture=scene_capture, point=hit_position + hit_normal * 0.08)
+    sample_b = distance_at(capture=scene_capture, point=hit_position + hit_normal * 0.18)
+    occlusion = clamp((0.08 - sample_a) * 2.0 + (0.18 - sample_b) * 1.1, 0.0, 1.0)
+    return 1.0 - occlusion * 0.75
+}
+
+fn main() -> Integer {
+    scene_capture = capture phase7_scene_shape
+    hit = trace_shape(
+        capture=scene_capture,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    surface = surface_at(capture=scene_capture, hit=hit)
+    radiance_sample = radiance_at(
+        capture=scene_capture,
+        point=hit.position,
+        direction=normalize(vec3(0.0, 1.0, 1.0)),
+    )
+    medium_sample = medium_at(capture=scene_capture, point=hit.position)
+    ambient = compute_ambient_occlusion(
+        scene_capture=scene_capture,
+        hit_position=hit.position,
+        hit_normal=hit.normal
+    )
+
+    if hit.hit != true { return 1 }
+    if hit.feature_id == u64(0) { return 2 }
+    if hit.local_position.z <= 0.0 { return 3 }
+    if hit.local_normal.z <= 0.0 { return 4 }
+    if surface.metalness <= 0.12 { return 5 }
+    if surface.clearcoat < 0.14 { return 6 }
+    if surface.sheen <= 0.05 { return 7 }
+    if surface.emissive.x <= 0.0 { return 8 }
+    if radiance_sample.z <= radiance_sample.x { return 9 }
+    if abs(medium_sample.anisotropy - 0.12) > 0.001 { return 10 }
+    if medium_sample.density <= 0.08 { return 11 }
+    if ambient <= 0.0 { return 12 }
+    if ambient > 1.0 { return 13 }
+    return 0
+}
+"#;
+
+    let output = compile_and_run_native_inline_source(
+        source,
+        "wr_v2_phase7_radiance_and_volume_surface_smoke",
+    );
+    let expected = expected_int_exit(0);
+    assert_eq!(
+        output.status.code().unwrap_or(-1),
+        expected,
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
 }

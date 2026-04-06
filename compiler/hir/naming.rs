@@ -310,12 +310,17 @@ impl<'a> Checker<'a> {
             let kind = match func.role {
                 FunctionRole::Field => "field",
                 FunctionRole::Material => "material",
+                FunctionRole::Radiance => "radiance field",
+                FunctionRole::Volume => "volume field",
                 _ => function_kind_label(func.kind),
             };
             self.check_snake(kind, &func.name, func.name_span);
 
             match func.role {
-                FunctionRole::Field | FunctionRole::Material => {
+                FunctionRole::Field
+                | FunctionRole::Material
+                | FunctionRole::Radiance
+                | FunctionRole::Volume => {
                     if is_verb_led(func.name.as_str()) {
                         self.errors.push(NamingError::NounOnlyRequired {
                             kind,
@@ -359,7 +364,13 @@ impl<'a> Checker<'a> {
         self.check_params(Some(func_id), &func.params, "parameter");
         if let Some(ret) = &func.ret_type {
             self.check_result_error_type_names(ret);
-            if !matches!(func.role, FunctionRole::Field | FunctionRole::Material) {
+            if !matches!(
+                func.role,
+                FunctionRole::Field
+                    | FunctionRole::Material
+                    | FunctionRole::Radiance
+                    | FunctionRole::Volume
+            ) {
                 self.check_return_name_rules(func, ret, is_class_scope);
             }
         }

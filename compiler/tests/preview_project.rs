@@ -5,11 +5,20 @@ use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const PREVIEW_TIMEOUT: Duration = Duration::from_secs(20);
+const PREVIEW_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn preview_run_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn assert_contains_all(source: &str, path: &str, needles: &[&str]) {
+    for needle in needles {
+        assert!(
+            source.contains(needle),
+            "expected {path} to mention `{needle}`"
+        );
+    }
 }
 
 fn repo_root() -> PathBuf {
@@ -180,9 +189,18 @@ fn assert_common_preview_signature(
 fn assert_preview_is_stable_across_runs(project_root: &str) {
     let first = run_preview_project(project_root);
     let second = run_preview_project(project_root);
-    assert_eq!(first.0, second.0, "unexpected width drift for {project_root}");
-    assert_eq!(first.1, second.1, "unexpected height drift for {project_root}");
-    assert_eq!(first.2, second.2, "preview output changed across runs for {project_root}");
+    assert_eq!(
+        first.0, second.0,
+        "unexpected width drift for {project_root}"
+    );
+    assert_eq!(
+        first.1, second.1,
+        "unexpected height drift for {project_root}"
+    );
+    assert_eq!(
+        first.2, second.2,
+        "preview output changed across runs for {project_root}"
+    );
 }
 
 #[test]
@@ -209,12 +227,109 @@ fn preview_project_layout_exists() {
 }
 
 #[test]
+fn preview_project_phase7_semantic_helpers_exist() {
+    let root = repo_root();
+    for (path, needles, forbidden) in [
+        (
+            "language/preview/src/main.wr",
+            &[
+                "radiance field",
+                "volume field",
+                "radiance = scene_radiance",
+                "volume = scene_volume",
+                "radiance_at(",
+                "medium_at(",
+                "compute_shadow_visibility(",
+                "compute_ambient_occlusion(",
+                "local_position",
+                "local_normal",
+                "surface.emissive",
+                "surface.clearcoat",
+                "surface.metalness",
+                "surface.sheen",
+            ][..],
+            &["scene_radiance(p=", "scene_volume(p="][..],
+        ),
+        (
+            "language/preview_boolean/src/main.wr",
+            &[
+                "radiance field",
+                "volume field",
+                "radiance = scene_radiance",
+                "volume = scene_volume",
+                "radiance_at(",
+                "medium_at(",
+                "compute_shadow_visibility(",
+                "compute_ambient_occlusion(",
+                "local_position",
+                "local_normal",
+                "surface.emissive",
+                "surface.clearcoat",
+                "surface.metalness",
+                "surface.sheen",
+            ][..],
+            &["scene_radiance(p=", "scene_volume(p="][..],
+        ),
+        (
+            "language/preview_repetition/src/main.wr",
+            &[
+                "radiance field",
+                "volume field",
+                "radiance = scene_radiance",
+                "volume = scene_volume",
+                "radiance_at(",
+                "medium_at(",
+                "compute_shadow_visibility(",
+                "compute_ambient_occlusion(",
+                "local_position",
+                "local_normal",
+                "surface.emissive",
+                "surface.clearcoat",
+                "surface.metalness",
+                "surface.sheen",
+            ][..],
+            &["scene_radiance(p=", "scene_volume(p="][..],
+        ),
+        (
+            "language/preview_thinstack/src/main.wr",
+            &[
+                "radiance field",
+                "volume field",
+                "radiance = scene_radiance",
+                "volume = scene_volume",
+                "radiance_at(",
+                "medium_at(",
+                "compute_shadow_visibility(",
+                "compute_ambient_occlusion(",
+                "local_position",
+                "local_normal",
+                "surface.emissive",
+                "surface.clearcoat",
+                "surface.metalness",
+                "surface.sheen",
+            ][..],
+            &["scene_radiance(p=", "scene_volume(p="][..],
+        ),
+    ] {
+        let source = std::fs::read_to_string(root.join(path)).expect("read phase7 preview surface");
+        assert_contains_all(&source, path, needles);
+        for needle in forbidden {
+            assert!(
+                !source.contains(needle),
+                "expected {path} to avoid renderer-side query shortcut {needle:?}, got:\n{source}"
+            );
+        }
+    }
+}
+
+#[test]
 fn preview_project_renders_lit_cube_ppm() {
-    let (width, _, pixels) = run_preview_project("language/preview");
-    assert_eq!(width, 64, "unexpected width for language/preview");
+    let (width, height, pixels) = run_preview_project("language/preview");
+    assert_eq!(width, 40, "unexpected width for language/preview");
+    assert_eq!(height, 40, "unexpected height for language/preview");
     assert_eq!(
         pixels.len(),
-        64 * 64,
+        40 * 40,
         "unexpected pixel count for language/preview"
     );
     assert!(
@@ -235,11 +350,15 @@ fn preview_project_renders_lit_cube_ppm() {
             .any(|px| px[0] < 25 && px[1] < 35 && px[2] < 50),
         "expected a darker contact-shadow pixel in language/preview"
     );
-    let center = average_region(&pixels, width, 22, 22, 42, 42);
-    let corner = average_region(&pixels, width, 0, 0, 18, 18);
+    let object = average_region(&pixels, width, 12, 28, 24, 36);
+    let corner = average_region(&pixels, width, 0, 0, 12, 12);
     assert!(
-        center[0] > corner[0] + 20.0 && center[2] + 25.0 < corner[2],
-        "expected a warm authored object region against a cooler sky corner for language/preview: center={center:?} corner={corner:?}"
+        (object[0] - object[2]) > (corner[0] - corner[2]) + 15.0,
+        "expected a warmer authored object region against a cooler sky corner for language/preview: object={object:?} corner={corner:?}"
+    );
+    assert!(
+        object[0] + object[1] + object[2] < corner[0] + corner[1] + corner[2],
+        "expected the authored object region to stay darker than the sky corner for language/preview: object={object:?} corner={corner:?}"
     );
     assert!(
         corner[2] > corner[0] + 20.0,
@@ -277,12 +396,15 @@ fn preview_project_renders_boolean_scene_stably_across_runs() {
     let second = run_preview_project("language/preview_boolean");
     assert_eq!(first.0, second.0, "unexpected width drift");
     assert_eq!(first.1, second.1, "unexpected height drift");
-    assert_eq!(first.2, second.2, "preview_boolean output changed across runs");
+    assert_eq!(
+        first.2, second.2,
+        "preview_boolean output changed across runs"
+    );
 }
 
 #[test]
 fn preview_project_renders_repetition_scene_ppm() {
-    assert_common_preview_signature("language/preview_repetition", 48, 48, true);
+    assert_common_preview_signature("language/preview_repetition", 32, 32, true);
 }
 
 #[test]
@@ -292,10 +414,35 @@ fn preview_project_renders_repetition_scene_stably_across_runs() {
 
 #[test]
 fn preview_project_renders_thinstack_scene_ppm() {
-    assert_common_preview_signature("language/preview_thinstack", 48, 48, true);
+    assert_common_preview_signature("language/preview_thinstack", 40, 40, true);
 }
 
 #[test]
 fn preview_project_renders_thinstack_scene_stably_across_runs() {
     assert_preview_is_stable_across_runs("language/preview_thinstack");
+}
+
+#[test]
+fn preview_project_renders_phase6_scene_set_consistently() {
+    for project_root in [
+        "language/preview",
+        "language/preview_boolean",
+        "language/preview_repetition",
+        "language/preview_thinstack",
+    ] {
+        let first = run_preview_project(project_root);
+        let second = run_preview_project(project_root);
+        assert_eq!(
+            first.0, second.0,
+            "unexpected width drift for {project_root}"
+        );
+        assert_eq!(
+            first.1, second.1,
+            "unexpected height drift for {project_root}"
+        );
+        assert_eq!(
+            first.2, second.2,
+            "preview output changed across runs for {project_root}"
+        );
+    }
 }

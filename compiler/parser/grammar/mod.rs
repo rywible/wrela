@@ -95,6 +95,14 @@ fn parse_root_statement(p: &mut Parser) {
     if func::attributed_func_or_check_def(p) {
         return;
     }
+    if p.at_ident_text("radiance") {
+        func::radiance_decl(p);
+        return;
+    }
+    if p.at_ident_text("volume") {
+        func::volume_decl(p);
+        return;
+    }
     if p.at_ident_text("field") {
         func::field_decl(p);
         return;

@@ -2166,6 +2166,66 @@ pub extern "C" fn wr_field_repeat_point(period: Value, point: Value) -> Value {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn wr_field_sweep_coords(path: Value, point: Value) -> Value {
+    portable::field_sweep_coords(path, point)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_field_profile_vertices_bounds4(vertices: Value) -> Value {
+    portable::field_profile_vertices_bounds4(vertices)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_translate(offset: Value, point: Value) -> Value {
+    portable::translate(offset, point)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_rotate(rotation: Value, point: Value) -> Value {
+    portable::rotate(rotation, point)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_uniform_scale(scale: Value, point: Value) -> Value {
+    portable::uniform_scale(scale, point)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_affine_transform(transform: Value, point: Value) -> Value {
+    portable::affine_transform(transform, point)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_warp(transform: Value, point: Value) -> Value {
+    portable::warp(transform, point)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_repeat_linear(period: Value, point: Value) -> Value {
+    portable::repeat_linear(period, point)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_repeat_grid(period: Value, point: Value) -> Value {
+    portable::repeat_grid(period, point)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_radial_repeat(period: Value, point: Value) -> Value {
+    portable::radial_repeat(period, point)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_mirror_array(mirror: Value, point: Value) -> Value {
+    portable::mirror_array(mirror, point)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_instance_array(instance: Value, point: Value) -> Value {
+    portable::instance_array(instance, point)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn wr_transform_vector(transform: Value, vector: Value) -> Value {
     portable::transform_vector(transform, vector)
 }
@@ -2213,6 +2273,41 @@ pub extern "C" fn wr_field_subtract(left: Value, right: Value) -> Value {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn wr_smooth_union(left: Value, right: Value, k: Value) -> Value {
+    portable::smooth_union(left, right, k)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_smooth_intersection(left: Value, right: Value, k: Value) -> Value {
+    portable::smooth_intersection(left, right, k)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_smooth_subtract(left: Value, right: Value, k: Value) -> Value {
+    portable::smooth_subtract(left, right, k)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_bend(config: Value, point: Value) -> Value {
+    portable::bend(config, point)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_twist(config: Value, point: Value) -> Value {
+    portable::twist(config, point)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_taper(config: Value, point: Value) -> Value {
+    portable::taper(config, point)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_displace(config: Value, point: Value) -> Value {
+    portable::displace(config, point)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn wr_repeat_point(point: Value, period: Value) -> Value {
     portable::repeat_point(point, period)
 }
@@ -2245,6 +2340,86 @@ pub extern "C" fn wr_plane(point: Value, normal: Value, offset: Value) -> Value 
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_torus(point: Value, major_radius: Value, minor_radius: Value) -> Value {
     portable::torus(point, major_radius, minor_radius)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_rounded_box(point: Value, half: Value, radius: Value) -> Value {
+    portable::rounded_box(point, half, radius)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_circle2(point: Value, radius: Value) -> Value {
+    portable::circle2(point, radius)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_rect2(point: Value, half: Value) -> Value {
+    portable::rect2(point, half)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_rounded_rect2(point: Value, half: Value, radius: Value) -> Value {
+    portable::rounded_rect2(point, half, radius)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_capsule2(point: Value, a: Value, b: Value, radius: Value) -> Value {
+    portable::capsule2(point, a, b, radius)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_segment2(point: Value, a: Value, b: Value) -> Value {
+    portable::segment2(point, a, b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_polygon2(point: Value, vertices: Value) -> Value {
+    portable::polygon2(point, vertices)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_polyline2(point: Value, vertices: Value) -> Value {
+    portable::polyline2(point, vertices)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_ellipsoid(point: Value, radii: Value) -> Value {
+    portable::ellipsoid(point, radii)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_cone(point: Value, radius: Value, half_height: Value) -> Value {
+    portable::cone(point, radius, half_height)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_capped_cone(
+    point: Value,
+    radius_bottom: Value,
+    radius_top: Value,
+    half_height: Value,
+) -> Value {
+    portable::capped_cone(point, radius_bottom, radius_top, half_height)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_box_frame(point: Value, half: Value, thickness: Value) -> Value {
+    portable::box_frame(point, half, thickness)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_slab(point: Value, thickness: Value) -> Value {
+    portable::slab(point, thickness)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_triangle_prism(point: Value, half: Value, half_height: Value) -> Value {
+    portable::triangle_prism(point, half, half_height)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_hex_prism(point: Value, half: Value, half_height: Value) -> Value {
+    portable::hex_prism(point, half, half_height)
 }
 
 #[unsafe(no_mangle)]
@@ -2797,6 +2972,18 @@ pub extern "C" fn wr_metrics_scene_trace_conservative_path() -> Value {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn wr_metrics_scene_trace_blend_cost() -> Value {
+    metrics::inc_scene_trace_blend_cost();
+    Value::nil()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_metrics_scene_trace_deformation_cost() -> Value {
+    metrics::inc_scene_trace_deformation_cost();
+    Value::nil()
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn wr_metrics_scene_trace_hit(steps_val: Value, field_samples_val: Value) -> Value {
     let steps = int_value(steps_val).unwrap_or(0).max(0) as u64;
     let field_samples = int_value(field_samples_val).unwrap_or(0).max(0) as u64;
@@ -2882,6 +3069,16 @@ pub extern "C" fn wr_metrics_scene_trace_steps_le_16_id() -> Value {
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_metrics_scene_trace_steps_gt_16_id() -> Value {
     Value::from_int(metrics::METRIC_SCENE_TRACE_STEPS_GT_16 as i64)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_metrics_scene_trace_blend_cost_id() -> Value {
+    Value::from_int(metrics::METRIC_SCENE_TRACE_BLEND_COST as i64)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_metrics_scene_trace_deformation_cost_id() -> Value {
+    Value::from_int(metrics::METRIC_SCENE_TRACE_DEFORMATION_COST as i64)
 }
 
 #[unsafe(no_mangle)]

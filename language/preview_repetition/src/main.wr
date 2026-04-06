@@ -1,124 +1,168 @@
 use print_line from host/io
 
-field conservative distance ground(p: Vec3) -> F32 {
+field exact distance ground(p: Vec3) -> F32 {
     plane(normal=vec3(0.0, 1.0, 0.0), offset=1.0)
 }
 
-field conservative distance window_frame(p: Vec3) -> F32 {
-    return box(p=p, half=vec3(0.43, 0.88, 0.22))
-}
-
-field conservative distance window_void(p: Vec3) -> F32 {
-    transform = vec3(0.0, -0.08, 0.0) {
-        box(p=p, half=vec3(0.20, 0.48, 0.14))
+field conservative distance column(p: Vec3) -> F32 {
+    sweep = vec3(0.0, 1.86, 0.0) {
+        circle2(radius = 0.10)
     }
 }
 
-field conservative distance window_cap(p: Vec3) -> F32 {
-    transform = vec3(0.0, 0.70, 0.0) {
-        box(p=p, half=vec3(0.30, 0.10, 0.18))
-    }
-}
-
-field conservative distance repeated_window(p: Vec3) -> F32 {
-    repeat = vec3(1.35, 0.0, 0.0) {
-        union {
-            provenance_policy = nearest
-            subtract {
-                provenance_policy = right
-                use window_frame
-                use window_void
-            }
-            use window_cap
+field conservative distance arch_beam(p: Vec3) -> F32 {
+    translate = vec3(0.0, 0.82, 0.0) {
+        sweep = vec3(1.14, 0.0, 0.0) {
+            rect2(half = vec2(0.08, 0.10))
         }
     }
 }
 
-field conservative distance beam_cell(p: Vec3) -> F32 {
-    transform = vec3(0.0, 0.92, 0.0) {
-        box(p=p, half=vec3(0.49, 0.08, 0.16))
-    }
-}
-
-field conservative distance repeated_beam(p: Vec3) -> F32 {
-    repeat = vec3(1.35, 0.0, 0.0) {
-        use beam_cell
-    }
-}
-
-field conservative distance facade_bounds(p: Vec3) -> F32 {
-    local = p - vec3(0.0, -0.04, 0.0)
-    abs_local = vec3(abs(local.x), abs(local.y), abs(local.z))
-    q = abs_local - vec3(4.2, 2.0, 0.34)
-    outside = length(max(q, vec3(0.0, 0.0, 0.0)))
-    inside = min(max(q.x, max(q.y, q.z)), 0.0)
-    return outside + inside
-}
-
-field conservative distance bounded_window(p: Vec3) -> F32 {
-    intersection {
+field conservative distance bay(p: Vec3) -> F32 {
+    union {
         provenance_policy = nearest
-        use repeated_window
-        use facade_bounds
+        mirror_array = vec3(1.0, 0.0, 0.0) {
+            translate = vec3(0.58, -0.06, 0.0) {
+                use column
+            }
+        }
+        use arch_beam
     }
 }
 
-field conservative distance bounded_beam(p: Vec3) -> F32 {
-    intersection {
-        provenance_policy = nearest
-        use repeated_beam
-        use facade_bounds
+field conservative distance repeated_window(p: Vec3) -> F32 {
+    repeat_linear = vec3(1.35, 0.0, 0.0) {
+        use bay
+    }
+}
+
+field conservative distance repeated_window_grid(p: Vec3) -> F32 {
+    translate = vec3(0.0, -0.20, -0.55) {
+        repeat_grid = vec3(1.35, 1.30, 0.0) {
+            use bay
+        }
+    }
+}
+
+field conservative distance radial_fin(p: Vec3) -> F32 {
+    radial_repeat = vec3(0.0, 1.0, 0.0) {
+        translate = vec3(0.0, 0.34, 0.0) {
+            sweep = vec3(0.0, 0.86, 0.0) {
+                rect2(half = vec2(0.06, 0.12))
+            }
+        }
+    }
+}
+
+field conservative distance mirror_beam(p: Vec3) -> F32 {
+    mirror_array = vec3(1.0, 0.0, 0.0) {
+        translate = vec3(0.0, 0.92, 0.0) {
+            sweep = vec3(0.0, 0.0, 1.16) {
+                rect2(half = vec2(0.08, 0.08))
+            }
+        }
+    }
+}
+
+field conservative distance instance_trellis(p: Vec3) -> F32 {
+    instance_array = Transform3(
+        matrix=mat4_cols(
+            vec4(1.0, 0.0, 0.0, 0.0),
+            vec4(0.0, 1.0, 0.0, 0.0),
+            vec4(0.0, 0.0, 1.0, 0.0),
+            vec4(1.35, 0.0, 0.0, 1.0)
+        ),
+        inverse=mat4_cols(
+            vec4(1.0, 0.0, 0.0, 0.0),
+            vec4(0.0, 1.0, 0.0, 0.0),
+            vec4(0.0, 0.0, 1.0, 0.0),
+            vec4(-1.35, 0.0, 0.0, 1.0)
+        )
+    ) {
+        translate = vec3(0.0, 0.34, 0.0) {
+            sweep = vec3(0.0, 0.64, 0.0) {
+                rect2(half = vec2(0.06, 0.10))
+            }
+        }
     }
 }
 
 field conservative distance scene(p: Vec3) -> F32 {
     union {
         provenance_policy = nearest
-        use bounded_window
-        use bounded_beam
+        use repeated_window
+        use repeated_window_grid
+        use radial_fin
+        use mirror_beam
+        use instance_trellis
         use ground
     }
 }
 
+radiance field scene_radiance(p: Vec3, direction: Vec3, feature_id: U64) -> Vec3 {
+    sky_t = clamp(0.5 + direction.y * 0.5, 0.0, 1.0)
+    band = clamp(0.24 - abs(p.y - 0.82) * 0.16, 0.0, 0.24) / 0.24
+    feature_bias = clamp(f32(feature_id), 0.0, 1.0)
+    return vec3(8.0, 10.0, 16.0) * (1.0 - sky_t)
+        + vec3(58.0, 84.0, 130.0) * sky_t
+        + vec3(12.0, 10.0, 8.0) * band * (0.35 + 0.65 * feature_bias)
+}
+
+volume field scene_volume(p: Vec3, surface_distance: F32) -> Medium {
+    arcade = clamp((0.4 - abs(p.y - 0.4)) * 1.4, 0.0, 0.4) / 0.4
+    near_surface = clamp((0.16 - abs(surface_distance)) * 5.5, 0.0, 1.0)
+    density = clamp(0.012 + arcade * 0.02 + near_surface * 0.014, 0.0, 0.09)
+    return Medium(
+        density=density,
+        emission=vec3(2.0, 3.0, 4.0) * density + vec3(0.0, 0.01, 0.02) * near_surface,
+        anisotropy=0.10
+    )
+}
+
 material frame_surface(hit: Hit3) -> Surface {
+    mullion = clamp(abs(hit.local_position.x) * 0.35 + abs(hit.local_position.y) * 0.25, 0.0, 1.0)
     return Surface(
-        albedo=vec3(180.0, 150.0, 104.0),
-        roughness=0.22,
-        metalness=0.0,
-        clearcoat=0.0,
-        clearcoat_roughness=0.0,
-        sheen=0.0,
+        albedo=vec3(168.0, 140.0, 98.0) + vec3(18.0, 12.0, 8.0) * mullion,
+        roughness=0.16 + mullion * 0.16,
+        metalness=0.10 + clamp(hit.local_normal.z, 0.0, 1.0) * 0.12,
+        clearcoat=0.14 + clamp(hit.local_normal.y, 0.0, 1.0) * 0.14,
+        clearcoat_roughness=0.08 + abs(hit.local_position.x) * 0.10,
+        sheen=0.06 + abs(hit.local_normal.x) * 0.14,
         emissive=vec3(0.0, 0.0, 0.0)
     )
 }
 
 material beam_surface(hit: Hit3) -> Surface {
+    brace = clamp(abs(hit.local_position.y) * 0.35 + abs(hit.local_normal.x) * 0.4, 0.0, 1.0)
     return Surface(
-        albedo=vec3(124.0, 164.0, 198.0),
-        roughness=0.28,
-        metalness=0.0,
-        clearcoat=0.0,
-        clearcoat_roughness=0.0,
-        sheen=0.0,
-        emissive=vec3(0.0, 0.0, 0.0)
+        albedo=vec3(110.0, 150.0, 186.0) + vec3(10.0, 12.0, 16.0) * brace,
+        roughness=0.18 + abs(hit.local_position.z) * 0.12,
+        metalness=0.18 + brace * 0.18,
+        clearcoat=0.16 + brace * 0.16,
+        clearcoat_roughness=0.10 + (1.0 - brace) * 0.12,
+        sheen=0.08 + abs(hit.local_normal.y) * 0.18,
+        emissive=vec3(1.5, 2.0, 3.0) * clamp(hit.local_normal.y, 0.0, 1.0)
     )
 }
 
 material ground_surface(hit: Hit3) -> Surface {
+    dust = clamp(abs(hit.local_position.x) * 0.16 + abs(hit.local_position.z) * 0.16, 0.0, 1.0)
     return Surface(
-        albedo=vec3(66.0, 74.0, 86.0),
-        roughness=0.98,
+        albedo=vec3(60.0, 70.0, 82.0) + vec3(8.0, 7.0, 6.0) * dust,
+        roughness=0.90 + dust * 0.08,
         metalness=0.0,
-        clearcoat=0.0,
-        clearcoat_roughness=0.0,
-        sheen=0.0,
+        clearcoat=0.03,
+        clearcoat_roughness=0.22,
+        sheen=0.02,
         emissive=vec3(0.0, 0.0, 0.0)
     )
 }
 
 shape frame_shape {
-    field = bounded_window
+    field = repeated_window
     material = frame_surface
+    radiance = scene_radiance
+    volume = scene_volume
     payload = Payload(
         entity_id=u64(1),
         material_id=u64(1),
@@ -126,9 +170,35 @@ shape frame_shape {
     )
 }
 
-shape beam_shape {
-    field = bounded_beam
+shape grid_shape {
+    field = repeated_window_grid
+    material = frame_surface
+    radiance = scene_radiance
+    volume = scene_volume
+    payload = Payload(
+        entity_id=u64(4),
+        material_id=u64(4),
+        actor=ActorHandle(id=u64(1), generation=u32(0))
+    )
+}
+
+shape radial_shape {
+    field = radial_fin
     material = beam_surface
+    radiance = scene_radiance
+    volume = scene_volume
+    payload = Payload(
+        entity_id=u64(5),
+        material_id=u64(5),
+        actor=ActorHandle(id=u64(1), generation=u32(0))
+    )
+}
+
+shape beam_shape {
+    field = mirror_beam
+    material = beam_surface
+    radiance = scene_radiance
+    volume = scene_volume
     payload = Payload(
         entity_id=u64(2),
         material_id=u64(2),
@@ -136,9 +206,23 @@ shape beam_shape {
     )
 }
 
+shape instance_shape {
+    field = instance_trellis
+    material = beam_surface
+    radiance = scene_radiance
+    volume = scene_volume
+    payload = Payload(
+        entity_id=u64(6),
+        material_id=u64(6),
+        actor=ActorHandle(id=u64(1), generation=u32(0))
+    )
+}
+
 shape ground_shape {
     field = ground
     material = ground_surface
+    radiance = scene_radiance
+    volume = scene_volume
     payload = Payload(
         entity_id=u64(3),
         material_id=u64(3),
@@ -150,7 +234,10 @@ shape scene_shape {
     union {
         provenance_policy = nearest
         use frame_shape
+        use grid_shape
+        use radial_shape
         use beam_shape
+        use instance_shape
         use ground_shape
     }
 }
@@ -164,10 +251,10 @@ fn compute_scene_hit(scene_capture: ShapeCapture, origin: Vec3, direction: Vec3)
         capture=scene_capture,
         origin=origin,
         direction=direction,
-        max_distance=14.0,
-        min_step=0.04,
-        hit_epsilon=0.0009,
-        max_steps=112
+        max_distance=12.0,
+        min_step=0.06,
+        hit_epsilon=0.0011,
+        max_steps=64
     )
 }
 
@@ -185,14 +272,30 @@ fn compute_shadow_visibility(
         origin=shadow_origin,
         direction=shadow_direction,
         max_distance=shadow_limit,
-        min_step=0.06,
-        hit_epsilon=0.0012,
-        max_steps=40
+        min_step=0.09,
+        hit_epsilon=0.0014,
+        max_steps=16
     )
     if shadow_hit.hit {
         return 0.0
     }
     return 1.0
+}
+
+fn compute_ambient_occlusion(
+    scene_capture: ShapeCapture,
+    hit_position: Vec3,
+    hit_normal: Vec3
+) -> F32 {
+    sample_a = distance_at(capture=scene_capture, point=hit_position + hit_normal * 0.06)
+    sample_b = distance_at(capture=scene_capture, point=hit_position + hit_normal * 0.14)
+    sample_c = distance_at(capture=scene_capture, point=hit_position + hit_normal * 0.30)
+    occlusion = clamp(
+        (0.06 - sample_a) * 1.5 + (0.14 - sample_b) * 1.0 + (0.30 - sample_c) * 0.8,
+        0.0,
+        1.0
+    )
+    return 1.0 - occlusion * 0.82
 }
 
 fn compute_scene_color(
@@ -209,36 +312,61 @@ fn compute_scene_color(
 
     if hit.hit {
         surface = compute_scene_surface(scene_capture=scene_capture, hit=hit)
+        radiance = radiance_at(
+            capture=scene_capture,
+            point=hit.position,
+            direction=ray_direction
+        )
+        medium = medium_at(capture=scene_capture, point=hit.position)
         key_dir = normalize(light.position - hit.position)
         fill_dir = normalize(vec3(-0.55, 0.42, 0.28))
         view_dir = normalize(camera_position - hit.position)
         half_dir = normalize(key_dir + view_dir)
         distance_to_light = length(light.position - hit.position)
         attenuation = clamp(1.0 - distance_to_light / light.range, 0.0, 1.0)
+        ao = compute_ambient_occlusion(
+            scene_capture=scene_capture,
+            hit_position=hit.position,
+            hit_normal=hit.normal
+        )
         shadow = compute_shadow_visibility(
             scene_capture=scene_capture,
             hit_position=hit.position,
             hit_normal=hit.normal,
             light=light
         )
-        diffuse = max(dot(hit.normal, key_dir), 0.0) * shadow
-        fill = 0.16 * max(dot(hit.normal, fill_dir), 0.0)
-        specular = pow(max(dot(hit.normal, half_dir), 0.0), 28.0) * 0.16
-        lighting = 0.07 + (0.90 * diffuse * attenuation) + (fill * 0.20)
-        return vec3(
-            clamp(surface.albedo.x * lighting * light.intensity.x + 230.0 * specular * (0.2 + surface.roughness * 0.8), 0.0, 255.0),
-            clamp(surface.albedo.y * lighting * light.intensity.y + 210.0 * specular * (0.2 + surface.roughness * 0.8), 0.0, 255.0),
-            clamp(surface.albedo.z * lighting * light.intensity.z + 185.0 * specular * (0.2 + surface.roughness * 0.8), 0.0, 255.0)
+        ndotl = max(dot(hit.normal, key_dir), 0.0)
+        ndotv = max(dot(hit.normal, view_dir), 0.0)
+        ndoth = max(dot(hit.normal, half_dir), 0.0)
+        diffuse = ndotl * shadow
+        fill = 0.16 * max(dot(hit.normal, fill_dir), 0.0) * ao
+        specular = pow(ndoth, mix(62.0, 9.0, clamp(surface.roughness, 0.0, 1.0))) * (0.14 + surface.metalness * 0.34 + surface.clearcoat * 0.32)
+        sheen = surface.sheen * pow(1.0 - ndotv, 3.0) * 18.0
+        lighting = (0.07 + (0.90 * diffuse * attenuation) + (fill * 0.20)) * ao
+        direct = vec3(
+            clamp(surface.albedo.x * lighting * light.intensity.x + 230.0 * specular + sheen * 0.6, 0.0, 255.0),
+            clamp(surface.albedo.y * lighting * light.intensity.y + 210.0 * specular + sheen * 0.5, 0.0, 255.0),
+            clamp(surface.albedo.z * lighting * light.intensity.z + 185.0 * specular + sheen * 0.4, 0.0, 255.0)
         )
+        fog_strength = clamp(medium.density * distance_to_light * 0.16 + (1.0 - ao) * 0.10, 0.0, 0.55)
+        fog_color = medium.emission + radiance * 0.20
+        return mix(direct + surface.emissive + radiance * 0.18, fog_color, fog_strength)
     }
 
-    sky_t = 0.5 * (ray_direction.y + 1.0)
-    return vec3(8.0, 10.0, 16.0) * (1.0 - sky_t) + vec3(58.0, 84.0, 130.0) * sky_t
+    miss_point = camera_position + ray_direction * 4.0
+    miss_radiance = radiance_at(
+        capture=scene_capture,
+        point=miss_point,
+        direction=ray_direction
+    )
+    miss_medium = medium_at(capture=scene_capture, point=miss_point)
+    miss_fog = clamp(miss_medium.density * 2.6, 0.0, 0.40)
+    return mix(miss_radiance, miss_medium.emission + miss_radiance * 0.22, miss_fog)
 }
 
 fn render_ppm() -> String {
-    width = 48
-    height = 48
+    width = 32
+    height = 32
     aspect = f32(width) / f32(height)
     camera_position = vec3(0.2, 0.45, 4.35)
     forward = normalize(vec3(-0.10, -0.03, -1.0))
@@ -253,7 +381,7 @@ fn render_ppm() -> String {
         range=18.0
     )
 
-    mutable ppm = "P3\n48 48\n255\n"
+    mutable ppm = "P3\n32 32\n255\n"
     mutable y = 0
     while y < height {
         mutable x = 0

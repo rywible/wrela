@@ -1373,6 +1373,12 @@ fn validate_portable_lane_functions(
                     errors,
                 );
             }
+        } else if matches!(func.role, FunctionRole::Radiance) {
+            validate_portable_function_boundary(func, classes, errors);
+            validate_radiance_boundary(func, errors);
+        } else if matches!(func.role, FunctionRole::Volume) {
+            validate_portable_function_boundary(func, classes, errors);
+            validate_volume_boundary(func, errors);
         } else if matches!(func.role, FunctionRole::Material) {
             validate_material_boundary(func, errors);
         } else {
@@ -1412,6 +1418,18 @@ fn validate_shape_declarations(
         .filter(|(_, func)| matches!(func.role, FunctionRole::Field))
         .map(|(_, func)| func.name.clone())
         .collect();
+    let radiance_names: HashSet<SmolStr> = module
+        .functions
+        .iter()
+        .filter(|(_, func)| matches!(func.role, FunctionRole::Radiance))
+        .map(|(_, func)| func.name.clone())
+        .collect();
+    let volume_names: HashSet<SmolStr> = module
+        .functions
+        .iter()
+        .filter(|(_, func)| matches!(func.role, FunctionRole::Volume))
+        .map(|(_, func)| func.name.clone())
+        .collect();
     let material_names: HashSet<SmolStr> = module
         .functions
         .iter()
@@ -1435,6 +1453,8 @@ fn validate_shape_declarations(
             shape,
             &shape_names,
             &field_names,
+            &radiance_names,
+            &volume_names,
             &material_names,
             &shape_graphs,
             &top_level,
@@ -1453,6 +1473,8 @@ fn validate_shape_expr(
     shape: &Shape,
     shape_names: &HashSet<SmolStr>,
     field_names: &HashSet<SmolStr>,
+    radiance_names: &HashSet<SmolStr>,
+    volume_names: &HashSet<SmolStr>,
     material_names: &HashSet<SmolStr>,
     shape_graphs: &HashMap<SmolStr, &ShapeGraph>,
     top_level: &PortableFunctionSets,
@@ -1492,6 +1514,8 @@ fn validate_shape_expr(
                     shape,
                     shape_names,
                     field_names,
+                    radiance_names,
+                    volume_names,
                     material_names,
                     shape_graphs,
                     top_level,
@@ -1512,6 +1536,8 @@ fn validate_shape_expr(
                     shape,
                     shape_names,
                     field_names,
+                    radiance_names,
+                    volume_names,
                     material_names,
                     shape_graphs,
                     top_level,
@@ -1530,6 +1556,8 @@ fn validate_shape_expr(
                 shape,
                 shape_names,
                 field_names,
+                radiance_names,
+                volume_names,
                 material_names,
                 shape_graphs,
                 top_level,
@@ -1545,6 +1573,8 @@ fn validate_shape_expr(
                 shape,
                 shape_names,
                 field_names,
+                radiance_names,
+                volume_names,
                 material_names,
                 shape_graphs,
                 top_level,
@@ -1576,6 +1606,30 @@ fn validate_shape_expr(
                     span: span_from_option_range(shape.name_span),
                     help: "Bind leaf shading to a top-level `material` declaration so trace-time provenance can flow directly into `surface_at`.".to_string(),
                 });
+            }
+            if let Some(radiance) = &leaf.radiance {
+                if !radiance_names.contains(radiance) {
+                    errors.push(TypeError::ShapeBindingTargetInvalid {
+                        shape: shape.name.clone(),
+                        binding: "`radiance = ...`",
+                        expected: "radiance field",
+                        target: radiance.clone(),
+                        span: span_from_option_range(shape.name_span),
+                        help: "Bind leaf radiance to a top-level `radiance field` declaration so lighting provenance stays compiler-visible.".to_string(),
+                    });
+                }
+            }
+            if let Some(volume) = &leaf.volume {
+                if !volume_names.contains(volume) {
+                    errors.push(TypeError::ShapeBindingTargetInvalid {
+                        shape: shape.name.clone(),
+                        binding: "`volume = ...`",
+                        expected: "volume field",
+                        target: volume.clone(),
+                        span: span_from_option_range(shape.name_span),
+                        help: "Bind leaf volume to a top-level `volume field` declaration so participating media provenance stays compiler-visible.".to_string(),
+                    });
+                }
             }
             validate_shape_payload(
                 leaf,
@@ -1662,6 +1716,8 @@ struct PortableFunctionSets {
     all: HashSet<SmolStr>,
     portable: HashSet<SmolStr>,
     materials: HashSet<SmolStr>,
+    radiances: HashSet<SmolStr>,
+    volumes: HashSet<SmolStr>,
     field_classes: HashMap<SmolStr, FieldClass>,
 }
 
@@ -1676,6 +1732,8 @@ fn portable_function_sets(module: &Module) -> PortableFunctionSets {
     let mut all = HashSet::new();
     let mut portable = HashSet::new();
     let mut materials = HashSet::new();
+    let mut radiances = HashSet::new();
+    let mut volumes = HashSet::new();
     let mut field_classes = HashMap::new();
     for (idx, func) in module.functions.iter() {
         if method_ids.contains(&idx) {
@@ -1688,6 +1746,12 @@ fn portable_function_sets(module: &Module) -> PortableFunctionSets {
         if matches!(func.role, FunctionRole::Material) {
             materials.insert(func.name.clone());
         }
+        if matches!(func.role, FunctionRole::Radiance) {
+            radiances.insert(func.name.clone());
+        }
+        if matches!(func.role, FunctionRole::Volume) {
+            volumes.insert(func.name.clone());
+        }
         if matches!(func.role, FunctionRole::Field | FunctionRole::Shape)
             && let Some(field) = func.field.as_ref()
         {
@@ -1699,6 +1763,8 @@ fn portable_function_sets(module: &Module) -> PortableFunctionSets {
         all,
         portable,
         materials,
+        radiances,
+        volumes,
         field_classes,
     }
 }
@@ -1880,40 +1946,280 @@ fn validate_field_wrapper_expr_types(
                 right, func, classes, enums, interfaces, functions, errors,
             );
         }
-        FieldExpr::Transform { transform, body } => {
-            if let Some((expr_id, ty)) =
-                infer_field_wrapper_body_type(transform, func, classes, enums, interfaces, functions)
-            {
-                if ty != Type::Vec3 && ty != portable_named_type("Transform3") {
-                    errors.push(TypeError::PortableBoundaryTypeForbidden {
-                        function: func.name.clone(),
-                        site: "field `transform` operand".to_string(),
-                        found: type_label(&ty),
-                        span: span_from_range(transform.expr_span(expr_id)),
-                        help: "`transform = ... { ... }` accepts only `Vec3` translation or `Transform3` in this slice.".to_string(),
-                    });
-                }
-            }
+        FieldExpr::Translate { translate, body } => {
+            validate_field_wrapper_operand_type(
+                "translate",
+                Type::Vec3,
+                translate,
+                func,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+            );
             validate_field_wrapper_expr_types(body, func, classes, enums, interfaces, functions, errors);
         }
-        FieldExpr::Mirror { body, .. } | FieldExpr::Repeat { body, .. } => {
+        FieldExpr::Rotate { rotate, body } => {
+            validate_field_wrapper_operand_type(
+                "rotate",
+                Type::Vec3,
+                rotate,
+                func,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+            );
             validate_field_wrapper_expr_types(body, func, classes, enums, interfaces, functions, errors);
         }
-        FieldExpr::Instance { instance, body } => {
-            if let Some((expr_id, ty)) =
-                infer_field_wrapper_body_type(instance, func, classes, enums, interfaces, functions)
-            {
-                if ty != portable_named_type("Transform3") {
-                    errors.push(TypeError::PortableBoundaryTypeForbidden {
-                        function: func.name.clone(),
-                        site: "field `instance` operand".to_string(),
-                        found: type_label(&ty),
-                        span: span_from_range(instance.expr_span(expr_id)),
-                        help: "`instance = ... { ... }` accepts only `Transform3` in this slice.".to_string(),
-                    });
-                }
-            }
+        FieldExpr::UniformScale { scale, body } => {
+            validate_field_wrapper_operand_type(
+                "uniform_scale",
+                Type::F32,
+                scale,
+                func,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+            );
             validate_field_wrapper_expr_types(body, func, classes, enums, interfaces, functions, errors);
+        }
+        FieldExpr::AffineTransform { transform, body } => {
+            validate_field_wrapper_operand_type(
+                "affine_transform",
+                Type::Vec3,
+                transform,
+                func,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+            );
+            validate_field_wrapper_expr_types(body, func, classes, enums, interfaces, functions, errors);
+        }
+        FieldExpr::Warp { warp, body } => {
+            validate_field_wrapper_operand_type(
+                "warp",
+                Type::Vec3,
+                warp,
+                func,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+            );
+            validate_field_wrapper_expr_types(body, func, classes, enums, interfaces, functions, errors);
+        }
+        FieldExpr::RepeatLinear { repeat, body } => {
+            validate_field_wrapper_operand_type(
+                "repeat_linear",
+                Type::Vec3,
+                repeat,
+                func,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+            );
+            validate_field_wrapper_expr_types(body, func, classes, enums, interfaces, functions, errors);
+        }
+        FieldExpr::RepeatGrid { repeat, body } => {
+            validate_field_wrapper_operand_type(
+                "repeat_grid",
+                Type::Vec3,
+                repeat,
+                func,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+            );
+            validate_field_wrapper_expr_types(body, func, classes, enums, interfaces, functions, errors);
+        }
+        FieldExpr::RadialRepeat { radial, body } => {
+            validate_field_wrapper_operand_type(
+                "radial_repeat",
+                Type::Vec3,
+                radial,
+                func,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+            );
+            validate_field_wrapper_expr_types(body, func, classes, enums, interfaces, functions, errors);
+        }
+        FieldExpr::MirrorArray { mirror, body } => {
+            validate_field_wrapper_operand_type(
+                "mirror_array",
+                Type::Vec3,
+                mirror,
+                func,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+            );
+            validate_field_wrapper_expr_types(body, func, classes, enums, interfaces, functions, errors);
+        }
+        FieldExpr::InstanceArray { instance, body } => {
+            validate_field_wrapper_operand_type(
+                "instance_array",
+                portable_named_type("Transform3"),
+                instance,
+                func,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+            );
+            validate_field_wrapper_expr_types(body, func, classes, enums, interfaces, functions, errors);
+        }
+        FieldExpr::Bend { bend, body } => {
+            validate_field_wrapper_operand_type(
+                "bend",
+                Type::Vec3,
+                bend,
+                func,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+            );
+            validate_field_wrapper_expr_types(body, func, classes, enums, interfaces, functions, errors);
+        }
+        FieldExpr::Twist { twist: bend, body } => {
+            validate_field_wrapper_operand_type(
+                "twist",
+                Type::Vec3,
+                bend,
+                func,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+            );
+            validate_field_wrapper_expr_types(body, func, classes, enums, interfaces, functions, errors);
+        }
+        FieldExpr::Taper { taper, body } => {
+            validate_field_wrapper_operand_type(
+                "taper",
+                Type::Vec3,
+                taper,
+                func,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+            );
+            validate_field_wrapper_expr_types(body, func, classes, enums, interfaces, functions, errors);
+        }
+        FieldExpr::Displace { displace, body } => {
+            validate_field_wrapper_operand_type(
+                "displace",
+                Type::Vec3,
+                displace,
+                func,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+            );
+            validate_field_wrapper_expr_types(body, func, classes, enums, interfaces, functions, errors);
+        }
+        FieldExpr::Extrude { height, .. } => {
+            validate_field_wrapper_operand_type(
+                "extrude",
+                Type::F32,
+                height,
+                func,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+            );
+        }
+        FieldExpr::Revolve { .. } => {}
+        FieldExpr::Sweep { path, .. } => {
+            validate_field_wrapper_operand_type(
+                "sweep",
+                Type::Vec3,
+                path,
+                func,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+            );
+        }
+        FieldExpr::Loft { height, .. } => {
+            validate_field_wrapper_operand_type(
+                "loft",
+                Type::F32,
+                height,
+                func,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+            );
+        }
+        FieldExpr::SmoothUnion { smoothing, items } | FieldExpr::SmoothIntersection { smoothing, items } => {
+            validate_field_wrapper_operand_type(
+                if matches!(expr, FieldExpr::SmoothUnion { .. }) {
+                    "smooth_union"
+                } else {
+                    "smooth_intersection"
+                },
+                Type::F32,
+                smoothing,
+                func,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+            );
+            for item in items {
+                validate_field_wrapper_expr_types(item, func, classes, enums, interfaces, functions, errors);
+            }
+        }
+        FieldExpr::SmoothSubtract {
+            smoothing,
+            left,
+            right,
+        } => {
+            validate_field_wrapper_operand_type(
+                "smooth_subtract",
+                Type::F32,
+                smoothing,
+                func,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+            );
+            validate_field_wrapper_expr_types(left, func, classes, enums, interfaces, functions, errors);
+            validate_field_wrapper_expr_types(right, func, classes, enums, interfaces, functions, errors);
         }
     }
 }
@@ -1962,6 +2268,130 @@ fn field_wrapper_value_expr(body: &Body) -> Option<Idx<Expr>> {
     }
 }
 
+fn field_wrapper_numeric_literal(body: &Body, expr_id: Idx<Expr>) -> Option<f64> {
+    match &body.exprs[expr_id] {
+        Expr::Literal(Literal::Integer(value)) => Some(*value as f64),
+        Expr::Literal(Literal::Float(value)) => Some(*value),
+        Expr::Unary { op: UnaryOp::Neg, expr, .. } => {
+            field_wrapper_numeric_literal(body, *expr).map(|value| -value)
+        }
+        Expr::Call { callee, args, .. } => {
+            let Expr::Variable(name) = &body.exprs[*callee] else {
+                return None;
+            };
+            if name.as_str() != "f32" && name.as_str() != "to_f32" {
+                return None;
+            }
+            let [arg] = args.as_slice() else {
+                return None;
+            };
+            match arg {
+                Arg::Positional { value, .. } | Arg::Named { value, .. } => {
+                    field_wrapper_numeric_literal(body, *value)
+                }
+            }
+        }
+        _ => None,
+    }
+}
+
+fn field_wrapper_label(expr: &FieldExpr) -> &'static str {
+    match expr {
+        FieldExpr::Translate { .. } => "translate",
+        FieldExpr::Rotate { .. } => "rotate",
+        FieldExpr::UniformScale { .. } => "uniform_scale",
+        FieldExpr::AffineTransform { .. } => "affine_transform",
+        FieldExpr::Warp { .. } => "warp",
+        FieldExpr::RepeatLinear { .. } => "repeat_linear",
+        FieldExpr::RepeatGrid { .. } => "repeat_grid",
+        FieldExpr::RadialRepeat { .. } => "radial_repeat",
+        FieldExpr::MirrorArray { .. } => "mirror_array",
+        FieldExpr::InstanceArray { .. } => "instance_array",
+        FieldExpr::SmoothUnion { .. } => "smooth_union",
+        FieldExpr::SmoothIntersection { .. } => "smooth_intersection",
+        FieldExpr::SmoothSubtract { .. } => "smooth_subtract",
+        FieldExpr::Bend { .. } => "bend",
+        FieldExpr::Twist { .. } => "twist",
+        FieldExpr::Taper { .. } => "taper",
+        FieldExpr::Displace { .. } => "displace",
+        FieldExpr::Extrude { .. } => "extrude",
+        FieldExpr::Revolve { .. } => "revolve",
+        FieldExpr::Sweep { .. } => "sweep",
+        FieldExpr::Loft { .. } => "loft",
+        FieldExpr::Use { .. } => "use",
+        FieldExpr::Primitive { .. } => "primitive",
+        FieldExpr::Union { .. } => "union",
+        FieldExpr::Intersection { .. } => "intersection",
+        FieldExpr::Subtract { .. } => "subtract",
+        FieldExpr::Custom { .. } => "custom",
+    }
+}
+
+fn validate_field_wrapper_operand_type(
+    node: &'static str,
+    expected: Type,
+    body: &Body,
+    func: &Function,
+    classes: &ClassIndex,
+    enums: &EnumIndex,
+    interfaces: &InterfaceIndex,
+    functions: &FunctionIndex,
+    errors: &mut Vec<TypeError>,
+) {
+    if let Some((expr_id, ty)) =
+        infer_field_wrapper_body_type(body, func, classes, enums, interfaces, functions)
+        && ty != expected
+    {
+        errors.push(TypeError::PortableBoundaryTypeForbidden {
+            function: func.name.clone(),
+            site: format!("field `{node}` operand"),
+            found: type_label(&ty),
+            span: span_from_range(body.expr_span(expr_id)),
+            help: format!("`{node}` expects {} in this phase.", type_label(&expected)),
+        });
+    }
+}
+
+fn field_exact_point_independent_vec3(
+    node: &'static str,
+    operand: &Body,
+    body: &FieldExpr,
+    point_param: Option<&SmolStr>,
+    func: &Function,
+    top_level: &PortableFunctionSets,
+    classes: &ClassIndex,
+    enums: &EnumIndex,
+    interfaces: &InterfaceIndex,
+    functions: &FunctionIndex,
+) -> Result<FieldClass, FieldExactnessViolation> {
+    if point_param.is_some_and(|name| body_references_variable(operand, name)) {
+        return Err(exactness_violation(
+            node,
+            format!("{} operand references sample point '{}'", node, point_param.expect("point param")),
+            format!(
+                "Exact `{node}` fields must be point-independent. Use a constant Vec3 operand or downgrade the field to conservative handling."
+            ),
+        ));
+    }
+    let Some((_expr_id, ty)) =
+        infer_field_wrapper_body_type(operand, func, classes, enums, interfaces, functions)
+    else {
+        return Err(exactness_violation(
+            node,
+            format!("unable to infer the {node} operand type"),
+            format!("Exact `{node}` fields must use an explicit Vec3 operand so the compiler can classify exactness."),
+        ));
+    };
+    if ty != Type::Vec3 {
+        return Err(exactness_violation(
+            node,
+            format!("expected Vec3 operand, found '{}'", type_label(&ty)),
+            format!("Exact `{node}` fields accept only Vec3 operands in this phase."),
+        ));
+    }
+    field_exactness_capability(body, func, top_level, classes, enums, interfaces, functions)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FieldExactnessViolation {
     node: String,
@@ -2001,7 +2431,7 @@ fn field_exactness_capability(
                 "Field composition may only reuse exact field declarations, not arbitrary portable functions.",
             )),
         },
-        FieldExpr::Primitive { .. } => Ok(FieldClass::Exact),
+        FieldExpr::Primitive { primitive, .. } => Ok(field_primitive_exactness(*primitive)),
         FieldExpr::Custom { .. } => Err(exactness_violation(
             "custom",
             "custom field bodies remain opaque and conservative in this phase",
@@ -2018,63 +2448,217 @@ fn field_exactness_capability(
             field_exactness_capability(right, func, top_level, classes, enums, interfaces, functions)?;
             Ok(FieldClass::Exact)
         }
-        FieldExpr::Transform { transform, body } => {
-            if point_param.is_some_and(|name| body_references_variable(transform, name)) {
+        FieldExpr::Translate { translate, body } => {
+            field_exact_point_independent_vec3(
+                "translate",
+                translate,
+                body,
+                point_param,
+                func,
+                top_level,
+                classes,
+                enums,
+                interfaces,
+                functions,
+            )
+        }
+        FieldExpr::Rotate { rotate, body } => field_exact_point_independent_vec3(
+            "rotate",
+            rotate,
+            body,
+            point_param,
+            func,
+            top_level,
+            classes,
+            enums,
+            interfaces,
+            functions,
+        ),
+        FieldExpr::UniformScale { scale, body } => {
+            if point_param.is_some_and(|name| body_references_variable(scale, name)) {
                 return Err(exactness_violation(
-                    "transform",
-                    format!("transform operand references sample point '{}'", point_param.expect("point param")),
-                    "Exact field transforms must be point-independent. Use a constant or parameter-driven local-frame transform, or downgrade the field to `conservative` for warps.",
+                    "uniform_scale",
+                    "scale operand references the sample point",
+                    "Exact uniform scaling requires a point-independent positive scalar literal.",
                 ));
             }
-            let Some((_expr_id, ty)) =
-                infer_field_wrapper_body_type(transform, func, classes, enums, interfaces, functions)
+            let Some((expr_id, ty)) =
+                infer_field_wrapper_body_type(scale, func, classes, enums, interfaces, functions)
             else {
                 return Err(exactness_violation(
-                    "transform",
-                    "unable to infer the transform operand type",
-                    "Field transforms must use an explicit local-frame wrapper so the compiler can classify exactness.",
+                    "uniform_scale",
+                    "unable to infer the scale operand type",
+                    "Exact uniform scaling must use an explicit numeric operand so the compiler can confirm positivity.",
                 ));
             };
-            if ty == Type::Vec3 {
-                field_exactness_capability(body, func, top_level, classes, enums, interfaces, functions)
-            } else if ty == portable_named_type("Transform3") {
-                Err(exactness_violation(
-                    "transform",
-                    "Transform3 transforms are conservative-only in this phase",
-                    "Use Vec3 translation for exact fields in this slice; Transform3 remains a conservative wrapper for later expansion.",
-                ))
-            } else {
-                Err(exactness_violation(
-                    "transform",
-                    format!("expected Vec3 translation or Transform3 operand, found '{}'", type_label(&ty)),
-                    "Field transforms currently accept either Vec3 translation or Transform3 operands.",
-                ))
-            }
-        }
-        FieldExpr::Repeat { repeat, body } => {
-            if point_param.is_some_and(|name| body_references_variable(repeat, name)) {
+            if ty != Type::F32 {
                 return Err(exactness_violation(
-                    "repeat",
-                    format!("repeat operand references sample point '{}'", point_param.expect("point param")),
-                    "Exact field repetition must be point-independent. Use a constant or parameter-driven period, or downgrade the field to `conservative` for warping repetition.",
+                    "uniform_scale",
+                    format!("expected F32 scale operand, found '{}'", type_label(&ty)),
+                    "Exact uniform scaling must use a scalar F32 scale.",
+                ));
+            }
+            let Some(value) = field_wrapper_numeric_literal(scale, expr_id) else {
+                return Err(exactness_violation(
+                    "uniform_scale",
+                    "unable to prove the scale operand is a positive literal",
+                    "Exact uniform scaling requires a point-independent positive scalar literal or casted literal.",
+                ));
+            };
+            if value <= 0.0 {
+                return Err(exactness_violation(
+                    "uniform_scale",
+                    format!("scale operand must be positive for exact fields, found {value}"),
+                    "Exact uniform scaling requires a positive scale factor. Use a positive literal or downgrade the field to conservative handling.",
                 ));
             }
             field_exactness_capability(body, func, top_level, classes, enums, interfaces, functions)
         }
-        FieldExpr::Mirror { mirror, body } => {
-            if point_param.is_some_and(|name| body_references_variable(mirror, name)) {
+        FieldExpr::AffineTransform { .. } => Err(exactness_violation(
+            "affine_transform",
+            "affine transforms are conservative-only in this phase",
+            "Use translate/rotate/uniform_scale for exact fields. Affine transforms remain conservative until the exact matrix semantics land.",
+        )),
+        FieldExpr::Warp { .. } => Err(exactness_violation(
+            "warp",
+            "warp transforms are conservative-only in this phase",
+            "Rewrite the body using exact-preserving transforms or accept conservative classification.",
+        )),
+        FieldExpr::RepeatLinear { repeat, body } => field_exact_point_independent_vec3(
+            "repeat_linear",
+            repeat,
+            body,
+            point_param,
+            func,
+            top_level,
+            classes,
+            enums,
+            interfaces,
+            functions,
+        ),
+        FieldExpr::RepeatGrid { repeat, body } => field_exact_point_independent_vec3(
+            "repeat_grid",
+            repeat,
+            body,
+            point_param,
+            func,
+            top_level,
+            classes,
+            enums,
+            interfaces,
+            functions,
+        ),
+        FieldExpr::RadialRepeat { .. } => Err(exactness_violation(
+            "radial_repeat",
+            "radial repeat is conservative-only in this phase",
+            "Use repeat_linear or repeat_grid for exact fields. Radial repeat remains conservative.",
+        )),
+        FieldExpr::MirrorArray { mirror, body } => field_exact_point_independent_vec3(
+            "mirror_array",
+            mirror,
+            body,
+            point_param,
+            func,
+            top_level,
+            classes,
+            enums,
+            interfaces,
+            functions,
+        ),
+        FieldExpr::InstanceArray { .. } => Err(exactness_violation(
+            "instance_array",
+            "instance arrays are conservative-only in this phase",
+            "Use repeat_linear, repeat_grid, or exact composition for exact fields.",
+        )),
+        FieldExpr::SmoothUnion { .. } => Err(exactness_violation(
+            "smooth_union",
+            "smooth unions are conservative-only in this phase",
+            "Exact fields may not use smooth boolean blending yet.",
+        )),
+        FieldExpr::SmoothIntersection { .. } => Err(exactness_violation(
+            "smooth_intersection",
+            "smooth intersections are conservative-only in this phase",
+            "Exact fields may not use smooth boolean blending yet.",
+        )),
+        FieldExpr::SmoothSubtract { .. } => Err(exactness_violation(
+            "smooth_subtract",
+            "smooth subtraction is conservative-only in this phase",
+            "Exact fields may not use smooth boolean blending yet.",
+        )),
+        FieldExpr::Bend { .. } => Err(exactness_violation(
+            "bend",
+            "bend deformation is conservative-only in this phase",
+            "Deformation operators remain conservative because they alter local support tracing.",
+        )),
+        FieldExpr::Twist { .. } => Err(exactness_violation(
+            "twist",
+            "twist deformation is conservative-only in this phase",
+            "Deformation operators remain conservative because they alter local support tracing.",
+        )),
+        FieldExpr::Taper { .. } => Err(exactness_violation(
+            "taper",
+            "taper deformation is conservative-only in this phase",
+            "Deformation operators remain conservative because they alter local support tracing.",
+        )),
+        FieldExpr::Displace { .. } => Err(exactness_violation(
+            "displace",
+            "displace deformation is conservative-only in this phase",
+            "Deformation operators remain conservative because they alter local support tracing.",
+        )),
+        FieldExpr::Extrude { height, .. } => {
+            if point_param.is_some_and(|name| body_references_variable(height, name)) {
                 return Err(exactness_violation(
-                    "mirror",
-                    format!("mirror operand references sample point '{}'", point_param.expect("point param")),
-                    "Exact field mirroring must be point-independent. Use a constant or parameter-driven mirror axis, or downgrade the field to `conservative` for warps.",
+                    "extrude",
+                    "extrude height references the sample point",
+                    "Exact extrusions require a point-independent positive scalar height.",
                 ));
             }
-            field_exactness_capability(body, func, top_level, classes, enums, interfaces, functions)
+            let Some((expr_id, ty)) =
+                infer_field_wrapper_body_type(height, func, classes, enums, interfaces, functions)
+            else {
+                return Err(exactness_violation(
+                    "extrude",
+                    "unable to infer the extrusion height type",
+                    "Exact extrusions require a point-independent positive scalar height.",
+                ));
+            };
+            if ty != Type::F32 {
+                return Err(exactness_violation(
+                    "extrude",
+                    format!("expected F32 height operand, found '{}'", type_label(&ty)),
+                    "Exact extrusions require a scalar F32 height.",
+                ));
+            }
+            let Some(value) = field_wrapper_numeric_literal(height, expr_id) else {
+                return Err(exactness_violation(
+                    "extrude",
+                    "unable to prove the extrusion height is a positive literal",
+                    "Exact extrusions require a point-independent positive scalar literal or casted literal.",
+                ));
+            };
+            if value <= 0.0 {
+                return Err(exactness_violation(
+                    "extrude",
+                    format!("extrude height must be positive for exact fields, found {value}"),
+                    "Exact extrusions require a positive height. Use a positive literal or downgrade the field to conservative handling.",
+                ));
+            }
+            Ok(FieldClass::Exact)
         }
-        FieldExpr::Instance { .. } => Err(exactness_violation(
-            "instance",
-            "instance composition is conservative-only in this phase",
-            "Use `repeat` or a translated exact field for exact fields; `instance` remains a conservative wrapper.",
+        FieldExpr::Revolve { .. } => Err(exactness_violation(
+            "revolve",
+            "revolve is conservative-only in this phase",
+            "Revolve remains conservative until the compiler proves full radial exactness contracts for profile silhouettes.",
+        )),
+        FieldExpr::Sweep { .. } => Err(exactness_violation(
+            "sweep",
+            "sweep is conservative-only in this phase",
+            "Sweeps remain conservative until the path-frame exactness contract is fully proven.",
+        )),
+        FieldExpr::Loft { .. } => Err(exactness_violation(
+            "loft",
+            "loft is conservative-only in this phase",
+            "Loft interpolates between profiles and remains conservative in this phase.",
         )),
     }
 }
@@ -2144,16 +2728,42 @@ fn authored_field_clause_metadata(field: &FieldMetadata) -> Option<(FieldSupport
 fn field_support_conflict_source(expr: &FieldExpr) -> Option<String> {
     match expr {
         FieldExpr::Use { target } => Some(format!("field reference '{target}'")),
-        FieldExpr::Primitive { primitive, .. } => Some(format!("primitive '{}'", field_primitive_name(*primitive))),
+        FieldExpr::Primitive { primitive, .. } => {
+            Some(format!("primitive '{}'", field_primitive_name(*primitive)))
+        }
         FieldExpr::Union { items } | FieldExpr::Intersection { items } => items
             .iter()
             .find_map(field_support_conflict_source),
         FieldExpr::Subtract { left, right } => field_support_conflict_source(left)
             .or_else(|| field_support_conflict_source(right)),
-        FieldExpr::Transform { body, .. } => field_support_conflict_source(body),
-        FieldExpr::Mirror { body, .. } => field_support_conflict_source(body),
-        FieldExpr::Repeat { .. } => Some("structural operator 'repeat'".to_string()),
-        FieldExpr::Instance { .. } => Some("structural operator 'instance'".to_string()),
+        FieldExpr::Translate { body, .. }
+        | FieldExpr::Rotate { body, .. }
+        | FieldExpr::UniformScale { body, .. }
+        | FieldExpr::MirrorArray { body, .. }
+        | FieldExpr::RepeatLinear { body, .. }
+        | FieldExpr::RepeatGrid { body, .. } => field_support_conflict_source(body),
+        FieldExpr::AffineTransform { body, .. }
+        | FieldExpr::Warp { body, .. }
+        | FieldExpr::RadialRepeat { body, .. }
+        | FieldExpr::InstanceArray { body, .. }
+        | FieldExpr::Bend { body, .. }
+        | FieldExpr::Twist { body, .. }
+        | FieldExpr::Taper { body, .. }
+        | FieldExpr::Displace { body, .. } => field_support_conflict_source(body)
+            .or_else(|| Some(format!("operator '{}'", field_wrapper_label(expr)))),
+        FieldExpr::Extrude { .. }
+        | FieldExpr::Revolve { .. }
+        | FieldExpr::Sweep { .. }
+        | FieldExpr::Loft { .. } => Some(format!("operator '{}'", field_wrapper_label(expr))),
+        FieldExpr::SmoothUnion { items, .. } | FieldExpr::SmoothIntersection { items, .. } => {
+            items
+                .iter()
+                .find_map(field_support_conflict_source)
+                .or_else(|| Some(format!("operator '{}'", field_wrapper_label(expr))))
+        }
+        FieldExpr::SmoothSubtract { left, right, .. } => field_support_conflict_source(left)
+            .or_else(|| field_support_conflict_source(right))
+            .or_else(|| Some("operator 'smooth_subtract'".to_string())),
         FieldExpr::Custom { .. } => Some("custom field body".to_string()),
     }
 }
@@ -2166,6 +2776,33 @@ fn field_primitive_name(primitive: FieldPrimitive) -> &'static str {
         FieldPrimitive::Cylinder => "cylinder",
         FieldPrimitive::Plane => "plane",
         FieldPrimitive::Torus => "torus",
+        FieldPrimitive::RoundedBox => "rounded_box",
+        FieldPrimitive::Ellipsoid => "ellipsoid",
+        FieldPrimitive::Cone => "cone",
+        FieldPrimitive::CappedCone => "capped_cone",
+        FieldPrimitive::BoxFrame => "box_frame",
+        FieldPrimitive::Slab => "slab",
+        FieldPrimitive::TrianglePrism => "triangle_prism",
+        FieldPrimitive::HexPrism => "hex_prism",
+    }
+}
+
+fn field_primitive_exactness(primitive: FieldPrimitive) -> FieldClass {
+    match primitive {
+        FieldPrimitive::Ellipsoid => FieldClass::Conservative,
+        FieldPrimitive::Sphere
+        | FieldPrimitive::Box
+        | FieldPrimitive::Capsule
+        | FieldPrimitive::Cylinder
+        | FieldPrimitive::Plane
+        | FieldPrimitive::Torus
+        | FieldPrimitive::RoundedBox
+        | FieldPrimitive::Cone
+        | FieldPrimitive::CappedCone
+        | FieldPrimitive::BoxFrame
+        | FieldPrimitive::Slab
+        | FieldPrimitive::TrianglePrism
+        | FieldPrimitive::HexPrism => FieldClass::Exact,
     }
 }
 
@@ -2283,6 +2920,171 @@ fn validate_material_boundary(func: &Function, errors: &mut Vec<TypeError>) {
                 .map(span_from_range)
                 .unwrap_or_else(|| span_from_option_range(func.name_span)),
             help: "Material declarations currently return `Surface` so the CPU reference path and future GPU backends share the same shading ABI.".to_string(),
+        });
+    }
+}
+
+fn validate_radiance_boundary(func: &Function, errors: &mut Vec<TypeError>) {
+    if func.params.is_empty() || func.params.len() > 3 {
+        errors.push(TypeError::PortableConstructForbidden {
+            function: func.name.clone(),
+            construct: "a radiance field parameter list that is not `(p: Vec3[, direction: Vec3[, feature_id: U64]])`".to_string(),
+            span: span_from_option_range(func.name_span),
+            help: "Radiance fields currently sample a point, with optional view direction and feature id for stable authored emissive logic.".to_string(),
+        });
+    }
+    if let Some(param) = func.params.first() {
+        let found = param
+            .ty
+            .as_ref()
+            .map(type_from_ref)
+            .unwrap_or(Type::Unknown);
+        if found != Type::Vec3 {
+            errors.push(TypeError::PortableBoundaryTypeForbidden {
+                function: func.name.clone(),
+                site: format!("parameter '{}'", param.name),
+                found: type_label(&found),
+                span: param
+                    .ty
+                    .as_ref()
+                    .and_then(|ty| ty.name_span)
+                    .map(span_from_range)
+                    .unwrap_or_else(|| span_from_option_range(param.name_span)),
+                help: "Radiance fields currently sample a point as their first argument: `(p: Vec3[, direction: Vec3[, feature_id: U64]]) -> Vec3`.".to_string(),
+            });
+        }
+    }
+    if let Some(param) = func.params.get(1) {
+        let found = param
+            .ty
+            .as_ref()
+            .map(type_from_ref)
+            .unwrap_or(Type::Unknown);
+        if found != Type::Vec3 {
+            errors.push(TypeError::PortableBoundaryTypeForbidden {
+                function: func.name.clone(),
+                site: format!("parameter '{}'", param.name),
+                found: type_label(&found),
+                span: param
+                    .ty
+                    .as_ref()
+                    .and_then(|ty| ty.name_span)
+                    .map(span_from_range)
+                    .unwrap_or_else(|| span_from_option_range(param.name_span)),
+                help: "Radiance fields optionally accept a view direction as their second argument: `(p: Vec3, direction: Vec3[, feature_id: U64]) -> Vec3`.".to_string(),
+            });
+        }
+    }
+    if let Some(param) = func.params.get(2) {
+        let found = param
+            .ty
+            .as_ref()
+            .map(type_from_ref)
+            .unwrap_or(Type::Unknown);
+        if found != Type::U64 {
+            errors.push(TypeError::PortableBoundaryTypeForbidden {
+                function: func.name.clone(),
+                site: format!("parameter '{}'", param.name),
+                found: type_label(&found),
+                span: param
+                    .ty
+                    .as_ref()
+                    .and_then(|ty| ty.name_span)
+                    .map(span_from_range)
+                    .unwrap_or_else(|| span_from_option_range(param.name_span)),
+                help: "Radiance fields optionally accept the resolved shape feature id as their third argument: `(p: Vec3, direction: Vec3, feature_id: U64) -> Vec3`.".to_string(),
+            });
+        }
+    }
+    let ret_ty = func
+        .ret_type
+        .as_ref()
+        .map(type_from_ref)
+        .unwrap_or(Type::Unknown);
+    if ret_ty != Type::Vec3 {
+        errors.push(TypeError::PortableBoundaryTypeForbidden {
+            function: func.name.clone(),
+            site: "return type".to_string(),
+            found: type_label(&ret_ty),
+            span: func
+                .ret_type
+                .as_ref()
+                .and_then(|ty| ty.name_span)
+                .map(span_from_range)
+                .unwrap_or_else(|| span_from_option_range(func.name_span)),
+            help: "Radiance field declarations currently return `Vec3` so the CPU truth path and future GPU backends share the same lighting ABI.".to_string(),
+        });
+    }
+}
+
+fn validate_volume_boundary(func: &Function, errors: &mut Vec<TypeError>) {
+    if func.params.is_empty() || func.params.len() > 2 {
+        errors.push(TypeError::PortableConstructForbidden {
+            function: func.name.clone(),
+            construct: "a volume field parameter list that is not `(p: Vec3[, surface_distance: F32])`".to_string(),
+            span: span_from_option_range(func.name_span),
+            help: "Volume fields currently sample a point, with an optional nearest-surface distance for authored fog and glow falloff.".to_string(),
+        });
+    }
+    if let Some(param) = func.params.first() {
+        let found = param
+            .ty
+            .as_ref()
+            .map(type_from_ref)
+            .unwrap_or(Type::Unknown);
+        if found != Type::Vec3 {
+            errors.push(TypeError::PortableBoundaryTypeForbidden {
+                function: func.name.clone(),
+                site: format!("parameter '{}'", param.name),
+                found: type_label(&found),
+                span: param
+                    .ty
+                    .as_ref()
+                    .and_then(|ty| ty.name_span)
+                    .map(span_from_range)
+                    .unwrap_or_else(|| span_from_option_range(param.name_span)),
+                help: "Volume fields currently sample a point as their first argument: `(p: Vec3[, surface_distance: F32]) -> Medium`.".to_string(),
+            });
+        }
+    }
+    if let Some(param) = func.params.get(1) {
+        let found = param
+            .ty
+            .as_ref()
+            .map(type_from_ref)
+            .unwrap_or(Type::Unknown);
+        if found != Type::F32 {
+            errors.push(TypeError::PortableBoundaryTypeForbidden {
+                function: func.name.clone(),
+                site: format!("parameter '{}'", param.name),
+                found: type_label(&found),
+                span: param
+                    .ty
+                    .as_ref()
+                    .and_then(|ty| ty.name_span)
+                    .map(span_from_range)
+                    .unwrap_or_else(|| span_from_option_range(param.name_span)),
+                help: "Volume fields optionally accept the nearest-surface distance as their second argument: `(p: Vec3, surface_distance: F32) -> Medium`.".to_string(),
+            });
+        }
+    }
+    let ret_ty = func
+        .ret_type
+        .as_ref()
+        .map(type_from_ref)
+        .unwrap_or(Type::Unknown);
+    if ret_ty != portable_named_type("Medium") {
+        errors.push(TypeError::PortableBoundaryTypeForbidden {
+            function: func.name.clone(),
+            site: "return type".to_string(),
+            found: type_label(&ret_ty),
+            span: func
+                .ret_type
+                .as_ref()
+                .and_then(|ty| ty.name_span)
+                .map(span_from_range)
+                .unwrap_or_else(|| span_from_option_range(func.name_span)),
+            help: "Volume field declarations currently return `Medium` so participating-media provenance stays on the shared portable ABI.".to_string(),
         });
     }
 }
@@ -2920,12 +3722,6 @@ fn validate_portable_expr(
             );
         }
         Expr::List(items) => {
-            errors.push(TypeError::PortableConstructForbidden {
-                function: function.clone(),
-                construct: "List literals".to_string(),
-                span: span_from_range(body.expr_span(expr_id)),
-                help: "Portable kernels cannot allocate dynamic lists. Use fixed-size arrays or buffers instead.".to_string(),
-            });
             for item in items {
                 validate_portable_expr(
                     body,
@@ -3110,6 +3906,74 @@ fn validate_portable_call(
                     });
                     return;
                 }
+            } else if matches!(current_role, FunctionRole::Radiance) {
+                if is_field_composition_builtin_call(name.as_str()) {
+                    errors.push(TypeError::PortableConstructForbidden {
+                        function: function.clone(),
+                        construct: format!("field composition helper '{}'", name),
+                        span: span_from_range(body.expr_span(expr_id)),
+                        help: "Radiance fields stay query-shaped and compiler-visible. Geometry composition belongs in `field` declarations.".to_string(),
+                    });
+                    return;
+                }
+                if is_field_safe_builtin_call(name.as_str()) {
+                    return;
+                }
+                if is_portable_safe_builtin_call(name.as_str()) {
+                    errors.push(TypeError::PortableConstructForbidden {
+                        function: function.clone(),
+                        construct: format!("calling kernel-only builtin '{}'", name),
+                        span: span_from_range(body.expr_span(expr_id)),
+                        help: "Radiance fields stay pure and portable. GPU buffers, invocation IDs, and synchronization belong in `kernel fn`, not authored emissive semantics.".to_string(),
+                    });
+                    return;
+                }
+                if functions.radiances.contains(name) || functions.field_classes.contains_key(name) {
+                    return;
+                }
+                if functions.portable.contains(name) {
+                    errors.push(TypeError::PortableConstructForbidden {
+                        function: function.clone(),
+                        construct: format!("calling unsupported portable declaration '{}'", name),
+                        span: span_from_range(body.expr_span(expr_id)),
+                        help: "Radiance fields may call other radiance fields, field declarations, value constructors, and pure math/geometry intrinsics.".to_string(),
+                    });
+                    return;
+                }
+            } else if matches!(current_role, FunctionRole::Volume) {
+                if is_field_composition_builtin_call(name.as_str()) {
+                    errors.push(TypeError::PortableConstructForbidden {
+                        function: function.clone(),
+                        construct: format!("field composition helper '{}'", name),
+                        span: span_from_range(body.expr_span(expr_id)),
+                        help: "Volume fields stay query-shaped and compiler-visible. Geometry composition belongs in `field` declarations.".to_string(),
+                    });
+                    return;
+                }
+                if is_field_safe_builtin_call(name.as_str()) {
+                    return;
+                }
+                if is_portable_safe_builtin_call(name.as_str()) {
+                    errors.push(TypeError::PortableConstructForbidden {
+                        function: function.clone(),
+                        construct: format!("calling kernel-only builtin '{}'", name),
+                        span: span_from_range(body.expr_span(expr_id)),
+                        help: "Volume fields stay pure and portable. GPU buffers, invocation IDs, and synchronization belong in `kernel fn`, not authored media semantics.".to_string(),
+                    });
+                    return;
+                }
+                if functions.volumes.contains(name) || functions.field_classes.contains_key(name) {
+                    return;
+                }
+                if functions.portable.contains(name) {
+                    errors.push(TypeError::PortableConstructForbidden {
+                        function: function.clone(),
+                        construct: format!("calling unsupported portable declaration '{}'", name),
+                        span: span_from_range(body.expr_span(expr_id)),
+                        help: "Volume fields may call other volume fields, field declarations, value constructors, and pure math/geometry intrinsics.".to_string(),
+                    });
+                    return;
+                }
             } else if is_portable_safe_builtin_call(name.as_str()) {
                 return;
             } else if is_field_composition_builtin_call(name.as_str()) {
@@ -3240,19 +4104,52 @@ fn is_portable_safe_builtin_call(name: &str) -> bool {
             | "transform_normal"
             | "compose_transform3"
             | "inverse_transform3"
-            | "repeat_point"
+            | "field_translate_point"
+            | "field_rotate_point"
+            | "field_uniform_scale_point"
+            | "field_affine_transform_point"
+            | "field_warp_point"
+            | "field_repeat_linear_point"
+            | "field_repeat_grid_point"
+            | "field_radial_repeat_point"
+            | "field_mirror_array_point"
+            | "field_instance_array_point"
+            | "field_sweep_coords"
+            | "field_smooth_union"
+            | "field_smooth_intersection"
+            | "field_smooth_subtract"
+            | "field_bend_point"
+            | "field_twist_point"
+            | "field_taper_point"
+            | "field_displace_point"
             | "sphere"
             | "box"
             | "capsule"
             | "cylinder"
             | "plane"
             | "torus"
+            | "rounded_box"
+            | "ellipsoid"
+            | "cone"
+            | "capped_cone"
+            | "box_frame"
+            | "slab"
+            | "triangle_prism"
+            | "hex_prism"
             | "__wr_primitive_sphere"
             | "__wr_primitive_box"
             | "__wr_primitive_capsule"
             | "__wr_primitive_cylinder"
             | "__wr_primitive_plane"
             | "__wr_primitive_torus"
+            | "__wr_primitive_rounded_box"
+            | "__wr_primitive_ellipsoid"
+            | "__wr_primitive_cone"
+            | "__wr_primitive_capped_cone"
+            | "__wr_primitive_box_frame"
+            | "__wr_primitive_slab"
+            | "__wr_primitive_triangle_prism"
+            | "__wr_primitive_hex_prism"
             | "dot"
             | "length"
             | "normalize"
@@ -3319,22 +4216,52 @@ fn is_field_safe_builtin_call(name: &str) -> bool {
             | "transform_normal"
             | "compose_transform3"
             | "inverse_transform3"
-            | "field_transform_point"
-            | "field_mirror_point"
-            | "field_repeat_point"
-            | "field_instance_point"
+            | "field_translate_point"
+            | "field_rotate_point"
+            | "field_uniform_scale_point"
+            | "field_affine_transform_point"
+            | "field_warp_point"
+            | "field_repeat_linear_point"
+            | "field_repeat_grid_point"
+            | "field_radial_repeat_point"
+            | "field_mirror_array_point"
+            | "field_instance_array_point"
+            | "field_sweep_coords"
+            | "field_smooth_union"
+            | "field_smooth_intersection"
+            | "field_smooth_subtract"
+            | "field_bend_point"
+            | "field_twist_point"
+            | "field_taper_point"
+            | "field_displace_point"
             | "sphere"
             | "box"
             | "capsule"
             | "cylinder"
             | "plane"
             | "torus"
+            | "rounded_box"
+            | "ellipsoid"
+            | "cone"
+            | "capped_cone"
+            | "box_frame"
+            | "slab"
+            | "triangle_prism"
+            | "hex_prism"
             | "__wr_primitive_sphere"
             | "__wr_primitive_box"
             | "__wr_primitive_capsule"
             | "__wr_primitive_cylinder"
             | "__wr_primitive_plane"
             | "__wr_primitive_torus"
+            | "__wr_primitive_rounded_box"
+            | "__wr_primitive_ellipsoid"
+            | "__wr_primitive_cone"
+            | "__wr_primitive_capped_cone"
+            | "__wr_primitive_box_frame"
+            | "__wr_primitive_slab"
+            | "__wr_primitive_triangle_prism"
+            | "__wr_primitive_hex_prism"
             | "field_union"
             | "field_intersection"
             | "field_subtract"
@@ -3396,18 +4323,47 @@ fn is_field_composition_builtin_call(name: &str) -> bool {
         "field_union"
             | "field_intersection"
             | "field_subtract"
-            | "field_transform_point"
-            | "field_mirror_point"
-            | "field_repeat_point"
-            | "field_instance_point"
+            | "field_translate_point"
+            | "field_rotate_point"
+            | "field_uniform_scale_point"
+            | "field_affine_transform_point"
+            | "field_warp_point"
+            | "field_repeat_linear_point"
+            | "field_repeat_grid_point"
+            | "field_radial_repeat_point"
+            | "field_mirror_array_point"
+            | "field_instance_array_point"
+            | "field_smooth_union"
+            | "field_smooth_intersection"
+            | "field_smooth_subtract"
+            | "field_bend_point"
+            | "field_twist_point"
+            | "field_taper_point"
+            | "field_displace_point"
     )
 }
 
 fn field_builtin_exactness(name: &str) -> Option<FieldClass> {
     match name {
-        "field_transform_point" => Some(FieldClass::Exact),
-        "field_instance_point" => Some(FieldClass::Conservative),
-        "field_mirror_point" | "field_repeat_point" => Some(FieldClass::Exact),
+        "field_translate_point"
+        | "field_rotate_point"
+        | "field_uniform_scale_point"
+        | "field_repeat_linear_point"
+        | "field_repeat_grid_point"
+        | "field_mirror_array_point" => Some(FieldClass::Exact),
+        "ellipsoid" | "__wr_primitive_ellipsoid" => Some(FieldClass::Conservative),
+        "field_affine_transform_point"
+        | "field_warp_point"
+        | "field_radial_repeat_point"
+        | "field_instance_array_point"
+        | "field_sweep_coords"
+        | "field_smooth_union"
+        | "field_smooth_intersection"
+        | "field_smooth_subtract"
+        | "field_bend_point"
+        | "field_twist_point"
+        | "field_taper_point"
+        | "field_displace_point" => Some(FieldClass::Conservative),
         _ => None,
     }
 }

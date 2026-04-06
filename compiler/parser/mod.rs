@@ -1466,65 +1466,6 @@ field conservative distance scene(p: Vec3) -> F32 {
     }
 
     #[test]
-    fn test_semantic_field_composition_parses_as_explicit_ast() {
-        use ast::{AstNode, FieldExpr, Stmt};
-        let text = "\
-field exact distance scene(p: Vec3) -> F32 {
-    union {
-        use cube
-        subtract {
-            use body
-            use hole
-        }
-    }
-}
-";
-        let (_node, errors) = parse_with_errors(text);
-        assert!(errors.is_empty(), "{errors:?}");
-
-        let node = parse(text);
-        let root = ast::Root::cast(node).unwrap();
-        let field = match root.statements().next() {
-            Some(Stmt::FieldDecl(field)) => field,
-            _ => panic!("Expected field declaration"),
-        };
-        assert_eq!(field.name().unwrap().text(), "scene");
-        let expr = field
-            .semantic_expr()
-            .expect("expected semantic field expression");
-        let FieldExpr::Union(union) = expr else {
-            panic!("expected union field expression");
-        };
-        let items: Vec<_> = union.items().collect();
-        assert_eq!(items.len(), 2);
-        match &items[0] {
-            FieldExpr::Use(use_expr) => {
-                assert_eq!(use_expr.name().unwrap().text(), "cube");
-            }
-            _ => panic!("expected first union item to be use"),
-        }
-        match &items[1] {
-            FieldExpr::Subtract(subtract) => {
-                let lhs = subtract.lhs().expect("expected subtract lhs");
-                let rhs = subtract.rhs().expect("expected subtract rhs");
-                match lhs {
-                    FieldExpr::Use(use_expr) => {
-                        assert_eq!(use_expr.name().unwrap().text(), "body");
-                    }
-                    _ => panic!("expected subtract lhs to be use"),
-                }
-                match rhs {
-                    FieldExpr::Use(use_expr) => {
-                        assert_eq!(use_expr.name().unwrap().text(), "hole");
-                    }
-                    _ => panic!("expected subtract rhs to be use"),
-                }
-            }
-            _ => panic!("expected second union item to be subtract"),
-        }
-    }
-
-    #[test]
     fn test_field_boolean_provenance_policy_parse_as_explicit_ast() {
         use ast::{AstNode, FieldExpr, Stmt};
         let text = "\
@@ -1594,19 +1535,396 @@ field conservative distance composed(p: Vec3) -> F32 {
     }
 
     #[test]
-    fn test_field_structural_operators_parse_as_explicit_ast() {
+    fn test_field_new_primitive_catalog_names_parse_as_explicit_ast() {
         use ast::{AstNode, FieldExpr, Stmt};
         let text = "\
-field exact distance scene(p: Vec3) -> F32 {
-    transform = vec3(1, 0, 0) {
-        mirror = vec3(0, 1, 0) {
-            repeat = vec3(2, 2, 2) {
-                instance = vec3(0, 0, 1) {
-                    use cube
-                }
-            }
+field exact distance rounded_box_field(p: Vec3) -> F32 {
+    rounded_box(radius = 1.0)
+}
+field exact distance ellipsoid_field(p: Vec3) -> F32 {
+    ellipsoid(radii = vec3(1.0, 2.0, 3.0))
+}
+field exact distance cone_field(p: Vec3) -> F32 {
+    cone(angle = 0.5)
+}
+field exact distance capped_cone_field(p: Vec3) -> F32 {
+    capped_cone(angle = 0.5, cap = 1.0)
+}
+field exact distance box_frame_field(p: Vec3) -> F32 {
+    box_frame(thickness = 0.1)
+}
+field exact distance slab_field(p: Vec3) -> F32 {
+    slab(thickness = 0.25)
+}
+field exact distance triangle_prism_field(p: Vec3) -> F32 {
+    triangle_prism()
+}
+field exact distance hex_prism_field(p: Vec3) -> F32 {
+    hex_prism()
+}
+";
+        let (_node, errors) = parse_with_errors(text);
+        assert!(errors.is_empty(), "{errors:?}");
+
+        let node = parse(text);
+        let root = ast::Root::cast(node).unwrap();
+        let fields: Vec<_> = root.statements().collect();
+        let expected = [
+            "rounded_box",
+            "ellipsoid",
+            "cone",
+            "capped_cone",
+            "box_frame",
+            "slab",
+            "triangle_prism",
+            "hex_prism",
+        ];
+        assert_eq!(fields.len(), expected.len());
+        for (stmt, expected_name) in fields.iter().zip(expected.iter()) {
+            let field = match stmt {
+                Stmt::FieldDecl(field) => field,
+                _ => panic!("expected field declaration"),
+            };
+            let expr = field
+                .semantic_expr()
+                .expect("expected semantic field expression");
+            let FieldExpr::Primitive(primitive) = expr else {
+                panic!("expected primitive field expression");
+            };
+            assert_eq!(primitive.name().unwrap().text(), *expected_name);
         }
     }
+
+    #[test]
+    fn test_field_new_operator_families_parse_as_explicit_ast() {
+        use ast::{AstNode, FieldExpr, Stmt};
+        let text = "\
+field exact distance translate_field(p: Vec3) -> F32 {
+    translate = vec3(1, 0, 0) {
+        use cube
+    }
+}
+field exact distance rotate_field(p: Vec3) -> F32 {
+    rotate = vec3(0, 1, 0) {
+        use cube
+    }
+}
+field exact distance uniform_scale_field(p: Vec3) -> F32 {
+    uniform_scale = 2.0 {
+        use cube
+    }
+}
+field exact distance affine_transform_field(p: Vec3) -> F32 {
+    affine_transform = vec3(1, 0, 0) {
+        use cube
+    }
+}
+field exact distance warp_field(p: Vec3) -> F32 {
+    warp = vec3(0, 0, 1) {
+        use cube
+    }
+}
+field exact distance repeat_linear_field(p: Vec3) -> F32 {
+    repeat_linear = vec3(2, 0, 0) {
+        use cube
+    }
+}
+field exact distance repeat_grid_field(p: Vec3) -> F32 {
+    repeat_grid = vec3(2, 2, 2) {
+        use cube
+    }
+}
+field exact distance radial_repeat_field(p: Vec3) -> F32 {
+    radial_repeat = vec3(0, 1, 0) {
+        use cube
+    }
+}
+field exact distance mirror_array_field(p: Vec3) -> F32 {
+    mirror_array = vec3(1, 0, 0) {
+        use cube
+    }
+}
+field exact distance instance_array_field(p: Vec3) -> F32 {
+    instance_array = vec3(0, 1, 0) {
+        use cube
+    }
+}
+field exact distance bend_field(p: Vec3) -> F32 {
+    bend = vec3(0, 0, 1) {
+        use cube
+    }
+}
+field exact distance twist_field(p: Vec3) -> F32 {
+    twist = vec3(0, 0, 1) {
+        use cube
+    }
+}
+field exact distance taper_field(p: Vec3) -> F32 {
+    taper = vec3(0, 0, 1) {
+        use cube
+    }
+}
+field exact distance displace_field(p: Vec3) -> F32 {
+    displace = vec3(0, 0, 1) {
+        use cube
+    }
+}
+";
+        let (_node, errors) = parse_with_errors(text);
+        assert!(errors.is_empty(), "{errors:?}");
+
+        let node = parse(text);
+        let root = ast::Root::cast(node).unwrap();
+        let fields: Vec<_> = root.statements().collect();
+        assert_eq!(fields.len(), 14);
+
+        macro_rules! assert_wrapper_field {
+            ($stmt:expr, $variant:ident, $accessor:ident) => {{
+                let field = match &$stmt {
+                    Stmt::FieldDecl(field) => field.clone(),
+                    _ => panic!("expected field declaration"),
+                };
+                let expr = field
+                    .semantic_expr()
+                    .expect("expected semantic field expression");
+                let FieldExpr::$variant(op) = expr else {
+                    panic!("expected {} field expression", stringify!($variant));
+                };
+                assert!(op.$accessor().is_some());
+                let inner = op.body().expect("expected nested field body");
+                match inner {
+                    FieldExpr::Use(use_expr) => {
+                        assert_eq!(use_expr.name().unwrap().text(), "cube");
+                    }
+                    _ => panic!("expected inner use field expression"),
+                }
+            }};
+        }
+
+        assert_wrapper_field!(fields[0], Translate, translate);
+        assert_wrapper_field!(fields[1], Rotate, rotate);
+        assert_wrapper_field!(fields[2], UniformScale, uniform_scale);
+        assert_wrapper_field!(fields[3], AffineTransform, affine_transform);
+        assert_wrapper_field!(fields[4], Warp, warp);
+        assert_wrapper_field!(fields[5], RepeatLinear, repeat_linear);
+        assert_wrapper_field!(fields[6], RepeatGrid, repeat_grid);
+        assert_wrapper_field!(fields[7], RadialRepeat, radial_repeat);
+        assert_wrapper_field!(fields[8], MirrorArray, mirror_array);
+        assert_wrapper_field!(fields[9], InstanceArray, instance_array);
+        assert_wrapper_field!(fields[10], Bend, bend);
+        assert_wrapper_field!(fields[11], Twist, twist);
+        assert_wrapper_field!(fields[12], Taper, taper);
+        assert_wrapper_field!(fields[13], Displace, displace);
+    }
+
+    #[test]
+    fn test_field_construction_operators_parse_as_explicit_ast() {
+        use ast::{AstNode, FieldExpr, Stmt};
+        let text = "\
+field exact distance extruded_field(p: Vec3) -> F32 {
+    extrude = 2.0 {
+        circle2(radius = 1.0)
+    }
+}
+field exact distance revolved_field(p: Vec3) -> F32 {
+    revolve {
+        rect2(half = vec2(1.0, 0.5))
+    }
+}
+field exact distance swept_field(p: Vec3) -> F32 {
+    sweep = vec3(0.0, 0.0, 1.0) {
+        polyline2(vertices = [vec2(-1.0, 0.0), vec2(0.0, 1.0), vec2(1.0, 0.0)])
+    }
+}
+field exact distance lofted_field(p: Vec3) -> F32 {
+    loft = 1.5 {
+        from circle2(radius = 1.0)
+        to rounded_rect2(half = vec2(1.0, 0.5), radius = 0.1)
+    }
+}
+";
+        let (_node, errors) = parse_with_errors(text);
+        assert!(errors.is_empty(), "{errors:?}");
+
+        let node = parse(text);
+        let root = ast::Root::cast(node).unwrap();
+        let fields: Vec<_> = root.statements().collect();
+        assert_eq!(fields.len(), 4);
+
+        let extrude = match &fields[0] {
+            Stmt::FieldDecl(field) => match field.semantic_expr().expect("extrude expr") {
+                FieldExpr::Extrude(expr) => expr,
+                _ => panic!("expected extrude field expression"),
+            },
+            _ => panic!("expected field declaration"),
+        };
+        assert!(extrude.height().is_some());
+        let extrude_profile = extrude.profile().expect("expected extrude profile");
+        assert!(matches!(extrude_profile, ast::ProfileExpr::Primitive(_)));
+
+        let revolve = match &fields[1] {
+            Stmt::FieldDecl(field) => match field.semantic_expr().expect("revolve expr") {
+                FieldExpr::Revolve(expr) => expr,
+                _ => panic!("expected revolve field expression"),
+            },
+            _ => panic!("expected field declaration"),
+        };
+        let revolve_profile = revolve.profile().expect("expected revolve profile");
+        assert!(matches!(revolve_profile, ast::ProfileExpr::Primitive(_)));
+
+        let sweep = match &fields[2] {
+            Stmt::FieldDecl(field) => match field.semantic_expr().expect("sweep expr") {
+                FieldExpr::Sweep(expr) => expr,
+                _ => panic!("expected sweep field expression"),
+            },
+            _ => panic!("expected field declaration"),
+        };
+        assert!(sweep.path().is_some());
+        let sweep_profile = sweep.profile().expect("expected sweep profile");
+        assert!(matches!(sweep_profile, ast::ProfileExpr::Primitive(_)));
+
+        let loft = match &fields[3] {
+            Stmt::FieldDecl(field) => match field.semantic_expr().expect("loft expr") {
+                FieldExpr::Loft(expr) => expr,
+                _ => panic!("expected loft field expression"),
+            },
+            _ => panic!("expected field declaration"),
+        };
+        assert!(loft.height().is_some());
+        assert!(matches!(
+            loft.from_profile().expect("expected loft from profile"),
+            ast::ProfileExpr::Primitive(_)
+        ));
+        assert!(matches!(
+            loft.to_profile().expect("expected loft to profile"),
+            ast::ProfileExpr::Primitive(_)
+        ));
+    }
+
+    #[test]
+    fn test_field_smooth_boolean_operators_parse_as_explicit_ast() {
+        use ast::{AstNode, FieldExpr, Stmt};
+        let text = "\
+field exact distance smooth_union_field(p: Vec3) -> F32 {
+    smooth_union {
+        smoothing = 0.25
+        use left
+        use right
+    }
+}
+field exact distance smooth_intersection_field(p: Vec3) -> F32 {
+    smooth_intersection {
+        smoothing = 0.5
+        use left
+        use right
+    }
+}
+field exact distance smooth_subtract_field(p: Vec3) -> F32 {
+    smooth_subtract {
+        smoothing = 0.75
+        use left
+        use right
+    }
+}
+";
+        let (_node, errors) = parse_with_errors(text);
+        assert!(errors.is_empty(), "{errors:?}");
+
+        let node = parse(text);
+        let root = ast::Root::cast(node).unwrap();
+        let fields: Vec<_> = root.statements().collect();
+        assert_eq!(fields.len(), 3);
+
+        let smooth_union = match &fields[0] {
+            Stmt::FieldDecl(field) => match field.semantic_expr().expect("smooth union expr") {
+                FieldExpr::SmoothUnion(expr) => expr,
+                _ => panic!("expected smooth union field expression"),
+            },
+            _ => panic!("expected field declaration"),
+        };
+        assert!(smooth_union.smoothing().is_some());
+        let items: Vec<_> = smooth_union.items().collect();
+        assert_eq!(items.len(), 2);
+        match &items[0] {
+            FieldExpr::Use(use_expr) => assert_eq!(use_expr.name().unwrap().text(), "left"),
+            _ => panic!("expected left field use"),
+        }
+        match &items[1] {
+            FieldExpr::Use(use_expr) => assert_eq!(use_expr.name().unwrap().text(), "right"),
+            _ => panic!("expected right field use"),
+        }
+
+        let smooth_intersection = match &fields[1] {
+            Stmt::FieldDecl(field) => {
+                match field.semantic_expr().expect("smooth intersection expr") {
+                    FieldExpr::SmoothIntersection(expr) => expr,
+                    _ => panic!("expected smooth intersection field expression"),
+                }
+            }
+            _ => panic!("expected field declaration"),
+        };
+        assert!(smooth_intersection.smoothing().is_some());
+        assert_eq!(smooth_intersection.items().count(), 2);
+
+        let smooth_subtract = match &fields[2] {
+            Stmt::FieldDecl(field) => match field.semantic_expr().expect("smooth subtract expr") {
+                FieldExpr::SmoothSubtract(expr) => expr,
+                _ => panic!("expected smooth subtract field expression"),
+            },
+            _ => panic!("expected field declaration"),
+        };
+        assert!(smooth_subtract.smoothing().is_some());
+        assert!(smooth_subtract.lhs().is_some());
+        assert!(smooth_subtract.rhs().is_some());
+    }
+
+    #[test]
+    fn test_old_wrapper_keywords_no_longer_parse_as_semantic_field_expressions() {
+        use ast::{AstNode, Stmt};
+        let text = "\
+field exact distance legacy_transform(p: Vec3) -> F32 {
+    transform = vec3(1, 0, 0) {
+        use cube
+    }
+}
+field exact distance legacy_mirror(p: Vec3) -> F32 {
+    mirror = vec3(0, 1, 0) {
+        use cube
+    }
+}
+field exact distance legacy_repeat(p: Vec3) -> F32 {
+    repeat = vec3(2, 0, 0) {
+        use cube
+    }
+}
+field exact distance legacy_instance(p: Vec3) -> F32 {
+    instance = vec3(0, 0, 1) {
+        use cube
+    }
+}
+";
+        let (_node, errors) = parse_with_errors(text);
+        let _ = errors;
+
+        let node = parse(text);
+        let root = ast::Root::cast(node).unwrap();
+        for stmt in root.statements() {
+            let Stmt::FieldDecl(field) = stmt else {
+                panic!("expected field declaration");
+            };
+            assert!(
+                field.semantic_expr().is_none(),
+                "expected retired wrapper keyword to stay out of semantic field expressions"
+            );
+        }
+    }
+
+    #[test]
+    fn test_legacy_field_body_still_parses_as_statement_block() {
+        use ast::{AstNode, Stmt};
+        let text = "\
+field exact distance sphere(p: F32) -> F32 {
+    return p
 }
 ";
         let (_node, errors) = parse_with_errors(text);
@@ -1618,37 +1936,8 @@ field exact distance scene(p: Vec3) -> F32 {
             Some(Stmt::FieldDecl(field)) => field,
             _ => panic!("Expected field declaration"),
         };
-        let expr = field
-            .semantic_expr()
-            .expect("expected semantic field expression");
-        let FieldExpr::Transform(transform) = expr else {
-            panic!("expected transform field expression");
-        };
-        assert!(transform.transform().is_some());
-
-        let mirror = transform.body().expect("expected nested mirror body");
-        let FieldExpr::Mirror(mirror) = mirror else {
-            panic!("expected mirror field expression");
-        };
-        assert!(mirror.mirror().is_some());
-
-        let repeat = mirror.body().expect("expected nested repeat body");
-        let FieldExpr::Repeat(repeat) = repeat else {
-            panic!("expected repeat field expression");
-        };
-        assert!(repeat.repeat().is_some());
-
-        let instance = repeat.body().expect("expected nested instance body");
-        let FieldExpr::Instance(instance) = instance else {
-            panic!("expected instance field expression");
-        };
-        assert!(instance.instance().is_some());
-
-        let inner = instance.body().expect("expected inner use field");
-        let FieldExpr::Use(use_expr) = inner else {
-            panic!("expected inner use field expression");
-        };
-        assert_eq!(use_expr.name().unwrap().text(), "cube");
+        assert!(field.semantic_expr().is_none());
+        assert_eq!(field.statements().count(), 1);
     }
 
     #[test]
@@ -1688,27 +1977,6 @@ field exact distance sphere(p: Vec3) -> F32 {
             }
             _ => panic!("expected radius arg to be named"),
         }
-    }
-
-    #[test]
-    fn test_legacy_field_body_still_parses_as_statement_block() {
-        use ast::{AstNode, Stmt};
-        let text = "\
-field exact distance sphere(p: F32) -> F32 {
-    return p
-}
-";
-        let (_node, errors) = parse_with_errors(text);
-        assert!(errors.is_empty(), "{errors:?}");
-
-        let node = parse(text);
-        let root = ast::Root::cast(node).unwrap();
-        let field = match root.statements().next() {
-            Some(Stmt::FieldDecl(field)) => field,
-            _ => panic!("Expected field declaration"),
-        };
-        assert!(field.semantic_expr().is_none());
-        assert_eq!(field.statements().count(), 1);
     }
 
     #[test]

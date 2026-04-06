@@ -1,6 +1,8 @@
 use super::class;
+use super::list;
 use super::math;
 use super::value::{TypeId, Value, type_id_raw};
+use crate::kernel::metrics;
 
 const BOUNDS2_FIELDS: [&str; 2] = ["min", "max"];
 const BOUNDS3_FIELDS: [&str; 2] = ["min", "max"];
@@ -143,7 +145,228 @@ pub fn field_repeat_point(period: Value, point: Value) -> Value {
     repeat_point(point, period)
 }
 
+pub fn field_sweep_coords(path: Value, point: Value) -> Value {
+    let Some(path) = vec3_components(path) else {
+        return Value::nil();
+    };
+    let Some(point) = vec3_components(point) else {
+        return Value::nil();
+    };
+    let path_len = vec3_length(path);
+    if path_len == 0.0 {
+        return vec3_value(point[0], point[2], 0.0);
+    }
+
+    let direction = vec3_scale(path, path_len.recip());
+    let up = if direction[1].abs() < 0.999 {
+        [0.0, 1.0, 0.0]
+    } else {
+        [1.0, 0.0, 0.0]
+    };
+    let tangent_u = vec3_normalize(vec3_cross(up, direction));
+    let tangent_v = vec3_cross(direction, tangent_u);
+
+    vec3_value(
+        vec3_dot(point, tangent_u),
+        vec3_dot(point, tangent_v),
+        vec3_dot(point, direction),
+    )
+}
+
+pub fn field_profile_vertices_bounds4(vertices: Value) -> Value {
+    let Some(vertices) = list::as_list_ref(vertices) else {
+        return Value::nil();
+    };
+    let vertices = unsafe { &(*vertices).data };
+    let Some(first) = vertices.first().and_then(|value| vec2_components(*value)) else {
+        return Value::nil();
+    };
+    let mut min_x = first[0];
+    let mut min_y = first[1];
+    let mut max_x = first[0];
+    let mut max_y = first[1];
+    for vertex in vertices.iter().skip(1) {
+        let Some(vertex) = vec2_components(*vertex) else {
+            return Value::nil();
+        };
+        min_x = min_x.min(vertex[0]);
+        min_y = min_y.min(vertex[1]);
+        max_x = max_x.max(vertex[0]);
+        max_y = max_y.max(vertex[1]);
+    }
+    vec4_value(min_x, min_y, max_x, max_y)
+}
+
+pub fn translate(offset: Value, point: Value) -> Value {
+    field_transform_point(offset, point)
+}
+
+pub fn rotate(rotation: Value, point: Value) -> Value {
+    let Some(point) = vec3_components(point) else {
+        return Value::nil();
+    };
+    if let Some((matrix, _inverse)) = transform3_fields(rotation) {
+        let Some(matrix) = mat4_components(matrix) else {
+            return Value::nil();
+        };
+        let out = mat4_mul_vec4(matrix, [point[0], point[1], point[2], 0.0]);
+        return vec3_value(out[0], out[1], out[2]);
+    }
+    if let Some(matrix) = mat3_components(rotation) {
+        let out = mat3_mul_vec3(matrix, point);
+        return vec3_value(out[0], out[1], out[2]);
+    }
+    if let Some(q) = vec4_components(rotation) {
+        let out = rotate_vec3_by_quat(point, q);
+        return vec3_value(out[0], out[1], out[2]);
+    }
+    if let Some(euler) = vec3_components(rotation) {
+        let out = rotate_vec3_by_euler(point, euler);
+        return vec3_value(out[0], out[1], out[2]);
+    }
+    if let Some(angle) = component_f32(rotation) {
+        let out = rotate_vec3_y(point, angle);
+        return vec3_value(out[0], out[1], out[2]);
+    }
+    Value::nil()
+}
+
+pub fn uniform_scale(scale: Value, point: Value) -> Value {
+    let Some(point) = vec3_components(point) else {
+        return Value::nil();
+    };
+    let Some(scale) = component_f32(scale) else {
+        return Value::nil();
+    };
+    if scale == 0.0 {
+        return Value::nil();
+    }
+    vec3_value(point[0] / scale, point[1] / scale, point[2] / scale)
+}
+
+pub fn affine_transform(transform: Value, point: Value) -> Value {
+    field_transform_point(transform, point)
+}
+
+pub fn warp(transform: Value, point: Value) -> Value {
+    affine_transform(transform, point)
+}
+
+pub fn repeat_linear(period: Value, point: Value) -> Value {
+    repeat_point(point, splat_period(period))
+}
+
+pub fn repeat_grid(period: Value, point: Value) -> Value {
+    repeat_point(point, splat_period(period))
+}
+
+pub fn radial_repeat(period: Value, point: Value) -> Value {
+    let Some(point) = vec3_components(point) else {
+        return Value::nil();
+    };
+    let Some(period) = component_f32(period).or_else(|| vec3_components(period).map(|v| v[0]))
+    else {
+        return Value::nil();
+    };
+    if period <= 0.0 {
+        return vec3_value(point[0], point[1], point[2]);
+    }
+    let radius = (point[0] * point[0] + point[2] * point[2]).sqrt();
+    if radius == 0.0 {
+        return vec3_value(0.0, point[1], 0.0);
+    }
+    let angle = point[2].atan2(point[0]);
+    let sector = std::f32::consts::TAU / period.max(1.0);
+    let wrapped = (angle + 0.5 * sector).rem_euclid(sector) - 0.5 * sector;
+    vec3_value(radius * wrapped.cos(), point[1], radius * wrapped.sin())
+}
+
+pub fn mirror_array(mirror: Value, point: Value) -> Value {
+    field_mirror_point(mirror, point)
+}
+
+pub fn instance_array(instance: Value, point: Value) -> Value {
+    field_transform_point(instance, point)
+}
+
+pub fn smooth_union(left: Value, right: Value, k: Value) -> Value {
+    metrics::inc_scene_trace_blend_cost();
+    smooth_boolean(left, right, k, SmoothBooleanOp::Union)
+}
+
+pub fn smooth_intersection(left: Value, right: Value, k: Value) -> Value {
+    metrics::inc_scene_trace_blend_cost();
+    smooth_boolean(left, right, k, SmoothBooleanOp::Intersection)
+}
+
+pub fn smooth_subtract(left: Value, right: Value, k: Value) -> Value {
+    metrics::inc_scene_trace_blend_cost();
+    smooth_boolean(left, right, k, SmoothBooleanOp::Subtract)
+}
+
+pub fn bend(config: Value, point: Value) -> Value {
+    metrics::inc_scene_trace_deformation_cost();
+    let Some(point) = vec3_components(point) else {
+        return Value::nil();
+    };
+    let amount = scalar_or_first_component(config).unwrap_or(0.0);
+    if amount == 0.0 {
+        return vec3_value(point[0], point[1], point[2]);
+    }
+    let angle = amount * point[0];
+    let cos = angle.cos();
+    let sin = angle.sin();
+    vec3_value(
+        point[0],
+        point[1] * cos - point[2] * sin,
+        point[1] * sin + point[2] * cos,
+    )
+}
+
+pub fn twist(config: Value, point: Value) -> Value {
+    metrics::inc_scene_trace_deformation_cost();
+    let Some(point) = vec3_components(point) else {
+        return Value::nil();
+    };
+    let amount = scalar_or_first_component(config).unwrap_or(0.0);
+    if amount == 0.0 {
+        return vec3_value(point[0], point[1], point[2]);
+    }
+    let angle = amount * point[1];
+    let out = rotate_vec3_y(point, angle);
+    vec3_value(out[0], out[1], out[2])
+}
+
+pub fn taper(config: Value, point: Value) -> Value {
+    metrics::inc_scene_trace_deformation_cost();
+    let Some(point) = vec3_components(point) else {
+        return Value::nil();
+    };
+    let amount = scalar_or_first_component(config).unwrap_or(0.0);
+    let scale = 1.0 + amount * point[1];
+    vec3_value(point[0] * scale, point[1], point[2] * scale)
+}
+
+pub fn displace(config: Value, point: Value) -> Value {
+    metrics::inc_scene_trace_deformation_cost();
+    let Some(point) = vec3_components(point) else {
+        return Value::nil();
+    };
+    if let Some(offset) = vec3_components(config) {
+        return vec3_value(
+            point[0] + offset[0],
+            point[1] + offset[1],
+            point[2] + offset[2],
+        );
+    }
+    let Some(offset) = component_f32(config) else {
+        return Value::nil();
+    };
+    vec3_value(point[0] + offset, point[1] + offset, point[2] + offset)
+}
+
 pub fn field_union(left: Value, right: Value) -> Value {
+    metrics::inc_scene_trace_blend_cost();
     let Some(left) = component_f32(left) else {
         return Value::nil();
     };
@@ -154,6 +377,7 @@ pub fn field_union(left: Value, right: Value) -> Value {
 }
 
 pub fn field_intersection(left: Value, right: Value) -> Value {
+    metrics::inc_scene_trace_blend_cost();
     let Some(left) = component_f32(left) else {
         return Value::nil();
     };
@@ -164,6 +388,7 @@ pub fn field_intersection(left: Value, right: Value) -> Value {
 }
 
 pub fn field_subtract(left: Value, right: Value) -> Value {
+    metrics::inc_scene_trace_blend_cost();
     let Some(left) = component_f32(left) else {
         return Value::nil();
     };
@@ -171,6 +396,323 @@ pub fn field_subtract(left: Value, right: Value) -> Value {
         return Value::nil();
     };
     Value::from_float(left.max(-right) as f64)
+}
+
+pub fn rounded_box(point: Value, half: Value, radius: Value) -> Value {
+    let Some(radius) = component_f32(radius) else {
+        return Value::nil();
+    };
+    let out = box_sdf(point, half);
+    let Some(out) = component_f32(out) else {
+        return Value::nil();
+    };
+    Value::from_float((out - radius) as f64)
+}
+
+pub fn circle2(point: Value, radius: Value) -> Value {
+    let Some(point) = vec2_components(point) else {
+        return Value::nil();
+    };
+    let Some(radius) = component_f32(radius) else {
+        return Value::nil();
+    };
+    Value::from_float(((point[0] * point[0] + point[1] * point[1]).sqrt() - radius) as f64)
+}
+
+pub fn rect2(point: Value, half: Value) -> Value {
+    let Some(point) = vec2_components(point) else {
+        return Value::nil();
+    };
+    let Some(half) = vec2_components(half) else {
+        return Value::nil();
+    };
+    let qx = point[0].abs() - half[0].abs();
+    let qy = point[1].abs() - half[1].abs();
+    let ax = qx.max(0.0);
+    let ay = qy.max(0.0);
+    let outside = (ax * ax + ay * ay).sqrt();
+    let inside = qx.max(qy).min(0.0);
+    Value::from_float((outside + inside) as f64)
+}
+
+pub fn rounded_rect2(point: Value, half: Value, radius: Value) -> Value {
+    let Some(radius) = component_f32(radius) else {
+        return Value::nil();
+    };
+    let dist = rect2(point, half);
+    let Some(dist) = component_f32(dist) else {
+        return Value::nil();
+    };
+    Value::from_float((dist - radius) as f64)
+}
+
+pub fn capsule2(point: Value, a: Value, b: Value, radius: Value) -> Value {
+    let Some(point) = vec2_components(point) else {
+        return Value::nil();
+    };
+    let Some(a) = vec2_components(a) else {
+        return Value::nil();
+    };
+    let Some(b) = vec2_components(b) else {
+        return Value::nil();
+    };
+    let Some(radius) = component_f32(radius) else {
+        return Value::nil();
+    };
+    let ab = vec2_sub(b, a);
+    let ap = vec2_sub(point, a);
+    let denom = vec2_dot(ab, ab);
+    let t = if denom == 0.0 {
+        0.0
+    } else {
+        vec2_dot(ap, ab) / denom
+    };
+    let t = t.clamp(0.0, 1.0);
+    let closest = vec2_add(a, vec2_scale(ab, t));
+    let delta = vec2_sub(point, closest);
+    Value::from_float(((vec2_dot(delta, delta)).sqrt() - radius) as f64)
+}
+
+pub fn segment2(point: Value, a: Value, b: Value) -> Value {
+    capsule2(point, a, b, Value::from_float(0.0))
+}
+
+pub fn polygon2(point: Value, vertices: Value) -> Value {
+    let Some(point) = vec2_components(point) else {
+        return Value::nil();
+    };
+    let Some(vertices) = list::as_list_ref(vertices) else {
+        return Value::nil();
+    };
+    let vertices = unsafe { &(*vertices).data };
+    if vertices.len() < 3 {
+        return Value::nil();
+    }
+    let mut inside = false;
+    let mut best = f32::INFINITY;
+    for i in 0..vertices.len() {
+        let a = match vec2_components(vertices[i]) {
+            Some(value) => value,
+            None => return Value::nil(),
+        };
+        let b = match vec2_components(vertices[(i + 1) % vertices.len()]) {
+            Some(value) => value,
+            None => return Value::nil(),
+        };
+        let edge = vec2_sub(b, a);
+        let ap = vec2_sub(point, a);
+        let denom = vec2_dot(edge, edge);
+        if denom > 0.0 {
+            let t = (vec2_dot(ap, edge) / denom).clamp(0.0, 1.0);
+            let closest = vec2_add(a, vec2_scale(edge, t));
+            let delta = vec2_sub(point, closest);
+            best = best.min(vec2_dot(delta, delta).sqrt());
+        }
+        let crosses = ((a[1] > point[1]) != (b[1] > point[1]))
+            && (point[0] < (b[0] - a[0]) * (point[1] - a[1]) / (b[1] - a[1] + f32::EPSILON) + a[0]);
+        if crosses {
+            inside = !inside;
+        }
+    }
+    Value::from_float((if inside { -best } else { best }) as f64)
+}
+
+pub fn polyline2(point: Value, vertices: Value) -> Value {
+    let Some(point) = vec2_components(point) else {
+        return Value::nil();
+    };
+    let Some(vertices) = list::as_list_ref(vertices) else {
+        return Value::nil();
+    };
+    let vertices = unsafe { &(*vertices).data };
+    if vertices.len() < 2 {
+        return Value::nil();
+    }
+    let mut best = f32::INFINITY;
+    for pair in vertices.windows(2) {
+        let Some(a) = vec2_components(pair[0]) else {
+            return Value::nil();
+        };
+        let Some(b) = vec2_components(pair[1]) else {
+            return Value::nil();
+        };
+        let ab = vec2_sub(b, a);
+        let ap = vec2_sub(point, a);
+        let denom = vec2_dot(ab, ab);
+        let t = if denom == 0.0 {
+            0.0
+        } else {
+            (vec2_dot(ap, ab) / denom).clamp(0.0, 1.0)
+        };
+        let closest = vec2_add(a, vec2_scale(ab, t));
+        let delta = vec2_sub(point, closest);
+        best = best.min(vec2_dot(delta, delta).sqrt());
+    }
+    Value::from_float(best as f64)
+}
+
+pub fn ellipsoid(point: Value, radii: Value) -> Value {
+    let Some(point) = vec3_components(point) else {
+        return Value::nil();
+    };
+    let Some(radii) = vec3_components(radii) else {
+        return Value::nil();
+    };
+    if radii[0] == 0.0 || radii[1] == 0.0 || radii[2] == 0.0 {
+        return Value::nil();
+    }
+    let q0 = (point[0] / radii[0]).powi(2)
+        + (point[1] / radii[1]).powi(2)
+        + (point[2] / radii[2]).powi(2);
+    let q1 = ((point[0] / (radii[0] * radii[0])).powi(2)
+        + (point[1] / (radii[1] * radii[1])).powi(2)
+        + (point[2] / (radii[2] * radii[2])).powi(2))
+    .sqrt();
+    if q1 == 0.0 {
+        let min_radius = radii[0].abs().min(radii[1].abs()).min(radii[2].abs());
+        return Value::from_float((-min_radius) as f64);
+    }
+    Value::from_float((q0.sqrt() * (q0.sqrt() - 1.0) / q1) as f64)
+}
+
+pub fn cone(point: Value, radius: Value, half_height: Value) -> Value {
+    let Some(point) = vec3_components(point) else {
+        return Value::nil();
+    };
+    let Some(radius) = component_f32(radius) else {
+        return Value::nil();
+    };
+    let Some(half_height) = component_f32(half_height) else {
+        return Value::nil();
+    };
+    if half_height == 0.0 {
+        return Value::nil();
+    }
+    let radial = (point[0] * point[0] + point[2] * point[2]).sqrt();
+    let height = half_height.abs() * 2.0;
+    let slope = radius / height;
+    Value::from_float(
+        (radial - slope * (half_height - point[1])).max(point[1] - half_height) as f64,
+    )
+}
+
+pub fn capped_cone(
+    point: Value,
+    radius_bottom: Value,
+    radius_top: Value,
+    half_height: Value,
+) -> Value {
+    let Some(point) = vec3_components(point) else {
+        return Value::nil();
+    };
+    let Some(radius_bottom) = component_f32(radius_bottom) else {
+        return Value::nil();
+    };
+    let Some(radius_top) = component_f32(radius_top) else {
+        return Value::nil();
+    };
+    let Some(half_height) = component_f32(half_height) else {
+        return Value::nil();
+    };
+    if half_height == 0.0 {
+        return Value::nil();
+    }
+    let half_height = half_height.abs();
+    let q = [(point[0] * point[0] + point[2] * point[2]).sqrt(), point[1]];
+    let k1 = [radius_top, half_height];
+    let k2 = [radius_top - radius_bottom, 2.0 * half_height];
+    let ca = [
+        q[0] - q[0].min(if q[1] < 0.0 {
+            radius_bottom
+        } else {
+            radius_top
+        }),
+        q[1].abs() - half_height,
+    ];
+    let denom = k2[0] * k2[0] + k2[1] * k2[1];
+    if denom == 0.0 {
+        return Value::from_float(((q[0] - radius_bottom).max(q[1].abs() - half_height)) as f64);
+    }
+    let t = (((k1[0] - q[0]) * k2[0] + (k1[1] - q[1]) * k2[1]) / denom).clamp(0.0, 1.0);
+    let cb = [q[0] - k1[0] + k2[0] * t, q[1] - k1[1] + k2[1] * t];
+    let ca_len_sq = ca[0] * ca[0] + ca[1] * ca[1];
+    let cb_len_sq = cb[0] * cb[0] + cb[1] * cb[1];
+    let sign = if cb[0] < 0.0 && ca[1] < 0.0 {
+        -1.0
+    } else {
+        1.0
+    };
+    Value::from_float((sign * ca_len_sq.min(cb_len_sq).sqrt()) as f64)
+}
+
+pub fn box_frame(point: Value, half: Value, thickness: Value) -> Value {
+    let Some(half) = vec3_components(half) else {
+        return Value::nil();
+    };
+    let Some(thickness) = component_f32(thickness) else {
+        return Value::nil();
+    };
+    let inner = vec3_value(
+        (half[0] - thickness).max(0.0),
+        (half[1] - thickness).max(0.0),
+        (half[2] - thickness).max(0.0),
+    );
+    let outer = box_sdf(point, vec3_value(half[0], half[1], half[2]));
+    let inner_dist = box_sdf(point, inner);
+    let Some(outer) = component_f32(outer) else {
+        return Value::nil();
+    };
+    let Some(inner_dist) = component_f32(inner_dist) else {
+        return Value::nil();
+    };
+    Value::from_float(outer.max(-inner_dist) as f64)
+}
+
+pub fn slab(point: Value, thickness: Value) -> Value {
+    let Some(point) = vec3_components(point) else {
+        return Value::nil();
+    };
+    let Some(thickness) = component_f32(thickness) else {
+        return Value::nil();
+    };
+    Value::from_float((point[1].abs() - thickness.abs() * 0.5) as f64)
+}
+
+pub fn triangle_prism(point: Value, half: Value, half_height: Value) -> Value {
+    let Some(point) = vec3_components(point) else {
+        return Value::nil();
+    };
+    let Some(half) = vec2_components(half) else {
+        return Value::nil();
+    };
+    let Some(half_height) = component_f32(half_height) else {
+        return Value::nil();
+    };
+    let qx = point[0].abs();
+    let qy = point[1].abs();
+    let qz = point[2];
+    let tri = (qx * 0.866_025_4 + qz * 0.5).max(-qz) - half[0];
+    Value::from_float(
+        tri.max(qy - half_height.abs())
+            .max(point[2].abs() - half[1]) as f64,
+    )
+}
+
+pub fn hex_prism(point: Value, half: Value, half_height: Value) -> Value {
+    let Some(point) = vec3_components(point) else {
+        return Value::nil();
+    };
+    let Some(half) = vec2_components(half) else {
+        return Value::nil();
+    };
+    let Some(half_height) = component_f32(half_height) else {
+        return Value::nil();
+    };
+    let qx = point[0].abs();
+    let qy = point[1].abs();
+    let qz = point[2].abs();
+    let hex = (qx * 0.866_025_4 + qz * 0.5).max(qz) - half[0];
+    Value::from_float(hex.max(qy - half_height.abs()).max(qz - half[1]) as f64)
 }
 
 pub fn repeat_point(point: Value, period: Value) -> Value {
@@ -315,6 +857,165 @@ fn transform3_fields(transform: Value) -> Option<(Value, Value)> {
     Some((values[0], values[1]))
 }
 
+fn mat3_components(val: Value) -> Option<[f32; 9]> {
+    if type_id_raw(val) != TypeId::Mat3 as u32 {
+        return None;
+    }
+    let mut out = [0.0f32; 9];
+    for idx in 0..9 {
+        out[idx] = component_f32(math::mat3_component(val, idx))?;
+    }
+    Some(out)
+}
+
+fn vec2_components(val: Value) -> Option<[f32; 2]> {
+    if type_id_raw(val) != TypeId::Vec2 as u32 {
+        return None;
+    }
+    Some([
+        component_f32(math::vec_x(val))?,
+        component_f32(math::vec_y(val))?,
+    ])
+}
+
+fn vec4_components(val: Value) -> Option<[f32; 4]> {
+    if type_id_raw(val) != TypeId::Vec4 as u32 && type_id_raw(val) != TypeId::Quat as u32 {
+        return None;
+    }
+    Some([
+        component_f32(math::vec_x(val))?,
+        component_f32(math::vec_y(val))?,
+        component_f32(math::vec_z(val))?,
+        component_f32(math::vec_w(val))?,
+    ])
+}
+
+fn splat_period(period: Value) -> Value {
+    if let Some(period) = vec3_components(period) {
+        return vec3_value(period[0], period[1], period[2]);
+    }
+    if let Some(period) = component_f32(period) {
+        return vec3_value(period, period, period);
+    }
+    Value::nil()
+}
+
+fn scalar_or_first_component(value: Value) -> Option<f32> {
+    component_f32(value).or_else(|| {
+        vec2_components(value)
+            .map(|components| components[0])
+            .or_else(|| vec3_components(value).map(|components| components[0]))
+            .or_else(|| vec4_components(value).map(|components| components[0]))
+    })
+}
+
+fn rotate_vec3_y(point: [f32; 3], angle: f32) -> [f32; 3] {
+    let cos = angle.cos();
+    let sin = angle.sin();
+    [
+        point[0] * cos - point[2] * sin,
+        point[1],
+        point[0] * sin + point[2] * cos,
+    ]
+}
+
+fn rotate_vec3_by_euler(point: [f32; 3], euler: [f32; 3]) -> [f32; 3] {
+    let mut out = point;
+    out = rotate_vec3_x(out, euler[0]);
+    out = rotate_vec3_y(out, euler[1]);
+    rotate_vec3_z(out, euler[2])
+}
+
+fn rotate_vec3_x(point: [f32; 3], angle: f32) -> [f32; 3] {
+    let cos = angle.cos();
+    let sin = angle.sin();
+    [
+        point[0],
+        point[1] * cos - point[2] * sin,
+        point[1] * sin + point[2] * cos,
+    ]
+}
+
+fn rotate_vec3_z(point: [f32; 3], angle: f32) -> [f32; 3] {
+    let cos = angle.cos();
+    let sin = angle.sin();
+    [
+        point[0] * cos - point[1] * sin,
+        point[0] * sin + point[1] * cos,
+        point[2],
+    ]
+}
+
+fn rotate_vec3_by_quat(point: [f32; 3], quat: [f32; 4]) -> [f32; 3] {
+    let qx = quat[0];
+    let qy = quat[1];
+    let qz = quat[2];
+    let qw = quat[3];
+    let uxv = [
+        qy * point[2] - qz * point[1],
+        qz * point[0] - qx * point[2],
+        qx * point[1] - qy * point[0],
+    ];
+    let uuv = [
+        qy * uxv[2] - qz * uxv[1],
+        qz * uxv[0] - qx * uxv[2],
+        qx * uxv[1] - qy * uxv[0],
+    ];
+    [
+        point[0] + 2.0 * (qw * uxv[0] + uuv[0]),
+        point[1] + 2.0 * (qw * uxv[1] + uuv[1]),
+        point[2] + 2.0 * (qw * uxv[2] + uuv[2]),
+    ]
+}
+
+enum SmoothBooleanOp {
+    Union,
+    Intersection,
+    Subtract,
+}
+
+fn smooth_boolean(left: Value, right: Value, k: Value, op: SmoothBooleanOp) -> Value {
+    let Some(left) = component_f32(left) else {
+        return Value::nil();
+    };
+    let Some(right) = component_f32(right) else {
+        return Value::nil();
+    };
+    let Some(k) = component_f32(k) else {
+        return Value::nil();
+    };
+    if k <= 0.0 {
+        return match op {
+            SmoothBooleanOp::Union => Value::from_float(left.min(right) as f64),
+            SmoothBooleanOp::Intersection => Value::from_float(left.max(right) as f64),
+            SmoothBooleanOp::Subtract => Value::from_float(left.max(-right) as f64),
+        };
+    }
+    let h = (0.5 + 0.5 * (right - left) / k).clamp(0.0, 1.0);
+    let union = right + (left - right) * h - k * h * (1.0 - h);
+    match op {
+        SmoothBooleanOp::Union => Value::from_float(union as f64),
+        SmoothBooleanOp::Intersection => {
+            let inv = smooth_boolean(
+                Value::from_float((-left) as f64),
+                Value::from_float((-right) as f64),
+                Value::from_float(k as f64),
+                SmoothBooleanOp::Union,
+            );
+            let Some(inv) = component_f32(inv) else {
+                return Value::nil();
+            };
+            Value::from_float((-inv) as f64)
+        }
+        SmoothBooleanOp::Subtract => smooth_boolean(
+            Value::from_float(left as f64),
+            Value::from_float((-right) as f64),
+            Value::from_float(k as f64),
+            SmoothBooleanOp::Union,
+        ),
+    }
+}
+
 fn named_record_values<const N: usize>(obj: Value, expected: &[&str; N]) -> Option<[Value; N]> {
     let obj = crate::kernel::actor::actor_backing_instance(obj).unwrap_or(obj);
     let (_, fields) = class::class_type_and_fields(obj)?;
@@ -386,6 +1087,31 @@ fn vec3_value(x: f32, y: f32, z: f32) -> Value {
     )
 }
 
+fn vec4_value(x: f32, y: f32, z: f32, w: f32) -> Value {
+    math::vec4_new(
+        Value::from_float(x as f64),
+        Value::from_float(y as f64),
+        Value::from_float(z as f64),
+        Value::from_float(w as f64),
+    )
+}
+
+fn vec2_add(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
+    [a[0] + b[0], a[1] + b[1]]
+}
+
+fn vec2_sub(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
+    [a[0] - b[0], a[1] - b[1]]
+}
+
+fn vec2_scale(v: [f32; 2], s: f32) -> [f32; 2] {
+    [v[0] * s, v[1] * s]
+}
+
+fn vec2_dot(a: [f32; 2], b: [f32; 2]) -> f32 {
+    a[0] * b[0] + a[1] * b[1]
+}
+
 fn vec3_sub(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
     [left[0] - right[0], left[1] - right[1], left[2] - right[2]]
 }
@@ -402,11 +1128,35 @@ fn vec3_length(value: [f32; 3]) -> f32 {
     vec3_dot(value, value).sqrt()
 }
 
+fn vec3_normalize(value: [f32; 3]) -> [f32; 3] {
+    let len = vec3_length(value);
+    if len == 0.0 {
+        return [0.0, 0.0, 0.0];
+    }
+    vec3_scale(value, len.recip())
+}
+
+fn vec3_cross(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
+    [
+        left[1] * right[2] - left[2] * right[1],
+        left[2] * right[0] - left[0] * right[2],
+        left[0] * right[1] - left[1] * right[0],
+    ]
+}
+
 fn repeat_axis(coord: f32, period: f32) -> f32 {
     if period <= 0.0 {
         return coord;
     }
     coord - period * (coord / period + 0.5).floor()
+}
+
+fn mat3_mul_vec3(matrix: [f32; 9], vector: [f32; 3]) -> [f32; 3] {
+    [
+        matrix[0] * vector[0] + matrix[3] * vector[1] + matrix[6] * vector[2],
+        matrix[1] * vector[0] + matrix[4] * vector[1] + matrix[7] * vector[2],
+        matrix[2] * vector[0] + matrix[5] * vector[1] + matrix[8] * vector[2],
+    ]
 }
 
 fn mat4_mul_vec4(matrix: [f32; 16], vector: [f32; 4]) -> [f32; 4] {
@@ -450,6 +1200,10 @@ fn component_f32(val: Value) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn vec2_value(x: f32, y: f32) -> Value {
+        math::vec2_new(Value::from_float(x as f64), Value::from_float(y as f64))
+    }
 
     fn bounds2_value(min: Value, max: Value) -> Value {
         build_class_value(1001, &BOUNDS2_FIELDS, [min, max])
@@ -629,5 +1383,109 @@ mod tests {
         let repeated = field_repeat_point(vec3_value(2.0, 0.0, 0.0), vec3_value(3.25, 0.5, 0.0));
         assert!((math::vec_x(repeated).as_float() + 0.75).abs() < 0.0001);
         assert_eq!(math::vec_y(repeated).as_float(), 0.5);
+    }
+
+    #[test]
+    fn phase5_helpers_execute() {
+        let point = vec3_value(3.0, -2.0, 1.0);
+        let translated = translate(vec3_value(1.0, 2.0, 3.0), point);
+        assert_eq!(math::vec_x(translated).as_float(), 2.0);
+        assert_eq!(math::vec_y(translated).as_float(), -4.0);
+        assert_eq!(math::vec_z(translated).as_float(), -2.0);
+
+        let scaled = uniform_scale(Value::from_float(2.0), vec3_value(4.0, -2.0, 6.0));
+        assert_eq!(math::vec_x(scaled).as_float(), 2.0);
+        assert_eq!(math::vec_y(scaled).as_float(), -1.0);
+        assert_eq!(math::vec_z(scaled).as_float(), 3.0);
+
+        let rotated = rotate(
+            Value::from_float(std::f32::consts::FRAC_PI_2 as f64),
+            vec3_value(1.0, 0.0, 0.0),
+        );
+        assert!(math::vec_x(rotated).as_float().abs() < 0.0001);
+        assert!((math::vec_z(rotated).as_float() - 1.0).abs() < 0.0001);
+
+        let smooth = smooth_union(
+            Value::from_float(1.0),
+            Value::from_float(0.0),
+            Value::from_float(0.5),
+        );
+        assert!(smooth.as_float() <= 1.0);
+
+        let bent = bend(Value::from_float(0.25), vec3_value(1.0, 2.0, 3.0));
+        assert!(math::vec_y(bent).as_float() != 2.0 || math::vec_z(bent).as_float() != 3.0);
+
+        assert!(
+            !rounded_box(
+                vec3_value(2.0, 0.0, 0.0),
+                vec3_value(1.0, 1.0, 1.0),
+                Value::from_float(0.25)
+            )
+            .is_nil()
+        );
+        assert!(
+            (circle2(vec2_value(2.0, 0.0), Value::from_float(1.0)).as_float() - 1.0).abs() < 1.0e-6
+        );
+        assert!(
+            (rect2(vec2_value(2.0, 0.0), vec2_value(1.0, 1.0)).as_float() - 1.0).abs() < 1.0e-6
+        );
+        assert!(
+            (rounded_rect2(
+                vec2_value(2.0, 0.0),
+                vec2_value(1.0, 1.0),
+                Value::from_float(0.25)
+            )
+            .as_float()
+                - 0.75)
+                .abs()
+                < 1.0e-6
+        );
+        assert!(
+            (capsule2(
+                vec2_value(2.0, 0.0),
+                vec2_value(-1.0, 0.0),
+                vec2_value(1.0, 0.0),
+                Value::from_float(0.25)
+            )
+            .as_float()
+                - 0.75)
+                .abs()
+                < 1.0e-6
+        );
+        assert!(
+            (segment2(
+                vec2_value(2.0, 0.0),
+                vec2_value(-1.0, 0.0),
+                vec2_value(1.0, 0.0)
+            )
+            .as_float()
+                - 1.0)
+                .abs()
+                < 1.0e-6
+        );
+        let poly = list::list_new_local(4);
+        list::list_set(poly, 0, vec2_value(-1.0, -1.0));
+        list::list_set(poly, 1, vec2_value(1.0, -1.0));
+        list::list_set(poly, 2, vec2_value(1.0, 1.0));
+        list::list_set(poly, 3, vec2_value(-1.0, 1.0));
+        assert!(polygon2(vec2_value(2.0, 0.0), poly).as_float() > 0.0);
+        assert!(polyline2(vec2_value(2.0, 0.0), poly).as_float() > 0.0);
+        assert!(!ellipsoid(vec3_value(1.0, 0.0, 0.0), vec3_value(2.0, 1.0, 1.0)).is_nil());
+        assert!(
+            !triangle_prism(
+                vec3_value(0.1, 0.1, 0.1),
+                vec2_value(1.0, 1.0),
+                Value::from_float(0.5)
+            )
+            .is_nil()
+        );
+        assert!(
+            !hex_prism(
+                vec3_value(0.1, 0.1, 0.1),
+                vec2_value(1.0, 1.0),
+                Value::from_float(0.5)
+            )
+            .is_nil()
+        );
     }
 }

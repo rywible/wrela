@@ -295,6 +295,7 @@ fn test_portable_builtin_records() -> Nothing {
         distance=4.0,
         position=vec3(1.0, 2.0, 3.0),
         normal=vec3(0.0, 1.0, 0.0),
+        shading_frame=transform3_identity(),
         steps=0,
         feature_id=u64(0),
         payload=payload
@@ -791,7 +792,7 @@ fn test_field_primitive_catalog() -> Nothing {
 }
 
 field conservative distance repeat_box(p: Vec3) -> F32 {
-    repeat = vec3(2.0, 0.0, 0.0) {
+    repeat_linear = vec3(2.0, 0.0, 0.0) {
         box(half=vec3(0.5, 0.5, 0.5))
     }
 }
@@ -820,6 +821,7 @@ fn test_repeat_wrapper_trace_steps() -> Nothing {
         distance=0.0,
         position=vec3(0.0, 0.0, 3.0),
         normal=vec3(0.0, 0.0, 1.0),
+        shading_frame=transform3_identity(),
         steps=0,
         feature_id=i64(0),
         payload=Payload(
@@ -837,6 +839,7 @@ fn test_repeat_wrapper_trace_steps() -> Nothing {
                 distance=repeat_traveled,
                 position=rp,
                 normal=vec3(0.0, 0.0, 1.0),
+                shading_frame=transform3_identity(),
                 steps=i64(repeat_steps + 1),
                 feature_id=i64(0),
                 payload=Payload(
@@ -860,6 +863,7 @@ fn test_repeat_wrapper_trace_steps() -> Nothing {
         distance=0.0,
         position=vec3(0.0, 0.0, 3.0),
         normal=vec3(0.0, 0.0, 1.0),
+        shading_frame=transform3_identity(),
         steps=0,
         feature_id=i64(0),
         payload=Payload(
@@ -877,6 +881,7 @@ fn test_repeat_wrapper_trace_steps() -> Nothing {
                 distance=manual_traveled,
                 position=mp,
                 normal=vec3(0.0, 0.0, 1.0),
+                shading_frame=transform3_identity(),
                 steps=i64(manual_steps + 1),
                 feature_id=i64(0),
                 payload=Payload(
@@ -994,13 +999,13 @@ fn test_authored_support_bounds_prune_scene() -> Nothing {
 }
 
 field exact distance left_orb(p: Vec3) -> F32 {
-    transform = vec3(-0.8, 0.0, 0.0) {
+    translate = vec3(-0.8, 0.0, 0.0) {
         sphere(radius=0.65)
     }
 }
 
 field exact distance right_orb(p: Vec3) -> F32 {
-    transform = vec3(0.8, 0.0, 0.0) {
+    translate = vec3(0.8, 0.0, 0.0) {
         sphere(radius=0.65)
     }
 }
@@ -1169,13 +1174,13 @@ shape reversed_scene_shape {
 }
 
 field exact distance near_orb(p: Vec3) -> F32 {
-    transform = vec3(0.0, 0.0, 1.6) {
+    translate = vec3(0.0, 0.0, 1.6) {
         sphere(radius=0.45)
     }
 }
 
 field exact distance far_orb(p: Vec3) -> F32 {
-    transform = vec3(0.0, 0.0, 0.9) {
+    translate = vec3(0.0, 0.0, 0.9) {
         sphere(radius=0.45)
     }
 }
@@ -1377,9 +1382,14 @@ fn test_boolean_provenance_is_stable_across_order_and_subtract() -> Nothing {
     assert value ordered_hit.feature_id == far_direct.feature_id
     assert value overlap_hit.feature_id == far_direct.feature_id
     assert value carve_hit.feature_id == cutter_hit.feature_id
+    carve_left_frame = inverse_transform3(transform=carve_left_hit.shading_frame)
+    carve_left_local_origin = transform_point(transform=carve_left_frame, point=carve_left_hit.position)
     assert value carve_left_hit.hit == true
     assert value carve_left_hit.payload.entity_id == u64(41)
     assert value carve_left_hit.feature_id == body_hit.feature_id
+    assert approx carve_left_local_origin.x ~= 0.0 within 0.001
+    assert approx carve_left_local_origin.y ~= 0.0 within 0.001
+    assert approx carve_left_local_origin.z ~= 0.0 within 0.001
     assert approx surface_at(capture=carved_scene_capture, hit=carve_hit).albedo.y ~= 200.0 within 0.001
     assert approx surface_at(capture=carved_left_scene_capture, hit=carve_left_hit).albedo.x ~= 220.0 within 0.001
 }
@@ -1393,10 +1403,10 @@ field exact distance tie_right_field(p: Vec3) -> F32 {
 }
 
 field conservative distance wrapped_stack_field(p: Vec3) -> F32 {
-    mirror = vec3(1.0, 0.0, 0.0) {
-        repeat = vec3(2.0, 0.0, 0.0) {
-            transform = vec3(0.0, 0.0, 0.0) {
-                instance = Transform3(
+    mirror_array = vec3(1.0, 0.0, 0.0) {
+        repeat_linear = vec3(2.0, 0.0, 0.0) {
+            translate = vec3(0.0, 0.0, 0.0) {
+                instance_array = Transform3(
                     matrix=mat4_cols(
                         vec4(1.0, 0.0, 0.0, 0.0),
                         vec4(0.0, 1.0, 0.0, 0.0),
@@ -1418,7 +1428,7 @@ field conservative distance wrapped_stack_field(p: Vec3) -> F32 {
 }
 
 field conservative distance wrapped_decoy_field(p: Vec3) -> F32 {
-    transform = vec3(4.0, 0.0, 0.0) {
+    translate = vec3(4.0, 0.0, 0.0) {
         sphere(radius=0.5)
     }
 }
@@ -1705,27 +1715,27 @@ fn test_authored_support_prunes_custom_field_branches() -> Nothing {
 }
 
 field conservative distance translated_sphere(p: Vec3) -> F32 {
-    transform = vec3(2.0, 0.0, 0.0) {
+    translate = vec3(2.0, 0.0, 0.0) {
         sphere(radius=1.0)
     }
 }
 
 field conservative distance mirrored_box(p: Vec3) -> F32 {
-    mirror = vec3(1.0, 0.0, 0.0) {
-        transform = vec3(1.0, 0.0, 0.0) {
+    mirror_array = vec3(1.0, 0.0, 0.0) {
+        translate = vec3(1.0, 0.0, 0.0) {
             box(half=vec3(0.5, 0.5, 0.5))
         }
     }
 }
 
 field exact distance repeated_sphere(p: Vec3) -> F32 {
-    repeat = vec3(2.0, 0.0, 0.0) {
+    repeat_linear = vec3(2.0, 0.0, 0.0) {
         sphere(radius=0.5)
     }
 }
 
 field conservative distance instanced_sphere(p: Vec3) -> F32 {
-    instance = Transform3(
+    instance_array = Transform3(
         matrix=mat4_cols(
             vec4(1.0, 0.0, 0.0, 0.0),
             vec4(0.0, 1.0, 0.0, 0.0),
@@ -2140,4 +2150,791 @@ fn test_assert_identity_for_objects() -> Nothing {
 
 fn test_assert_approx_within_tolerance() -> Nothing {
     assert approx 1.0 ~= 1.001 within 0.01
+}
+
+// ------------------------------------------------------------
+// 11) Phase 5 primitive completion, operator families, and deformations
+
+field conservative distance phase5_rounded_box_field(p: Vec3) -> F32 {
+    rounded_box(half=vec3(0.60, 0.48, 0.36), radius=0.10)
+}
+
+field conservative distance phase5_ellipsoid_field(p: Vec3) -> F32 {
+    ellipsoid(radii=vec3(0.58, 0.38, 0.46))
+}
+
+field conservative distance phase5_cone_field(p: Vec3) -> F32 {
+    cone(radius=0.48, half_height=0.88)
+}
+
+field conservative distance phase5_capped_cone_field(p: Vec3) -> F32 {
+    capped_cone(radius_bottom=0.54, radius_top=0.16, half_height=0.34)
+}
+
+field conservative distance phase5_box_frame_field(p: Vec3) -> F32 {
+    box_frame(half=vec3(0.54, 0.54, 0.54), thickness=0.10)
+}
+
+field conservative distance phase5_slab_field(p: Vec3) -> F32 {
+    slab(thickness=0.18)
+}
+
+field conservative distance phase5_triangle_prism_field(p: Vec3) -> F32 {
+    triangle_prism(half=vec2(0.32, 0.28), half_height=0.36)
+}
+
+field conservative distance phase5_hex_prism_field(p: Vec3) -> F32 {
+    hex_prism(half=vec2(0.32, 0.46), half_height=0.30)
+}
+
+shape phase5_rounded_box_shape {
+    field = phase5_rounded_box_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(501),
+        material_id=u64(501),
+        actor=ActorHandle(id=u64(501), generation=u32(0))
+    )
+}
+
+shape phase5_ellipsoid_shape {
+    field = phase5_ellipsoid_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(502),
+        material_id=u64(502),
+        actor=ActorHandle(id=u64(502), generation=u32(0))
+    )
+}
+
+shape phase5_cone_shape {
+    field = phase5_cone_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(503),
+        material_id=u64(503),
+        actor=ActorHandle(id=u64(503), generation=u32(0))
+    )
+}
+
+shape phase5_capped_cone_shape {
+    field = phase5_capped_cone_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(504),
+        material_id=u64(504),
+        actor=ActorHandle(id=u64(504), generation=u32(0))
+    )
+}
+
+shape phase5_box_frame_shape {
+    field = phase5_box_frame_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(505),
+        material_id=u64(505),
+        actor=ActorHandle(id=u64(505), generation=u32(0))
+    )
+}
+
+shape phase5_slab_shape {
+    field = phase5_slab_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(506),
+        material_id=u64(506),
+        actor=ActorHandle(id=u64(506), generation=u32(0))
+    )
+}
+
+shape phase5_triangle_prism_shape {
+    field = phase5_triangle_prism_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(507),
+        material_id=u64(507),
+        actor=ActorHandle(id=u64(507), generation=u32(0))
+    )
+}
+
+shape phase5_hex_prism_shape {
+    field = phase5_hex_prism_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(508),
+        material_id=u64(508),
+        actor=ActorHandle(id=u64(508), generation=u32(0))
+    )
+}
+
+field conservative distance phase5_translate_field(p: Vec3) -> F32 {
+    translate = vec3(0.85, 0.0, 0.0) {
+        use phase5_rounded_box_field
+    }
+}
+
+field conservative distance phase5_rotate_field(p: Vec3) -> F32 {
+    rotate = vec3(0.0, 0.0, 0.35) {
+        use phase5_cone_field
+    }
+}
+
+field conservative distance phase5_uniform_scale_field(p: Vec3) -> F32 {
+    uniform_scale = f32(0.85) {
+        use phase5_ellipsoid_field
+    }
+}
+
+field conservative distance phase5_affine_transform_field(p: Vec3) -> F32 {
+    affine_transform = vec3(0.32, 0.0, 0.0) {
+        use phase5_box_frame_field
+    }
+}
+
+field conservative distance phase5_warp_field(p: Vec3) -> F32 {
+    warp = vec3(0.08, 0.0, 0.0) {
+        use phase5_hex_prism_field
+    }
+}
+
+field conservative distance phase5_repeat_linear_field(p: Vec3) -> F32 {
+    repeat_linear = vec3(1.35, 0.0, 0.0) {
+        use phase5_triangle_prism_field
+    }
+}
+
+field conservative distance phase5_repeat_grid_field(p: Vec3) -> F32 {
+    repeat_grid = vec3(1.35, 1.35, 0.0) {
+        use phase5_slab_field
+    }
+}
+
+field conservative distance phase5_radial_repeat_field(p: Vec3) -> F32 {
+    radial_repeat = vec3(0.0, 1.0, 0.0) {
+        use phase5_capped_cone_field
+    }
+}
+
+field conservative distance phase5_mirror_array_field(p: Vec3) -> F32 {
+    mirror_array = vec3(1.0, 0.0, 0.0) {
+        use phase5_rounded_box_field
+    }
+}
+
+field conservative distance phase5_instance_array_field(p: Vec3) -> F32 {
+    instance_array = Transform3(
+        matrix=mat4_identity(),
+        inverse=mat4_identity()
+    ) {
+        use phase5_box_frame_field
+    }
+}
+
+shape phase5_translate_shape {
+    field = phase5_translate_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(509),
+        material_id=u64(509),
+        actor=ActorHandle(id=u64(509), generation=u32(0))
+    )
+}
+
+shape phase5_rotate_shape {
+    field = phase5_rotate_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(510),
+        material_id=u64(510),
+        actor=ActorHandle(id=u64(510), generation=u32(0))
+    )
+}
+
+shape phase5_uniform_scale_shape {
+    field = phase5_uniform_scale_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(511),
+        material_id=u64(511),
+        actor=ActorHandle(id=u64(511), generation=u32(0))
+    )
+}
+
+shape phase5_affine_transform_shape {
+    field = phase5_affine_transform_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(512),
+        material_id=u64(512),
+        actor=ActorHandle(id=u64(512), generation=u32(0))
+    )
+}
+
+shape phase5_warp_shape {
+    field = phase5_warp_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(513),
+        material_id=u64(513),
+        actor=ActorHandle(id=u64(513), generation=u32(0))
+    )
+}
+
+shape phase5_repeat_linear_shape {
+    field = phase5_repeat_linear_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(514),
+        material_id=u64(514),
+        actor=ActorHandle(id=u64(514), generation=u32(0))
+    )
+}
+
+shape phase5_repeat_grid_shape {
+    field = phase5_repeat_grid_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(515),
+        material_id=u64(515),
+        actor=ActorHandle(id=u64(515), generation=u32(0))
+    )
+}
+
+shape phase5_radial_repeat_shape {
+    field = phase5_radial_repeat_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(516),
+        material_id=u64(516),
+        actor=ActorHandle(id=u64(516), generation=u32(0))
+    )
+}
+
+shape phase5_mirror_array_shape {
+    field = phase5_mirror_array_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(517),
+        material_id=u64(517),
+        actor=ActorHandle(id=u64(517), generation=u32(0))
+    )
+}
+
+shape phase5_instance_array_shape {
+    field = phase5_instance_array_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(518),
+        material_id=u64(518),
+        actor=ActorHandle(id=u64(518), generation=u32(0))
+    )
+}
+
+field conservative distance phase5_smooth_left_field(p: Vec3) -> F32 {
+    translate = vec3(-0.55, 0.0, 0.0) {
+        use phase5_rounded_box_field
+    }
+}
+
+field conservative distance phase5_smooth_right_field(p: Vec3) -> F32 {
+    translate = vec3(0.55, 0.0, 0.0) {
+        use phase5_ellipsoid_field
+    }
+}
+
+field conservative distance phase5_smooth_union_field(p: Vec3) -> F32 {
+    smooth_union {
+        smoothing = f32(0.18)
+        use phase5_smooth_left_field
+        use phase5_smooth_right_field
+    }
+}
+
+field conservative distance phase5_smooth_intersection_field(p: Vec3) -> F32 {
+    smooth_intersection {
+        smoothing = f32(0.16)
+        use phase5_smooth_left_field
+        use phase5_smooth_right_field
+    }
+}
+
+field conservative distance phase5_smooth_subtract_field(p: Vec3) -> F32 {
+    smooth_subtract {
+        smoothing = f32(0.16)
+        use phase5_smooth_left_field
+        use phase5_smooth_right_field
+    }
+}
+
+field conservative distance phase5_bend_field(p: Vec3) -> F32 {
+    bend = vec3(0.0, 0.30, 0.0) {
+        use phase5_slab_field
+    }
+}
+
+field conservative distance phase5_twist_field(p: Vec3) -> F32 {
+    twist = vec3(0.0, 0.30, 0.0) {
+        use phase5_slab_field
+    }
+}
+
+field conservative distance phase5_taper_field(p: Vec3) -> F32 {
+    taper = vec3(0.0, 0.20, 0.0) {
+        use phase5_slab_field
+    }
+}
+
+field conservative distance phase5_displace_field(p: Vec3) -> F32 {
+    displace = vec3(0.06, 0.0, 0.0) {
+        use phase5_slab_field
+    }
+}
+
+shape phase5_smooth_scene_shape {
+    field = phase5_smooth_union_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(519),
+        material_id=u64(519),
+        actor=ActorHandle(id=u64(519), generation=u32(0))
+    )
+}
+
+shape phase5_smooth_intersection_shape {
+    field = phase5_smooth_intersection_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(520),
+        material_id=u64(520),
+        actor=ActorHandle(id=u64(520), generation=u32(0))
+    )
+}
+
+shape phase5_smooth_subtract_shape {
+    field = phase5_smooth_subtract_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(521),
+        material_id=u64(521),
+        actor=ActorHandle(id=u64(521), generation=u32(0))
+    )
+}
+
+shape phase5_bend_shape {
+    field = phase5_bend_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(522),
+        material_id=u64(522),
+        actor=ActorHandle(id=u64(522), generation=u32(0))
+    )
+}
+
+shape phase5_twist_shape {
+    field = phase5_twist_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(523),
+        material_id=u64(523),
+        actor=ActorHandle(id=u64(523), generation=u32(0))
+    )
+}
+
+shape phase5_taper_shape {
+    field = phase5_taper_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(524),
+        material_id=u64(524),
+        actor=ActorHandle(id=u64(524), generation=u32(0))
+    )
+}
+
+shape phase5_displace_shape {
+    field = phase5_displace_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(525),
+        material_id=u64(525),
+        actor=ActorHandle(id=u64(525), generation=u32(0))
+    )
+}
+
+shape phase5_deform_scene_shape {
+    union {
+        provenance_policy = nearest
+        use phase5_bend_shape
+        use phase5_twist_shape
+        use phase5_taper_shape
+        use phase5_displace_shape
+    }
+}
+
+fn test_phase5_primitive_point_sampling() -> Nothing {
+    rounded_box_scene = capture phase5_rounded_box_shape
+    ellipsoid_scene = capture phase5_ellipsoid_shape
+    cone_scene = capture phase5_cone_shape
+    capped_cone_scene = capture phase5_capped_cone_shape
+    box_frame_scene = capture phase5_box_frame_shape
+    slab_scene = capture phase5_slab_shape
+    triangle_scene = capture phase5_triangle_prism_shape
+    hex_scene = capture phase5_hex_prism_shape
+
+    rounded_box_center = distance_at(capture=rounded_box_scene, point=vec3(0.0, 0.0, 0.0))
+    ellipsoid_center = distance_at(capture=ellipsoid_scene, point=vec3(0.0, 0.0, 0.0))
+    cone_center = distance_at(capture=cone_scene, point=vec3(0.0, 0.0, 0.0))
+    capped_cone_center = distance_at(capture=capped_cone_scene, point=vec3(0.0, 0.0, 0.0))
+    box_frame_center = distance_at(capture=box_frame_scene, point=vec3(0.0, 0.0, 0.0))
+    slab_center = distance_at(capture=slab_scene, point=vec3(0.0, 0.0, 0.0))
+    triangle_center = distance_at(capture=triangle_scene, point=vec3(0.0, 0.0, 0.0))
+    hex_center = distance_at(capture=hex_scene, point=vec3(0.0, 0.0, 0.0))
+
+    assert value rounded_box_center < 0.0
+    assert value ellipsoid_center < 0.0
+    assert value cone_center < 0.0
+    assert value capped_cone_center < 0.0
+    assert value box_frame_center > 0.0
+    assert value slab_center < 0.0
+    assert value triangle_center < 0.0
+    assert value hex_center < 0.0
+}
+
+fn test_phase5_transform_and_repeat_families_are_sampleable() -> Nothing {
+    translate_scene = capture phase5_translate_shape
+    rotate_scene = capture phase5_rotate_shape
+    scale_scene = capture phase5_uniform_scale_shape
+    affine_scene = capture phase5_affine_transform_shape
+    warp_scene = capture phase5_warp_shape
+    repeat_linear_scene = capture phase5_repeat_linear_shape
+    repeat_grid_scene = capture phase5_repeat_grid_shape
+    radial_repeat_scene = capture phase5_radial_repeat_shape
+    mirror_array_scene = capture phase5_mirror_array_shape
+    instance_array_scene = capture phase5_instance_array_shape
+
+    translate_sample = distance_at(capture=translate_scene, point=vec3(0.85, 0.0, 0.0))
+    rotate_sample = distance_at(capture=rotate_scene, point=vec3(0.0, 0.0, 0.0))
+    scale_sample = distance_at(capture=scale_scene, point=vec3(0.0, 0.0, 0.0))
+    affine_sample = distance_at(capture=affine_scene, point=vec3(0.32, 0.0, 0.0))
+    warp_sample = distance_at(capture=warp_scene, point=vec3(0.0, 0.0, 0.0))
+    repeat_linear_sample = distance_at(capture=repeat_linear_scene, point=vec3(1.35, 0.0, 0.0))
+    repeat_grid_sample = distance_at(capture=repeat_grid_scene, point=vec3(1.35, 1.35, 0.0))
+    radial_repeat_sample = distance_at(capture=radial_repeat_scene, point=vec3(0.0, 0.0, 0.0))
+    mirror_array_sample = distance_at(capture=mirror_array_scene, point=vec3(-0.85, 0.0, 0.0))
+    instance_array_sample = distance_at(capture=instance_array_scene, point=vec3(0.0, 0.0, 0.0))
+
+    assert value translate_sample < 0.0
+    assert value rotate_sample < 0.0
+    assert value scale_sample < 0.0
+    assert value affine_sample > 0.0
+    assert value warp_sample < 0.0
+    assert value repeat_linear_sample < 0.0
+    assert value repeat_grid_sample < 0.0
+    assert value radial_repeat_sample < 0.0
+    assert value mirror_array_sample > 0.0
+    assert value instance_array_sample > 0.0
+}
+
+fn test_phase5_smooth_and_deform_costs_raise_field_sampling() -> Nothing {
+    control_samples_before = __wr_metrics_get(__wr_metrics_field_sample_id())
+    control_scene = capture phase5_rounded_box_shape
+    control_hit = trace_shape(
+        capture=control_scene,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    control_samples_after = __wr_metrics_get(__wr_metrics_field_sample_id())
+
+    smooth_samples_before = control_samples_after
+    smooth_scene = capture phase5_smooth_scene_shape
+    smooth_hit = trace_shape(
+        capture=smooth_scene,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    smooth_samples_after = __wr_metrics_get(__wr_metrics_field_sample_id())
+
+    deform_samples_before = smooth_samples_after
+    deform_scene = capture phase5_deform_scene_shape
+    deform_hit = trace_shape(
+        capture=deform_scene,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    deform_samples_after = __wr_metrics_get(__wr_metrics_field_sample_id())
+
+    control_samples = control_samples_after - control_samples_before
+    smooth_samples = smooth_samples_after - smooth_samples_before
+    deform_samples = deform_samples_after - deform_samples_before
+
+    assert value control_hit.hit == true
+    assert value smooth_hit.hit == true
+    assert value deform_hit.hit == true
+    assert value smooth_samples > control_samples
+    assert value deform_samples > control_samples
+    assert value deform_samples >= smooth_samples
+}
+
+field exact distance phase6_extruded_disc(p: Vec3) -> F32 {
+    extrude = f32(1.6) {
+        circle2(radius = 0.75)
+    }
+}
+
+field conservative distance phase6_revolved_orb(p: Vec3) -> F32 {
+    revolve {
+        circle2(radius = 0.5)
+    }
+}
+
+field conservative distance phase6_swept_beam(p: Vec3) -> F32 {
+    sweep = vec3(0.0, 1.6, 0.0) {
+        circle2(radius = 0.15)
+    }
+}
+
+field conservative distance phase6_lofted_form(p: Vec3) -> F32 {
+    loft = f32(1.2) {
+        from rect2(half = vec2(0.25, 0.18))
+        to rounded_rect2(half = vec2(0.42, 0.28), radius = 0.08)
+    }
+}
+
+field exact distance phase6_polygon_plate(p: Vec3) -> F32 {
+    extrude = f32(0.4) {
+        polygon2(vertices = [
+            vec2(-0.4, -0.3),
+            vec2(0.5, -0.2),
+            vec2(0.3, 0.4),
+            vec2(-0.3, 0.35)
+        ])
+    }
+}
+
+field conservative distance phase6_capsule_rib(p: Vec3) -> F32 {
+    extrude = f32(0.18) {
+        capsule2(a = vec2(-0.24, 0.0), b = vec2(0.24, 0.0), radius = 0.06)
+    }
+}
+
+field conservative distance phase6_segment_strip(p: Vec3) -> F32 {
+    extrude = f32(0.12) {
+        segment2(a = vec2(-0.28, 0.0), b = vec2(0.28, 0.0))
+    }
+}
+
+field conservative distance phase6_polyline_strip(p: Vec3) -> F32 {
+    extrude = f32(0.16) {
+        polyline2(vertices = [
+            vec2(-0.28, -0.10),
+            vec2(0.0, 0.14),
+            vec2(0.28, -0.10)
+        ])
+    }
+}
+
+field exact distance phase6_near_disc(p: Vec3) -> F32 {
+    extrude = f32(1.2) {
+        circle2(radius = 0.55)
+    }
+}
+
+field conservative distance phase6_far_loft(p: Vec3) -> F32 {
+    translate = vec3(9.5, 0.0, 0.0) {
+        loft = f32(1.4) {
+            from circle2(radius = 0.32)
+            to rounded_rect2(half = vec2(0.50, 0.32), radius = 0.08)
+        }
+    }
+}
+
+material phase6_surface(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(1.0, 0.7, 0.4),
+        roughness=0.2,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape phase6_near_shape {
+    field = phase6_near_disc
+    material = phase6_surface
+    payload = Payload(
+        entity_id=u64(801),
+        material_id=u64(801),
+        actor=ActorHandle(id=u64(801), generation=u32(0))
+    )
+}
+
+shape phase6_far_shape {
+    field = phase6_far_loft
+    material = phase6_surface
+    payload = Payload(
+        entity_id=u64(802),
+        material_id=u64(802),
+        actor=ActorHandle(id=u64(802), generation=u32(0))
+    )
+}
+
+shape phase6_scene_shape {
+    union {
+        provenance_policy = nearest
+        use phase6_near_shape
+        use phase6_far_shape
+    }
+}
+
+fn test_phase6_construction_operators_are_sampleable() -> Nothing {
+    disc_scene = capture phase6_extruded_disc
+    orb_scene = capture phase6_revolved_orb
+    beam_scene = capture phase6_swept_beam
+    loft_scene = capture phase6_lofted_form
+    plate_scene = capture phase6_polygon_plate
+
+    disc_center = distance_at(capture=disc_scene, point=vec3(0.0, 0.0, 0.0))
+    orb_center = distance_at(capture=orb_scene, point=vec3(0.0, 0.0, 0.0))
+    beam_center = distance_at(capture=beam_scene, point=vec3(0.0, 0.0, 0.0))
+    loft_center = distance_at(capture=loft_scene, point=vec3(0.0, 0.0, 0.0))
+    plate_center = distance_at(capture=plate_scene, point=vec3(0.05, 0.0, 0.05))
+    disc_outside = distance_at(capture=disc_scene, point=vec3(0.0, 1.2, 0.0))
+    beam_outside = distance_at(capture=beam_scene, point=vec3(0.45, 0.0, 0.0))
+
+    assert approx disc_center ~= -0.75 within 0.001
+    assert approx orb_center ~= -0.5 within 0.001
+    assert approx beam_center ~= -0.15 within 0.001
+    assert value loft_center < 0.0
+    assert value plate_center <= 0.0
+    assert value disc_outside > 0.0
+    assert value beam_outside > 0.0
+}
+
+fn test_phase6_constructed_shapes_prune_by_inferred_support() -> Nothing {
+    pruned_before = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
+    candidates_before = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+    scene_capture = capture phase6_scene_shape
+    hit = trace_shape(
+        capture=scene_capture,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    pruned_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
+    candidates_after = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+
+    assert value hit.hit == true
+    assert value hit.payload.material_id == u64(801)
+    assert value pruned_after - pruned_before > 0
+    assert value candidates_after - candidates_before >= 2
+}
+
+field exact distance phase7_shell(p: Vec3) -> F32 {
+    sphere(radius = 0.45)
+}
+
+radiance field phase7_radiance(p: Vec3, direction: Vec3, feature_id: U64) -> Vec3 {
+    sky_t = clamp(0.5 + direction.y * 0.5, 0.0, 1.0)
+    feature_bias = clamp(f32(feature_id), 0.0, 1.0)
+    point_bias = clamp(0.2 - abs(p.z), 0.0, 0.2) * 5.0
+    return vec3(0.10, 0.18, 0.28) * (1.0 - sky_t)
+        + vec3(0.36, 0.54, 0.82) * sky_t
+        + vec3(0.08, 0.04, 0.02) * point_bias * feature_bias
+}
+
+volume field phase7_volume(p: Vec3, surface_distance: F32) -> Medium {
+    surface_bias = clamp(0.2 - abs(surface_distance), 0.0, 0.2) * 0.4
+    density = clamp(0.08 + abs(p.y) * 0.02 + abs(p.x) * 0.01 + surface_bias, 0.0, 0.16)
+    return Medium(
+        density=density,
+        emission=vec3(0.06, 0.08, 0.10) * density + vec3(0.0, 0.01, 0.02) * surface_bias,
+        anisotropy=0.12
+    )
+}
+
+material phase7_surface(hit: Hit3) -> Surface {
+    ridge = clamp(abs(hit.local_position.y) * 0.8 + abs(hit.local_normal.x) * 0.2, 0.0, 1.0)
+    return Surface(
+        albedo=vec3(0.26, 0.34, 0.44) + vec3(0.08, 0.06, 0.04) * ridge,
+        roughness=0.16 + ridge * 0.18,
+        metalness=0.12 + clamp(hit.local_normal.z, 0.0, 1.0) * 0.18,
+        clearcoat=0.14 + clamp(hit.local_normal.y, 0.0, 1.0) * 0.16,
+        clearcoat_roughness=0.08 + abs(hit.local_position.x) * 0.12,
+        sheen=0.06 + abs(hit.local_normal.x) * 0.10,
+        emissive=vec3(0.04, 0.02, 0.01) * clamp(hit.local_normal.z, 0.0, 1.0)
+    )
+}
+
+shape phase7_scene_shape {
+    field = phase7_shell
+    material = phase7_surface
+    radiance = phase7_radiance
+    volume = phase7_volume
+    payload = Payload(
+        entity_id=u64(901),
+        material_id=u64(901),
+        actor=ActorHandle(id=u64(901), generation=u32(0))
+    )
+}
+
+fn compute_ambient_occlusion(scene_capture: ShapeCapture, hit_position: Vec3, hit_normal: Vec3) -> F32 {
+    sample_a = distance_at(capture=scene_capture, point=hit_position + hit_normal * 0.08)
+    sample_b = distance_at(capture=scene_capture, point=hit_position + hit_normal * 0.18)
+    occlusion = clamp((0.08 - sample_a) * 2.0 + (0.18 - sample_b) * 1.1, 0.0, 1.0)
+    return 1.0 - occlusion * 0.75
+}
+
+fn test_phase7_radiance_and_volume_surface_and_queries() -> Nothing {
+    scene_capture = capture phase7_scene_shape
+    hit = trace_shape(
+        capture=scene_capture,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    surface = surface_at(capture=scene_capture, hit=hit)
+    radiance_sample = radiance_at(
+        capture=scene_capture,
+        point=hit.position,
+        direction=normalize(vec3(0.0, 1.0, 1.0))
+    )
+    medium_sample = medium_at(capture=scene_capture, point=hit.position)
+    ambient = compute_ambient_occlusion(
+        scene_capture=scene_capture,
+        hit_position=hit.position,
+        hit_normal=hit.normal
+    )
+
+    assert value hit.hit == true
+    assert value hit.feature_id != u64(0)
+    assert value hit.local_position.z > 0.0
+    assert value hit.local_normal.z > 0.0
+    assert value surface.metalness > 0.12
+    assert value surface.clearcoat >= 0.14
+    assert value surface.sheen > 0.05
+    assert value surface.emissive.x > 0.0
+    assert value radiance_sample.z > radiance_sample.x
+    assert approx medium_sample.anisotropy ~= 0.12 within 0.001
+    assert value medium_sample.density > 0.08
+    assert value ambient > 0.0
+    assert value ambient <= 1.0
 }

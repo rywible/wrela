@@ -37,6 +37,18 @@ pub fn field_decl(p: &mut Parser) {
     m.complete(p, SyntaxKind::FieldDecl);
 }
 
+pub fn radiance_decl(p: &mut Parser) {
+    let m = p.start();
+    parse_radiance_signature_and_block(p);
+    m.complete(p, SyntaxKind::RadianceDecl);
+}
+
+pub fn volume_decl(p: &mut Parser) {
+    let m = p.start();
+    parse_volume_signature_and_block(p);
+    m.complete(p, SyntaxKind::VolumeDecl);
+}
+
 pub fn material_decl(p: &mut Parser) {
     let m = p.start();
     parse_material_signature_and_block(p);
@@ -204,6 +216,54 @@ fn parse_field_body(p: &mut Parser) {
     m.complete(p, SyntaxKind::Block);
 }
 
+fn parse_radiance_signature_and_block(p: &mut Parser) {
+    expect_ident_text(
+        p,
+        "radiance",
+        "expected 'radiance' to start a radiance field declaration",
+    );
+    expect_ident_text(p, "field", "expected 'field' after 'radiance'");
+    p.expect_with_message(
+        SyntaxKind::Ident,
+        "expected radiance field name after 'radiance field'",
+    );
+    p.expect_with_message(SyntaxKind::LParen, "expected '(' after radiance field name");
+    parse_param_list(p);
+    p.expect_with_message(
+        SyntaxKind::RParen,
+        "expected ')' after radiance field parameters",
+    );
+    p.expect_with_message(SyntaxKind::Arrow, "expected '->' and a return type");
+    types::parse_type(p);
+
+    expect_block_intro(p, "expected '{' after radiance field signature");
+    parse_block(p);
+}
+
+fn parse_volume_signature_and_block(p: &mut Parser) {
+    expect_ident_text(
+        p,
+        "volume",
+        "expected 'volume' to start a volume field declaration",
+    );
+    expect_ident_text(p, "field", "expected 'field' after 'volume'");
+    p.expect_with_message(
+        SyntaxKind::Ident,
+        "expected volume field name after 'volume field'",
+    );
+    p.expect_with_message(SyntaxKind::LParen, "expected '(' after volume field name");
+    parse_param_list(p);
+    p.expect_with_message(
+        SyntaxKind::RParen,
+        "expected ')' after volume field parameters",
+    );
+    p.expect_with_message(SyntaxKind::Arrow, "expected '->' and a return type");
+    types::parse_type(p);
+
+    expect_block_intro(p, "expected '{' after volume field signature");
+    parse_block(p);
+}
+
 fn parse_field_clause(p: &mut Parser) -> bool {
     if p.at_ident_text("support") {
         parse_field_support_clause(p);
@@ -221,17 +281,54 @@ fn is_field_semantic_start(p: &Parser) -> bool {
         || p.at_ident_text("union")
         || p.at_ident_text("intersection")
         || p.at_ident_text("subtract")
-        || p.at_ident_text("transform")
-        || p.at_ident_text("mirror")
-        || p.at_ident_text("repeat")
-        || p.at_ident_text("instance")
+        || p.at_ident_text("smooth_union")
+        || p.at_ident_text("smooth_intersection")
+        || p.at_ident_text("smooth_subtract")
+        || p.at_ident_text("translate")
+        || p.at_ident_text("rotate")
+        || p.at_ident_text("uniform_scale")
+        || p.at_ident_text("affine_transform")
+        || p.at_ident_text("warp")
+        || p.at_ident_text("repeat_linear")
+        || p.at_ident_text("repeat_grid")
+        || p.at_ident_text("radial_repeat")
+        || p.at_ident_text("mirror_array")
+        || p.at_ident_text("instance_array")
+        || p.at_ident_text("bend")
+        || p.at_ident_text("twist")
+        || p.at_ident_text("taper")
+        || p.at_ident_text("displace")
+        || p.at_ident_text("extrude")
+        || p.at_ident_text("revolve")
+        || p.at_ident_text("sweep")
+        || p.at_ident_text("loft")
         || is_field_primitive_name(p.peek_text())
 }
 
 fn is_field_primitive_name(text: &str) -> bool {
     matches!(
         text,
-        "sphere" | "box" | "capsule" | "cylinder" | "plane" | "torus"
+        "sphere"
+            | "box"
+            | "capsule"
+            | "cylinder"
+            | "plane"
+            | "torus"
+            | "rounded_box"
+            | "ellipsoid"
+            | "cone"
+            | "capped_cone"
+            | "box_frame"
+            | "slab"
+            | "triangle_prism"
+            | "hex_prism"
+    )
+}
+
+fn is_profile_primitive_name(text: &str) -> bool {
+    matches!(
+        text,
+        "circle2" | "rect2" | "rounded_rect2" | "capsule2" | "segment2" | "polygon2" | "polyline2"
     )
 }
 
@@ -256,20 +353,184 @@ fn parse_field_expr(p: &mut Parser) {
         parse_field_subtract_expr(p);
         return;
     }
-    if p.at_ident_text("transform") {
-        parse_field_transform_expr(p);
+    if p.at_ident_text("smooth_union") {
+        parse_field_smooth_union_expr(p);
         return;
     }
-    if p.at_ident_text("mirror") {
-        parse_field_mirror_expr(p);
+    if p.at_ident_text("smooth_intersection") {
+        parse_field_smooth_intersection_expr(p);
         return;
     }
-    if p.at_ident_text("repeat") {
-        parse_field_repeat_expr(p);
+    if p.at_ident_text("smooth_subtract") {
+        parse_field_smooth_subtract_expr(p);
         return;
     }
-    if p.at_ident_text("instance") {
-        parse_field_instance_expr(p);
+    if p.at_ident_text("translate") {
+        parse_field_wrapped_expr(
+            p,
+            "translate",
+            SyntaxKind::FieldTranslateExpr,
+            "expected '{' after 'translate'",
+            "expected '}' after field translate body",
+        );
+        return;
+    }
+    if p.at_ident_text("rotate") {
+        parse_field_wrapped_expr(
+            p,
+            "rotate",
+            SyntaxKind::FieldRotateExpr,
+            "expected '{' after 'rotate'",
+            "expected '}' after field rotate body",
+        );
+        return;
+    }
+    if p.at_ident_text("uniform_scale") {
+        parse_field_wrapped_expr(
+            p,
+            "uniform_scale",
+            SyntaxKind::FieldUniformScaleExpr,
+            "expected '{' after 'uniform_scale'",
+            "expected '}' after field uniform scale body",
+        );
+        return;
+    }
+    if p.at_ident_text("affine_transform") {
+        parse_field_wrapped_expr(
+            p,
+            "affine_transform",
+            SyntaxKind::FieldAffineTransformExpr,
+            "expected '{' after 'affine_transform'",
+            "expected '}' after field affine transform body",
+        );
+        return;
+    }
+    if p.at_ident_text("warp") {
+        parse_field_wrapped_expr(
+            p,
+            "warp",
+            SyntaxKind::FieldWarpExpr,
+            "expected '{' after 'warp'",
+            "expected '}' after field warp body",
+        );
+        return;
+    }
+    if p.at_ident_text("repeat_linear") {
+        parse_field_wrapped_expr(
+            p,
+            "repeat_linear",
+            SyntaxKind::FieldRepeatLinearExpr,
+            "expected '{' after 'repeat_linear'",
+            "expected '}' after field repeat linear body",
+        );
+        return;
+    }
+    if p.at_ident_text("repeat_grid") {
+        parse_field_wrapped_expr(
+            p,
+            "repeat_grid",
+            SyntaxKind::FieldRepeatGridExpr,
+            "expected '{' after 'repeat_grid'",
+            "expected '}' after field repeat grid body",
+        );
+        return;
+    }
+    if p.at_ident_text("radial_repeat") {
+        parse_field_wrapped_expr(
+            p,
+            "radial_repeat",
+            SyntaxKind::FieldRadialRepeatExpr,
+            "expected '{' after 'radial_repeat'",
+            "expected '}' after field radial repeat body",
+        );
+        return;
+    }
+    if p.at_ident_text("mirror_array") {
+        parse_field_wrapped_expr(
+            p,
+            "mirror_array",
+            SyntaxKind::FieldMirrorArrayExpr,
+            "expected '{' after 'mirror_array'",
+            "expected '}' after field mirror array body",
+        );
+        return;
+    }
+    if p.at_ident_text("instance_array") {
+        parse_field_wrapped_expr(
+            p,
+            "instance_array",
+            SyntaxKind::FieldInstanceArrayExpr,
+            "expected '{' after 'instance_array'",
+            "expected '}' after field instance array body",
+        );
+        return;
+    }
+    if p.at_ident_text("bend") {
+        parse_field_wrapped_expr(
+            p,
+            "bend",
+            SyntaxKind::FieldBendExpr,
+            "expected '{' after 'bend'",
+            "expected '}' after field bend body",
+        );
+        return;
+    }
+    if p.at_ident_text("twist") {
+        parse_field_wrapped_expr(
+            p,
+            "twist",
+            SyntaxKind::FieldTwistExpr,
+            "expected '{' after 'twist'",
+            "expected '}' after field twist body",
+        );
+        return;
+    }
+    if p.at_ident_text("taper") {
+        parse_field_wrapped_expr(
+            p,
+            "taper",
+            SyntaxKind::FieldTaperExpr,
+            "expected '{' after 'taper'",
+            "expected '}' after field taper body",
+        );
+        return;
+    }
+    if p.at_ident_text("displace") {
+        parse_field_wrapped_expr(
+            p,
+            "displace",
+            SyntaxKind::FieldDisplaceExpr,
+            "expected '{' after 'displace'",
+            "expected '}' after field displace body",
+        );
+        return;
+    }
+    if p.at_ident_text("extrude") {
+        parse_field_profile_wrapped_expr(
+            p,
+            "extrude",
+            SyntaxKind::FieldExtrudeExpr,
+            "expected '{' after 'extrude'",
+            "expected '}' after field extrude body",
+        );
+        return;
+    }
+    if p.at_ident_text("revolve") {
+        parse_field_revolve_expr(p);
+        return;
+    }
+    if p.at_ident_text("sweep") {
+        parse_field_profile_wrapped_expr(
+            p,
+            "sweep",
+            SyntaxKind::FieldSweepExpr,
+            "expected '{' after 'sweep'",
+            "expected '}' after field sweep body",
+        );
+        return;
+    }
+    if p.at_ident_text("loft") {
+        parse_field_loft_expr(p);
         return;
     }
     p.error_with_message_no_bump("expected field composition expression");
@@ -338,46 +599,6 @@ fn parse_field_subtract_expr(p: &mut Parser) {
     m.complete(p, SyntaxKind::FieldSubtractExpr);
 }
 
-fn parse_field_transform_expr(p: &mut Parser) {
-    parse_field_wrapped_expr(
-        p,
-        "transform",
-        SyntaxKind::FieldTransformExpr,
-        "expected '{' after 'transform'",
-        "expected '}' after field transform body",
-    );
-}
-
-fn parse_field_mirror_expr(p: &mut Parser) {
-    parse_field_wrapped_expr(
-        p,
-        "mirror",
-        SyntaxKind::FieldMirrorExpr,
-        "expected '{' after 'mirror'",
-        "expected '}' after field mirror body",
-    );
-}
-
-fn parse_field_repeat_expr(p: &mut Parser) {
-    parse_field_wrapped_expr(
-        p,
-        "repeat",
-        SyntaxKind::FieldRepeatExpr,
-        "expected '{' after 'repeat'",
-        "expected '}' after field repeat body",
-    );
-}
-
-fn parse_field_instance_expr(p: &mut Parser) {
-    parse_field_wrapped_expr(
-        p,
-        "instance",
-        SyntaxKind::FieldInstanceExpr,
-        "expected '{' after 'instance'",
-        "expected '}' after field instance body",
-    );
-}
-
 fn parse_field_wrapped_expr(
     p: &mut Parser,
     keyword: &str,
@@ -421,6 +642,232 @@ fn parse_field_wrapped_expr(
     p.expect_with_message(SyntaxKind::RBrace, close_error);
     body.complete(p, SyntaxKind::Block);
     m.complete(p, expr_kind);
+}
+
+fn parse_field_profile_wrapped_expr(
+    p: &mut Parser,
+    keyword: &str,
+    expr_kind: SyntaxKind,
+    open_error: &str,
+    close_error: &str,
+) {
+    let m = p.start();
+    expect_ident_text(
+        p,
+        keyword,
+        &format!("expected '{keyword}' to start a field wrapper"),
+    );
+    p.expect_with_message(
+        SyntaxKind::Equals,
+        &format!("expected '=' after '{keyword}'"),
+    );
+    expr::expr(p);
+    p.consume_trivia();
+    let body = p.start();
+    if p.at(SyntaxKind::LBrace) {
+        p.bump();
+    } else {
+        p.error_with_message_no_bump(open_error);
+    }
+    p.consume_trivia();
+    if !p.at(SyntaxKind::RBrace) && !p.is_at_eof() {
+        let cursor = p.cursor_pos();
+        parse_profile_expr(p);
+        if p.cursor_pos() == cursor {
+            p.error();
+        }
+        p.consume_trivia();
+        if !p.at(SyntaxKind::RBrace) {
+            p.error_with_message_no_bump(close_error);
+            p.recover_until(&[SyntaxKind::RBrace]);
+        }
+    } else {
+        p.error_with_message_no_bump(close_error);
+    }
+    p.expect_with_message(SyntaxKind::RBrace, close_error);
+    body.complete(p, SyntaxKind::Block);
+    m.complete(p, expr_kind);
+}
+
+fn parse_profile_expr(p: &mut Parser) {
+    if is_profile_primitive_name(p.peek_text()) {
+        parse_field_primitive_expr(p);
+        return;
+    }
+    p.error_with_message_no_bump("expected profile primitive expression");
+}
+
+fn parse_field_revolve_expr(p: &mut Parser) {
+    let m = p.start();
+    expect_ident_text(p, "revolve", "expected 'revolve' to start a field revolve");
+    let body = p.start();
+    if p.at(SyntaxKind::LBrace) {
+        p.bump();
+    } else {
+        p.error_with_message_no_bump("expected '{' after 'revolve'");
+    }
+    p.consume_trivia();
+    parse_profile_expr(p);
+    p.consume_trivia();
+    if p.at_stmt_boundary() {
+        p.expect_stmt_boundary();
+    }
+    p.expect_with_message(SyntaxKind::RBrace, "expected '}' after field revolve body");
+    body.complete(p, SyntaxKind::Block);
+    m.complete(p, SyntaxKind::FieldRevolveExpr);
+}
+
+fn parse_field_loft_expr(p: &mut Parser) {
+    let m = p.start();
+    expect_ident_text(p, "loft", "expected 'loft' to start a field loft");
+    p.expect_with_message(SyntaxKind::Equals, "expected '=' after 'loft'");
+    expr::expr(p);
+    p.consume_trivia();
+    let body = p.start();
+    if p.at(SyntaxKind::LBrace) {
+        p.bump();
+    } else {
+        p.error_with_message_no_bump("expected '{' after 'loft'");
+    }
+    p.consume_trivia();
+    p.expect_with_message(
+        SyntaxKind::FromKw,
+        "expected 'from' to start loft profile pair",
+    );
+    parse_profile_expr(p);
+    p.consume_trivia();
+    if p.at_stmt_boundary() {
+        p.expect_stmt_boundary();
+    }
+    expect_ident_text(p, "to", "expected 'to' after loft source profile");
+    parse_profile_expr(p);
+    p.consume_trivia();
+    if p.at_stmt_boundary() {
+        p.expect_stmt_boundary();
+    }
+    p.expect_with_message(SyntaxKind::RBrace, "expected '}' after field loft body");
+    body.complete(p, SyntaxKind::Block);
+    m.complete(p, SyntaxKind::FieldLoftExpr);
+}
+
+fn parse_field_smoothing_clause(p: &mut Parser) {
+    let m = p.start();
+    expect_ident_text(
+        p,
+        "smoothing",
+        "expected 'smoothing' to start a smooth field clause",
+    );
+    p.expect_with_message(SyntaxKind::Equals, "expected '=' after 'smoothing'");
+    expr::expr(p);
+    m.complete(p, SyntaxKind::FieldSmoothingClause);
+}
+
+fn parse_field_smooth_expr_block(
+    p: &mut Parser,
+    expr_kind: SyntaxKind,
+    open_error: &str,
+    close_error: &str,
+) {
+    let block = p.start();
+    if p.at(SyntaxKind::LBrace) {
+        p.bump();
+    } else {
+        p.error_with_message_no_bump(open_error);
+    }
+    p.consume_trivia();
+    parse_field_smoothing_clause(p);
+    p.consume_trivia();
+    if p.at_stmt_boundary() {
+        p.expect_stmt_boundary();
+    }
+    while !p.at(SyntaxKind::RBrace) && !p.is_at_eof() {
+        p.consume_trivia();
+        if p.at(SyntaxKind::RBrace) || p.is_at_eof() {
+            break;
+        }
+        let cursor = p.cursor_pos();
+        parse_field_expr(p);
+        if p.cursor_pos() == cursor {
+            p.error();
+            break;
+        }
+        p.consume_trivia();
+        if p.at_stmt_boundary() {
+            p.expect_stmt_boundary();
+        }
+    }
+    p.expect_with_message(SyntaxKind::RBrace, close_error);
+    block.complete(p, SyntaxKind::Block);
+    let _ = expr_kind;
+}
+
+fn parse_field_smooth_union_expr(p: &mut Parser) {
+    let m = p.start();
+    expect_ident_text(
+        p,
+        "smooth_union",
+        "expected 'smooth_union' to start a smooth field union",
+    );
+    parse_field_smooth_expr_block(
+        p,
+        SyntaxKind::FieldSmoothUnionExpr,
+        "expected '{' after 'smooth_union'",
+        "expected '}' after smooth field union",
+    );
+    m.complete(p, SyntaxKind::FieldSmoothUnionExpr);
+}
+
+fn parse_field_smooth_intersection_expr(p: &mut Parser) {
+    let m = p.start();
+    expect_ident_text(
+        p,
+        "smooth_intersection",
+        "expected 'smooth_intersection' to start a smooth field intersection",
+    );
+    parse_field_smooth_expr_block(
+        p,
+        SyntaxKind::FieldSmoothIntersectionExpr,
+        "expected '{' after 'smooth_intersection'",
+        "expected '}' after smooth field intersection",
+    );
+    m.complete(p, SyntaxKind::FieldSmoothIntersectionExpr);
+}
+
+fn parse_field_smooth_subtract_expr(p: &mut Parser) {
+    let m = p.start();
+    expect_ident_text(
+        p,
+        "smooth_subtract",
+        "expected 'smooth_subtract' to start smooth field subtraction",
+    );
+    let inner = p.start();
+    if p.at(SyntaxKind::LBrace) {
+        p.bump();
+    } else {
+        p.error_with_message_no_bump("expected '{' after 'smooth_subtract'");
+    }
+    p.consume_trivia();
+    parse_field_smoothing_clause(p);
+    p.consume_trivia();
+    if p.at_stmt_boundary() {
+        p.expect_stmt_boundary();
+    }
+    parse_field_expr(p);
+    p.consume_trivia();
+    if p.at_stmt_boundary() {
+        p.expect_stmt_boundary();
+    }
+    parse_field_expr(p);
+    p.consume_trivia();
+    if p.at_stmt_boundary() {
+        p.expect_stmt_boundary();
+    }
+    p.expect_with_message(
+        SyntaxKind::RBrace,
+        "expected '}' after smooth field subtraction operands",
+    );
+    inner.complete(p, SyntaxKind::Block);
+    m.complete(p, SyntaxKind::FieldSmoothSubtractExpr);
 }
 
 fn parse_field_expr_block(p: &mut Parser, expr_kind: SyntaxKind, open_error: &str) {
@@ -470,10 +917,7 @@ fn parse_field_provenance_policy_clause(
 
     let m = p.start();
     p.bump();
-    p.expect_with_message(
-        SyntaxKind::Equals,
-        "expected '=' after provenance_policy",
-    );
+    p.expect_with_message(SyntaxKind::Equals, "expected '=' after provenance_policy");
     p.consume_trivia();
     if !is_name_like_label_token(p.peek()) {
         p.error_with_message_no_bump("expected provenance policy name");
@@ -671,7 +1115,11 @@ fn is_shape_semantic_start(p: &Parser) -> bool {
 }
 
 fn is_shape_leaf_start(p: &Parser) -> bool {
-    p.at_ident_text("field") || p.at_ident_text("material") || p.at_ident_text("payload")
+    p.at_ident_text("field")
+        || p.at_ident_text("material")
+        || p.at_ident_text("radiance")
+        || p.at_ident_text("volume")
+        || p.at_ident_text("payload")
 }
 
 fn parse_shape_expr(p: &mut Parser) {
@@ -803,10 +1251,7 @@ fn parse_shape_provenance_policy_clause(
 
     let m = p.start();
     p.bump();
-    p.expect_with_message(
-        SyntaxKind::Equals,
-        "expected '=' after provenance_policy",
-    );
+    p.expect_with_message(SyntaxKind::Equals, "expected '=' after provenance_policy");
     p.consume_trivia();
     if !is_name_like_label_token(p.peek()) {
         p.error_with_message_no_bump("expected provenance policy name");
@@ -846,6 +1291,10 @@ fn parse_shape_leaf_expr(p: &mut Parser) {
             parse_shape_field_binding(p);
         } else if p.at_ident_text("material") {
             parse_shape_material_binding(p);
+        } else if p.at_ident_text("radiance") {
+            parse_shape_radiance_binding(p);
+        } else if p.at_ident_text("volume") {
+            parse_shape_volume_binding(p);
         } else if p.at_ident_text("payload") {
             parse_shape_payload_binding(p);
         } else {
@@ -881,6 +1330,28 @@ fn parse_shape_material_binding(p: &mut Parser) {
     );
     expr::expr(p);
     m.complete(p, SyntaxKind::ShapeMaterialBinding);
+}
+
+fn parse_shape_radiance_binding(p: &mut Parser) {
+    let m = p.start();
+    expect_ident_text(p, "radiance", "expected 'radiance' binding in shape leaf");
+    p.expect_with_message(
+        SyntaxKind::Equals,
+        "expected '=' after shape radiance binding",
+    );
+    expr::expr(p);
+    m.complete(p, SyntaxKind::ShapeRadianceBinding);
+}
+
+fn parse_shape_volume_binding(p: &mut Parser) {
+    let m = p.start();
+    expect_ident_text(p, "volume", "expected 'volume' binding in shape leaf");
+    p.expect_with_message(
+        SyntaxKind::Equals,
+        "expected '=' after shape volume binding",
+    );
+    expr::expr(p);
+    m.complete(p, SyntaxKind::ShapeVolumeBinding);
 }
 
 fn parse_shape_payload_binding(p: &mut Parser) {

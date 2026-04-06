@@ -1,62 +1,139 @@
 use print_line from host/io
 
-field conservative distance cube(p: Vec3) -> F32 {
-    yaw_c = cos(0.7)
-    yaw_s = sin(0.7)
-    spun = vec3(p.x * yaw_c + p.z * yaw_s, p.y, p.z * yaw_c - p.x * yaw_s)
-    pitch_c = cos(-0.45)
-    pitch_s = sin(-0.45)
-    local = vec3(
-        spun.x,
-        spun.y * pitch_c - spun.z * pitch_s,
-        spun.y * pitch_s + spun.z * pitch_c
-    )
-    abs_p = vec3(abs(local.x), abs(local.y), abs(local.z))
-    q = abs_p - vec3(0.65, 0.65, 0.65)
-    outside = length(max(q, vec3(0.0, 0.0, 0.0)))
-    inside = min(max(q.x, max(q.y, q.z)), 0.0)
-    return outside + inside
+field exact distance plinth(p: Vec3) -> F32 {
+    translate = vec3(0.0, -0.78, 0.0) {
+        extrude = f32(0.34) {
+            rounded_rect2(half = vec2(0.82, 0.42), radius = 0.14)
+        }
+    }
+}
+
+field conservative distance column(p: Vec3) -> F32 {
+    revolve {
+        rounded_rect2(half = vec2(0.34, 0.82), radius = 0.12)
+    }
+}
+
+field conservative distance crown(p: Vec3) -> F32 {
+    translate = vec3(0.0, 0.84, 0.0) {
+        loft = f32(0.46) {
+            from rect2(half = vec2(0.22, 0.16))
+            to rounded_rect2(half = vec2(0.48, 0.20), radius = 0.08)
+        }
+    }
+}
+
+field exact distance fin(p: Vec3) -> F32 {
+    translate = vec3(-0.86, 0.06, 0.0) {
+        extrude = f32(0.20) {
+            polygon2(vertices = [
+                vec2(-0.10, -0.62),
+                vec2(0.42, 0.0),
+                vec2(-0.10, 0.62)
+            ])
+        }
+    }
+}
+
+field exact distance fin_pair(p: Vec3) -> F32 {
+    mirror_array = vec3(1.0, 0.0, 0.0) {
+        use fin
+    }
 }
 
 field exact distance ground(p: Vec3) -> F32 {
-    plane(normal=vec3(0.0, 1.0, 0.0), offset=0.95)
+    plane(normal = vec3(0.0, 1.0, 0.0), offset = 0.98)
 }
 
 field conservative distance scene(p: Vec3) -> F32 {
     union {
         provenance_policy = nearest
-        use cube
+        use plinth
+        use column
+        use crown
+        use fin_pair
         use ground
     }
 }
 
-material cube_surface(hit: Hit3) -> Surface {
+radiance field scene_radiance(p: Vec3, direction: Vec3, feature_id: U64) -> Vec3 {
+    sky_t = clamp(0.5 + direction.y * 0.5, 0.0, 1.0)
+    horizon = clamp(0.16 - abs(p.y) * 0.04, 0.0, 0.16) / 0.16
+    feature_bias = clamp(f32(feature_id), 0.0, 1.0)
+    return vec3(10.0, 14.0, 22.0) * (1.0 - sky_t)
+        + vec3(58.0, 84.0, 130.0) * sky_t
+        + vec3(4.0, 3.0, 2.0) * horizon * (0.25 + 0.75 * feature_bias)
+}
+
+volume field scene_volume(p: Vec3, surface_distance: F32) -> Medium {
+    near_ground = clamp((0.25 - p.y) * 4.0, 0.0, 1.0)
+    near_surface = clamp((0.18 - abs(surface_distance)) * 5.0, 0.0, 1.0)
+    density = clamp(0.01 + near_ground * 0.035 + near_surface * 0.02, 0.0, 0.12)
+    emission = vec3(5.0, 7.0, 11.0) * density * 0.1
+    return Medium(
+        density=density,
+        emission=emission,
+        anisotropy=0.14
+    )
+}
+
+material core_surface(hit: Hit3) -> Surface {
+    rib = clamp(abs(hit.local_position.y) * 0.9 + abs(hit.local_normal.x) * 0.25, 0.0, 1.0)
     return Surface(
-        albedo=vec3(214.0, 180.0, 130.0),
-        roughness=0.25,
-        metalness=0.0,
-        clearcoat=0.0,
-        clearcoat_roughness=0.0,
-        sheen=0.0,
+        albedo=vec3(192.0, 162.0, 116.0) + vec3(22.0, 16.0, 10.0) * rib,
+        roughness=0.18 + rib * 0.16,
+        metalness=0.08 + clamp(hit.local_normal.z, 0.0, 1.0) * 0.18,
+        clearcoat=0.12 + clamp(hit.local_normal.y, 0.0, 1.0) * 0.20,
+        clearcoat_roughness=0.06 + abs(hit.local_position.x) * 0.12,
+        sheen=0.04 + abs(hit.local_normal.x) * 0.16,
         emissive=vec3(0.0, 0.0, 0.0)
     )
 }
 
-material ground_surface(hit: Hit3) -> Surface {
+material accent_surface(hit: Hit3) -> Surface {
+    glow = clamp(0.55 + hit.local_position.z * 0.65 + hit.local_normal.y * 0.2, 0.0, 1.0)
     return Surface(
-        albedo=vec3(74.0, 80.0, 94.0),
-        roughness=0.95,
+        albedo=vec3(82.0, 126.0, 186.0) + vec3(10.0, 18.0, 28.0) * glow,
+        roughness=0.12 + abs(hit.local_position.y) * 0.12,
+        metalness=0.20 + glow * 0.22,
+        clearcoat=0.22 + glow * 0.26,
+        clearcoat_roughness=0.10 + (1.0 - glow) * 0.18,
+        sheen=0.12 + abs(hit.local_normal.x) * 0.18,
+        emissive=vec3(8.0, 5.0, 2.0) * glow
+    )
+}
+
+material base_surface(hit: Hit3) -> Surface {
+    grit = clamp(abs(hit.local_position.x) * 0.4 + abs(hit.local_position.z) * 0.25, 0.0, 1.0)
+    return Surface(
+        albedo=vec3(62.0, 70.0, 82.0) + vec3(10.0, 8.0, 8.0) * grit,
+        roughness=0.88 + grit * 0.10,
         metalness=0.0,
-        clearcoat=0.0,
-        clearcoat_roughness=0.0,
-        sheen=0.0,
+        clearcoat=0.04,
+        clearcoat_roughness=0.24,
+        sheen=0.02,
         emissive=vec3(0.0, 0.0, 0.0)
     )
 }
 
-shape cube_shape {
-    field = cube
-    material = cube_surface
+material frame_surface(hit: Hit3) -> Surface {
+    band = clamp(abs(hit.local_position.x) * 0.8 + abs(hit.local_normal.y) * 0.2, 0.0, 1.0)
+    return Surface(
+        albedo=vec3(168.0, 144.0, 108.0) + vec3(14.0, 10.0, 8.0) * band,
+        roughness=0.20 + band * 0.12,
+        metalness=0.06 + abs(hit.local_normal.z) * 0.12,
+        clearcoat=0.14 + band * 0.12,
+        clearcoat_roughness=0.08 + abs(hit.local_position.y) * 0.10,
+        sheen=0.06 + abs(hit.local_normal.x) * 0.12,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape core_shape {
+    field = column
+    material = core_surface
+    radiance = scene_radiance
+    volume = scene_volume
     payload = Payload(
         entity_id=u64(1),
         material_id=u64(1),
@@ -64,9 +141,11 @@ shape cube_shape {
     )
 }
 
-shape ground_shape {
-    field = ground
-    material = ground_surface
+shape accent_shape {
+    field = crown
+    material = accent_surface
+    radiance = scene_radiance
+    volume = scene_volume
     payload = Payload(
         entity_id=u64(2),
         material_id=u64(2),
@@ -74,11 +153,50 @@ shape ground_shape {
     )
 }
 
+shape foot_shape {
+    field = plinth
+    material = frame_surface
+    radiance = scene_radiance
+    volume = scene_volume
+    payload = Payload(
+        entity_id=u64(3),
+        material_id=u64(3),
+        actor=ActorHandle(id=u64(1), generation=u32(0))
+    )
+}
+
+shape floor_shape {
+    field = ground
+    material = base_surface
+    radiance = scene_radiance
+    volume = scene_volume
+    payload = Payload(
+        entity_id=u64(4),
+        material_id=u64(4),
+        actor=ActorHandle(id=u64(1), generation=u32(0))
+    )
+}
+
+shape fin_shape {
+    field = fin_pair
+    material = accent_surface
+    radiance = scene_radiance
+    volume = scene_volume
+    payload = Payload(
+        entity_id=u64(5),
+        material_id=u64(5),
+        actor=ActorHandle(id=u64(1), generation=u32(0))
+    )
+}
+
 shape scene_shape {
     union {
         provenance_policy = nearest
-        use cube_shape
-        use ground_shape
+        use core_shape
+        use accent_shape
+        use foot_shape
+        use floor_shape
+        use fin_shape
     }
 }
 
@@ -94,7 +212,7 @@ fn compute_scene_hit(scene_capture: ShapeCapture, origin: Vec3, direction: Vec3)
         max_distance=12.0,
         min_step=0.02,
         hit_epsilon=0.0008,
-        max_steps=192
+        max_steps=96
     )
 }
 
@@ -109,7 +227,7 @@ fn compute_shadow_visibility(
     shadow_limit = length(light.position - shadow_origin)
     mutable total = 0.02
     mutable step_count = 0
-    while total < shadow_limit and step_count < 96 {
+    while total < shadow_limit and step_count < 32 {
         sample_position = shadow_origin + shadow_direction * total
         sampled_distance = distance_at(capture=scene_capture, point=sample_position)
         if sampled_distance < 0.001 {
@@ -119,6 +237,22 @@ fn compute_shadow_visibility(
         step_count += 1
     }
     return 1.0
+}
+
+fn compute_ambient_occlusion(
+    scene_capture: ShapeCapture,
+    hit_position: Vec3,
+    hit_normal: Vec3
+) -> F32 {
+    sample_a = distance_at(capture=scene_capture, point=hit_position + hit_normal * 0.06)
+    sample_b = distance_at(capture=scene_capture, point=hit_position + hit_normal * 0.14)
+    sample_c = distance_at(capture=scene_capture, point=hit_position + hit_normal * 0.28)
+    occlusion = clamp(
+        (0.06 - sample_a) * 1.6 + (0.14 - sample_b) * 1.1 + (0.28 - sample_c) * 0.8,
+        0.0,
+        1.0
+    )
+    return 1.0 - occlusion * 0.85
 }
 
 fn compute_scene_color(
@@ -135,36 +269,72 @@ fn compute_scene_color(
 
     if hit.hit {
         surface = compute_scene_surface(scene_capture=scene_capture, hit=hit)
+        captured_radiance = radiance_at(
+            capture=scene_capture,
+            point=hit.position,
+            direction=ray_direction
+        )
+        medium = medium_at(capture=scene_capture, point=hit.position)
+        feature_bias = clamp(f32(hit.feature_id), 0.0, 1.0)
+        edge_glow = clamp(0.18 - abs(hit.position.x) * 0.1 - abs(hit.position.z) * 0.06, 0.0, 0.18) / 0.18
+        radiance = captured_radiance
+            + vec3(20.0, 12.0, 6.0) * edge_glow * (0.35 + 0.65 * feature_bias)
         key_dir = normalize(light.position - hit.position)
         fill_dir = normalize(vec3(-0.9, 0.45, 0.2))
         view_dir = normalize(camera_position - hit.position)
         half_dir = normalize(key_dir + view_dir)
+        surface_frame = inverse_transform3(transform=hit.shading_frame)
+        local_view = normalize(transform_vector(transform=surface_frame, vector=view_dir))
         distance_to_light = length(light.position - hit.position)
         attenuation = clamp(1.0 - distance_to_light / light.range, 0.0, 1.0)
+        ao = compute_ambient_occlusion(
+            scene_capture=scene_capture,
+            hit_position=hit.position,
+            hit_normal=hit.normal
+        )
         shadow = compute_shadow_visibility(
             scene_capture=scene_capture,
             hit_position=hit.position,
             hit_normal=hit.normal,
             light=light
         )
-        diffuse = max(dot(hit.normal, key_dir), 0.0) * shadow
-        fill = 0.2 * max(dot(hit.normal, fill_dir), 0.0)
-        specular = pow(max(dot(hit.normal, half_dir), 0.0), 24.0) * 0.22
-        lighting = 0.11 + (0.92 * diffuse * attenuation) + (fill * 0.35)
-        return vec3(
-            clamp(surface.albedo.x * lighting * light.intensity.x + 255.0 * specular * (0.25 + surface.roughness * 0.75), 0.0, 255.0),
-            clamp(surface.albedo.y * lighting * light.intensity.y + 224.0 * specular * (0.25 + surface.roughness * 0.75), 0.0, 255.0),
-            clamp(surface.albedo.z * lighting * light.intensity.z + 196.0 * specular * (0.25 + surface.roughness * 0.75), 0.0, 255.0)
+        ndotl = max(dot(hit.normal, key_dir), 0.0)
+        ndotv = max(dot(hit.normal, view_dir), 0.0)
+        ndoth = max(dot(hit.normal, half_dir), 0.0)
+        diffuse = ndotl * shadow
+        fill = 0.2 * max(dot(hit.normal, fill_dir), 0.0) * ao
+        frame_bias = 0.10 + 0.18 * abs(local_view.x) + surface.clearcoat * 0.24
+        spec_power = mix(64.0, 10.0, clamp(surface.roughness, 0.0, 1.0))
+        fresnel = pow(1.0 - ndotv, 5.0)
+        specular = pow(ndoth, spec_power) * frame_bias * (0.18 + surface.metalness * 0.42 + surface.clearcoat * 0.38)
+        sheen = surface.sheen * pow(1.0 - ndotv, 3.0) * 26.0
+        lighting = (0.10 + (0.92 * diffuse * attenuation) + (fill * 0.35)) * ao
+        base = 1.0 - surface.metalness * 0.28
+        direct = vec3(
+            clamp(surface.albedo.x * lighting * light.intensity.x * base + 255.0 * specular + sheen * 0.8, 0.0, 255.0),
+            clamp(surface.albedo.y * lighting * light.intensity.y * base + 224.0 * specular + sheen * 0.6, 0.0, 255.0),
+            clamp(surface.albedo.z * lighting * light.intensity.z * base + 196.0 * specular + sheen * 0.4, 0.0, 255.0)
         )
+        fog_strength = clamp(medium.density * distance_to_light * 0.22 + (1.0 - ao) * 0.12, 0.0, 0.65)
+        fog_color = medium.emission + radiance * 0.25
+        lit = direct + surface.emissive + radiance * (0.35 + fresnel * 0.25)
+        return mix(lit, fog_color, fog_strength)
     }
 
-    sky_t = 0.5 * (ray_direction.y + 1.0)
-    return vec3(10.0, 14.0, 22.0) * (1.0 - sky_t) + vec3(58.0, 84.0, 130.0) * sky_t
+    miss_point = camera_position + ray_direction * 4.0
+    miss_radiance = radiance_at(
+        capture=scene_capture,
+        point=miss_point,
+        direction=ray_direction
+    )
+    miss_medium = medium_at(capture=scene_capture, point=miss_point)
+    miss_fog = clamp(miss_medium.density * 3.0, 0.0, 0.45)
+    return mix(miss_radiance, miss_medium.emission + miss_radiance * 0.28, miss_fog)
 }
 
 fn render_ppm() -> String {
-    width = 64
-    height = 64
+    width = 40
+    height = 40
     aspect = f32(width) / f32(height)
     camera_position = vec3(0.0, 0.1, 2.7)
     forward = normalize(vec3(0.0, 0.0, -1.0))
@@ -179,7 +349,7 @@ fn render_ppm() -> String {
         range=12.0
     )
 
-    mutable ppm = "P3\n64 64\n255\n"
+    mutable ppm = "P3\n40 40\n255\n"
     mutable y = 0
     while y < height {
         mutable x = 0

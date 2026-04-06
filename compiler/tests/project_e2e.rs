@@ -1257,6 +1257,74 @@ fn run_service() -> Integer {
 }
 
 #[test]
+fn domain_scene_queries_are_classified_as_host_reads() {
+    let base = tempfile::tempdir().expect("tempdir");
+    let entry_path = base.path().join("src").join("main.wr");
+    let domain_path = base.path().join("src").join("domain").join("service.wr");
+
+    write_temp(
+        &entry_path,
+        r#"use sample_scene from domain/service
+
+fn run() -> Integer {
+    return sample_scene()
+}
+"#,
+    );
+    write_temp(
+        &domain_path,
+        r#"field exact distance shell_field(p: Vec3) -> F32 {
+    sphere(radius=0.5)
+}
+
+material shade_surface(hit: Hit3) -> Surface {
+    return Surface()
+}
+
+radiance field scene_radiance(p: Vec3, direction: Vec3, feature_id: U64) -> Vec3 {
+    return direction + vec3(f32(feature_id) * 0.0 + p.x * 0.0, 0.0, 0.0)
+}
+
+volume field scene_volume(p: Vec3, surface_distance: F32) -> Medium {
+    return Medium(density=0.1, emission=vec3(0.0, 0.0, 0.0), anisotropy=0.0)
+}
+
+shape scene_shape {
+    field = shell_field
+    material = shade_surface
+    radiance = scene_radiance
+    volume = scene_volume
+    payload = Payload()
+}
+
+fn sample_scene() -> Integer {
+    scene = capture scene_shape
+    glow = radiance_at(
+        capture=scene,
+        point=vec3(0.0, 0.0, 0.0),
+        direction=vec3(0.0, 0.0, -1.0)
+    )
+    fog = medium_at(capture=scene, point=vec3(0.0, 0.0, 0.0))
+    if glow.z > fog.density {
+        return 1
+    }
+    return 0
+}
+"#,
+    );
+
+    let errors = match load_project(&entry_path) {
+        Ok(_) => panic!("expected domain host-read diagnostic"),
+        Err(err) => err,
+    };
+    let host_read_diag = errors
+        .iter()
+        .find(|err| err.message.contains("HostRead effect"))
+        .expect("missing host-read effect diagnostic");
+    assert!(host_read_diag.message.contains("domain code must stay pure"));
+}
+
+#[test]
 fn domain_async_orchestration_keywords_are_rejected() {
     let base = tempfile::tempdir().expect("tempdir");
     let entry_path = base.path().join("src").join("main.wr");

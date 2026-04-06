@@ -29,36 +29,70 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
     for node in root.descendants() {
         match node.kind() {
             kind if is_function_like_definition(kind) => {
-                if kind == SyntaxKind::FieldDecl || kind == SyntaxKind::MaterialDecl {
-                    let (name_message, return_message, name_present, has_return_type) = if kind
-                        == SyntaxKind::FieldDecl
-                    {
-                        let field = ast::FieldDecl::cast(node.clone());
-                        let name_present = field.as_ref().and_then(|field| field.name()).is_some();
-                        let has_return_type =
-                            field.as_ref().and_then(|field| field.ret_type()).is_some();
-                        (
-                            "field declaration requires a name",
-                            "field requires an explicit return type",
-                            name_present,
-                            has_return_type,
-                        )
-                    } else {
-                        let material = ast::MaterialDecl::cast(node.clone());
-                        let name_present = material
-                            .as_ref()
-                            .and_then(|material| material.name())
-                            .is_some();
-                        let has_return_type = material
-                            .as_ref()
-                            .and_then(|material| material.ret_type())
-                            .is_some();
-                        (
-                            "material declaration requires a name",
-                            "material requires an explicit return type",
-                            name_present,
-                            has_return_type,
-                        )
+                if matches!(
+                    kind,
+                    SyntaxKind::FieldDecl
+                        | SyntaxKind::RadianceDecl
+                        | SyntaxKind::VolumeDecl
+                        | SyntaxKind::MaterialDecl
+                ) {
+                    let (name_message, return_message, name_present, has_return_type) = match kind {
+                        SyntaxKind::FieldDecl => {
+                            let field = ast::FieldDecl::cast(node.clone());
+                            let name_present =
+                                field.as_ref().and_then(|field| field.name()).is_some();
+                            let has_return_type =
+                                field.as_ref().and_then(|field| field.ret_type()).is_some();
+                            (
+                                "field declaration requires a name",
+                                "field requires an explicit return type",
+                                name_present,
+                                has_return_type,
+                            )
+                        }
+                        SyntaxKind::RadianceDecl => {
+                            let radiance = ast::RadianceDecl::cast(node.clone());
+                            let name_present =
+                                radiance.as_ref().and_then(|decl| decl.name()).is_some();
+                            let has_return_type =
+                                radiance.as_ref().and_then(|decl| decl.ret_type()).is_some();
+                            (
+                                "radiance field declaration requires a name",
+                                "radiance field requires an explicit return type",
+                                name_present,
+                                has_return_type,
+                            )
+                        }
+                        SyntaxKind::VolumeDecl => {
+                            let volume = ast::VolumeDecl::cast(node.clone());
+                            let name_present =
+                                volume.as_ref().and_then(|decl| decl.name()).is_some();
+                            let has_return_type =
+                                volume.as_ref().and_then(|decl| decl.ret_type()).is_some();
+                            (
+                                "volume field declaration requires a name",
+                                "volume field requires an explicit return type",
+                                name_present,
+                                has_return_type,
+                            )
+                        }
+                        _ => {
+                            let material = ast::MaterialDecl::cast(node.clone());
+                            let name_present = material
+                                .as_ref()
+                                .and_then(|material| material.name())
+                                .is_some();
+                            let has_return_type = material
+                                .as_ref()
+                                .and_then(|material| material.ret_type())
+                                .is_some();
+                            (
+                                "material declaration requires a name",
+                                "material requires an explicit return type",
+                                name_present,
+                                has_return_type,
+                            )
+                        }
                     };
                     if !name_present {
                         errors.push(ValidationError {
@@ -312,13 +346,15 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                                 | SyntaxKind::FuncDef
                                 | SyntaxKind::KernelDef
                                 | SyntaxKind::FieldDecl
+                                | SyntaxKind::RadianceDecl
+                                | SyntaxKind::VolumeDecl
                                 | SyntaxKind::MaterialDecl
                                 | SyntaxKind::SystemDef
                         ) {
                             errors.push(ValidationError {
                                 kind: ValidationDiagKind::AstRule,
                                 message: "private blocks at the top level may only \
-contain functions, fields, materials, and classes"
+contain functions, fields, radiance/volume fields, materials, and classes"
                                     .to_string(),
                                 span: span_for_node(&stmt),
                             });
@@ -548,6 +584,8 @@ fn is_function_like_definition(kind: SyntaxKind) -> bool {
             | SyntaxKind::KernelDef
             | SyntaxKind::SystemDef
             | SyntaxKind::FieldDecl
+            | SyntaxKind::RadianceDecl
+            | SyntaxKind::VolumeDecl
             | SyntaxKind::MaterialDecl
     )
 }
@@ -827,6 +865,23 @@ private {
 private {
     material surface(hit: Hit3) -> Surface {
         return hit
+    }
+}
+";
+        let root = parse(text);
+        let errors = validate(&root);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_private_block_top_level_allows_radiance_and_volume_declarations() {
+        let text = "\
+private {
+    radiance field emit_sky(direction: Vec3) -> Vec3 {
+        return direction
+    }
+    volume field accumulate_fog(p: Vec3) -> Medium {
+        return Medium(density=0.1, emission=vec3(0.0, 0.0, 0.0), anisotropy=0.0)
     }
 }
 ";
