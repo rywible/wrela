@@ -1,8 +1,8 @@
 use crate::hir::{
     Arg, BinaryOp, Body, ClassRole, Expr, FieldBounds, FieldClass, FieldDefault, FieldExpr,
     FieldGraph, FieldMetadata, FieldPrimitive, FieldSupport, Function, FunctionKind, FunctionLane,
-    FunctionRole, Idx, InterfaceMethodKind, Literal, Module, Pattern, Shape, ShapeExpr,
-    ShapeGraph, ShapeLeaf, Stmt, TypeRef, UnaryOp, Visibility,
+    FunctionRole, Idx, InterfaceMethodKind, Literal, Module, Pattern, RegionItemMetadata, Shape,
+    ShapeExpr, ShapeGraph, ShapeLeaf, Stmt, TypeRef, UnaryOp, Visibility,
 };
 use crate::portable::{
     PortableBuiltinAtom, PortableBuiltinType, builtin_record, is_builtin_record_name,
@@ -197,7 +197,7 @@ pub enum TypeError {
         span: SourceSpan,
     },
 
-    #[error("capture requires a top-level field or shape declaration")]
+    #[error("capture requires a top-level field, shape, or region declaration")]
     #[diagnostic(code(lang::ty::capture_target_scene))]
     CaptureTargetMustBeFieldOrShape {
         #[label("capture target here")]
@@ -870,6 +870,14 @@ pub fn check_module_with_info(module: &Module) -> (Vec<TypeError>, TypeInfo) {
         &mut errors,
     );
     validate_shape_declarations(
+        module,
+        &class_index,
+        &enum_index,
+        &interface_index,
+        &function_index,
+        &mut errors,
+    );
+    validate_region_domain_render_declarations(
         module,
         &class_index,
         &enum_index,
@@ -1643,6 +1651,486 @@ fn validate_shape_expr(
             );
         }
     }
+}
+
+fn validate_region_domain_render_declarations(
+    module: &Module,
+    classes: &ClassIndex,
+    enums: &EnumIndex,
+    interfaces: &InterfaceIndex,
+    functions: &FunctionIndex,
+    errors: &mut Vec<TypeError>,
+) {
+    let shape_names: HashSet<SmolStr> = module
+        .shapes
+        .iter()
+        .map(|(_, shape)| shape.name.clone())
+        .collect();
+    for (_idx, func) in module.functions.iter() {
+        match func.role {
+            FunctionRole::Region => {
+                validate_region_declaration(func, &shape_names, classes, enums, errors)
+            }
+            FunctionRole::Domain => {
+                validate_domain_declaration(func, classes, enums, interfaces, functions, errors)
+            }
+            FunctionRole::Render => {
+                validate_render_declaration(func, classes, enums, interfaces, functions, errors)
+            }
+            _ => {}
+        }
+    }
+}
+
+fn validate_region_declaration(
+    func: &Function,
+    shape_names: &HashSet<SmolStr>,
+    _classes: &ClassIndex,
+    _enums: &EnumIndex,
+    errors: &mut Vec<TypeError>,
+) {
+    if func.region.is_none() {
+        errors.push(TypeError::PortableConstructForbidden {
+            function: func.name.clone(),
+            construct: "missing region metadata".to_string(),
+            span: span_from_option_range(func.name_span),
+            help: "Region declarations must lower into dedicated region metadata so capture and residency analysis stay compiler-visible.".to_string(),
+        });
+    }
+    let found = func
+        .ret_type
+        .as_ref()
+        .map(type_from_ref)
+        .unwrap_or(Type::Unknown);
+    if found != portable_named_type("RegionCapture") {
+        errors.push(TypeError::PortableBoundaryTypeForbidden {
+            function: func.name.clone(),
+            site: "return type".to_string(),
+            found: type_label(&found),
+            span: func
+                .ret_type
+                .as_ref()
+                .and_then(|ty| ty.name_span)
+                .map(span_from_range)
+                .unwrap_or_else(|| span_from_option_range(func.name_span)),
+            help: "Region declarations lower to `RegionCapture` so capture and residency analysis stay compiler-visible.".to_string(),
+        });
+    }
+    if !func.params.is_empty() {
+        errors.push(TypeError::PortableConstructForbidden {
+            function: func.name.clone(),
+            construct: "a parameterized region declaration".to_string(),
+            span: span_from_option_range(func.name_span),
+            help: "Region declarations are not parameterized yet; keep them closed and lift any scene variation into shapes, domains, or host code instead.".to_string(),
+        });
+    }
+    if let Some(body) = func.body.as_ref()
+        && !body.root_stmts.is_empty()
+    {
+        errors.push(TypeError::PortableConstructForbidden {
+            function: func.name.clone(),
+            construct: "an executable region body".to_string(),
+            span: span_from_option_range(func.name_span),
+            help: "Region declarations are declarative scene partitions only; move executable logic into ordinary functions and keep the region body empty.".to_string(),
+        });
+    }
+    if let Some(region) = func.region.as_ref() {
+        validate_region_items(&func.name, &region.items, shape_names, errors);
+    }
+}
+
+fn validate_region_items(
+    function: &SmolStr,
+    items: &[RegionItemMetadata],
+    shape_names: &HashSet<SmolStr>,
+    errors: &mut Vec<TypeError>,
+) {
+    for item in items {
+        match item {
+            RegionItemMetadata::Compose {
+                name: _name,
+                name_span,
+                shape,
+                shape_span,
+                ..
+            } => {
+                if !shape_names.contains(shape) {
+                    errors.push(TypeError::PortableConstructForbidden {
+                        function: function.clone(),
+                        construct: format!("region binding target '{}'", shape),
+                        span: shape_span
+                            .map(span_from_range)
+                            .or_else(|| name_span.map(span_from_range))
+                            .unwrap_or_else(|| span_from_option_range(None)),
+                        help: "Region declarations compose top-level shapes only so capture residency stays compiler-visible.".to_string(),
+                    });
+                }
+            }
+            RegionItemMetadata::Scatter { items, .. } => {
+                errors.push(TypeError::PortableConstructForbidden {
+                    function: function.clone(),
+                    construct: "a scatter region item".to_string(),
+                    span: span_from_option_range(None),
+                    help: "Scatter region items are not fully supported yet; flatten the region into explicit compose items or reject the branch before runtime.".to_string(),
+                });
+                let _ = items;
+            }
+            RegionItemMetadata::Conditional {
+                ..
+            } => {
+                errors.push(TypeError::PortableConstructForbidden {
+                    function: function.clone(),
+                    construct: "a conditional region item".to_string(),
+                    span: span_from_option_range(None),
+                    help: "Conditional region items are not fully supported yet; lower the variation into explicit regions or reject it before runtime.".to_string(),
+                });
+            }
+        }
+    }
+}
+
+fn validate_domain_declaration(
+    func: &Function,
+    classes: &ClassIndex,
+    enums: &EnumIndex,
+    interfaces: &InterfaceIndex,
+    functions: &FunctionIndex,
+    errors: &mut Vec<TypeError>,
+) {
+    if func.domain.is_none() {
+        errors.push(TypeError::PortableConstructForbidden {
+            function: func.name.clone(),
+            construct: "missing domain metadata".to_string(),
+            span: span_from_option_range(func.name_span),
+            help: "Domain declarations must lower into dedicated query-policy metadata so capture routing stays explicit.".to_string(),
+        });
+    }
+    if func.ret_type.is_some() {
+        let found = func
+            .ret_type
+            .as_ref()
+            .map(type_from_ref)
+            .unwrap_or(Type::Unknown);
+        if found != portable_named_type("SceneDomain") {
+            errors.push(TypeError::PortableBoundaryTypeForbidden {
+                function: func.name.clone(),
+                site: "return type".to_string(),
+                found: type_label(&found),
+                span: func
+                    .ret_type
+                    .as_ref()
+                    .and_then(|ty| ty.name_span)
+                    .map(span_from_range)
+                    .unwrap_or_else(|| span_from_option_range(func.name_span)),
+                help: "Domain declarations lower to `SceneDomain` so capture routing stays explicit.".to_string(),
+            });
+        }
+    }
+    if func.params.is_empty() {
+        errors.push(TypeError::PortableConstructForbidden {
+            function: func.name.clone(),
+            construct: "a domain parameter list without `world: RegionCapture`".to_string(),
+            span: span_from_option_range(func.name_span),
+            help: "Domain declarations require an explicit world capture parameter so they can be specialized over a captured region.".to_string(),
+        });
+        return;
+    }
+    let world = &func.params[0];
+    if world.name != "world" {
+        errors.push(TypeError::PortableConstructForbidden {
+            function: func.name.clone(),
+            construct: format!("domain parameter '{}'", world.name),
+            span: span_from_option_range(world.name_span),
+            help: "Domain declarations use a leading `world` parameter to make capture specialization explicit.".to_string(),
+        });
+    }
+    let found = world.ty.as_ref().map(type_from_ref).unwrap_or(Type::Unknown);
+    if found != portable_named_type("RegionCapture") {
+        errors.push(TypeError::PortableBoundaryTypeForbidden {
+            function: func.name.clone(),
+            site: format!("parameter '{}'", world.name),
+            found: type_label(&found),
+            span: world
+                .ty
+                .as_ref()
+                .and_then(|ty| ty.name_span)
+                .map(span_from_range)
+                .unwrap_or_else(|| span_from_option_range(world.name_span)),
+            help: "Domain declarations require a leading `world: RegionCapture` parameter so query-policy planning stays tied to a captured region.".to_string(),
+        });
+    }
+    validate_semantic_world_params(
+        func,
+        "domain",
+        func.params.iter().skip(1),
+        classes,
+        enums,
+        errors,
+    );
+    validate_world_decl_body(func, classes, enums, interfaces, functions, errors);
+}
+
+fn validate_render_declaration(
+    func: &Function,
+    classes: &ClassIndex,
+    enums: &EnumIndex,
+    interfaces: &InterfaceIndex,
+    functions: &FunctionIndex,
+    errors: &mut Vec<TypeError>,
+) {
+    if func.render.is_none() {
+        errors.push(TypeError::PortableConstructForbidden {
+            function: func.name.clone(),
+            construct: "missing render metadata".to_string(),
+            span: span_from_option_range(func.name_span),
+            help: "Render declarations must lower into dedicated presentation metadata so camera/world routing stays compiler-visible.".to_string(),
+        });
+    }
+    let found = func
+        .ret_type
+        .as_ref()
+        .map(type_from_ref)
+        .unwrap_or(Type::Unknown);
+    if found != Type::String {
+        errors.push(TypeError::PortableBoundaryTypeForbidden {
+            function: func.name.clone(),
+            site: "return type".to_string(),
+            found: type_label(&found),
+            span: func
+                .ret_type
+                .as_ref()
+                .and_then(|ty| ty.name_span)
+                .map(span_from_range)
+                .unwrap_or_else(|| span_from_option_range(func.name_span)),
+            help: "Render declarations lower to `String` so presentation plans remain host-side artifacts.".to_string(),
+        });
+    }
+    if func.params.len() < 2 {
+        errors.push(TypeError::PortableConstructForbidden {
+            function: func.name.clone(),
+            construct: "a render parameter list without `world: RegionCapture` and `camera: Camera`".to_string(),
+            span: span_from_option_range(func.name_span),
+            help: "Render declarations require a leading world capture and camera parameter so presentation stays tied to a captured region.".to_string(),
+        });
+        return;
+    }
+    let world = &func.params[0];
+    if world.name != "world" {
+        errors.push(TypeError::PortableConstructForbidden {
+            function: func.name.clone(),
+            construct: format!("render parameter '{}'", world.name),
+            span: span_from_option_range(world.name_span),
+            help: "Render declarations use a leading `world` parameter to make capture specialization explicit.".to_string(),
+        });
+    }
+    let found = world.ty.as_ref().map(type_from_ref).unwrap_or(Type::Unknown);
+    if found != portable_named_type("RegionCapture") {
+        errors.push(TypeError::PortableBoundaryTypeForbidden {
+            function: func.name.clone(),
+            site: format!("parameter '{}'", world.name),
+            found: type_label(&found),
+            span: world
+                .ty
+                .as_ref()
+                .and_then(|ty| ty.name_span)
+                .map(span_from_range)
+                .unwrap_or_else(|| span_from_option_range(world.name_span)),
+            help: "Render declarations require a leading `world: RegionCapture` parameter so presentation plans stay tied to a captured region.".to_string(),
+        });
+    }
+    let camera = &func.params[1];
+    if camera.name != "camera" {
+        errors.push(TypeError::PortableConstructForbidden {
+            function: func.name.clone(),
+            construct: format!("render parameter '{}'", camera.name),
+            span: span_from_option_range(camera.name_span),
+            help: "Render declarations use a `camera` parameter as their second argument so presentation plans stay explicit.".to_string(),
+        });
+    }
+    let found = camera.ty.as_ref().map(type_from_ref).unwrap_or(Type::Unknown);
+    if found != portable_named_type("Camera") {
+        errors.push(TypeError::PortableBoundaryTypeForbidden {
+            function: func.name.clone(),
+            site: format!("parameter '{}'", camera.name),
+            found: type_label(&found),
+            span: camera
+                .ty
+                .as_ref()
+                .and_then(|ty| ty.name_span)
+                .map(span_from_range)
+                .unwrap_or_else(|| span_from_option_range(camera.name_span)),
+            help: "Render declarations require a `camera: Camera` parameter so presentation plans stay tied to a concrete view.".to_string(),
+        });
+    }
+    validate_semantic_world_params(
+        func,
+        "render",
+        func.params.iter().skip(2),
+        classes,
+        enums,
+        errors,
+    );
+    validate_world_decl_body(func, classes, enums, interfaces, functions, errors);
+}
+
+fn validate_world_decl_body(
+    func: &Function,
+    _classes: &ClassIndex,
+    _enums: &EnumIndex,
+    _interfaces: &InterfaceIndex,
+    _functions: &FunctionIndex,
+    errors: &mut Vec<TypeError>,
+) {
+    let Some(body) = func.body.as_ref() else {
+        errors.push(TypeError::PortableConstructForbidden {
+            function: func.name.clone(),
+            construct: "a world declaration without a body".to_string(),
+            span: span_from_option_range(func.name_span),
+            help: "World declarations need an explicit body so the compiler can analyze their query plan and presentation wiring.".to_string(),
+        });
+        return;
+    };
+
+    if body.root_stmts.is_empty() {
+        return;
+    }
+
+    let allowed_names: &[&str] = match func.role {
+        FunctionRole::Domain => &[
+            "geometry",
+            "geometry_detail",
+            "material",
+            "radiance",
+            "media",
+            "max_distance",
+            "min_step",
+            "hit_epsilon",
+            "max_steps",
+        ],
+        FunctionRole::Render => &[
+            "domain",
+            "light",
+            "lights",
+            "width",
+            "height",
+            "world_up",
+            "view_scale",
+            "fill_dir",
+        ],
+        _ => &[],
+    };
+
+    for stmt_id in &body.root_stmts {
+        match &body.stmts[*stmt_id] {
+            Stmt::Let { name, .. } | Stmt::Assign { name, .. }
+                if func.role == FunctionRole::Render && name == "lights" =>
+            {
+                errors.push(TypeError::PortableConstructForbidden {
+                    function: func.name.clone(),
+                    construct: "render lights metadata".to_string(),
+                    span: span_from_option_range(func.name_span),
+                    help: "Plural render lights metadata is not supported yet; keep render metadata to the typed single-light path or reject the construct before runtime.".to_string(),
+                });
+            }
+            Stmt::Let { name, .. } | Stmt::Assign { name, .. } if allowed_names.contains(&name.as_str()) => {}
+            Stmt::Let { name, .. } | Stmt::Assign { name, .. } => {
+                errors.push(TypeError::PortableConstructForbidden {
+                    function: func.name.clone(),
+                    construct: format!(
+                        "{} declaration statement '{}'",
+                        match func.role {
+                            FunctionRole::Domain => "domain",
+                            FunctionRole::Render => "render",
+                            _ => "world",
+                        },
+                        name
+                    ),
+                    span: span_from_option_range(func.name_span),
+                    help: "World declarations are metadata-only. Use only the explicit world-policy assignment keys the compiler understands.".to_string(),
+                });
+            }
+            other => {
+                errors.push(TypeError::PortableConstructForbidden {
+                    function: func.name.clone(),
+                    construct: format!(
+                        "{} declaration executable statement {:?}",
+                        match func.role {
+                            FunctionRole::Domain => "domain",
+                            FunctionRole::Render => "render",
+                            _ => "world",
+                        },
+                        other
+                    ),
+                    span: span_from_option_range(func.name_span),
+                    help: "World declarations are metadata-only. Remove loops, returns, captures, control flow, and other executable statements from the body.".to_string(),
+                });
+            }
+        }
+    }
+}
+
+fn validate_semantic_world_params<'a, I>(
+    func: &Function,
+    kind: &'static str,
+    params: I,
+    classes: &ClassIndex,
+    enums: &EnumIndex,
+    errors: &mut Vec<TypeError>,
+) where
+    I: IntoIterator<Item = &'a crate::hir::Param>,
+{
+    for param in params {
+        let found = param
+            .ty
+            .as_ref()
+            .map(type_from_ref)
+            .unwrap_or(Type::Unknown);
+        let mut visiting = HashSet::new();
+        if !supports_semantic_world_boundary_type(&found, classes, enums, &mut visiting) {
+            errors.push(TypeError::PortableBoundaryTypeForbidden {
+                function: func.name.clone(),
+                site: format!("parameter '{}'", param.name),
+                found: type_label(&found),
+                span: param
+                    .ty
+                    .as_ref()
+                    .and_then(|ty| ty.name_span)
+                    .map(span_from_range)
+                    .unwrap_or_else(|| span_from_option_range(param.name_span)),
+                help: format!(
+                    "{kind} declarations use fixed-layout world parameters or semantic boundary values such as `RegionCapture`, `SceneDomain`, and `DetailTier`."
+                ),
+            });
+        }
+    }
+}
+
+fn supports_semantic_world_boundary_type(
+    ty: &Type,
+    classes: &ClassIndex,
+    enums: &EnumIndex,
+    visiting: &mut HashSet<SmolStr>,
+) -> bool {
+    if is_capture_boundary_type(ty)
+        || is_detail_tier_boundary_type(ty)
+        || is_scene_domain_boundary_type(ty)
+    {
+        return true;
+    }
+    supports_fixed_value_type(ty, classes, visiting)
+        || matches!(ty, Type::Named(name, _) if enums.get(name).is_some())
+}
+
+fn is_capture_boundary_type(ty: &Type) -> bool {
+    matches!(ty, Type::Named(name, args) if name.as_str() == "RegionCapture" && args.is_empty())
+}
+
+fn is_detail_tier_boundary_type(ty: &Type) -> bool {
+    matches!(ty, Type::Named(name, args) if name.as_str() == "DetailTier" && args.is_empty())
+}
+
+fn is_scene_domain_boundary_type(ty: &Type) -> bool {
+    matches!(ty, Type::Named(name, args) if name.as_str() == "SceneDomain" && args.is_empty())
 }
 
 fn validate_shape_payload(

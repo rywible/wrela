@@ -13,7 +13,10 @@ fn infer_expr(
 ) -> Type {
     let ty = match &body.exprs[expr_id] {
         Expr::Literal(lit) => literal_type(lit),
-        Expr::Variable(name) => ctx.resolve(name).unwrap_or(Type::Unknown),
+        Expr::Variable(name) => match name.as_str() {
+            "coarse" | "fine" => detail_tier_type(),
+            _ => ctx.resolve(name).unwrap_or(Type::Unknown),
+        },
         Expr::Detach { target, .. } => actor_type_for_detach_target(body, *target, classes),
         Expr::Unary { op, expr, op_span } => {
             let allow_pending_operand = matches!(op, UnaryOp::Await | UnaryOp::Fire);
@@ -2207,20 +2210,22 @@ fn infer_capture_builtin(
     if let Some(target_expr) = target_expr {
         let is_valid = match &body.exprs[target_expr] {
             Expr::Variable(name) => {
-                ctx.resolve(name).is_none() && (functions.is_field(name) || functions.is_shape(name))
+                ctx.resolve(name).is_none()
+                    && (functions.is_field(name) || functions.is_shape(name) || functions.is_region(name))
             }
             _ => false,
         };
         if !is_valid {
             errors.push(TypeError::CaptureTargetMustBeFieldOrShape {
                 span: span_from_range(body.expr_span(target_expr)),
-                help: "Pass a top-level field or shape declaration, for example `capture scene_shape`.".to_string(),
+                help: "Pass a top-level field, shape, or region declaration, for example `capture scene_shape` or `capture Highlands`.".to_string(),
             });
         }
     }
 
     Some(match target_expr {
         Some(target_expr) => match &body.exprs[target_expr] {
+            Expr::Variable(name) if functions.is_region(name) => region_capture_type(),
             Expr::Variable(name) if functions.is_shape(name) => shape_capture_type(),
             Expr::Variable(name) if functions.is_field(name) => field_capture_type(),
             _ => Type::Unknown,
@@ -2283,7 +2288,15 @@ fn infer_field_query_builtin(
             allow_result,
             in_result_fn,
         );
-        if !is_scene_sample_capture_type(&found) {
+        if let Some(target) = direct_capture_target_name(body, capture_expr) {
+            if !(functions.is_field(&target) || functions.is_shape(&target)) {
+                errors.push(TypeError::ShapeQueryTargetMustBeShape {
+                    query: query_name.clone(),
+                    span: span_from_range(body.expr_span(capture_expr)),
+                    help: "Pass a capture created from a top-level field or shape declaration, for example `distance_at(capture=capture sphere, ...)`.".to_string(),
+                });
+            }
+        } else if !is_scene_sample_capture_type(&found) {
             errors.push(TypeError::ArgumentTypeMismatch {
                 name: SmolStr::new("capture"),
                 expected: "FieldCapture or ShapeCapture".to_string(),
@@ -2383,14 +2396,14 @@ fn infer_shape_query_builtin(
             allow_result,
             in_result_fn,
         );
-        if let Some(target) = direct_capture_target_name(body, capture_expr)
-            && !functions.is_shape(&target)
-        {
-            errors.push(TypeError::ShapeQueryTargetMustBeShape {
-                query: query_name.clone(),
-                span: span_from_range(body.expr_span(capture_expr)),
-                help: "Pass a capture created from a top-level shape declaration, for example `trace_shape(capture=capture scene_shape, ...)`.".to_string(),
-            });
+        if let Some(target) = direct_capture_target_name(body, capture_expr) {
+            if !functions.is_shape(&target) {
+                errors.push(TypeError::ShapeQueryTargetMustBeShape {
+                    query: query_name.clone(),
+                    span: span_from_range(body.expr_span(capture_expr)),
+                    help: "Pass a capture created from a top-level shape declaration, for example `trace_shape(capture=capture scene_shape, ...)`.".to_string(),
+                });
+            }
         } else if types_known(&shape_capture_type(), &found)
             && !is_assignable(&shape_capture_type(), &found, classes, interfaces)
         {
@@ -2399,10 +2412,7 @@ fn infer_shape_query_builtin(
                 span: span_from_range(body.expr_span(capture_expr)),
                 help: "Store captures from top-level shapes in `ShapeCapture` values before using shape queries like `trace_shape` or `surface_at`.".to_string(),
             });
-        }
-        if !types_known(&shape_capture_type(), &found)
-            && found != Type::Unknown
-        {
+        } else if !types_known(&shape_capture_type(), &found) && found != Type::Unknown {
             errors.push(TypeError::ArgumentTypeMismatch {
                 name: SmolStr::new("capture"),
                 expected: type_label(&shape_capture_type()),
@@ -2481,16 +2491,14 @@ fn infer_shape_point_query_builtin(
             allow_result,
             in_result_fn,
         );
-        if let Some(target) = direct_capture_target_name(body, capture_expr)
-            && !functions.is_shape(&target)
-        {
-            errors.push(TypeError::ShapeQueryTargetMustBeShape {
-                query: query_name.clone(),
-                span: span_from_range(body.expr_span(capture_expr)),
-                help: format!(
-                    "Pass a capture created from a top-level shape declaration, for example `{query_name}(capture=capture scene_shape, ...)`."
-                ),
-            });
+        if let Some(target) = direct_capture_target_name(body, capture_expr) {
+            if !functions.is_shape(&target) {
+                errors.push(TypeError::ShapeQueryTargetMustBeShape {
+                    query: query_name.clone(),
+                    span: span_from_range(body.expr_span(capture_expr)),
+                    help: "Pass a capture created from a top-level shape declaration, for example `trace_shape(capture=capture scene_shape, ...)`.".to_string(),
+                });
+            }
         } else if types_known(&shape_capture_type(), &found)
             && !is_assignable(&shape_capture_type(), &found, classes, interfaces)
         {
@@ -2501,13 +2509,89 @@ fn infer_shape_point_query_builtin(
                     "Store captures from top-level shapes in `ShapeCapture` values before using `{query_name}`."
                 ),
             });
-        }
-        if !types_known(&shape_capture_type(), &found) && found != Type::Unknown {
+        } else if !types_known(&shape_capture_type(), &found) && found != Type::Unknown {
             errors.push(TypeError::ArgumentTypeMismatch {
                 name: SmolStr::new("capture"),
                 expected: type_label(&shape_capture_type()),
                 found: type_label(&found),
                 span: span_from_range(body.expr_span(capture_expr)),
+            });
+        }
+    }
+
+    Some(ret)
+}
+
+fn infer_world_query_builtin(
+    body: &Body,
+    expr_id: Idx<Expr>,
+    query_name: &SmolStr,
+    args: &Vec<crate::hir::Arg>,
+    ctx: &mut TypeContext,
+    classes: &ClassIndex,
+    enums: &EnumIndex,
+    interfaces: &InterfaceIndex,
+    functions: &FunctionIndex,
+    errors: &mut Vec<TypeError>,
+    allow_result: bool,
+    in_result_fn: bool,
+    expected: &[(SmolStr, Type)],
+    ret: Type,
+) -> Option<Type> {
+    if ctx.in_portable_lane() {
+        errors.push(TypeError::PortableHostCallForbidden {
+            function: ctx.current_function_name(),
+            callee: query_name.clone(),
+            span: span_from_range(body.expr_span(expr_id)),
+            help: "World queries belong in the host lane. Capture a region, build a domain over it, then query that domain from host code.".to_string(),
+        });
+    }
+
+    infer_exact_builtin_call(
+        body,
+        expr_id,
+        args,
+        ctx,
+        classes,
+        enums,
+        interfaces,
+        functions,
+        errors,
+        allow_result,
+        in_result_fn,
+        expected,
+        ret.clone(),
+    )?;
+
+    if let Some(domain_expr) = call_named_arg_value(args, "domain") {
+        let found = infer_expr(
+            body,
+            domain_expr,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            false,
+            allow_result,
+            in_result_fn,
+        );
+        if types_known(&scene_domain_type(), &found)
+            && !is_assignable(&scene_domain_type(), &found, classes, interfaces)
+        {
+            errors.push(TypeError::ArgumentTypeMismatch {
+                name: SmolStr::new("domain"),
+                expected: type_label(&scene_domain_type()),
+                found: type_label(&found),
+                span: span_from_range(body.expr_span(domain_expr)),
+            });
+        } else if !types_known(&scene_domain_type(), &found) && found != Type::Unknown {
+            errors.push(TypeError::ArgumentTypeMismatch {
+                name: SmolStr::new("domain"),
+                expected: type_label(&scene_domain_type()),
+                found: type_label(&found),
+                span: span_from_range(body.expr_span(domain_expr)),
             });
         }
     }
@@ -2552,6 +2636,327 @@ fn infer_scene_backend_builtin(
         &[],
         dispatch_backend_type(),
     )
+}
+
+fn infer_world_distance_query_builtin(
+    body: &Body,
+    expr_id: Idx<Expr>,
+    query_name: &SmolStr,
+    args: &Vec<crate::hir::Arg>,
+    ctx: &mut TypeContext,
+    classes: &ClassIndex,
+    enums: &EnumIndex,
+    interfaces: &InterfaceIndex,
+    functions: &FunctionIndex,
+    errors: &mut Vec<TypeError>,
+    allow_result: bool,
+    in_result_fn: bool,
+    ret: Type,
+) -> Option<Type> {
+    if ctx.in_portable_lane() {
+        errors.push(TypeError::PortableHostCallForbidden {
+            function: ctx.current_function_name(),
+            callee: query_name.clone(),
+            span: span_from_range(body.expr_span(expr_id)),
+            help: "World queries belong in the host lane. Capture the region first, derive a domain plan, then query that captured world.".to_string(),
+        });
+    }
+    infer_exact_builtin_call(
+        body,
+        expr_id,
+        args,
+        ctx,
+        classes,
+        enums,
+        interfaces,
+        functions,
+        errors,
+        allow_result,
+        in_result_fn,
+        &[
+            (SmolStr::new("capture"), region_capture_type()),
+            (SmolStr::new("domain"), scene_domain_type()),
+            (SmolStr::new("point"), Type::Vec3),
+        ],
+        ret.clone(),
+    )?;
+    if let Some(capture_expr) = call_named_arg_value(args, "capture") {
+        validate_region_capture_argument(
+            body,
+            capture_expr,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+        );
+    }
+    if let Some(domain_expr) = call_named_arg_value(args, "domain") {
+        validate_scene_domain_argument(
+            body,
+            domain_expr,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+        );
+    }
+    Some(ret)
+}
+
+fn infer_world_shape_query_builtin(
+    body: &Body,
+    expr_id: Idx<Expr>,
+    query_name: &SmolStr,
+    args: &Vec<crate::hir::Arg>,
+    ctx: &mut TypeContext,
+    classes: &ClassIndex,
+    enums: &EnumIndex,
+    interfaces: &InterfaceIndex,
+    functions: &FunctionIndex,
+    errors: &mut Vec<TypeError>,
+    allow_result: bool,
+    in_result_fn: bool,
+    ret: Type,
+) -> Option<Type> {
+    if ctx.in_portable_lane() {
+        errors.push(TypeError::PortableHostCallForbidden {
+            function: ctx.current_function_name(),
+            callee: query_name.clone(),
+            span: span_from_range(body.expr_span(expr_id)),
+            help: "World queries belong in the host lane. Capture the region first, derive a domain plan, then query that captured world.".to_string(),
+        });
+    }
+    let expected = match query_name.as_str() {
+        "trace_world" => vec![
+            (SmolStr::new("capture"), region_capture_type()),
+            (SmolStr::new("domain"), scene_domain_type()),
+            (SmolStr::new("origin"), Type::Vec3),
+            (SmolStr::new("direction"), Type::Vec3),
+            (SmolStr::new("max_distance"), Type::F32),
+            (SmolStr::new("min_step"), Type::F32),
+            (SmolStr::new("hit_epsilon"), Type::F32),
+            (SmolStr::new("max_steps"), Type::Integer),
+        ],
+        _ => vec![
+            (SmolStr::new("capture"), region_capture_type()),
+            (SmolStr::new("domain"), scene_domain_type()),
+            (SmolStr::new("hit"), portable_named_type("Hit3")),
+        ],
+    };
+    infer_exact_builtin_call(
+        body,
+        expr_id,
+        args,
+        ctx,
+        classes,
+        enums,
+        interfaces,
+        functions,
+        errors,
+        allow_result,
+        in_result_fn,
+        &expected,
+        ret.clone(),
+    )?;
+    if let Some(capture_expr) = call_named_arg_value(args, "capture") {
+        validate_region_capture_argument(
+            body,
+            capture_expr,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+        );
+    }
+    if let Some(domain_expr) = call_named_arg_value(args, "domain") {
+        validate_scene_domain_argument(
+            body,
+            domain_expr,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+        );
+    }
+    Some(ret)
+}
+
+fn infer_world_point_query_builtin(
+    body: &Body,
+    expr_id: Idx<Expr>,
+    query_name: &SmolStr,
+    args: &Vec<crate::hir::Arg>,
+    ctx: &mut TypeContext,
+    classes: &ClassIndex,
+    enums: &EnumIndex,
+    interfaces: &InterfaceIndex,
+    functions: &FunctionIndex,
+    errors: &mut Vec<TypeError>,
+    allow_result: bool,
+    in_result_fn: bool,
+    ret: Type,
+) -> Option<Type> {
+    if ctx.in_portable_lane() {
+        errors.push(TypeError::PortableHostCallForbidden {
+            function: ctx.current_function_name(),
+            callee: query_name.clone(),
+            span: span_from_range(body.expr_span(expr_id)),
+            help: "World queries belong in the host lane. Capture the region first, derive a domain plan, then query that captured world.".to_string(),
+        });
+    }
+    let expected = match query_name.as_str() {
+        "radiance_world" => vec![
+            (SmolStr::new("capture"), region_capture_type()),
+            (SmolStr::new("domain"), scene_domain_type()),
+            (SmolStr::new("point"), Type::Vec3),
+            (SmolStr::new("direction"), Type::Vec3),
+        ],
+        _ => vec![
+            (SmolStr::new("capture"), region_capture_type()),
+            (SmolStr::new("domain"), scene_domain_type()),
+            (SmolStr::new("point"), Type::Vec3),
+        ],
+    };
+    infer_exact_builtin_call(
+        body,
+        expr_id,
+        args,
+        ctx,
+        classes,
+        enums,
+        interfaces,
+        functions,
+        errors,
+        allow_result,
+        in_result_fn,
+        &expected,
+        ret.clone(),
+    )?;
+    if let Some(capture_expr) = call_named_arg_value(args, "capture") {
+        validate_region_capture_argument(
+            body,
+            capture_expr,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+        );
+    }
+    if let Some(domain_expr) = call_named_arg_value(args, "domain") {
+        validate_scene_domain_argument(
+            body,
+            domain_expr,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+        );
+    }
+    Some(ret)
+}
+
+fn validate_region_capture_argument(
+    body: &Body,
+    capture_expr: Idx<Expr>,
+    ctx: &mut TypeContext,
+    classes: &ClassIndex,
+    enums: &EnumIndex,
+    interfaces: &InterfaceIndex,
+    functions: &FunctionIndex,
+    errors: &mut Vec<TypeError>,
+    allow_result: bool,
+    in_result_fn: bool,
+) {
+    let found = infer_expr(
+        body,
+        capture_expr,
+        ctx,
+        classes,
+        enums,
+        interfaces,
+        functions,
+        errors,
+        false,
+        allow_result,
+        in_result_fn,
+    );
+    if let Some(target) = direct_capture_target_name(body, capture_expr) {
+        if !functions.is_region(&target) {
+            errors.push(TypeError::ArgumentTypeMismatch {
+                name: SmolStr::new("capture"),
+                expected: "RegionCapture".to_string(),
+                found: type_label(&found),
+                span: span_from_range(body.expr_span(capture_expr)),
+            });
+        }
+    } else if !is_region_capture_type(&found) && found != Type::Unknown {
+        errors.push(TypeError::ArgumentTypeMismatch {
+            name: SmolStr::new("capture"),
+            expected: "RegionCapture".to_string(),
+            found: type_label(&found),
+            span: span_from_range(body.expr_span(capture_expr)),
+        });
+    }
+}
+
+fn validate_scene_domain_argument(
+    body: &Body,
+    domain_expr: Idx<Expr>,
+    ctx: &mut TypeContext,
+    classes: &ClassIndex,
+    enums: &EnumIndex,
+    interfaces: &InterfaceIndex,
+    functions: &FunctionIndex,
+    errors: &mut Vec<TypeError>,
+    allow_result: bool,
+    in_result_fn: bool,
+) {
+    let found = infer_expr(
+        body,
+        domain_expr,
+        ctx,
+        classes,
+        enums,
+        interfaces,
+        functions,
+        errors,
+        false,
+        allow_result,
+        in_result_fn,
+    );
+    if found != Type::Unknown && !is_assignable(&scene_domain_type(), &found, classes, interfaces)
+    {
+        errors.push(TypeError::ArgumentTypeMismatch {
+            name: SmolStr::new("domain"),
+            expected: "SceneDomain".to_string(),
+            found: type_label(&found),
+            span: span_from_range(body.expr_span(domain_expr)),
+        });
+    }
 }
 
 fn infer_shape_batch_query_builtin(
@@ -2618,14 +3023,14 @@ fn infer_shape_batch_query_builtin(
             allow_result,
             in_result_fn,
         );
-        if let Some(target) = direct_capture_target_name(body, capture_expr)
-            && !functions.is_shape(&target)
-        {
-            errors.push(TypeError::ShapeQueryTargetMustBeShape {
-                query: query_name.clone(),
-                span: span_from_range(body.expr_span(capture_expr)),
-                help: "Pass a capture created from a top-level shape declaration, for example `trace_shape_batch(capture=capture scene_shape, rays=queries, backend=dispatch_backend_cpu())`.".to_string(),
-            });
+        if let Some(target) = direct_capture_target_name(body, capture_expr) {
+            if !functions.is_shape(&target) {
+                errors.push(TypeError::ShapeQueryTargetMustBeShape {
+                    query: query_name.clone(),
+                    span: span_from_range(body.expr_span(capture_expr)),
+                    help: "Pass a capture created from a top-level shape declaration, for example `trace_shape_batch(capture=capture scene_shape, rays=queries, backend=dispatch_backend_cpu())`.".to_string(),
+                });
+            }
         } else if types_known(&shape_capture_type(), &found)
             && !is_assignable(&shape_capture_type(), &found, classes, interfaces)
         {
@@ -2634,8 +3039,7 @@ fn infer_shape_batch_query_builtin(
                 span: span_from_range(body.expr_span(capture_expr)),
                 help: "Store captures from top-level shapes in `ShapeCapture` values before using shape batch queries.".to_string(),
             });
-        }
-        if !types_known(&shape_capture_type(), &found) && found != Type::Unknown {
+        } else if !types_known(&shape_capture_type(), &found) && found != Type::Unknown {
             errors.push(TypeError::ArgumentTypeMismatch {
                 name: SmolStr::new("capture"),
                 expected: type_label(&shape_capture_type()),
@@ -2706,7 +3110,15 @@ fn infer_field_batch_query_builtin(
             allow_result,
             in_result_fn,
         );
-        if !is_scene_sample_capture_type(&found) {
+        if let Some(target) = direct_capture_target_name(body, capture_expr) {
+            if !(functions.is_field(&target) || functions.is_shape(&target)) {
+                errors.push(TypeError::ShapeQueryTargetMustBeShape {
+                    query: query_name.clone(),
+                    span: span_from_range(body.expr_span(capture_expr)),
+                    help: "Pass a capture created from a top-level field or shape declaration, for example `distance_at_batch(capture=capture sphere, points=queries, backend=dispatch_backend_cpu())`.".to_string(),
+                });
+            }
+        } else if !is_scene_sample_capture_type(&found) {
             errors.push(TypeError::ArgumentTypeMismatch {
                 name: SmolStr::new("capture"),
                 expected: "FieldCapture or ShapeCapture".to_string(),
@@ -2726,8 +3138,24 @@ fn shape_capture_type() -> Type {
     portable_named_type("ShapeCapture")
 }
 
+fn region_capture_type() -> Type {
+    portable_named_type("RegionCapture")
+}
+
+fn detail_tier_type() -> Type {
+    portable_named_type("DetailTier")
+}
+
+fn is_region_capture_type(ty: &Type) -> bool {
+    *ty == region_capture_type()
+}
+
 fn dispatch_backend_type() -> Type {
     portable_named_type("DispatchBackend")
+}
+
+fn scene_domain_type() -> Type {
+    portable_named_type("SceneDomain")
 }
 
 fn is_scene_sample_capture_type(found: &Type) -> bool {
@@ -3953,6 +4381,96 @@ fn infer_math_builtin_call(
             Type::Vec3,
         ),
         "medium_at" => infer_shape_point_query_builtin(
+            body,
+            expr_id,
+            name,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            portable_named_type("Medium"),
+        ),
+        "distance_world" => infer_world_distance_query_builtin(
+            body,
+            expr_id,
+            name,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            Type::F32,
+        ),
+        "normal_world" => infer_world_distance_query_builtin(
+            body,
+            expr_id,
+            name,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            Type::Vec3,
+        ),
+        "trace_world" => infer_world_shape_query_builtin(
+            body,
+            expr_id,
+            name,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            portable_named_type("Hit3"),
+        ),
+        "surface_world" => infer_world_shape_query_builtin(
+            body,
+            expr_id,
+            name,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            portable_named_type("Surface"),
+        ),
+        "radiance_world" => infer_world_point_query_builtin(
+            body,
+            expr_id,
+            name,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            Type::Vec3,
+        ),
+        "medium_world" => infer_world_point_query_builtin(
             body,
             expr_id,
             name,

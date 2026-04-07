@@ -200,185 +200,48 @@ shape scene_shape {
     }
 }
 
-fn compute_scene_surface(scene_capture: ShapeCapture, hit: Hit3) -> Surface {
-    return surface_at(capture=scene_capture, hit=hit)
+region scene_region() {
+    place coarse = scene_shape
+    place fine = scene_shape
 }
 
-fn compute_scene_hit(scene_capture: ShapeCapture, origin: Vec3, direction: Vec3) -> Hit3 {
-    return trace_shape(
-        capture=scene_capture,
-        origin=origin,
-        direction=direction,
-        max_distance=12.0,
-        min_step=0.02,
-        hit_epsilon=0.0008,
-        max_steps=96
-    )
+domain scene_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = true
+    radiance = true
+    media = true
+    max_distance = 12.0
+    min_step = 0.02
+    hit_epsilon = 0.0008
+    max_steps = 96
 }
 
-fn compute_shadow_visibility(
-    scene_capture: ShapeCapture,
-    hit_position: Vec3,
-    hit_normal: Vec3,
-    light: Light
-) -> F32 {
-    shadow_origin = hit_position + hit_normal * 0.01
-    shadow_direction = normalize(light.position - shadow_origin)
-    shadow_limit = length(light.position - shadow_origin)
-    mutable total = 0.02
-    mutable step_count = 0
-    while total < shadow_limit and step_count < 32 {
-        sample_position = shadow_origin + shadow_direction * total
-        sampled_distance = distance_at(capture=scene_capture, point=sample_position)
-        if sampled_distance < 0.001 {
-            return 0.0
-        }
-        total += max(sampled_distance, 0.01)
-        step_count += 1
-    }
-    return 1.0
-}
-
-fn compute_ambient_occlusion(
-    scene_capture: ShapeCapture,
-    hit_position: Vec3,
-    hit_normal: Vec3
-) -> F32 {
-    sample_a = distance_at(capture=scene_capture, point=hit_position + hit_normal * 0.06)
-    sample_b = distance_at(capture=scene_capture, point=hit_position + hit_normal * 0.14)
-    sample_c = distance_at(capture=scene_capture, point=hit_position + hit_normal * 0.28)
-    occlusion = clamp(
-        (0.06 - sample_a) * 1.6 + (0.14 - sample_b) * 1.1 + (0.28 - sample_c) * 0.8,
-        0.0,
-        1.0
-    )
-    return 1.0 - occlusion * 0.85
-}
-
-fn compute_scene_color(
-    scene_capture: ShapeCapture,
-    camera_position: Vec3,
-    light: Light,
-    ray_direction: Vec3
-) -> Vec3 {
-    hit = compute_scene_hit(
-        scene_capture=scene_capture,
-        origin=camera_position,
-        direction=ray_direction
-    )
-
-    if hit.hit {
-        surface = compute_scene_surface(scene_capture=scene_capture, hit=hit)
-        captured_radiance = radiance_at(
-            capture=scene_capture,
-            point=hit.position,
-            direction=ray_direction
-        )
-        medium = medium_at(capture=scene_capture, point=hit.position)
-        feature_bias = clamp(f32(hit.feature_id), 0.0, 1.0)
-        edge_glow = clamp(0.18 - abs(hit.position.x) * 0.1 - abs(hit.position.z) * 0.06, 0.0, 0.18) / 0.18
-        radiance = captured_radiance
-            + vec3(20.0, 12.0, 6.0) * edge_glow * (0.35 + 0.65 * feature_bias)
-        key_dir = normalize(light.position - hit.position)
-        fill_dir = normalize(vec3(-0.9, 0.45, 0.2))
-        view_dir = normalize(camera_position - hit.position)
-        half_dir = normalize(key_dir + view_dir)
-        surface_frame = inverse_transform3(transform=hit.shading_frame)
-        local_view = normalize(transform_vector(transform=surface_frame, vector=view_dir))
-        distance_to_light = length(light.position - hit.position)
-        attenuation = clamp(1.0 - distance_to_light / light.range, 0.0, 1.0)
-        ao = compute_ambient_occlusion(
-            scene_capture=scene_capture,
-            hit_position=hit.position,
-            hit_normal=hit.normal
-        )
-        shadow = compute_shadow_visibility(
-            scene_capture=scene_capture,
-            hit_position=hit.position,
-            hit_normal=hit.normal,
-            light=light
-        )
-        ndotl = max(dot(hit.normal, key_dir), 0.0)
-        ndotv = max(dot(hit.normal, view_dir), 0.0)
-        ndoth = max(dot(hit.normal, half_dir), 0.0)
-        diffuse = ndotl * shadow
-        fill = 0.2 * max(dot(hit.normal, fill_dir), 0.0) * ao
-        frame_bias = 0.10 + 0.18 * abs(local_view.x) + surface.clearcoat * 0.24
-        spec_power = mix(64.0, 10.0, clamp(surface.roughness, 0.0, 1.0))
-        fresnel = pow(1.0 - ndotv, 5.0)
-        specular = pow(ndoth, spec_power) * frame_bias * (0.18 + surface.metalness * 0.42 + surface.clearcoat * 0.38)
-        sheen = surface.sheen * pow(1.0 - ndotv, 3.0) * 26.0
-        lighting = (0.10 + (0.92 * diffuse * attenuation) + (fill * 0.35)) * ao
-        base = 1.0 - surface.metalness * 0.28
-        direct = vec3(
-            clamp(surface.albedo.x * lighting * light.intensity.x * base + 255.0 * specular + sheen * 0.8, 0.0, 255.0),
-            clamp(surface.albedo.y * lighting * light.intensity.y * base + 224.0 * specular + sheen * 0.6, 0.0, 255.0),
-            clamp(surface.albedo.z * lighting * light.intensity.z * base + 196.0 * specular + sheen * 0.4, 0.0, 255.0)
-        )
-        fog_strength = clamp(medium.density * distance_to_light * 0.22 + (1.0 - ao) * 0.12, 0.0, 0.65)
-        fog_color = medium.emission + radiance * 0.25
-        lit = direct + surface.emissive + radiance * (0.35 + fresnel * 0.25)
-        return mix(lit, fog_color, fog_strength)
-    }
-
-    miss_point = camera_position + ray_direction * 4.0
-    miss_radiance = radiance_at(
-        capture=scene_capture,
-        point=miss_point,
-        direction=ray_direction
-    )
-    miss_medium = medium_at(capture=scene_capture, point=miss_point)
-    miss_fog = clamp(miss_medium.density * 3.0, 0.0, 0.45)
-    return mix(miss_radiance, miss_medium.emission + miss_radiance * 0.28, miss_fog)
-}
-
-fn render_ppm() -> String {
-    width = 40
-    height = 40
-    aspect = f32(width) / f32(height)
-    camera_position = vec3(0.0, 0.1, 2.7)
-    forward = normalize(vec3(0.0, 0.0, -1.0))
-    world_up = vec3(0.0, 1.0, 0.0)
-    right = normalize(cross(forward, world_up))
-    up = normalize(cross(right, forward))
-    scene_capture = capture scene_shape
+render render_ppm(
+    world: RegionCapture,
+    camera: Camera
+) {
+    domain = scene_domain(world = world)
     light = Light(
         position=vec3(2.4, 2.8, 2.4),
         direction=normalize(vec3(-0.8, -0.9, -0.9)),
         intensity=vec3(1.0, 0.98, 0.95),
         range=12.0
     )
-
-    mutable ppm = "P3\n40 40\n255\n"
-    mutable y = 0
-    while y < height {
-        mutable x = 0
-        while x < width {
-            sample_u = (f32(x) + 0.5) / f32(width)
-            sample_v = (f32(y) + 0.5) / f32(height)
-            screen_x = (sample_u - 0.5) * 2.0 * aspect * 0.72
-            screen_y = (0.5 - sample_v) * 2.0 * 0.72
-            ray = normalize(forward + right * screen_x + up * screen_y)
-            shaded = compute_scene_color(
-                scene_capture=scene_capture,
-                camera_position=camera_position,
-                light=light,
-                ray_direction=ray
-            )
-            r = i32(clamp(shaded.x, 0.0, 255.0))
-            g = i32(clamp(shaded.y, 0.0, 255.0))
-            b = i32(clamp(shaded.z, 0.0, 255.0))
-
-            ppm += "{r} {g} {b}\n"
-            x += 1
-        }
-        y += 1
-    }
-
-    return ppm
+    width = 40
+    height = 40
+    world_up = camera.up
+    view_scale = 0.72
+    fill_dir = normalize(vec3(-0.9, 0.45, 0.2))
 }
 
 fn run() -> Integer {
-    print_line(text=render_ppm())
+    camera = Camera(
+        position=vec3(0.0, 0.1, 2.7),
+        forward=normalize(vec3(0.0, 0.0, -1.0)),
+        up=vec3(0.0, 1.0, 0.0),
+        vertical_fov_degrees=46.0
+    )
+    world = capture scene_region
+    print_line(text=render_ppm(world=world, camera=camera))
     return 0
 }

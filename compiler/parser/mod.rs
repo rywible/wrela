@@ -2156,6 +2156,118 @@ shape subtract_shape {
     }
 
     #[test]
+    fn test_region_domain_and_render_declarations_parse_and_attach_to_ast() {
+        use ast::{AstNode, RegionItem, Stmt};
+        let text = "\
+region Highlands(band: I32, seed: U64) {
+    place stairs = StairBand(index = band)
+    overlay boss = FoldMother(instance = seed)
+    replace landing = BossLanding(seed = seed)
+    scatter trees {
+        place sapling = Oak(seed = seed)
+    }
+    if band {
+        place fallback = Stone()
+    }
+}
+domain Combat(world: Capture[StaircaseWorld]) {
+    geometry_detail = coarse
+    material = false
+    radiance = false
+    media = false
+}
+render StaircaseView(world: Capture[StaircaseWorld], camera: Camera) {
+    domain = Presentation(world = world, camera = camera)
+    lights = []
+    limits = render_limits(max_steps = 128)
+}
+";
+        let (_node, errors) = parse_with_errors(text);
+        assert!(errors.is_empty(), "{errors:?}");
+
+        let node = parse(text);
+        let root = ast::Root::cast(node).unwrap();
+        let statements: Vec<_> = root.statements().collect();
+        assert_eq!(statements.len(), 3);
+
+        let region = match &statements[0] {
+            Stmt::RegionDecl(region) => region,
+            _ => panic!("expected region declaration"),
+        };
+        assert_eq!(region.name().unwrap().text(), "Highlands");
+        assert_eq!(region.params().count(), 2);
+        let region_items: Vec<_> = region.items().collect();
+        assert_eq!(region_items.len(), 5);
+        match &region_items[0] {
+            RegionItem::Place(place) => {
+                assert_eq!(place.name().unwrap().text(), "stairs");
+                assert!(place.value().is_some());
+            }
+            _ => panic!("expected region place item"),
+        }
+        match &region_items[3] {
+            RegionItem::Scatter(scatter) => {
+                assert_eq!(scatter.name().unwrap().text(), "trees");
+                let nested: Vec<_> = scatter.items().collect();
+                assert_eq!(nested.len(), 1);
+                match &nested[0] {
+                    RegionItem::Place(place) => {
+                        assert_eq!(place.name().unwrap().text(), "sapling");
+                    }
+                    _ => panic!("expected nested scatter place item"),
+                }
+            }
+            _ => panic!("expected region scatter item"),
+        }
+
+        let domain = match &statements[1] {
+            Stmt::DomainDecl(domain) => domain,
+            _ => panic!("expected domain declaration"),
+        };
+        assert_eq!(domain.name().unwrap().text(), "Combat");
+        assert_eq!(domain.params().count(), 1);
+        assert_eq!(domain.statements().count(), 4);
+
+        let render = match &statements[2] {
+            Stmt::RenderDecl(render) => render,
+            _ => panic!("expected render declaration"),
+        };
+        assert_eq!(render.name().unwrap().text(), "StaircaseView");
+        assert_eq!(render.params().count(), 2);
+        assert_eq!(render.statements().count(), 3);
+    }
+
+    #[test]
+    fn test_region_domain_and_render_signature_errors_are_reported_by_the_parser() {
+        let region_text = "region (band: I32) {}\n";
+        let (_node, region_errors) = parse_with_errors(region_text);
+        assert!(
+            region_errors
+                .iter()
+                .any(|error| error.message == "expected region name after 'region'"),
+            "expected missing region name parse error, got: {region_errors:?}"
+        );
+
+        let domain_text = "domain Combat {}\n";
+        let (_node, domain_errors) = parse_with_errors(domain_text);
+        assert!(
+            domain_errors
+                .iter()
+                .any(|error| error.message == "expected '(' after domain name"),
+            "expected missing domain parameter-list parse error, got: {domain_errors:?}"
+        );
+
+        let render_text = "render (world: Capture[StaircaseWorld]) {}\n";
+        let (_node, render_errors) = parse_with_errors(render_text);
+        assert!(
+            render_errors
+                .iter()
+                .any(|error| error.message == "expected render name after 'render'"),
+            "expected missing render name parse error, got: {render_errors:?}"
+        );
+    }
+
+    #[test]
     fn test_material_declarations_parse_and_attach_to_ast() {
         use ast::{AstNode, Stmt};
         let text = "\

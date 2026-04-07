@@ -28,6 +28,51 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
     }
     for node in root.descendants() {
         match node.kind() {
+            SyntaxKind::RegionDecl | SyntaxKind::DomainDecl | SyntaxKind::RenderDecl => {
+                let (name_message, name_present, has_params) = match node.kind() {
+                    SyntaxKind::RegionDecl => {
+                        let region = ast::RegionDecl::cast(node.clone());
+                        (
+                            "region declaration requires a name",
+                            region.as_ref().and_then(|decl| decl.name()).is_some(),
+                            has_token(&node, SyntaxKind::LParen)
+                                && has_token(&node, SyntaxKind::RParen),
+                        )
+                    }
+                    SyntaxKind::DomainDecl => {
+                        let domain = ast::DomainDecl::cast(node.clone());
+                        (
+                            "domain declaration requires a name",
+                            domain.as_ref().and_then(|decl| decl.name()).is_some(),
+                            has_token(&node, SyntaxKind::LParen)
+                                && has_token(&node, SyntaxKind::RParen),
+                        )
+                    }
+                    _ => {
+                        let render = ast::RenderDecl::cast(node.clone());
+                        (
+                            "render declaration requires a name",
+                            render.as_ref().and_then(|decl| decl.name()).is_some(),
+                            has_token(&node, SyntaxKind::LParen)
+                                && has_token(&node, SyntaxKind::RParen),
+                        )
+                    }
+                };
+                if !name_present {
+                    errors.push(ValidationError {
+                        kind: ValidationDiagKind::AstRule,
+                        message: name_message.to_string(),
+                        span: span_for_node(&node),
+                    });
+                }
+                if !has_params {
+                    errors.push(ValidationError {
+                        kind: ValidationDiagKind::AstRule,
+                        message: "declaration requires an explicit parameter list".to_string(),
+                        span: span_for_node(&node),
+                    });
+                }
+            }
             kind if is_function_like_definition(kind) => {
                 if matches!(
                     kind,
@@ -349,12 +394,15 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                                 | SyntaxKind::RadianceDecl
                                 | SyntaxKind::VolumeDecl
                                 | SyntaxKind::MaterialDecl
+                                | SyntaxKind::RegionDecl
+                                | SyntaxKind::DomainDecl
+                                | SyntaxKind::RenderDecl
                                 | SyntaxKind::SystemDef
                         ) {
                             errors.push(ValidationError {
                                 kind: ValidationDiagKind::AstRule,
                                 message: "private blocks at the top level may only \
-contain functions, fields, radiance/volume fields, materials, and classes"
+contain functions, fields, radiance/volume fields, materials, regions, domains, renders, and classes"
                                     .to_string(),
                                 span: span_for_node(&stmt),
                             });
@@ -776,6 +824,41 @@ material (hit: Hit3) {
                 .iter()
                 .any(|e| e.message == "material requires an explicit return type"),
             "expected material return-type validation error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_region_domain_and_render_declarations_require_names_and_parameter_lists() {
+        let text = "\
+region (band: I32) {
+    place stairs = StairBand(index = band)
+}
+domain Combat {
+    geometry_detail = coarse
+}
+render (world: Capture[StaircaseWorld]) {
+    domain = Presentation(world = world, camera = camera)
+}
+";
+        let root = parse(text);
+        let errors = validate(&root);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message == "region declaration requires a name"),
+            "expected region name validation error, got: {errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message == "render declaration requires a name"),
+            "expected render name validation error, got: {errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message == "declaration requires an explicit parameter list"),
+            "expected parameter-list validation error, got: {errors:?}"
         );
     }
 

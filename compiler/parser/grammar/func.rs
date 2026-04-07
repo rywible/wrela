@@ -37,6 +37,24 @@ pub fn field_decl(p: &mut Parser) {
     m.complete(p, SyntaxKind::FieldDecl);
 }
 
+pub fn region_decl(p: &mut Parser) {
+    let m = p.start();
+    parse_region_signature_and_block(p);
+    m.complete(p, SyntaxKind::RegionDecl);
+}
+
+pub fn domain_decl(p: &mut Parser) {
+    let m = p.start();
+    parse_domain_signature_and_block(p);
+    m.complete(p, SyntaxKind::DomainDecl);
+}
+
+pub fn render_decl(p: &mut Parser) {
+    let m = p.start();
+    parse_render_signature_and_block(p);
+    m.complete(p, SyntaxKind::RenderDecl);
+}
+
 pub fn radiance_decl(p: &mut Parser) {
     let m = p.start();
     parse_radiance_signature_and_block(p);
@@ -238,6 +256,200 @@ fn parse_radiance_signature_and_block(p: &mut Parser) {
 
     expect_block_intro(p, "expected '{' after radiance field signature");
     parse_block(p);
+}
+
+fn parse_region_signature_and_block(p: &mut Parser) {
+    expect_ident_text(p, "region", "expected 'region' to start a region declaration");
+    p.expect_with_message(SyntaxKind::Ident, "expected region name after 'region'");
+    p.expect_with_message(SyntaxKind::LParen, "expected '(' after region name");
+    parse_param_list(p);
+    p.expect_with_message(SyntaxKind::RParen, "expected ')' after region parameters");
+
+    expect_block_intro(p, "expected '{' after region signature");
+    parse_region_body(p);
+}
+
+fn parse_domain_signature_and_block(p: &mut Parser) {
+    expect_ident_text(p, "domain", "expected 'domain' to start a domain declaration");
+    p.expect_with_message(SyntaxKind::Ident, "expected domain name after 'domain'");
+    p.expect_with_message(SyntaxKind::LParen, "expected '(' after domain name");
+    parse_param_list(p);
+    p.expect_with_message(SyntaxKind::RParen, "expected ')' after domain parameters");
+
+    expect_block_intro(p, "expected '{' after domain signature");
+    parse_block(p);
+}
+
+fn parse_render_signature_and_block(p: &mut Parser) {
+    expect_ident_text(p, "render", "expected 'render' to start a render declaration");
+    p.expect_with_message(SyntaxKind::Ident, "expected render name after 'render'");
+    p.expect_with_message(SyntaxKind::LParen, "expected '(' after render name");
+    parse_param_list(p);
+    p.expect_with_message(SyntaxKind::RParen, "expected ')' after render parameters");
+
+    expect_block_intro(p, "expected '{' after render signature");
+    parse_block(p);
+}
+
+fn parse_region_body(p: &mut Parser) {
+    let m = p.start();
+    if p.at(SyntaxKind::LBrace) {
+        p.bump();
+    } else {
+        p.error_with_message_no_bump("expected '{' after region signature");
+    }
+
+    p.consume_trivia();
+    while parse_region_item(p) {
+        p.consume_trivia();
+    }
+
+    while !p.at(SyntaxKind::RBrace) && !p.is_at_eof() {
+        p.consume_trivia();
+        if p.at(SyntaxKind::RBrace) || p.is_at_eof() {
+            break;
+        }
+        let cursor = p.cursor_pos();
+        p.error_with_message_no_bump("expected region statement: place, overlay, replace, scatter, or if");
+        p.recover_until(&[SyntaxKind::Newline, SyntaxKind::RBrace]);
+        p.expect_stmt_boundary();
+        if p.cursor_pos() == cursor {
+            p.error();
+        }
+    }
+    p.expect(SyntaxKind::RBrace);
+    m.complete(p, SyntaxKind::Block);
+}
+
+fn parse_region_item(p: &mut Parser) -> bool {
+    if p.at(SyntaxKind::IfKw) {
+        parse_region_if(p);
+        return true;
+    }
+    if p.at_ident_text("place") {
+        parse_region_named_assignment(p, "place", SyntaxKind::RegionPlaceStmt, "expected region placement name");
+        return true;
+    }
+    if p.at_ident_text("overlay") {
+        parse_region_named_assignment(
+            p,
+            "overlay",
+            SyntaxKind::RegionOverlayStmt,
+            "expected overlay name",
+        );
+        return true;
+    }
+    if p.at_ident_text("replace") {
+        parse_region_named_assignment(
+            p,
+            "replace",
+            SyntaxKind::RegionReplaceStmt,
+            "expected replacement name",
+        );
+        return true;
+    }
+    if p.at_ident_text("scatter") {
+        parse_region_scatter(p);
+        return true;
+    }
+    false
+}
+
+fn parse_region_named_assignment(
+    p: &mut Parser,
+    keyword: &str,
+    node_kind: SyntaxKind,
+    missing_name_message: &str,
+) {
+    let m = p.start();
+    expect_ident_text(p, keyword, &format!("expected '{keyword}' to start a region statement"));
+    p.expect_with_message(SyntaxKind::Ident, missing_name_message);
+    p.expect_with_message(SyntaxKind::Equals, "expected '=' after region item name");
+    expr::expr(p);
+    m.complete(p, node_kind);
+    p.expect_stmt_boundary();
+}
+
+fn parse_region_scatter(p: &mut Parser) {
+    let m = p.start();
+    expect_ident_text(p, "scatter", "expected 'scatter' to start a region scatter statement");
+    p.expect_with_message(SyntaxKind::Ident, "expected scatter name after 'scatter'");
+    let b = p.start();
+    expect_block_intro(p, "expected '{' after scatter name");
+    if p.at(SyntaxKind::LBrace) {
+        p.bump();
+        p.consume_trivia();
+        while parse_region_item(p) {
+            p.consume_trivia();
+        }
+        while !p.at(SyntaxKind::RBrace) && !p.is_at_eof() {
+            p.consume_trivia();
+            if p.at(SyntaxKind::RBrace) || p.is_at_eof() {
+                break;
+            }
+            p.error_with_message_no_bump(
+                "expected region statement inside scatter: place, overlay, replace, scatter, or if",
+            );
+            p.recover_until(&[SyntaxKind::Newline, SyntaxKind::RBrace]);
+            p.expect_stmt_boundary();
+        }
+        p.expect(SyntaxKind::RBrace);
+    } else {
+        p.error_with_message_no_bump("expected '{' after scatter name");
+    }
+    b.complete(p, SyntaxKind::Block);
+    m.complete(p, SyntaxKind::RegionScatterStmt);
+    p.expect_stmt_boundary();
+}
+
+fn parse_region_if(p: &mut Parser) {
+    let m = p.start();
+    p.expect(SyntaxKind::IfKw);
+    expr::expr(p);
+    expect_block_intro(p, "expected '{' after if condition");
+    parse_region_body(p);
+    if p.at(SyntaxKind::ElseKw) {
+        p.bump();
+        if p.at(SyntaxKind::IfKw) {
+            parse_region_if(p);
+        } else {
+            expect_block_intro(p, "expected '{' after else");
+            parse_region_body(p);
+        }
+    } else if p.at_ident_text("but") {
+        p.error_with_message_no_bump("`but if` was removed; use `else if`");
+        p.bump();
+        if p.at(SyntaxKind::IfKw) {
+            parse_region_if(p);
+        }
+    } else if p.at(SyntaxKind::DefaultKw) {
+        p.error_with_message_no_bump("`otherwise` was removed from control-flow; use `else`");
+        p.bump();
+        if p.at(SyntaxKind::IfKw) {
+            parse_region_if(p);
+        } else {
+            if p.at(SyntaxKind::Colon) {
+                p.bump();
+            }
+            if p.at(SyntaxKind::LBrace) {
+                parse_region_body(p);
+            }
+        }
+    } else if p.at_ident_text("otherwise") {
+        p.error_with_message_no_bump("`otherwise` was removed from control-flow; use `else`");
+        p.bump();
+        if p.at(SyntaxKind::IfKw) {
+            parse_region_if(p);
+        } else {
+            if p.at(SyntaxKind::Colon) {
+                p.bump();
+            }
+            if p.at(SyntaxKind::LBrace) {
+                parse_region_body(p);
+            }
+        }
+    }
+    m.complete(p, SyntaxKind::IfStmt);
 }
 
 fn parse_volume_signature_and_block(p: &mut Parser) {

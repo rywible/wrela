@@ -676,6 +676,7 @@ struct Checker<'a> {
     in_method: bool,
     in_check: bool,
     in_certified_flow: bool,
+    current_function_role: FunctionRole,
 }
 
 pub struct SemanticDiagnostics {
@@ -721,6 +722,7 @@ impl<'a> Checker<'a> {
             in_method: false,
             in_check: false,
             in_certified_flow: false,
+            current_function_role: FunctionRole::Function,
         }
     }
 
@@ -898,6 +900,7 @@ impl<'a> Checker<'a> {
         let prev_check = self.in_check;
         let prev_certified_flow = self.in_certified_flow;
         let prev_require_objective = self.current_objective_required;
+        let prev_role = self.current_function_role;
         self.current_objective_required = self
             .objective_required_by_fn
             .get(&func_id.into_raw())
@@ -906,6 +909,7 @@ impl<'a> Checker<'a> {
         self.in_method = is_method;
         self.in_check = matches!(func.kind, FunctionKind::Check | FunctionKind::CheckMethod);
         self.in_certified_flow = func.name.starts_with("test_");
+        self.current_function_role = func.role;
         for attr in &func.attributes {
             match attr.name.as_str() {
                 "serial" | "allows_env_set" | "allows_fs_escape" => {
@@ -999,6 +1003,7 @@ impl<'a> Checker<'a> {
         self.in_check = prev_check;
         self.in_certified_flow = prev_certified_flow;
         self.current_objective_required = prev_require_objective;
+        self.current_function_role = prev_role;
     }
 
     fn check_system_metadata(&mut self, func: &Function) {
@@ -1109,13 +1114,19 @@ impl<'a> Checker<'a> {
                         previous: binding.span.map(span_from_range),
                     });
                 } else {
+                    let metadata_binding =
+                        world_metadata_binding(self.current_function_role, name.as_str());
                     self.declare(
                         name.clone(),
                         Binding {
                             mutable: *mutable,
-                            kind: BindingKind::Local,
+                            kind: if metadata_binding {
+                                BindingKind::Implicit
+                            } else {
+                                BindingKind::Local
+                            },
                             span: Some(span),
-                            used: false,
+                            used: metadata_binding,
                         },
                     );
                 }
@@ -1208,10 +1219,22 @@ impl<'a> Checker<'a> {
                         }
                     },
                     None => {
-                        self.errors.push(SemanticError::UndefinedName {
-                            name: name.clone(),
-                            span: span_from_range(span),
-                        });
+                        if world_metadata_binding(self.current_function_role, name.as_str()) {
+                            self.declare(
+                                name.clone(),
+                                Binding {
+                                    mutable: true,
+                                    kind: BindingKind::Implicit,
+                                    span: Some(span),
+                                    used: true,
+                                },
+                            );
+                        } else {
+                            self.errors.push(SemanticError::UndefinedName {
+                                name: name.clone(),
+                                span: span_from_range(span),
+                            });
+                        }
                     }
                 }
             }
@@ -2167,6 +2190,35 @@ fn impurity_in_expr(body: &Body, expr_id: Idx<Expr>) -> Option<BooleanImpurity> 
     }
 }
 
+fn world_metadata_binding(role: FunctionRole, name: &str) -> bool {
+    match role {
+        FunctionRole::Domain => matches!(
+            name,
+            "geometry"
+                | "geometry_detail"
+                | "material"
+                | "radiance"
+                | "media"
+                | "max_distance"
+                | "min_step"
+                | "hit_epsilon"
+                | "max_steps"
+        ),
+        FunctionRole::Render => matches!(
+            name,
+            "domain"
+                | "light"
+                | "lights"
+                | "width"
+                | "height"
+                | "world_up"
+                | "view_scale"
+                | "fill_dir"
+        ),
+        _ => false,
+    }
+}
+
 impl<'a> Checker<'a> {
     fn is_type_name(&self, name: &SmolStr) -> bool {
         if self.class_names.contains(name) {
@@ -2865,6 +2917,8 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
             SmolStr::new("__wr_auth_render_jwks_document"),
             BindingKind::Function,
         ),
+        (SmolStr::new("coarse"), BindingKind::Implicit),
+        (SmolStr::new("fine"), BindingKind::Implicit),
         (SmolStr::new("vec2"), BindingKind::Function),
         (SmolStr::new("vec3"), BindingKind::Function),
         (SmolStr::new("vec4"), BindingKind::Function),
@@ -2928,6 +2982,12 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
         (SmolStr::new("surface_at"), BindingKind::Function),
         (SmolStr::new("radiance_at"), BindingKind::Function),
         (SmolStr::new("medium_at"), BindingKind::Function),
+        (SmolStr::new("distance_world"), BindingKind::Function),
+        (SmolStr::new("normal_world"), BindingKind::Function),
+        (SmolStr::new("trace_world"), BindingKind::Function),
+        (SmolStr::new("surface_world"), BindingKind::Function),
+        (SmolStr::new("radiance_world"), BindingKind::Function),
+        (SmolStr::new("medium_world"), BindingKind::Function),
         (SmolStr::new("trace_shape_batch"), BindingKind::Function),
         (SmolStr::new("surface_at_batch"), BindingKind::Function),
         (SmolStr::new("distance_at_batch"), BindingKind::Function),
@@ -4740,6 +4800,9 @@ system updater[stage=fixed, writes=[Velocity]]() -> Nothing {
             role: FunctionRole::System,
             field: None,
             field_graph: None,
+            region: None,
+            domain: None,
+            render: None,
             system_metadata: Some(SystemMetadata {
                 stage: Some(SmolStr::new("fixed")),
                 reads: Vec::new(),
@@ -4761,6 +4824,9 @@ system updater[stage=fixed, writes=[Velocity]]() -> Nothing {
             role: FunctionRole::System,
             field: None,
             field_graph: None,
+            region: None,
+            domain: None,
+            render: None,
             system_metadata: Some(SystemMetadata {
                 stage: Some(SmolStr::new("fixed")),
                 reads: Vec::new(),

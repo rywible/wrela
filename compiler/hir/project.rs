@@ -1951,6 +1951,12 @@ fn effect_for_builtin_symbol(name: &str) -> FunctionEffect {
         | "normal_at"
         | "radiance_at"
         | "medium_at"
+        | "distance_world"
+        | "normal_world"
+        | "trace_world"
+        | "surface_world"
+        | "radiance_world"
+        | "medium_world"
         | "trace_shape"
         | "surface_at"
         | "trace_shape_batch"
@@ -2319,6 +2325,12 @@ fn is_host_only_portable_builtin_symbol(name: &str) -> bool {
             "try_to_call_external"
                 | "try_to_http_call"
                 | "capture"
+                | "distance_world"
+                | "normal_world"
+                | "trace_world"
+                | "surface_world"
+                | "radiance_world"
+                | "medium_world"
                 | "dispatch_compute"
                 | "trace_shape_batch"
                 | "surface_at_batch"
@@ -3322,6 +3334,9 @@ fn make_main_wrapper() -> crate::hir::Function {
         kind: FunctionKind::Function,
         role: FunctionRole::Function,
         field: None,
+        region: None,
+        domain: None,
+        render: None,
         field_graph: None,
         system_metadata: None,
         type_params: Vec::new(),
@@ -3798,10 +3813,16 @@ fn is_builtin_value_name(name: &SmolStr) -> bool {
             | "capture"
             | "distance_at"
             | "normal_at"
+            | "distance_world"
+            | "normal_world"
+            | "trace_world"
+            | "surface_world"
             | "trace_shape"
             | "surface_at"
             | "radiance_at"
             | "medium_at"
+            | "radiance_world"
+            | "medium_world"
             | "trace_shape_batch"
             | "surface_at_batch"
             | "distance_at_batch"

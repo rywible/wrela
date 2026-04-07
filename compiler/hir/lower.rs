@@ -20,6 +20,9 @@ pub fn lower_root_body(root: ast::Root) -> Option<Body> {
             | ast::Stmt::KernelDef(_)
             | ast::Stmt::SystemDef(_)
             | ast::Stmt::FieldDecl(_)
+            | ast::Stmt::RegionDecl(_)
+            | ast::Stmt::DomainDecl(_)
+            | ast::Stmt::RenderDecl(_)
             | ast::Stmt::RadianceDecl(_)
             | ast::Stmt::VolumeDecl(_)
             | ast::Stmt::MaterialDecl(_)
@@ -96,6 +99,18 @@ impl LoweringContext {
                     let func = self.lower_field_decl(f);
                     self.module.functions.alloc(func);
                 }
+                ast::Stmt::RegionDecl(r) => {
+                    let func = self.lower_region_decl(r);
+                    self.module.functions.alloc(func);
+                }
+                ast::Stmt::DomainDecl(d) => {
+                    let func = self.lower_domain_decl(d);
+                    self.module.functions.alloc(func);
+                }
+                ast::Stmt::RenderDecl(r) => {
+                    let func = self.lower_render_decl(r);
+                    self.module.functions.alloc(func);
+                }
                 ast::Stmt::RadianceDecl(f) => {
                     let func = self.lower_radiance_decl(f);
                     self.module.functions.alloc(func);
@@ -150,6 +165,18 @@ impl LoweringContext {
                             }
                             ast::Stmt::FieldDecl(f) => {
                                 let func = self.lower_field_decl(f);
+                                self.module.functions.alloc(func);
+                            }
+                            ast::Stmt::RegionDecl(r) => {
+                                let func = self.lower_region_decl(r);
+                                self.module.functions.alloc(func);
+                            }
+                            ast::Stmt::DomainDecl(d) => {
+                                let func = self.lower_domain_decl(d);
+                                self.module.functions.alloc(func);
+                            }
+                            ast::Stmt::RenderDecl(r) => {
+                                let func = self.lower_render_decl(r);
                                 self.module.functions.alloc(func);
                             }
                             ast::Stmt::RadianceDecl(f) => {
@@ -1131,6 +1158,9 @@ impl LoweringContext {
             kind: FunctionKind::Function,
             role: FunctionRole::Function,
             field: None,
+            region: None,
+            domain: None,
+            render: None,
             field_graph: None,
             system_metadata: None,
             type_params,
@@ -1164,6 +1194,9 @@ impl LoweringContext {
             kind: FunctionKind::Function,
             role: FunctionRole::System,
             field: None,
+            region: None,
+            domain: None,
+            render: None,
             field_graph: None,
             system_metadata: parse_system_metadata(f.syntax()),
             type_params,
@@ -1197,6 +1230,9 @@ impl LoweringContext {
             kind: FunctionKind::Function,
             role: FunctionRole::Kernel,
             field: None,
+            region: None,
+            domain: None,
+            render: None,
             field_graph: None,
             system_metadata: None,
             type_params,
@@ -1273,11 +1309,113 @@ impl LoweringContext {
             kind: FunctionKind::Function,
             role: FunctionRole::Field,
             field,
+            region: None,
+            domain: None,
+            render: None,
             field_graph,
             system_metadata: None,
             type_params: Vec::new(),
             params,
             ret_type,
+            body: Some(body),
+        }
+    }
+
+    fn lower_region_decl(&mut self, r: ast::RegionDecl) -> Function {
+        let name = r.name().map(|t| SmolStr::new(t.text())).unwrap_or_default();
+        let name_span = r.name().map(|t| t.text_range());
+        let visibility = visibility_for_node_default(r.syntax());
+        let params = r.params().map(|p| self.lower_param(p)).collect();
+        let items: Vec<_> = r.items().filter_map(|item| self.lower_region_item(item)).collect();
+        let layers = collect_region_layers(&items);
+
+        Function {
+            name,
+            name_span,
+            attributes: Vec::new(),
+            visibility,
+            kind: FunctionKind::Function,
+            role: FunctionRole::Region,
+            field: None,
+            region: Some(RegionMetadata { layers, items }),
+            domain: None,
+            render: None,
+            field_graph: None,
+            system_metadata: None,
+            type_params: Vec::new(),
+            params,
+            ret_type: Some(TypeRef {
+                name: SmolStr::new("RegionCapture"),
+                name_span: None,
+                args: Vec::new(),
+            }),
+            body: Some(Self::empty_body()),
+        }
+    }
+
+    fn lower_domain_decl(&mut self, d: ast::DomainDecl) -> Function {
+        let name = d.name().map(|t| SmolStr::new(t.text())).unwrap_or_default();
+        let name_span = d.name().map(|t| t.text_range());
+        let visibility = visibility_for_node_default(d.syntax());
+        let params = d.params().map(|p| self.lower_param(p)).collect();
+        let stmts: Vec<_> = d.statements().collect();
+        let metadata = self.lower_domain_metadata(&stmts);
+        let body = self.lower_world_body(stmts);
+
+        Function {
+            name,
+            name_span,
+            attributes: Vec::new(),
+            visibility,
+            kind: FunctionKind::Function,
+            role: FunctionRole::Domain,
+            field: None,
+            region: None,
+            domain: Some(metadata),
+            render: None,
+            field_graph: None,
+            system_metadata: None,
+            type_params: Vec::new(),
+            params,
+            ret_type: Some(TypeRef {
+                name: SmolStr::new("SceneDomain"),
+                name_span: None,
+                args: Vec::new(),
+            }),
+            body: Some(body),
+        }
+    }
+
+    fn lower_render_decl(&mut self, r: ast::RenderDecl) -> Function {
+        let name = r.name().map(|t| SmolStr::new(t.text())).unwrap_or_default();
+        let name_span = r.name().map(|t| t.text_range());
+        let visibility = visibility_for_node_default(r.syntax());
+        let params = r.params().map(|p| self.lower_param(p)).collect();
+        let stmts: Vec<_> = r.statements().collect();
+        let metadata = self.lower_render_metadata(&stmts);
+        let render_ret_type = TypeRef {
+            name: SmolStr::new("String"),
+            name_span: None,
+            args: Vec::new(),
+        };
+        let body = self.lower_world_body(stmts);
+
+        Function {
+            name,
+            name_span,
+            attributes: Vec::new(),
+            visibility,
+            kind: FunctionKind::Function,
+            role: FunctionRole::Render,
+            field: None,
+            region: None,
+            domain: None,
+            render: Some(metadata),
+            field_graph: None,
+            system_metadata: None,
+            type_params: Vec::new(),
+            params,
+            ret_type: Some(render_ret_type),
             body: Some(body),
         }
     }
@@ -1304,6 +1442,9 @@ impl LoweringContext {
             kind: FunctionKind::Function,
             role: FunctionRole::Radiance,
             field: None,
+            region: None,
+            domain: None,
+            render: None,
             field_graph: None,
             system_metadata: None,
             type_params: Vec::new(),
@@ -1335,6 +1476,9 @@ impl LoweringContext {
             kind: FunctionKind::Function,
             role: FunctionRole::Volume,
             field: None,
+            region: None,
+            domain: None,
+            render: None,
             field_graph: None,
             system_metadata: None,
             type_params: Vec::new(),
@@ -1366,6 +1510,9 @@ impl LoweringContext {
             kind: FunctionKind::Function,
             role: FunctionRole::Material,
             field: None,
+            region: None,
+            domain: None,
+            render: None,
             field_graph: None,
             system_metadata: None,
             type_params: Vec::new(),
@@ -1373,6 +1520,166 @@ impl LoweringContext {
             ret_type,
             body: Some(body_ctx.body),
         }
+    }
+
+    fn lower_region_item(&mut self, item: ast::RegionItem) -> Option<RegionItemMetadata> {
+        match item {
+            ast::RegionItem::Place(stmt) => self.lower_region_assignment(
+                stmt.name(),
+                stmt.value(),
+                RegionComposeKind::Place,
+            ),
+            ast::RegionItem::Overlay(stmt) => self.lower_region_assignment(
+                stmt.name(),
+                stmt.value(),
+                RegionComposeKind::Overlay,
+            ),
+            ast::RegionItem::Replace(stmt) => self.lower_region_assignment(
+                stmt.name(),
+                stmt.value(),
+                RegionComposeKind::Replace,
+            ),
+            ast::RegionItem::Scatter(stmt) => {
+                let name = stmt.name().map(|t| SmolStr::new(t.text())).unwrap_or_default();
+                let name_span = stmt.name().map(|t| t.text_range());
+                let items = stmt
+                    .items()
+                    .filter_map(|item| self.lower_region_item(item))
+                    .collect();
+                Some(RegionItemMetadata::Scatter {
+                    name,
+                    name_span,
+                    items,
+                })
+            }
+            ast::RegionItem::If(stmt) => {
+                let condition = stmt.condition().map(|expr| self.lower_shape_payload(expr))?;
+                let then_items = stmt
+                    .then_block()
+                    .into_iter()
+                    .flat_map(|block| block.region_items().collect::<Vec<_>>())
+                    .filter_map(|item| self.lower_region_item(item))
+                    .collect();
+                let else_items = stmt
+                    .else_block()
+                    .into_iter()
+                    .flat_map(|block| block.region_items().collect::<Vec<_>>())
+                    .filter_map(|item| self.lower_region_item(item))
+                    .collect();
+                Some(RegionItemMetadata::Conditional {
+                    condition,
+                    then_items,
+                    else_items,
+                })
+            }
+        }
+    }
+
+    fn lower_region_assignment(
+        &mut self,
+        name: Option<SyntaxToken>,
+        value: Option<ast::Expr>,
+        kind: RegionComposeKind,
+    ) -> Option<RegionItemMetadata> {
+        let name_token = name?;
+        let value_expr = value?;
+        let shape = self.lower_shape_name_expr(&value_expr);
+        let name = SmolStr::new(name_token.text());
+        let detail = region_detail_level_for_name(name.as_str());
+        Some(RegionItemMetadata::Compose {
+            kind,
+            name,
+            name_span: Some(name_token.text_range()),
+            shape_span: Some(value_expr.syntax().text_range()),
+            shape,
+            detail,
+        })
+    }
+
+    fn lower_domain_metadata(&mut self, stmts: &[ast::Stmt]) -> DomainMetadata {
+        let mut metadata = DomainMetadata {
+            geometry_detail: DomainGeometryDetail::Fine,
+            material: true,
+            radiance: true,
+            media: true,
+            max_distance: None,
+            min_step: None,
+            hit_epsilon: None,
+            max_steps: None,
+        };
+        for stmt in stmts {
+            let ast::Stmt::VarAssign(assign) = stmt else {
+                continue;
+            };
+            let Some(name) = assign.name().map(|tok| SmolStr::new(tok.text())) else {
+                continue;
+            };
+            let Some(value) = assign.value() else {
+                continue;
+            };
+            match name.as_str() {
+                "geometry" | "geometry_detail" => {
+                    metadata.geometry_detail = match value.syntax().text().to_string().as_str() {
+                        "coarse" => DomainGeometryDetail::Coarse,
+                        _ => DomainGeometryDetail::Fine,
+                    };
+                }
+                "material" => metadata.material = lower_bool_config_expr(&value).unwrap_or(true),
+                "radiance" => metadata.radiance = lower_bool_config_expr(&value).unwrap_or(true),
+                "media" => metadata.media = lower_bool_config_expr(&value).unwrap_or(true),
+                "max_distance" => metadata.max_distance = Some(self.lower_shape_payload(value)),
+                "min_step" => metadata.min_step = Some(self.lower_shape_payload(value)),
+                "hit_epsilon" => metadata.hit_epsilon = Some(self.lower_shape_payload(value)),
+                "max_steps" => metadata.max_steps = Some(self.lower_shape_payload(value)),
+                _ => {}
+            }
+        }
+        metadata
+    }
+
+    fn lower_render_metadata(&mut self, stmts: &[ast::Stmt]) -> RenderMetadata {
+        let mut metadata = RenderMetadata {
+            domain: None,
+            light: None,
+            lights: None,
+            width: None,
+            height: None,
+            world_up: None,
+            view_scale: None,
+            fill_dir: None,
+        };
+        for stmt in stmts {
+            let ast::Stmt::VarAssign(assign) = stmt else {
+                continue;
+            };
+            let Some(name) = assign.name().map(|tok| SmolStr::new(tok.text())) else {
+                continue;
+            };
+            let Some(value) = assign.value() else {
+                continue;
+            };
+            match name.as_str() {
+                "domain" => metadata.domain = Some(self.lower_shape_payload(value)),
+                "light" => metadata.light = Some(self.lower_shape_payload(value)),
+                "lights" => metadata.lights = Some(self.lower_shape_payload(value)),
+                "width" => metadata.width = Some(self.lower_shape_payload(value)),
+                "height" => metadata.height = Some(self.lower_shape_payload(value)),
+                "world_up" => metadata.world_up = Some(self.lower_shape_payload(value)),
+                "view_scale" => metadata.view_scale = Some(self.lower_shape_payload(value)),
+                "fill_dir" => metadata.fill_dir = Some(self.lower_shape_payload(value)),
+                _ => {}
+            }
+        }
+        metadata
+    }
+
+    fn lower_world_body(&mut self, stmts: Vec<ast::Stmt>) -> Body {
+        let mut body_ctx = BodyLoweringContext::new();
+        for stmt in stmts {
+            let s = body_ctx.lower_stmt(stmt);
+            body_ctx.body.root_stmts.push(s);
+        }
+        body_ctx.body
     }
 
     fn lower_shape_decl(&mut self, s: ast::ShapeDecl) -> Shape {
@@ -1468,21 +1775,21 @@ impl LoweringContext {
                 let field = leaf_expr
                     .field()
                     .and_then(|binding| binding.value())
-                    .map(|expr| self.lower_shape_name_expr(expr))
+                    .map(|expr| self.lower_shape_name_expr(&expr))
                     .unwrap_or_default();
                 let material = leaf_expr
                     .material()
                     .and_then(|binding| binding.value())
-                    .map(|expr| self.lower_shape_name_expr(expr))
+                    .map(|expr| self.lower_shape_name_expr(&expr))
                     .unwrap_or_default();
                 let radiance = leaf_expr
                     .radiance()
                     .and_then(|binding| binding.value())
-                    .map(|expr| self.lower_shape_name_expr(expr));
+                    .map(|expr| self.lower_shape_name_expr(&expr));
                 let volume = leaf_expr
                     .volume()
                     .and_then(|binding| binding.value())
-                    .map(|expr| self.lower_shape_name_expr(expr));
+                    .map(|expr| self.lower_shape_name_expr(&expr));
                 let payload = leaf_expr
                     .payload()
                     .and_then(|binding| binding.value())
@@ -1586,7 +1893,7 @@ impl LoweringContext {
         }
     }
 
-    fn lower_shape_name_expr(&self, expr: ast::Expr) -> SmolStr {
+    fn lower_shape_name_expr(&self, expr: &ast::Expr) -> SmolStr {
         match expr {
             ast::Expr::Ident(ident) => ident
                 .name()
@@ -3257,6 +3564,9 @@ impl LoweringContext {
             kind: FunctionKind::Method,
             role: FunctionRole::Function,
             field: None,
+            region: None,
+            domain: None,
+            render: None,
             field_graph: None,
             system_metadata: None,
             type_params: Vec::new(),
@@ -3454,6 +3764,55 @@ fn lower_func_type_params(node: &SyntaxNode) -> Vec<TypeParam> {
         });
     }
     result
+}
+
+fn region_detail_level_for_name(name: &str) -> Option<RegionDetailLevel> {
+    match name {
+        "coarse" => Some(RegionDetailLevel::Coarse),
+        "fine" => Some(RegionDetailLevel::Fine),
+        _ => None,
+    }
+}
+
+fn collect_region_layers(items: &[RegionItemMetadata]) -> Vec<RegionLayerBinding> {
+    fn walk(items: &[RegionItemMetadata], out: &mut Vec<RegionLayerBinding>) {
+        for item in items {
+            match item {
+                RegionItemMetadata::Compose {
+                    detail: Some(detail),
+                    shape,
+                    shape_span,
+                    ..
+                } => out.push(RegionLayerBinding {
+                    detail: *detail,
+                    shape: shape.clone(),
+                    shape_span: *shape_span,
+                }),
+                RegionItemMetadata::Scatter { items, .. } => walk(items, out),
+                RegionItemMetadata::Conditional {
+                    then_items,
+                    else_items,
+                    ..
+                } => {
+                    walk(then_items, out);
+                    walk(else_items, out);
+                }
+                RegionItemMetadata::Compose { .. } => {}
+            }
+        }
+    }
+
+    let mut layers = Vec::new();
+    walk(items, &mut layers);
+    layers
+}
+
+fn lower_bool_config_expr(expr: &ast::Expr) -> Option<bool> {
+    match expr.syntax().text().to_string().as_str() {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
 }
 
 fn lower_attributes(attributes: impl Iterator<Item = ast::Attribute>) -> Vec<AttributeAnnotation> {

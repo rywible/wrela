@@ -33,27 +33,30 @@ fn parse_ppm(data: &str) -> (usize, usize, Vec<[u8; 3]>) {
     assert_eq!(parts.next(), Some("P3"), "missing PPM header: {data}");
     let width: usize = parts
         .next()
-        .expect("missing width")
+        .unwrap_or_else(|| panic!("missing width in PPM data: {data}"))
         .parse()
-        .expect("width parse");
+        .unwrap_or_else(|err| panic!("width parse failed in PPM data: {data}\nerror: {err:?}"));
     let height: usize = parts
         .next()
-        .expect("missing height")
+        .unwrap_or_else(|| panic!("missing height in PPM data: {data}"))
         .parse()
-        .expect("height parse");
+        .unwrap_or_else(|err| panic!("height parse failed in PPM data: {data}\nerror: {err:?}"));
     let max_value: usize = parts
         .next()
-        .expect("missing max value")
+        .unwrap_or_else(|| panic!("missing max value in PPM data: {data}"))
         .parse()
-        .expect("max value parse");
+        .unwrap_or_else(|err| panic!("max value parse failed in PPM data: {data}\nerror: {err:?}"));
     assert_eq!(max_value, 255, "unexpected PPM max value");
 
     let mut pixels = Vec::with_capacity(width * height);
     while let (Some(r), Some(g), Some(b)) = (parts.next(), parts.next(), parts.next()) {
         pixels.push([
-            r.parse::<u8>().expect("red parse"),
-            g.parse::<u8>().expect("green parse"),
-            b.parse::<u8>().expect("blue parse"),
+            r.parse::<u8>()
+                .unwrap_or_else(|err| panic!("red parse failed in PPM data: {data}\nerror: {err:?}")),
+            g.parse::<u8>()
+                .unwrap_or_else(|err| panic!("green parse failed in PPM data: {data}\nerror: {err:?}")),
+            b.parse::<u8>()
+                .unwrap_or_else(|err| panic!("blue parse failed in PPM data: {data}\nerror: {err:?}")),
         ]);
     }
 
@@ -224,99 +227,220 @@ fn preview_project_layout_exists() {
             .is_file(),
         "missing language/preview_thinstack/src/main.wr"
     );
+    assert!(
+        !root.join("language/preview/src/render.wr").exists(),
+        "legacy language/preview/src/render.wr should not exist"
+    );
+    assert!(
+        !root.join("language/preview_repetition/src/render.wr").exists(),
+        "legacy language/preview_repetition/src/render.wr should not exist"
+    );
+    assert!(
+        !root.join("language/preview_boolean/src/render.wr").exists(),
+        "legacy language/preview_boolean/src/render.wr should not exist"
+    );
+    assert!(
+        !root.join("language/preview_thinstack/src/render.wr").exists(),
+        "legacy language/preview_thinstack/src/render.wr should not exist"
+    );
 }
 
 #[test]
-fn preview_project_phase7_semantic_helpers_exist() {
+fn preview_project_phase8_semantic_region_domain_render_exists() {
     let root = repo_root();
-    for (path, needles, forbidden) in [
+    for (main_path, main_needles, main_forbidden) in [
         (
             "language/preview/src/main.wr",
             &[
+                "region scene_region()",
+                "domain scene_domain(world: RegionCapture)",
+                "geometry_detail = 1",
+                "material = true",
+                "radiance = true",
+                "media = true",
+                "max_distance = 12.0",
+                "min_step = 0.02",
+                "hit_epsilon = 0.0008",
+                "max_steps = 96",
+                "render render_ppm(",
                 "radiance field",
                 "volume field",
-                "radiance = scene_radiance",
-                "volume = scene_volume",
+                "world = capture scene_region",
+                "world_up = camera.up",
+                "view_scale = 0.72",
+                "fill_dir = normalize(vec3(-0.9, 0.45, 0.2))",
+                "render_ppm(",
+            ][..],
+            &[
+                "use render_ppm from render",
+                "scene_capture = capture scene_shape",
+                "trace_shape(",
+                "surface_at(",
+                "distance_at(",
                 "radiance_at(",
                 "medium_at(",
+                "compute_scene_surface(",
+                "compute_scene_hit(",
                 "compute_shadow_visibility(",
                 "compute_ambient_occlusion(",
-                "local_position",
-                "local_normal",
-                "surface.emissive",
-                "surface.clearcoat",
-                "surface.metalness",
-                "surface.sheen",
+                "compute_scene_color(",
+                "trace_world(",
+                "surface_world(",
+                "distance_world(",
+                "normal_world(",
+                "radiance_world(",
+                "medium_world(",
+                "while y <",
+                "while x <",
+                "mutable ppm",
             ][..],
-            &["scene_radiance(p=", "scene_volume(p="][..],
         ),
         (
             "language/preview_boolean/src/main.wr",
             &[
+                "region scene_region()",
+                "domain scene_domain(world: RegionCapture)",
+                "geometry_detail = 1",
+                "material = true",
+                "radiance = true",
+                "media = true",
+                "max_distance = 6.0",
+                "min_step = 0.1",
+                "hit_epsilon = 0.0008",
+                "max_steps = 96",
+                "render render_ppm(",
                 "radiance field",
                 "volume field",
-                "radiance = scene_radiance",
-                "volume = scene_volume",
+                "world = capture scene_region",
+                "world_up = camera.up",
+                "view_scale = 0.70",
+                "fill_dir = normalize(vec3(-0.7, 0.4, 0.2))",
+                "render_ppm(",
+            ][..],
+            &[
+                "use render_ppm from render",
+                "scene_capture = capture scene_shape",
+                "trace_shape(",
+                "surface_at(",
+                "distance_at(",
                 "radiance_at(",
                 "medium_at(",
+                "compute_scene_surface(",
+                "compute_scene_hit(",
                 "compute_shadow_visibility(",
                 "compute_ambient_occlusion(",
-                "local_position",
-                "local_normal",
-                "surface.emissive",
-                "surface.clearcoat",
-                "surface.metalness",
-                "surface.sheen",
+                "compute_scene_color(",
+                "trace_world(",
+                "surface_world(",
+                "distance_world(",
+                "normal_world(",
+                "radiance_world(",
+                "medium_world(",
+                "while y <",
+                "while x <",
+                "mutable ppm",
             ][..],
-            &["scene_radiance(p=", "scene_volume(p="][..],
         ),
         (
             "language/preview_repetition/src/main.wr",
             &[
+                "region scene_region()",
+                "domain scene_domain(world: RegionCapture)",
+                "geometry_detail = 1",
+                "material = true",
+                "radiance = true",
+                "media = true",
+                "max_distance = 12.0",
+                "min_step = 0.06",
+                "hit_epsilon = 0.0011",
+                "max_steps = 64",
+                "render render_ppm(",
                 "radiance field",
                 "volume field",
-                "radiance = scene_radiance",
-                "volume = scene_volume",
+                "world = capture scene_region",
+                "world_up = camera.up",
+                "view_scale = 0.76",
+                "fill_dir = normalize(vec3(-0.55, 0.42, 0.28))",
+                "render_ppm(",
+            ][..],
+            &[
+                "use render_ppm from render",
+                "scene_capture = capture scene_shape",
+                "trace_shape(",
+                "surface_at(",
+                "distance_at(",
                 "radiance_at(",
                 "medium_at(",
+                "compute_scene_surface(",
+                "compute_scene_hit(",
                 "compute_shadow_visibility(",
                 "compute_ambient_occlusion(",
-                "local_position",
-                "local_normal",
-                "surface.emissive",
-                "surface.clearcoat",
-                "surface.metalness",
-                "surface.sheen",
+                "compute_scene_color(",
+                "trace_world(",
+                "surface_world(",
+                "distance_world(",
+                "normal_world(",
+                "radiance_world(",
+                "medium_world(",
+                "while y <",
+                "while x <",
+                "mutable ppm",
             ][..],
-            &["scene_radiance(p=", "scene_volume(p="][..],
         ),
         (
             "language/preview_thinstack/src/main.wr",
             &[
+                "region scene_region()",
+                "domain scene_domain(world: RegionCapture)",
+                "geometry_detail = 1",
+                "material = true",
+                "radiance = true",
+                "media = true",
+                "max_distance = 14.0",
+                "min_step = 0.04",
+                "hit_epsilon = 0.0008",
+                "max_steps = 88",
+                "render render_ppm(",
                 "radiance field",
                 "volume field",
-                "radiance = scene_radiance",
-                "volume = scene_volume",
+                "world = capture scene_region",
+                "world_up = camera.up",
+                "view_scale = 0.74",
+                "fill_dir = normalize(vec3(-0.5, 0.42, 0.25))",
+                "render_ppm(",
+            ][..],
+            &[
+                "use render_ppm from render",
+                "scene_capture = capture scene_shape",
+                "trace_shape(",
+                "surface_at(",
+                "distance_at(",
                 "radiance_at(",
                 "medium_at(",
+                "compute_scene_surface(",
+                "compute_scene_hit(",
                 "compute_shadow_visibility(",
                 "compute_ambient_occlusion(",
-                "local_position",
-                "local_normal",
-                "surface.emissive",
-                "surface.clearcoat",
-                "surface.metalness",
-                "surface.sheen",
+                "compute_scene_color(",
+                "trace_world(",
+                "surface_world(",
+                "distance_world(",
+                "normal_world(",
+                "radiance_world(",
+                "medium_world(",
+                "while y <",
+                "while x <",
+                "mutable ppm",
             ][..],
-            &["scene_radiance(p=", "scene_volume(p="][..],
         ),
     ] {
-        let source = std::fs::read_to_string(root.join(path)).expect("read phase7 preview surface");
-        assert_contains_all(&source, path, needles);
-        for needle in forbidden {
+        let main_source =
+            std::fs::read_to_string(root.join(main_path)).expect("read preview main surface");
+        assert_contains_all(&main_source, main_path, main_needles);
+        for needle in main_forbidden {
             assert!(
-                !source.contains(needle),
-                "expected {path} to avoid renderer-side query shortcut {needle:?}, got:\n{source}"
+                !main_source.contains(needle),
+                "expected {main_path} to avoid renderer-side query shortcut {needle:?}, got:\n{main_source}"
             );
         }
     }

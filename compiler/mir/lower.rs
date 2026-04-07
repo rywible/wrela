@@ -62,6 +62,105 @@ fn stable_field_scene_capture_id(field_name: &SmolStr) -> i64 {
     hash as i64
 }
 
+fn stable_region_scene_capture_id(region_name: &SmolStr) -> i64 {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let mut hash = FNV_OFFSET_BASIS;
+    for byte in b"scene::region::" {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    for byte in region_name.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash as i64
+}
+
+fn region_item_matches_detail(
+    domain_detail: hir::DomainGeometryDetail,
+    item_detail: Option<hir::RegionDetailLevel>,
+) -> bool {
+    match item_detail {
+        None => true,
+        Some(hir::RegionDetailLevel::Coarse) => true,
+        Some(hir::RegionDetailLevel::Fine) => matches!(domain_detail, hir::DomainGeometryDetail::Fine),
+    }
+}
+
+fn resolve_region_shapes_for_detail(
+    metadata: &hir::RegionMetadata,
+    domain_detail: hir::DomainGeometryDetail,
+) -> Result<Vec<SmolStr>, &'static str> {
+    fn walk(
+        items: &[hir::RegionItemMetadata],
+        domain_detail: hir::DomainGeometryDetail,
+        named: &mut HashMap<SmolStr, SmolStr>,
+        ordered: &mut Vec<SmolStr>,
+    ) -> Result<(), &'static str> {
+        for item in items {
+            match item {
+                hir::RegionItemMetadata::Compose {
+                    kind,
+                    name,
+                    shape,
+                    detail,
+                    ..
+                } => {
+                    if !region_item_matches_detail(domain_detail, *detail) {
+                        continue;
+                    }
+                    match kind {
+                        hir::RegionComposeKind::Place => {
+                            if !named.contains_key(name) {
+                                named.insert(name.clone(), shape.clone());
+                                ordered.push(name.clone());
+                            }
+                        }
+                        hir::RegionComposeKind::Replace => {
+                            if !named.contains_key(name) {
+                                ordered.push(name.clone());
+                            }
+                            named.insert(name.clone(), shape.clone());
+                        }
+                        hir::RegionComposeKind::Overlay => {
+                            ordered.push(SmolStr::new(format!("__overlay_{}_{}", name, ordered.len())));
+                            named.insert(
+                                ordered.last().cloned().unwrap_or_default(),
+                                shape.clone(),
+                            );
+                        }
+                    }
+                }
+                hir::RegionItemMetadata::Scatter { .. } => {
+                    return Err("scatter regions are not executable yet");
+                }
+                hir::RegionItemMetadata::Conditional { .. } => {
+                    return Err("conditional regions are not executable yet");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    let mut named = HashMap::new();
+    let mut ordered = Vec::new();
+    walk(&metadata.items, domain_detail, &mut named, &mut ordered)?;
+    Ok(ordered
+        .into_iter()
+        .filter_map(|name| named.remove(&name))
+        .collect())
+}
+
+fn executable_region_shape_lists(
+    func: &hir::Function,
+) -> Result<(Vec<SmolStr>, Vec<SmolStr>), &'static str> {
+    let metadata = func.region.as_ref().ok_or("region metadata missing")?;
+    let coarse = resolve_region_shapes_for_detail(metadata, hir::DomainGeometryDetail::Coarse)?;
+    let fine = resolve_region_shapes_for_detail(metadata, hir::DomainGeometryDetail::Fine)?;
+    Ok((coarse, fine))
+}
+
 pub fn lower_module(module: &Module) -> MirModule {
     let (_type_errors, type_info) = crate::hir::typeck::check_module_with_info(module);
     lower_module_with_types(module, &type_info)
@@ -548,6 +647,186 @@ pub fn lower_module_with_types(module: &Module, type_info: &TypeInfo) -> MirModu
         &class_method_ids,
         &interface_methods,
     ));
+    functions.push(lower_world_distance_capture_helper(
+        module,
+        &tag_map,
+        &class_fields,
+        &class_field_defaults,
+        &function_names,
+        &field_names,
+        &shape_names,
+        &shape_graphs,
+        &field_graphs,
+        &field_bodies,
+        &field_metadata,
+        &radiance_param_counts,
+        &volume_param_counts,
+        &result_functions,
+        &class_method_ids,
+        &interface_methods,
+    ));
+    functions.push(lower_world_normal_capture_helper(
+        module,
+        &tag_map,
+        &class_fields,
+        &class_field_defaults,
+        &function_names,
+        &field_names,
+        &shape_names,
+        &shape_graphs,
+        &field_graphs,
+        &field_bodies,
+        &field_metadata,
+        &radiance_param_counts,
+        &volume_param_counts,
+        &result_functions,
+        &class_method_ids,
+        &interface_methods,
+    ));
+    functions.push(lower_world_trace_capture_helper(
+        module,
+        &tag_map,
+        &class_fields,
+        &class_field_defaults,
+        &function_names,
+        &field_names,
+        &shape_names,
+        &shape_graphs,
+        &field_graphs,
+        &field_bodies,
+        &field_metadata,
+        &radiance_param_counts,
+        &volume_param_counts,
+        &result_functions,
+        &class_method_ids,
+        &interface_methods,
+    ));
+    functions.push(lower_world_surface_capture_helper(
+        module,
+        &tag_map,
+        &class_fields,
+        &class_field_defaults,
+        &function_names,
+        &field_names,
+        &shape_names,
+        &shape_graphs,
+        &field_graphs,
+        &field_bodies,
+        &field_metadata,
+        &radiance_param_counts,
+        &volume_param_counts,
+        &result_functions,
+        &class_method_ids,
+        &interface_methods,
+    ));
+    functions.push(lower_world_radiance_capture_helper(
+        module,
+        &tag_map,
+        &class_fields,
+        &class_field_defaults,
+        &function_names,
+        &field_names,
+        &shape_names,
+        &shape_graphs,
+        &field_graphs,
+        &field_bodies,
+        &field_metadata,
+        &radiance_param_counts,
+        &volume_param_counts,
+        &result_functions,
+        &class_method_ids,
+        &interface_methods,
+    ));
+    functions.push(lower_world_medium_capture_helper(
+        module,
+        &tag_map,
+        &class_fields,
+        &class_field_defaults,
+        &function_names,
+        &field_names,
+        &shape_names,
+        &shape_graphs,
+        &field_graphs,
+        &field_bodies,
+        &field_metadata,
+        &radiance_param_counts,
+        &volume_param_counts,
+        &result_functions,
+        &class_method_ids,
+        &interface_methods,
+    ));
+    functions.push(lower_render_shadow_visibility_helper(
+        module,
+        &tag_map,
+        &class_fields,
+        &class_field_defaults,
+        &function_names,
+        &field_names,
+        &shape_names,
+        &shape_graphs,
+        &field_graphs,
+        &field_bodies,
+        &field_metadata,
+        &radiance_param_counts,
+        &volume_param_counts,
+        &result_functions,
+        &class_method_ids,
+        &interface_methods,
+    ));
+    functions.push(lower_render_ambient_occlusion_helper(
+        module,
+        &tag_map,
+        &class_fields,
+        &class_field_defaults,
+        &function_names,
+        &field_names,
+        &shape_names,
+        &shape_graphs,
+        &field_graphs,
+        &field_bodies,
+        &field_metadata,
+        &radiance_param_counts,
+        &volume_param_counts,
+        &result_functions,
+        &class_method_ids,
+        &interface_methods,
+    ));
+    functions.push(lower_render_scene_color_helper(
+        module,
+        &tag_map,
+        &class_fields,
+        &class_field_defaults,
+        &function_names,
+        &field_names,
+        &shape_names,
+        &shape_graphs,
+        &field_graphs,
+        &field_bodies,
+        &field_metadata,
+        &radiance_param_counts,
+        &volume_param_counts,
+        &result_functions,
+        &class_method_ids,
+        &interface_methods,
+    ));
+    functions.push(lower_render_capture_to_ppm_helper(
+        module,
+        &tag_map,
+        &class_fields,
+        &class_field_defaults,
+        &function_names,
+        &field_names,
+        &shape_names,
+        &shape_graphs,
+        &field_graphs,
+        &field_bodies,
+        &field_metadata,
+        &radiance_param_counts,
+        &volume_param_counts,
+        &result_functions,
+        &class_method_ids,
+        &interface_methods,
+    ));
     functions.push(lower_scene_trace_queries_helper(
         module,
         &tag_map,
@@ -619,6 +898,75 @@ fn lower_function(
     is_method: bool,
     type_info: &FunctionTypeInfo,
 ) -> MirFunction {
+    if matches!(func.role, FunctionRole::Region) {
+        return lower_region_function(
+            module,
+            func,
+            name,
+            type_tags,
+            class_fields,
+            class_field_defaults,
+            function_names,
+            field_names,
+            shape_names,
+            shape_graphs,
+            field_graphs,
+            field_bodies,
+            field_metadata,
+            radiance_param_counts,
+            volume_param_counts,
+            result_functions,
+            class_method_ids,
+            interface_methods,
+            type_info,
+        );
+    }
+    if matches!(func.role, FunctionRole::Domain) {
+        return lower_domain_function(
+            module,
+            func,
+            name,
+            type_tags,
+            class_fields,
+            class_field_defaults,
+            function_names,
+            field_names,
+            shape_names,
+            shape_graphs,
+            field_graphs,
+            field_bodies,
+            field_metadata,
+            radiance_param_counts,
+            volume_param_counts,
+            result_functions,
+            class_method_ids,
+            interface_methods,
+            type_info,
+        );
+    }
+    if matches!(func.role, FunctionRole::Render) {
+        return lower_render_function(
+            module,
+            func,
+            name,
+            type_tags,
+            class_fields,
+            class_field_defaults,
+            function_names,
+            field_names,
+            shape_names,
+            shape_graphs,
+            field_graphs,
+            field_bodies,
+            field_metadata,
+            radiance_param_counts,
+            volume_param_counts,
+            result_functions,
+            class_method_ids,
+            interface_methods,
+            type_info,
+        );
+    }
     let mut lowerer = FunctionLowerer::new(
         name,
         type_tags,
@@ -703,6 +1051,1966 @@ fn lower_function(
         blocks: lowerer.blocks,
         entry,
         suspendable: lowerer.suspendable,
+    }
+}
+
+fn lower_region_function(
+    module: &hir::Module,
+    func: &hir::Function,
+    name: SmolStr,
+    type_tags: &HashMap<SmolStr, TypeTagId>,
+    class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
+    class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
+    function_names: &HashSet<SmolStr>,
+    field_names: &HashSet<SmolStr>,
+    shape_names: &HashSet<SmolStr>,
+    shape_graphs: &HashMap<SmolStr, hir::ShapeGraph>,
+    field_graphs: &HashMap<SmolStr, hir::FieldGraph>,
+    field_bodies: &HashMap<SmolStr, hir::Body>,
+    field_metadata: &HashMap<SmolStr, hir::FieldMetadata>,
+    radiance_param_counts: &HashMap<SmolStr, usize>,
+    volume_param_counts: &HashMap<SmolStr, usize>,
+    result_functions: &HashSet<SmolStr>,
+    class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
+    interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
+    type_info: &FunctionTypeInfo,
+) -> MirFunction {
+    let span = TextRange::empty(0.into());
+    let mut lowerer = FunctionLowerer::new(
+        name,
+        type_tags,
+        class_fields,
+        class_field_defaults,
+        function_names,
+        field_names,
+        shape_names,
+        shape_graphs,
+        field_graphs,
+        field_bodies,
+        field_metadata,
+        radiance_param_counts,
+        volume_param_counts,
+        result_functions,
+        class_method_ids,
+        interface_methods,
+        false,
+        Some(type_info),
+    );
+
+    for param in &func.params {
+        let local = lowerer.new_local(
+            param.name.clone(),
+            false,
+            lowerer.local_type_for_name(&param.name),
+        );
+        lowerer.declare_local(param.name.clone(), local);
+        lowerer.params.push(local);
+    }
+
+    let entry = lowerer.new_block();
+    lowerer.current_block = entry;
+    let result = if func.params.is_empty() {
+        lowerer.build_scene_capture_value(&func.name, span)
+    } else {
+        let crash_temp = lowerer.new_temp(MirType::Unknown);
+        lowerer.push_stmt(MirStmt::Assign {
+            place: Place::Temp(crash_temp),
+            value: Rvalue::Crash {
+                value: Value::Const(Literal::String(SmolStr::new(
+                    "parameterized regions are not executable yet; capture a zero-argument region",
+                ))),
+            },
+            span,
+        });
+        Value::Temp(crash_temp)
+    };
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(result),
+        span,
+    });
+
+    MirFunction {
+        name: lowerer.name,
+        params: lowerer.params,
+        abi_params: func
+            .params
+            .iter()
+            .map(|param| {
+                portable_abi_from_type_ref(
+                    param.ty.as_ref(),
+                    module,
+                    type_tags,
+                    &mut HashSet::new(),
+                )
+            })
+            .collect(),
+        abi_return: portable_abi_from_type_ref(
+            func.ret_type.as_ref(),
+            module,
+            type_tags,
+            &mut HashSet::new(),
+        ),
+        locals: lowerer.locals,
+        temps: lowerer.temps,
+        blocks: lowerer.blocks,
+        entry,
+        suspendable: false,
+    }
+}
+
+fn lower_domain_function(
+    module: &hir::Module,
+    func: &hir::Function,
+    name: SmolStr,
+    type_tags: &HashMap<SmolStr, TypeTagId>,
+    class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
+    class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
+    function_names: &HashSet<SmolStr>,
+    field_names: &HashSet<SmolStr>,
+    shape_names: &HashSet<SmolStr>,
+    shape_graphs: &HashMap<SmolStr, hir::ShapeGraph>,
+    field_graphs: &HashMap<SmolStr, hir::FieldGraph>,
+    field_bodies: &HashMap<SmolStr, hir::Body>,
+    field_metadata: &HashMap<SmolStr, hir::FieldMetadata>,
+    radiance_param_counts: &HashMap<SmolStr, usize>,
+    volume_param_counts: &HashMap<SmolStr, usize>,
+    result_functions: &HashSet<SmolStr>,
+    class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
+    interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
+    type_info: &FunctionTypeInfo,
+) -> MirFunction {
+    let span = TextRange::empty(0.into());
+    let mut lowerer = FunctionLowerer::new(
+        name,
+        type_tags,
+        class_fields,
+        class_field_defaults,
+        function_names,
+        field_names,
+        shape_names,
+        shape_graphs,
+        field_graphs,
+        field_bodies,
+        field_metadata,
+        radiance_param_counts,
+        volume_param_counts,
+        result_functions,
+        class_method_ids,
+        interface_methods,
+        false,
+        Some(type_info),
+    );
+
+    for param in &func.params {
+        let local = lowerer.new_local(
+            param.name.clone(),
+            false,
+            lowerer.local_type_for_name(&param.name),
+        );
+        lowerer.declare_local(param.name.clone(), local);
+        lowerer.params.push(local);
+    }
+
+    let entry = lowerer.new_block();
+    lowerer.current_block = entry;
+    let metadata = func.domain.as_ref().expect("domain metadata");
+    let world_local = func
+        .params
+        .first()
+        .and_then(|param| lowerer.resolve_local(&param.name));
+    let world_scene_id = world_local.map(|world| {
+        lowerer.lower_get_named_field(
+            Value::Local(world),
+            "RegionCapture",
+            "scene_id",
+            MirType::Integer,
+            span,
+        )
+    });
+
+    let mut class = lowerer.synthetic_class_target_info("SceneDomain");
+    FunctionLowerer::set_class_field_value(
+        &mut class,
+        "scene_id",
+        world_scene_id.unwrap_or(Value::Const(Literal::Integer(0))),
+    );
+    FunctionLowerer::set_class_field_value(
+        &mut class,
+        "geometry_detail",
+        Value::Const(Literal::Integer(match metadata.geometry_detail {
+            hir::DomainGeometryDetail::Coarse => 0,
+            hir::DomainGeometryDetail::Fine => 1,
+        })),
+    );
+    FunctionLowerer::set_class_field_value(
+        &mut class,
+        "material",
+        Value::Const(Literal::Boolean(metadata.material)),
+    );
+    FunctionLowerer::set_class_field_value(
+        &mut class,
+        "radiance",
+        Value::Const(Literal::Boolean(metadata.radiance)),
+    );
+    FunctionLowerer::set_class_field_value(
+        &mut class,
+        "media",
+        Value::Const(Literal::Boolean(metadata.media)),
+    );
+    FunctionLowerer::set_class_field_value(
+        &mut class,
+        "max_distance",
+        metadata
+            .max_distance
+            .as_ref()
+            .map(|body| lowerer.lower_wrapped_body_value(body, span))
+            .unwrap_or(Value::Const(Literal::Float(12.0))),
+    );
+    FunctionLowerer::set_class_field_value(
+        &mut class,
+        "min_step",
+        metadata
+            .min_step
+            .as_ref()
+            .map(|body| lowerer.lower_wrapped_body_value(body, span))
+            .unwrap_or(Value::Const(Literal::Float(0.02))),
+    );
+    FunctionLowerer::set_class_field_value(
+        &mut class,
+        "hit_epsilon",
+        metadata
+            .hit_epsilon
+            .as_ref()
+            .map(|body| lowerer.lower_wrapped_body_value(body, span))
+            .unwrap_or(Value::Const(Literal::Float(0.001))),
+    );
+    FunctionLowerer::set_class_field_value(
+        &mut class,
+        "max_steps",
+        metadata
+            .max_steps
+            .as_ref()
+            .map(|body| lowerer.lower_wrapped_body_value(body, span))
+            .unwrap_or(Value::Const(Literal::Integer(96))),
+    );
+    let result = lowerer.build_class_instance(&class, span);
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(result),
+        span,
+    });
+
+    MirFunction {
+        name: lowerer.name,
+        params: lowerer.params,
+        abi_params: func
+            .params
+            .iter()
+            .map(|param| {
+                portable_abi_from_type_ref(
+                    param.ty.as_ref(),
+                    module,
+                    type_tags,
+                    &mut HashSet::new(),
+                )
+            })
+            .collect(),
+        abi_return: portable_abi_from_type_ref(
+            func.ret_type.as_ref(),
+            module,
+            type_tags,
+            &mut HashSet::new(),
+        ),
+        locals: lowerer.locals,
+        temps: lowerer.temps,
+        blocks: lowerer.blocks,
+        entry,
+        suspendable: false,
+    }
+}
+
+fn portable_abi_named_type(
+    name: &str,
+    module: &hir::Module,
+    type_tags: &HashMap<SmolStr, TypeTagId>,
+) -> PortableAbiType {
+    let ty = hir::TypeRef {
+        name: SmolStr::new(name),
+        name_span: None,
+        args: Vec::new(),
+    };
+    portable_abi_from_type_ref(Some(&ty), module, type_tags, &mut HashSet::new())
+}
+
+fn lower_render_function(
+    module: &hir::Module,
+    func: &hir::Function,
+    name: SmolStr,
+    type_tags: &HashMap<SmolStr, TypeTagId>,
+    class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
+    class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
+    function_names: &HashSet<SmolStr>,
+    field_names: &HashSet<SmolStr>,
+    shape_names: &HashSet<SmolStr>,
+    shape_graphs: &HashMap<SmolStr, hir::ShapeGraph>,
+    field_graphs: &HashMap<SmolStr, hir::FieldGraph>,
+    field_bodies: &HashMap<SmolStr, hir::Body>,
+    field_metadata: &HashMap<SmolStr, hir::FieldMetadata>,
+    radiance_param_counts: &HashMap<SmolStr, usize>,
+    volume_param_counts: &HashMap<SmolStr, usize>,
+    result_functions: &HashSet<SmolStr>,
+    class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
+    interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
+    type_info: &FunctionTypeInfo,
+) -> MirFunction {
+    let span = TextRange::empty(0.into());
+    let mut lowerer = FunctionLowerer::new(
+        name,
+        type_tags,
+        class_fields,
+        class_field_defaults,
+        function_names,
+        field_names,
+        shape_names,
+        shape_graphs,
+        field_graphs,
+        field_bodies,
+        field_metadata,
+        radiance_param_counts,
+        volume_param_counts,
+        result_functions,
+        class_method_ids,
+        interface_methods,
+        false,
+        Some(type_info),
+    );
+
+    for param in &func.params {
+        let local = lowerer.new_local(
+            param.name.clone(),
+            false,
+            lowerer.local_type_for_name(&param.name),
+        );
+        lowerer.declare_local(param.name.clone(), local);
+        lowerer.params.push(local);
+    }
+
+    let entry = lowerer.new_block();
+    lowerer.current_block = entry;
+
+    let metadata = func.render.as_ref().expect("render metadata");
+    let world_local = func
+        .params
+        .first()
+        .and_then(|param| lowerer.resolve_local(&param.name))
+        .expect("render world param");
+    let camera_local = func
+        .params
+        .get(1)
+        .and_then(|param| lowerer.resolve_local(&param.name))
+        .expect("render camera param");
+
+    let domain = metadata
+        .domain
+        .as_ref()
+        .map(|body| lowerer.lower_wrapped_body_value(body, span))
+        .unwrap_or_else(|| build_default_scene_domain_value(&mut lowerer, world_local, span));
+    let light = metadata
+        .light
+        .as_ref()
+        .map(|body| lowerer.lower_wrapped_body_value(body, span))
+        .unwrap_or_else(|| build_default_render_light_value(&mut lowerer, span));
+    let width = metadata
+        .width
+        .as_ref()
+        .map(|body| lowerer.lower_wrapped_body_value(body, span))
+        .unwrap_or(Value::Const(Literal::Integer(40)));
+    let height = metadata
+        .height
+        .as_ref()
+        .map(|body| lowerer.lower_wrapped_body_value(body, span))
+        .unwrap_or(Value::Const(Literal::Integer(40)));
+    let world_up = metadata
+        .world_up
+        .as_ref()
+        .map(|body| lowerer.lower_wrapped_body_value(body, span))
+        .unwrap_or_else(|| {
+            lowerer.lower_get_named_field(
+                Value::Local(camera_local),
+                "Camera",
+                "up",
+                MirType::Vec3,
+                span,
+            )
+        });
+    let view_scale = metadata
+        .view_scale
+        .as_ref()
+        .map(|body| lowerer.lower_wrapped_body_value(body, span))
+        .unwrap_or(Value::Const(Literal::Float(0.72)));
+    let fill_dir = metadata
+        .fill_dir
+        .as_ref()
+        .map(|body| lowerer.lower_wrapped_body_value(body, span))
+        .unwrap_or_else(|| build_default_render_fill_dir_value(&mut lowerer, span));
+
+    let result = lowerer.lower_call_temp(
+        MirType::String,
+        SmolStr::new("__wr_render_capture_to_ppm"),
+        vec![
+            Value::Local(world_local),
+            domain,
+            Value::Local(camera_local),
+            light,
+            width,
+            height,
+            world_up,
+            view_scale,
+            fill_dir,
+        ],
+        span,
+    );
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(result),
+        span,
+    });
+
+    MirFunction {
+        name: lowerer.name,
+        params: lowerer.params,
+        abi_params: func
+            .params
+            .iter()
+            .map(|param| {
+                portable_abi_from_type_ref(
+                    param.ty.as_ref(),
+                    module,
+                    type_tags,
+                    &mut HashSet::new(),
+                )
+            })
+            .collect(),
+        abi_return: portable_abi_from_type_ref(
+            func.ret_type.as_ref(),
+            module,
+            type_tags,
+            &mut HashSet::new(),
+        ),
+        locals: lowerer.locals,
+        temps: lowerer.temps,
+        blocks: lowerer.blocks,
+        entry,
+        suspendable: false,
+    }
+}
+
+fn build_vec3_value(lowerer: &mut FunctionLowerer, values: [f64; 3], span: TextRange) -> Value {
+    lowerer.lower_call_temp(
+        MirType::Vec3,
+        SmolStr::new("vec3"),
+        vec![
+            Value::Const(Literal::Float(values[0])),
+            Value::Const(Literal::Float(values[1])),
+            Value::Const(Literal::Float(values[2])),
+        ],
+        span,
+    )
+}
+
+fn build_default_render_fill_dir_value(lowerer: &mut FunctionLowerer, span: TextRange) -> Value {
+    let base = build_vec3_value(lowerer, [-0.9, 0.45, 0.2], span);
+    lowerer.lower_call_temp(MirType::Vec3, SmolStr::new("normalize"), vec![base], span)
+}
+
+fn build_default_render_light_value(lowerer: &mut FunctionLowerer, span: TextRange) -> Value {
+    let mut class = lowerer.synthetic_class_target_info("Light");
+    FunctionLowerer::set_class_field_value(
+        &mut class,
+        "position",
+        build_vec3_value(lowerer, [2.4, 2.8, 2.4], span),
+    );
+    let light_dir = build_vec3_value(lowerer, [-0.8, -0.9, -0.9], span);
+    FunctionLowerer::set_class_field_value(
+        &mut class,
+        "direction",
+        lowerer.lower_call_temp(MirType::Vec3, SmolStr::new("normalize"), vec![light_dir], span),
+    );
+    FunctionLowerer::set_class_field_value(
+        &mut class,
+        "intensity",
+        build_vec3_value(lowerer, [1.0, 0.98, 0.95], span),
+    );
+    FunctionLowerer::set_class_field_value(
+        &mut class,
+        "range",
+        Value::Const(Literal::Float(12.0)),
+    );
+    lowerer.build_class_instance(&class, span)
+}
+
+fn build_default_scene_domain_value(
+    lowerer: &mut FunctionLowerer,
+    world_local: LocalId,
+    span: TextRange,
+) -> Value {
+    let scene_id = lowerer.lower_get_named_field(
+        Value::Local(world_local),
+        "RegionCapture",
+        "scene_id",
+        MirType::Integer,
+        span,
+    );
+    let mut class = lowerer.synthetic_class_target_info("SceneDomain");
+    FunctionLowerer::set_class_field_value(&mut class, "scene_id", scene_id);
+    FunctionLowerer::set_class_field_value(
+        &mut class,
+        "geometry_detail",
+        Value::Const(Literal::Integer(1)),
+    );
+    FunctionLowerer::set_class_field_value(
+        &mut class,
+        "material",
+        Value::Const(Literal::Boolean(true)),
+    );
+    FunctionLowerer::set_class_field_value(
+        &mut class,
+        "radiance",
+        Value::Const(Literal::Boolean(true)),
+    );
+    FunctionLowerer::set_class_field_value(
+        &mut class,
+        "media",
+        Value::Const(Literal::Boolean(true)),
+    );
+    FunctionLowerer::set_class_field_value(
+        &mut class,
+        "max_distance",
+        Value::Const(Literal::Float(12.0)),
+    );
+    FunctionLowerer::set_class_field_value(
+        &mut class,
+        "min_step",
+        Value::Const(Literal::Float(0.02)),
+    );
+    FunctionLowerer::set_class_field_value(
+        &mut class,
+        "hit_epsilon",
+        Value::Const(Literal::Float(0.001)),
+    );
+    FunctionLowerer::set_class_field_value(
+        &mut class,
+        "max_steps",
+        Value::Const(Literal::Integer(96)),
+    );
+    lowerer.build_class_instance(&class, span)
+}
+
+fn declare_internal_param(lowerer: &mut FunctionLowerer, name: &str, ty: MirType) -> LocalId {
+    let local = lowerer.new_local(SmolStr::new(name), false, ty);
+    lowerer.declare_local(SmolStr::new(name), local);
+    lowerer.params.push(local);
+    local
+}
+
+fn lower_render_world_distance_call(
+    lowerer: &mut FunctionLowerer,
+    world: Value,
+    domain: Value,
+    point: Value,
+    span: TextRange,
+) -> Value {
+    lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("__wr_world_distance_capture"),
+        vec![world, domain, point],
+        span,
+    )
+}
+
+fn lower_render_world_trace_call(
+    lowerer: &mut FunctionLowerer,
+    world: Value,
+    domain: Value,
+    origin: Value,
+    direction: Value,
+    max_distance: Value,
+    min_step: Value,
+    hit_epsilon: Value,
+    max_steps: Value,
+    span: TextRange,
+) -> Value {
+    lowerer.lower_call_temp(
+        MirType::Named(SmolStr::new("Hit3")),
+        SmolStr::new("__wr_world_trace_capture"),
+        vec![
+            world,
+            domain,
+            origin,
+            direction,
+            max_distance,
+            min_step,
+            hit_epsilon,
+            max_steps,
+        ],
+        span,
+    )
+}
+
+fn lower_render_world_surface_call(
+    lowerer: &mut FunctionLowerer,
+    world: Value,
+    domain: Value,
+    hit: Value,
+    span: TextRange,
+) -> Value {
+    lowerer.lower_call_temp(
+        MirType::Named(SmolStr::new("Surface")),
+        SmolStr::new("__wr_world_surface_capture"),
+        vec![world, domain, hit],
+        span,
+    )
+}
+
+fn lower_render_world_radiance_call(
+    lowerer: &mut FunctionLowerer,
+    world: Value,
+    domain: Value,
+    point: Value,
+    direction: Value,
+    span: TextRange,
+) -> Value {
+    lowerer.lower_call_temp(
+        MirType::Vec3,
+        SmolStr::new("__wr_world_radiance_capture"),
+        vec![world, domain, point, direction],
+        span,
+    )
+}
+
+fn lower_render_world_medium_call(
+    lowerer: &mut FunctionLowerer,
+    world: Value,
+    domain: Value,
+    point: Value,
+    span: TextRange,
+) -> Value {
+    lowerer.lower_call_temp(
+        MirType::Named(SmolStr::new("Medium")),
+        SmolStr::new("__wr_world_medium_capture"),
+        vec![world, domain, point],
+        span,
+    )
+}
+
+fn lower_render_shadow_visibility_helper(
+    module: &hir::Module,
+    type_tags: &HashMap<SmolStr, TypeTagId>,
+    class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
+    class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
+    function_names: &HashSet<SmolStr>,
+    field_names: &HashSet<SmolStr>,
+    shape_names: &HashSet<SmolStr>,
+    shape_graphs: &HashMap<SmolStr, hir::ShapeGraph>,
+    field_graphs: &HashMap<SmolStr, hir::FieldGraph>,
+    field_bodies: &HashMap<SmolStr, hir::Body>,
+    field_metadata: &HashMap<SmolStr, hir::FieldMetadata>,
+    radiance_param_counts: &HashMap<SmolStr, usize>,
+    volume_param_counts: &HashMap<SmolStr, usize>,
+    result_functions: &HashSet<SmolStr>,
+    class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
+    interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
+) -> MirFunction {
+    let span = TextRange::empty(0.into());
+    let mut lowerer = FunctionLowerer::new(
+        SmolStr::new("__wr_render_shadow_visibility_capture"),
+        type_tags,
+        class_fields,
+        class_field_defaults,
+        function_names,
+        field_names,
+        shape_names,
+        shape_graphs,
+        field_graphs,
+        field_bodies,
+        field_metadata,
+        radiance_param_counts,
+        volume_param_counts,
+        result_functions,
+        class_method_ids,
+        interface_methods,
+        false,
+        None,
+    );
+
+    let world = declare_internal_param(&mut lowerer, "world", MirType::Named(SmolStr::new("RegionCapture")));
+    let domain = declare_internal_param(&mut lowerer, "domain", MirType::Named(SmolStr::new("SceneDomain")));
+    let hit_position = declare_internal_param(&mut lowerer, "hit_position", MirType::Vec3);
+    let hit_normal = declare_internal_param(&mut lowerer, "hit_normal", MirType::Vec3);
+    let light = declare_internal_param(&mut lowerer, "light", MirType::Named(SmolStr::new("Light")));
+
+    let entry = lowerer.new_block();
+    let hit_block = lowerer.new_block();
+    let miss_block = lowerer.new_block();
+    let join_block = lowerer.new_block();
+    lowerer.current_block = entry;
+
+    let normal_bias = lowerer.lower_binary_temp(
+        MirType::Vec3,
+        BinaryOp::Mul,
+        Value::Local(hit_normal),
+        Value::Const(Literal::Float(0.01)),
+        span,
+    );
+    let shadow_origin = lowerer.lower_binary_temp(
+        MirType::Vec3,
+        BinaryOp::Add,
+        Value::Local(hit_position),
+        normal_bias,
+        span,
+    );
+    let light_position = lowerer.lower_get_named_field(
+        Value::Local(light),
+        "Light",
+        "position",
+        MirType::Vec3,
+        span,
+    );
+    let light_range = lowerer.lower_get_named_field(
+        Value::Local(light),
+        "Light",
+        "range",
+        MirType::Float,
+        span,
+    );
+    let light_delta = lowerer.lower_binary_temp(
+        MirType::Vec3,
+        BinaryOp::Sub,
+        light_position,
+        shadow_origin.clone(),
+        span,
+    );
+    let shadow_direction = lowerer.lower_call_temp(
+        MirType::Vec3,
+        SmolStr::new("normalize"),
+        vec![light_delta.clone()],
+        span,
+    );
+    let light_distance = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("length"),
+        vec![light_delta],
+        span,
+    );
+    let shadow_limit = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("min"),
+        vec![light_distance, light_range],
+        span,
+    );
+    let min_step = lowerer.lower_get_named_field(
+        Value::Local(domain),
+        "SceneDomain",
+        "min_step",
+        MirType::Float,
+        span,
+    );
+    let hit_epsilon = lowerer.lower_get_named_field(
+        Value::Local(domain),
+        "SceneDomain",
+        "hit_epsilon",
+        MirType::Float,
+        span,
+    );
+    let max_steps = lowerer.lower_get_named_field(
+        Value::Local(domain),
+        "SceneDomain",
+        "max_steps",
+        MirType::Integer,
+        span,
+    );
+    let shadow_hit = lower_render_world_trace_call(
+        &mut lowerer,
+        Value::Local(world),
+        Value::Local(domain),
+        shadow_origin,
+        shadow_direction,
+        shadow_limit,
+        min_step,
+        hit_epsilon,
+        max_steps,
+        span,
+    );
+    let shadow_hit_flag = lowerer.lower_get_named_field(
+        shadow_hit,
+        "Hit3",
+        "hit",
+        MirType::Boolean,
+        span,
+    );
+    let result_local = lowerer.new_local(SmolStr::new("$shadow_visibility"), true, MirType::Float);
+    lowerer.assign_use(
+        Place::Local(result_local),
+        Value::Const(Literal::Float(1.0)),
+        span,
+    );
+    lowerer.set_terminator(Terminator::Branch {
+        cond: shadow_hit_flag,
+        then_target: hit_block,
+        else_target: miss_block,
+        span,
+    });
+
+    lowerer.current_block = hit_block;
+    lowerer.assign_use(
+        Place::Local(result_local),
+        Value::Const(Literal::Float(0.0)),
+        span,
+    );
+    lowerer.set_terminator(Terminator::Jump {
+        target: join_block,
+        span,
+    });
+
+    lowerer.current_block = miss_block;
+    lowerer.assign_use(
+        Place::Local(result_local),
+        Value::Const(Literal::Float(1.0)),
+        span,
+    );
+    lowerer.set_terminator(Terminator::Jump {
+        target: join_block,
+        span,
+    });
+
+    lowerer.current_block = join_block;
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(Value::Local(result_local)),
+        span,
+    });
+
+    MirFunction {
+        name: lowerer.name,
+        params: lowerer.params,
+        abi_params: vec![
+            portable_abi_named_type("RegionCapture", module, type_tags),
+            portable_abi_named_type("SceneDomain", module, type_tags),
+            PortableAbiType::Vec3,
+            PortableAbiType::Vec3,
+            portable_abi_named_type("Light", module, type_tags),
+        ],
+        abi_return: PortableAbiType::F32,
+        locals: lowerer.locals,
+        temps: lowerer.temps,
+        blocks: lowerer.blocks,
+        entry,
+        suspendable: false,
+    }
+}
+
+fn lower_render_ambient_occlusion_helper(
+    module: &hir::Module,
+    type_tags: &HashMap<SmolStr, TypeTagId>,
+    class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
+    class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
+    function_names: &HashSet<SmolStr>,
+    field_names: &HashSet<SmolStr>,
+    shape_names: &HashSet<SmolStr>,
+    shape_graphs: &HashMap<SmolStr, hir::ShapeGraph>,
+    field_graphs: &HashMap<SmolStr, hir::FieldGraph>,
+    field_bodies: &HashMap<SmolStr, hir::Body>,
+    field_metadata: &HashMap<SmolStr, hir::FieldMetadata>,
+    radiance_param_counts: &HashMap<SmolStr, usize>,
+    volume_param_counts: &HashMap<SmolStr, usize>,
+    result_functions: &HashSet<SmolStr>,
+    class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
+    interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
+) -> MirFunction {
+    let span = TextRange::empty(0.into());
+    let mut lowerer = FunctionLowerer::new(
+        SmolStr::new("__wr_render_ambient_occlusion_capture"),
+        type_tags,
+        class_fields,
+        class_field_defaults,
+        function_names,
+        field_names,
+        shape_names,
+        shape_graphs,
+        field_graphs,
+        field_bodies,
+        field_metadata,
+        radiance_param_counts,
+        volume_param_counts,
+        result_functions,
+        class_method_ids,
+        interface_methods,
+        false,
+        None,
+    );
+
+    let world = declare_internal_param(&mut lowerer, "world", MirType::Named(SmolStr::new("RegionCapture")));
+    let domain = declare_internal_param(&mut lowerer, "domain", MirType::Named(SmolStr::new("SceneDomain")));
+    let hit_position = declare_internal_param(&mut lowerer, "hit_position", MirType::Vec3);
+    let hit_normal = declare_internal_param(&mut lowerer, "hit_normal", MirType::Vec3);
+
+    let entry = lowerer.new_block();
+    lowerer.current_block = entry;
+    let sample_a_offset = lowerer.lower_binary_temp(
+        MirType::Vec3,
+        BinaryOp::Mul,
+        Value::Local(hit_normal),
+        Value::Const(Literal::Float(0.06)),
+        span,
+    );
+    let sample_a_point = lowerer.lower_binary_temp(
+        MirType::Vec3,
+        BinaryOp::Add,
+        Value::Local(hit_position),
+        sample_a_offset,
+        span,
+    );
+    let sample_a = lower_render_world_distance_call(
+        &mut lowerer,
+        Value::Local(world),
+        Value::Local(domain),
+        sample_a_point,
+        span,
+    );
+    let sample_b_offset = lowerer.lower_binary_temp(
+        MirType::Vec3,
+        BinaryOp::Mul,
+        Value::Local(hit_normal),
+        Value::Const(Literal::Float(0.14)),
+        span,
+    );
+    let sample_b_point = lowerer.lower_binary_temp(
+        MirType::Vec3,
+        BinaryOp::Add,
+        Value::Local(hit_position),
+        sample_b_offset,
+        span,
+    );
+    let sample_b = lower_render_world_distance_call(
+        &mut lowerer,
+        Value::Local(world),
+        Value::Local(domain),
+        sample_b_point,
+        span,
+    );
+    let sample_c_offset = lowerer.lower_binary_temp(
+        MirType::Vec3,
+        BinaryOp::Mul,
+        Value::Local(hit_normal),
+        Value::Const(Literal::Float(0.28)),
+        span,
+    );
+    let sample_c_point = lowerer.lower_binary_temp(
+        MirType::Vec3,
+        BinaryOp::Add,
+        Value::Local(hit_position),
+        sample_c_offset,
+        span,
+    );
+    let sample_c = lower_render_world_distance_call(
+        &mut lowerer,
+        Value::Local(world),
+        Value::Local(domain),
+        sample_c_point,
+        span,
+    );
+
+    let sample_a_gap = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Sub,
+        Value::Const(Literal::Float(0.06)),
+        sample_a,
+        span,
+    );
+    let sample_b_gap = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Sub,
+        Value::Const(Literal::Float(0.14)),
+        sample_b,
+        span,
+    );
+    let sample_c_gap = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Sub,
+        Value::Const(Literal::Float(0.28)),
+        sample_c,
+        span,
+    );
+    let term_a = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Mul,
+        sample_a_gap,
+        Value::Const(Literal::Float(1.6)),
+        span,
+    );
+    let term_b = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Mul,
+        sample_b_gap,
+        Value::Const(Literal::Float(1.1)),
+        span,
+    );
+    let term_c = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Mul,
+        sample_c_gap,
+        Value::Const(Literal::Float(0.8)),
+        span,
+    );
+    let term_ab = lowerer.lower_binary_temp(MirType::Float, BinaryOp::Add, term_a, term_b, span);
+    let occlusion_sum = lowerer.lower_binary_temp(MirType::Float, BinaryOp::Add, term_ab, term_c, span);
+    let occlusion = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("clamp"),
+        vec![
+            occlusion_sum,
+            Value::Const(Literal::Float(0.0)),
+            Value::Const(Literal::Float(1.0)),
+        ],
+        span,
+    );
+    let occlusion_scaled = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Mul,
+        occlusion,
+        Value::Const(Literal::Float(0.85)),
+        span,
+    );
+    let ao = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Sub,
+        Value::Const(Literal::Float(1.0)),
+        occlusion_scaled,
+        span,
+    );
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(ao),
+        span,
+    });
+
+    MirFunction {
+        name: lowerer.name,
+        params: lowerer.params,
+        abi_params: vec![
+            portable_abi_named_type("RegionCapture", module, type_tags),
+            portable_abi_named_type("SceneDomain", module, type_tags),
+            PortableAbiType::Vec3,
+            PortableAbiType::Vec3,
+        ],
+        abi_return: PortableAbiType::F32,
+        locals: lowerer.locals,
+        temps: lowerer.temps,
+        blocks: lowerer.blocks,
+        entry,
+        suspendable: false,
+    }
+}
+
+fn lower_render_scene_color_helper(
+    module: &hir::Module,
+    type_tags: &HashMap<SmolStr, TypeTagId>,
+    class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
+    class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
+    function_names: &HashSet<SmolStr>,
+    field_names: &HashSet<SmolStr>,
+    shape_names: &HashSet<SmolStr>,
+    shape_graphs: &HashMap<SmolStr, hir::ShapeGraph>,
+    field_graphs: &HashMap<SmolStr, hir::FieldGraph>,
+    field_bodies: &HashMap<SmolStr, hir::Body>,
+    field_metadata: &HashMap<SmolStr, hir::FieldMetadata>,
+    radiance_param_counts: &HashMap<SmolStr, usize>,
+    volume_param_counts: &HashMap<SmolStr, usize>,
+    result_functions: &HashSet<SmolStr>,
+    class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
+    interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
+) -> MirFunction {
+    let span = TextRange::empty(0.into());
+    let mut lowerer = FunctionLowerer::new(
+        SmolStr::new("__wr_render_scene_color_capture"),
+        type_tags,
+        class_fields,
+        class_field_defaults,
+        function_names,
+        field_names,
+        shape_names,
+        shape_graphs,
+        field_graphs,
+        field_bodies,
+        field_metadata,
+        radiance_param_counts,
+        volume_param_counts,
+        result_functions,
+        class_method_ids,
+        interface_methods,
+        false,
+        None,
+    );
+
+    let world = declare_internal_param(&mut lowerer, "world", MirType::Named(SmolStr::new("RegionCapture")));
+    let domain = declare_internal_param(&mut lowerer, "domain", MirType::Named(SmolStr::new("SceneDomain")));
+    let camera_position = declare_internal_param(&mut lowerer, "camera_position", MirType::Vec3);
+    let light = declare_internal_param(&mut lowerer, "light", MirType::Named(SmolStr::new("Light")));
+    let ray_direction = declare_internal_param(&mut lowerer, "ray_direction", MirType::Vec3);
+    let fill_dir = declare_internal_param(&mut lowerer, "fill_dir", MirType::Vec3);
+
+    let entry = lowerer.new_block();
+    let hit_block = lowerer.new_block();
+    let miss_block = lowerer.new_block();
+    let join_block = lowerer.new_block();
+    lowerer.current_block = entry;
+
+    let max_distance = lowerer.lower_get_named_field(
+        Value::Local(domain),
+        "SceneDomain",
+        "max_distance",
+        MirType::Float,
+        span,
+    );
+    let min_step = lowerer.lower_get_named_field(
+        Value::Local(domain),
+        "SceneDomain",
+        "min_step",
+        MirType::Float,
+        span,
+    );
+    let hit_epsilon = lowerer.lower_get_named_field(
+        Value::Local(domain),
+        "SceneDomain",
+        "hit_epsilon",
+        MirType::Float,
+        span,
+    );
+    let max_steps = lowerer.lower_get_named_field(
+        Value::Local(domain),
+        "SceneDomain",
+        "max_steps",
+        MirType::Integer,
+        span,
+    );
+    let hit = lower_render_world_trace_call(
+        &mut lowerer,
+        Value::Local(world),
+        Value::Local(domain),
+        Value::Local(camera_position),
+        Value::Local(ray_direction),
+        max_distance,
+        min_step.clone(),
+        hit_epsilon.clone(),
+        max_steps.clone(),
+        span,
+    );
+    let hit_flag = lowerer.lower_get_named_field(hit.clone(), "Hit3", "hit", MirType::Boolean, span);
+    let result_local = lowerer.new_local(SmolStr::new("$scene_color"), true, MirType::Vec3);
+    let black = build_vec3_value(&mut lowerer, [0.0, 0.0, 0.0], span);
+    lowerer.assign_use(Place::Local(result_local), black, span);
+    lowerer.set_terminator(Terminator::Branch {
+        cond: hit_flag,
+        then_target: hit_block,
+        else_target: miss_block,
+        span,
+    });
+
+    lowerer.current_block = hit_block;
+    let hit_position = lowerer.lower_get_named_field(hit.clone(), "Hit3", "position", MirType::Vec3, span);
+    let hit_normal = lowerer.lower_get_named_field(hit.clone(), "Hit3", "normal", MirType::Vec3, span);
+    let surface = lower_render_world_surface_call(
+        &mut lowerer,
+        Value::Local(world),
+        Value::Local(domain),
+        hit.clone(),
+        span,
+    );
+    let captured_radiance = lower_render_world_radiance_call(
+        &mut lowerer,
+        Value::Local(world),
+        Value::Local(domain),
+        hit_position.clone(),
+        Value::Local(ray_direction),
+        span,
+    );
+    let medium = lower_render_world_medium_call(
+        &mut lowerer,
+        Value::Local(world),
+        Value::Local(domain),
+        hit_position.clone(),
+        span,
+    );
+    let light_position = lowerer.lower_get_named_field(Value::Local(light), "Light", "position", MirType::Vec3, span);
+    let light_intensity = lowerer.lower_get_named_field(Value::Local(light), "Light", "intensity", MirType::Vec3, span);
+    let light_range = lowerer.lower_get_named_field(Value::Local(light), "Light", "range", MirType::Float, span);
+    let key_delta = lowerer.lower_binary_temp(MirType::Vec3, BinaryOp::Sub, light_position, hit_position.clone(), span);
+    let key_dir = lowerer.lower_call_temp(MirType::Vec3, SmolStr::new("normalize"), vec![key_delta.clone()], span);
+    let view_delta = lowerer.lower_binary_temp(MirType::Vec3, BinaryOp::Sub, Value::Local(camera_position), hit_position.clone(), span);
+    let view_dir = lowerer.lower_call_temp(MirType::Vec3, SmolStr::new("normalize"), vec![view_delta], span);
+    let half_sum = lowerer.lower_binary_temp(MirType::Vec3, BinaryOp::Add, key_dir.clone(), view_dir.clone(), span);
+    let half_dir = lowerer.lower_call_temp(
+        MirType::Vec3,
+        SmolStr::new("normalize"),
+        vec![half_sum],
+        span,
+    );
+    let distance_to_light = lowerer.lower_call_temp(MirType::Float, SmolStr::new("length"), vec![key_delta], span);
+    let light_distance_ratio = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Div,
+        distance_to_light.clone(),
+        light_range,
+        span,
+    );
+    let attenuation_base = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Sub,
+        Value::Const(Literal::Float(1.0)),
+        light_distance_ratio,
+        span,
+    );
+    let attenuation = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("clamp"),
+        vec![
+            attenuation_base,
+            Value::Const(Literal::Float(0.0)),
+            Value::Const(Literal::Float(1.0)),
+        ],
+        span,
+    );
+    let ao = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("__wr_render_ambient_occlusion_capture"),
+        vec![Value::Local(world), Value::Local(domain), hit_position.clone(), hit_normal.clone()],
+        span,
+    );
+    let shadow = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("__wr_render_shadow_visibility_capture"),
+        vec![Value::Local(world), Value::Local(domain), hit_position.clone(), hit_normal.clone(), Value::Local(light)],
+        span,
+    );
+    let ndotl_raw = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("dot"),
+        vec![hit_normal.clone(), key_dir.clone()],
+        span,
+    );
+    let ndotl = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("max"),
+        vec![ndotl_raw, Value::Const(Literal::Float(0.0))],
+        span,
+    );
+    let ndotv_raw = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("dot"),
+        vec![hit_normal.clone(), view_dir.clone()],
+        span,
+    );
+    let _ndotv = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("max"),
+        vec![ndotv_raw, Value::Const(Literal::Float(0.0))],
+        span,
+    );
+    let ndoth_raw = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("dot"),
+        vec![hit_normal.clone(), half_dir.clone()],
+        span,
+    );
+    let ndoth = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("max"),
+        vec![ndoth_raw, Value::Const(Literal::Float(0.0))],
+        span,
+    );
+    let diffuse_base = lowerer.lower_binary_temp(MirType::Float, BinaryOp::Mul, ndotl, attenuation, span);
+    let diffuse = lowerer.lower_binary_temp(MirType::Float, BinaryOp::Mul, diffuse_base, shadow, span);
+    let fill_dot_raw = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("dot"),
+        vec![hit_normal.clone(), Value::Local(fill_dir)],
+        span,
+    );
+    let fill_dot = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("max"),
+        vec![fill_dot_raw, Value::Const(Literal::Float(0.0))],
+        span,
+    );
+    let fill = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Mul,
+        fill_dot,
+        Value::Const(Literal::Float(0.22)),
+        span,
+    );
+    let roughness = lowerer.lower_get_named_field(surface.clone(), "Surface", "roughness", MirType::Float, span);
+    let roughness_clamped = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("clamp"),
+        vec![
+            roughness,
+            Value::Const(Literal::Float(0.0)),
+            Value::Const(Literal::Float(1.0)),
+        ],
+        span,
+    );
+    let spec_power = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("mix"),
+        vec![
+            Value::Const(Literal::Float(48.0)),
+            Value::Const(Literal::Float(8.0)),
+            roughness_clamped,
+        ],
+        span,
+    );
+    let metalness = lowerer.lower_get_named_field(surface.clone(), "Surface", "metalness", MirType::Float, span);
+    let clearcoat = lowerer.lower_get_named_field(surface.clone(), "Surface", "clearcoat", MirType::Float, span);
+    let spec_raw = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("pow"),
+        vec![ndoth, spec_power],
+        span,
+    );
+    let metalness_term = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Mul,
+        metalness.clone(),
+        Value::Const(Literal::Float(0.25)),
+        span,
+    );
+    let specular_strength_a = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Add,
+        Value::Const(Literal::Float(0.10)),
+        metalness_term,
+        span,
+    );
+    let clearcoat_term = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Mul,
+        clearcoat,
+        Value::Const(Literal::Float(0.20)),
+        span,
+    );
+    let specular_strength = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Add,
+        specular_strength_a,
+        clearcoat_term,
+        span,
+    );
+    let highlight = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Mul,
+        spec_raw,
+        specular_strength.clone(),
+        span,
+    );
+    let lighting_a = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Add,
+        Value::Const(Literal::Float(0.12)),
+        diffuse,
+        span,
+    );
+    let lighting_b = lowerer.lower_binary_temp(MirType::Float, BinaryOp::Add, lighting_a, fill, span);
+    let lighting = lowerer.lower_binary_temp(MirType::Float, BinaryOp::Mul, lighting_b, ao.clone(), span);
+    let albedo = lowerer.lower_get_named_field(surface.clone(), "Surface", "albedo", MirType::Vec3, span);
+    let intensity_x = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("__wr_vec_component"),
+        vec![light_intensity.clone(), Value::Const(Literal::Integer(0))],
+        span,
+    );
+    let intensity_y = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("__wr_vec_component"),
+        vec![light_intensity.clone(), Value::Const(Literal::Integer(1))],
+        span,
+    );
+    let intensity_z = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("__wr_vec_component"),
+        vec![light_intensity, Value::Const(Literal::Integer(2))],
+        span,
+    );
+    let albedo_x = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("__wr_vec_component"),
+        vec![albedo.clone(), Value::Const(Literal::Integer(0))],
+        span,
+    );
+    let albedo_y = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("__wr_vec_component"),
+        vec![albedo.clone(), Value::Const(Literal::Integer(1))],
+        span,
+    );
+    let albedo_z = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("__wr_vec_component"),
+        vec![albedo, Value::Const(Literal::Integer(2))],
+        span,
+    );
+    let direct_x_base = lowerer.lower_binary_temp(MirType::Float, BinaryOp::Mul, albedo_x, lighting.clone(), span);
+    let direct_x_lit = lowerer.lower_binary_temp(MirType::Float, BinaryOp::Mul, direct_x_base, intensity_x, span);
+    let direct_x_highlight = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Mul,
+        highlight.clone(),
+        Value::Const(Literal::Float(220.0)),
+        span,
+    );
+    let direct_x_sum = lowerer.lower_binary_temp(MirType::Float, BinaryOp::Add, direct_x_lit, direct_x_highlight, span);
+    let direct_x = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("clamp"),
+        vec![direct_x_sum, Value::Const(Literal::Float(0.0)), Value::Const(Literal::Float(255.0))],
+        span,
+    );
+    let direct_y_base = lowerer.lower_binary_temp(MirType::Float, BinaryOp::Mul, albedo_y, lighting.clone(), span);
+    let direct_y_lit = lowerer.lower_binary_temp(MirType::Float, BinaryOp::Mul, direct_y_base, intensity_y, span);
+    let direct_y_highlight = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Mul,
+        highlight.clone(),
+        Value::Const(Literal::Float(208.0)),
+        span,
+    );
+    let direct_y_sum = lowerer.lower_binary_temp(MirType::Float, BinaryOp::Add, direct_y_lit, direct_y_highlight, span);
+    let direct_y = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("clamp"),
+        vec![direct_y_sum, Value::Const(Literal::Float(0.0)), Value::Const(Literal::Float(255.0))],
+        span,
+    );
+    let direct_z_base = lowerer.lower_binary_temp(MirType::Float, BinaryOp::Mul, albedo_z, lighting, span);
+    let direct_z_lit = lowerer.lower_binary_temp(MirType::Float, BinaryOp::Mul, direct_z_base, intensity_z, span);
+    let direct_z_highlight = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Mul,
+        highlight.clone(),
+        Value::Const(Literal::Float(196.0)),
+        span,
+    );
+    let direct_z_sum = lowerer.lower_binary_temp(MirType::Float, BinaryOp::Add, direct_z_lit, direct_z_highlight, span);
+    let direct_z = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("clamp"),
+        vec![direct_z_sum, Value::Const(Literal::Float(0.0)), Value::Const(Literal::Float(255.0))],
+        span,
+    );
+    let direct = lowerer.lower_call_temp(
+        MirType::Vec3,
+        SmolStr::new("vec3"),
+        vec![direct_x, direct_y, direct_z],
+        span,
+    );
+    let medium_density = lowerer.lower_get_named_field(medium.clone(), "Medium", "density", MirType::Float, span);
+    let fog_distance = lowerer.lower_binary_temp(MirType::Float, BinaryOp::Mul, medium_density, distance_to_light.clone(), span);
+    let fog_distance_scaled = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Mul,
+        fog_distance,
+        Value::Const(Literal::Float(0.18)),
+        span,
+    );
+    let one_minus_ao = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Sub,
+        Value::Const(Literal::Float(1.0)),
+        ao,
+        span,
+    );
+    let fog_occlusion = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Mul,
+        one_minus_ao,
+        Value::Const(Literal::Float(0.08)),
+        span,
+    );
+    let fog_sum = lowerer.lower_binary_temp(MirType::Float, BinaryOp::Add, fog_distance_scaled, fog_occlusion, span);
+    let fog_strength = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("clamp"),
+        vec![fog_sum, Value::Const(Literal::Float(0.0)), Value::Const(Literal::Float(0.55))],
+        span,
+    );
+    let radiance_fog = lowerer.lower_binary_temp(
+        MirType::Vec3,
+        BinaryOp::Mul,
+        captured_radiance.clone(),
+        Value::Const(Literal::Float(0.22)),
+        span,
+    );
+    let medium_emission = lowerer.lower_get_named_field(medium.clone(), "Medium", "emission", MirType::Vec3, span);
+    let fog_color = lowerer.lower_binary_temp(MirType::Vec3, BinaryOp::Add, medium_emission.clone(), radiance_fog, span);
+    let highlight_radiance = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Mul,
+        highlight,
+        Value::Const(Literal::Float(0.15)),
+        span,
+    );
+    let radiance_scale = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Add,
+        Value::Const(Literal::Float(0.25)),
+        highlight_radiance,
+        span,
+    );
+    let radiance_lit = lowerer.lower_binary_temp(
+        MirType::Vec3,
+        BinaryOp::Mul,
+        captured_radiance,
+        radiance_scale,
+        span,
+    );
+    let surface_emissive = lowerer.lower_get_named_field(surface.clone(), "Surface", "emissive", MirType::Vec3, span);
+    let lit_base = lowerer.lower_binary_temp(MirType::Vec3, BinaryOp::Add, direct, surface_emissive, span);
+    let lit = lowerer.lower_binary_temp(MirType::Vec3, BinaryOp::Add, lit_base, radiance_lit, span);
+    let hit_color = lowerer.lower_call_temp(
+        MirType::Vec3,
+        SmolStr::new("mix"),
+        vec![lit, fog_color, fog_strength],
+        span,
+    );
+    lowerer.assign_use(Place::Local(result_local), hit_color, span);
+    lowerer.set_terminator(Terminator::Jump {
+        target: join_block,
+        span,
+    });
+
+    lowerer.current_block = miss_block;
+    let miss_offset = lowerer.lower_binary_temp(
+        MirType::Vec3,
+        BinaryOp::Mul,
+        Value::Local(ray_direction),
+        Value::Const(Literal::Float(4.0)),
+        span,
+    );
+    let miss_point = lowerer.lower_binary_temp(
+        MirType::Vec3,
+        BinaryOp::Add,
+        Value::Local(camera_position),
+        miss_offset,
+        span,
+    );
+    let miss_radiance = lower_render_world_radiance_call(
+        &mut lowerer,
+        Value::Local(world),
+        Value::Local(domain),
+        miss_point.clone(),
+        Value::Local(ray_direction),
+        span,
+    );
+    let miss_medium = lower_render_world_medium_call(
+        &mut lowerer,
+        Value::Local(world),
+        Value::Local(domain),
+        miss_point,
+        span,
+    );
+    let miss_density = lowerer.lower_get_named_field(miss_medium.clone(), "Medium", "density", MirType::Float, span);
+    let miss_fog_raw = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Mul,
+        miss_density,
+        Value::Const(Literal::Float(3.0)),
+        span,
+    );
+    let miss_fog = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("clamp"),
+        vec![miss_fog_raw, Value::Const(Literal::Float(0.0)), Value::Const(Literal::Float(0.45))],
+        span,
+    );
+    let miss_emission = lowerer.lower_get_named_field(miss_medium, "Medium", "emission", MirType::Vec3, span);
+    let miss_radiance_scaled = lowerer.lower_binary_temp(
+        MirType::Vec3,
+        BinaryOp::Mul,
+        miss_radiance.clone(),
+        Value::Const(Literal::Float(0.28)),
+        span,
+    );
+    let miss_mix_color = lowerer.lower_binary_temp(
+        MirType::Vec3,
+        BinaryOp::Add,
+        miss_emission,
+        miss_radiance_scaled,
+        span,
+    );
+    let miss_color = lowerer.lower_call_temp(
+        MirType::Vec3,
+        SmolStr::new("mix"),
+        vec![miss_radiance, miss_mix_color, miss_fog],
+        span,
+    );
+    lowerer.assign_use(Place::Local(result_local), miss_color, span);
+    lowerer.set_terminator(Terminator::Jump {
+        target: join_block,
+        span,
+    });
+
+    lowerer.current_block = join_block;
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(Value::Local(result_local)),
+        span,
+    });
+
+    MirFunction {
+        name: lowerer.name,
+        params: lowerer.params,
+        abi_params: vec![
+            portable_abi_named_type("RegionCapture", module, type_tags),
+            portable_abi_named_type("SceneDomain", module, type_tags),
+            PortableAbiType::Vec3,
+            portable_abi_named_type("Light", module, type_tags),
+            PortableAbiType::Vec3,
+            PortableAbiType::Vec3,
+        ],
+        abi_return: PortableAbiType::Vec3,
+        locals: lowerer.locals,
+        temps: lowerer.temps,
+        blocks: lowerer.blocks,
+        entry,
+        suspendable: false,
+    }
+}
+
+fn lower_render_capture_to_ppm_helper(
+    module: &hir::Module,
+    type_tags: &HashMap<SmolStr, TypeTagId>,
+    class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
+    class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
+    function_names: &HashSet<SmolStr>,
+    field_names: &HashSet<SmolStr>,
+    shape_names: &HashSet<SmolStr>,
+    shape_graphs: &HashMap<SmolStr, hir::ShapeGraph>,
+    field_graphs: &HashMap<SmolStr, hir::FieldGraph>,
+    field_bodies: &HashMap<SmolStr, hir::Body>,
+    field_metadata: &HashMap<SmolStr, hir::FieldMetadata>,
+    radiance_param_counts: &HashMap<SmolStr, usize>,
+    volume_param_counts: &HashMap<SmolStr, usize>,
+    result_functions: &HashSet<SmolStr>,
+    class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
+    interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
+) -> MirFunction {
+    let span = TextRange::empty(0.into());
+    let mut lowerer = FunctionLowerer::new(
+        SmolStr::new("__wr_render_capture_to_ppm"),
+        type_tags,
+        class_fields,
+        class_field_defaults,
+        function_names,
+        field_names,
+        shape_names,
+        shape_graphs,
+        field_graphs,
+        field_bodies,
+        field_metadata,
+        radiance_param_counts,
+        volume_param_counts,
+        result_functions,
+        class_method_ids,
+        interface_methods,
+        false,
+        None,
+    );
+
+    let world = declare_internal_param(&mut lowerer, "world", MirType::Named(SmolStr::new("RegionCapture")));
+    let domain = declare_internal_param(&mut lowerer, "domain", MirType::Named(SmolStr::new("SceneDomain")));
+    let camera = declare_internal_param(&mut lowerer, "camera", MirType::Named(SmolStr::new("Camera")));
+    let light = declare_internal_param(&mut lowerer, "light", MirType::Named(SmolStr::new("Light")));
+    let width = declare_internal_param(&mut lowerer, "width", MirType::Integer);
+    let height = declare_internal_param(&mut lowerer, "height", MirType::Integer);
+    let world_up = declare_internal_param(&mut lowerer, "world_up", MirType::Vec3);
+    let view_scale = declare_internal_param(&mut lowerer, "view_scale", MirType::Float);
+    let fill_dir = declare_internal_param(&mut lowerer, "fill_dir", MirType::Vec3);
+
+    let entry = lowerer.new_block();
+    let y_head = lowerer.new_block();
+    let y_body = lowerer.new_block();
+    let x_head = lowerer.new_block();
+    let x_body = lowerer.new_block();
+    let row_done = lowerer.new_block();
+    let exit = lowerer.new_block();
+    lowerer.current_block = entry;
+
+    let camera_position = lowerer.lower_get_named_field(Value::Local(camera), "Camera", "position", MirType::Vec3, span);
+    let camera_forward = lowerer.lower_get_named_field(Value::Local(camera), "Camera", "forward", MirType::Vec3, span);
+    let width_float = lowerer.lower_call_temp(MirType::Float, SmolStr::new("f32"), vec![Value::Local(width)], span);
+    let height_float = lowerer.lower_call_temp(MirType::Float, SmolStr::new("f32"), vec![Value::Local(height)], span);
+    let aspect = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Div,
+        width_float.clone(),
+        height_float.clone(),
+        span,
+    );
+    let right_cross = lowerer.lower_call_temp(
+        MirType::Vec3,
+        SmolStr::new("cross"),
+        vec![camera_forward.clone(), Value::Local(world_up)],
+        span,
+    );
+    let right = lowerer.lower_call_temp(
+        MirType::Vec3,
+        SmolStr::new("normalize"),
+        vec![right_cross],
+        span,
+    );
+    let up_cross = lowerer.lower_call_temp(
+        MirType::Vec3,
+        SmolStr::new("cross"),
+        vec![right.clone(), camera_forward.clone()],
+        span,
+    );
+    let up = lowerer.lower_call_temp(
+        MirType::Vec3,
+        SmolStr::new("normalize"),
+        vec![up_cross],
+        span,
+    );
+    let ppm_local = lowerer.new_local(SmolStr::new("$ppm"), true, MirType::String);
+    let header = lowerer.lower_string_interp_temp(
+        vec![
+            StringPartValue::Literal(SmolStr::new("P3\n")),
+            StringPartValue::Value(Value::Local(width)),
+            StringPartValue::Literal(SmolStr::new(" ")),
+            StringPartValue::Value(Value::Local(height)),
+            StringPartValue::Literal(SmolStr::new("\n255\n")),
+        ],
+        span,
+    );
+    lowerer.assign_use(Place::Local(ppm_local), header, span);
+    let y_local = lowerer.new_local(SmolStr::new("$y"), true, MirType::Integer);
+    lowerer.assign_use(Place::Local(y_local), Value::Const(Literal::Integer(0)), span);
+    let x_local = lowerer.new_local(SmolStr::new("$x"), true, MirType::Integer);
+    lowerer.assign_use(Place::Local(x_local), Value::Const(Literal::Integer(0)), span);
+    lowerer.set_terminator(Terminator::Jump {
+        target: y_head,
+        span,
+    });
+
+    lowerer.current_block = y_head;
+    let y_cond = lowerer.lower_binary_temp(
+        MirType::Boolean,
+        BinaryOp::Lt,
+        Value::Local(y_local),
+        Value::Local(height),
+        span,
+    );
+    lowerer.set_terminator(Terminator::Branch {
+        cond: y_cond,
+        then_target: y_body,
+        else_target: exit,
+        span,
+    });
+
+    lowerer.current_block = y_body;
+    lowerer.assign_use(Place::Local(x_local), Value::Const(Literal::Integer(0)), span);
+    lowerer.set_terminator(Terminator::Jump {
+        target: x_head,
+        span,
+    });
+
+    lowerer.current_block = x_head;
+    let x_cond = lowerer.lower_binary_temp(
+        MirType::Boolean,
+        BinaryOp::Lt,
+        Value::Local(x_local),
+        Value::Local(width),
+        span,
+    );
+    lowerer.set_terminator(Terminator::Branch {
+        cond: x_cond,
+        then_target: x_body,
+        else_target: row_done,
+        span,
+    });
+
+    lowerer.current_block = x_body;
+    let x_float = lowerer.lower_call_temp(MirType::Float, SmolStr::new("f32"), vec![Value::Local(x_local)], span);
+    let y_float = lowerer.lower_call_temp(MirType::Float, SmolStr::new("f32"), vec![Value::Local(y_local)], span);
+    let sample_u_num = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Add,
+        x_float,
+        Value::Const(Literal::Float(0.5)),
+        span,
+    );
+    let sample_u = lowerer.lower_binary_temp(MirType::Float, BinaryOp::Div, sample_u_num, width_float.clone(), span);
+    let sample_v_num = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Add,
+        y_float,
+        Value::Const(Literal::Float(0.5)),
+        span,
+    );
+    let sample_v = lowerer.lower_binary_temp(MirType::Float, BinaryOp::Div, sample_v_num, height_float.clone(), span);
+    let centered_u = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Sub,
+        sample_u,
+        Value::Const(Literal::Float(0.5)),
+        span,
+    );
+    let doubled_u = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Mul,
+        centered_u,
+        Value::Const(Literal::Float(2.0)),
+        span,
+    );
+    let aspect_u = lowerer.lower_binary_temp(MirType::Float, BinaryOp::Mul, doubled_u, aspect.clone(), span);
+    let screen_x = lowerer.lower_binary_temp(MirType::Float, BinaryOp::Mul, aspect_u, Value::Local(view_scale), span);
+    let centered_v = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Sub,
+        Value::Const(Literal::Float(0.5)),
+        sample_v,
+        span,
+    );
+    let doubled_v = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Mul,
+        centered_v,
+        Value::Const(Literal::Float(2.0)),
+        span,
+    );
+    let screen_y = lowerer.lower_binary_temp(MirType::Float, BinaryOp::Mul, doubled_v, Value::Local(view_scale), span);
+    let ray_x = lowerer.lower_binary_temp(MirType::Vec3, BinaryOp::Mul, right.clone(), screen_x, span);
+    let ray_xy = lowerer.lower_binary_temp(MirType::Vec3, BinaryOp::Add, camera_forward.clone(), ray_x, span);
+    let ray_y = lowerer.lower_binary_temp(MirType::Vec3, BinaryOp::Mul, up.clone(), screen_y, span);
+    let ray_base = lowerer.lower_binary_temp(MirType::Vec3, BinaryOp::Add, ray_xy, ray_y, span);
+    let ray = lowerer.lower_call_temp(
+        MirType::Vec3,
+        SmolStr::new("normalize"),
+        vec![ray_base],
+        span,
+    );
+    let shaded = lowerer.lower_call_temp(
+        MirType::Vec3,
+        SmolStr::new("__wr_render_scene_color_capture"),
+        vec![
+            Value::Local(world),
+            Value::Local(domain),
+            camera_position.clone(),
+            Value::Local(light),
+            ray,
+            Value::Local(fill_dir),
+        ],
+        span,
+    );
+    let shaded_x = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("__wr_vec_component"),
+        vec![shaded.clone(), Value::Const(Literal::Integer(0))],
+        span,
+    );
+    let shaded_y = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("__wr_vec_component"),
+        vec![shaded.clone(), Value::Const(Literal::Integer(1))],
+        span,
+    );
+    let shaded_z = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("__wr_vec_component"),
+        vec![shaded, Value::Const(Literal::Integer(2))],
+        span,
+    );
+    let shaded_x_clamped = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("clamp"),
+        vec![shaded_x, Value::Const(Literal::Float(0.0)), Value::Const(Literal::Float(255.0))],
+        span,
+    );
+    let r = lowerer.lower_call_temp(MirType::Integer, SmolStr::new("i32"), vec![shaded_x_clamped], span);
+    let shaded_y_clamped = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("clamp"),
+        vec![shaded_y, Value::Const(Literal::Float(0.0)), Value::Const(Literal::Float(255.0))],
+        span,
+    );
+    let g = lowerer.lower_call_temp(MirType::Integer, SmolStr::new("i32"), vec![shaded_y_clamped], span);
+    let shaded_z_clamped = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("clamp"),
+        vec![shaded_z, Value::Const(Literal::Float(0.0)), Value::Const(Literal::Float(255.0))],
+        span,
+    );
+    let b = lowerer.lower_call_temp(MirType::Integer, SmolStr::new("i32"), vec![shaded_z_clamped], span);
+    let line = lowerer.lower_string_interp_temp(
+        vec![
+            StringPartValue::Value(r),
+            StringPartValue::Literal(SmolStr::new(" ")),
+            StringPartValue::Value(g),
+            StringPartValue::Literal(SmolStr::new(" ")),
+            StringPartValue::Value(b),
+            StringPartValue::Literal(SmolStr::new("\n")),
+        ],
+        span,
+    );
+    let ppm_next = lowerer.lower_string_concat_temp(Value::Local(ppm_local), line, span);
+    lowerer.assign_use(Place::Local(ppm_local), ppm_next, span);
+    let x_next = lowerer.lower_binary_temp(
+        MirType::Integer,
+        BinaryOp::Add,
+        Value::Local(x_local),
+        Value::Const(Literal::Integer(1)),
+        span,
+    );
+    lowerer.assign_use(Place::Local(x_local), x_next, span);
+    lowerer.set_terminator(Terminator::Jump {
+        target: x_head,
+        span,
+    });
+
+    lowerer.current_block = row_done;
+    let y_next = lowerer.lower_binary_temp(
+        MirType::Integer,
+        BinaryOp::Add,
+        Value::Local(y_local),
+        Value::Const(Literal::Integer(1)),
+        span,
+    );
+    lowerer.assign_use(Place::Local(y_local), y_next, span);
+    lowerer.set_terminator(Terminator::Jump {
+        target: y_head,
+        span,
+    });
+
+    lowerer.current_block = exit;
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(Value::Local(ppm_local)),
+        span,
+    });
+
+    MirFunction {
+        name: lowerer.name,
+        params: lowerer.params,
+        abi_params: vec![
+            portable_abi_named_type("RegionCapture", module, type_tags),
+            portable_abi_named_type("SceneDomain", module, type_tags),
+            portable_abi_named_type("Camera", module, type_tags),
+            portable_abi_named_type("Light", module, type_tags),
+            PortableAbiType::I64,
+            PortableAbiType::I64,
+            PortableAbiType::Vec3,
+            PortableAbiType::F32,
+            PortableAbiType::Vec3,
+        ],
+        abi_return: PortableAbiType::Value,
+        locals: lowerer.locals,
+        temps: lowerer.temps,
+        blocks: lowerer.blocks,
+        entry,
+        suspendable: false,
     }
 }
 
@@ -1104,6 +3412,11 @@ fn lower_shape_trace_helper(
     FunctionLowerer::set_class_field_value(&mut hit_class, "shading_frame", shading_frame);
     FunctionLowerer::set_class_field_value(&mut hit_class, "steps", Value::Local(step_count));
     FunctionLowerer::set_class_field_value(&mut hit_class, "feature_id", Value::Local(feature_id));
+    FunctionLowerer::set_class_field_value(
+        &mut hit_class,
+        "root_shape_id",
+        Value::Const(Literal::Integer(stable_shape_capture_id(&shape.name))),
+    );
     FunctionLowerer::set_class_field_value(&mut hit_class, "payload", Value::Local(payload));
     let hit_value = lowerer.build_class_instance(&hit_class, span);
     let field_samples_after = lowerer.lower_call_temp(
@@ -2818,6 +5131,1758 @@ fn lower_scene_medium_capture_helper(
             portable_abi_from_type_ref(
                 Some(&hir::TypeRef {
                     name: SmolStr::new("ShapeCapture"),
+                    name_span: None,
+                    args: Vec::new(),
+                }),
+                module,
+                type_tags,
+                &mut HashSet::new(),
+            ),
+            PortableAbiType::Vec3,
+        ],
+        abi_return: portable_abi_from_type_ref(
+            Some(&hir::TypeRef {
+                name: SmolStr::new("Medium"),
+                name_span: None,
+                args: Vec::new(),
+            }),
+            module,
+            type_tags,
+            &mut HashSet::new(),
+        ),
+        locals: lowerer.locals,
+        temps: lowerer.temps,
+        blocks: lowerer.blocks,
+        entry,
+        suspendable: false,
+    }
+}
+
+fn lower_world_distance_capture_helper(
+    module: &hir::Module,
+    type_tags: &HashMap<SmolStr, TypeTagId>,
+    class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
+    class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
+    function_names: &HashSet<SmolStr>,
+    field_names: &HashSet<SmolStr>,
+    shape_names: &HashSet<SmolStr>,
+    shape_graphs: &HashMap<SmolStr, hir::ShapeGraph>,
+    field_graphs: &HashMap<SmolStr, hir::FieldGraph>,
+    field_bodies: &HashMap<SmolStr, hir::Body>,
+    field_metadata: &HashMap<SmolStr, hir::FieldMetadata>,
+    radiance_param_counts: &HashMap<SmolStr, usize>,
+    volume_param_counts: &HashMap<SmolStr, usize>,
+    result_functions: &HashSet<SmolStr>,
+    class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
+    interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
+) -> MirFunction {
+    let helper_name = SmolStr::new("__wr_world_distance_capture");
+    let span = TextRange::empty(0.into());
+    let mut lowerer = FunctionLowerer::new(
+        helper_name.clone(),
+        type_tags,
+        class_fields,
+        class_field_defaults,
+        function_names,
+        field_names,
+        shape_names,
+        shape_graphs,
+        field_graphs,
+        field_bodies,
+        field_metadata,
+        radiance_param_counts,
+        volume_param_counts,
+        result_functions,
+        class_method_ids,
+        interface_methods,
+        false,
+        None,
+    );
+
+    let capture = lowerer.new_local(
+        SmolStr::new("capture"),
+        false,
+        MirType::Named(SmolStr::new("RegionCapture")),
+    );
+    let domain = lowerer.new_local(
+        SmolStr::new("domain"),
+        false,
+        MirType::Named(SmolStr::new("SceneDomain")),
+    );
+    let point = lowerer.new_local(SmolStr::new("point"), false, MirType::Vec3);
+    for (name, local) in [
+        (SmolStr::new("capture"), capture),
+        (SmolStr::new("domain"), domain),
+        (SmolStr::new("point"), point),
+    ] {
+        lowerer.declare_local(name, local);
+        lowerer.params.push(local);
+    }
+
+    let entry = lowerer.new_block();
+    lowerer.current_block = entry;
+    let capture_scene_id = lowerer.lower_get_named_field(
+        Value::Local(capture),
+        "RegionCapture",
+        "scene_id",
+        MirType::Integer,
+        span,
+    );
+    let domain_scene_id = lowerer.lower_get_named_field(
+        Value::Local(domain),
+        "SceneDomain",
+        "scene_id",
+        MirType::Integer,
+        span,
+    );
+    let scene_ids_match = lowerer.lower_binary_temp(
+        MirType::Boolean,
+        BinaryOp::Eq,
+        capture_scene_id.clone(),
+        domain_scene_id,
+        span,
+    );
+    let matched_block = lowerer.new_block();
+    let mismatch_block = lowerer.new_block();
+    lowerer.set_terminator(Terminator::Branch {
+        cond: scene_ids_match,
+        then_target: matched_block,
+        else_target: mismatch_block,
+        span,
+    });
+
+    lowerer.current_block = mismatch_block;
+    let crash_temp = lowerer.new_temp(MirType::Unknown);
+    lowerer.push_stmt(MirStmt::Assign {
+        place: Place::Temp(crash_temp),
+        value: Rvalue::Crash {
+            value: Value::Const(Literal::String(SmolStr::new(
+                "world queries require a domain derived from the same region capture",
+            ))),
+        },
+        span,
+    });
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(Value::Temp(crash_temp)),
+        span,
+    });
+
+    lowerer.current_block = matched_block;
+    let detail = lowerer.lower_get_named_field(
+        Value::Local(domain),
+        "SceneDomain",
+        "geometry_detail",
+        MirType::Integer,
+        span,
+    );
+    let result = lowerer.new_local(SmolStr::new("$world_distance_result"), true, MirType::Float);
+    lowerer.assign_use(
+        Place::Local(result),
+        Value::Const(Literal::Float(1_000_000.0)),
+        span,
+    );
+    let return_block = lowerer.new_block();
+    let mut dispatch_block = lowerer.new_block();
+    lowerer.set_terminator(Terminator::Jump {
+        target: dispatch_block,
+        span,
+    });
+
+    for (_, region) in module
+        .functions
+        .iter()
+        .filter(|(_, func)| matches!(func.role, FunctionRole::Region))
+    {
+        let match_block = lowerer.new_block();
+        let next_block = lowerer.new_block();
+        lowerer.current_block = dispatch_block;
+        let matched = lowerer.lower_binary_temp(
+            MirType::Boolean,
+            BinaryOp::Eq,
+            capture_scene_id.clone(),
+            Value::Const(Literal::Integer(stable_region_scene_capture_id(&region.name))),
+            span,
+        );
+        lowerer.set_terminator(Terminator::Branch {
+            cond: matched,
+            then_target: match_block,
+            else_target: next_block,
+            span,
+        });
+        lowerer.current_block = match_block;
+        let Ok((coarse_shapes, fine_shapes)) = executable_region_shape_lists(region) else {
+            let crash_temp = lowerer.new_temp(MirType::Unknown);
+            lowerer.push_stmt(MirStmt::Assign {
+                place: Place::Temp(crash_temp),
+                value: Rvalue::Crash {
+                    value: Value::Const(Literal::String(SmolStr::new(
+                        "world queries only support direct region compose items today",
+                    ))),
+                },
+                span,
+            });
+            lowerer.set_terminator(Terminator::Return {
+                value: Some(Value::Temp(crash_temp)),
+                span,
+            });
+            dispatch_block = next_block;
+            continue;
+        };
+        let coarse_block = lowerer.new_block();
+        let fine_block = lowerer.new_block();
+        let detail_is_coarse = lowerer.lower_binary_temp(
+            MirType::Boolean,
+            BinaryOp::Eq,
+            detail.clone(),
+            Value::Const(Literal::Integer(0)),
+            span,
+        );
+        lowerer.set_terminator(Terminator::Branch {
+            cond: detail_is_coarse,
+            then_target: coarse_block,
+            else_target: fine_block,
+            span,
+        });
+        for (shapes, block) in [(&coarse_shapes, coarse_block), (&fine_shapes, fine_block)] {
+            lowerer.current_block = block;
+            for shape in shapes {
+                let distance =
+                    lowerer.lower_shape_distance_call(shape, Value::Local(point), span);
+                let next = lowerer.lower_call_temp(
+                    MirType::Float,
+                    SmolStr::new("min"),
+                    vec![Value::Local(result), distance],
+                    span,
+                );
+                lowerer.assign_use(Place::Local(result), next, span);
+            }
+            lowerer.set_terminator(Terminator::Jump {
+                target: return_block,
+                span,
+            });
+        }
+        dispatch_block = next_block;
+    }
+
+    lowerer.current_block = dispatch_block;
+    let invalid_scene_block = lowerer.new_block();
+    lowerer.set_terminator(Terminator::Jump {
+        target: invalid_scene_block,
+        span,
+    });
+    lowerer.current_block = invalid_scene_block;
+    let crash_temp = lowerer.new_temp(MirType::Unknown);
+    lowerer.push_stmt(MirStmt::Assign {
+        place: Place::Temp(crash_temp),
+        value: Rvalue::Crash {
+            value: Value::Const(Literal::String(SmolStr::new(
+                "distance_world requires a capture created from a region declaration",
+            ))),
+        },
+        span,
+    });
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(Value::Temp(crash_temp)),
+        span,
+    });
+
+    lowerer.current_block = return_block;
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(Value::Local(result)),
+        span,
+    });
+
+    MirFunction {
+        name: helper_name,
+        params: lowerer.params,
+        abi_params: vec![
+            portable_abi_from_type_ref(
+                Some(&hir::TypeRef {
+                    name: SmolStr::new("RegionCapture"),
+                    name_span: None,
+                    args: Vec::new(),
+                }),
+                module,
+                type_tags,
+                &mut HashSet::new(),
+            ),
+            portable_abi_from_type_ref(
+                Some(&hir::TypeRef {
+                    name: SmolStr::new("SceneDomain"),
+                    name_span: None,
+                    args: Vec::new(),
+                }),
+                module,
+                type_tags,
+                &mut HashSet::new(),
+            ),
+            PortableAbiType::Vec3,
+        ],
+        abi_return: PortableAbiType::F32,
+        locals: lowerer.locals,
+        temps: lowerer.temps,
+        blocks: lowerer.blocks,
+        entry,
+        suspendable: false,
+    }
+}
+
+fn lower_world_normal_capture_helper(
+    module: &hir::Module,
+    type_tags: &HashMap<SmolStr, TypeTagId>,
+    class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
+    class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
+    function_names: &HashSet<SmolStr>,
+    field_names: &HashSet<SmolStr>,
+    shape_names: &HashSet<SmolStr>,
+    shape_graphs: &HashMap<SmolStr, hir::ShapeGraph>,
+    field_graphs: &HashMap<SmolStr, hir::FieldGraph>,
+    field_bodies: &HashMap<SmolStr, hir::Body>,
+    field_metadata: &HashMap<SmolStr, hir::FieldMetadata>,
+    radiance_param_counts: &HashMap<SmolStr, usize>,
+    volume_param_counts: &HashMap<SmolStr, usize>,
+    result_functions: &HashSet<SmolStr>,
+    class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
+    interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
+) -> MirFunction {
+    let helper_name = SmolStr::new("__wr_world_normal_capture");
+    let span = TextRange::empty(0.into());
+    let mut lowerer = FunctionLowerer::new(
+        helper_name.clone(),
+        type_tags,
+        class_fields,
+        class_field_defaults,
+        function_names,
+        field_names,
+        shape_names,
+        shape_graphs,
+        field_graphs,
+        field_bodies,
+        field_metadata,
+        radiance_param_counts,
+        volume_param_counts,
+        result_functions,
+        class_method_ids,
+        interface_methods,
+        false,
+        None,
+    );
+
+    let capture = lowerer.new_local(
+        SmolStr::new("capture"),
+        false,
+        MirType::Named(SmolStr::new("RegionCapture")),
+    );
+    let domain = lowerer.new_local(
+        SmolStr::new("domain"),
+        false,
+        MirType::Named(SmolStr::new("SceneDomain")),
+    );
+    let point = lowerer.new_local(SmolStr::new("point"), false, MirType::Vec3);
+    for (name, local) in [
+        (SmolStr::new("capture"), capture),
+        (SmolStr::new("domain"), domain),
+        (SmolStr::new("point"), point),
+    ] {
+        lowerer.declare_local(name, local);
+        lowerer.params.push(local);
+    }
+
+    let entry = lowerer.new_block();
+    lowerer.current_block = entry;
+    let epsilon = Value::Const(Literal::Float(0.001));
+    let offset_x = lowerer.lower_call_temp(
+        MirType::Vec3,
+        SmolStr::new("vec3"),
+        vec![epsilon.clone(), Value::Const(Literal::Float(0.0)), Value::Const(Literal::Float(0.0))],
+        span,
+    );
+    let offset_y = lowerer.lower_call_temp(
+        MirType::Vec3,
+        SmolStr::new("vec3"),
+        vec![Value::Const(Literal::Float(0.0)), epsilon.clone(), Value::Const(Literal::Float(0.0))],
+        span,
+    );
+    let offset_z = lowerer.lower_call_temp(
+        MirType::Vec3,
+        SmolStr::new("vec3"),
+        vec![Value::Const(Literal::Float(0.0)), Value::Const(Literal::Float(0.0)), epsilon],
+        span,
+    );
+    let px = lowerer.lower_binary_temp(MirType::Vec3, BinaryOp::Add, Value::Local(point), offset_x.clone(), span);
+    let nx = lowerer.lower_binary_temp(MirType::Vec3, BinaryOp::Sub, Value::Local(point), offset_x, span);
+    let py = lowerer.lower_binary_temp(MirType::Vec3, BinaryOp::Add, Value::Local(point), offset_y.clone(), span);
+    let ny = lowerer.lower_binary_temp(MirType::Vec3, BinaryOp::Sub, Value::Local(point), offset_y, span);
+    let pz = lowerer.lower_binary_temp(MirType::Vec3, BinaryOp::Add, Value::Local(point), offset_z.clone(), span);
+    let nz = lowerer.lower_binary_temp(MirType::Vec3, BinaryOp::Sub, Value::Local(point), offset_z, span);
+    let dxp = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("__wr_world_distance_capture"),
+        vec![Value::Local(capture), Value::Local(domain), px],
+        span,
+    );
+    let dxn = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("__wr_world_distance_capture"),
+        vec![Value::Local(capture), Value::Local(domain), nx],
+        span,
+    );
+    let dyp = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("__wr_world_distance_capture"),
+        vec![Value::Local(capture), Value::Local(domain), py],
+        span,
+    );
+    let dyn_ = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("__wr_world_distance_capture"),
+        vec![Value::Local(capture), Value::Local(domain), ny],
+        span,
+    );
+    let dzp = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("__wr_world_distance_capture"),
+        vec![Value::Local(capture), Value::Local(domain), pz],
+        span,
+    );
+    let dzn = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("__wr_world_distance_capture"),
+        vec![Value::Local(capture), Value::Local(domain), nz],
+        span,
+    );
+    let nx_comp = lowerer.lower_binary_temp(MirType::Float, BinaryOp::Sub, dxp, dxn, span);
+    let ny_comp = lowerer.lower_binary_temp(MirType::Float, BinaryOp::Sub, dyp, dyn_, span);
+    let nz_comp = lowerer.lower_binary_temp(MirType::Float, BinaryOp::Sub, dzp, dzn, span);
+    let gradient = lowerer.lower_call_temp(
+        MirType::Vec3,
+        SmolStr::new("vec3"),
+        vec![nx_comp, ny_comp, nz_comp],
+        span,
+    );
+    let normal = lowerer.lower_call_temp(
+        MirType::Vec3,
+        SmolStr::new("normalize"),
+        vec![gradient],
+        span,
+    );
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(normal),
+        span,
+    });
+
+    MirFunction {
+        name: helper_name,
+        params: lowerer.params,
+        abi_params: vec![
+            portable_abi_from_type_ref(
+                Some(&hir::TypeRef {
+                    name: SmolStr::new("RegionCapture"),
+                    name_span: None,
+                    args: Vec::new(),
+                }),
+                module,
+                type_tags,
+                &mut HashSet::new(),
+            ),
+            portable_abi_from_type_ref(
+                Some(&hir::TypeRef {
+                    name: SmolStr::new("SceneDomain"),
+                    name_span: None,
+                    args: Vec::new(),
+                }),
+                module,
+                type_tags,
+                &mut HashSet::new(),
+            ),
+            PortableAbiType::Vec3,
+        ],
+        abi_return: PortableAbiType::Vec3,
+        locals: lowerer.locals,
+        temps: lowerer.temps,
+        blocks: lowerer.blocks,
+        entry,
+        suspendable: false,
+    }
+}
+
+fn lower_world_trace_capture_helper(
+    module: &hir::Module,
+    type_tags: &HashMap<SmolStr, TypeTagId>,
+    class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
+    class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
+    function_names: &HashSet<SmolStr>,
+    field_names: &HashSet<SmolStr>,
+    shape_names: &HashSet<SmolStr>,
+    shape_graphs: &HashMap<SmolStr, hir::ShapeGraph>,
+    field_graphs: &HashMap<SmolStr, hir::FieldGraph>,
+    field_bodies: &HashMap<SmolStr, hir::Body>,
+    field_metadata: &HashMap<SmolStr, hir::FieldMetadata>,
+    radiance_param_counts: &HashMap<SmolStr, usize>,
+    volume_param_counts: &HashMap<SmolStr, usize>,
+    result_functions: &HashSet<SmolStr>,
+    class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
+    interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
+) -> MirFunction {
+    let helper_name = SmolStr::new("__wr_world_trace_capture");
+    let span = TextRange::empty(0.into());
+    let mut lowerer = FunctionLowerer::new(
+        helper_name.clone(),
+        type_tags,
+        class_fields,
+        class_field_defaults,
+        function_names,
+        field_names,
+        shape_names,
+        shape_graphs,
+        field_graphs,
+        field_bodies,
+        field_metadata,
+        radiance_param_counts,
+        volume_param_counts,
+        result_functions,
+        class_method_ids,
+        interface_methods,
+        false,
+        None,
+    );
+
+    let capture = lowerer.new_local(
+        SmolStr::new("capture"),
+        false,
+        MirType::Named(SmolStr::new("RegionCapture")),
+    );
+    let domain = lowerer.new_local(
+        SmolStr::new("domain"),
+        false,
+        MirType::Named(SmolStr::new("SceneDomain")),
+    );
+    let origin = lowerer.new_local(SmolStr::new("origin"), false, MirType::Vec3);
+    let direction = lowerer.new_local(SmolStr::new("direction"), false, MirType::Vec3);
+    let max_distance = lowerer.new_local(SmolStr::new("max_distance"), false, MirType::Float);
+    let min_step = lowerer.new_local(SmolStr::new("min_step"), false, MirType::Float);
+    let hit_epsilon = lowerer.new_local(SmolStr::new("hit_epsilon"), false, MirType::Float);
+    let max_steps = lowerer.new_local(SmolStr::new("max_steps"), false, MirType::Integer);
+    for (name, local) in [
+        (SmolStr::new("capture"), capture),
+        (SmolStr::new("domain"), domain),
+        (SmolStr::new("origin"), origin),
+        (SmolStr::new("direction"), direction),
+        (SmolStr::new("max_distance"), max_distance),
+        (SmolStr::new("min_step"), min_step),
+        (SmolStr::new("hit_epsilon"), hit_epsilon),
+        (SmolStr::new("max_steps"), max_steps),
+    ] {
+        lowerer.declare_local(name, local);
+        lowerer.params.push(local);
+    }
+
+    let entry = lowerer.new_block();
+    lowerer.current_block = entry;
+    let capture_scene_id = lowerer.lower_get_named_field(
+        Value::Local(capture),
+        "RegionCapture",
+        "scene_id",
+        MirType::Integer,
+        span,
+    );
+    let domain_scene_id = lowerer.lower_get_named_field(
+        Value::Local(domain),
+        "SceneDomain",
+        "scene_id",
+        MirType::Integer,
+        span,
+    );
+    let scene_ids_match = lowerer.lower_binary_temp(
+        MirType::Boolean,
+        BinaryOp::Eq,
+        capture_scene_id.clone(),
+        domain_scene_id,
+        span,
+    );
+    let matched_block = lowerer.new_block();
+    let mismatch_block = lowerer.new_block();
+    lowerer.set_terminator(Terminator::Branch {
+        cond: scene_ids_match,
+        then_target: matched_block,
+        else_target: mismatch_block,
+        span,
+    });
+
+    lowerer.current_block = mismatch_block;
+    let crash_temp = lowerer.new_temp(MirType::Unknown);
+    lowerer.push_stmt(MirStmt::Assign {
+        place: Place::Temp(crash_temp),
+        value: Rvalue::Crash {
+            value: Value::Const(Literal::String(SmolStr::new(
+                "trace_world requires a domain derived from the same region capture",
+            ))),
+        },
+        span,
+    });
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(Value::Temp(crash_temp)),
+        span,
+    });
+
+    lowerer.current_block = matched_block;
+    let detail = lowerer.lower_get_named_field(
+        Value::Local(domain),
+        "SceneDomain",
+        "geometry_detail",
+        MirType::Integer,
+        span,
+    );
+    let result = lowerer.new_local(
+        SmolStr::new("$world_trace_result"),
+        true,
+        MirType::Named(SmolStr::new("Hit3")),
+    );
+    let default_hit = lowerer.build_default_hit(Value::Local(origin), span);
+    lowerer.assign_use(Place::Local(result), default_hit, span);
+    let return_block = lowerer.new_block();
+    let mut dispatch_block = lowerer.new_block();
+    lowerer.set_terminator(Terminator::Jump {
+        target: dispatch_block,
+        span,
+    });
+
+    for (_, region) in module
+        .functions
+        .iter()
+        .filter(|(_, func)| matches!(func.role, FunctionRole::Region))
+    {
+        let match_block = lowerer.new_block();
+        let next_block = lowerer.new_block();
+        lowerer.current_block = dispatch_block;
+        let matched = lowerer.lower_binary_temp(
+            MirType::Boolean,
+            BinaryOp::Eq,
+            capture_scene_id.clone(),
+            Value::Const(Literal::Integer(stable_region_scene_capture_id(&region.name))),
+            span,
+        );
+        lowerer.set_terminator(Terminator::Branch {
+            cond: matched,
+            then_target: match_block,
+            else_target: next_block,
+            span,
+        });
+        lowerer.current_block = match_block;
+        let Ok((coarse_shapes, fine_shapes)) = executable_region_shape_lists(region) else {
+            let crash_temp = lowerer.new_temp(MirType::Unknown);
+            lowerer.push_stmt(MirStmt::Assign {
+                place: Place::Temp(crash_temp),
+                value: Rvalue::Crash {
+                    value: Value::Const(Literal::String(SmolStr::new(
+                        "world queries only support direct region compose items today",
+                    ))),
+                },
+                span,
+            });
+            lowerer.set_terminator(Terminator::Return {
+                value: Some(Value::Temp(crash_temp)),
+                span,
+            });
+            dispatch_block = next_block;
+            continue;
+        };
+        let coarse_block = lowerer.new_block();
+        let fine_block = lowerer.new_block();
+        let detail_is_coarse = lowerer.lower_binary_temp(
+            MirType::Boolean,
+            BinaryOp::Eq,
+            detail.clone(),
+            Value::Const(Literal::Integer(0)),
+            span,
+        );
+        lowerer.set_terminator(Terminator::Branch {
+            cond: detail_is_coarse,
+            then_target: coarse_block,
+            else_target: fine_block,
+            span,
+        });
+
+        for (shapes, block) in [(&coarse_shapes, coarse_block), (&fine_shapes, fine_block)] {
+            lowerer.current_block = block;
+            for shape in shapes {
+                let candidate = lowerer.lower_call_temp(
+                    MirType::Named(SmolStr::new("Hit3")),
+                    SmolStr::new(format!("__wr_shape_trace_{}", shape)),
+                    vec![
+                        Value::Local(origin),
+                        Value::Local(direction),
+                        Value::Local(max_distance),
+                        Value::Local(min_step),
+                        Value::Local(hit_epsilon),
+                        Value::Local(max_steps),
+                    ],
+                    span,
+                );
+                let candidate_hit = lowerer.lower_get_named_field(
+                    candidate.clone(),
+                    "Hit3",
+                    "hit",
+                    MirType::Boolean,
+                    span,
+                );
+                let current_hit = lowerer.lower_get_named_field(
+                    Value::Local(result),
+                    "Hit3",
+                    "hit",
+                    MirType::Boolean,
+                    span,
+                );
+                let candidate_distance = lowerer.lower_get_named_field(
+                    candidate.clone(),
+                    "Hit3",
+                    "distance",
+                    MirType::Float,
+                    span,
+                );
+                let current_distance = lowerer.lower_get_named_field(
+                    Value::Local(result),
+                    "Hit3",
+                    "distance",
+                    MirType::Float,
+                    span,
+                );
+                let current_miss =
+                    lowerer.lower_unary_temp(MirType::Boolean, UnaryOp::Not, current_hit, span);
+                let candidate_nearer = lowerer.lower_binary_temp(
+                    MirType::Boolean,
+                    BinaryOp::Lt,
+                    candidate_distance,
+                    current_distance,
+                    span,
+                );
+                let replace = lowerer.lower_binary_temp(
+                    MirType::Boolean,
+                    BinaryOp::Or,
+                    current_miss,
+                    candidate_nearer,
+                    span,
+                );
+                let should_take = lowerer.lower_binary_temp(
+                    MirType::Boolean,
+                    BinaryOp::And,
+                    candidate_hit,
+                    replace,
+                    span,
+                );
+                let take_block = lowerer.new_block();
+                let skip_block = lowerer.new_block();
+                let merge_block = lowerer.new_block();
+                lowerer.set_terminator(Terminator::Branch {
+                    cond: should_take,
+                    then_target: take_block,
+                    else_target: skip_block,
+                    span,
+                });
+                lowerer.current_block = take_block;
+                lowerer.assign_use(Place::Local(result), candidate, span);
+                lowerer.set_terminator(Terminator::Jump {
+                    target: merge_block,
+                    span,
+                });
+                lowerer.current_block = skip_block;
+                lowerer.set_terminator(Terminator::Jump {
+                    target: merge_block,
+                    span,
+                });
+                lowerer.current_block = merge_block;
+            }
+            lowerer.set_terminator(Terminator::Jump {
+                target: return_block,
+                span,
+            });
+        }
+        dispatch_block = next_block;
+    }
+
+    lowerer.current_block = dispatch_block;
+    let invalid_scene_block = lowerer.new_block();
+    lowerer.set_terminator(Terminator::Jump {
+        target: invalid_scene_block,
+        span,
+    });
+    lowerer.current_block = invalid_scene_block;
+    let crash_temp = lowerer.new_temp(MirType::Unknown);
+    lowerer.push_stmt(MirStmt::Assign {
+        place: Place::Temp(crash_temp),
+        value: Rvalue::Crash {
+            value: Value::Const(Literal::String(SmolStr::new(
+                "trace_world requires a capture created from a region declaration",
+            ))),
+        },
+        span,
+    });
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(Value::Temp(crash_temp)),
+        span,
+    });
+
+    lowerer.current_block = return_block;
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(Value::Local(result)),
+        span,
+    });
+
+    MirFunction {
+        name: helper_name,
+        params: lowerer.params,
+        abi_params: vec![
+            portable_abi_from_type_ref(
+                Some(&hir::TypeRef {
+                    name: SmolStr::new("RegionCapture"),
+                    name_span: None,
+                    args: Vec::new(),
+                }),
+                module,
+                type_tags,
+                &mut HashSet::new(),
+            ),
+            portable_abi_from_type_ref(
+                Some(&hir::TypeRef {
+                    name: SmolStr::new("SceneDomain"),
+                    name_span: None,
+                    args: Vec::new(),
+                }),
+                module,
+                type_tags,
+                &mut HashSet::new(),
+            ),
+            PortableAbiType::Vec3,
+            PortableAbiType::Vec3,
+            PortableAbiType::F32,
+            PortableAbiType::F32,
+            PortableAbiType::F32,
+            PortableAbiType::I64,
+        ],
+        abi_return: portable_abi_from_type_ref(
+            Some(&hir::TypeRef {
+                name: SmolStr::new("Hit3"),
+                name_span: None,
+                args: Vec::new(),
+            }),
+            module,
+            type_tags,
+            &mut HashSet::new(),
+        ),
+        locals: lowerer.locals,
+        temps: lowerer.temps,
+        blocks: lowerer.blocks,
+        entry,
+        suspendable: false,
+    }
+}
+
+fn lower_world_surface_capture_helper(
+    module: &hir::Module,
+    type_tags: &HashMap<SmolStr, TypeTagId>,
+    class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
+    class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
+    function_names: &HashSet<SmolStr>,
+    field_names: &HashSet<SmolStr>,
+    shape_names: &HashSet<SmolStr>,
+    shape_graphs: &HashMap<SmolStr, hir::ShapeGraph>,
+    field_graphs: &HashMap<SmolStr, hir::FieldGraph>,
+    field_bodies: &HashMap<SmolStr, hir::Body>,
+    field_metadata: &HashMap<SmolStr, hir::FieldMetadata>,
+    radiance_param_counts: &HashMap<SmolStr, usize>,
+    volume_param_counts: &HashMap<SmolStr, usize>,
+    result_functions: &HashSet<SmolStr>,
+    class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
+    interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
+) -> MirFunction {
+    let helper_name = SmolStr::new("__wr_world_surface_capture");
+    let span = TextRange::empty(0.into());
+    let mut lowerer = FunctionLowerer::new(
+        helper_name.clone(),
+        type_tags,
+        class_fields,
+        class_field_defaults,
+        function_names,
+        field_names,
+        shape_names,
+        shape_graphs,
+        field_graphs,
+        field_bodies,
+        field_metadata,
+        radiance_param_counts,
+        volume_param_counts,
+        result_functions,
+        class_method_ids,
+        interface_methods,
+        false,
+        None,
+    );
+
+    let capture = lowerer.new_local(
+        SmolStr::new("capture"),
+        false,
+        MirType::Named(SmolStr::new("RegionCapture")),
+    );
+    let domain = lowerer.new_local(
+        SmolStr::new("domain"),
+        false,
+        MirType::Named(SmolStr::new("SceneDomain")),
+    );
+    let hit = lowerer.new_local(
+        SmolStr::new("hit"),
+        false,
+        MirType::Named(SmolStr::new("Hit3")),
+    );
+    for (name, local) in [
+        (SmolStr::new("capture"), capture),
+        (SmolStr::new("domain"), domain),
+        (SmolStr::new("hit"), hit),
+    ] {
+        lowerer.declare_local(name, local);
+        lowerer.params.push(local);
+    }
+
+    let entry = lowerer.new_block();
+    lowerer.current_block = entry;
+    let capture_scene_id = lowerer.lower_get_named_field(
+        Value::Local(capture),
+        "RegionCapture",
+        "scene_id",
+        MirType::Integer,
+        span,
+    );
+    let domain_scene_id = lowerer.lower_get_named_field(
+        Value::Local(domain),
+        "SceneDomain",
+        "scene_id",
+        MirType::Integer,
+        span,
+    );
+    let scene_ids_match = lowerer.lower_binary_temp(
+        MirType::Boolean,
+        BinaryOp::Eq,
+        capture_scene_id,
+        domain_scene_id,
+        span,
+    );
+    let matched_block = lowerer.new_block();
+    let mismatch_block = lowerer.new_block();
+    lowerer.set_terminator(Terminator::Branch {
+        cond: scene_ids_match,
+        then_target: matched_block,
+        else_target: mismatch_block,
+        span,
+    });
+
+    lowerer.current_block = mismatch_block;
+    let crash_temp = lowerer.new_temp(MirType::Unknown);
+    lowerer.push_stmt(MirStmt::Assign {
+        place: Place::Temp(crash_temp),
+        value: Rvalue::Crash {
+            value: Value::Const(Literal::String(SmolStr::new(
+                "surface_world requires a domain derived from the same region capture",
+            ))),
+        },
+        span,
+    });
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(Value::Temp(crash_temp)),
+        span,
+    });
+
+    lowerer.current_block = matched_block;
+    let material_enabled = lowerer.lower_get_named_field(
+        Value::Local(domain),
+        "SceneDomain",
+        "material",
+        MirType::Boolean,
+        span,
+    );
+    let material_block = lowerer.new_block();
+    let disabled_block = lowerer.new_block();
+    lowerer.set_terminator(Terminator::Branch {
+        cond: material_enabled,
+        then_target: material_block,
+        else_target: disabled_block,
+        span,
+    });
+
+    lowerer.current_block = disabled_block;
+    let default_surface = lowerer.build_default_surface(span);
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(default_surface),
+        span,
+    });
+
+    lowerer.current_block = material_block;
+    let root_shape_id = lowerer.lower_get_named_field(
+        Value::Local(hit),
+        "Hit3",
+        "root_shape_id",
+        MirType::Integer,
+        span,
+    );
+    let result = lowerer.new_local(
+        SmolStr::new("$world_surface_result"),
+        true,
+        MirType::Named(SmolStr::new("Surface")),
+    );
+    let default_surface = lowerer.build_default_surface(span);
+    lowerer.assign_use(Place::Local(result), default_surface, span);
+    let return_block = lowerer.new_block();
+    let mut dispatch_block = lowerer.new_block();
+    lowerer.set_terminator(Terminator::Jump {
+        target: dispatch_block,
+        span,
+    });
+    for (_, shape) in module.shapes.iter().filter(|(_, shape)| shape.graph.is_some()) {
+        let match_block = lowerer.new_block();
+        let next_block = lowerer.new_block();
+        lowerer.current_block = dispatch_block;
+        let matched = lowerer.lower_binary_temp(
+            MirType::Boolean,
+            BinaryOp::Eq,
+            root_shape_id.clone(),
+            Value::Const(Literal::Integer(stable_shape_capture_id(&shape.name))),
+            span,
+        );
+        lowerer.set_terminator(Terminator::Branch {
+            cond: matched,
+            then_target: match_block,
+            else_target: next_block,
+            span,
+        });
+        lowerer.current_block = match_block;
+        let surface = lowerer.lower_call_temp(
+            MirType::Named(SmolStr::new("Surface")),
+            SmolStr::new(format!("__wr_shape_surface_{}", shape.name)),
+            vec![Value::Local(hit)],
+            span,
+        );
+        lowerer.assign_use(Place::Local(result), surface, span);
+        lowerer.set_terminator(Terminator::Jump {
+            target: return_block,
+            span,
+        });
+        dispatch_block = next_block;
+    }
+    lowerer.current_block = dispatch_block;
+    lowerer.set_terminator(Terminator::Jump {
+        target: return_block,
+        span,
+    });
+    lowerer.current_block = return_block;
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(Value::Local(result)),
+        span,
+    });
+
+    MirFunction {
+        name: helper_name,
+        params: lowerer.params,
+        abi_params: vec![
+            portable_abi_from_type_ref(
+                Some(&hir::TypeRef {
+                    name: SmolStr::new("RegionCapture"),
+                    name_span: None,
+                    args: Vec::new(),
+                }),
+                module,
+                type_tags,
+                &mut HashSet::new(),
+            ),
+            portable_abi_from_type_ref(
+                Some(&hir::TypeRef {
+                    name: SmolStr::new("SceneDomain"),
+                    name_span: None,
+                    args: Vec::new(),
+                }),
+                module,
+                type_tags,
+                &mut HashSet::new(),
+            ),
+            portable_abi_from_type_ref(
+                Some(&hir::TypeRef {
+                    name: SmolStr::new("Hit3"),
+                    name_span: None,
+                    args: Vec::new(),
+                }),
+                module,
+                type_tags,
+                &mut HashSet::new(),
+            ),
+        ],
+        abi_return: portable_abi_from_type_ref(
+            Some(&hir::TypeRef {
+                name: SmolStr::new("Surface"),
+                name_span: None,
+                args: Vec::new(),
+            }),
+            module,
+            type_tags,
+            &mut HashSet::new(),
+        ),
+        locals: lowerer.locals,
+        temps: lowerer.temps,
+        blocks: lowerer.blocks,
+        entry,
+        suspendable: false,
+    }
+}
+
+fn lower_world_radiance_capture_helper(
+    module: &hir::Module,
+    type_tags: &HashMap<SmolStr, TypeTagId>,
+    class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
+    class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
+    function_names: &HashSet<SmolStr>,
+    field_names: &HashSet<SmolStr>,
+    shape_names: &HashSet<SmolStr>,
+    shape_graphs: &HashMap<SmolStr, hir::ShapeGraph>,
+    field_graphs: &HashMap<SmolStr, hir::FieldGraph>,
+    field_bodies: &HashMap<SmolStr, hir::Body>,
+    field_metadata: &HashMap<SmolStr, hir::FieldMetadata>,
+    radiance_param_counts: &HashMap<SmolStr, usize>,
+    volume_param_counts: &HashMap<SmolStr, usize>,
+    result_functions: &HashSet<SmolStr>,
+    class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
+    interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
+) -> MirFunction {
+    let helper_name = SmolStr::new("__wr_world_radiance_capture");
+    let span = TextRange::empty(0.into());
+    let mut lowerer = FunctionLowerer::new(
+        helper_name.clone(),
+        type_tags,
+        class_fields,
+        class_field_defaults,
+        function_names,
+        field_names,
+        shape_names,
+        shape_graphs,
+        field_graphs,
+        field_bodies,
+        field_metadata,
+        radiance_param_counts,
+        volume_param_counts,
+        result_functions,
+        class_method_ids,
+        interface_methods,
+        false,
+        None,
+    );
+
+    let capture = lowerer.new_local(
+        SmolStr::new("capture"),
+        false,
+        MirType::Named(SmolStr::new("RegionCapture")),
+    );
+    let domain = lowerer.new_local(
+        SmolStr::new("domain"),
+        false,
+        MirType::Named(SmolStr::new("SceneDomain")),
+    );
+    let point = lowerer.new_local(SmolStr::new("point"), false, MirType::Vec3);
+    let direction = lowerer.new_local(SmolStr::new("direction"), false, MirType::Vec3);
+    for (name, local) in [
+        (SmolStr::new("capture"), capture),
+        (SmolStr::new("domain"), domain),
+        (SmolStr::new("point"), point),
+        (SmolStr::new("direction"), direction),
+    ] {
+        lowerer.declare_local(name, local);
+        lowerer.params.push(local);
+    }
+
+    let entry = lowerer.new_block();
+    lowerer.current_block = entry;
+    let capture_scene_id = lowerer.lower_get_named_field(
+        Value::Local(capture),
+        "RegionCapture",
+        "scene_id",
+        MirType::Integer,
+        span,
+    );
+    let domain_scene_id = lowerer.lower_get_named_field(
+        Value::Local(domain),
+        "SceneDomain",
+        "scene_id",
+        MirType::Integer,
+        span,
+    );
+    let scene_ids_match = lowerer.lower_binary_temp(
+        MirType::Boolean,
+        BinaryOp::Eq,
+        capture_scene_id.clone(),
+        domain_scene_id,
+        span,
+    );
+    let matched_block = lowerer.new_block();
+    let mismatch_block = lowerer.new_block();
+    lowerer.set_terminator(Terminator::Branch {
+        cond: scene_ids_match,
+        then_target: matched_block,
+        else_target: mismatch_block,
+        span,
+    });
+
+    lowerer.current_block = mismatch_block;
+    let crash_temp = lowerer.new_temp(MirType::Unknown);
+    lowerer.push_stmt(MirStmt::Assign {
+        place: Place::Temp(crash_temp),
+        value: Rvalue::Crash {
+            value: Value::Const(Literal::String(SmolStr::new(
+                "radiance_world requires a domain derived from the same region capture",
+            ))),
+        },
+        span,
+    });
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(Value::Temp(crash_temp)),
+        span,
+    });
+
+    lowerer.current_block = matched_block;
+    let radiance_enabled = lowerer.lower_get_named_field(
+        Value::Local(domain),
+        "SceneDomain",
+        "radiance",
+        MirType::Boolean,
+        span,
+    );
+    let enabled_block = lowerer.new_block();
+    let disabled_block = lowerer.new_block();
+    lowerer.set_terminator(Terminator::Branch {
+        cond: radiance_enabled,
+        then_target: enabled_block,
+        else_target: disabled_block,
+        span,
+    });
+    lowerer.current_block = disabled_block;
+    let black = lowerer.lower_call_temp(
+        MirType::Vec3,
+        SmolStr::new("vec3"),
+        vec![
+            Value::Const(Literal::Float(0.0)),
+            Value::Const(Literal::Float(0.0)),
+            Value::Const(Literal::Float(0.0)),
+        ],
+        span,
+    );
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(black),
+        span,
+    });
+
+    lowerer.current_block = enabled_block;
+    let detail = lowerer.lower_get_named_field(
+        Value::Local(domain),
+        "SceneDomain",
+        "geometry_detail",
+        MirType::Integer,
+        span,
+    );
+    let result = lowerer.new_local(SmolStr::new("$world_radiance_result"), true, MirType::Vec3);
+    let zero = lowerer.lower_call_temp(
+        MirType::Vec3,
+        SmolStr::new("vec3"),
+        vec![
+            Value::Const(Literal::Float(0.0)),
+            Value::Const(Literal::Float(0.0)),
+            Value::Const(Literal::Float(0.0)),
+        ],
+        span,
+    );
+    lowerer.assign_use(Place::Local(result), zero, span);
+    let best_distance =
+        lowerer.new_local(SmolStr::new("$world_radiance_best"), true, MirType::Float);
+    lowerer.assign_use(
+        Place::Local(best_distance),
+        Value::Const(Literal::Float(1_000_000.0)),
+        span,
+    );
+    let return_block = lowerer.new_block();
+    let mut dispatch_block = lowerer.new_block();
+    lowerer.set_terminator(Terminator::Jump {
+        target: dispatch_block,
+        span,
+    });
+
+    for (_, region) in module
+        .functions
+        .iter()
+        .filter(|(_, func)| matches!(func.role, FunctionRole::Region))
+    {
+        let match_block = lowerer.new_block();
+        let next_block = lowerer.new_block();
+        lowerer.current_block = dispatch_block;
+        let matched = lowerer.lower_binary_temp(
+            MirType::Boolean,
+            BinaryOp::Eq,
+            capture_scene_id.clone(),
+            Value::Const(Literal::Integer(stable_region_scene_capture_id(&region.name))),
+            span,
+        );
+        lowerer.set_terminator(Terminator::Branch {
+            cond: matched,
+            then_target: match_block,
+            else_target: next_block,
+            span,
+        });
+        lowerer.current_block = match_block;
+        let Ok((coarse_shapes, fine_shapes)) = executable_region_shape_lists(region) else {
+            let crash_temp = lowerer.new_temp(MirType::Unknown);
+            lowerer.push_stmt(MirStmt::Assign {
+                place: Place::Temp(crash_temp),
+                value: Rvalue::Crash {
+                    value: Value::Const(Literal::String(SmolStr::new(
+                        "world queries only support direct region compose items today",
+                    ))),
+                },
+                span,
+            });
+            lowerer.set_terminator(Terminator::Return {
+                value: Some(Value::Temp(crash_temp)),
+                span,
+            });
+            dispatch_block = next_block;
+            continue;
+        };
+        let coarse_block = lowerer.new_block();
+        let fine_block = lowerer.new_block();
+        let detail_is_coarse = lowerer.lower_binary_temp(
+            MirType::Boolean,
+            BinaryOp::Eq,
+            detail.clone(),
+            Value::Const(Literal::Integer(0)),
+            span,
+        );
+        lowerer.set_terminator(Terminator::Branch {
+            cond: detail_is_coarse,
+            then_target: coarse_block,
+            else_target: fine_block,
+            span,
+        });
+        for (shapes, block) in [(&coarse_shapes, coarse_block), (&fine_shapes, fine_block)] {
+            lowerer.current_block = block;
+            for shape_name in shapes {
+                let distance =
+                    lowerer.lower_shape_distance_call(shape_name, Value::Local(point), span);
+                let better = lowerer.lower_binary_temp(
+                    MirType::Boolean,
+                    BinaryOp::Lt,
+                    distance.clone(),
+                    Value::Local(best_distance),
+                    span,
+                );
+                let take_block = lowerer.new_block();
+                let skip_block = lowerer.new_block();
+                let merge_block = lowerer.new_block();
+                lowerer.set_terminator(Terminator::Branch {
+                    cond: better,
+                    then_target: take_block,
+                    else_target: skip_block,
+                    span,
+                });
+                lowerer.current_block = take_block;
+                if let Some(shape) = module.shapes.iter().find_map(|(_, shape)| {
+                    (shape.name == *shape_name).then_some(shape)
+                }) {
+                    if let Some(graph) = shape.graph.as_ref() {
+                        let (_, _, feature_id) = lowerer.lower_shape_payload_selection(
+                            &graph.root,
+                            graph.provenance.as_ref(),
+                            Value::Local(point),
+                            Value::Const(Literal::Float(0.001)),
+                            &mut vec![shape.name.clone()],
+                            span,
+                        );
+                        let (_, radiance) = lowerer.lower_shape_radiance_selection(
+                            &graph.root,
+                            feature_id,
+                            Value::Local(point),
+                            Value::Local(direction),
+                            &mut vec![shape.name.clone()],
+                            span,
+                        );
+                        lowerer.assign_use(Place::Local(result), radiance, span);
+                        lowerer.assign_use(Place::Local(best_distance), distance, span);
+                    }
+                }
+                lowerer.set_terminator(Terminator::Jump {
+                    target: merge_block,
+                    span,
+                });
+                lowerer.current_block = skip_block;
+                lowerer.set_terminator(Terminator::Jump {
+                    target: merge_block,
+                    span,
+                });
+                lowerer.current_block = merge_block;
+            }
+            lowerer.set_terminator(Terminator::Jump {
+                target: return_block,
+                span,
+            });
+        }
+        dispatch_block = next_block;
+    }
+
+    lowerer.current_block = dispatch_block;
+    lowerer.set_terminator(Terminator::Jump {
+        target: return_block,
+        span,
+    });
+    lowerer.current_block = return_block;
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(Value::Local(result)),
+        span,
+    });
+
+    MirFunction {
+        name: helper_name,
+        params: lowerer.params,
+        abi_params: vec![
+            portable_abi_from_type_ref(
+                Some(&hir::TypeRef {
+                    name: SmolStr::new("RegionCapture"),
+                    name_span: None,
+                    args: Vec::new(),
+                }),
+                module,
+                type_tags,
+                &mut HashSet::new(),
+            ),
+            portable_abi_from_type_ref(
+                Some(&hir::TypeRef {
+                    name: SmolStr::new("SceneDomain"),
+                    name_span: None,
+                    args: Vec::new(),
+                }),
+                module,
+                type_tags,
+                &mut HashSet::new(),
+            ),
+            PortableAbiType::Vec3,
+            PortableAbiType::Vec3,
+        ],
+        abi_return: PortableAbiType::Vec3,
+        locals: lowerer.locals,
+        temps: lowerer.temps,
+        blocks: lowerer.blocks,
+        entry,
+        suspendable: false,
+    }
+}
+
+fn lower_world_medium_capture_helper(
+    module: &hir::Module,
+    type_tags: &HashMap<SmolStr, TypeTagId>,
+    class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
+    class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
+    function_names: &HashSet<SmolStr>,
+    field_names: &HashSet<SmolStr>,
+    shape_names: &HashSet<SmolStr>,
+    shape_graphs: &HashMap<SmolStr, hir::ShapeGraph>,
+    field_graphs: &HashMap<SmolStr, hir::FieldGraph>,
+    field_bodies: &HashMap<SmolStr, hir::Body>,
+    field_metadata: &HashMap<SmolStr, hir::FieldMetadata>,
+    radiance_param_counts: &HashMap<SmolStr, usize>,
+    volume_param_counts: &HashMap<SmolStr, usize>,
+    result_functions: &HashSet<SmolStr>,
+    class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
+    interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
+) -> MirFunction {
+    let helper_name = SmolStr::new("__wr_world_medium_capture");
+    let span = TextRange::empty(0.into());
+    let mut lowerer = FunctionLowerer::new(
+        helper_name.clone(),
+        type_tags,
+        class_fields,
+        class_field_defaults,
+        function_names,
+        field_names,
+        shape_names,
+        shape_graphs,
+        field_graphs,
+        field_bodies,
+        field_metadata,
+        radiance_param_counts,
+        volume_param_counts,
+        result_functions,
+        class_method_ids,
+        interface_methods,
+        false,
+        None,
+    );
+
+    let capture = lowerer.new_local(
+        SmolStr::new("capture"),
+        false,
+        MirType::Named(SmolStr::new("RegionCapture")),
+    );
+    let domain = lowerer.new_local(
+        SmolStr::new("domain"),
+        false,
+        MirType::Named(SmolStr::new("SceneDomain")),
+    );
+    let point = lowerer.new_local(SmolStr::new("point"), false, MirType::Vec3);
+    for (name, local) in [
+        (SmolStr::new("capture"), capture),
+        (SmolStr::new("domain"), domain),
+        (SmolStr::new("point"), point),
+    ] {
+        lowerer.declare_local(name, local);
+        lowerer.params.push(local);
+    }
+
+    let entry = lowerer.new_block();
+    lowerer.current_block = entry;
+    let capture_scene_id = lowerer.lower_get_named_field(
+        Value::Local(capture),
+        "RegionCapture",
+        "scene_id",
+        MirType::Integer,
+        span,
+    );
+    let domain_scene_id = lowerer.lower_get_named_field(
+        Value::Local(domain),
+        "SceneDomain",
+        "scene_id",
+        MirType::Integer,
+        span,
+    );
+    let scene_ids_match = lowerer.lower_binary_temp(
+        MirType::Boolean,
+        BinaryOp::Eq,
+        capture_scene_id.clone(),
+        domain_scene_id,
+        span,
+    );
+    let matched_block = lowerer.new_block();
+    let mismatch_block = lowerer.new_block();
+    lowerer.set_terminator(Terminator::Branch {
+        cond: scene_ids_match,
+        then_target: matched_block,
+        else_target: mismatch_block,
+        span,
+    });
+
+    lowerer.current_block = mismatch_block;
+    let crash_temp = lowerer.new_temp(MirType::Unknown);
+    lowerer.push_stmt(MirStmt::Assign {
+        place: Place::Temp(crash_temp),
+        value: Rvalue::Crash {
+            value: Value::Const(Literal::String(SmolStr::new(
+                "medium_world requires a domain derived from the same region capture",
+            ))),
+        },
+        span,
+    });
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(Value::Temp(crash_temp)),
+        span,
+    });
+
+    lowerer.current_block = matched_block;
+    let media_enabled = lowerer.lower_get_named_field(
+        Value::Local(domain),
+        "SceneDomain",
+        "media",
+        MirType::Boolean,
+        span,
+    );
+    let enabled_block = lowerer.new_block();
+    let disabled_block = lowerer.new_block();
+    lowerer.set_terminator(Terminator::Branch {
+        cond: media_enabled,
+        then_target: enabled_block,
+        else_target: disabled_block,
+        span,
+    });
+    lowerer.current_block = disabled_block;
+    let default_medium = lowerer.build_default_medium(span);
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(default_medium),
+        span,
+    });
+
+    lowerer.current_block = enabled_block;
+    let detail = lowerer.lower_get_named_field(
+        Value::Local(domain),
+        "SceneDomain",
+        "geometry_detail",
+        MirType::Integer,
+        span,
+    );
+    let result = lowerer.new_local(
+        SmolStr::new("$world_medium_result"),
+        true,
+        MirType::Named(SmolStr::new("Medium")),
+    );
+    let default_medium = lowerer.build_default_medium(span);
+    lowerer.assign_use(Place::Local(result), default_medium, span);
+    let best_distance =
+        lowerer.new_local(SmolStr::new("$world_medium_best"), true, MirType::Float);
+    lowerer.assign_use(
+        Place::Local(best_distance),
+        Value::Const(Literal::Float(1_000_000.0)),
+        span,
+    );
+    let return_block = lowerer.new_block();
+    let mut dispatch_block = lowerer.new_block();
+    lowerer.set_terminator(Terminator::Jump {
+        target: dispatch_block,
+        span,
+    });
+
+    for (_, region) in module
+        .functions
+        .iter()
+        .filter(|(_, func)| matches!(func.role, FunctionRole::Region))
+    {
+        let match_block = lowerer.new_block();
+        let next_block = lowerer.new_block();
+        lowerer.current_block = dispatch_block;
+        let matched = lowerer.lower_binary_temp(
+            MirType::Boolean,
+            BinaryOp::Eq,
+            capture_scene_id.clone(),
+            Value::Const(Literal::Integer(stable_region_scene_capture_id(&region.name))),
+            span,
+        );
+        lowerer.set_terminator(Terminator::Branch {
+            cond: matched,
+            then_target: match_block,
+            else_target: next_block,
+            span,
+        });
+        lowerer.current_block = match_block;
+        let Ok((coarse_shapes, fine_shapes)) = executable_region_shape_lists(region) else {
+            let crash_temp = lowerer.new_temp(MirType::Unknown);
+            lowerer.push_stmt(MirStmt::Assign {
+                place: Place::Temp(crash_temp),
+                value: Rvalue::Crash {
+                    value: Value::Const(Literal::String(SmolStr::new(
+                        "world queries only support direct region compose items today",
+                    ))),
+                },
+                span,
+            });
+            lowerer.set_terminator(Terminator::Return {
+                value: Some(Value::Temp(crash_temp)),
+                span,
+            });
+            dispatch_block = next_block;
+            continue;
+        };
+        let coarse_block = lowerer.new_block();
+        let fine_block = lowerer.new_block();
+        let detail_is_coarse = lowerer.lower_binary_temp(
+            MirType::Boolean,
+            BinaryOp::Eq,
+            detail.clone(),
+            Value::Const(Literal::Integer(0)),
+            span,
+        );
+        lowerer.set_terminator(Terminator::Branch {
+            cond: detail_is_coarse,
+            then_target: coarse_block,
+            else_target: fine_block,
+            span,
+        });
+        for (shapes, block) in [(&coarse_shapes, coarse_block), (&fine_shapes, fine_block)] {
+            lowerer.current_block = block;
+            for shape_name in shapes {
+                let distance =
+                    lowerer.lower_shape_distance_call(shape_name, Value::Local(point), span);
+                let better = lowerer.lower_binary_temp(
+                    MirType::Boolean,
+                    BinaryOp::Lt,
+                    distance.clone(),
+                    Value::Local(best_distance),
+                    span,
+                );
+                let take_block = lowerer.new_block();
+                let skip_block = lowerer.new_block();
+                let merge_block = lowerer.new_block();
+                lowerer.set_terminator(Terminator::Branch {
+                    cond: better,
+                    then_target: take_block,
+                    else_target: skip_block,
+                    span,
+                });
+                lowerer.current_block = take_block;
+                if let Some(shape) = module.shapes.iter().find_map(|(_, shape)| {
+                    (shape.name == *shape_name).then_some(shape)
+                }) {
+                    if let Some(graph) = shape.graph.as_ref() {
+                        let (_, _, feature_id) = lowerer.lower_shape_payload_selection(
+                            &graph.root,
+                            graph.provenance.as_ref(),
+                            Value::Local(point),
+                            Value::Const(Literal::Float(0.001)),
+                            &mut vec![shape.name.clone()],
+                            span,
+                        );
+                        let (_, medium) = lowerer.lower_shape_medium_selection(
+                            &graph.root,
+                            feature_id,
+                            Value::Local(point),
+                            distance.clone(),
+                            &mut vec![shape.name.clone()],
+                            span,
+                        );
+                        lowerer.assign_use(Place::Local(result), medium, span);
+                        lowerer.assign_use(Place::Local(best_distance), distance, span);
+                    }
+                }
+                lowerer.set_terminator(Terminator::Jump {
+                    target: merge_block,
+                    span,
+                });
+                lowerer.current_block = skip_block;
+                lowerer.set_terminator(Terminator::Jump {
+                    target: merge_block,
+                    span,
+                });
+                lowerer.current_block = merge_block;
+            }
+            lowerer.set_terminator(Terminator::Jump {
+                target: return_block,
+                span,
+            });
+        }
+        dispatch_block = next_block;
+    }
+
+    lowerer.current_block = dispatch_block;
+    lowerer.set_terminator(Terminator::Jump {
+        target: return_block,
+        span,
+    });
+    lowerer.current_block = return_block;
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(Value::Local(result)),
+        span,
+    });
+
+    MirFunction {
+        name: helper_name,
+        params: lowerer.params,
+        abi_params: vec![
+            portable_abi_from_type_ref(
+                Some(&hir::TypeRef {
+                    name: SmolStr::new("RegionCapture"),
+                    name_span: None,
+                    args: Vec::new(),
+                }),
+                module,
+                type_tags,
+                &mut HashSet::new(),
+            ),
+            portable_abi_from_type_ref(
+                Some(&hir::TypeRef {
+                    name: SmolStr::new("SceneDomain"),
                     name_span: None,
                     args: Vec::new(),
                 }),
@@ -5163,6 +9228,12 @@ impl FunctionLowerer {
                 if let Some(spec) = self.parse_shape_query(body, expr_id) {
                     return self.lower_shape_query_call(body, span, &spec);
                 }
+                if let Some(spec) = self.parse_world_point_query(body, expr_id) {
+                    return self.lower_world_point_query_call(body, span, &spec);
+                }
+                if let Some(spec) = self.parse_world_shape_query(body, expr_id) {
+                    return self.lower_world_shape_query_call(body, span, &spec);
+                }
                 if let Some(spec) = self.parse_field_batch_query(body, expr_id) {
                     return self.lower_field_batch_query_call(body, span, &spec);
                 }
@@ -6029,7 +10100,13 @@ impl FunctionLowerer {
                     let Expr::Variable(target) = &body.exprs[*value] else {
                         return None;
                     };
-                    if self.shape_names.contains(target) || self.field_names.contains(target) {
+                    if self.shape_names.contains(target)
+                        || self.field_names.contains(target)
+                        || matches!(
+                            self.expr_type(expr_id),
+                            MirType::Named(ref name) if name.as_str() == "RegionCapture"
+                        )
+                    {
                         return Some(target.clone());
                     }
                     return None;
@@ -6043,7 +10120,13 @@ impl FunctionLowerer {
             let Expr::Variable(target) = &body.exprs[value] else {
                 return None;
             };
-            if self.shape_names.contains(target) || self.field_names.contains(target) {
+            if self.shape_names.contains(target)
+                || self.field_names.contains(target)
+                || matches!(
+                    self.expr_type(expr_id),
+                    MirType::Named(ref name) if name.as_str() == "RegionCapture"
+                )
+            {
                 return Some(target.clone());
             }
         }
@@ -6120,6 +10203,109 @@ impl FunctionLowerer {
         Some(ShapeQuerySpec {
             kind,
             capture: capture?,
+            origin,
+            direction,
+            max_distance,
+            min_step,
+            hit_epsilon,
+            max_steps,
+            hit,
+        })
+    }
+
+    fn parse_world_point_query(
+        &self,
+        body: &hir::Body,
+        expr_id: hir::Idx<Expr>,
+    ) -> Option<WorldPointQuerySpec> {
+        let (callee, args) = match &body.exprs[expr_id] {
+            Expr::Call { callee, args, .. } => (callee, args),
+            _ => return None,
+        };
+        let Expr::Variable(name) = &body.exprs[*callee] else {
+            return None;
+        };
+        let kind = match name.as_str() {
+            "distance_world" => WorldPointQueryKind::Distance,
+            "normal_world" => WorldPointQueryKind::Normal,
+            "radiance_world" => WorldPointQueryKind::Radiance,
+            "medium_world" => WorldPointQueryKind::Medium,
+            _ => return None,
+        };
+        let mut capture = None;
+        let mut domain = None;
+        let mut point = None;
+        let mut direction = None;
+        for arg in args {
+            let hir::Arg::Named { name, value, .. } = arg else {
+                return None;
+            };
+            match name.as_str() {
+                "capture" => capture = Some(*value),
+                "domain" => domain = Some(*value),
+                "point" => point = Some(*value),
+                "direction" if matches!(kind, WorldPointQueryKind::Radiance) => {
+                    direction = Some(*value)
+                }
+                _ => return None,
+            }
+        }
+        Some(WorldPointQuerySpec {
+            kind,
+            capture: capture?,
+            domain: domain?,
+            point: point?,
+            direction,
+        })
+    }
+
+    fn parse_world_shape_query(
+        &self,
+        body: &hir::Body,
+        expr_id: hir::Idx<Expr>,
+    ) -> Option<WorldShapeQuerySpec> {
+        let (callee, args) = match &body.exprs[expr_id] {
+            Expr::Call { callee, args, .. } => (callee, args),
+            _ => return None,
+        };
+        let Expr::Variable(name) = &body.exprs[*callee] else {
+            return None;
+        };
+        let kind = match name.as_str() {
+            "trace_world" => WorldShapeQueryKind::Trace,
+            "surface_world" => WorldShapeQueryKind::Surface,
+            _ => return None,
+        };
+        let mut capture = None;
+        let mut domain = None;
+        let mut origin = None;
+        let mut direction = None;
+        let mut max_distance = None;
+        let mut min_step = None;
+        let mut hit_epsilon = None;
+        let mut max_steps = None;
+        let mut hit = None;
+        for arg in args {
+            let hir::Arg::Named { name, value, .. } = arg else {
+                return None;
+            };
+            match name.as_str() {
+                "capture" => capture = Some(*value),
+                "domain" => domain = Some(*value),
+                "origin" => origin = Some(*value),
+                "direction" => direction = Some(*value),
+                "max_distance" => max_distance = Some(*value),
+                "min_step" => min_step = Some(*value),
+                "hit_epsilon" => hit_epsilon = Some(*value),
+                "max_steps" => max_steps = Some(*value),
+                "hit" => hit = Some(*value),
+                _ => return None,
+            }
+        }
+        Some(WorldShapeQuerySpec {
+            kind,
+            capture: capture?,
+            domain: domain?,
             origin,
             direction,
             max_distance,
@@ -6307,6 +10493,101 @@ impl FunctionLowerer {
                     MirType::Named(SmolStr::new("Surface")),
                     SmolStr::new("__wr_scene_surface_capture"),
                     vec![capture, hit],
+                    span,
+                )
+            }
+        }
+    }
+
+    fn lower_world_point_query_call(
+        &mut self,
+        body: &hir::Body,
+        span: TextRange,
+        spec: &WorldPointQuerySpec,
+    ) -> Value {
+        let capture = self.lower_expr(body, spec.capture);
+        let domain = self.lower_expr(body, spec.domain);
+        let point = self.lower_expr(body, spec.point);
+        match spec.kind {
+            WorldPointQueryKind::Distance => self.lower_call_temp(
+                MirType::Float,
+                SmolStr::new("__wr_world_distance_capture"),
+                vec![capture, domain, point],
+                span,
+            ),
+            WorldPointQueryKind::Normal => self.lower_call_temp(
+                MirType::Vec3,
+                SmolStr::new("__wr_world_normal_capture"),
+                vec![capture, domain, point],
+                span,
+            ),
+            WorldPointQueryKind::Radiance => {
+                let direction = self
+                    .lower_expr(body, spec.direction.expect("radiance_world missing direction"));
+                self.lower_call_temp(
+                    MirType::Vec3,
+                    SmolStr::new("__wr_world_radiance_capture"),
+                    vec![capture, domain, point, direction],
+                    span,
+                )
+            }
+            WorldPointQueryKind::Medium => self.lower_call_temp(
+                MirType::Named(SmolStr::new("Medium")),
+                SmolStr::new("__wr_world_medium_capture"),
+                vec![capture, domain, point],
+                span,
+            ),
+        }
+    }
+
+    fn lower_world_shape_query_call(
+        &mut self,
+        body: &hir::Body,
+        span: TextRange,
+        spec: &WorldShapeQuerySpec,
+    ) -> Value {
+        let capture = self.lower_expr(body, spec.capture);
+        let domain = self.lower_expr(body, spec.domain);
+        match spec.kind {
+            WorldShapeQueryKind::Trace => {
+                let origin =
+                    self.lower_expr(body, spec.origin.expect("trace_world missing origin"));
+                let direction = self
+                    .lower_expr(body, spec.direction.expect("trace_world missing direction"));
+                let max_distance = self.lower_expr(
+                    body,
+                    spec.max_distance.expect("trace_world missing max_distance"),
+                );
+                let min_step =
+                    self.lower_expr(body, spec.min_step.expect("trace_world missing min_step"));
+                let hit_epsilon = self.lower_expr(
+                    body,
+                    spec.hit_epsilon.expect("trace_world missing hit_epsilon"),
+                );
+                let max_steps =
+                    self.lower_expr(body, spec.max_steps.expect("trace_world missing max_steps"));
+                self.lower_call_temp(
+                    MirType::Named(SmolStr::new("Hit3")),
+                    SmolStr::new("__wr_world_trace_capture"),
+                    vec![
+                        capture,
+                        domain,
+                        origin,
+                        direction,
+                        max_distance,
+                        min_step,
+                        hit_epsilon,
+                        max_steps,
+                    ],
+                    span,
+                )
+            }
+            WorldShapeQueryKind::Surface => {
+                let hit = self.lower_expr(body, spec.hit.expect("surface_world missing hit"));
+                self.lower_call_temp(
+                    MirType::Named(SmolStr::new("Surface")),
+                    SmolStr::new("__wr_world_surface_capture"),
+                    vec![capture, domain, hit],
                     span,
                 )
             }
@@ -7307,6 +11588,32 @@ impl FunctionLowerer {
         Value::Temp(temp)
     }
 
+    fn lower_string_interp_temp(&mut self, parts: Vec<StringPartValue>, span: TextRange) -> Value {
+        let temp = self.new_temp(MirType::String);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(temp),
+            value: Rvalue::StringInterp {
+                parts,
+                alloc: AllocKind::LocalTemp,
+            },
+            span,
+        });
+        Value::Temp(temp)
+    }
+
+    fn lower_string_concat_temp(&mut self, lhs: Value, rhs: Value, span: TextRange) -> Value {
+        let temp = self.new_temp(MirType::String);
+        self.push_stmt(MirStmt::Assign {
+            place: Place::Temp(temp),
+            value: Rvalue::StrConcat {
+                parts: vec![lhs, rhs],
+                alloc: AllocKind::LocalTemp,
+            },
+            span,
+        });
+        Value::Temp(temp)
+    }
+
     fn synthetic_class_target_info(&self, class_name: &str) -> ClassTargetInfo {
         let name = SmolStr::new(class_name);
         let fields = self.class_fields.get(&name).cloned().unwrap_or_default();
@@ -7413,6 +11720,7 @@ impl FunctionLowerer {
         Self::set_class_field_value(&mut class, "shading_frame", shading_frame);
         Self::set_class_field_value(&mut class, "steps", Value::Const(Literal::Integer(0)));
         Self::set_class_field_value(&mut class, "feature_id", Value::Const(Literal::Integer(0)));
+        Self::set_class_field_value(&mut class, "root_shape_id", Value::Const(Literal::Integer(0)));
         let payload = self.build_default_payload(span);
         Self::set_class_field_value(&mut class, "payload", payload);
         self.build_class_instance(&class, span)
@@ -7420,18 +11728,23 @@ impl FunctionLowerer {
 
     fn build_scene_capture_value(&mut self, shape_name: &SmolStr, span: TextRange) -> Value {
         let is_field = self.field_names.contains(shape_name);
+        let is_shape = self.shape_names.contains(shape_name);
         let mut class = self.synthetic_class_target_info(if is_field {
             "FieldCapture"
-        } else {
+        } else if is_shape {
             "ShapeCapture"
+        } else {
+            "RegionCapture"
         });
         Self::set_class_field_value(
             &mut class,
             "scene_id",
             Value::Const(Literal::Integer(if is_field {
                 stable_field_scene_capture_id(shape_name)
-            } else {
+            } else if is_shape {
                 stable_shape_scene_capture_id(shape_name)
+            } else {
+                stable_region_scene_capture_id(shape_name)
             })),
         );
         Self::set_class_field_value(&mut class, "epoch", Value::Const(Literal::Integer(0)));
@@ -7440,8 +11753,10 @@ impl FunctionLowerer {
             "root_feature_id",
             Value::Const(Literal::Integer(if is_field {
                 0
-            } else {
+            } else if is_shape {
                 stable_shape_capture_id(shape_name)
+            } else {
+                0
             })),
         );
         self.build_class_instance(&class, span)
@@ -10904,6 +15219,41 @@ enum ShapeQueryKind {
 struct ShapeQuerySpec {
     kind: ShapeQueryKind,
     capture: hir::Idx<Expr>,
+    origin: Option<hir::Idx<Expr>>,
+    direction: Option<hir::Idx<Expr>>,
+    max_distance: Option<hir::Idx<Expr>>,
+    min_step: Option<hir::Idx<Expr>>,
+    hit_epsilon: Option<hir::Idx<Expr>>,
+    max_steps: Option<hir::Idx<Expr>>,
+    hit: Option<hir::Idx<Expr>>,
+}
+
+#[derive(Clone, Copy)]
+enum WorldPointQueryKind {
+    Distance,
+    Normal,
+    Radiance,
+    Medium,
+}
+
+struct WorldPointQuerySpec {
+    kind: WorldPointQueryKind,
+    capture: hir::Idx<Expr>,
+    domain: hir::Idx<Expr>,
+    point: hir::Idx<Expr>,
+    direction: Option<hir::Idx<Expr>>,
+}
+
+#[derive(Clone, Copy)]
+enum WorldShapeQueryKind {
+    Trace,
+    Surface,
+}
+
+struct WorldShapeQuerySpec {
+    kind: WorldShapeQueryKind,
+    capture: hir::Idx<Expr>,
+    domain: hir::Idx<Expr>,
     origin: Option<hir::Idx<Expr>>,
     direction: Option<hir::Idx<Expr>>,
     max_distance: Option<hir::Idx<Expr>>,

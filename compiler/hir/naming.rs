@@ -318,6 +318,8 @@ impl<'a> Checker<'a> {
 
             match func.role {
                 FunctionRole::Field
+                | FunctionRole::Region
+                | FunctionRole::Domain
                 | FunctionRole::Material
                 | FunctionRole::Radiance
                 | FunctionRole::Volume => {
@@ -375,7 +377,9 @@ impl<'a> Checker<'a> {
             }
         }
 
-        if let Some(body) = &func.body {
+        if let Some(body) = &func.body
+            && !matches!(func.role, FunctionRole::Domain | FunctionRole::Render)
+        {
             let fn_types = self.type_info.functions.get(&func_id);
             self.check_body_locals(body, fn_types);
         }

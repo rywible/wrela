@@ -83,6 +83,8 @@ fn portable_builtin_catalog_matches_expected_surface() {
             "PointQuery",
             "Ray3",
             "RayQuery",
+            "RegionCapture",
+            "SceneDomain",
             "ShapeCapture",
             "Support3",
             "Surface",
@@ -170,6 +172,7 @@ fn portable_builtin_catalog_matches_expected_surface() {
             "shading_frame",
             "steps",
             "feature_id",
+            "root_shape_id",
             "payload",
         ]
     );
@@ -466,6 +469,7 @@ kernel fn portable_entry() -> QueryBatchProbe {
         shading_frame=transform3_identity(),
         steps=12,
         feature_id=u64(7),
+        root_shape_id=u64(99),
         payload=Payload(
             entity_id=u64(7),
             material_id=u64(9),
@@ -482,6 +486,7 @@ kernel fn portable_entry() -> QueryBatchProbe {
         shading_frame=transform3_identity(),
         steps=13,
         feature_id=u64(8),
+        root_shape_id=u64(99),
         payload=Payload(
             entity_id=u64(7),
             material_id=u64(9),
@@ -617,6 +622,7 @@ kernel fn portable_entry() -> TraceProbe {
         shading_frame=transform3_identity(),
         steps=12,
         feature_id=u64(305419896),
+        root_shape_id=u64(77),
         payload=payload
     )
     return TraceProbe(hit=hit)
@@ -1010,6 +1016,7 @@ kernel fn portable_entry() -> SceneProbe {
         shading_frame=transform3_identity(),
         steps=0,
         feature_id=u64(0),
+        root_shape_id=u64(123),
         payload=payload
     )
     surface = Surface(
@@ -1626,6 +1633,7 @@ kernel fn portable_entry() -> Phase7Probe {
         shading_frame=transform3_identity(),
         steps=i64(4),
         feature_id=u64(901),
+        root_shape_id=u64(901),
         payload=payload
     )
     return Phase7Probe(

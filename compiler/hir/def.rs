@@ -55,6 +55,9 @@ pub enum FunctionRole {
     Kernel,
     System,
     Field,
+    Region,
+    Domain,
+    Render,
     Radiance,
     Volume,
     Shape,
@@ -85,6 +88,84 @@ pub enum FieldBounds {
     Unknown,
     Bounded,
     Unbounded,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegionDetailLevel {
+    Coarse,
+    Fine,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RegionLayerBinding {
+    pub detail: RegionDetailLevel,
+    pub shape: SmolStr,
+    pub shape_span: Option<TextRange>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RegionMetadata {
+    pub layers: Vec<RegionLayerBinding>,
+    pub items: Vec<RegionItemMetadata>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegionComposeKind {
+    Place,
+    Overlay,
+    Replace,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RegionItemMetadata {
+    Compose {
+        kind: RegionComposeKind,
+        name: SmolStr,
+        name_span: Option<TextRange>,
+        shape: SmolStr,
+        shape_span: Option<TextRange>,
+        detail: Option<RegionDetailLevel>,
+    },
+    Scatter {
+        name: SmolStr,
+        name_span: Option<TextRange>,
+        items: Vec<RegionItemMetadata>,
+    },
+    Conditional {
+        condition: Body,
+        then_items: Vec<RegionItemMetadata>,
+        else_items: Vec<RegionItemMetadata>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DomainGeometryDetail {
+    Coarse,
+    Fine,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DomainMetadata {
+    pub geometry_detail: DomainGeometryDetail,
+    pub material: bool,
+    pub radiance: bool,
+    pub media: bool,
+    pub max_distance: Option<Body>,
+    pub min_step: Option<Body>,
+    pub hit_epsilon: Option<Body>,
+    pub max_steps: Option<Body>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RenderMetadata {
+    pub domain: Option<Body>,
+    pub light: Option<Body>,
+    pub lights: Option<Body>,
+    pub width: Option<Body>,
+    pub height: Option<Body>,
+    pub world_up: Option<Body>,
+    pub view_scale: Option<Body>,
+    pub fill_dir: Option<Body>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -430,6 +511,9 @@ pub struct Function {
     pub kind: FunctionKind,
     pub role: FunctionRole,
     pub field: Option<FieldMetadata>,
+    pub region: Option<RegionMetadata>,
+    pub domain: Option<DomainMetadata>,
+    pub render: Option<RenderMetadata>,
     pub field_graph: Option<FieldGraph>,
     pub system_metadata: Option<SystemMetadata>,
     pub type_params: Vec<TypeParam>,
@@ -441,7 +525,11 @@ pub struct Function {
 impl Function {
     pub fn lane(&self) -> FunctionLane {
         match self.role {
-            FunctionRole::Function | FunctionRole::System => FunctionLane::Host,
+            FunctionRole::Function
+            | FunctionRole::System
+            | FunctionRole::Region
+            | FunctionRole::Domain
+            | FunctionRole::Render => FunctionLane::Host,
             FunctionRole::Kernel
             | FunctionRole::Field
             | FunctionRole::Radiance

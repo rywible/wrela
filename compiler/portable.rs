@@ -310,6 +310,10 @@ const HIT3_FIELDS: &[PortableBuiltinField] = &[
         ty: TyAtom(Atom::U64),
     },
     PortableBuiltinField {
+        name: "root_shape_id",
+        ty: TyAtom(Atom::U64),
+    },
+    PortableBuiltinField {
         name: "payload",
         ty: TyNamed("Payload"),
     },
@@ -411,6 +415,55 @@ const BUILTIN_RECORDS: &[PortableBuiltinRecord] = &[
         function_name: None,
         constructible: false,
         fields: SCENE_CAPTURE_FIELDS,
+    },
+    PortableBuiltinRecord {
+        name: "RegionCapture",
+        function_name: None,
+        constructible: false,
+        fields: SCENE_CAPTURE_FIELDS,
+    },
+    PortableBuiltinRecord {
+        name: "SceneDomain",
+        function_name: None,
+        constructible: false,
+        fields: &[
+            PortableBuiltinField {
+                name: "scene_id",
+                ty: TyAtom(Atom::U64),
+            },
+            PortableBuiltinField {
+                name: "geometry_detail",
+                ty: TyAtom(Atom::I64),
+            },
+            PortableBuiltinField {
+                name: "material",
+                ty: TyAtom(Atom::Bool),
+            },
+            PortableBuiltinField {
+                name: "radiance",
+                ty: TyAtom(Atom::Bool),
+            },
+            PortableBuiltinField {
+                name: "media",
+                ty: TyAtom(Atom::Bool),
+            },
+            PortableBuiltinField {
+                name: "max_distance",
+                ty: TyAtom(Atom::F32),
+            },
+            PortableBuiltinField {
+                name: "min_step",
+                ty: TyAtom(Atom::F32),
+            },
+            PortableBuiltinField {
+                name: "hit_epsilon",
+                ty: TyAtom(Atom::F32),
+            },
+            PortableBuiltinField {
+                name: "max_steps",
+                ty: TyAtom(Atom::I64),
+            },
+        ],
     },
     PortableBuiltinRecord {
         name: "DispatchBackend",

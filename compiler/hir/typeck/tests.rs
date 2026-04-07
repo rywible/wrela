@@ -508,6 +508,181 @@ fn f() -> Nothing {
     }
 
     #[test]
+    fn test_capture_understands_region_targets() {
+        let input = r#"region Highlands() {
+}
+
+fn f() -> Nothing {
+    world = capture Highlands
+}
+"#;
+        let errors = check_source(input);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_legacy_capture_generic_is_rejected_in_world_boundaries() {
+        let input = r#"domain Legacy(world: Capture) {
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::PortableBoundaryTypeForbidden { found, .. }
+                    if found == "Capture"
+            )),
+            "expected legacy generic Capture boundary to be rejected, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_parameterized_regions_are_rejected() {
+        let input = r#"region Highlands(band: I32) {
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::PortableConstructForbidden { construct, .. }
+                    if construct == "a parameterized region declaration"
+            )),
+            "expected parameterized regions to be rejected, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_domain_and_render_accept_region_world_queries() {
+        let input = r#"region Highlands() {
+}
+
+domain Combat(world: RegionCapture) {
+}
+
+render View(world: RegionCapture, camera: Camera) {
+}
+
+fn run() -> Nothing {
+    world = capture Highlands
+    domain = Combat(world=world)
+    distance = distance_world(capture=world, domain=domain, point=vec3(0.0, 0.0, 0.0))
+    normal = normal_world(capture=world, domain=domain, point=vec3(0.0, 0.0, 0.0))
+    hit = trace_world(
+        capture=world,
+        domain=domain,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    surface = surface_world(capture=world, domain=domain, hit=hit)
+    radiance = radiance_world(capture=world, domain=domain, point=hit.position, direction=vec3(0.0, 0.0, -1.0))
+    medium = medium_world(capture=world, domain=domain, point=hit.position)
+}
+"#;
+        let errors = check_source(input);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_region_scatter_and_conditional_items_are_rejected() {
+        let input = r#"region Highlands() {
+    scatter trees {
+        place sapling = Oak()
+    }
+    if true {
+        place fallback = Stone()
+    }
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::PortableConstructForbidden { construct, .. }
+                    if construct == "a scatter region item"
+                        || construct == "a conditional region item"
+            )),
+            "expected unsupported region items to be rejected, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_render_lights_metadata_is_rejected() {
+        let input = r#"region Highlands() {
+}
+
+render View(world: RegionCapture, camera: Camera) {
+    lights = Light(
+        position=vec3(0.0, 1.0, 2.0),
+        direction=vec3(0.0, -1.0, 0.0),
+        intensity=vec3(1.0, 1.0, 1.0),
+        range=10.0
+    )
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::PortableConstructForbidden { construct, .. }
+                    if construct == "render lights metadata"
+            )),
+            "expected render lights metadata to be rejected, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_domain_and_render_reject_executable_statements() {
+        let input = r#"region Highlands() {
+}
+
+domain Combat(world: RegionCapture) {
+    return 1
+}
+
+render View(world: RegionCapture, camera: Camera) {
+    while true {
+    }
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::PortableConstructForbidden { construct, .. }
+                    if construct.contains("domain declaration executable statement")
+                        || construct.contains("render declaration executable statement")
+            )),
+            "expected executable world declarations to be rejected, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_host_field_queries_reject_region_captures() {
+        let input = r#"region Highlands() {
+}
+
+fn f() -> Nothing {
+    world = capture Highlands
+    distance = distance_at(capture=world, point=vec3(1.0, 2.0, 3.0))
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::ArgumentTypeMismatch { name, expected, .. }
+                    if name.as_str() == "capture" && expected == "FieldCapture or ShapeCapture"
+            )),
+            "expected region captures to be rejected by host field queries, got: {errors:?}"
+        );
+    }
+
+    #[test]
     fn test_shape_queries_typecheck_on_host() {
         let input = r#"field exact distance sphere_field(p: Vec3) -> F32 {
     sphere(radius=1.0)

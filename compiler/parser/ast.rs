@@ -48,6 +48,9 @@ pub enum Stmt {
     KernelDef(KernelDef),
     SystemDef(SystemDef),
     FieldDecl(FieldDecl),
+    RegionDecl(RegionDecl),
+    DomainDecl(DomainDecl),
+    RenderDecl(RenderDecl),
     RadianceDecl(RadianceDecl),
     VolumeDecl(VolumeDecl),
     MaterialDecl(MaterialDecl),
@@ -87,6 +90,9 @@ impl AstNode for Stmt {
                 | SyntaxKind::KernelDef
                 | SyntaxKind::SystemDef
                 | SyntaxKind::FieldDecl
+                | SyntaxKind::RegionDecl
+                | SyntaxKind::DomainDecl
+                | SyntaxKind::RenderDecl
                 | SyntaxKind::RadianceDecl
                 | SyntaxKind::VolumeDecl
                 | SyntaxKind::MaterialDecl
@@ -124,6 +130,9 @@ impl AstNode for Stmt {
             SyntaxKind::KernelDef => KernelDef::cast(node).map(Stmt::KernelDef),
             SyntaxKind::SystemDef => SystemDef::cast(node).map(Stmt::SystemDef),
             SyntaxKind::FieldDecl => FieldDecl::cast(node).map(Stmt::FieldDecl),
+            SyntaxKind::RegionDecl => RegionDecl::cast(node).map(Stmt::RegionDecl),
+            SyntaxKind::DomainDecl => DomainDecl::cast(node).map(Stmt::DomainDecl),
+            SyntaxKind::RenderDecl => RenderDecl::cast(node).map(Stmt::RenderDecl),
             SyntaxKind::RadianceDecl => RadianceDecl::cast(node).map(Stmt::RadianceDecl),
             SyntaxKind::VolumeDecl => VolumeDecl::cast(node).map(Stmt::VolumeDecl),
             SyntaxKind::MaterialDecl => MaterialDecl::cast(node).map(Stmt::MaterialDecl),
@@ -170,6 +179,9 @@ impl AstNode for Stmt {
             Stmt::KernelDef(it) => it.syntax(),
             Stmt::SystemDef(it) => it.syntax(),
             Stmt::FieldDecl(it) => it.syntax(),
+            Stmt::RegionDecl(it) => it.syntax(),
+            Stmt::DomainDecl(it) => it.syntax(),
+            Stmt::RenderDecl(it) => it.syntax(),
             Stmt::RadianceDecl(it) => it.syntax(),
             Stmt::VolumeDecl(it) => it.syntax(),
             Stmt::MaterialDecl(it) => it.syntax(),
@@ -1211,6 +1223,198 @@ impl FieldDecl {
         }
     }
 }
+
+macro_rules! impl_world_decl {
+    ($name:ident, $kind:expr) => {
+        pub struct $name(SyntaxNode);
+        impl AstNode for $name {
+            fn can_cast(kind: SyntaxKind) -> bool {
+                kind == $kind
+            }
+            fn cast(node: SyntaxNode) -> Option<Self> {
+                if Self::can_cast(node.kind()) {
+                    Some($name(node))
+                } else {
+                    None
+                }
+            }
+            fn syntax(&self) -> &SyntaxNode {
+                &self.0
+            }
+        }
+
+        impl $name {
+            pub fn name(&self) -> Option<SyntaxToken> {
+                self.0
+                    .children_with_tokens()
+                    .filter_map(|it| it.into_token())
+                    .filter(|it| it.kind() == SyntaxKind::Ident)
+                    .nth(1)
+            }
+
+            pub fn params(&self) -> impl Iterator<Item = Param> {
+                self.0
+                    .children()
+                    .filter(|it| it.kind() == SyntaxKind::ParamList)
+                    .flat_map(|node| node.children())
+                    .filter_map(Param::cast)
+            }
+
+            fn block(&self) -> Option<Block> {
+                self.0.children().filter_map(Block::cast).next()
+            }
+
+            pub fn statements(&self) -> impl Iterator<Item = Stmt> {
+                self.block().into_iter().flat_map(|b| {
+                    b.0.children()
+                        .filter_map(Stmt::cast)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                })
+            }
+        }
+    };
+}
+
+impl_world_decl!(RegionDecl, SyntaxKind::RegionDecl);
+impl_world_decl!(DomainDecl, SyntaxKind::DomainDecl);
+impl_world_decl!(RenderDecl, SyntaxKind::RenderDecl);
+
+impl RegionDecl {
+    pub fn items(&self) -> impl Iterator<Item = RegionItem> {
+        self.block().into_iter().flat_map(|b| {
+            b.0.children()
+                .filter_map(RegionItem::cast)
+                .collect::<Vec<_>>()
+                .into_iter()
+        })
+    }
+}
+
+pub enum RegionItem {
+    Place(RegionPlaceStmt),
+    Overlay(RegionOverlayStmt),
+    Replace(RegionReplaceStmt),
+    Scatter(RegionScatterStmt),
+    If(IfStmt),
+}
+
+impl AstNode for RegionItem {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        matches!(
+            kind,
+            SyntaxKind::RegionPlaceStmt
+                | SyntaxKind::RegionOverlayStmt
+                | SyntaxKind::RegionReplaceStmt
+                | SyntaxKind::RegionScatterStmt
+                | SyntaxKind::IfStmt
+        )
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        match node.kind() {
+            SyntaxKind::RegionPlaceStmt => RegionPlaceStmt::cast(node).map(RegionItem::Place),
+            SyntaxKind::RegionOverlayStmt => {
+                RegionOverlayStmt::cast(node).map(RegionItem::Overlay)
+            }
+            SyntaxKind::RegionReplaceStmt => {
+                RegionReplaceStmt::cast(node).map(RegionItem::Replace)
+            }
+            SyntaxKind::RegionScatterStmt => {
+                RegionScatterStmt::cast(node).map(RegionItem::Scatter)
+            }
+            SyntaxKind::IfStmt => IfStmt::cast(node).map(RegionItem::If),
+            _ => None,
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        match self {
+            RegionItem::Place(it) => it.syntax(),
+            RegionItem::Overlay(it) => it.syntax(),
+            RegionItem::Replace(it) => it.syntax(),
+            RegionItem::Scatter(it) => it.syntax(),
+            RegionItem::If(it) => it.syntax(),
+        }
+    }
+}
+
+macro_rules! impl_region_named_assignment_stmt {
+    ($name:ident, $kind:expr) => {
+        pub struct $name(SyntaxNode);
+        impl AstNode for $name {
+            fn can_cast(kind: SyntaxKind) -> bool {
+                kind == $kind
+            }
+            fn cast(node: SyntaxNode) -> Option<Self> {
+                if Self::can_cast(node.kind()) {
+                    Some($name(node))
+                } else {
+                    None
+                }
+            }
+            fn syntax(&self) -> &SyntaxNode {
+                &self.0
+            }
+        }
+
+        impl $name {
+            pub fn name(&self) -> Option<SyntaxToken> {
+                self.0
+                    .children_with_tokens()
+                    .filter_map(|it| it.into_token())
+                    .filter(|it| it.kind() == SyntaxKind::Ident)
+                    .nth(1)
+            }
+
+            pub fn value(&self) -> Option<Expr> {
+                self.0.children().filter_map(Expr::cast).next()
+            }
+        }
+    };
+}
+
+pub struct RegionScatterStmt(SyntaxNode);
+impl AstNode for RegionScatterStmt {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::RegionScatterStmt
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(RegionScatterStmt(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl RegionScatterStmt {
+    pub fn name(&self) -> Option<SyntaxToken> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .filter(|it| it.kind() == SyntaxKind::Ident)
+            .nth(1)
+    }
+
+    fn block(&self) -> Option<Block> {
+        self.0.children().filter_map(Block::cast).next()
+    }
+
+    pub fn items(&self) -> impl Iterator<Item = RegionItem> {
+        self.block().into_iter().flat_map(|b| {
+            b.0.children()
+                .filter_map(RegionItem::cast)
+                .collect::<Vec<_>>()
+                .into_iter()
+        })
+    }
+}
+
+impl_region_named_assignment_stmt!(RegionPlaceStmt, SyntaxKind::RegionPlaceStmt);
+impl_region_named_assignment_stmt!(RegionOverlayStmt, SyntaxKind::RegionOverlayStmt);
+impl_region_named_assignment_stmt!(RegionReplaceStmt, SyntaxKind::RegionReplaceStmt);
 
 pub struct RadianceDecl(SyntaxNode);
 impl AstNode for RadianceDecl {
@@ -3059,6 +3263,10 @@ impl AstNode for Block {
 impl Block {
     pub fn statements(&self) -> impl Iterator<Item = Stmt> {
         self.0.children().filter_map(Stmt::cast)
+    }
+
+    pub fn region_items(&self) -> impl Iterator<Item = RegionItem> {
+        self.0.children().filter_map(RegionItem::cast)
     }
 
     pub fn trailing_stmt_expr(&self) -> Option<StmtExpr> {

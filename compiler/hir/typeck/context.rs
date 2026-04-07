@@ -106,6 +106,7 @@ fn check_function(
     let mut fn_info = FunctionTypeInfo::default();
     let mut ctx = TypeContext::with_info(&mut fn_info);
     ctx.set_function_lane(func.lane());
+    ctx.set_function_role(func.role);
     ctx.set_function_name(func.name.clone());
     ctx.enter_scope();
     let has_func_type_params = !func.type_params.is_empty();
@@ -157,20 +158,45 @@ fn check_function(
         .map(|t| type_from_ref_in_ctx(t, &ctx));
     let returns_result = matches!(ret_type, Some(Type::Result(_, _)));
     if let Some(body) = &func.body {
-        for stmt in &body.root_stmts {
-            check_stmt(
-                body,
-                *stmt,
-                &mut ctx,
-                classes,
-                enums,
-                interfaces,
-                functions,
-                errors,
-                ret_type.as_ref(),
-                returns_result,
-                func.name_span,
-            );
+        if matches!(func.role, FunctionRole::Region) {
+            if !body.root_stmts.is_empty() {
+                errors.push(TypeError::PortableConstructForbidden {
+                    function: func.name.clone(),
+                    construct: "an executable region body".to_string(),
+                    span: span_from_option_range(func.name_span),
+                    help: "Region declarations are declarative scene partitions only; keep the body empty and move executable logic into ordinary functions.".to_string(),
+                });
+            }
+        } else {
+            let forbidden_world_return = match func.role {
+                FunctionRole::Domain | FunctionRole::Render => {
+                    body_contains_forbidden_world_return(body, false)
+                }
+                _ => false,
+            };
+            if forbidden_world_return {
+                errors.push(TypeError::PortableConstructForbidden {
+                    function: func.name.clone(),
+                    construct: "an explicit `return` in a domain/render declaration".to_string(),
+                    span: span_from_option_range(func.name_span),
+                    help: "Domain and render declarations stay metadata-only. Keep the body to compiler-understood policy assignments only.".to_string(),
+                });
+            }
+            for stmt in &body.root_stmts {
+                check_stmt(
+                    body,
+                    *stmt,
+                    &mut ctx,
+                    classes,
+                    enums,
+                    interfaces,
+                    functions,
+                    errors,
+                    ret_type.as_ref(),
+                    returns_result,
+                    func.name_span,
+                );
+            }
         }
     }
     ctx.exit_scope();
@@ -181,6 +207,65 @@ fn check_function(
         ctx.exit_type_params();
     }
     info.functions.insert(func_id.into_raw(), fn_info);
+}
+
+fn body_contains_forbidden_world_return(body: &Body, allow_terminal_top_level_return: bool) -> bool {
+    body.root_stmts.iter().enumerate().any(|(index, stmt)| {
+        let allow_here = allow_terminal_top_level_return && index + 1 == body.root_stmts.len();
+        stmt_contains_forbidden_world_return(body, *stmt, allow_here, true)
+    })
+}
+
+fn stmt_contains_forbidden_world_return(
+    body: &Body,
+    stmt_id: Idx<Stmt>,
+    allow_here: bool,
+    top_level: bool,
+) -> bool {
+    match &body.stmts[stmt_id] {
+        Stmt::Return(_) => !(allow_here && top_level),
+        Stmt::Optimize { body: inner, .. }
+        | Stmt::If {
+            then_branch: inner,
+            else_branch: None,
+            ..
+        }
+        | Stmt::For { body: inner, .. }
+        | Stmt::While { body: inner, .. } => inner
+            .iter()
+            .copied()
+            .any(|stmt| stmt_contains_forbidden_world_return(body, stmt, false, false)),
+        Stmt::If {
+            then_branch,
+            else_branch: Some(else_branch),
+            ..
+        } => then_branch
+            .iter()
+            .copied()
+            .any(|stmt| stmt_contains_forbidden_world_return(body, stmt, false, false))
+            || else_branch
+                .iter()
+                .copied()
+                .any(|stmt| stmt_contains_forbidden_world_return(body, stmt, false, false)),
+        Stmt::Match {
+            cases,
+            otherwise,
+            ..
+        } => {
+            cases.iter().any(|case| {
+                case.body
+                    .iter()
+                    .copied()
+                    .any(|stmt| stmt_contains_forbidden_world_return(body, stmt, false, false))
+            }) || otherwise.as_ref().is_some_and(|branch| {
+                branch
+                    .iter()
+                    .copied()
+                    .any(|stmt| stmt_contains_forbidden_world_return(body, stmt, false, false))
+            })
+        }
+        _ => false,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -491,6 +576,7 @@ struct FunctionIndex {
     portable_functions: HashSet<SmolStr>,
     field_functions: HashSet<SmolStr>,
     shape_functions: HashSet<SmolStr>,
+    region_functions: HashSet<SmolStr>,
 }
 
 impl FunctionIndex {
@@ -506,6 +592,7 @@ impl FunctionIndex {
         let mut portable_functions = HashSet::new();
         let mut field_functions = HashSet::new();
         let mut shape_functions = HashSet::new();
+        let mut region_functions = HashSet::new();
         for (idx, func) in module.functions.iter() {
             if method_ids.contains(&idx.into_raw()) {
                 continue;
@@ -554,6 +641,9 @@ impl FunctionIndex {
             if matches!(func.role, FunctionRole::Field) && func.field.is_some() {
                 field_functions.insert(func.name.clone());
             }
+            if matches!(func.role, FunctionRole::Region) {
+                region_functions.insert(func.name.clone());
+            }
         }
         for (_idx, shape) in module.shapes.iter() {
             shape_functions.insert(shape.name.clone());
@@ -569,6 +659,7 @@ impl FunctionIndex {
             portable_functions,
             field_functions,
             shape_functions,
+            region_functions,
         }
     }
 
@@ -586,6 +677,10 @@ impl FunctionIndex {
 
     fn is_shape(&self, name: &SmolStr) -> bool {
         self.shape_functions.contains(name)
+    }
+
+    fn is_region(&self, name: &SmolStr) -> bool {
+        self.region_functions.contains(name)
     }
 }
 
@@ -3703,6 +3798,96 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
+            SmolStr::new("distance_world"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("capture"), portable_named_type("RegionCapture")),
+                    (SmolStr::new("domain"), portable_named_type("SceneDomain")),
+                    (SmolStr::new("point"), Type::Vec3),
+                ],
+                ret: Type::F32,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("normal_world"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("capture"), portable_named_type("RegionCapture")),
+                    (SmolStr::new("domain"), portable_named_type("SceneDomain")),
+                    (SmolStr::new("point"), Type::Vec3),
+                ],
+                ret: Type::Vec3,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("trace_world"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("capture"), portable_named_type("RegionCapture")),
+                    (SmolStr::new("domain"), portable_named_type("SceneDomain")),
+                    (SmolStr::new("origin"), Type::Vec3),
+                    (SmolStr::new("direction"), Type::Vec3),
+                    (SmolStr::new("max_distance"), Type::F32),
+                    (SmolStr::new("min_step"), Type::F32),
+                    (SmolStr::new("hit_epsilon"), Type::F32),
+                    (SmolStr::new("max_steps"), Type::Integer),
+                ],
+                ret: portable_named_type("Hit3"),
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("surface_world"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("capture"), portable_named_type("RegionCapture")),
+                    (SmolStr::new("domain"), portable_named_type("SceneDomain")),
+                    (SmolStr::new("hit"), portable_named_type("Hit3")),
+                ],
+                ret: portable_named_type("Surface"),
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("radiance_world"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("capture"), portable_named_type("RegionCapture")),
+                    (SmolStr::new("domain"), portable_named_type("SceneDomain")),
+                    (SmolStr::new("point"), Type::Vec3),
+                    (SmolStr::new("direction"), Type::Vec3),
+                ],
+                ret: Type::Vec3,
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("medium_world"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("capture"), portable_named_type("RegionCapture")),
+                    (SmolStr::new("domain"), portable_named_type("SceneDomain")),
+                    (SmolStr::new("point"), Type::Vec3),
+                ],
+                ret: portable_named_type("Medium"),
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
             SmolStr::new("trace_shape_batch"),
             FunctionSig {
                 params: vec![
@@ -3907,6 +4092,7 @@ struct TypeContext {
     type_params: Vec<HashSet<SmolStr>>,
     info: Option<*mut FunctionTypeInfo>,
     function_lane: FunctionLane,
+    function_role: FunctionRole,
     function_name: SmolStr,
 }
 
@@ -3917,12 +4103,17 @@ impl TypeContext {
             type_params: Vec::new(),
             info: Some(info as *mut FunctionTypeInfo),
             function_lane: FunctionLane::Host,
+            function_role: FunctionRole::Function,
             function_name: SmolStr::new(""),
         }
     }
 
     fn set_function_lane(&mut self, lane: FunctionLane) {
         self.function_lane = lane;
+    }
+
+    fn set_function_role(&mut self, role: FunctionRole) {
+        self.function_role = role;
     }
 
     fn set_function_name(&mut self, name: SmolStr) {
@@ -3939,6 +4130,10 @@ impl TypeContext {
         } else {
             self.function_name.clone()
         }
+    }
+
+    fn current_function_role(&self) -> FunctionRole {
+        self.function_role
     }
 
     fn enter_scope(&mut self) {
