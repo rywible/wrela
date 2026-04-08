@@ -291,7 +291,7 @@ pub struct ShapeLeafScene {
     pub material: SmolStr,
     pub radiance: Option<SmolStr>,
     pub volume: Option<SmolStr>,
-    pub feature_id: u64,
+    pub feature_id: u32,
     pub field_semantics: DistanceSemantics,
     pub opaque_boundary: bool,
 }
@@ -1489,13 +1489,13 @@ material shade(hit: Hit3) -> Surface {
 shape sphere_shape {
     field = sphere_field
     material = shade
-    payload = Payload(entity_id=u64(1), material_id=u64(1), actor=ActorHandle(id=u64(1), generation=u32(0)))
+    payload = Payload(entity_id=u32(1), material_id=u32(1), actor=ActorHandle(id=u32(1), generation=u32(0)))
 }
 
 shape opaque_shape {
     field = opaque_field
     material = shade
-    payload = Payload(entity_id=u64(2), material_id=u64(2), actor=ActorHandle(id=u64(2), generation=u32(0)))
+    payload = Payload(entity_id=u32(2), material_id=u32(2), actor=ActorHandle(id=u32(2), generation=u32(0)))
 }
 
 shape scene_shape {
@@ -1544,7 +1544,7 @@ material shade(hit: Hit3) -> Surface {
 shape opaque_shape {
     field = opaque_field
     material = shade
-    payload = Payload(entity_id=u64(2), material_id=u64(2), actor=ActorHandle(id=u64(2), generation=u32(0)))
+    payload = Payload(entity_id=u32(2), material_id=u32(2), actor=ActorHandle(id=u32(2), generation=u32(0)))
 }
 "#;
         let module = lower_inline_module_from_source(source);
@@ -1835,13 +1835,13 @@ material shade(hit: Hit3) -> Surface {
 shape left_shape {
     field = left_field
     material = shade
-    payload = Payload(entity_id=u64(1), material_id=u64(1), actor=ActorHandle(id=u64(1), generation=u32(0)))
+    payload = Payload(entity_id=u32(1), material_id=u32(1), actor=ActorHandle(id=u32(1), generation=u32(0)))
 }
 
 shape right_shape {
     field = right_field
     material = shade
-    payload = Payload(entity_id=u64(2), material_id=u64(2), actor=ActorHandle(id=u64(2), generation=u32(0)))
+    payload = Payload(entity_id=u32(2), material_id=u32(2), actor=ActorHandle(id=u32(2), generation=u32(0)))
 }
 
 shape union_shape {

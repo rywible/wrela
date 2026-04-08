@@ -4,6 +4,10 @@ use crate::mir::ir::{
     AllocKind, CallKind, CallTarget, MirFunction, MirModule, MirType, Place, PortableAbiType,
     PortableStructField, Rvalue, Stmt, Terminator, Value,
 };
+use crate::portable::{
+    align_to_u32 as shared_align_to_u32, portable_abi_field_offset as shared_field_offset,
+    portable_abi_lane_offset as shared_lane_offset, portable_abi_layout as shared_portable_layout,
+};
 use cranelift_codegen::ir::{
     AbiParam, Function, InstBuilder, MemFlags, Signature, StackSlotData, StackSlotKind, types,
 };
@@ -52,8 +56,6 @@ enum PortableLaneKind {
     Bool,
     I32,
     U32,
-    I64,
-    U64,
     F32,
 }
 
@@ -369,9 +371,20 @@ pub fn compile_to_object(mir: &MirModule) -> Result<Vec<u8>, CodegenError> {
             &method_wrappers,
             &mir.classes,
         )?;
-        module
-            .define_function(*func_id, &mut ctx)
-            .map_err(|err| CodegenError(format!("define_function failed: {err}")))?;
+        if let Err(err) = cranelift_codegen::verify_function(&ctx.func, module.isa()) {
+            return Err(CodegenError(format!(
+                "verify_function failed for {}: {err}\n{}",
+                func.name,
+                ctx.func.display()
+            )));
+        }
+        module.define_function(*func_id, &mut ctx).map_err(|err| {
+            CodegenError(format!(
+                "define_function failed for {}: {err}\n{}",
+                func.name,
+                ctx.func.display()
+            ))
+        })?;
     }
 
     if std::env::var("WRELA_CODEGEN_DEBUG").is_ok() {
@@ -1869,8 +1882,22 @@ fn lower_rvalue(
                                     })?;
                                 let case_callee =
                                     module.declare_func_in_func(case_func_id, builder.func);
-                                let case_call = builder.ins().call(case_callee, &call_args);
-                                let case_result = builder.inst_results(case_call)[0];
+                                let case_result = if let Some((param_abis, ret_abi)) =
+                                    function_abis.get(func_name).cloned()
+                                {
+                                    emit_portable_function_call(
+                                        builder,
+                                        module,
+                                        runtime,
+                                        case_callee,
+                                        &call_args,
+                                        &param_abis,
+                                        &ret_abi,
+                                    )?
+                                } else {
+                                    let case_call = builder.ins().call(case_callee, &call_args);
+                                    builder.inst_results(case_call)[0]
+                                };
                                 builder.ins().jump(result_block, &[case_result]);
                             }
 
@@ -1883,8 +1910,22 @@ fn lower_rvalue(
                             })?;
                             let fallback_callee =
                                 module.declare_func_in_func(fallback_id, builder.func);
-                            let fallback_call = builder.ins().call(fallback_callee, &call_args);
-                            let fallback_result = builder.inst_results(fallback_call)[0];
+                            let fallback_result = if let Some((param_abis, ret_abi)) =
+                                function_abis.get(fallback).cloned()
+                            {
+                                emit_portable_function_call(
+                                    builder,
+                                    module,
+                                    runtime,
+                                    fallback_callee,
+                                    &call_args,
+                                    &param_abis,
+                                    &ret_abi,
+                                )?
+                            } else {
+                                let fallback_call = builder.ins().call(fallback_callee, &call_args);
+                                builder.inst_results(fallback_call)[0]
+                            };
                             builder.ins().jump(result_block, &[fallback_result]);
 
                             builder.switch_to_block(result_block);
@@ -2211,8 +2252,6 @@ fn portable_abi_scalar_kind(abi: &PortableAbiType) -> Option<PortableLaneKind> {
         PortableAbiType::Bool => Some(PortableLaneKind::Bool),
         PortableAbiType::I32 => Some(PortableLaneKind::I32),
         PortableAbiType::U32 => Some(PortableLaneKind::U32),
-        PortableAbiType::I64 => Some(PortableLaneKind::I64),
-        PortableAbiType::U64 => Some(PortableLaneKind::U64),
         PortableAbiType::F32 => Some(PortableLaneKind::F32),
         _ => None,
     }
@@ -2220,9 +2259,7 @@ fn portable_abi_scalar_kind(abi: &PortableAbiType) -> Option<PortableLaneKind> {
 
 fn portable_lane_clif_type(kind: PortableLaneKind) -> cranelift_codegen::ir::Type {
     match kind {
-        PortableLaneKind::Bool => types::I8,
-        PortableLaneKind::I32 | PortableLaneKind::U32 => types::I32,
-        PortableLaneKind::I64 | PortableLaneKind::U64 => types::I64,
+        PortableLaneKind::Bool | PortableLaneKind::I32 | PortableLaneKind::U32 => types::I32,
         PortableLaneKind::F32 => types::F32,
     }
 }
@@ -2275,8 +2312,6 @@ fn portable_abi_collect_param_types(
         PortableAbiType::Bool
         | PortableAbiType::I32
         | PortableAbiType::U32
-        | PortableAbiType::I64
-        | PortableAbiType::U64
         | PortableAbiType::F32 => unreachable!(),
     }
 }
@@ -2287,8 +2322,6 @@ fn portable_abi_lane_count(abi: &PortableAbiType) -> usize {
         | PortableAbiType::Bool
         | PortableAbiType::I32
         | PortableAbiType::U32
-        | PortableAbiType::I64
-        | PortableAbiType::U64
         | PortableAbiType::F32 => 1,
         PortableAbiType::Vec2 => 2,
         PortableAbiType::Vec3 => 3,
@@ -2304,56 +2337,12 @@ fn portable_abi_lane_count(abi: &PortableAbiType) -> usize {
 }
 
 fn portable_abi_layout(abi: &PortableAbiType) -> (u32, u32) {
-    match abi {
-        PortableAbiType::Bool => (1, 1),
-        PortableAbiType::I32 | PortableAbiType::U32 | PortableAbiType::F32 => (4, 4),
-        PortableAbiType::I64 | PortableAbiType::U64 => (8, 8),
-        PortableAbiType::Vec2 => portable_fixed_array_layout(4, 4, 2),
-        PortableAbiType::Vec3 => portable_fixed_array_layout(4, 4, 3),
-        PortableAbiType::Vec4 | PortableAbiType::Quat => portable_fixed_array_layout(4, 4, 4),
-        PortableAbiType::Mat3 => portable_fixed_array_layout(4, 4, 9),
-        PortableAbiType::Mat4 => portable_fixed_array_layout(4, 4, 16),
-        PortableAbiType::Array(inner, len) => {
-            let (size, align) = portable_abi_layout(inner);
-            portable_fixed_array_layout(size, align, *len)
-        }
-        PortableAbiType::Struct { fields, .. } => {
-            let mut offset = 0;
-            let mut max_align = 1;
-            for field in fields {
-                let (field_size, field_align) = portable_abi_layout(&field.ty);
-                max_align = max_align.max(field_align);
-                offset = align_to_u32(offset, field_align);
-                offset += field_size;
-            }
-            (align_to_u32(offset, max_align).max(1), max_align.max(1))
-        }
-        PortableAbiType::Value => (8, 8),
-    }
-}
-
-fn portable_fixed_array_layout(item_size: u32, item_align: u32, len: usize) -> (u32, u32) {
-    let stride = align_to_u32(item_size, item_align);
-    if len == 0 {
-        (0, item_align.max(1))
-    } else {
-        (
-            stride.saturating_mul(len.saturating_sub(1) as u32) + item_size,
-            item_align.max(1),
-        )
-    }
+    let layout = shared_portable_layout(abi);
+    (layout.size, layout.align)
 }
 
 fn align_to_u32(offset: u32, align: u32) -> u32 {
-    if align <= 1 {
-        return offset;
-    }
-    let rem = offset % align;
-    if rem == 0 {
-        offset
-    } else {
-        offset + (align - rem)
-    }
+    shared_align_to_u32(offset, align)
 }
 
 fn align_shift_for_bytes(align: u32) -> u8 {
@@ -2361,18 +2350,7 @@ fn align_shift_for_bytes(align: u32) -> u8 {
 }
 
 fn field_offset(fields: &[PortableStructField], index: usize) -> u32 {
-    let mut offset = 0;
-    for field in fields.iter().take(index) {
-        let (size, align) = portable_abi_layout(&field.ty);
-        offset = align_to_u32(offset, align);
-        offset += size;
-    }
-    if let Some(field) = fields.get(index) {
-        let (_, align) = portable_abi_layout(&field.ty);
-        align_to_u32(offset, align)
-    } else {
-        offset
-    }
+    shared_field_offset(fields, index)
 }
 
 fn tagged_index_value(
@@ -2415,7 +2393,6 @@ fn box_scalar_lane_to_value(
             let widened = builder.ins().uextend(types::I64, lane);
             tag_int(builder, module, runtime, widened)
         }
-        PortableLaneKind::I64 | PortableLaneKind::U64 => tag_int(builder, module, runtime, lane),
         PortableLaneKind::F32 => boxed_float_from_f32_lane(builder, module, runtime, lane),
     }
 }
@@ -2434,11 +2411,7 @@ fn lower_value_to_scalar_lane(
     match kind {
         PortableLaneKind::Bool => {
             let raw = untag_bool(builder, value);
-            Ok(if ty == types::I8 {
-                builder.ins().ireduce(types::I8, raw)
-            } else {
-                raw
-            })
+            Ok(builder.ins().ireduce(ty, raw))
         }
         PortableLaneKind::I32 => {
             let cast_id = runtime_fn_cast_i32(module, runtime)?;
@@ -2456,7 +2429,6 @@ fn lower_value_to_scalar_lane(
             let raw = untag_int(builder, module, runtime, casted)?;
             Ok(builder.ins().ireduce(ty, raw))
         }
-        PortableLaneKind::I64 | PortableLaneKind::U64 => untag_int(builder, module, runtime, value),
         PortableLaneKind::F32 => {
             let cast_id = runtime_fn_cast_f32(module, runtime)?;
             let cast_callee = module.declare_func_in_func(cast_id, builder.func);
@@ -2622,8 +2594,6 @@ fn box_portable_param_inner(
         | PortableAbiType::Bool
         | PortableAbiType::I32
         | PortableAbiType::U32
-        | PortableAbiType::I64
-        | PortableAbiType::U64
         | PortableAbiType::F32 => unreachable!(),
     }
 }
@@ -2761,8 +2731,6 @@ fn append_portable_call_arg_lanes(
         | PortableAbiType::Bool
         | PortableAbiType::I32
         | PortableAbiType::U32
-        | PortableAbiType::I64
-        | PortableAbiType::U64
         | PortableAbiType::F32 => {}
     }
     Ok(())
@@ -2845,11 +2813,12 @@ fn load_portable_aggregate_from_memory(
             let lane_count = portable_abi_lane_count(abi);
             let mut lanes = Vec::with_capacity(lane_count);
             for idx in 0..lane_count {
+                let lane_offset = shared_lane_offset(abi, idx).unwrap_or(idx as u32 * 4);
                 lanes.push(load_scalar_from_memory(
                     builder,
                     ptr,
                     PortableLaneKind::F32,
-                    offset + (idx as u32 * 4),
+                    offset + lane_offset,
                 ));
             }
             box_portable_param(builder, module, runtime, abi, &lanes, 0)
@@ -2858,11 +2827,12 @@ fn load_portable_aggregate_from_memory(
             let lane_count = portable_abi_lane_count(abi);
             let mut lanes = Vec::with_capacity(lane_count);
             for idx in 0..lane_count {
+                let lane_offset = shared_lane_offset(abi, idx).unwrap_or(idx as u32 * 4);
                 lanes.push(load_scalar_from_memory(
                     builder,
                     ptr,
                     PortableLaneKind::F32,
-                    offset + (idx as u32 * 4),
+                    offset + lane_offset,
                 ));
             }
             box_portable_param(builder, module, runtime, abi, &lanes, 0)
@@ -2934,8 +2904,6 @@ fn load_portable_aggregate_from_memory(
         PortableAbiType::Bool
         | PortableAbiType::I32
         | PortableAbiType::U32
-        | PortableAbiType::I64
-        | PortableAbiType::U64
         | PortableAbiType::F32 => unreachable!(),
     }
 }
@@ -2995,7 +2963,7 @@ fn store_value_to_portable_aggregate(
                     ptr,
                     lane,
                     PortableLaneKind::F32,
-                    offset + (idx as u32 * 4),
+                    offset + shared_lane_offset(abi, idx).unwrap_or(idx as u32 * 4),
                 );
             }
         }
@@ -3015,7 +2983,7 @@ fn store_value_to_portable_aggregate(
                     ptr,
                     lane,
                     PortableLaneKind::F32,
-                    offset + (idx as u32 * 4),
+                    offset + shared_lane_offset(abi, idx).unwrap_or(idx as u32 * 4),
                 );
             }
         }
@@ -3057,8 +3025,6 @@ fn store_value_to_portable_aggregate(
         PortableAbiType::Bool
         | PortableAbiType::I32
         | PortableAbiType::U32
-        | PortableAbiType::I64
-        | PortableAbiType::U64
         | PortableAbiType::F32 => unreachable!(),
     }
     Ok(())

@@ -417,7 +417,7 @@ pub struct ShapeLeaf {
     pub radiance: Option<SmolStr>,
     pub volume: Option<SmolStr>,
     pub payload: Body,
-    pub feature_id: u64,
+    pub feature_id: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -60,7 +60,7 @@ pub enum DispatchBackend {
 }
 
 impl DispatchBackend {
-    pub fn from_id(id: i64) -> Option<Self> {
+    pub fn from_id(id: i32) -> Option<Self> {
         match id {
             0 => Some(Cpu),
             1 => Some(VirtualGpu),

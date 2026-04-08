@@ -1254,21 +1254,23 @@ fn vec3_cross(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
     ]
 }
 
-const IDENTITY_HASH_OFFSET: u64 = 0xcbf29ce484222325;
-const IDENTITY_HASH_PRIME: u64 = 0x100000001b3;
+const IDENTITY_HASH_OFFSET: u32 = 0x811c9dc5;
+const IDENTITY_HASH_PRIME: u32 = 0x0100_0193;
 
-fn hash_identity_i64(hash: u64, value: i64) -> u64 {
+fn hash_identity_i64(hash: u32, value: i64) -> u32 {
     let zigzag = ((value << 1) ^ (value >> 63)) as u64;
-    (hash ^ zigzag).wrapping_mul(IDENTITY_HASH_PRIME)
+    let lo = zigzag as u32;
+    let hi = (zigzag >> 32) as u32;
+    let mixed_lo = (hash ^ lo).wrapping_mul(IDENTITY_HASH_PRIME);
+    (mixed_lo ^ hi).wrapping_mul(IDENTITY_HASH_PRIME)
 }
 
-fn hash_identity_f32(hash: u64, value: f32) -> u64 {
-    (hash ^ u64::from(value.to_bits())).wrapping_mul(IDENTITY_HASH_PRIME)
+fn hash_identity_f32(hash: u32, value: f32) -> u32 {
+    (hash ^ value.to_bits()).wrapping_mul(IDENTITY_HASH_PRIME)
 }
 
-fn finalize_identity_hash(hash: u64) -> Value {
-    let masked = (hash & (i64::MAX as u64)).max(1);
-    Value::from_int(masked as i64)
+fn finalize_identity_hash(hash: u32) -> Value {
+    Value::from_int(hash.max(1) as i64)
 }
 
 fn repeat_axis(coord: f32, period: f32) -> f32 {

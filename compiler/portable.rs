@@ -1,10 +1,17 @@
+pub mod abi;
+
+pub use abi::{
+    PortableAbiLayout, PortableAbiType, PortableStructField, align_to_u32,
+    portable_abi_array_stride, portable_abi_field_offset, portable_abi_lane_offset,
+    portable_abi_layout,
+};
+use smol_str::SmolStr;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PortableBuiltinAtom {
     Bool,
     I32,
     U32,
-    I64,
-    U64,
     F32,
     Vec2,
     Vec3,
@@ -91,7 +98,7 @@ const OCCLUSION_RESULT_FIELDS: &[PortableBuiltinField] = &[
     },
     PortableBuiltinField {
         name: "steps",
-        ty: TyAtom(Atom::I64),
+        ty: TyAtom(Atom::I32),
     },
 ];
 
@@ -109,21 +116,21 @@ const TRANSFORM3_FIELDS: &[PortableBuiltinField] = &[
 const SCENE_CAPTURE_FIELDS: &[PortableBuiltinField] = &[
     PortableBuiltinField {
         name: "scene_id",
-        ty: TyAtom(Atom::U64),
+        ty: TyAtom(Atom::U32),
     },
     PortableBuiltinField {
         name: "epoch",
-        ty: TyAtom(Atom::U64),
+        ty: TyAtom(Atom::U32),
     },
     PortableBuiltinField {
         name: "root_feature_id",
-        ty: TyAtom(Atom::U64),
+        ty: TyAtom(Atom::U32),
     },
 ];
 
 const DISPATCH_BACKEND_FIELDS: &[PortableBuiltinField] = &[PortableBuiltinField {
     name: "id",
-    ty: TyAtom(Atom::I64),
+    ty: TyAtom(Atom::I32),
 }];
 
 const TRACE_QUERY_FIELDS: &[PortableBuiltinField] = &[
@@ -153,7 +160,7 @@ const TRACE_QUERY_FIELDS: &[PortableBuiltinField] = &[
     },
     PortableBuiltinField {
         name: "max_steps",
-        ty: TyAtom(Atom::I64),
+        ty: TyAtom(Atom::I32),
     },
 ];
 
@@ -196,7 +203,7 @@ const RAY_QUERY_FIELDS: &[PortableBuiltinField] = &[
     },
     PortableBuiltinField {
         name: "max_steps",
-        ty: TyAtom(Atom::I64),
+        ty: TyAtom(Atom::I32),
     },
 ];
 
@@ -249,7 +256,7 @@ const MEDIUM_FIELDS: &[PortableBuiltinField] = &[
 const ACTOR_HANDLE_FIELDS: &[PortableBuiltinField] = &[
     PortableBuiltinField {
         name: "id",
-        ty: TyAtom(Atom::U64),
+        ty: TyAtom(Atom::U32),
     },
     PortableBuiltinField {
         name: "generation",
@@ -260,11 +267,11 @@ const ACTOR_HANDLE_FIELDS: &[PortableBuiltinField] = &[
 const PAYLOAD_FIELDS: &[PortableBuiltinField] = &[
     PortableBuiltinField {
         name: "entity_id",
-        ty: TyAtom(Atom::U64),
+        ty: TyAtom(Atom::U32),
     },
     PortableBuiltinField {
         name: "material_id",
-        ty: TyAtom(Atom::U64),
+        ty: TyAtom(Atom::U32),
     },
     PortableBuiltinField {
         name: "actor",
@@ -303,23 +310,23 @@ const HIT3_FIELDS: &[PortableBuiltinField] = &[
     },
     PortableBuiltinField {
         name: "steps",
-        ty: TyAtom(Atom::I64),
+        ty: TyAtom(Atom::I32),
     },
     PortableBuiltinField {
         name: "feature_id",
-        ty: TyAtom(Atom::U64),
+        ty: TyAtom(Atom::U32),
     },
     PortableBuiltinField {
         name: "instance_id",
-        ty: TyAtom(Atom::U64),
+        ty: TyAtom(Atom::U32),
     },
     PortableBuiltinField {
         name: "repeat_id",
-        ty: TyAtom(Atom::U64),
+        ty: TyAtom(Atom::U32),
     },
     PortableBuiltinField {
         name: "root_shape_id",
-        ty: TyAtom(Atom::U64),
+        ty: TyAtom(Atom::U32),
     },
     PortableBuiltinField {
         name: "payload",
@@ -437,11 +444,11 @@ const BUILTIN_RECORDS: &[PortableBuiltinRecord] = &[
         fields: &[
             PortableBuiltinField {
                 name: "scene_id",
-                ty: TyAtom(Atom::U64),
+                ty: TyAtom(Atom::U32),
             },
             PortableBuiltinField {
                 name: "geometry_detail",
-                ty: TyAtom(Atom::I64),
+                ty: TyAtom(Atom::I32),
             },
             PortableBuiltinField {
                 name: "material",
@@ -469,7 +476,7 @@ const BUILTIN_RECORDS: &[PortableBuiltinRecord] = &[
             },
             PortableBuiltinField {
                 name: "max_steps",
-                ty: TyAtom(Atom::I64),
+                ty: TyAtom(Atom::I32),
             },
         ],
     },
@@ -699,4 +706,45 @@ pub fn is_builtin_helper_function(name: &str) -> bool {
 
 pub fn is_builtin_field_primitive_function(name: &str) -> bool {
     BUILTIN_FIELD_PRIMITIVE_FUNCTIONS.contains(&name)
+}
+
+pub fn portable_builtin_type_abi(ty: PortableBuiltinType) -> Option<PortableAbiType> {
+    match ty {
+        PortableBuiltinType::Atom(atom) => Some(match atom {
+            PortableBuiltinAtom::Bool => PortableAbiType::Bool,
+            PortableBuiltinAtom::I32 => PortableAbiType::I32,
+            PortableBuiltinAtom::U32 => PortableAbiType::U32,
+            PortableBuiltinAtom::F32 => PortableAbiType::F32,
+            PortableBuiltinAtom::Vec2 => PortableAbiType::Vec2,
+            PortableBuiltinAtom::Vec3 => PortableAbiType::Vec3,
+            PortableBuiltinAtom::Vec4 => PortableAbiType::Vec4,
+            PortableBuiltinAtom::Mat3 => PortableAbiType::Mat3,
+            PortableBuiltinAtom::Mat4 => PortableAbiType::Mat4,
+            PortableBuiltinAtom::Quat => PortableAbiType::Quat,
+        }),
+        PortableBuiltinType::Named(name) => portable_builtin_record_abi(name),
+    }
+}
+
+pub fn portable_builtin_record_abi(name: &str) -> Option<PortableAbiType> {
+    let class_id = u32::try_from(
+        BUILTIN_RECORDS
+            .iter()
+            .position(|record| record.name == name)?
+            .saturating_add(1),
+    )
+    .ok()?;
+    let record = builtin_record(name)?;
+    let mut fields = Vec::with_capacity(record.fields.len());
+    for field in record.fields {
+        fields.push(PortableStructField {
+            name: SmolStr::new(field.name),
+            ty: portable_builtin_type_abi(field.ty)?,
+        });
+    }
+    Some(PortableAbiType::Struct {
+        name: SmolStr::new(record.name),
+        class_id,
+        fields,
+    })
 }

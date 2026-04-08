@@ -91,9 +91,9 @@ shape sphere_shape {
     field = sphere_field
     material = shade
     payload = Payload(
-        entity_id=u64(1),
-        material_id=u64(1),
-        actor=ActorHandle(id=u64(1), generation=u32(0))
+        entity_id=u32(1),
+        material_id=u32(1),
+        actor=ActorHandle(id=u32(1), generation=u32(0))
     )
 }
 
@@ -101,9 +101,9 @@ shape opaque_shape {
     field = opaque_field
     material = shade
     payload = Payload(
-        entity_id=u64(2),
-        material_id=u64(2),
-        actor=ActorHandle(id=u64(2), generation=u32(0))
+        entity_id=u32(2),
+        material_id=u32(2),
+        actor=ActorHandle(id=u32(2), generation=u32(0))
     )
 }
 
@@ -220,9 +220,9 @@ shape scene_shape {
     field = sphere_field
     material = shade
     payload = Payload(
-        entity_id=u64(11),
-        material_id=u64(11),
-        actor=ActorHandle(id=u64(11), generation=u32(0))
+        entity_id=u32(11),
+        material_id=u32(11),
+        actor=ActorHandle(id=u32(11), generation=u32(0))
     )
 }
 
@@ -528,9 +528,9 @@ shape near_shape {
     field = near_field
     material = shade
     payload = Payload(
-        entity_id=u64(1),
-        material_id=u64(1),
-        actor=ActorHandle(id=u64(1), generation=u32(0))
+        entity_id=u32(1),
+        material_id=u32(1),
+        actor=ActorHandle(id=u32(1), generation=u32(0))
     )
 }
 
@@ -538,9 +538,9 @@ shape far_semantic_shape {
     field = far_semantic
     material = shade
     payload = Payload(
-        entity_id=u64(2),
-        material_id=u64(2),
-        actor=ActorHandle(id=u64(2), generation=u32(0))
+        entity_id=u32(2),
+        material_id=u32(2),
+        actor=ActorHandle(id=u32(2), generation=u32(0))
     )
 }
 
@@ -548,9 +548,9 @@ shape far_opaque_shape {
     field = far_opaque
     material = shade
     payload = Payload(
-        entity_id=u64(3),
-        material_id=u64(3),
-        actor=ActorHandle(id=u64(3), generation=u32(0))
+        entity_id=u32(3),
+        material_id=u32(3),
+        actor=ActorHandle(id=u32(3), generation=u32(0))
     )
 }
 

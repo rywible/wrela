@@ -523,14 +523,14 @@ kernel fn portable_entry() -> QueryBatchProbe {
         local_normal=vec3(0.0, 0.0, 1.0),
         shading_frame=transform3_identity(),
         steps=12,
-        feature_id=u64(7),
-        instance_id=u64(11),
-        repeat_id=u64(21),
-        root_shape_id=u64(99),
+        feature_id=u32(7),
+        instance_id=u32(11),
+        repeat_id=u32(21),
+        root_shape_id=u32(99),
         payload=Payload(
-            entity_id=u64(7),
-            material_id=u64(9),
-            actor=ActorHandle(id=u64(1), generation=u32(0))
+            entity_id=u32(7),
+            material_id=u32(9),
+            actor=ActorHandle(id=u32(1), generation=u32(0))
         )
     )
     hit1 = Hit3(
@@ -542,14 +542,14 @@ kernel fn portable_entry() -> QueryBatchProbe {
         local_normal=vec3(0.0, 0.0, 1.0),
         shading_frame=transform3_identity(),
         steps=13,
-        feature_id=u64(8),
-        instance_id=u64(12),
-        repeat_id=u64(22),
-        root_shape_id=u64(99),
+        feature_id=u32(8),
+        instance_id=u32(12),
+        repeat_id=u32(22),
+        root_shape_id=u32(99),
         payload=Payload(
-            entity_id=u64(7),
-            material_id=u64(9),
-            actor=ActorHandle(id=u64(1), generation=u32(0))
+            entity_id=u32(7),
+            material_id=u32(9),
+            actor=ActorHandle(id=u32(1), generation=u32(0))
         )
     )
     hits = HitBatch(h0=hit0, h1=hit1)
@@ -647,10 +647,10 @@ kernel fn portable_entry() -> QueryBatchProbe {
     assert_eq!(distances.field("d2"), Some(&pir::PirValue::F32(-0.5)));
     assert_eq!(hit0.field("hit"), Some(&pir::PirValue::Bool(true)));
     assert_eq!(hit1.field("hit"), Some(&pir::PirValue::Bool(true)));
-    assert_eq!(hit0.field("feature_id"), Some(&pir::PirValue::U64(7)));
-    assert_eq!(hit1.field("feature_id"), Some(&pir::PirValue::U64(8)));
-    assert_eq!(hit0.field("instance_id"), Some(&pir::PirValue::U64(11)));
-    assert_eq!(hit1.field("repeat_id"), Some(&pir::PirValue::U64(22)));
+    assert_eq!(hit0.field("feature_id"), Some(&pir::PirValue::U32(7)));
+    assert_eq!(hit1.field("feature_id"), Some(&pir::PirValue::U32(8)));
+    assert_eq!(hit0.field("instance_id"), Some(&pir::PirValue::U32(11)));
+    assert_eq!(hit1.field("repeat_id"), Some(&pir::PirValue::U32(22)));
     assert_eq!(
         surface0.field("albedo"),
         Some(&pir::PirValue::Vec3([1.0, 0.0, 0.0]))
@@ -667,10 +667,10 @@ value TraceProbe {
 }
 
 kernel fn portable_entry() -> TraceProbe {
-    handle = ActorHandle(id=u64(1), generation=u32(0))
+    handle = ActorHandle(id=u32(1), generation=u32(0))
     payload = Payload(
-        entity_id=u64(77),
-        material_id=u64(99),
+        entity_id=u32(77),
+        material_id=u32(99),
         actor=handle
     )
     hit = Hit3(
@@ -682,10 +682,10 @@ kernel fn portable_entry() -> TraceProbe {
         local_normal=vec3(0.0, 0.0, 1.0),
         shading_frame=transform3_identity(),
         steps=12,
-        feature_id=u64(305419896),
-        instance_id=u64(17),
-        repeat_id=u64(23),
-        root_shape_id=u64(77),
+        feature_id=u32(305419896),
+        instance_id=u32(17),
+        repeat_id=u32(23),
+        root_shape_id=u32(77),
         payload=payload
     )
     return TraceProbe(hit=hit)
@@ -703,14 +703,14 @@ kernel fn portable_entry() -> TraceProbe {
         pir::PirValue::Struct(value) => value,
         other => panic!("expected Hit3 struct, got {other:?}"),
     };
-    assert_ne!(hit.field("feature_id"), Some(&pir::PirValue::U64(0)));
+    assert_ne!(hit.field("feature_id"), Some(&pir::PirValue::U32(0)));
 
     assert_eq!(
         hit.field("feature_id"),
-        Some(&pir::PirValue::U64(305419896))
+        Some(&pir::PirValue::U32(305419896))
     );
-    assert_eq!(hit.field("instance_id"), Some(&pir::PirValue::U64(17)));
-    assert_eq!(hit.field("repeat_id"), Some(&pir::PirValue::U64(23)));
+    assert_eq!(hit.field("instance_id"), Some(&pir::PirValue::U32(17)));
+    assert_eq!(hit.field("repeat_id"), Some(&pir::PirValue::U32(23)));
 }
 
 #[test]
@@ -894,7 +894,7 @@ field exact distance phase7_shell(p: Vec3) -> F32 {
     sphere(radius = 0.45)
 }
 
-radiance field phase7_radiance(p: Vec3, direction: Vec3, feature_id: U64) -> Vec3 {
+radiance field phase7_radiance(p: Vec3, direction: Vec3, feature_id: U32) -> Vec3 {
     return vec3(0.25, 0.5, 0.75)
         + direction * 0.0
         + p * 0.0
@@ -927,9 +927,9 @@ shape phase7_scene_shape {
     radiance = phase7_radiance
     volume = phase7_volume
     payload = Payload(
-        entity_id=u64(901),
-        material_id=u64(901),
-        actor=ActorHandle(id=u64(901), generation=u32(0))
+        entity_id=u32(901),
+        material_id=u32(901),
+        actor=ActorHandle(id=u32(901), generation=u32(0))
     )
 }
 "#;
@@ -955,7 +955,7 @@ value Phase7Probe {
     surface: Surface
 }
 
-radiance field phase7_radiance(p: Vec3, direction: Vec3, feature_id: U64) -> Vec3 {
+radiance field phase7_radiance(p: Vec3, direction: Vec3, feature_id: U32) -> Vec3 {
     feature_bias = clamp(f32(feature_id), 0.0, 1.0)
     return vec3(0.25, 0.5, 0.75)
         + direction * 0.0
@@ -993,9 +993,9 @@ shape phase7_scene_shape {
     radiance = phase7_radiance
     volume = phase7_volume
     payload = Payload(
-        entity_id=u64(901),
-        material_id=u64(901),
-        actor=ActorHandle(id=u64(901), generation=u32(0))
+        entity_id=u32(901),
+        material_id=u32(901),
+        actor=ActorHandle(id=u32(901), generation=u32(0))
     )
 }
 
@@ -1030,11 +1030,9 @@ kernel fn portable_entry() -> Phase7Probe {
 
     let module = lower_inline_module_from_source(source);
     let (type_errors, _) = hir::typeck::check_module_with_info(&module);
-    assert!(!type_errors.is_empty(), "expected portable-lane rejection");
-    let rendered = format!("{type_errors:?}");
     assert!(
-        rendered.contains("PortableHostCallForbidden"),
-        "expected portable-lane query rejection, got: {rendered}"
+        type_errors.is_empty(),
+        "expected kernel query entry to typecheck, got: {type_errors:?}"
     );
 }
 
@@ -1053,8 +1051,8 @@ value SceneProbe {
 }
 
 kernel fn portable_entry() -> SceneProbe {
-    handle = ActorHandle(id=u64(7), generation=u32(3))
-    payload = Payload(entity_id=u64(7), material_id=u64(11), actor=handle)
+    handle = ActorHandle(id=u32(7), generation=u32(3))
+    payload = Payload(entity_id=u32(7), material_id=u32(11), actor=handle)
     hit = Hit3(
         hit=true,
         distance=f32(4.0),
@@ -1064,10 +1062,10 @@ kernel fn portable_entry() -> SceneProbe {
         local_normal=vec3(0.0, 1.0, 0.0),
         shading_frame=transform3_identity(),
         steps=0,
-        feature_id=u64(0),
-        instance_id=u64(0),
-        repeat_id=u64(0),
-        root_shape_id=u64(123),
+        feature_id=u32(0),
+        instance_id=u32(0),
+        repeat_id=u32(0),
+        root_shape_id=u32(123),
         payload=payload
     )
     surface = Surface(
@@ -1161,7 +1159,7 @@ kernel fn portable_entry() -> SceneProbe {
         pir::PirValue::Struct(value) => value,
         other => panic!("expected ActorHandle struct, got {other:?}"),
     };
-    assert_eq!(actor.field("id"), Some(&pir::PirValue::U64(7)));
+    assert_eq!(actor.field("id"), Some(&pir::PirValue::U32(7)));
     assert_eq!(actor.field("generation"), Some(&pir::PirValue::U32(3)));
 
     let support = match scene.field("support").expect("support") {
@@ -1626,10 +1624,10 @@ value Phase7Probe {
     surface: Surface
 }
 
-radiance field phase7_radiance(p: Vec3, direction: Vec3, feature_id: U64) -> Vec3 {
+radiance field phase7_radiance(p: Vec3, direction: Vec3, feature_id: U32) -> Vec3 {
     sky_t = clamp(0.5 + direction.y * 0.5, 0.0, 1.0)
     mutable feature_bias = 0.0
-    if feature_id != u64(0) {
+    if feature_id != u32(0) {
         feature_bias = 1.0
     }
     return vec3(0.10, 0.18, 0.28) * (1.0 - sky_t)
@@ -1661,9 +1659,9 @@ material phase7_surface(hit: Hit3) -> Surface {
 
 kernel fn portable_entry() -> Phase7Probe {
     payload = Payload(
-        entity_id=u64(901),
-        material_id=u64(901),
-        actor=ActorHandle(id=u64(901), generation=u32(0))
+        entity_id=u32(901),
+        material_id=u32(901),
+        actor=ActorHandle(id=u32(901), generation=u32(0))
     )
     hit = Hit3(
         hit=true,
@@ -1673,11 +1671,11 @@ kernel fn portable_entry() -> Phase7Probe {
         local_position=vec3(0.0, 0.0, 0.45),
         local_normal=vec3(0.0, 0.0, 1.0),
         shading_frame=transform3_identity(),
-        steps=i64(4),
-        feature_id=u64(901),
-        instance_id=u64(0),
-        repeat_id=u64(0),
-        root_shape_id=u64(901),
+        steps=i32(4),
+        feature_id=u32(901),
+        instance_id=u32(0),
+        repeat_id=u32(0),
+        root_shape_id=u32(901),
         payload=payload
     )
     return Phase7Probe(

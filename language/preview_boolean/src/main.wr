@@ -78,7 +78,7 @@ field conservative distance scene(p: Vec3) -> F32 {
     }
 }
 
-radiance field scene_radiance(p: Vec3, direction: Vec3, feature_id: U64) -> Vec3 {
+radiance field scene_radiance(p: Vec3, direction: Vec3, feature_id: U32) -> Vec3 {
     sky_t = clamp(0.5 + direction.y * 0.5, 0.0, 1.0)
     carve = clamp(0.24 - abs(p.x) * 0.18 - abs(p.y) * 0.10, 0.0, 0.24) / 0.24
     return vec3(12.0, 14.0, 22.0) * (1.0 - sky_t)
@@ -142,9 +142,9 @@ shape left_shape {
     radiance = scene_radiance
     volume = scene_volume
     payload = Payload(
-        entity_id=u64(1),
-        material_id=u64(1),
-        actor=ActorHandle(id=u64(1), generation=u32(0))
+        entity_id=u32(1),
+        material_id=u32(1),
+        actor=ActorHandle(id=u32(1), generation=u32(0))
     )
 }
 
@@ -154,9 +154,9 @@ shape right_shape {
     radiance = scene_radiance
     volume = scene_volume
     payload = Payload(
-        entity_id=u64(2),
-        material_id=u64(2),
-        actor=ActorHandle(id=u64(1), generation=u32(0))
+        entity_id=u32(2),
+        material_id=u32(2),
+        actor=ActorHandle(id=u32(1), generation=u32(0))
     )
 }
 
@@ -166,9 +166,9 @@ shape bridge_shape {
     radiance = scene_radiance
     volume = scene_volume
     payload = Payload(
-        entity_id=u64(4),
-        material_id=u64(4),
-        actor=ActorHandle(id=u64(1), generation=u32(0))
+        entity_id=u32(4),
+        material_id=u32(4),
+        actor=ActorHandle(id=u32(1), generation=u32(0))
     )
 }
 
@@ -178,9 +178,9 @@ shape ground_shape {
     radiance = scene_radiance
     volume = scene_volume
     payload = Payload(
-        entity_id=u64(3),
-        material_id=u64(3),
-        actor=ActorHandle(id=u64(1), generation=u32(0))
+        entity_id=u32(3),
+        material_id=u32(3),
+        actor=ActorHandle(id=u32(1), generation=u32(0))
     )
 }
 

@@ -71,8 +71,6 @@ fn portable_builtin_type_to_type(ty: PortableBuiltinType) -> Type {
             PortableBuiltinAtom::Bool => Type::Boolean,
             PortableBuiltinAtom::I32 => Type::I32,
             PortableBuiltinAtom::U32 => Type::U32,
-            PortableBuiltinAtom::I64 => Type::I64,
-            PortableBuiltinAtom::U64 => Type::U64,
             PortableBuiltinAtom::F32 => Type::F32,
             PortableBuiltinAtom::Vec2 => Type::Vec2,
             PortableBuiltinAtom::Vec3 => Type::Vec3,
@@ -2241,6 +2239,7 @@ fn shape_payload_value_expr(body: &Body) -> Option<Idx<Expr>> {
 struct PortableFunctionSets {
     all: HashSet<SmolStr>,
     portable: HashSet<SmolStr>,
+    domains: HashSet<SmolStr>,
     materials: HashSet<SmolStr>,
     radiances: HashSet<SmolStr>,
     volumes: HashSet<SmolStr>,
@@ -2257,6 +2256,7 @@ fn portable_function_sets(module: &Module) -> PortableFunctionSets {
 
     let mut all = HashSet::new();
     let mut portable = HashSet::new();
+    let mut domains = HashSet::new();
     let mut materials = HashSet::new();
     let mut radiances = HashSet::new();
     let mut volumes = HashSet::new();
@@ -2268,6 +2268,9 @@ fn portable_function_sets(module: &Module) -> PortableFunctionSets {
         all.insert(func.name.clone());
         if matches!(func.lane(), FunctionLane::Portable) {
             portable.insert(func.name.clone());
+        }
+        if matches!(func.role, FunctionRole::Domain) {
+            domains.insert(func.name.clone());
         }
         if matches!(func.role, FunctionRole::Material) {
             materials.insert(func.name.clone());
@@ -2288,6 +2291,7 @@ fn portable_function_sets(module: &Module) -> PortableFunctionSets {
     PortableFunctionSets {
         all,
         portable,
+        domains,
         materials,
         radiances,
         volumes,
@@ -3634,7 +3638,7 @@ fn validate_radiance_boundary(func: &Function, errors: &mut Vec<TypeError>) {
     if func.params.is_empty() || func.params.len() > 3 {
         errors.push(TypeError::PortableConstructForbidden {
             function: func.name.clone(),
-            construct: "a radiance field parameter list that is not `(p: Vec3[, direction: Vec3[, feature_id: U64]])`".to_string(),
+            construct: "a radiance field parameter list that is not `(p: Vec3[, direction: Vec3[, feature_id: U32]])`".to_string(),
             span: span_from_option_range(func.name_span),
             help: "Radiance fields currently sample a point, with optional view direction and feature id for stable authored emissive logic.".to_string(),
         });
@@ -3656,7 +3660,7 @@ fn validate_radiance_boundary(func: &Function, errors: &mut Vec<TypeError>) {
                     .and_then(|ty| ty.name_span)
                     .map(span_from_range)
                     .unwrap_or_else(|| span_from_option_range(param.name_span)),
-                help: "Radiance fields currently sample a point as their first argument: `(p: Vec3[, direction: Vec3[, feature_id: U64]]) -> Vec3`.".to_string(),
+                help: "Radiance fields currently sample a point as their first argument: `(p: Vec3[, direction: Vec3[, feature_id: U32]]) -> Vec3`.".to_string(),
             });
         }
     }
@@ -3677,7 +3681,7 @@ fn validate_radiance_boundary(func: &Function, errors: &mut Vec<TypeError>) {
                     .and_then(|ty| ty.name_span)
                     .map(span_from_range)
                     .unwrap_or_else(|| span_from_option_range(param.name_span)),
-                help: "Radiance fields optionally accept a view direction as their second argument: `(p: Vec3, direction: Vec3[, feature_id: U64]) -> Vec3`.".to_string(),
+                help: "Radiance fields optionally accept a view direction as their second argument: `(p: Vec3, direction: Vec3[, feature_id: U32]) -> Vec3`.".to_string(),
             });
         }
     }
@@ -3687,7 +3691,7 @@ fn validate_radiance_boundary(func: &Function, errors: &mut Vec<TypeError>) {
             .as_ref()
             .map(type_from_ref)
             .unwrap_or(Type::Unknown);
-        if found != Type::U64 {
+        if found != Type::U32 {
             errors.push(TypeError::PortableBoundaryTypeForbidden {
                 function: func.name.clone(),
                 site: format!("parameter '{}'", param.name),
@@ -3698,7 +3702,7 @@ fn validate_radiance_boundary(func: &Function, errors: &mut Vec<TypeError>) {
                     .and_then(|ty| ty.name_span)
                     .map(span_from_range)
                     .unwrap_or_else(|| span_from_option_range(param.name_span)),
-                help: "Radiance fields optionally accept the resolved shape feature id as their third argument: `(p: Vec3, direction: Vec3, feature_id: U64) -> Vec3`.".to_string(),
+                help: "Radiance fields optionally accept the resolved shape feature id as their third argument: `(p: Vec3, direction: Vec3, feature_id: U32) -> Vec3`.".to_string(),
             });
         }
     }
@@ -3878,10 +3882,9 @@ fn supports_portable_boundary_type(
         | Type::Boolean
         | Type::I32
         | Type::U32
-        | Type::I64
-        | Type::U64
         | Type::F32
         | Type::Nil => true,
+        Type::I64 | Type::U64 => false,
         Type::Vec2 | Type::Vec3 | Type::Vec4 | Type::Mat3 | Type::Mat4 | Type::Quat => true,
         Type::GpuBuffer(inner) => supports_portable_boundary_type(inner, classes, visiting),
         Type::GpuAtomicI32 | Type::GpuAtomicU32 => true,
@@ -4530,6 +4533,15 @@ fn validate_portable_call(
 ) {
     match &body.exprs[*callee] {
         Expr::Variable(name) => {
+            if is_portable_64_bit_builtin_call(name.as_str()) {
+                errors.push(TypeError::PortableConstructForbidden {
+                    function: function.clone(),
+                    construct: format!("64-bit integer constructor '{}'", name),
+                    span: span_from_range(body.expr_span(expr_id)),
+                    help: "Portable compute is 32-bit only. Use `i32`/`u32` in field, query, material, radiance, volume, and kernel code, and keep 64-bit conversion in host/runtime paths.".to_string(),
+                });
+                return;
+            }
             if let Some(current_field) = current_field {
                 if is_field_safe_builtin_call(name.as_str()) {
                     if matches!(current_field.class, FieldClass::Exact)
@@ -4692,6 +4704,11 @@ fn validate_portable_call(
                 return;
             }
             if functions.portable.contains(name) {
+                return;
+            }
+            if matches!(current_role, FunctionRole::Kernel)
+                && (functions.domains.contains(name) || is_kernel_query_builtin_call(name.as_str()))
+            {
                 return;
             }
             if classes
@@ -4897,6 +4914,10 @@ fn is_portable_safe_builtin_call(name: &str) -> bool {
     )
 }
 
+fn is_portable_64_bit_builtin_call(name: &str) -> bool {
+    matches!(name, "i64" | "u64")
+}
+
 fn is_field_safe_builtin_call(name: &str) -> bool {
     matches!(
         name,
@@ -4992,9 +5013,7 @@ fn is_field_safe_builtin_call(name: &str) -> bool {
             | "reflect"
             | "f32"
             | "i32"
-            | "i64"
             | "u32"
-            | "u64"
     )
 }
 
@@ -5021,6 +5040,33 @@ fn is_host_only_builtin_call(name: &str) -> bool {
                 | "gpu_schedule_workgroup_shuffle"
                 | "gpu_schedule_round_robin_workgroups"
         )
+}
+
+fn is_kernel_query_builtin_call(name: &str) -> bool {
+    matches!(
+        name,
+        "capture"
+            | "distance_at"
+            | "normal_at"
+            | "trace_shape"
+            | "surface_at"
+            | "radiance_at"
+            | "medium_at"
+            | "distance_world"
+            | "normal_world"
+            | "trace_world"
+            | "surface_world"
+            | "radiance_world"
+            | "medium_world"
+            | "trace_shape_batch"
+            | "surface_at_batch"
+            | "occluded_batch"
+            | "distance_at_batch"
+            | "normal_at_batch"
+            | "dispatch_backend_cpu"
+            | "dispatch_backend_virtual_gpu"
+            | "dispatch_backend_auto"
+    )
 }
 
 fn is_field_composition_builtin_call(name: &str) -> bool {

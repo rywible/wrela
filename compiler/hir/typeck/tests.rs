@@ -321,6 +321,50 @@ fn run() -> Nothing {
     }
 
     #[test]
+    fn test_portable_compute_rejects_i64_and_u64_constructors() {
+        let input = r#"kernel fn run_kernel(data: GpuBuffer[I32]) -> Nothing {
+    a = i64(1)
+    b = u64(2)
+    gpu_buffer_set(buffer=data, index=i32(0), value=i32(7))
+    _ = a
+    _ = b
+}
+
+fn run() -> Nothing {
+    data = gpu_buffer_new(length=1, default_value=i32(0))
+    dispatch_compute(
+        kernel=run_kernel,
+        data=data,
+        schedule=gpu_schedule_deterministic(),
+        workgroups_x=u32(1),
+        workgroups_y=u32(1),
+        workgroups_z=u32(1),
+        workgroup_size_x=u32(1),
+        workgroup_size_y=u32(1),
+        workgroup_size_z=u32(1)
+    )
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::PortableConstructForbidden { construct, .. }
+                    if construct.contains("i64")
+            )),
+            "expected i64 rejection, got: {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::PortableConstructForbidden { construct, .. }
+                    if construct.contains("u64")
+            )),
+            "expected u64 rejection, got: {errors:?}"
+        );
+    }
+
+    #[test]
     fn test_host_may_call_portable_helper_shared_with_kernel() {
         let input = r#"kernel fn add_one(value: I32) -> I32 {
     return value + i32(1)
@@ -415,9 +459,9 @@ shape scene_shape {
     field = sphere_field
     material = shade
     payload = Payload(
-        entity_id=u64(1),
-        material_id=u64(2),
-        actor=ActorHandle(id=u64(3), generation=u32(0))
+        entity_id=u32(1),
+        material_id=u32(2),
+        actor=ActorHandle(id=u32(3), generation=u32(0))
     )
 }
 
@@ -457,34 +501,19 @@ fn f() -> Nothing {
     }
 
     #[test]
-    fn test_field_query_builtins_are_rejected_in_portable_lane() {
-        let input = r#"field conservative distance sphere(p: Vec3) -> F32 {
+    fn test_field_query_builtins_are_allowed_in_kernel_lane() {
+        let input = r#"field conservative distance sphere_field(p: Vec3) -> F32 {
     return length(p) - 1.0
 }
 
 kernel fn run_kernel() -> Nothing {
-    scene = capture sphere
+    scene = capture sphere_field
     distance = distance_at(capture=scene, point=vec3(1.0, 2.0, 3.0))
     normal = normal_at(capture=scene, point=vec3(1.0, 2.0, 3.0))
 }
 "#;
         let errors = check_source(input);
-        assert!(
-            errors.iter().any(|err| matches!(
-                err,
-                TypeError::PortableHostCallForbidden { callee, .. }
-                    if callee.as_str() == "distance_at"
-            )),
-            "expected PortableHostCallForbidden(distance_at), got: {errors:?}"
-        );
-        assert!(
-            errors.iter().any(|err| matches!(
-                err,
-                TypeError::PortableHostCallForbidden { callee, .. }
-                    if callee.as_str() == "normal_at"
-            )),
-            "expected PortableHostCallForbidden(normal_at), got: {errors:?}"
-        );
+        assert!(errors.is_empty(), "{errors:?}");
     }
 
     #[test]
@@ -742,9 +771,9 @@ shape scene_shape {
     field = sphere_field
     material = shade
     payload = Payload(
-        entity_id=u64(1),
-        material_id=u64(2),
-        actor=ActorHandle(id=u64(3), generation=u32(0))
+        entity_id=u32(1),
+        material_id=u32(2),
+        actor=ActorHandle(id=u32(3), generation=u32(0))
     )
 }
 
@@ -848,9 +877,9 @@ shape scene_shape {
     field = sphere_field
     material = shade
     payload = Payload(
-        entity_id=u64(1),
-        material_id=u64(2),
-        actor=ActorHandle(id=u64(3), generation=u32(0))
+        entity_id=u32(1),
+        material_id=u32(2),
+        actor=ActorHandle(id=u32(3), generation=u32(0))
     )
 }
 
@@ -941,8 +970,8 @@ fn run() -> Nothing {
     #[test]
     fn test_capture_boundary_types_are_opaque() {
         let input = r#"fn run() -> Nothing {
-    _ = FieldCapture(scene_id=u64(1), epoch=u64(0), root_feature_id=u64(0))
-    _ = DispatchBackend(id=i64(0))
+    _ = FieldCapture(scene_id=u32(1), epoch=u32(0), root_feature_id=u32(0))
+    _ = DispatchBackend(id=i32(0))
 }
 "#;
         let errors = check_source(input);
@@ -986,9 +1015,9 @@ shape broken_shape {
     field = helper
     material = bad_material
     payload = Payload(
-        entity_id=u64(1),
-        material_id=u64(2),
-        actor=ActorHandle(id=u64(3), generation=u32(0))
+        entity_id=u32(1),
+        material_id=u32(2),
+        actor=ActorHandle(id=u32(3), generation=u32(0))
     )
 }
 "#;
@@ -1038,7 +1067,7 @@ material shade(hit: Hit3) -> Surface {
 shape broken_shape {
     field = sphere_field
     material = shade
-    payload = u64(7)
+    payload = u32(7)
 }
 "#;
         let errors = check_source(input);
@@ -1046,7 +1075,7 @@ shape broken_shape {
             errors.iter().any(|err| matches!(
                 err,
                 TypeError::ShapePayloadTypeForbidden { shape, found, .. }
-                    if shape.as_str() == "broken_shape" && found == "U64"
+                    if shape.as_str() == "broken_shape" && found == "U32"
             )),
             "expected payload type rejection, got: {errors:?}"
         );
@@ -1074,9 +1103,9 @@ shape leaf_shape {
     field = sphere_field
     material = shade
     payload = Payload(
-        entity_id=u64(1),
-        material_id=u64(2),
-        actor=ActorHandle(id=u64(3), generation=u32(0))
+        entity_id=u32(1),
+        material_id=u32(2),
+        actor=ActorHandle(id=u32(3), generation=u32(0))
     )
 }
 
@@ -2012,9 +2041,9 @@ shape bad_shape {
     field = missing_field
     material = shade
     payload = Payload(
-        entity_id=u64(1),
-        material_id=u64(1),
-        actor=ActorHandle(id=u64(1), generation=u32(0))
+        entity_id=u32(1),
+        material_id=u32(1),
+        actor=ActorHandle(id=u32(1), generation=u32(0))
     )
 }
 "#;
@@ -2042,9 +2071,9 @@ shape bad_shape {
     field = sphere
     material = missing_material
     payload = Payload(
-        entity_id=u64(1),
-        material_id=u64(1),
-        actor=ActorHandle(id=u64(1), generation=u32(0))
+        entity_id=u32(1),
+        material_id=u32(1),
+        actor=ActorHandle(id=u32(1), generation=u32(0))
     )
 }
 "#;
@@ -2119,9 +2148,9 @@ shape leaf_shape {
     field = sphere
     material = shade
     payload = Payload(
-        entity_id=u64(1),
-        material_id=u64(1),
-        actor=ActorHandle(id=u64(1), generation=u32(0))
+        entity_id=u32(1),
+        material_id=u32(1),
+        actor=ActorHandle(id=u32(1), generation=u32(0))
     )
 }
 
@@ -2170,9 +2199,9 @@ shape left_shape {
     field = left_field
     material = shade
     payload = Payload(
-        entity_id=u64(1),
-        material_id=u64(1),
-        actor=ActorHandle(id=u64(1), generation=u32(0))
+        entity_id=u32(1),
+        material_id=u32(1),
+        actor=ActorHandle(id=u32(1), generation=u32(0))
     )
 }
 
@@ -2180,9 +2209,9 @@ shape right_shape {
     field = right_field
     material = shade
     payload = Payload(
-        entity_id=u64(2),
-        material_id=u64(2),
-        actor=ActorHandle(id=u64(2), generation=u32(0))
+        entity_id=u32(2),
+        material_id=u32(2),
+        actor=ActorHandle(id=u32(2), generation=u32(0))
     )
 }
 
@@ -2279,15 +2308,15 @@ material shade(hit: Hit3) -> Surface {
 }
 
 fn run() -> Nothing {
-    handle = ActorHandle(id=u64(1), generation=u32(0))
-    payload = Payload(entity_id=u64(2), material_id=u64(3), actor=handle)
+    handle = ActorHandle(id=u32(1), generation=u32(0))
+    payload = Payload(entity_id=u32(2), material_id=u32(3), actor=handle)
     hit = Hit3(
         hit=true,
         distance=1.25,
         position=vec3(0.0, 0.0, 1.0),
         normal=vec3(0.0, 0.0, 1.0),
         steps=0,
-        feature_id=u64(0),
+        feature_id=u32(0),
         payload=payload
     )
     surface = shade(hit=hit)
@@ -2301,16 +2330,16 @@ fn run() -> Nothing {
 
     #[test]
     fn test_builtin_portable_record_constructors_and_nested_fields_typecheck() {
-        let input = r#"kernel fn portable_entry() -> U64 {
-    handle = ActorHandle(id=u64(9), generation=u32(2))
-    payload = Payload(entity_id=u64(7), material_id=u64(11), actor=handle)
+        let input = r#"kernel fn portable_entry() -> U32 {
+    handle = ActorHandle(id=u32(9), generation=u32(2))
+    payload = Payload(entity_id=u32(7), material_id=u32(11), actor=handle)
     hit = Hit3(
         hit=true,
         distance=4.25,
         position=vec3(1.0, 2.0, 3.0),
         normal=normalize(vec3(0.0, 2.0, 0.0)),
         steps=0,
-        feature_id=u64(0),
+        feature_id=u32(0),
         payload=payload
     )
     surface = Surface(
@@ -4668,7 +4697,7 @@ fn caller() -> Foo {
 
     #[test]
     fn test_radiance_and_volume_declarations_and_shape_leaf_bindings_typecheck() {
-        let input = r#"radiance field emit_sky(p: Vec3, direction: Vec3, feature_id: U64) -> Vec3 {
+        let input = r#"radiance field emit_sky(p: Vec3, direction: Vec3, feature_id: U32) -> Vec3 {
     return p * 0.0 + direction + vec3(f32(feature_id) * 0.0, 0.0, 0.0)
 }
 
@@ -4706,9 +4735,9 @@ shape scene_shape {
     radiance = emit_sky
     volume = accumulate_fog
     payload = Payload(
-        entity_id=u64(1),
-        material_id=u64(2),
-        actor=ActorHandle(id=u64(3), generation=u32(0))
+        entity_id=u32(1),
+        material_id=u32(2),
+        actor=ActorHandle(id=u32(3), generation=u32(0))
     )
 }
 "#;
@@ -4834,9 +4863,9 @@ shape scene_shape {
     radiance = shade_surface
     volume = emit_sky
     payload = Payload(
-        entity_id=u64(1),
-        material_id=u64(2),
-        actor=ActorHandle(id=u64(3), generation=u32(0))
+        entity_id=u32(1),
+        material_id=u32(2),
+        actor=ActorHandle(id=u32(3), generation=u32(0))
     )
 }
 "#;
@@ -4869,7 +4898,7 @@ shape scene_shape {
     sphere(radius = 0.45)
 }
 
-radiance field phase7_radiance(p: Vec3, direction: Vec3, feature_id: U64) -> Vec3 {
+radiance field phase7_radiance(p: Vec3, direction: Vec3, feature_id: U32) -> Vec3 {
     return vec3(0.25, 0.5, 0.75) + direction * 0.0 + vec3(f32(feature_id) * 0.0 + p.x * 0.0, 0.0, 0.0)
 }
 
@@ -4899,9 +4928,9 @@ shape phase7_scene_shape {
     radiance = phase7_radiance
     volume = phase7_volume
     payload = Payload(
-        entity_id=u64(901),
-        material_id=u64(901),
-        actor=ActorHandle(id=u64(901), generation=u32(0))
+        entity_id=u32(901),
+        material_id=u32(901),
+        actor=ActorHandle(id=u32(901), generation=u32(0))
     )
 }
 

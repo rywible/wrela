@@ -1281,7 +1281,7 @@ material shade_surface(hit: Hit3) -> Surface {
     return Surface()
 }
 
-radiance field scene_radiance(p: Vec3, direction: Vec3, feature_id: U64) -> Vec3 {
+radiance field scene_radiance(p: Vec3, direction: Vec3, feature_id: U32) -> Vec3 {
     return direction + vec3(f32(feature_id) * 0.0 + p.x * 0.0, 0.0, 0.0)
 }
 

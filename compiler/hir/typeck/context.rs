@@ -579,6 +579,7 @@ struct FunctionIndex {
     field_functions: HashSet<SmolStr>,
     shape_functions: HashSet<SmolStr>,
     region_functions: HashSet<SmolStr>,
+    domain_functions: HashSet<SmolStr>,
 }
 
 impl FunctionIndex {
@@ -595,6 +596,7 @@ impl FunctionIndex {
         let mut field_functions = HashSet::new();
         let mut shape_functions = HashSet::new();
         let mut region_functions = HashSet::new();
+        let mut domain_functions = HashSet::new();
         for (idx, func) in module.functions.iter() {
             if method_ids.contains(&idx.into_raw()) {
                 continue;
@@ -646,6 +648,9 @@ impl FunctionIndex {
             if matches!(func.role, FunctionRole::Region) {
                 region_functions.insert(func.name.clone());
             }
+            if matches!(func.role, FunctionRole::Domain) {
+                domain_functions.insert(func.name.clone());
+            }
         }
         for (_idx, shape) in module.shapes.iter() {
             shape_functions.insert(shape.name.clone());
@@ -662,6 +667,7 @@ impl FunctionIndex {
             field_functions,
             shape_functions,
             region_functions,
+            domain_functions,
         }
     }
 
@@ -683,6 +689,10 @@ impl FunctionIndex {
 
     fn is_region(&self, name: &SmolStr) -> bool {
         self.region_functions.contains(name)
+    }
+
+    fn is_domain(&self, name: &SmolStr) -> bool {
+        self.domain_functions.contains(name)
     }
 }
 
@@ -4124,6 +4134,10 @@ impl TypeContext {
 
     fn in_portable_lane(&self) -> bool {
         matches!(self.function_lane, FunctionLane::Portable)
+    }
+
+    fn in_portable_query_kernel_lane(&self) -> bool {
+        self.in_portable_lane() && matches!(self.function_role, FunctionRole::Kernel)
     }
 
     fn current_function_name(&self) -> SmolStr {

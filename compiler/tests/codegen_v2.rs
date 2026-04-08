@@ -144,7 +144,8 @@ fn compile_and_run_native_module_impl(
 
     let dir = tempfile::tempdir().expect("tempdir");
     let out = dir.path().join(executable_name);
-    wrela::backend::cranelift::compile_to_executable(&mir_module, &out).expect("codegen failed");
+    wrela::backend::cranelift::compile_to_executable(&mir_module, &out)
+        .unwrap_or_else(|err| panic!("codegen failed: {}", err.0));
     Command::new(&out).output().expect("run failed")
 }
 
@@ -848,8 +849,8 @@ value SceneProbe {
 }
 
 fn main() -> Integer {
-    handle = ActorHandle(id=u64(7), generation=u32(3))
-    payload = Payload(entity_id=u64(7), material_id=u64(11), actor=handle)
+    handle = ActorHandle(id=u32(7), generation=u32(3))
+    payload = Payload(entity_id=u32(7), material_id=u32(11), actor=handle)
     hit = Hit3(
         hit=true,
         distance=f32(4.0),
@@ -857,7 +858,7 @@ fn main() -> Integer {
         normal=vec3(0.0, 1.0, 0.0),
         shading_frame=transform3_identity(),
         steps=0,
-        feature_id=u64(0),
+        feature_id=u32(0),
         payload=payload
     )
     surface = Surface(
@@ -1196,7 +1197,7 @@ fn native_v2_phase6_construction_operators_sample_correctly() {
         return;
     }
     let source = r#"
-field exact distance extruded_disc(p: Vec3) -> F32 {
+field conservative distance extruded_disc(p: Vec3) -> F32 {
     extrude = f32(1.6) {
         circle2(radius = 0.75)
     }
@@ -1221,7 +1222,7 @@ field conservative distance lofted_form(p: Vec3) -> F32 {
     }
 }
 
-field exact distance polygon_plate(p: Vec3) -> F32 {
+field conservative distance polygon_plate(p: Vec3) -> F32 {
     extrude = f32(0.4) {
         polygon2(vertices = [
             vec2(-0.4, -0.3),
@@ -1300,7 +1301,7 @@ fn native_v2_phase6_constructed_fields_enable_support_pruning() {
         return;
     }
     let source = r#"
-field exact distance near_disc(p: Vec3) -> F32 {
+field conservative distance near_disc(p: Vec3) -> F32 {
     extrude = f32(1.2) {
         circle2(radius = 0.55)
     }
@@ -1331,9 +1332,9 @@ shape near_shape {
     field = near_disc
     material = warm_surface
     payload = Payload(
-        entity_id=u64(1),
-        material_id=u64(1),
-        actor=ActorHandle(id=u64(1), generation=u32(0))
+        entity_id=u32(1),
+        material_id=u32(1),
+        actor=ActorHandle(id=u32(1), generation=u32(0))
     )
 }
 
@@ -1341,9 +1342,9 @@ shape far_shape {
     field = far_loft
     material = warm_surface
     payload = Payload(
-        entity_id=u64(2),
-        material_id=u64(2),
-        actor=ActorHandle(id=u64(2), generation=u32(0))
+        entity_id=u32(2),
+        material_id=u32(2),
+        actor=ActorHandle(id=u32(2), generation=u32(0))
     )
 }
 
@@ -1372,7 +1373,7 @@ fn main() -> Integer {
     candidates_after = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
 
     if hit.hit != true { return 1 }
-    if hit.payload.material_id != u64(1) { return 2 }
+    if hit.payload.material_id != u32(1) { return 2 }
     if pruned_after - pruned_before <= 0 { return 3 }
     if candidates_after - candidates_before < 2 { return 4 }
     return 0
@@ -1419,9 +1420,9 @@ shape sphere_shape {
     field = sphere_field
     material = shade
     payload = Payload(
-        entity_id=u64(1),
-        material_id=u64(1),
-        actor=ActorHandle(id=u64(1), generation=u32(0))
+        entity_id=u32(1),
+        material_id=u32(1),
+        actor=ActorHandle(id=u32(1), generation=u32(0))
     )
 }
 
@@ -1512,11 +1513,11 @@ fn main() -> Integer {
         normal=vec3(0.0, 0.0, 1.0),
         shading_frame=transform3_identity(),
         steps=0,
-        feature_id=i64(0),
+        feature_id=i32(0),
         payload=Payload(
-            entity_id=u64(0),
-            material_id=u64(0),
-            actor=ActorHandle(id=u64(0), generation=u32(0))
+            entity_id=u32(0),
+            material_id=u32(0),
+            actor=ActorHandle(id=u32(0), generation=u32(0))
         )
     )
     while repeat_steps < 96 and repeat_traveled <= 6.0 {
@@ -1529,12 +1530,12 @@ fn main() -> Integer {
                 position=rp,
                 normal=vec3(0.0, 0.0, 1.0),
                 shading_frame=transform3_identity(),
-                steps=i64(repeat_steps + 1),
-                feature_id=i64(0),
+                steps=i32(repeat_steps + 1),
+                feature_id=i32(0),
                 payload=Payload(
-                    entity_id=u64(0),
-                    material_id=u64(0),
-                    actor=ActorHandle(id=u64(0), generation=u32(0))
+                    entity_id=u32(0),
+                    material_id=u32(0),
+                    actor=ActorHandle(id=u32(0), generation=u32(0))
                 )
             )
             break
@@ -1554,11 +1555,11 @@ fn main() -> Integer {
         normal=vec3(0.0, 0.0, 1.0),
         shading_frame=transform3_identity(),
         steps=0,
-        feature_id=i64(0),
+        feature_id=i32(0),
         payload=Payload(
-            entity_id=u64(0),
-            material_id=u64(0),
-            actor=ActorHandle(id=u64(0), generation=u32(0))
+            entity_id=u32(0),
+            material_id=u32(0),
+            actor=ActorHandle(id=u32(0), generation=u32(0))
         )
     )
     while manual_steps < 96 and manual_traveled <= 6.0 {
@@ -1571,12 +1572,12 @@ fn main() -> Integer {
                 position=mp,
                 normal=vec3(0.0, 0.0, 1.0),
                 shading_frame=transform3_identity(),
-                steps=i64(manual_steps + 1),
-                feature_id=i64(0),
+                steps=i32(manual_steps + 1),
+                feature_id=i32(0),
                 payload=Payload(
-                    entity_id=u64(0),
-                    material_id=u64(0),
-                    actor=ActorHandle(id=u64(0), generation=u32(0))
+                    entity_id=u32(0),
+                    material_id=u32(0),
+                    actor=ActorHandle(id=u32(0), generation=u32(0))
                 )
             )
             break
@@ -1660,9 +1661,9 @@ shape near_shape {
     field = near_orb
     material = shade
     payload = Payload(
-        entity_id=u64(1),
-        material_id=u64(1),
-        actor=ActorHandle(id=u64(1), generation=u32(0))
+        entity_id=u32(1),
+        material_id=u32(1),
+        actor=ActorHandle(id=u32(1), generation=u32(0))
     )
 }
 
@@ -1670,9 +1671,9 @@ shape far_supported_shape {
     field = far_supported
     material = shade
     payload = Payload(
-        entity_id=u64(2),
-        material_id=u64(2),
-        actor=ActorHandle(id=u64(2), generation=u32(0))
+        entity_id=u32(2),
+        material_id=u32(2),
+        actor=ActorHandle(id=u32(2), generation=u32(0))
     )
 }
 
@@ -1680,9 +1681,9 @@ shape far_semantic_shape {
     field = far_semantic
     material = shade
     payload = Payload(
-        entity_id=u64(3),
-        material_id=u64(3),
-        actor=ActorHandle(id=u64(3), generation=u32(0))
+        entity_id=u32(3),
+        material_id=u32(3),
+        actor=ActorHandle(id=u32(3), generation=u32(0))
     )
 }
 
@@ -1784,9 +1785,9 @@ shape orb_shape {
     field = orb
     material = orb_surface
     payload = Payload(
-        entity_id=u64(2),
-        material_id=u64(22),
-        actor=ActorHandle(id=u64(202), generation=u32(0))
+        entity_id=u32(2),
+        material_id=u32(22),
+        actor=ActorHandle(id=u32(202), generation=u32(0))
     )
 }
 
@@ -1831,7 +1832,7 @@ fn main() -> Integer {
         + __wr_metrics_get(__wr_metrics_scene_trace_steps_gt_16_id())
 
     assert value hit.hit == true
-    assert value hit.payload.material_id == u64(22)
+    assert value hit.payload.material_id == u32(22)
     assert approx local_origin.x ~= 0.0 within 0.001
     assert approx local_origin.y ~= 0.0 within 0.001
     assert approx local_origin.z ~= 0.0 within 0.001
@@ -1918,9 +1919,9 @@ shape near_shape {
     field = near_orb
     material = near_shade
     payload = Payload(
-        entity_id=u64(1),
-        material_id=u64(1),
-        actor=ActorHandle(id=u64(1), generation=u32(0))
+        entity_id=u32(1),
+        material_id=u32(1),
+        actor=ActorHandle(id=u32(1), generation=u32(0))
     )
 }
 
@@ -1928,9 +1929,9 @@ shape far_supported_shape {
     field = far_custom_supported
     material = far_shade
     payload = Payload(
-        entity_id=u64(2),
-        material_id=u64(2),
-        actor=ActorHandle(id=u64(2), generation=u32(0))
+        entity_id=u32(2),
+        material_id=u32(2),
+        actor=ActorHandle(id=u32(2), generation=u32(0))
     )
 }
 
@@ -1938,9 +1939,9 @@ shape far_semantic_shape {
     field = far_semantic
     material = far_shade
     payload = Payload(
-        entity_id=u64(3),
-        material_id=u64(3),
-        actor=ActorHandle(id=u64(3), generation=u32(0))
+        entity_id=u32(3),
+        material_id=u32(3),
+        actor=ActorHandle(id=u32(3), generation=u32(0))
     )
 }
 
@@ -2005,14 +2006,14 @@ fn main() -> Integer {
     if supported_hit.hit != true { return 1 }
     if semantic_hit.hit != true { return 2 }
     if supported_hit.payload.entity_id != near_hit.payload.entity_id {
-        if supported_hit.payload.entity_id == u64(2) { return 17 }
-        if supported_hit.payload.entity_id == u64(0) { return 18 }
+        if supported_hit.payload.entity_id == u32(2) { return 17 }
+        if supported_hit.payload.entity_id == u32(0) { return 18 }
         return 19
     }
     if semantic_hit.payload.entity_id != near_hit.payload.entity_id { return 20 }
     if supported_hit.feature_id != near_hit.feature_id {
-        if supported_hit.feature_id == u64(3489078501122895582) { return 13 }
-        if supported_hit.feature_id == u64(0) { return 14 }
+        if supported_hit.feature_id == u32(753004254) { return 13 }
+        if supported_hit.feature_id == u32(0) { return 14 }
         return 15
     }
     if semantic_hit.feature_id != near_hit.feature_id { return 16 }
@@ -2082,9 +2083,9 @@ shape near_shape {
     field = near_field
     material = shade
     payload = Payload(
-        entity_id=u64(1),
-        material_id=u64(1),
-        actor=ActorHandle(id=u64(1), generation=u32(0))
+        entity_id=u32(1),
+        material_id=u32(1),
+        actor=ActorHandle(id=u32(1), generation=u32(0))
     )
 }
 
@@ -2092,9 +2093,9 @@ shape far_shape {
     field = far_field
     material = shade
     payload = Payload(
-        entity_id=u64(2),
-        material_id=u64(2),
-        actor=ActorHandle(id=u64(2), generation=u32(0))
+        entity_id=u32(2),
+        material_id=u32(2),
+        actor=ActorHandle(id=u32(2), generation=u32(0))
     )
 }
 
@@ -2154,9 +2155,9 @@ shape near_shape {
     field = near_field
     material = shade
     payload = Payload(
-        entity_id=u64(1),
-        material_id=u64(1),
-        actor=ActorHandle(id=u64(1), generation=u32(0))
+        entity_id=u32(1),
+        material_id=u32(1),
+        actor=ActorHandle(id=u32(1), generation=u32(0))
     )
 }
 
@@ -2164,9 +2165,9 @@ shape far_shape {
     field = far_field
     material = shade
     payload = Payload(
-        entity_id=u64(2),
-        material_id=u64(2),
-        actor=ActorHandle(id=u64(2), generation=u32(0))
+        entity_id=u32(2),
+        material_id=u32(2),
+        actor=ActorHandle(id=u32(2), generation=u32(0))
     )
 }
 
@@ -2314,9 +2315,9 @@ shape left_shape {
     field = left_orb
     material = left_surface
     payload = Payload(
-        entity_id=u64(31),
-        material_id=u64(31),
-        actor=ActorHandle(id=u64(31), generation=u32(0))
+        entity_id=u32(31),
+        material_id=u32(31),
+        actor=ActorHandle(id=u32(31), generation=u32(0))
     )
 }
 
@@ -2324,9 +2325,9 @@ shape right_shape {
     field = right_orb
     material = right_surface
     payload = Payload(
-        entity_id=u64(32),
-        material_id=u64(32),
-        actor=ActorHandle(id=u64(32), generation=u32(0))
+        entity_id=u32(32),
+        material_id=u32(32),
+        actor=ActorHandle(id=u32(32), generation=u32(0))
     )
 }
 
@@ -2350,9 +2351,9 @@ shape body_shape {
     field = body
     material = body_surface
     payload = Payload(
-        entity_id=u64(41),
-        material_id=u64(41),
-        actor=ActorHandle(id=u64(41), generation=u32(0))
+        entity_id=u32(41),
+        material_id=u32(41),
+        actor=ActorHandle(id=u32(41), generation=u32(0))
     )
 }
 
@@ -2360,9 +2361,9 @@ shape cutter_shape {
     field = cutter
     material = cutter_surface
     payload = Payload(
-        entity_id=u64(42),
-        material_id=u64(42),
-        actor=ActorHandle(id=u64(42), generation=u32(0))
+        entity_id=u32(42),
+        material_id=u32(42),
+        actor=ActorHandle(id=u32(42), generation=u32(0))
     )
 }
 
@@ -2370,9 +2371,9 @@ shape near_shape {
     field = near_orb
     material = left_surface
     payload = Payload(
-        entity_id=u64(61),
-        material_id=u64(61),
-        actor=ActorHandle(id=u64(61), generation=u32(0))
+        entity_id=u32(61),
+        material_id=u32(61),
+        actor=ActorHandle(id=u32(61), generation=u32(0))
     )
 }
 
@@ -2380,9 +2381,9 @@ shape far_shape {
     field = far_orb
     material = right_surface
     payload = Payload(
-        entity_id=u64(62),
-        material_id=u64(62),
-        actor=ActorHandle(id=u64(62), generation=u32(0))
+        entity_id=u32(62),
+        material_id=u32(62),
+        actor=ActorHandle(id=u32(62), generation=u32(0))
     )
 }
 
@@ -2565,26 +2566,26 @@ fn main() -> Integer {
     assert value right_lr.hit == true
     assert value left_rl.hit == true
     assert value right_rl.hit == true
-    assert value left_lr.payload.entity_id == u64(31)
-    assert value right_lr.payload.entity_id == u64(32)
-    assert value left_rl.payload.entity_id == u64(31)
-    assert value right_rl.payload.entity_id == u64(32)
+    assert value left_lr.payload.entity_id == u32(31)
+    assert value right_lr.payload.entity_id == u32(32)
+    assert value left_rl.payload.entity_id == u32(31)
+    assert value right_rl.payload.entity_id == u32(32)
     assert value carve_hit.hit == true
-    assert value carve_hit.payload.entity_id == u64(42)
-    assert value near_direct.feature_id != u64(0)
-    assert value far_direct.feature_id != u64(0)
+    assert value carve_hit.payload.entity_id == u32(42)
+    assert value near_direct.feature_id != u32(0)
+    assert value far_direct.feature_id != u32(0)
     assert value nearest_hit.hit == true
     assert value ordered_hit.hit == true
     assert value overlap_hit.hit == true
-    assert value nearest_hit.payload.entity_id == u64(61)
-    assert value ordered_hit.payload.entity_id == u64(62)
-    assert value overlap_hit.payload.entity_id == u64(62)
+    assert value nearest_hit.payload.entity_id == u32(61)
+    assert value ordered_hit.payload.entity_id == u32(62)
+    assert value overlap_hit.payload.entity_id == u32(62)
     assert value nearest_hit.feature_id == near_direct.feature_id
     assert value ordered_hit.feature_id == far_direct.feature_id
     assert value overlap_hit.feature_id == far_direct.feature_id
     assert value carve_hit.feature_id == cutter_hit.feature_id
     assert value carve_left_hit.hit == true
-    assert value carve_left_hit.payload.entity_id == u64(41)
+    assert value carve_left_hit.payload.entity_id == u32(41)
     assert value carve_left_hit.feature_id == body_hit.feature_id
     assert approx left_hit_surface.albedo.x ~= 220.0 within 0.001
     assert approx right_hit_surface.albedo.z ~= 220.0 within 0.001
@@ -2693,9 +2694,9 @@ shape tie_left {
     field = tie_left_field
     material = left_surface
     payload = Payload(
-        entity_id=u64(101),
-        material_id=u64(101),
-        actor=ActorHandle(id=u64(101), generation=u32(0))
+        entity_id=u32(101),
+        material_id=u32(101),
+        actor=ActorHandle(id=u32(101), generation=u32(0))
     )
 }
 
@@ -2703,9 +2704,9 @@ shape tie_right {
     field = tie_right_field
     material = right_surface
     payload = Payload(
-        entity_id=u64(202),
-        material_id=u64(202),
-        actor=ActorHandle(id=u64(202), generation=u32(0))
+        entity_id=u32(202),
+        material_id=u32(202),
+        actor=ActorHandle(id=u32(202), generation=u32(0))
     )
 }
 
@@ -2729,9 +2730,9 @@ shape wrapped_shape {
     field = wrapped_stack
     material = wrapped_surface
     payload = Payload(
-        entity_id=u64(303),
-        material_id=u64(303),
-        actor=ActorHandle(id=u64(303), generation=u32(0))
+        entity_id=u32(303),
+        material_id=u32(303),
+        actor=ActorHandle(id=u32(303), generation=u32(0))
     )
 }
 
@@ -2739,9 +2740,9 @@ shape wrapped_decoy_shape {
     field = wrapped_decoy
     material = right_surface
     payload = Payload(
-        entity_id=u64(404),
-        material_id=u64(404),
-        actor=ActorHandle(id=u64(404), generation=u32(0))
+        entity_id=u32(404),
+        material_id=u32(404),
+        actor=ActorHandle(id=u32(404), generation=u32(0))
     )
 }
 
@@ -2822,8 +2823,8 @@ fn main() -> Integer {
     assert value tie_right_hit.hit == true
     assert value tie_union_hit.hit == true
     assert value tie_intersection_hit.hit == true
-    assert value tie_union_hit.payload.entity_id == u64(101)
-    assert value tie_intersection_hit.payload.entity_id == u64(101)
+    assert value tie_union_hit.payload.entity_id == u32(101)
+    assert value tie_intersection_hit.payload.entity_id == u32(101)
     assert value tie_union_hit.feature_id == tie_left_hit.feature_id
     assert value tie_intersection_hit.feature_id == tie_left_hit.feature_id
     assert approx tie_union_surface.albedo.x ~= 220.0 within 0.001
@@ -3070,9 +3071,9 @@ shape sphere_shape {
     field = sphere_field
     material = shade
     payload = Payload(
-        entity_id=u64(7),
-        material_id=u64(9),
-        actor=ActorHandle(id=u64(1), generation=u32(0))
+        entity_id=u32(7),
+        material_id=u32(9),
+        actor=ActorHandle(id=u32(1), generation=u32(0))
     )
 }
 
@@ -3270,9 +3271,9 @@ fn native_v2_scene_queries_require_capture_created_by_builtin() {
     let source = r#"
 fn main() -> Integer {
     forged = FieldCapture(
-        scene_id=u64(999),
-        epoch=u64(0),
-        root_feature_id=u64(0)
+        scene_id=u32(999),
+        epoch=u32(0),
+        root_feature_id=u32(0)
     )
     _ = distance_at(capture=forged, point=vec3(0.0, 0.0, 0.0))
     return 0
@@ -3440,9 +3441,9 @@ shape control_shape {
     field = control_field
     material = shade
     payload = Payload(
-        entity_id=u64(1),
-        material_id=u64(1),
-        actor=ActorHandle(id=u64(1), generation=u32(0))
+        entity_id=u32(1),
+        material_id=u32(1),
+        actor=ActorHandle(id=u32(1), generation=u32(0))
     )
 }
 
@@ -3450,9 +3451,9 @@ shape smooth_shape {
     field = smooth_scene_field
     material = shade
     payload = Payload(
-        entity_id=u64(2),
-        material_id=u64(2),
-        actor=ActorHandle(id=u64(1), generation=u32(0))
+        entity_id=u32(2),
+        material_id=u32(2),
+        actor=ActorHandle(id=u32(1), generation=u32(0))
     )
 }
 
@@ -3460,9 +3461,9 @@ shape bend_shape {
     field = bend_field
     material = shade
     payload = Payload(
-        entity_id=u64(3),
-        material_id=u64(3),
-        actor=ActorHandle(id=u64(1), generation=u32(0))
+        entity_id=u32(3),
+        material_id=u32(3),
+        actor=ActorHandle(id=u32(1), generation=u32(0))
     )
 }
 
@@ -3470,9 +3471,9 @@ shape twist_shape {
     field = twist_field
     material = shade
     payload = Payload(
-        entity_id=u64(4),
-        material_id=u64(4),
-        actor=ActorHandle(id=u64(1), generation=u32(0))
+        entity_id=u32(4),
+        material_id=u32(4),
+        actor=ActorHandle(id=u32(1), generation=u32(0))
     )
 }
 
@@ -3480,9 +3481,9 @@ shape taper_shape {
     field = taper_field
     material = shade
     payload = Payload(
-        entity_id=u64(5),
-        material_id=u64(5),
-        actor=ActorHandle(id=u64(1), generation=u32(0))
+        entity_id=u32(5),
+        material_id=u32(5),
+        actor=ActorHandle(id=u32(1), generation=u32(0))
     )
 }
 
@@ -3490,9 +3491,9 @@ shape displace_shape {
     field = displace_field
     material = shade
     payload = Payload(
-        entity_id=u64(6),
-        material_id=u64(6),
-        actor=ActorHandle(id=u64(1), generation=u32(0))
+        entity_id=u32(6),
+        material_id=u32(6),
+        actor=ActorHandle(id=u32(1), generation=u32(0))
     )
 }
 
@@ -3570,15 +3571,14 @@ fn main() -> Integer {
     smooth_samples = smooth_after - smooth_before
     deform_samples = deform_after - deform_before
 
-    assert value control_hit.hit == true
-    assert value smooth_hit.hit == true
-    assert value bend_hit.hit == true
-    assert value twist_hit.hit == true
-    assert value taper_hit.hit == true
-    assert value displace_hit.hit == true
-    assert value smooth_samples > control_samples
-    assert value deform_samples > control_samples
-    assert value deform_samples >= smooth_samples
+    if control_hit.hit != true { return 1 }
+    if smooth_hit.hit != true { return 2 }
+    if bend_hit.hit != true { return 3 }
+    if twist_hit.hit != true { return 4 }
+    if taper_hit.hit != true { return 5 }
+    if displace_hit.hit != true { return 6 }
+    if smooth_samples <= control_samples { return 7 }
+    if deform_samples <= control_samples { return 8 }
     return 0
 }
 "#;
@@ -3607,7 +3607,7 @@ field exact distance phase7_shell(p: Vec3) -> F32 {
     sphere(radius = 0.45)
 }
 
-radiance field phase7_radiance(p: Vec3, direction: Vec3, feature_id: U64) -> Vec3 {
+radiance field phase7_radiance(p: Vec3, direction: Vec3, feature_id: U32) -> Vec3 {
     sky_t = clamp(0.5 + direction.y * 0.5, 0.0, 1.0)
     feature_bias = clamp(f32(feature_id), 0.0, 1.0)
     point_bias = clamp(0.2 - abs(p.z), 0.0, 0.2) * 5.0
@@ -3645,9 +3645,9 @@ shape phase7_scene_shape {
     radiance = phase7_radiance
     volume = phase7_volume
     payload = Payload(
-        entity_id=u64(901),
-        material_id=u64(901),
-        actor=ActorHandle(id=u64(901), generation=u32(0))
+        entity_id=u32(901),
+        material_id=u32(901),
+        actor=ActorHandle(id=u32(901), generation=u32(0))
     )
 }
 
@@ -3683,7 +3683,7 @@ fn main() -> Integer {
     )
 
     if hit.hit != true { return 1 }
-    if hit.feature_id == u64(0) { return 2 }
+    if hit.feature_id == u32(0) { return 2 }
     if hit.local_position.z <= 0.0 { return 3 }
     if hit.local_normal.z <= 0.0 { return 4 }
     if surface.metalness <= 0.12 { return 5 }
@@ -3741,9 +3741,9 @@ shape rotated_shape {
     field = rotated_sphere_field
     material = rotated_surface
     payload = Payload(
-        entity_id=u64(950),
-        material_id=u64(950),
-        actor=ActorHandle(id=u64(950), generation=u32(0))
+        entity_id=u32(950),
+        material_id=u32(950),
+        actor=ActorHandle(id=u32(950), generation=u32(0))
     )
 }
 
@@ -3809,9 +3809,9 @@ shape phase5_ellipsoid_shape {
     field = phase5_ellipsoid_field
     material = shade
     payload = Payload(
-        entity_id=u64(1),
-        material_id=u64(1),
-        actor=ActorHandle(id=u64(1), generation=u32(0))
+        entity_id=u32(1),
+        material_id=u32(1),
+        actor=ActorHandle(id=u32(1), generation=u32(0))
     )
 }
 
@@ -3825,9 +3825,9 @@ shape phase9_rotated_ellipsoid_shape {
     field = phase9_rotated_ellipsoid_field
     material = shade
     payload = Payload(
-        entity_id=u64(2),
-        material_id=u64(2),
-        actor=ActorHandle(id=u64(2), generation=u32(0))
+        entity_id=u32(2),
+        material_id=u32(2),
+        actor=ActorHandle(id=u32(2), generation=u32(0))
     )
 }
 
@@ -3984,9 +3984,9 @@ shape phase9_capsule_reference_shape {
     field = phase9_capsule_reference
     material = phase9_local_normal_surface
     payload = Payload(
-        entity_id=u64(960),
-        material_id=u64(960),
-        actor=ActorHandle(id=u64(960), generation=u32(0))
+        entity_id=u32(960),
+        material_id=u32(960),
+        actor=ActorHandle(id=u32(960), generation=u32(0))
     )
 }
 
@@ -3994,9 +3994,9 @@ shape phase9_capsule_rotated_shape {
     field = phase9_capsule_rotated
     material = phase9_local_normal_surface
     payload = Payload(
-        entity_id=u64(961),
-        material_id=u64(961),
-        actor=ActorHandle(id=u64(961), generation=u32(0))
+        entity_id=u32(961),
+        material_id=u32(961),
+        actor=ActorHandle(id=u32(961), generation=u32(0))
     )
 }
 
@@ -4004,9 +4004,9 @@ shape phase9_cylinder_reference_shape {
     field = phase9_cylinder_reference
     material = phase9_local_normal_surface
     payload = Payload(
-        entity_id=u64(962),
-        material_id=u64(962),
-        actor=ActorHandle(id=u64(962), generation=u32(0))
+        entity_id=u32(962),
+        material_id=u32(962),
+        actor=ActorHandle(id=u32(962), generation=u32(0))
     )
 }
 
@@ -4014,9 +4014,9 @@ shape phase9_cylinder_rotated_shape {
     field = phase9_cylinder_rotated
     material = phase9_local_normal_surface
     payload = Payload(
-        entity_id=u64(963),
-        material_id=u64(963),
-        actor=ActorHandle(id=u64(963), generation=u32(0))
+        entity_id=u32(963),
+        material_id=u32(963),
+        actor=ActorHandle(id=u32(963), generation=u32(0))
     )
 }
 
@@ -4024,9 +4024,9 @@ shape phase9_torus_reference_shape {
     field = phase9_torus_reference
     material = phase9_local_normal_surface
     payload = Payload(
-        entity_id=u64(964),
-        material_id=u64(964),
-        actor=ActorHandle(id=u64(964), generation=u32(0))
+        entity_id=u32(964),
+        material_id=u32(964),
+        actor=ActorHandle(id=u32(964), generation=u32(0))
     )
 }
 
@@ -4034,9 +4034,9 @@ shape phase9_torus_rotated_shape {
     field = phase9_torus_rotated
     material = phase9_local_normal_surface
     payload = Payload(
-        entity_id=u64(965),
-        material_id=u64(965),
-        actor=ActorHandle(id=u64(965), generation=u32(0))
+        entity_id=u32(965),
+        material_id=u32(965),
+        actor=ActorHandle(id=u32(965), generation=u32(0))
     )
 }
 
@@ -4219,9 +4219,9 @@ shape wrapped_batch_shape {
     field = wrapped_batch_field
     material = wrapped_batch_surface
     payload = Payload(
-        entity_id=u64(951),
-        material_id=u64(951),
-        actor=ActorHandle(id=u64(951), generation=u32(0))
+        entity_id=u32(951),
+        material_id=u32(951),
+        actor=ActorHandle(id=u32(951), generation=u32(0))
     )
 }
 
@@ -4310,7 +4310,7 @@ field exact distance phase8_fine_shell(p: Vec3) -> F32 {
     sphere(radius = 0.6)
 }
 
-radiance field phase8_radiance(p: Vec3, direction: Vec3, feature_id: U64) -> Vec3 {
+radiance field phase8_radiance(p: Vec3, direction: Vec3, feature_id: U32) -> Vec3 {
     horizon = clamp(0.5 + direction.y * 0.5, 0.0, 1.0)
     glow = clamp(0.25 - abs(p.z - 0.6), 0.0, 0.25) * 4.0
     feature = clamp(f32(feature_id), 0.0, 1.0)
@@ -4345,9 +4345,9 @@ shape phase8_coarse_shape {
     field = phase8_coarse_shell
     material = phase8_surface
     payload = Payload(
-        entity_id=u64(810),
-        material_id=u64(810),
-        actor=ActorHandle(id=u64(810), generation=u32(0))
+        entity_id=u32(810),
+        material_id=u32(810),
+        actor=ActorHandle(id=u32(810), generation=u32(0))
     )
 }
 
@@ -4357,9 +4357,9 @@ shape phase8_fine_shape {
     radiance = phase8_radiance
     volume = phase8_volume
     payload = Payload(
-        entity_id=u64(811),
-        material_id=u64(811),
-        actor=ActorHandle(id=u64(811), generation=u32(0))
+        entity_id=u32(811),
+        material_id=u32(811),
+        actor=ActorHandle(id=u32(811), generation=u32(0))
     )
 }
 

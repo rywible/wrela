@@ -604,7 +604,10 @@ fn infer_expr(
                     }
                 }
                 if !valid_callee && let Some(function) = functions.get(name) {
-                    if ctx.in_portable_lane() && !functions.is_portable(name) {
+                    if ctx.in_portable_lane()
+                        && !functions.is_portable(name)
+                        && !(ctx.in_portable_query_kernel_lane() && functions.is_domain(name))
+                    {
                         errors.push(TypeError::PortableHostCallForbidden {
                             function: ctx.current_function_name(),
                             callee: name.clone(),
@@ -2180,7 +2183,7 @@ fn infer_capture_builtin(
     allow_result: bool,
     in_result_fn: bool,
 ) -> Option<Type> {
-    if ctx.in_portable_lane() {
+    if ctx.in_portable_lane() && !ctx.in_portable_query_kernel_lane() {
         errors.push(TypeError::PortableHostCallForbidden {
             function: ctx.current_function_name(),
             callee: SmolStr::new("capture"),
@@ -2249,7 +2252,7 @@ fn infer_field_query_builtin(
     in_result_fn: bool,
     ret: Type,
 ) -> Option<Type> {
-    if ctx.in_portable_lane() {
+    if ctx.in_portable_lane() && !ctx.in_portable_query_kernel_lane() {
         errors.push(TypeError::PortableHostCallForbidden {
             function: ctx.current_function_name(),
             callee: query_name.clone(),
@@ -2341,7 +2344,7 @@ fn infer_shape_query_builtin(
     in_result_fn: bool,
     ret: Type,
 ) -> Option<Type> {
-    if ctx.in_portable_lane() {
+    if ctx.in_portable_lane() && !ctx.in_portable_query_kernel_lane() {
         errors.push(TypeError::PortableHostCallForbidden {
             function: ctx.current_function_name(),
             callee: query_name.clone(),
@@ -2440,7 +2443,7 @@ fn infer_shape_point_query_builtin(
     in_result_fn: bool,
     ret: Type,
 ) -> Option<Type> {
-    if ctx.in_portable_lane() {
+    if ctx.in_portable_lane() && !ctx.in_portable_query_kernel_lane() {
         errors.push(TypeError::PortableHostCallForbidden {
             function: ctx.current_function_name(),
             callee: query_name.clone(),
@@ -2536,7 +2539,7 @@ fn infer_scene_backend_builtin(
     allow_result: bool,
     in_result_fn: bool,
 ) -> Option<Type> {
-    if ctx.in_portable_lane() {
+    if ctx.in_portable_lane() && !ctx.in_portable_query_kernel_lane() {
         errors.push(TypeError::PortableHostCallForbidden {
             function: ctx.current_function_name(),
             callee: name.clone(),
@@ -2576,7 +2579,7 @@ fn infer_world_distance_query_builtin(
     in_result_fn: bool,
     ret: Type,
 ) -> Option<Type> {
-    if ctx.in_portable_lane() {
+    if ctx.in_portable_lane() && !ctx.in_portable_query_kernel_lane() {
         errors.push(TypeError::PortableHostCallForbidden {
             function: ctx.current_function_name(),
             callee: query_name.clone(),
@@ -2649,7 +2652,7 @@ fn infer_world_shape_query_builtin(
     in_result_fn: bool,
     ret: Type,
 ) -> Option<Type> {
-    if ctx.in_portable_lane() {
+    if ctx.in_portable_lane() && !ctx.in_portable_query_kernel_lane() {
         errors.push(TypeError::PortableHostCallForbidden {
             function: ctx.current_function_name(),
             callee: query_name.clone(),
@@ -2735,7 +2738,7 @@ fn infer_world_point_query_builtin(
     in_result_fn: bool,
     ret: Type,
 ) -> Option<Type> {
-    if ctx.in_portable_lane() {
+    if ctx.in_portable_lane() && !ctx.in_portable_query_kernel_lane() {
         errors.push(TypeError::PortableHostCallForbidden {
             function: ctx.current_function_name(),
             callee: query_name.clone(),
@@ -2897,7 +2900,7 @@ fn infer_shape_batch_query_builtin(
     in_result_fn: bool,
     ret: Type,
 ) -> Option<Type> {
-    if ctx.in_portable_lane() {
+    if ctx.in_portable_lane() && !ctx.in_portable_query_kernel_lane() {
         errors.push(TypeError::PortableHostCallForbidden {
             function: ctx.current_function_name(),
             callee: query_name.clone(),
@@ -2989,7 +2992,7 @@ fn infer_field_batch_query_builtin(
     in_result_fn: bool,
     ret: Type,
 ) -> Option<Type> {
-    if ctx.in_portable_lane() {
+    if ctx.in_portable_lane() && !ctx.in_portable_query_kernel_lane() {
         errors.push(TypeError::PortableHostCallForbidden {
             function: ctx.current_function_name(),
             callee: query_name.clone(),

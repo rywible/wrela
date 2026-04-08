@@ -1,4 +1,5 @@
 use crate::hir::{BinaryOp, Literal, Objective, PoolSize, UnaryOp};
+pub use crate::portable::{PortableAbiType, PortableStructField};
 use rowan::TextRange;
 use smol_str::SmolStr;
 
@@ -51,35 +52,6 @@ pub struct MirFunction {
     pub blocks: Vec<BasicBlock>,
     pub entry: BlockId,
     pub suspendable: bool,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum PortableAbiType {
-    Value,
-    Bool,
-    I32,
-    U32,
-    I64,
-    U64,
-    F32,
-    Vec2,
-    Vec3,
-    Vec4,
-    Mat3,
-    Mat4,
-    Quat,
-    Array(Box<PortableAbiType>, usize),
-    Struct {
-        name: SmolStr,
-        class_id: u32,
-        fields: Vec<PortableStructField>,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct PortableStructField {
-    pub name: SmolStr,
-    pub ty: PortableAbiType,
 }
 
 #[derive(Debug, Clone, PartialEq)]

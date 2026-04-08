@@ -46,6 +46,8 @@ pub fn lower_root_body(root: ast::Root) -> Option<Body> {
 #[derive(Default)]
 struct LoweringContext {
     module: Module,
+    shape_feature_ids: HashMap<Vec<SmolStr>, u32>,
+    next_shape_feature_id: u32,
 }
 
 impl Module {
@@ -1725,7 +1727,7 @@ impl LoweringContext {
                     .and_then(|binding| binding.value())
                     .map(|expr| self.lower_shape_payload(expr))
                     .unwrap_or_else(Self::empty_body);
-                let feature_id = Self::shape_feature_id(feature_path);
+                let feature_id = self.shape_feature_id(feature_path);
 
                 ShapeExpr::Leaf(ShapeLeaf {
                     field,
@@ -1789,20 +1791,18 @@ impl LoweringContext {
         }
     }
 
-    fn shape_feature_id(path: &[SmolStr]) -> u64 {
-        const FNV_OFFSET: u64 = 0xcbf29ce484222325;
-        const FNV_PRIME: u64 = 0x100000001b3;
-
-        let mut hash = FNV_OFFSET;
-        for part in path {
-            for byte in part.as_bytes() {
-                hash ^= *byte as u64;
-                hash = hash.wrapping_mul(FNV_PRIME);
-            }
-            hash ^= b'/' as u64;
-            hash = hash.wrapping_mul(FNV_PRIME);
+    fn shape_feature_id(&mut self, path: &[SmolStr]) -> u32 {
+        if let Some(id) = self.shape_feature_ids.get(path) {
+            return *id;
         }
-        hash & (i64::MAX as u64)
+
+        let next = self
+            .next_shape_feature_id
+            .checked_add(1)
+            .expect("portable feature ids exceeded the u32 address space");
+        self.next_shape_feature_id = next;
+        self.shape_feature_ids.insert(path.to_vec(), next);
+        next
     }
 
     fn lower_shape_merge_provenance_policy(
@@ -4862,7 +4862,7 @@ field exact distance sphere_field(p: Vec3) -> F32 {
 shape sphere_shape {
     field = sphere_field
     material = surface
-    payload = Payload(entity_id=u64(1), material_id=u64(2), actor=ActorHandle(id=u64(3), generation=u32(0)))
+    payload = Payload(entity_id=u32(1), material_id=u32(2), actor=ActorHandle(id=u32(3), generation=u32(0)))
 }
 
 shape scene_shape {
