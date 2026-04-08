@@ -1428,19 +1428,18 @@ impl ProjectLoader {
             }
             let imported = imported_function_bindings(module, &public_functions);
             for (_, func) in module.module.functions.iter() {
-                let Some(body) = &func.body else {
-                    continue;
-                };
-                enforce_external_call_policy_in_block(
-                    body,
-                    &body.root_stmts,
-                    &imported,
-                    module.name.as_str(),
-                    &func.name,
-                    &module.path,
-                    &module.source,
-                    &mut self.errors,
-                );
+                func.visit_analysis_bodies(|body| {
+                    enforce_external_call_policy_in_block(
+                        body,
+                        &body.root_stmts,
+                        &imported,
+                        module.name.as_str(),
+                        &func.name,
+                        &module.path,
+                        &module.source,
+                        &mut self.errors,
+                    );
+                });
             }
         }
     }
@@ -1457,26 +1456,25 @@ impl ProjectLoader {
                 continue;
             }
             for (_, func) in module.module.functions.iter() {
-                let Some(body) = &func.body else {
-                    continue;
-                };
-                for raw in 0..body.exprs.len() {
-                    let expr_id = Idx::new(raw);
-                    if let Expr::Variable(name) = &body.exprs[expr_id]
-                        && name.as_str().starts_with("__wr_")
-                    {
-                        self.errors.push(ProjectError {
-                            kind: ProjectDiagKind::LoadError,
-                            path: module.path.clone(),
-                            source: module.source.clone(),
-                            message: format!(
-                                "intrinsic '{}' is internal and cannot be used here. teacher fix: use list/map literals with methods/index syntax, or move runtime bridging into language/stdlib/**",
-                                name
-                            ),
-                            span: span_from_range(body.expr_span(expr_id)),
-                        });
+                func.visit_analysis_bodies(|body| {
+                    for raw in 0..body.exprs.len() {
+                        let expr_id = Idx::new(raw);
+                        if let Expr::Variable(name) = &body.exprs[expr_id]
+                            && name.as_str().starts_with("__wr_")
+                        {
+                            self.errors.push(ProjectError {
+                                kind: ProjectDiagKind::LoadError,
+                                path: module.path.clone(),
+                                source: module.source.clone(),
+                                message: format!(
+                                    "intrinsic '{}' is internal and cannot be used here. teacher fix: use list/map literals with methods/index syntax, or move runtime bridging into language/stdlib/**",
+                                    name
+                                ),
+                                span: span_from_range(body.expr_span(expr_id)),
+                            });
+                        }
                     }
-                }
+                });
             }
             if let Some(root_body) = &module.root_body {
                 for raw in 0..root_body.exprs.len() {
@@ -1557,7 +1555,7 @@ impl ProjectLoader {
             let func = &module.module.functions[nodes[node_idx].function_idx];
             let imported = imported_function_bindings(module, &public_functions);
             let mut callees = HashSet::new();
-            if let Some(body) = &func.body {
+            func.visit_analysis_bodies(|body| {
                 let mut called = Vec::new();
                 collect_called_functions(body, &body.root_stmts, &mut called);
                 for callee_name in called {
@@ -1593,7 +1591,7 @@ impl ProjectLoader {
                         roots.insert(*target_idx);
                     }
                 }
-            }
+            });
 
             let mut callee_list: Vec<usize> = callees.into_iter().collect();
             callee_list.sort_unstable();
@@ -1621,11 +1619,10 @@ impl ProjectLoader {
             };
             let func = &module.module.functions[node.function_idx];
             let imported = imported_function_bindings(module, &public_functions);
-            let Some(body) = &func.body else {
-                continue;
-            };
             let mut called = Vec::new();
-            collect_called_functions(body, &body.root_stmts, &mut called);
+            func.visit_analysis_bodies(|body| {
+                collect_called_functions(body, &body.root_stmts, &mut called);
+            });
             let mut seen_host_calls = HashSet::new();
             for callee_name in called {
                 let imported_host_wrapper = imported.get(&callee_name).is_some_and(|module_name| {
@@ -1715,9 +1712,9 @@ impl ProjectLoader {
             let func = &module.module.functions[nodes[node_idx].function_idx];
             let imported = imported_function_bindings(module, &public_functions);
             let mut called = Vec::new();
-            if let Some(body) = &func.body {
+            func.visit_analysis_bodies(|body| {
                 collect_called_functions(body, &body.root_stmts, &mut called);
-            }
+            });
 
             let mut direct = FunctionEffect::Pure;
             let mut callees = HashSet::new();
@@ -3626,7 +3623,7 @@ fn collect_used_external_names(module: &Module) -> HashMap<SmolStr, TextRange> {
     }
 
     for (idx, func) in module.functions.iter() {
-        if let Some(body) = &func.body {
+        func.visit_analysis_bodies(|body| {
             let mut scope = Scope::new();
             if method_ids.contains(&idx) {
                 scope.insert(SmolStr::new("self"));
@@ -3636,7 +3633,7 @@ fn collect_used_external_names(module: &Module) -> HashMap<SmolStr, TextRange> {
                 scope.insert(param.name.clone());
             }
             collect_used_in_block(body, &body.root_stmts, &mut scope, &mut used);
-        }
+        });
     }
     used
 }

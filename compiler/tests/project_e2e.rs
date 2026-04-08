@@ -1321,7 +1321,11 @@ fn sample_scene() -> Integer {
         .iter()
         .find(|err| err.message.contains("HostRead effect"))
         .expect("missing host-read effect diagnostic");
-    assert!(host_read_diag.message.contains("domain code must stay pure"));
+    assert!(
+        host_read_diag
+            .message
+            .contains("domain code must stay pure")
+    );
 }
 
 #[test]

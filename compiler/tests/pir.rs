@@ -56,6 +56,40 @@ fn lower_pir_module_result(
     pir::lower_portable_entry_by_name(&module, &type_info, entry)
 }
 
+fn assert_semantic_field_graph_backed_pir_body_empty<F>(
+    module: &hir::Module,
+    field_name: &str,
+    check_root: F,
+) where
+    F: FnOnce(&hir::FieldExpr),
+{
+    let field = module
+        .functions
+        .iter()
+        .find(|(_, func)| func.name == field_name)
+        .map(|(_, func)| func)
+        .unwrap_or_else(|| panic!("missing field function '{field_name}'"));
+    assert!(
+        field
+            .body
+            .as_ref()
+            .expect("field body")
+            .root_stmts
+            .is_empty(),
+        "expected semantic field '{field_name}' body to be empty"
+    );
+    check_root(&field.field_graph.as_ref().expect("field graph").root);
+
+    let pir = lower_pir_module(module.clone(), field_name);
+    let lowered = pir
+        .function(field_name)
+        .unwrap_or_else(|| panic!("missing PIR function '{field_name}'"));
+    assert!(
+        lowered.body.is_empty(),
+        "expected PIR body for semantic field '{field_name}' to be empty"
+    );
+}
+
 #[test]
 fn portable_builtin_catalog_matches_expected_surface() {
     let mut names = portable::builtin_records()
@@ -143,6 +177,19 @@ fn portable_builtin_catalog_matches_expected_surface() {
             "__wr_scene_surface_capture",
             "__wr_scene_radiance_capture",
             "__wr_scene_medium_capture",
+            "__wr_world_distance_capture",
+            "__wr_world_normal_capture",
+            "__wr_world_trace_capture",
+            "__wr_world_surface_capture",
+            "__wr_world_radiance_capture",
+            "__wr_world_medium_capture",
+            "__wr_field_distance_batch_queries",
+            "__wr_shape_distance_batch_queries",
+            "__wr_field_normal_batch_queries",
+            "__wr_shape_normal_batch_queries",
+            "__wr_scene_trace_batch_queries",
+            "__wr_scene_surface_batch_queries",
+            "__wr_scene_occluded_batch_queries",
             "__wr_scene_trace_queries",
             "__wr_scene_surface_queries",
         ]
@@ -172,6 +219,8 @@ fn portable_builtin_catalog_matches_expected_surface() {
             "shading_frame",
             "steps",
             "feature_id",
+            "instance_id",
+            "repeat_id",
             "root_shape_id",
             "payload",
         ]
@@ -380,17 +429,23 @@ kernel fn portable_entry(seed: I32) -> I32 {
 }
 
 #[test]
-fn executes_field_entry_on_cpu() {
+fn lowers_semantic_field_entry_as_graph_backed_pir_body() {
     let source = r#"
 field exact distance sphere_field(p: Vec3) -> F32 {
     sphere(radius = 1.0)
 }
 "#;
 
-    let module = lower_pir_inline(source, "sphere_field");
-    let result =
-        pir::execute_entry(&module, vec![pir::PirValue::Vec3([0.0, 0.0, 2.0])]).expect("execute");
-    assert_eq!(result, pir::PirValue::F32(1.0));
+    let module = lower_inline_module_from_source(source);
+    assert_semantic_field_graph_backed_pir_body_empty(&module, "sphere_field", |root| {
+        assert!(matches!(
+            root,
+            hir::FieldExpr::Primitive {
+                primitive: hir::FieldPrimitive::Sphere,
+                ..
+            }
+        ));
+    });
 }
 
 #[test]
@@ -469,6 +524,8 @@ kernel fn portable_entry() -> QueryBatchProbe {
         shading_frame=transform3_identity(),
         steps=12,
         feature_id=u64(7),
+        instance_id=u64(11),
+        repeat_id=u64(21),
         root_shape_id=u64(99),
         payload=Payload(
             entity_id=u64(7),
@@ -486,6 +543,8 @@ kernel fn portable_entry() -> QueryBatchProbe {
         shading_frame=transform3_identity(),
         steps=13,
         feature_id=u64(8),
+        instance_id=u64(12),
+        repeat_id=u64(22),
         root_shape_id=u64(99),
         payload=Payload(
             entity_id=u64(7),
@@ -590,6 +649,8 @@ kernel fn portable_entry() -> QueryBatchProbe {
     assert_eq!(hit1.field("hit"), Some(&pir::PirValue::Bool(true)));
     assert_eq!(hit0.field("feature_id"), Some(&pir::PirValue::U64(7)));
     assert_eq!(hit1.field("feature_id"), Some(&pir::PirValue::U64(8)));
+    assert_eq!(hit0.field("instance_id"), Some(&pir::PirValue::U64(11)));
+    assert_eq!(hit1.field("repeat_id"), Some(&pir::PirValue::U64(22)));
     assert_eq!(
         surface0.field("albedo"),
         Some(&pir::PirValue::Vec3([1.0, 0.0, 0.0]))
@@ -622,6 +683,8 @@ kernel fn portable_entry() -> TraceProbe {
         shading_frame=transform3_identity(),
         steps=12,
         feature_id=u64(305419896),
+        instance_id=u64(17),
+        repeat_id=u64(23),
         root_shape_id=u64(77),
         payload=payload
     )
@@ -646,25 +709,27 @@ kernel fn portable_entry() -> TraceProbe {
         hit.field("feature_id"),
         Some(&pir::PirValue::U64(305419896))
     );
+    assert_eq!(hit.field("instance_id"), Some(&pir::PirValue::U64(17)));
+    assert_eq!(hit.field("repeat_id"), Some(&pir::PirValue::U64(23)));
 }
 
 #[test]
-fn executes_semantic_field_composition_on_cpu() {
+fn lowers_semantic_field_composition_as_graph_backed_pir_body() {
     let source = r#"
 field conservative distance left_x(p: Vec3) -> F32 {
-    return p.x
+    plane(normal = vec3(1.0, 0.0, 0.0), offset = 0.0)
 }
 
 field conservative distance left_y(p: Vec3) -> F32 {
-    return p.y
+    plane(normal = vec3(0.0, 1.0, 0.0), offset = 0.0)
 }
 
 field conservative distance cap_z(p: Vec3) -> F32 {
-    return p.z
+    plane(normal = vec3(0.0, 0.0, 1.0), offset = 0.0)
 }
 
 field conservative distance notch(p: Vec3) -> F32 {
-    return p.x - 0.5
+    plane(normal = vec3(1.0, 0.0, 0.0), offset = -0.5)
 }
 
 field conservative distance composed(p: Vec3) -> F32 {
@@ -681,17 +746,21 @@ field conservative distance composed(p: Vec3) -> F32 {
 }
 "#;
 
-    let module = lower_pir_inline(source, "composed");
-    let result_a =
-        pir::execute_entry(&module, vec![pir::PirValue::Vec3([1.0, 2.0, 3.0])]).expect("execute");
-    let result_b =
-        pir::execute_entry(&module, vec![pir::PirValue::Vec3([-1.0, 2.0, 0.5])]).expect("execute");
-    assert_eq!(result_a, pir::PirValue::F32(3.0));
-    assert_eq!(result_b, pir::PirValue::F32(1.5));
+    let module = lower_inline_module_from_source(source);
+    assert_semantic_field_graph_backed_pir_body_empty(&module, "composed", |root| {
+        let hir::FieldExpr::Subtract { left, right } = root else {
+            panic!("expected subtract root, got {root:?}");
+        };
+        assert!(matches!(left.as_ref(), hir::FieldExpr::Intersection { .. }));
+        assert!(matches!(
+            right.as_ref(),
+            hir::FieldExpr::Use { target } if target == "notch"
+        ));
+    });
 }
 
 #[test]
-fn executes_field_primitive_catalog_on_cpu() {
+fn lowers_field_primitive_catalog_as_graph_backed_pir_bodies() {
     let source = r#"
 field exact distance sphere_field(p: Vec3) -> F32 {
     sphere(radius = 1.0)
@@ -718,37 +787,28 @@ field exact distance torus_field(p: Vec3) -> F32 {
 }
 "#;
 
-    let sphere_module = lower_pir_inline(source, "sphere_field");
-    let sphere = pir::execute_entry(&sphere_module, vec![pir::PirValue::Vec3([0.0, 0.0, 0.0])])
-        .expect("sphere execute");
-    let box_module = lower_pir_inline(source, "box_field");
-    let cube = pir::execute_entry(&box_module, vec![pir::PirValue::Vec3([0.0, 0.0, 0.0])])
-        .expect("box execute");
-    let capsule_module = lower_pir_inline(source, "capsule_field");
-    let capsule = pir::execute_entry(&capsule_module, vec![pir::PirValue::Vec3([0.0, 0.0, 0.0])])
-        .expect("capsule execute");
-    let cylinder_module = lower_pir_inline(source, "cylinder_field");
-    let cylinder = pir::execute_entry(&cylinder_module, vec![pir::PirValue::Vec3([0.0, 0.0, 0.0])])
-        .expect("cylinder execute");
-    let plane_module = lower_pir_inline(source, "plane_field");
-    let plane = pir::execute_entry(&plane_module, vec![pir::PirValue::Vec3([0.0, 0.0, 0.0])])
-        .expect("plane execute");
-    let torus_module = lower_pir_inline(source, "torus_field");
-    let torus = pir::execute_entry(&torus_module, vec![pir::PirValue::Vec3([2.0, 0.0, 0.0])])
-        .expect("torus execute");
-
-    assert_eq!(sphere, pir::PirValue::F32(-1.0));
-    assert_eq!(cube, pir::PirValue::F32(-1.0));
-    assert_eq!(capsule, pir::PirValue::F32(-0.5));
-    assert_eq!(cylinder, pir::PirValue::F32(-0.5));
-    assert_eq!(plane, pir::PirValue::F32(0.25));
-    assert_eq!(torus, pir::PirValue::F32(-0.5));
+    let module = lower_inline_module_from_source(source);
+    for (field_name, expected) in [
+        ("sphere_field", hir::FieldPrimitive::Sphere),
+        ("box_field", hir::FieldPrimitive::Box),
+        ("capsule_field", hir::FieldPrimitive::Capsule),
+        ("cylinder_field", hir::FieldPrimitive::Cylinder),
+        ("plane_field", hir::FieldPrimitive::Plane),
+        ("torus_field", hir::FieldPrimitive::Torus),
+    ] {
+        assert_semantic_field_graph_backed_pir_body_empty(&module, field_name, |root| {
+            assert!(matches!(
+                root,
+                hir::FieldExpr::Primitive { primitive, .. } if *primitive == expected
+            ));
+        });
+    }
 }
 
 #[test]
-fn executes_phase6_construction_operators_on_cpu() {
+fn lowers_phase6_construction_operators_as_graph_backed_pir_bodies() {
     let source = r#"
-field exact distance extruded_disc(p: Vec3) -> F32 {
+field conservative distance extruded_disc(p: Vec3) -> F32 {
     extrude = f32(1.6) {
         circle2(radius = 0.75)
     }
@@ -773,7 +833,7 @@ field conservative distance lofted_form(p: Vec3) -> F32 {
     }
 }
 
-field exact distance polygon_plate(p: Vec3) -> F32 {
+field conservative distance polygon_plate(p: Vec3) -> F32 {
     extrude = f32(0.4) {
         polygon2(vertices = [
             vec2(-0.4, -0.3),
@@ -807,45 +867,28 @@ field conservative distance polyline_strip(p: Vec3) -> F32 {
 }
 "#;
 
-    let extruded_disc = lower_pir_inline(source, "extruded_disc");
-    let revolved_orb = lower_pir_inline(source, "revolved_orb");
-    let swept_beam = lower_pir_inline(source, "swept_beam");
-    let lofted_form = lower_pir_inline(source, "lofted_form");
-    let polygon_plate = lower_pir_inline(source, "polygon_plate");
-
-    let disc_center =
-        pir::execute_entry(&extruded_disc, vec![pir::PirValue::Vec3([0.0, 0.0, 0.0])])
-            .expect("extruded disc execute");
-    let orb_center = pir::execute_entry(&revolved_orb, vec![pir::PirValue::Vec3([0.0, 0.0, 0.0])])
-        .expect("revolved orb execute");
-    let beam_center = pir::execute_entry(&swept_beam, vec![pir::PirValue::Vec3([0.0, 0.0, 0.0])])
-        .expect("swept beam execute");
-    let loft_center = pir::execute_entry(&lofted_form, vec![pir::PirValue::Vec3([0.0, 0.0, 0.0])])
-        .expect("lofted form execute");
-    let plate_center =
-        pir::execute_entry(&polygon_plate, vec![pir::PirValue::Vec3([0.05, 0.0, 0.05])])
-            .expect("polygon plate execute");
-
-    assert_eq!(disc_center, pir::PirValue::F32(-0.75));
-    assert_eq!(orb_center, pir::PirValue::F32(-0.5));
-    assert_eq!(beam_center, pir::PirValue::F32(-0.15));
-    match loft_center {
-        pir::PirValue::F32(value) => {
-            assert!(value < 0.0, "expected loft center inside, got {value}")
-        }
-        other => panic!("expected loft center to be F32, got {other:?}"),
-    }
-    match plate_center {
-        pir::PirValue::F32(value) => assert!(
-            value <= 0.0,
-            "expected polygon plate center on or inside the profile, got {value}"
-        ),
-        other => panic!("expected polygon plate center to be F32, got {other:?}"),
+    let module = lower_inline_module_from_source(source);
+    for (field_name, expected_variant) in [
+        ("extruded_disc", "extrude"),
+        ("revolved_orb", "revolve"),
+        ("swept_beam", "sweep"),
+        ("lofted_form", "loft"),
+        ("polygon_plate", "extrude"),
+    ] {
+        assert_semantic_field_graph_backed_pir_body_empty(&module, field_name, |root| {
+            match (expected_variant, root) {
+                ("extrude", hir::FieldExpr::Extrude { .. }) => {}
+                ("revolve", hir::FieldExpr::Revolve { .. }) => {}
+                ("sweep", hir::FieldExpr::Sweep { .. }) => {}
+                ("loft", hir::FieldExpr::Loft { .. }) => {}
+                other => panic!("unexpected field graph root: {other:?}"),
+            }
+        });
     }
 }
 
 #[test]
-fn executes_phase7_radiance_and_volume_surface_declarations_on_cpu() {
+fn lowers_phase7_field_entry_as_graph_backed_pir_body() {
     let source = r#"
 field exact distance phase7_shell(p: Vec3) -> F32 {
     sphere(radius = 0.45)
@@ -891,10 +934,16 @@ shape phase7_scene_shape {
 }
 "#;
 
-    let module = lower_pir_inline(source, "phase7_shell");
-    let result =
-        pir::execute_entry(&module, vec![pir::PirValue::Vec3([0.0, 0.0, 0.0])]).expect("execute");
-    assert_eq!(result, pir::PirValue::F32(-0.45));
+    let module = lower_inline_module_from_source(source);
+    assert_semantic_field_graph_backed_pir_body_empty(&module, "phase7_shell", |root| {
+        assert!(matches!(
+            root,
+            hir::FieldExpr::Primitive {
+                primitive: hir::FieldPrimitive::Sphere,
+                ..
+            }
+        ));
+    });
 }
 
 #[test]
@@ -1016,6 +1065,8 @@ kernel fn portable_entry() -> SceneProbe {
         shading_frame=transform3_identity(),
         steps=0,
         feature_id=u64(0),
+        instance_id=u64(0),
+        repeat_id=u64(0),
         root_shape_id=u64(123),
         payload=payload
     )
@@ -1151,7 +1202,7 @@ kernel fn portable_entry() -> SceneProbe {
 }
 
 #[test]
-fn authored_field_support_and_bounds_survive_hir_lowering_for_pir_execution() {
+fn authored_field_support_and_bounds_survive_hir_lowering_for_pir_lowering() {
     let source = r#"
 field conservative distance hinted(p: Vec3) -> F32 {
     support = Support3(bounds=Bounds3(
@@ -1162,7 +1213,9 @@ field conservative distance hinted(p: Vec3) -> F32 {
         min=vec3(8.0, -1.0, -1.0),
         max=vec3(12.0, 1.0, 1.0)
     )
-    return sphere(p=p - vec3(10.0, 0.0, 0.0), radius=0.5)
+    translate = vec3(10.0, 0.0, 0.0) {
+        sphere(radius=0.5)
+    }
 }
 "#;
 
@@ -1186,16 +1239,26 @@ field conservative distance hinted(p: Vec3) -> F32 {
         metadata.trace.can_coarse_support_pruning,
         "expected authored support/bounds clauses to keep pruning enabled"
     );
+    assert!(matches!(
+        field.field_graph.as_ref().expect("field graph").root,
+        hir::FieldExpr::Translate { .. }
+    ));
     assert_eq!(
         field.field_graph.as_ref().expect("field graph").trace,
-        hir::GraphTraceMetadata::pessimistic(),
-        "expected the inferred graph trace to remain available for validation"
+        hir::GraphTraceMetadata::conservative(
+            hir::FieldSupport::Bounded,
+            hir::FieldBounds::Bounded,
+            true,
+        ),
+        "expected the graph trace to reflect authored support/bounds"
     );
 
     let pir = lower_pir_module(module, "hinted");
-    let result =
-        pir::execute_entry(&pir, vec![pir::PirValue::Vec3([10.0, 0.0, 0.0])]).expect("execute");
-    assert_eq!(result, pir::PirValue::F32(-0.5));
+    let lowered = pir.function("hinted").expect("pir function");
+    assert!(
+        lowered.body.is_empty(),
+        "expected PIR body for semantic field to stay empty"
+    );
 }
 
 #[test]
@@ -1248,7 +1311,7 @@ kernel fn portable_entry() -> I32 {
 }
 
 #[test]
-fn executes_structural_field_point_helpers_on_cpu() {
+fn lowers_structural_field_point_helpers_as_graph_backed_pir_bodies() {
     let source = r#"
 field conservative distance translated_sphere(p: Vec3) -> F32 {
     translate = vec3(2.0, 0.0, 0.0) {
@@ -1264,7 +1327,7 @@ field conservative distance mirrored_box(p: Vec3) -> F32 {
     }
 }
 
-field exact distance repeated_sphere(p: Vec3) -> F32 {
+field conservative distance repeated_sphere(p: Vec3) -> F32 {
     repeat_linear = vec3(2.0, 0.0, 0.0) {
         sphere(radius=0.5)
     }
@@ -1290,36 +1353,22 @@ field conservative distance instanced_sphere(p: Vec3) -> F32 {
 }
 "#;
 
-    let translated = lower_pir_inline(source, "translated_sphere");
-    let translated_result =
-        pir::execute_entry(&translated, vec![pir::PirValue::Vec3([2.0, 0.0, 0.0])])
-            .expect("execute translated sphere");
-    assert_eq!(translated_result, pir::PirValue::F32(-1.0));
-
-    let mirrored = lower_pir_inline(source, "mirrored_box");
-    let mirrored_result =
-        pir::execute_entry(&mirrored, vec![pir::PirValue::Vec3([-1.0, 0.0, 0.0])])
-            .expect("execute mirrored box");
-    match mirrored_result {
-        pir::PirValue::F32(value) => assert!((value + 0.5).abs() < 0.0001, "value={value}"),
-        other => panic!("expected f32 result, got {other:?}"),
-    }
-
-    let repeated = lower_pir_inline(source, "repeated_sphere");
-    let repeated_result = pir::execute_entry(&repeated, vec![pir::PirValue::Vec3([2.0, 0.0, 0.0])])
-        .expect("execute repeated sphere");
-    match repeated_result {
-        pir::PirValue::F32(value) => assert!((value + 0.5).abs() < 0.0001, "value={value}"),
-        other => panic!("expected f32 result, got {other:?}"),
-    }
-
-    let instanced = lower_pir_inline(source, "instanced_sphere");
-    let instanced_result =
-        pir::execute_entry(&instanced, vec![pir::PirValue::Vec3([0.0, 0.0, 1.0])])
-            .expect("execute instanced sphere");
-    match instanced_result {
-        pir::PirValue::F32(value) => assert!((value + 0.5).abs() < 0.0001, "value={value}"),
-        other => panic!("expected f32 result, got {other:?}"),
+    let module = lower_inline_module_from_source(source);
+    for (field_name, expected_variant) in [
+        ("translated_sphere", "translate"),
+        ("mirrored_box", "mirror"),
+        ("repeated_sphere", "repeat"),
+        ("instanced_sphere", "instance"),
+    ] {
+        assert_semantic_field_graph_backed_pir_body_empty(&module, field_name, |root| {
+            match (expected_variant, root) {
+                ("translate", hir::FieldExpr::Translate { .. }) => {}
+                ("mirror", hir::FieldExpr::MirrorArray { .. }) => {}
+                ("repeat", hir::FieldExpr::RepeatLinear { .. }) => {}
+                ("instance", hir::FieldExpr::InstanceArray { .. }) => {}
+                other => panic!("unexpected field graph root: {other:?}"),
+            }
+        });
     }
 }
 
@@ -1511,7 +1560,7 @@ kernel fn portable_entry() -> I32 {
 }
 
 #[test]
-fn executes_phase5_primitive_catalog_on_cpu() {
+fn lowers_phase5_primitive_catalog_as_graph_backed_pir_bodies() {
     let source = r#"
 field conservative distance phase5_rounded_box_field(p: Vec3) -> F32 {
     rounded_box(half=vec3(0.60, 0.48, 0.36), radius=0.10)
@@ -1545,33 +1594,26 @@ field conservative distance phase5_hex_prism_field(p: Vec3) -> F32 {
     hex_prism(half=vec2(0.32, 0.46), half_height=0.30)
 }
 "#;
-    for (entry, point, expect_negative) in [
-        ("phase5_rounded_box_field", [0.0, 0.0, 0.0], true),
-        ("phase5_ellipsoid_field", [0.0, 0.0, 0.0], true),
-        ("phase5_cone_field", [0.0, 0.0, 0.0], true),
-        ("phase5_capped_cone_field", [0.0, 0.0, 0.0], true),
-        ("phase5_box_frame_field", [0.0, 0.0, 0.0], false),
-        ("phase5_slab_field", [0.0, 0.0, 0.0], true),
-        ("phase5_triangle_prism_field", [0.0, 0.0, 0.0], true),
-        ("phase5_hex_prism_field", [0.0, 0.0, 0.0], true),
+    let module = lower_inline_module_from_source(source);
+    for (field_name, expected) in [
+        ("phase5_rounded_box_field", hir::FieldPrimitive::RoundedBox),
+        ("phase5_ellipsoid_field", hir::FieldPrimitive::Ellipsoid),
+        ("phase5_cone_field", hir::FieldPrimitive::Cone),
+        ("phase5_capped_cone_field", hir::FieldPrimitive::CappedCone),
+        ("phase5_box_frame_field", hir::FieldPrimitive::BoxFrame),
+        ("phase5_slab_field", hir::FieldPrimitive::Slab),
+        (
+            "phase5_triangle_prism_field",
+            hir::FieldPrimitive::TrianglePrism,
+        ),
+        ("phase5_hex_prism_field", hir::FieldPrimitive::HexPrism),
     ] {
-        let module = lower_pir_inline(source, entry);
-        let result = pir::execute_entry(&module, vec![pir::PirValue::Vec3(point)])
-            .unwrap_or_else(|err| panic!("{entry} execute failed: {err:?}"));
-        let pir::PirValue::F32(value) = result else {
-            panic!("{entry} returned non-f32 result");
-        };
-        if expect_negative {
-            assert!(
-                value < 0.0,
-                "{entry} expected negative center distance, got {value}"
-            );
-        } else {
-            assert!(
-                value > 0.0,
-                "{entry} expected positive center distance, got {value}"
-            );
-        }
+        assert_semantic_field_graph_backed_pir_body_empty(&module, field_name, |root| {
+            assert!(matches!(
+                root,
+                hir::FieldExpr::Primitive { primitive, .. } if *primitive == expected
+            ));
+        });
     }
 }
 
@@ -1633,6 +1675,8 @@ kernel fn portable_entry() -> Phase7Probe {
         shading_frame=transform3_identity(),
         steps=i64(4),
         feature_id=u64(901),
+        instance_id=u64(0),
+        repeat_id=u64(0),
         root_shape_id=u64(901),
         payload=payload
     )

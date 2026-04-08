@@ -748,13 +748,15 @@ Evolve `material` and the shading model beyond the minimal `Hit3 -> Surface` MVP
 Add stable shading inputs such as:
 
 - feature id
-- local coordinates
+- truthful local coordinates and normals
+- local provenance for repeated and instanced placements
 - optional curvature-ish data
 - later ray footprint or cone info
 
 Acceptance criteria:
 
-- procedural materials become stable under repetition and camera motion
+- procedural materials become stable under repetition, placement, and camera motion
+- `local_position` and `local_normal` are leaf-local values, not world-space aliases
 
 Tests:
 
@@ -771,6 +773,8 @@ Add:
 Acceptance criteria:
 
 - authored emissive and media semantics are real scene constructs, not renderer-only hacks
+- surface ownership stays separate from radiance and media participation
+- radiance and media queries may aggregate all participating leaves rather than only the surface winner
 
 Tests:
 
@@ -870,29 +874,54 @@ Keep authored scenes semantic, but let the compiler/runtime generate lower-lane 
 
 This is where `kernel fn` becomes useful as a derived execution substrate rather than a scene-authoring escape hatch.
 
+Phase 9 is where that compiler-owned middle-end becomes concrete:
+
+- typed semantic scene ir
+- explicit specialized query plans
+- derived artifacts attached to those plans rather than inferred ad hoc during backend lowering
+
 ### Worklanes
 
-#### Lane A: Derived Artifact Pipeline
+#### Lane A: Scene IR, Query Plans, And Derived Artifacts
+
+Introduce a typed semantic scene ir and an explicit query-plan ir between authored graphs and executable kernels.
 
 Generate artifacts such as:
 
+- support algebra and hierarchical support summaries
 - culling tables
+- bvh-style acceleration data
 - capture caches
 - occupancy/visibility data
+- local lipschitz/step-control data where conservative proofs exist
 - later probe/light data
+
+Lowering contract:
+
+- authored field/shape/world graphs lower into typed semantic scene ir
+- scene ir lowers into explicit specialized query plans for distance, trace, radiance, and volume work
+- derived artifacts attach to scene ir/query plans and are never source of truth
+- support, exactness, placement, and repeat/instance identity remain explicit compiler data rather than syntax heuristics
 
 Acceptance criteria:
 
+- scene ir/query plans are the semantic source for phase-9+ execution
 - artifacts are derived from semantic scenes and captures, never source of truth
+- support propagation is conservative and compositional across transforms, booleans, repeats, and instancing
+- candidate generation and pruning can be explained in terms of explicit plan nodes rather than ad hoc mir lowering
 
 Tests:
 
+- scene-ir snapshot tests
+- query-plan determinism tests
+- support-propagation tests
 - derivation determinism tests
 - artifact-vs-direct-query parity tests
+- culling/bvh construction tests
 
 #### Lane B: Compiler-Generated Internal Kernels
 
-Lower selected derived jobs into portable/internal kernel execution.
+Lower selected query plans and derived jobs into portable/internal kernel execution.
 
 The first internal kernel families should be:
 
@@ -901,22 +930,33 @@ The first internal kernel families should be:
 - culling kernels
 - bake kernels for derived artifacts
 
+Portable kernel subset rules:
+
+- no recursion
+- explicit loops and buffers
+- deterministic dispatch-record and hit-record layouts
+- one shared CPU/virtual-GPU kernel contract that later lowers to WGSL
+
 Lowering contract:
 
 - semantic scene graph/query graph lowers to a specialized query plan
 - the query plan lowers to compiler-generated portable kernel bodies
 - those generated kernels lower to CPU, virtual GPU, and later WGSL
-- user-authored scene code never bypasses the semantic graph and drops straight into kernel execution
+- user-authored scene code never bypasses the semantic graph, scene ir, or query plan and drops straight into kernel execution
+- the generated kernels preserve truthful local provenance, including true leaf-local frames, repeat/instance identity, and radiance/media participant selection, through trace, surface, radiance, and volume queries
 
 Acceptance criteria:
 
 - authored scenes are not expressed as manual kernels
 - compiler-generated kernels can run on CPU first and later WGSL
+- hit assembly preserves truthful `local_position`, `local_normal`, `shading_frame`, and identity-bearing fields
 
 Tests:
 
 - CPU internal-kernel tests
+- query-plan-to-kernel parity tests
 - virtual GPU integration tests
+- hit/local-frame regression tests
 
 #### Lane C: Opaque Leaf Policy
 
@@ -925,48 +965,81 @@ If an escape hatch is still needed, add it only here and only as an explicit opa
 Rules:
 
 - no user-authored arbitrary scene kernel path
-- opaque fields MUST declare conservative status
+- opaque fields MUST declare unknown or conservative distance semantics
 - opaque fields MUST provide or accept explicit support/bounds constraints
+- opaque fields MUST NOT silently participate in exactness or specialization proofs
 - opaque fields MUST be a pessimization boundary
+- slower conservative fallback lanes are allowed here, including interval/debug-style evaluation, but they do not define the primary fast path
 
 Acceptance criteria:
 
 - the escape hatch cannot masquerade as a normal optimizable node
+- opaque leaves are quarantined at support, exactness, and specialization boundaries
 
 Tests:
 
 - legality tests
 - pessimization-boundary tests
+- opaque-leaf conservative-fallback tests
+
+### Recommended Internal Sequencing
+
+Implementors SHOULD land Phase 9 in this order:
+
+1. scene ir skeleton with typed operator payloads instead of arbitrary execution bodies as semantic operands
+2. support/capability propagation on scene ir
+3. query-plan generation for distance and trace first
+4. portable kernel subset for CPU truth first
+5. virtual GPU parity on the same generated kernels
+6. derived artifacts such as bvh/culling data attached to query plans
+7. opaque-leaf quarantine and conservative fallback lanes
+
+### Implementor Notes
+
+- scene ir is where semantic meaning should live; synthesized executable bodies may exist as derived debug or backend artifacts, but not as a parallel source of truth
+- query plans should make candidate generation, pruning, winner selection, hit assembly, and radiance/media participation explicit compiler-owned stages
+- capability propagation should be table-driven and conservative; a practical capability model is exact signed distance, conservative/lower-bound distance, and unknown/opaque, and nodes should only upgrade into the stronger states when the operator rules prove it
+- support algebra should stay structured and compositional; a practical initial set is `unknown`, `unbounded`, `aabb`, `sphere`, `transform`, `union`, `intersection`, `difference`, and periodic/repetition support
+- finite placement/instancing should carry identity-bearing data; infinite repetition remains field algebra, not a substitute for explicit instances
+- `local_position` and `local_normal` must be leaf-local values; `local_normal` should come from the winning local function or gradient and then transform cleanly back to world space
+- opaque leaves are allowed to force slower conservative evaluation lanes, but they must not silently participate in exactness, support, or specialization proofs
 
 ### Exit Criteria
 
 - lower-lane execution exists without sacrificing authored scene semantics
+- scene ir/query-plan/kernel lowering exists as a compiler-owned architecture
 - any remaining escape hatch is explicit and quarantined
 
 ## Phase 10: WGSL Backend And Differential Validation
 
 ### Goal
 
-Lower the semantic query/dispatch system to WGSL compute after CPU truth is solid.
+Lower the semantic query/dispatch system to WGSL compute after CPU truth and the query-plan/kernel contract are solid.
 
 ### Worklanes
 
-#### Lane A: WGSL Lowering
+#### Lane A: WGSL Lowering And Data Layout
 
 Lower:
 
 - portable query plans
 - generated internal kernels
 - typed dispatch records
+- typed hit/result records
+- accelerator and culling tables
 
 Acceptance criteria:
 
 - WGSL is emitted from semantic/portable lowering, not handwritten as the primary scene language
+- the same query-plan/kernel contract works across CPU, virtual GPU, and WGSL
+- layout and alignment rules are explicit, deterministic, and testable
+- distance and batch-query kernels land first, then trace/hit assembly, then radiance/volume paths
 
 Tests:
 
 - WGSL codegen tests
 - layout/binding tests
+- kernel-subset legality tests
 
 #### Lane B: Virtual GPU Differential Lane
 
@@ -975,11 +1048,14 @@ Use the virtual GPU as an integration/testing lane between CPU truth and real WG
 Acceptance criteria:
 
 - CPU, virtual GPU, and WGSL can run the same query/dispatch surface
+- CPU, virtual GPU, and WGSL share the same dispatch/result record contract
+- virtual GPU remains the fast differential lane for plan/kernel changes before real WGSL bring-up
 
 Tests:
 
 - CPU vs virtual GPU parity tests
 - virtual GPU vs WGSL parity tests
+- dispatch-record roundtrip tests
 
 #### Lane C: Image And Query Differentials
 
@@ -988,59 +1064,104 @@ Run differential checks for:
 - scalar queries
 - bulk query outputs
 - rendered images
+- hit provenance and local-frame records
+- radiance/media participation outputs
 
 Acceptance criteria:
 
 - GPU correctness is defined as parity with CPU truth within declared tolerances
+- provenance, identity, and local-frame-bearing records stay stable across backends within declared tolerances
 
 Tests:
 
 - per-query differentials
 - image/regression tests
+- backend-tolerance snapshot tests
+
+### Recommended Internal Sequencing
+
+Implementors SHOULD land Phase 10 in this order:
+
+1. lock the portable kernel subset and typed dispatch/result layouts
+2. lower distance and bulk-query kernels to WGSL first
+3. add trace/hit assembly once distance kernels are stable
+4. add radiance and volume paths last
+5. expand differential coverage from per-query parity to rendered-image parity
+
+### Implementor Notes
+
+- WGSL is a backend for the same query-plan/kernel contract, not a second scene implementation path
+- CPU remains the oracle; virtual GPU is the fast differential lane between CPU truth and real WGSL bring-up
+- layout, alignment, and binding conventions must be explicit and snapshot-tested because backend parity depends on them as much as arithmetic parity
+- kernel lowering should stay within the portable subset from Phase 9: no recursion, explicit loops, explicit buffers, deterministic record layouts
+- accelerator and culling tables are shared backend data contracts, not WGSL-only implementation details
+- hot batched GPU inputs may eventually prefer structure-of-arrays-friendly storage, but the logical dispatch/result contract and tolerance model stay shared
+- bring-up order matters: distance queries first, then trace/hit, then radiance/media, because each layer depends on the previous layer's record correctness
+- differential tests must cover identity-bearing outputs such as provenance, instance/repeat identity, and local-frame-bearing records rather than only scalar distances
 
 ### Exit Criteria
 
 - WGSL is a real backend for the same authored semantic engine
 - CPU remains the oracle
+- all backends consume the same plan/kernel contract
 
 ## Phase 11: Performance Closure
 
 ### Goal
 
-Turn the semantic engine into a measurably fast engine without changing authored semantics.
+Turn the semantic engine into a measurably fast engine without changing authored semantics or backend truth contracts.
 
 ### Worklanes
 
-#### Lane A: Specialization
+#### Lane A: Specialization And Pruning
 
 Add specialization based on:
 
 - supports
+- support hierarchies and bvh structure
 - domains
 - captures
 - phase/world variants
 - repeated-instance structure
+- identity-preserving locality information
+- explicit query-plan structure
+- local lipschitz/step-control data where conservative
+- constant-folded and capture-folded kernel variants
 
 Acceptance criteria:
 
 - specialization cuts work without changing authored behavior
+- repeated-instance specialization never changes hit provenance, local frames, or leaf identity
+- exactness/support capabilities remain conservative under specialization and pruning
 
 Tests:
 
 - counter-based perf regressions
 - parity tests against the unspecialized path
+- provenance/local-frame invariance tests
 
 #### Lane B: Render/Query Cost Reports
 
 Build developer-facing cost explanations.
 
+Reports should attribute cost to semantic structure such as:
+
+- dominant query-plan stages
+- branch/candidate counts and prune rates
+- march step counts and bailout causes
+- capture and specialization wins/misses
+- opaque-leaf penalties
+- backend-specific hotspots without losing the semantic explanation
+
 Acceptance criteria:
 
 - the compiler/runtime can explain why a scene or query is expensive
+- explanations connect cost back to supports, domains, captures, instances, and plan structure rather than only raw generated code
 
 Tests:
 
 - diagnostic snapshot tests
+- counter-accounting tests
 
 #### Lane C: Hard Scene Benchmark Suite
 
@@ -1053,22 +1174,51 @@ Create a permanent hard-scene suite covering:
 - deformations
 - character-like silhouettes
 - region/domain composition
+- repeated/instanced identity stability
+- truthful local-frame recovery
+- radiance/media participation separation
+- opaque-leaf pessimization cases
 
 Acceptance criteria:
 
 - the suite exercises the real engine architecture rather than just toy examples
+- performance budgets are tracked against CPU and WGSL on the same semantic scenes
 
 Tests:
 
 - perf counters
 - CPU/WGSL image differentials
+- benchmark determinism and regression tests
+
+### Recommended Internal Sequencing
+
+Implementors SHOULD land Phase 11 in this order:
+
+1. stabilize unspecialized counters and baseline benchmark scenes
+2. add support/bvh/capture-driven pruning first
+3. add repeated-instance and locality-aware specialization next
+4. add constant-folded and cached kernel variants after plan-level specialization is trustworthy
+5. wire diagnostics and hard-scene regressions into the same measurement flow
+
+### Implementor Notes
+
+- the unspecialized plan path remains the correctness reference for specialized variants
+- optimize the shared query plan and derived artifacts first; backend-specific tuning should not become the primary source of wins
+- specialization must preserve hit provenance, local frames, repeated-instance identity, and radiance/media participation semantics
+- local lipschitz or step-control data is a high-value specialization input, but it must remain conservative and should not block the earlier support/bvh wins
+- cost reports should point back to semantic causes such as support overlap, candidate counts, march steps, capture misses, or opaque-leaf penalties rather than only generated-code details
+- the hard-scene suite should stay anchored in the real failure cases of the engine: large repetition, thin features, deformations, smooth blends, nested transforms, identity stability, local-frame recovery, and radiance/media separation
+- opaque-leaf slow paths are acceptable correctness fallbacks but are never the performance target
 
 ### Exit Criteria
 
 - performance work is driven by semantic structure and measurements
 - authored code does not need to change to get faster
+- specialization, diagnostics, and benchmarks all operate on the shared query-plan architecture
 
 ## Phase Ordering Summary
+
+The top-level phase count stays fixed here; implementors should use the internal sequencing inside Phases 9-11 rather than introducing new top-level phases unless a later RFC changes the overall order.
 
 Implement in this order:
 

@@ -1024,7 +1024,7 @@ field conservative distance mirrored_box(p: Vec3) -> F32 {
     }
 }
 
-field exact distance repeated_sphere(p: Vec3) -> F32 {
+field conservative distance repeated_sphere(p: Vec3) -> F32 {
     repeat_linear = vec3(2.0, 0.0, 0.0) {
         sphere(radius=0.5)
     }
@@ -1092,7 +1092,9 @@ field exact distance sphere_field(p: Vec3) -> F32 {
 }
 
 field conservative distance shifted_sphere(p: Vec3) -> F32 {
-    return sphere(p=p - vec3(0.0, 0.0, 1.0), radius=1.0)
+    translate = vec3(0.0, 0.0, 1.0) {
+        sphere(radius=1.0)
+    }
 }
 
 fn main() -> Integer {
@@ -1492,16 +1494,9 @@ field conservative distance repeat_box(p: Vec3) -> F32 {
 }
 
 field conservative distance manual_box(p: Vec3) -> F32 {
-    repeated = vec3(
-        p.x - 2.0 * floor(p.x / 2.0 + 0.5),
-        p.y,
-        p.z
-    )
-    repeated_abs = vec3(abs(repeated.x), abs(repeated.y), abs(repeated.z))
-    q = repeated_abs - vec3(0.5, 0.5, 0.5)
-    outside = length(max(q, vec3(0.0, 0.0, 0.0)))
-    inside = min(max(q.x, max(q.y, q.z)), 0.0)
-    return outside + inside
+    repeat_linear = vec3(2.0, 0.0, 0.0) {
+        box(half=vec3(0.5, 0.5, 0.5))
+    }
 }
 
 fn main() -> Integer {
@@ -1622,7 +1617,7 @@ fn main() -> Integer {
 }
 
 #[test]
-fn native_v2_authored_support_pruning_preserves_hit_identity() {
+fn native_v2_authored_support_quarantine_preserves_hit_identity() {
     if std::env::var("WR_SKIP_NATIVE").is_ok() {
         return;
     }
@@ -1643,8 +1638,10 @@ field conservative distance far_supported(p: Vec3) -> F32 {
     return length(p - vec3(10.0, 0.0, 0.0)) - 0.5
 }
 
-field conservative distance far_plain(p: Vec3) -> F32 {
-    return length(p - vec3(10.0, 0.0, 0.0)) - 0.5
+field conservative distance far_semantic(p: Vec3) -> F32 {
+    translate = vec3(10.0, 0.0, 0.0) {
+        sphere(radius=0.5)
+    }
 }
 
 material shade(hit: Hit3) -> Surface {
@@ -1679,8 +1676,8 @@ shape far_supported_shape {
     )
 }
 
-shape far_plain_shape {
-    field = far_plain
+shape far_semantic_shape {
+    field = far_semantic
     material = shade
     payload = Payload(
         entity_id=u64(3),
@@ -1697,11 +1694,11 @@ shape supported_scene {
     }
 }
 
-shape plain_scene {
+shape semantic_scene {
     union {
         provenance_policy = nearest
         use near_shape
-        use far_plain_shape
+        use far_semantic_shape
     }
 }
 
@@ -1720,10 +1717,10 @@ fn main() -> Integer {
     supported_surface = surface_at(capture=supported_scene_capture, hit=supported_hit)
     supported_pruned_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
 
-    plain_pruned_before = supported_pruned_after
-    plain_scene_capture = capture plain_scene
-    plain_hit = trace_shape(
-        capture=plain_scene_capture,
+    semantic_pruned_before = supported_pruned_after
+    semantic_scene_capture = capture semantic_scene
+    semantic_hit = trace_shape(
+        capture=semantic_scene_capture,
         origin=vec3(0.0, 0.0, 3.0),
         direction=vec3(0.0, 0.0, -1.0),
         max_distance=6.0,
@@ -1731,23 +1728,23 @@ fn main() -> Integer {
         hit_epsilon=0.001,
         max_steps=96
     )
-    plain_surface = surface_at(capture=plain_scene_capture, hit=plain_hit)
-    plain_pruned_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
+    semantic_surface = surface_at(capture=semantic_scene_capture, hit=semantic_hit)
+    semantic_pruned_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
 
     if supported_hit.hit != true { return 1 }
-    if plain_hit.hit != true { return 2 }
-    if supported_hit.feature_id != plain_hit.feature_id { return 3 }
-    if abs(supported_hit.distance - plain_hit.distance) > 0.0001 { return 4 }
-    if supported_surface.albedo.x != plain_surface.albedo.x { return 5 }
-    if supported_pruned_after - supported_pruned_before <= 0 { return 6 }
-    if plain_pruned_after - plain_pruned_before != 0 { return 7 }
+    if semantic_hit.hit != true { return 2 }
+    if supported_hit.feature_id != semantic_hit.feature_id { return 3 }
+    if abs(supported_hit.distance - semantic_hit.distance) > 0.0001 { return 4 }
+    if supported_surface.albedo.x != semantic_surface.albedo.x { return 5 }
+    if supported_pruned_after - supported_pruned_before != 0 { return 6 }
+    if semantic_pruned_after - semantic_pruned_before <= 0 { return 7 }
     return 0
 }
 "#;
 
     let output = compile_and_run_native_inline_source(
         source,
-        "wr_v2_authored_support_pruning_preserves_hit_identity",
+        "wr_v2_authored_support_quarantine_preserves_hit_identity",
     );
     let expected = expected_int_exit(0);
     assert_eq!(
@@ -1866,7 +1863,7 @@ fn main() -> Integer {
 }
 
 #[test]
-fn native_v2_authored_support_prunes_custom_field_branches() {
+fn native_v2_authored_support_quarantines_custom_field_branches() {
     if std::env::var("WR_SKIP_NATIVE").is_ok() {
         return;
     }
@@ -1877,23 +1874,37 @@ field exact distance near_orb(p: Vec3) -> F32 {
 
 field conservative distance far_custom_supported(p: Vec3) -> F32 {
     support = Support3(bounds=Bounds3(
-        min=vec3(7.5, -1.0, -1.0),
-        max=vec3(8.5, 1.0, 1.0)
+        min=vec3(8.0, -1.0, -1.0),
+        max=vec3(12.0, 1.0, 1.0)
     ))
     bounds = Bounds3(
-        min=vec3(7.5, -1.0, -1.0),
-        max=vec3(8.5, 1.0, 1.0)
+        min=vec3(8.0, -1.0, -1.0),
+        max=vec3(12.0, 1.0, 1.0)
     )
-    return length(p - vec3(8.0, 0.0, 0.0)) - 0.5
+    return length(p - vec3(10.0, 0.0, 0.0)) - 0.5
 }
 
-field conservative distance far_custom_plain(p: Vec3) -> F32 {
-    return length(p - vec3(8.0, 0.0, 0.0)) - 0.5
+field conservative distance far_semantic(p: Vec3) -> F32 {
+    translate = vec3(10.0, 0.0, 0.0) {
+        sphere(radius=0.5)
+    }
 }
 
-material shade(hit: Hit3) -> Surface {
+material near_shade(hit: Hit3) -> Surface {
     return Surface(
-        albedo=vec3(0.5, 0.5, 0.5),
+        albedo=vec3(1.0, 0.0, 0.0),
+        roughness=0.4,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+material far_shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.0, 1.0, 0.0),
         roughness=0.4,
         metalness=0.0,
         clearcoat=0.0,
@@ -1905,7 +1916,7 @@ material shade(hit: Hit3) -> Surface {
 
 shape near_shape {
     field = near_orb
-    material = shade
+    material = near_shade
     payload = Payload(
         entity_id=u64(1),
         material_id=u64(1),
@@ -1915,7 +1926,7 @@ shape near_shape {
 
 shape far_supported_shape {
     field = far_custom_supported
-    material = shade
+    material = far_shade
     payload = Payload(
         entity_id=u64(2),
         material_id=u64(2),
@@ -1923,9 +1934,9 @@ shape far_supported_shape {
     )
 }
 
-shape far_plain_shape {
-    field = far_custom_plain
-    material = shade
+shape far_semantic_shape {
+    field = far_semantic
+    material = far_shade
     payload = Payload(
         entity_id=u64(3),
         material_id=u64(3),
@@ -1941,16 +1952,27 @@ shape supported_scene {
     }
 }
 
-shape plain_scene {
+shape semantic_scene {
     union {
         provenance_policy = nearest
         use near_shape
-        use far_plain_shape
+        use far_semantic_shape
     }
 }
 
 fn main() -> Integer {
     pruned_before = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
+    candidate_before = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+    near_capture = capture near_shape
+    near_hit = trace_shape(
+        capture=near_capture,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
     scene_capture = capture supported_scene
     supported_hit = trace_shape(
         capture=scene_capture,
@@ -1962,9 +1984,13 @@ fn main() -> Integer {
         max_steps=96
     )
     pruned_mid = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
-    plain_capture = capture plain_scene
-    plain_hit = trace_shape(
-        capture=plain_capture,
+    candidate_mid = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+    supported_surface = surface_at(capture=scene_capture, hit=supported_hit)
+    semantic_pruned_before = pruned_mid
+    semantic_candidate_before = candidate_mid
+    semantic_capture = capture semantic_scene
+    semantic_hit = trace_shape(
+        capture=semantic_capture,
         origin=vec3(0.0, 0.0, 3.0),
         direction=vec3(0.0, 0.0, -1.0),
         max_distance=6.0,
@@ -1972,17 +1998,44 @@ fn main() -> Integer {
         hit_epsilon=0.001,
         max_steps=96
     )
-    pruned_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
-    return (pruned_mid - pruned_before) - (pruned_after - pruned_mid)
+    semantic_pruned_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
+    semantic_candidate_after = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+    semantic_surface = surface_at(capture=semantic_capture, hit=semantic_hit)
+    if near_hit.hit != true { return 12 }
+    if supported_hit.hit != true { return 1 }
+    if semantic_hit.hit != true { return 2 }
+    if supported_hit.payload.entity_id != near_hit.payload.entity_id {
+        if supported_hit.payload.entity_id == u64(2) { return 17 }
+        if supported_hit.payload.entity_id == u64(0) { return 18 }
+        return 19
+    }
+    if semantic_hit.payload.entity_id != near_hit.payload.entity_id { return 20 }
+    if supported_hit.feature_id != near_hit.feature_id {
+        if supported_hit.feature_id == u64(3489078501122895582) { return 13 }
+        if supported_hit.feature_id == u64(0) { return 14 }
+        return 15
+    }
+    if semantic_hit.feature_id != near_hit.feature_id { return 16 }
+    if supported_hit.feature_id != semantic_hit.feature_id { return 3 }
+    if abs(supported_hit.distance - semantic_hit.distance) > 0.0001 { return 4 }
+    if candidate_mid - candidate_before <= 0 { return 5 }
+    if semantic_candidate_after - semantic_candidate_before <= 0 { return 6 }
+    if pruned_mid - pruned_before != 0 { return 7 }
+    if semantic_pruned_after - semantic_pruned_before <= 0 { return 8 }
+    if supported_surface.albedo.x != semantic_surface.albedo.x { return 9 }
+    if supported_surface.albedo.y != semantic_surface.albedo.y { return 10 }
+    if supported_surface.albedo.z != semantic_surface.albedo.z { return 11 }
+    return 0
 }
 "#;
 
     let output = compile_and_run_native_inline_source(
         source,
-        "wr_v2_authored_support_prunes_custom_field_branches",
+        "wr_v2_authored_support_quarantines_custom_field_branches",
     );
-    assert!(
-        output.status.code().unwrap_or(-1) > 0,
+    assert_eq!(
+        output.status.code().unwrap_or(-1),
+        expected_int_exit(0),
         "stdout={}\nstderr={}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
@@ -1990,14 +2043,19 @@ fn main() -> Integer {
 }
 
 #[test]
-fn native_v2_authored_support_bounds_enable_support_pruning() {
+fn native_v2_authored_support_bounds_quarantine_custom_fields() {
     if std::env::var("WR_SKIP_NATIVE").is_ok() {
         return;
     }
 
-    fn scene_source(include_authored_support: bool) -> String {
-        let support_clause = if include_authored_support {
-            r#"    support = Support3(bounds=Bounds3(
+    fn authored_scene_source() -> &'static str {
+        r#"
+field exact distance near_field(p: Vec3) -> F32 {
+    sphere(radius=0.5)
+}
+
+field conservative distance far_field(p: Vec3) -> F32 {
+    support = Support3(bounds=Bounds3(
         min=vec3(8.0, -1.0, -1.0),
         max=vec3(12.0, 1.0, 1.0)
     ))
@@ -2005,22 +2063,10 @@ fn native_v2_authored_support_bounds_enable_support_pruning() {
         min=vec3(8.0, -1.0, -1.0),
         max=vec3(12.0, 1.0, 1.0)
     )
-"#
-        } else {
-            ""
-        };
+    return length(p - vec3(10.0, 0.0, 0.0)) - 0.5
+}
 
-        format!(
-            r#"
-field conservative distance near_field(p: Vec3) -> F32 {{
-    return sphere(p=p, radius=0.5)
-}}
-
-field conservative distance far_field(p: Vec3) -> F32 {{
-{support_clause}    return length(p - vec3(10.0, 0.0, 0.0)) - 0.5
-}}
-
-material shade(hit: Hit3) -> Surface {{
+material shade(hit: Hit3) -> Surface {
     return Surface(
         albedo=vec3(1.0, 0.0, 0.0),
         roughness=0.0,
@@ -2030,9 +2076,9 @@ material shade(hit: Hit3) -> Surface {{
         sheen=0.0,
         emissive=vec3(0.0, 0.0, 0.0)
     )
-}}
+}
 
-shape near_shape {{
+shape near_shape {
     field = near_field
     material = shade
     payload = Payload(
@@ -2040,9 +2086,9 @@ shape near_shape {{
         material_id=u64(1),
         actor=ActorHandle(id=u64(1), generation=u32(0))
     )
-}}
+}
 
-shape far_shape {{
+shape far_shape {
     field = far_field
     material = shade
     payload = Payload(
@@ -2050,17 +2096,17 @@ shape far_shape {{
         material_id=u64(2),
         actor=ActorHandle(id=u64(2), generation=u32(0))
     )
-}}
+}
 
-shape scene_shape {{
-    union {{
+shape scene_shape {
+    union {
         provenance_policy = nearest
         use near_shape
         use far_shape
-    }}
-}}
+    }
+}
 
-fn main() -> Integer {{
+fn main() -> Integer {
     pruned_before = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
     scene_capture = capture scene_shape
 
@@ -2076,36 +2122,105 @@ fn main() -> Integer {{
 
     pruned_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
     return pruned_after - pruned_before
-}}
-"#,
-            support_clause = support_clause,
-        )
+}
+"#
+    }
+
+    fn semantic_scene_source() -> &'static str {
+        r#"
+field exact distance near_field(p: Vec3) -> F32 {
+    sphere(radius=0.5)
+}
+
+field conservative distance far_field(p: Vec3) -> F32 {
+    translate = vec3(10.0, 0.0, 0.0) {
+        sphere(radius=0.5)
+    }
+}
+
+material shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(1.0, 0.0, 0.0),
+        roughness=0.0,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape near_shape {
+    field = near_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(1),
+        material_id=u64(1),
+        actor=ActorHandle(id=u64(1), generation=u32(0))
+    )
+}
+
+shape far_shape {
+    field = far_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(2),
+        material_id=u64(2),
+        actor=ActorHandle(id=u64(2), generation=u32(0))
+    )
+}
+
+shape scene_shape {
+    union {
+        provenance_policy = nearest
+        use near_shape
+        use far_shape
+    }
+}
+
+fn main() -> Integer {
+    pruned_before = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
+    scene_capture = capture scene_shape
+
+    hit = trace_shape(
+        capture=scene_capture,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+
+    pruned_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
+    return pruned_after - pruned_before
+}
+"#
     }
 
     let authored_output = compile_and_run_native_inline_source(
-        &scene_source(true),
-        "wr_v2_authored_support_bounds_enable_support_pruning",
+        authored_scene_source(),
+        "wr_v2_authored_support_bounds_quarantine_custom_fields",
     );
     let authored_delta = authored_output.status.code().unwrap_or(-1);
 
-    let control_output = compile_and_run_native_inline_source(
-        &scene_source(false),
-        "wr_v2_authored_support_bounds_disable_support_pruning",
+    let semantic_output = compile_and_run_native_inline_source(
+        semantic_scene_source(),
+        "wr_v2_semantic_support_bounds_enable_support_pruning",
     );
-    let control_delta = control_output.status.code().unwrap_or(-1);
+    let semantic_delta = semantic_output.status.code().unwrap_or(-1);
 
-    assert_eq!(
-        control_delta,
-        0,
-        "stdout={}\nstderr={}",
-        String::from_utf8_lossy(&control_output.stdout),
-        String::from_utf8_lossy(&control_output.stderr)
-    );
     assert!(
-        authored_delta > control_delta,
+        authored_delta == expected_int_exit(0),
         "stdout={}\nstderr={}",
         String::from_utf8_lossy(&authored_output.stdout),
         String::from_utf8_lossy(&authored_output.stderr)
+    );
+    assert!(
+        semantic_delta > 0,
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&semantic_output.stdout),
+        String::from_utf8_lossy(&semantic_output.stderr)
     );
 }
 
@@ -2745,19 +2860,19 @@ fn native_v2_semantic_field_composition_smoke() {
     }
     let source = r#"
 field conservative distance left_x(p: Vec3) -> F32 {
-    return p.x
+    plane(normal = vec3(1.0, 0.0, 0.0), offset = 0.0)
 }
 
 field conservative distance left_y(p: Vec3) -> F32 {
-    return p.y
+    plane(normal = vec3(0.0, 1.0, 0.0), offset = 0.0)
 }
 
 field conservative distance cap_z(p: Vec3) -> F32 {
-    return p.z
+    plane(normal = vec3(0.0, 0.0, 1.0), offset = 0.0)
 }
 
 field conservative distance notch(p: Vec3) -> F32 {
-    return p.x - 0.5
+    plane(normal = vec3(1.0, 0.0, 0.0), offset = -0.5)
 }
 
 field conservative distance composed(p: Vec3) -> F32 {
@@ -3197,11 +3312,13 @@ fn main() -> Integer {
         hir::typeck::check_module_with_info(&lower_inline_module_from_source(source));
     let rejection_count = errors
         .iter()
-        .filter(|err| matches!(
-            err,
-            hir::typeck::TypeError::ShapeQueryTargetMustBeShape { query, .. }
-                if query.as_str() == "radiance_at" || query.as_str() == "medium_at"
-        ))
+        .filter(|err| {
+            matches!(
+                err,
+                hir::typeck::TypeError::ShapeQueryTargetMustBeShape { query, .. }
+                    if query.as_str() == "radiance_at" || query.as_str() == "medium_at"
+            )
+        })
         .count();
     assert_eq!(
         rejection_count, 2,
@@ -3592,6 +3709,794 @@ fn main() -> Integer {
         expected,
         "stdout={}\nstderr={}",
         String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn native_v2_phase9_rotated_trace_reports_leaf_local_normal() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = r#"
+field exact distance rotated_sphere_field(p: Vec3) -> F32 {
+    rotate = vec3(0.0, 1.5707963, 0.0) {
+        sphere(radius = 1.0)
+    }
+}
+
+material rotated_surface(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.2, 0.3, 0.4),
+        roughness=0.4,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape rotated_shape {
+    field = rotated_sphere_field
+    material = rotated_surface
+    payload = Payload(
+        entity_id=u64(950),
+        material_id=u64(950),
+        actor=ActorHandle(id=u64(950), generation=u32(0))
+    )
+}
+
+fn main() -> Integer {
+    scene = capture rotated_shape
+    hit = trace_shape(
+        capture=scene,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+
+    if hit.hit != true { return 1 }
+    if hit.normal.z < 0.95 { return 2 }
+    if abs(abs(hit.local_normal.x) - 1.0) > 0.05 { return 3 }
+    if abs(hit.local_normal.z) > 0.05 { return 4 }
+    if abs(abs(hit.local_position.x) - 1.0) > 0.05 { return 5 }
+    if abs(hit.local_position.z) > 0.05 { return 6 }
+    return 0
+}
+"#;
+
+    let output = compile_and_run_native_inline_source(
+        source,
+        "wr_v2_phase9_rotated_trace_reports_leaf_local_normal",
+    );
+    let expected = expected_int_exit(0);
+    assert_eq!(
+        output.status.code().unwrap_or(-1),
+        expected,
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn native_v2_phase9_rotated_ellipsoid_matches_reference_local_frame() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = r#"
+field conservative distance phase5_ellipsoid_field(p: Vec3) -> F32 {
+    ellipsoid(radii=vec3(0.58, 0.38, 0.46))
+}
+
+material shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.2, 0.3, 0.4),
+        roughness=0.4,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape phase5_ellipsoid_shape {
+    field = phase5_ellipsoid_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(1),
+        material_id=u64(1),
+        actor=ActorHandle(id=u64(1), generation=u32(0))
+    )
+}
+
+field conservative distance phase9_rotated_ellipsoid_field(p: Vec3) -> F32 {
+    rotate = vec3(0.35, 0.0, 0.0) {
+        use phase5_ellipsoid_field
+    }
+}
+
+shape phase9_rotated_ellipsoid_shape {
+    field = phase9_rotated_ellipsoid_field
+    material = shade
+    payload = Payload(
+        entity_id=u64(2),
+        material_id=u64(2),
+        actor=ActorHandle(id=u64(2), generation=u32(0))
+    )
+}
+
+fn main() -> Integer {
+    angle = 0.35
+    inverse_rotation = Transform3(
+        matrix=mat4_cols(
+            vec4(1.0, 0.0, 0.0, 0.0),
+            vec4(0.0, cos(angle), -sin(angle), 0.0),
+            vec4(0.0, sin(angle), cos(angle), 0.0),
+            vec4(0.0, 0.0, 0.0, 1.0)
+        ),
+        inverse=mat4_cols(
+            vec4(1.0, 0.0, 0.0, 0.0),
+            vec4(0.0, cos(angle), sin(angle), 0.0),
+            vec4(0.0, -sin(angle), cos(angle), 0.0),
+            vec4(0.0, 0.0, 0.0, 1.0)
+        )
+    )
+    world_origin = vec3(0.18, 0.07, 3.0)
+    world_direction = vec3(0.0, 0.0, -1.0)
+    reference_origin = transform_point(transform=inverse_rotation, point=world_origin)
+    reference_direction = transform_vector(transform=inverse_rotation, vector=world_direction)
+    rotated_scene = capture phase9_rotated_ellipsoid_shape
+    reference_scene = capture phase5_ellipsoid_shape
+    rotated_hit = trace_shape(
+        capture=rotated_scene,
+        origin=world_origin,
+        direction=world_direction,
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    reference_hit = trace_shape(
+        capture=reference_scene,
+        origin=reference_origin,
+        direction=reference_direction,
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    rotated_hits = trace_shape_batch(
+        capture=rotated_scene,
+        rays=[
+            RayQuery(
+                origin=world_origin,
+                direction=world_direction,
+                max_distance=6.0,
+                min_step=0.05,
+                hit_epsilon=0.001,
+                max_steps=96
+            )
+        ],
+        backend=dispatch_backend_cpu()
+    )
+    reference_hits = trace_shape_batch(
+        capture=reference_scene,
+        rays=[
+            RayQuery(
+                origin=reference_origin,
+                direction=reference_direction,
+                max_distance=6.0,
+                min_step=0.05,
+                hit_epsilon=0.001,
+                max_steps=96
+            )
+        ],
+        backend=dispatch_backend_cpu()
+    )
+
+    if not rotated_hit.hit or not reference_hit.hit { return 1 }
+    if not rotated_hits[0].hit or not reference_hits[0].hit { return 2 }
+    if abs(rotated_hit.local_position.x - reference_hit.local_position.x) > 0.01 { return 3 }
+    if abs(rotated_hit.local_position.y - reference_hit.local_position.y) > 0.01 { return 4 }
+    if abs(rotated_hit.local_position.z - reference_hit.local_position.z) > 0.01 { return 5 }
+    if abs(rotated_hit.local_normal.x - reference_hit.local_normal.x) > 0.01 { return 6 }
+    if abs(rotated_hit.local_normal.y - reference_hit.local_normal.y) > 0.01 { return 7 }
+    if abs(rotated_hit.local_normal.z - reference_hit.local_normal.z) > 0.01 { return 8 }
+    if abs(rotated_hits[0].local_position.x - reference_hits[0].local_position.x) > 0.01 { return 9 }
+    if abs(rotated_hits[0].local_position.y - reference_hits[0].local_position.y) > 0.01 { return 10 }
+    if abs(rotated_hits[0].local_position.z - reference_hits[0].local_position.z) > 0.01 { return 11 }
+    if abs(rotated_hits[0].local_normal.x - reference_hits[0].local_normal.x) > 0.01 { return 12 }
+    if abs(rotated_hits[0].local_normal.y - reference_hits[0].local_normal.y) > 0.01 { return 13 }
+    if abs(rotated_hits[0].local_normal.z - reference_hits[0].local_normal.z) > 0.01 { return 14 }
+    return 0
+}
+"#;
+
+    let output = compile_and_run_native_inline_source(
+        source,
+        "wr_v2_phase9_rotated_ellipsoid_matches_reference_local_frame",
+    );
+    let expected = expected_int_exit(0);
+    assert_eq!(
+        output.status.code().unwrap_or(-1),
+        expected,
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn native_v2_phase9_rotated_exact_primitives_match_reference_local_normals() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = r#"
+field exact distance phase9_capsule_reference(p: Vec3) -> F32 {
+    capsule(a = vec3(0.0, -0.8, 0.0), b = vec3(0.0, 0.8, 0.0), radius = 0.35)
+}
+
+field exact distance phase9_capsule_rotated(p: Vec3) -> F32 {
+    rotate = vec3(0.55, 0.0, 0.0) {
+        capsule(a = vec3(0.0, -0.8, 0.0), b = vec3(0.0, 0.8, 0.0), radius = 0.35)
+    }
+}
+
+field exact distance phase9_cylinder_reference(p: Vec3) -> F32 {
+    cylinder(radius = 0.45, half_height = 0.9)
+}
+
+field exact distance phase9_cylinder_rotated(p: Vec3) -> F32 {
+    rotate = vec3(0.55, 0.0, 0.0) {
+        cylinder(radius = 0.45, half_height = 0.9)
+    }
+}
+
+field exact distance phase9_torus_reference(p: Vec3) -> F32 {
+    torus(major_radius = 1.0, minor_radius = 0.28)
+}
+
+field exact distance phase9_torus_rotated(p: Vec3) -> F32 {
+    rotate = vec3(0.55, 0.0, 0.0) {
+        torus(major_radius = 1.0, minor_radius = 0.28)
+    }
+}
+
+material phase9_local_normal_surface(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.2, 0.3, 0.4),
+        roughness=0.4,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape phase9_capsule_reference_shape {
+    field = phase9_capsule_reference
+    material = phase9_local_normal_surface
+    payload = Payload(
+        entity_id=u64(960),
+        material_id=u64(960),
+        actor=ActorHandle(id=u64(960), generation=u32(0))
+    )
+}
+
+shape phase9_capsule_rotated_shape {
+    field = phase9_capsule_rotated
+    material = phase9_local_normal_surface
+    payload = Payload(
+        entity_id=u64(961),
+        material_id=u64(961),
+        actor=ActorHandle(id=u64(961), generation=u32(0))
+    )
+}
+
+shape phase9_cylinder_reference_shape {
+    field = phase9_cylinder_reference
+    material = phase9_local_normal_surface
+    payload = Payload(
+        entity_id=u64(962),
+        material_id=u64(962),
+        actor=ActorHandle(id=u64(962), generation=u32(0))
+    )
+}
+
+shape phase9_cylinder_rotated_shape {
+    field = phase9_cylinder_rotated
+    material = phase9_local_normal_surface
+    payload = Payload(
+        entity_id=u64(963),
+        material_id=u64(963),
+        actor=ActorHandle(id=u64(963), generation=u32(0))
+    )
+}
+
+shape phase9_torus_reference_shape {
+    field = phase9_torus_reference
+    material = phase9_local_normal_surface
+    payload = Payload(
+        entity_id=u64(964),
+        material_id=u64(964),
+        actor=ActorHandle(id=u64(964), generation=u32(0))
+    )
+}
+
+shape phase9_torus_rotated_shape {
+    field = phase9_torus_rotated
+    material = phase9_local_normal_surface
+    payload = Payload(
+        entity_id=u64(965),
+        material_id=u64(965),
+        actor=ActorHandle(id=u64(965), generation=u32(0))
+    )
+}
+
+fn main() -> Integer {
+    angle = 0.55
+    inverse_rotation = Transform3(
+        matrix=mat4_cols(
+            vec4(1.0, 0.0, 0.0, 0.0),
+            vec4(0.0, cos(angle), -sin(angle), 0.0),
+            vec4(0.0, sin(angle), cos(angle), 0.0),
+            vec4(0.0, 0.0, 0.0, 1.0)
+        ),
+        inverse=mat4_cols(
+            vec4(1.0, 0.0, 0.0, 0.0),
+            vec4(0.0, cos(angle), sin(angle), 0.0),
+            vec4(0.0, -sin(angle), cos(angle), 0.0),
+            vec4(0.0, 0.0, 0.0, 1.0)
+        )
+    )
+
+    capsule_world_origin = vec3(0.18, 0.55, 3.0)
+    cylinder_world_origin = vec3(0.22, 0.4, 3.0)
+    torus_world_origin = vec3(1.15, 0.12, 3.0)
+    world_direction = vec3(0.0, 0.0, -1.0)
+    reference_direction = transform_vector(transform=inverse_rotation, vector=world_direction)
+
+    capsule_reference_origin = transform_point(transform=inverse_rotation, point=capsule_world_origin)
+    cylinder_reference_origin = transform_point(transform=inverse_rotation, point=cylinder_world_origin)
+    torus_reference_origin = transform_point(transform=inverse_rotation, point=torus_world_origin)
+
+    capsule_rotated_scene = capture phase9_capsule_rotated_shape
+    capsule_reference_scene = capture phase9_capsule_reference_shape
+    cylinder_rotated_scene = capture phase9_cylinder_rotated_shape
+    cylinder_reference_scene = capture phase9_cylinder_reference_shape
+    torus_rotated_scene = capture phase9_torus_rotated_shape
+    torus_reference_scene = capture phase9_torus_reference_shape
+
+    capsule_rotated_hit = trace_shape(
+        capture=capsule_rotated_scene,
+        origin=capsule_world_origin,
+        direction=world_direction,
+        max_distance=8.0,
+        min_step=0.02,
+        hit_epsilon=0.001,
+        max_steps=128
+    )
+    capsule_reference_hit = trace_shape(
+        capture=capsule_reference_scene,
+        origin=capsule_reference_origin,
+        direction=reference_direction,
+        max_distance=8.0,
+        min_step=0.02,
+        hit_epsilon=0.001,
+        max_steps=128
+    )
+
+    cylinder_rotated_hit = trace_shape(
+        capture=cylinder_rotated_scene,
+        origin=cylinder_world_origin,
+        direction=world_direction,
+        max_distance=8.0,
+        min_step=0.02,
+        hit_epsilon=0.001,
+        max_steps=128
+    )
+    cylinder_reference_hit = trace_shape(
+        capture=cylinder_reference_scene,
+        origin=cylinder_reference_origin,
+        direction=reference_direction,
+        max_distance=8.0,
+        min_step=0.02,
+        hit_epsilon=0.001,
+        max_steps=128
+    )
+
+    torus_rotated_hit = trace_shape(
+        capture=torus_rotated_scene,
+        origin=torus_world_origin,
+        direction=world_direction,
+        max_distance=8.0,
+        min_step=0.02,
+        hit_epsilon=0.001,
+        max_steps=128
+    )
+    torus_reference_hit = trace_shape(
+        capture=torus_reference_scene,
+        origin=torus_reference_origin,
+        direction=reference_direction,
+        max_distance=8.0,
+        min_step=0.02,
+        hit_epsilon=0.001,
+        max_steps=128
+    )
+
+    if not capsule_rotated_hit.hit or not capsule_reference_hit.hit { return 1 }
+    if not cylinder_rotated_hit.hit or not cylinder_reference_hit.hit { return 2 }
+    if not torus_rotated_hit.hit or not torus_reference_hit.hit { return 3 }
+
+    if abs(capsule_rotated_hit.local_position.x - capsule_reference_hit.local_position.x) > 0.02 { return 4 }
+    if abs(capsule_rotated_hit.local_position.y - capsule_reference_hit.local_position.y) > 0.02 { return 5 }
+    if abs(capsule_rotated_hit.local_position.z - capsule_reference_hit.local_position.z) > 0.02 { return 6 }
+    if abs(capsule_rotated_hit.local_normal.x - capsule_reference_hit.local_normal.x) > 0.02 { return 7 }
+    if abs(capsule_rotated_hit.local_normal.y - capsule_reference_hit.local_normal.y) > 0.02 { return 8 }
+    if abs(capsule_rotated_hit.local_normal.z - capsule_reference_hit.local_normal.z) > 0.02 { return 9 }
+
+    if abs(cylinder_rotated_hit.local_position.x - cylinder_reference_hit.local_position.x) > 0.02 { return 10 }
+    if abs(cylinder_rotated_hit.local_position.y - cylinder_reference_hit.local_position.y) > 0.02 { return 11 }
+    if abs(cylinder_rotated_hit.local_position.z - cylinder_reference_hit.local_position.z) > 0.02 { return 12 }
+    if abs(cylinder_rotated_hit.local_normal.x - cylinder_reference_hit.local_normal.x) > 0.02 { return 13 }
+    if abs(cylinder_rotated_hit.local_normal.y - cylinder_reference_hit.local_normal.y) > 0.02 { return 14 }
+    if abs(cylinder_rotated_hit.local_normal.z - cylinder_reference_hit.local_normal.z) > 0.02 { return 15 }
+
+    if abs(torus_rotated_hit.local_position.x - torus_reference_hit.local_position.x) > 0.02 { return 16 }
+    if abs(torus_rotated_hit.local_position.y - torus_reference_hit.local_position.y) > 0.02 { return 17 }
+    if abs(torus_rotated_hit.local_position.z - torus_reference_hit.local_position.z) > 0.02 { return 18 }
+    if abs(torus_rotated_hit.local_normal.x - torus_reference_hit.local_normal.x) > 0.02 { return 19 }
+    if abs(torus_rotated_hit.local_normal.y - torus_reference_hit.local_normal.y) > 0.02 { return 20 }
+    if abs(torus_rotated_hit.local_normal.z - torus_reference_hit.local_normal.z) > 0.02 { return 21 }
+
+    return 0
+}
+"#;
+
+    let output = compile_and_run_native_inline_source(
+        source,
+        "wr_v2_phase9_rotated_exact_primitives_match_reference_local_normals",
+    );
+    let expected = expected_int_exit(0);
+    assert_eq!(
+        output.status.code().unwrap_or(-1),
+        expected,
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn native_v2_phase9_virtual_gpu_trace_batch_preserves_identity_and_local_frame() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = r#"
+field conservative distance wrapped_batch_field(p: Vec3) -> F32 {
+    repeat_linear = vec3(2.0, 0.0, 0.0) {
+        instance_array = Transform3(
+            matrix=mat4_cols(
+                vec4(1.0, 0.0, 0.0, 0.0),
+                vec4(0.0, 1.0, 0.0, 0.0),
+                vec4(0.0, 0.0, 1.0, 0.0),
+                vec4(0.0, 0.0, 0.0, 1.0)
+            ),
+            inverse=mat4_cols(
+                vec4(1.0, 0.0, 0.0, 0.0),
+                vec4(0.0, 1.0, 0.0, 0.0),
+                vec4(0.0, 0.0, 1.0, 0.0),
+                vec4(0.0, 0.0, 0.0, 1.0)
+            )
+        ) {
+            rotate = vec3(0.0, 1.5707963, 0.0) {
+                sphere(radius = 0.5)
+            }
+        }
+    }
+}
+
+material wrapped_batch_surface(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.3, 0.4, 0.5),
+        roughness=0.35,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape wrapped_batch_shape {
+    field = wrapped_batch_field
+    material = wrapped_batch_surface
+    payload = Payload(
+        entity_id=u64(951),
+        material_id=u64(951),
+        actor=ActorHandle(id=u64(951), generation=u32(0))
+    )
+}
+
+fn main() -> Integer {
+    scene = capture wrapped_batch_shape
+    rays = [
+        RayQuery(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        ),
+        RayQuery(
+            origin=vec3(2.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
+    ]
+    cpu_hits = trace_shape_batch(
+        capture=scene,
+        rays=rays,
+        backend=dispatch_backend_cpu()
+    )
+    vgpu_hits = trace_shape_batch(
+        capture=scene,
+        rays=rays,
+        backend=dispatch_backend_virtual_gpu()
+    )
+
+    if not cpu_hits[0].hit or not cpu_hits[1].hit { return 1 }
+    if not vgpu_hits[0].hit or not vgpu_hits[1].hit { return 2 }
+    if cpu_hits[0].instance_id != cpu_hits[1].instance_id { return 3 }
+    if cpu_hits[0].repeat_id == cpu_hits[1].repeat_id { return 4 }
+    if vgpu_hits[0].instance_id != cpu_hits[0].instance_id { return 5 }
+    if vgpu_hits[1].instance_id != cpu_hits[1].instance_id { return 6 }
+    if vgpu_hits[0].repeat_id != cpu_hits[0].repeat_id { return 7 }
+    if vgpu_hits[1].repeat_id != cpu_hits[1].repeat_id { return 8 }
+    if abs(vgpu_hits[0].local_position.x - cpu_hits[0].local_position.x) > 0.01 { return 9 }
+    if abs(vgpu_hits[0].local_position.y - cpu_hits[0].local_position.y) > 0.01 { return 10 }
+    if abs(vgpu_hits[0].local_position.z - cpu_hits[0].local_position.z) > 0.01 { return 11 }
+    if abs(vgpu_hits[1].local_position.x - cpu_hits[1].local_position.x) > 0.01 { return 12 }
+    if abs(vgpu_hits[1].local_position.y - cpu_hits[1].local_position.y) > 0.01 { return 13 }
+    if abs(vgpu_hits[1].local_position.z - cpu_hits[1].local_position.z) > 0.01 { return 14 }
+    if abs(vgpu_hits[0].local_normal.x - cpu_hits[0].local_normal.x) > 0.01 { return 15 }
+    if abs(vgpu_hits[0].local_normal.y - cpu_hits[0].local_normal.y) > 0.01 { return 16 }
+    if abs(vgpu_hits[0].local_normal.z - cpu_hits[0].local_normal.z) > 0.01 { return 17 }
+    if abs(vgpu_hits[1].local_normal.x - cpu_hits[1].local_normal.x) > 0.01 { return 18 }
+    if abs(vgpu_hits[1].local_normal.y - cpu_hits[1].local_normal.y) > 0.01 { return 19 }
+    if abs(vgpu_hits[1].local_normal.z - cpu_hits[1].local_normal.z) > 0.01 { return 20 }
+    return 0
+}
+"#;
+
+    let output = compile_and_run_native_inline_source(
+        source,
+        "wr_v2_phase9_virtual_gpu_trace_batch_preserves_identity_and_local_frame",
+    );
+    let expected = expected_int_exit(0);
+    assert_eq!(
+        output.status.code().unwrap_or(-1),
+        expected,
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn native_v2_phase8_region_domain_render_world_queries_smoke() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = r#"
+field exact distance phase8_coarse_shell(p: Vec3) -> F32 {
+    translate = vec3(3.0, 0.0, 0.0) {
+        sphere(radius = 0.5)
+    }
+}
+
+field exact distance phase8_fine_shell(p: Vec3) -> F32 {
+    sphere(radius = 0.6)
+}
+
+radiance field phase8_radiance(p: Vec3, direction: Vec3, feature_id: U64) -> Vec3 {
+    horizon = clamp(0.5 + direction.y * 0.5, 0.0, 1.0)
+    glow = clamp(0.25 - abs(p.z - 0.6), 0.0, 0.25) * 4.0
+    feature = clamp(f32(feature_id), 0.0, 1.0)
+    return vec3(0.08, 0.12, 0.20) * (1.0 - horizon)
+        + vec3(0.20, 0.34, 0.72) * horizon
+        + vec3(0.04, 0.02, 0.10) * glow * feature
+}
+
+volume field phase8_volume(p: Vec3, surface_distance: F32) -> Medium {
+    density = clamp(0.04 + clamp(0.18 - abs(surface_distance), 0.0, 0.18) * 0.45, 0.0, 0.16)
+    return Medium(
+        density=density,
+        emission=vec3(0.02, 0.03, 0.06) * density + vec3(abs(p.x) * 0.0, 0.0, 0.0),
+        anisotropy=0.08
+    )
+}
+
+material phase8_surface(hit: Hit3) -> Surface {
+    ridge = clamp(abs(hit.local_position.y) * 0.6 + abs(hit.local_normal.x) * 0.2, 0.0, 1.0)
+    return Surface(
+        albedo=vec3(0.16, 0.24, 0.62) + vec3(0.08, 0.04, 0.10) * ridge,
+        roughness=0.18 + ridge * 0.16,
+        metalness=0.10 + clamp(hit.local_normal.z, 0.0, 1.0) * 0.12,
+        clearcoat=0.12 + clamp(hit.local_normal.y, 0.0, 1.0) * 0.10,
+        clearcoat_roughness=0.08 + abs(hit.local_position.x) * 0.10,
+        sheen=0.06 + abs(hit.local_normal.x) * 0.10,
+        emissive=vec3(0.02, 0.01, 0.04) * clamp(hit.local_normal.z, 0.0, 1.0)
+    )
+}
+
+shape phase8_coarse_shape {
+    field = phase8_coarse_shell
+    material = phase8_surface
+    payload = Payload(
+        entity_id=u64(810),
+        material_id=u64(810),
+        actor=ActorHandle(id=u64(810), generation=u32(0))
+    )
+}
+
+shape phase8_fine_shape {
+    field = phase8_fine_shell
+    material = phase8_surface
+    radiance = phase8_radiance
+    volume = phase8_volume
+    payload = Payload(
+        entity_id=u64(811),
+        material_id=u64(811),
+        actor=ActorHandle(id=u64(811), generation=u32(0))
+    )
+}
+
+region phase8_scene_region() {
+    place coarse = phase8_coarse_shape
+    place fine = phase8_fine_shape
+}
+
+domain phase8_coarse_domain(world: RegionCapture) {
+    geometry_detail = 0
+    material = false
+    radiance = false
+    media = false
+    max_distance = 6.0
+    min_step = 0.05
+    hit_epsilon = 0.001
+    max_steps = 96
+}
+
+domain phase8_fine_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = true
+    radiance = true
+    media = true
+    max_distance = 6.0
+    min_step = 0.05
+    hit_epsilon = 0.001
+    max_steps = 96
+}
+
+render phase8_render_ppm(world: RegionCapture, camera: Camera) {
+    domain = phase8_fine_domain(world = world)
+    light = Light(
+        position = camera.position + vec3(1.5, 1.5, 1.5),
+        direction = normalize(vec3(-0.6, -0.7, -0.5)),
+        intensity = vec3(1.0, 0.95, 0.90),
+        range = 10.0
+    )
+    width = 4
+    height = 4
+    world_up = camera.up
+    view_scale = 0.82
+    fill_dir = normalize(vec3(-0.4, 0.5, 0.2))
+}
+
+fn main() -> Integer {
+    world = capture phase8_scene_region
+    coarse_domain = phase8_coarse_domain(world = world)
+    fine_domain = phase8_fine_domain(world = world)
+    probe = vec3(0.0, 0.0, 0.6)
+
+    coarse_distance = distance_world(capture = world, domain = coarse_domain, point = probe)
+    fine_distance = distance_world(capture = world, domain = fine_domain, point = probe)
+    fine_normal = normal_world(capture = world, domain = fine_domain, point = probe)
+    coarse_hit = trace_world(
+        capture = world,
+        domain = coarse_domain,
+        origin = vec3(0.0, 0.0, 3.0),
+        direction = vec3(0.0, 0.0, -1.0),
+        max_distance = 6.0,
+        min_step = 0.05,
+        hit_epsilon = 0.001,
+        max_steps = 96
+    )
+    fine_hit = trace_world(
+        capture = world,
+        domain = fine_domain,
+        origin = vec3(0.0, 0.0, 3.0),
+        direction = vec3(0.0, 0.0, -1.0),
+        max_distance = 6.0,
+        min_step = 0.05,
+        hit_epsilon = 0.001,
+        max_steps = 96
+    )
+    coarse_surface = surface_world(capture = world, domain = coarse_domain, hit = fine_hit)
+    fine_surface = surface_world(capture = world, domain = fine_domain, hit = fine_hit)
+    coarse_radiance = radiance_world(
+        capture = world,
+        domain = coarse_domain,
+        point = fine_hit.position,
+        direction = normalize(vec3(0.0, 1.0, 1.0))
+    )
+    fine_radiance = radiance_world(
+        capture = world,
+        domain = fine_domain,
+        point = fine_hit.position,
+        direction = normalize(vec3(0.0, 1.0, 1.0))
+    )
+    coarse_medium = medium_world(capture = world, domain = coarse_domain, point = fine_hit.position)
+    fine_medium = medium_world(capture = world, domain = fine_domain, point = fine_hit.position)
+    camera = Camera(
+        position = vec3(0.0, 0.0, 3.0),
+        forward = vec3(0.0, 0.0, -1.0),
+        up = vec3(0.0, 1.0, 0.0),
+        vertical_fov_degrees = 48.0
+    )
+    ppm = phase8_render_ppm(world = world, camera = camera)
+
+    if coarse_domain.scene_id != world.scene_id { return 1 }
+    if fine_domain.scene_id != world.scene_id { return 2 }
+    if coarse_domain.geometry_detail != 0 { return 3 }
+    if fine_domain.geometry_detail != 1 { return 4 }
+    if coarse_distance <= 2.0 { return 5 }
+    if abs(fine_distance) > 0.02 { return 6 }
+    if fine_normal.z < 0.9 { return 7 }
+    if coarse_hit.hit { return 8 }
+    if not fine_hit.hit { return 9 }
+    if coarse_surface.albedo.x != 0.0 or coarse_surface.albedo.y != 0.0 or coarse_surface.albedo.z != 0.0 { return 10 }
+    if fine_surface.albedo.z <= fine_surface.albedo.x { return 11 }
+    if coarse_radiance.z != 0.0 { return 12 }
+    if fine_radiance.z <= fine_radiance.x { return 13 }
+    if coarse_medium.density != 0.0 { return 14 }
+    if fine_medium.density <= 0.0 { return 15 }
+    if ppm == "" { return 16 }
+
+    __wr_print(ppm)
+    return 0
+}
+"#;
+
+    let output = compile_and_run_native_inline_source(
+        source,
+        "wr_v2_phase8_region_domain_render_world_queries_smoke",
+    );
+    let expected = expected_int_exit(0);
+    assert_eq!(
+        output.status.code().unwrap_or(-1),
+        expected,
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.starts_with("P3\n4 4\n255\n"),
+        "expected compiler-owned render ppm prefix, got:\n{}\nstderr={}",
+        stdout,
         String::from_utf8_lossy(&output.stderr)
     );
 }

@@ -11,20 +11,19 @@ fn check_async_actor_usage(
     let mut cause: HashMap<usize, Option<Idx<Function>>> = HashMap::new();
 
     for (func_id, func) in module.functions.iter() {
-        let Some(body) = &func.body else {
-            continue;
-        };
         let fn_info = info.function(func_id);
         let mut has_await = false;
         let mut calls = Vec::new();
-        collect_direct_await_and_sync_calls(
-            body,
-            fn_info,
-            &function_by_name,
-            &class_method_ids,
-            &mut has_await,
-            &mut calls,
-        );
+        func.visit_analysis_bodies(|body| {
+            collect_direct_await_and_sync_calls(
+                body,
+                fn_info,
+                &function_by_name,
+                &class_method_ids,
+                &mut has_await,
+                &mut calls,
+            );
+        });
         direct_await.insert(func_id.into_raw(), has_await);
         if has_await {
             cause.insert(func_id.into_raw(), None);
@@ -85,22 +84,21 @@ fn check_async_actor_usage(
     }
 
     for (func_id, func) in module.functions.iter() {
-        let Some(body) = &func.body else {
-            continue;
-        };
         let fn_info = info.function(func_id);
-        check_body_async_usage(
-            body,
-            fn_info,
-            classes,
-            &class_method_ids,
-            &requires_actor,
-            &class_requires_actor,
-            &class_trace,
-            &cause,
-            &func_labels,
-            errors,
-        );
+        func.visit_analysis_bodies(|body| {
+            check_body_async_usage(
+                body,
+                fn_info,
+                classes,
+                &class_method_ids,
+                &requires_actor,
+                &class_requires_actor,
+                &class_trace,
+                &cause,
+                &func_labels,
+                errors,
+            );
+        });
     }
 }
 
@@ -459,7 +457,7 @@ fn visit_expr_for_async(
                 }
             } else if let Expr::Member { object, member, .. } = &body.exprs[*callee]
                 && let Some(fn_info) = fn_info
-                && let Some(obj_ty) = fn_info.expr_types.get(&object.into_raw())
+                && let Some(obj_ty) = fn_info.expr_type(body, *object)
                 && let Type::Named(class_name, _) = obj_ty
                 && let Some(methods) = class_method_ids.get(class_name)
                 && let Some(method_id) = methods.get(member)
@@ -1038,7 +1036,7 @@ fn check_expr_async_usage(
                 member_span,
             } = &body.exprs[*callee]
                 && let Some(fn_info) = fn_info
-                && let Some(obj_ty) = fn_info.expr_types.get(&object.into_raw())
+                && let Some(obj_ty) = fn_info.expr_type(body, *object)
                 && let Type::Named(class_name, _) = obj_ty
                 && let Some(methods) = class_method_ids.get(class_name)
                 && let Some(method_id) = methods.get(member)

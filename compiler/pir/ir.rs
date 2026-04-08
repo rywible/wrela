@@ -161,6 +161,7 @@ pub enum PirIntrinsic {
     RadialRepeat,
     MirrorArray,
     InstanceArray,
+    FieldRotatePoint,
     FieldTransformPoint,
     FieldInstancePoint,
     FieldMirrorPoint,

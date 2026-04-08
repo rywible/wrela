@@ -377,11 +377,9 @@ impl<'a> Checker<'a> {
             }
         }
 
-        if let Some(body) = &func.body
-            && !matches!(func.role, FunctionRole::Domain | FunctionRole::Render)
-        {
+        if !matches!(func.role, FunctionRole::Domain | FunctionRole::Render) {
             let fn_types = self.type_info.functions.get(&func_id);
-            self.check_body_locals(body, fn_types);
+            func.visit_analysis_bodies(|body| self.check_body_locals(body, fn_types));
         }
     }
 
@@ -512,7 +510,7 @@ impl<'a> Checker<'a> {
                         self.check_snake("local", index_name, Some(body.stmt_span(*stmt_id)));
                     }
                     let is_collection_iterable = fn_types
-                        .and_then(|info| info.expr_types.get(&iterable.into_raw()))
+                        .and_then(|info| info.expr_type(body, *iterable))
                         .is_some_and(type_is_collection);
                     if is_collection_iterable {
                         self.check_singular_collection_binder_name(

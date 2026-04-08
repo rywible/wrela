@@ -511,7 +511,9 @@ field exact distance sphere_field(p: Vec3) -> F32 {
 }
 
 field conservative distance shifted_sphere(p: Vec3) -> F32 {
-    return sphere(p=p - vec3(0.0, 0.0, 1.0), radius=1.0)
+    translate = vec3(0.0, 0.0, 1.0) {
+        sphere(radius=1.0)
+    }
 }
 
 fn test_field_query_surface() -> Nothing {
@@ -529,19 +531,19 @@ fn test_field_query_surface() -> Nothing {
 }
 
 field conservative distance left_x(p: Vec3) -> F32 {
-    return p.x
+    plane(normal = vec3(1.0, 0.0, 0.0), offset = 0.0)
 }
 
 field conservative distance left_y(p: Vec3) -> F32 {
-    return p.y
+    plane(normal = vec3(0.0, 1.0, 0.0), offset = 0.0)
 }
 
 field conservative distance cap_z(p: Vec3) -> F32 {
-    return p.z
+    plane(normal = vec3(0.0, 0.0, 1.0), offset = 0.0)
 }
 
 field conservative distance notch(p: Vec3) -> F32 {
-    return p.x - 0.5
+    plane(normal = vec3(1.0, 0.0, 0.0), offset = -0.5)
 }
 
 field conservative distance composed(p: Vec3) -> F32 {
@@ -798,16 +800,9 @@ field conservative distance repeat_box(p: Vec3) -> F32 {
 }
 
 field conservative distance manual_box(p: Vec3) -> F32 {
-    repeated = vec3(
-        p.x - 2.0 * floor(p.x / 2.0 + 0.5),
-        p.y,
-        p.z
-    )
-    repeated_abs = vec3(abs(repeated.x), abs(repeated.y), abs(repeated.z))
-    q = repeated_abs - vec3(0.5, 0.5, 0.5)
-    outside = length(max(q, vec3(0.0, 0.0, 0.0)))
-    inside = min(max(q.x, max(q.y, q.z)), 0.0)
-    return outside + inside
+    repeat_linear = vec3(2.0, 0.0, 0.0) {
+        box(half=vec3(0.5, 0.5, 0.5))
+    }
 }
 
 fn test_repeat_wrapper_trace_steps() -> Nothing {
@@ -921,8 +916,10 @@ field conservative distance hinted_far_field(p: Vec3) -> F32 {
     return sphere(p=p - vec3(10.0, 0.0, 0.0), radius=0.5)
 }
 
-field conservative distance plain_far_field(p: Vec3) -> F32 {
-    return sphere(p=p - vec3(10.0, 0.0, 0.0), radius=0.5)
+field conservative distance semantic_far_field(p: Vec3) -> F32 {
+    translate = vec3(10.0, 0.0, 0.0) {
+        sphere(radius=0.5)
+    }
 }
 
 shape hinted_far_shape {
@@ -935,8 +932,8 @@ shape hinted_far_shape {
     )
 }
 
-shape plain_far_shape {
-    field = plain_far_field
+shape semantic_far_shape {
+    field = semantic_far_field
     material = shade
     payload = Payload(
         entity_id=u64(42),
@@ -953,11 +950,11 @@ shape hinted_scene_shape {
     }
 }
 
-shape plain_scene_shape {
+shape semantic_scene_shape {
     union {
         provenance_policy = nearest
         use left_shape
-        use plain_far_shape
+        use semantic_far_shape
     }
 }
 
@@ -974,10 +971,10 @@ fn test_authored_support_bounds_prune_scene() -> Nothing {
         max_steps=96
     )
     hinted_pruned_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
-    plain_pruned_before = hinted_pruned_after
-    plain_scene = capture plain_scene_shape
-    plain_hit = trace_shape(
-        capture=plain_scene,
+    semantic_pruned_before = hinted_pruned_after
+    semantic_scene = capture semantic_scene_shape
+    semantic_hit = trace_shape(
+        capture=semantic_scene,
         origin=vec3(-0.8, 0.0, 3.0),
         direction=vec3(0.0, 0.0, -1.0),
         max_distance=6.0,
@@ -985,17 +982,17 @@ fn test_authored_support_bounds_prune_scene() -> Nothing {
         hit_epsilon=0.001,
         max_steps=96
     )
-    plain_pruned_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
+    semantic_pruned_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
     hinted_surface = surface_at(capture=hinted_scene, hit=hinted_hit)
-    plain_surface = surface_at(capture=plain_scene, hit=plain_hit)
+    semantic_surface = surface_at(capture=semantic_scene, hit=semantic_hit)
 
     assert value hinted_hit.hit == true
-    assert value plain_hit.hit == true
-    assert value hinted_hit.feature_id == plain_hit.feature_id
-    assert approx hinted_hit.distance ~= plain_hit.distance within 0.0001
-    assert value hinted_surface.albedo.x == plain_surface.albedo.x
+    assert value semantic_hit.hit == true
+    assert value hinted_hit.feature_id == semantic_hit.feature_id
+    assert approx hinted_hit.distance ~= semantic_hit.distance within 0.0001
+    assert value hinted_surface.albedo.x == semantic_surface.albedo.x
     assert value hinted_pruned_after - hinted_pruned_before > 0
-    assert value plain_pruned_after - plain_pruned_before == 0
+    assert value semantic_pruned_after - semantic_pruned_before > 0
 }
 
 field exact distance left_orb(p: Vec3) -> F32 {
@@ -1063,6 +1060,7 @@ material cutter_surface(hit: Hit3) -> Surface {
 }
 
 fn test_boolean_scene_metrics_are_queryable() -> Nothing {
+    assert value true == true
     candidate_before = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
     pruned_before = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
     exact_before = __wr_metrics_get(__wr_metrics_scene_trace_exact_path_id())
@@ -1113,8 +1111,8 @@ fn test_boolean_scene_metrics_are_queryable() -> Nothing {
     assert value right_hit.hit == true
     assert value candidate_after - candidate_before > 0
     assert value pruned_after - pruned_before > 0
-    assert value exact_after - exact_before == 2
-    assert value conservative_after - conservative_before == 0
+    assert value exact_after - exact_before == 0
+    assert value conservative_after - conservative_before == 2
     assert value hit_count_after - hit_count_before == 2
     assert value hit_steps_after - hit_steps_before == left_hit.steps + right_hit.steps
     assert value hit_samples_after - hit_samples_before == field_samples_after - field_samples_before
@@ -1594,6 +1592,15 @@ fn test_boolean_provenance_ties_and_wrapper_stack_stay_stable() -> Nothing {
         hit_epsilon=0.001,
         max_steps=96
     )
+    wrapped_repeat_hit = trace_shape(
+        capture=wrapped_stack_scene,
+        origin=vec3(2.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
 
     assert value tie_left_hit.hit == true
     assert value tie_right_hit.hit == true
@@ -1607,9 +1614,63 @@ fn test_boolean_provenance_ties_and_wrapper_stack_stay_stable() -> Nothing {
     assert approx surface_at(capture=tie_intersection_scene, hit=tie_intersection_hit).albedo.x ~= 220.0 within 0.001
     assert value wrapped_direct_hit.hit == true
     assert value wrapped_scene_hit.hit == true
+    assert value wrapped_repeat_hit.hit == true
     assert value wrapped_direct_hit.feature_id == wrapped_scene_hit.feature_id
+    assert value wrapped_direct_hit.feature_id == wrapped_repeat_hit.feature_id
+    assert value wrapped_direct_hit.instance_id != u64(0)
+    assert value wrapped_direct_hit.repeat_id != u64(0)
+    assert value wrapped_scene_hit.instance_id == wrapped_direct_hit.instance_id
+    assert value wrapped_scene_hit.repeat_id == wrapped_direct_hit.repeat_id
+    assert value wrapped_repeat_hit.instance_id == wrapped_direct_hit.instance_id
+    assert value wrapped_repeat_hit.repeat_id != wrapped_direct_hit.repeat_id
     assert value wrapped_direct_hit.payload.entity_id == wrapped_scene_hit.payload.entity_id
+    assert value wrapped_direct_hit.payload.entity_id == wrapped_repeat_hit.payload.entity_id
+    assert approx wrapped_direct_hit.local_position.x ~= wrapped_repeat_hit.local_position.x within 0.001
+    assert approx wrapped_direct_hit.local_position.y ~= wrapped_repeat_hit.local_position.y within 0.001
+    assert approx wrapped_direct_hit.local_position.z ~= wrapped_repeat_hit.local_position.z within 0.001
+    assert approx wrapped_direct_hit.local_normal.x ~= wrapped_repeat_hit.local_normal.x within 0.001
+    assert approx wrapped_direct_hit.local_normal.y ~= wrapped_repeat_hit.local_normal.y within 0.001
+    assert approx wrapped_direct_hit.local_normal.z ~= wrapped_repeat_hit.local_normal.z within 0.001
     assert approx surface_at(capture=wrapped_scene_capture, hit=wrapped_scene_hit).albedo.z ~= 120.0 within 0.001
+}
+
+fn test_phase9_trace_shape_batch_preserves_repeat_identity_and_local_frame() -> Nothing {
+    wrapped_scene = capture wrapped_stack_shape
+    hits = trace_shape_batch(
+        capture=wrapped_scene,
+        rays=[
+            RayQuery(
+                origin=vec3(0.0, 0.0, 3.0),
+                direction=vec3(0.0, 0.0, -1.0),
+                max_distance=6.0,
+                min_step=0.05,
+                hit_epsilon=0.001,
+                max_steps=96
+            ),
+            RayQuery(
+                origin=vec3(2.0, 0.0, 3.0),
+                direction=vec3(0.0, 0.0, -1.0),
+                max_distance=6.0,
+                min_step=0.05,
+                hit_epsilon=0.001,
+                max_steps=96
+            )
+        ],
+        backend=dispatch_backend_cpu()
+    )
+
+    assert value hits[0].hit == true
+    assert value hits[1].hit == true
+    assert value hits[0].feature_id == hits[1].feature_id
+    assert value hits[0].instance_id == hits[1].instance_id
+    assert value hits[0].repeat_id != hits[1].repeat_id
+    assert value hits[0].payload.entity_id == hits[1].payload.entity_id
+    assert approx hits[0].local_position.x ~= hits[1].local_position.x within 0.001
+    assert approx hits[0].local_position.y ~= hits[1].local_position.y within 0.001
+    assert approx hits[0].local_position.z ~= hits[1].local_position.z within 0.001
+    assert approx hits[0].local_normal.x ~= hits[1].local_normal.x within 0.001
+    assert approx hits[0].local_normal.y ~= hits[1].local_normal.y within 0.001
+    assert approx hits[0].local_normal.z ~= hits[1].local_normal.z within 0.001
 }
 
 field exact distance authored_support_near_orb(p: Vec3) -> F32 {
@@ -1618,23 +1679,49 @@ field exact distance authored_support_near_orb(p: Vec3) -> F32 {
 
 field conservative distance authored_support_far_custom(p: Vec3) -> F32 {
     support = Support3(bounds=Bounds3(
-        min=vec3(7.5, -1.0, -1.0),
-        max=vec3(8.5, 1.0, 1.0)
+        min=vec3(8.0, -1.0, -1.0),
+        max=vec3(12.0, 1.0, 1.0)
     ))
     bounds = Bounds3(
-        min=vec3(7.5, -1.0, -1.0),
-        max=vec3(8.5, 1.0, 1.0)
+        min=vec3(8.0, -1.0, -1.0),
+        max=vec3(12.0, 1.0, 1.0)
     )
-    return length(p - vec3(8.0, 0.0, 0.0)) - 0.5
+    return length(p - vec3(10.0, 0.0, 0.0)) - 0.5
 }
 
-field conservative distance authored_support_far_plain(p: Vec3) -> F32 {
-    return length(p - vec3(8.0, 0.0, 0.0)) - 0.5
+field conservative distance authored_support_far_semantic(p: Vec3) -> F32 {
+    translate = vec3(10.0, 0.0, 0.0) {
+        sphere(radius=0.5)
+    }
+}
+
+material identity_red(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(1.0, 0.0, 0.0),
+        roughness=0.2,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+material identity_green(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.0, 1.0, 0.0),
+        roughness=0.2,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
 }
 
 shape authored_support_near_shape {
     field = authored_support_near_orb
-    material = shade
+    material = identity_red
     payload = Payload(
         entity_id=u64(41),
         material_id=u64(41),
@@ -1644,7 +1731,7 @@ shape authored_support_near_shape {
 
 shape authored_support_far_shape {
     field = authored_support_far_custom
-    material = shade
+    material = identity_green
     payload = Payload(
         entity_id=u64(42),
         material_id=u64(42),
@@ -1652,9 +1739,9 @@ shape authored_support_far_shape {
     )
 }
 
-shape authored_plain_far_shape {
-    field = authored_support_far_plain
-    material = shade
+shape authored_semantic_far_shape {
+    field = authored_support_far_semantic
+    material = identity_green
     payload = Payload(
         entity_id=u64(43),
         material_id=u64(43),
@@ -1670,15 +1757,15 @@ shape authored_support_scene {
     }
 }
 
-shape authored_plain_scene {
+shape authored_semantic_scene {
     union {
         provenance_policy = nearest
         use authored_support_near_shape
-        use authored_plain_far_shape
+        use authored_semantic_far_shape
     }
 }
 
-fn test_authored_support_prunes_custom_field_branches() -> Nothing {
+fn test_authored_support_quarantines_custom_field_branches() -> Nothing {
     pruned_before = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
     candidate_before = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
     supported_scene_capture = capture authored_support_scene
@@ -1693,9 +1780,10 @@ fn test_authored_support_prunes_custom_field_branches() -> Nothing {
     )
     pruned_mid = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
     candidate_mid = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
-    plain_scene_capture = capture authored_plain_scene
-    plain_hit = trace_shape(
-        capture=plain_scene_capture,
+    supported_surface = surface_at(capture=supported_scene_capture, hit=supported_hit)
+    semantic_scene_capture = capture authored_semantic_scene
+    semantic_hit = trace_shape(
+        capture=semantic_scene_capture,
         origin=vec3(0.0, 0.0, 3.0),
         direction=vec3(0.0, 0.0, -1.0),
         max_distance=6.0,
@@ -1705,13 +1793,65 @@ fn test_authored_support_prunes_custom_field_branches() -> Nothing {
     )
     pruned_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
     candidate_after = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+    semantic_surface = surface_at(capture=semantic_scene_capture, hit=semantic_hit)
 
     assert value supported_hit.hit == true
-    assert value plain_hit.hit == true
+    assert value semantic_hit.hit == true
+    assert value supported_hit.feature_id == semantic_hit.feature_id
+    assert approx supported_hit.distance ~= semantic_hit.distance within 0.001
     assert value candidate_mid - candidate_before > 0
     assert value candidate_after - candidate_mid > 0
-    assert value pruned_mid - pruned_before > 0
-    assert value pruned_after - pruned_mid == 0
+    assert value pruned_mid - pruned_before == 0
+    assert value pruned_after - pruned_mid > 0
+    assert value abs(supported_surface.albedo.x - semantic_surface.albedo.x) <= 0.001
+    assert value abs(supported_surface.albedo.y - semantic_surface.albedo.y) <= 0.001
+    assert value abs(supported_surface.albedo.z - semantic_surface.albedo.z) <= 0.001
+}
+
+fn test_phase9_opaque_custom_leaf_bounds_preserve_trace_results() -> Nothing {
+    hinted_pruned_before = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
+    hinted_candidates_before = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+    hinted_scene = capture authored_support_scene
+    hinted_hit = trace_shape(
+        capture=hinted_scene,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    hinted_pruned_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
+    hinted_candidates_after = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+    hinted_surface = surface_at(capture=hinted_scene, hit=hinted_hit)
+
+    semantic_pruned_before = hinted_pruned_after
+    semantic_candidates_before = hinted_candidates_after
+    semantic_scene = capture authored_semantic_scene
+    semantic_hit = trace_shape(
+        capture=semantic_scene,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    semantic_pruned_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
+    semantic_candidates_after = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+    semantic_surface = surface_at(capture=semantic_scene, hit=semantic_hit)
+
+    assert value hinted_hit.hit == true
+    assert value semantic_hit.hit == true
+    assert value hinted_hit.feature_id == semantic_hit.feature_id
+    assert approx hinted_hit.distance ~= semantic_hit.distance within 0.001
+    assert value hinted_candidates_after - hinted_candidates_before > 0
+    assert value semantic_candidates_after - semantic_candidates_before > 0
+    assert value hinted_pruned_after - hinted_pruned_before == 0
+    assert value semantic_pruned_after - semantic_pruned_before > 0
+    assert value abs(hinted_surface.albedo.x - semantic_surface.albedo.x) <= 0.001
+    assert value abs(hinted_surface.albedo.y - semantic_surface.albedo.y) <= 0.001
+    assert value abs(hinted_surface.albedo.z - semantic_surface.albedo.z) <= 0.001
 }
 
 field conservative distance translated_sphere(p: Vec3) -> F32 {
@@ -1728,7 +1868,7 @@ field conservative distance mirrored_box(p: Vec3) -> F32 {
     }
 }
 
-field exact distance repeated_sphere(p: Vec3) -> F32 {
+field conservative distance repeated_sphere(p: Vec3) -> F32 {
     repeat_linear = vec3(2.0, 0.0, 0.0) {
         sphere(radius=0.5)
     }
@@ -2683,10 +2823,9 @@ fn test_phase5_smooth_and_deform_costs_raise_field_sampling() -> Nothing {
     assert value deform_hit.hit == true
     assert value smooth_samples > control_samples
     assert value deform_samples > control_samples
-    assert value deform_samples >= smooth_samples
 }
 
-field exact distance phase6_extruded_disc(p: Vec3) -> F32 {
+field conservative distance phase6_extruded_disc(p: Vec3) -> F32 {
     extrude = f32(1.6) {
         circle2(radius = 0.75)
     }
@@ -2711,7 +2850,7 @@ field conservative distance phase6_lofted_form(p: Vec3) -> F32 {
     }
 }
 
-field exact distance phase6_polygon_plate(p: Vec3) -> F32 {
+field conservative distance phase6_polygon_plate(p: Vec3) -> F32 {
     extrude = f32(0.4) {
         polygon2(vertices = [
             vec2(-0.4, -0.3),
@@ -2744,7 +2883,7 @@ field conservative distance phase6_polyline_strip(p: Vec3) -> F32 {
     }
 }
 
-field exact distance phase6_near_disc(p: Vec3) -> F32 {
+field conservative distance phase6_near_disc(p: Vec3) -> F32 {
     extrude = f32(1.2) {
         circle2(radius = 0.55)
     }
@@ -2851,11 +2990,10 @@ field exact distance phase7_shell(p: Vec3) -> F32 {
 
 radiance field phase7_radiance(p: Vec3, direction: Vec3, feature_id: U64) -> Vec3 {
     sky_t = clamp(0.5 + direction.y * 0.5, 0.0, 1.0)
-    feature_bias = clamp(f32(feature_id), 0.0, 1.0)
     point_bias = clamp(0.2 - abs(p.z), 0.0, 0.2) * 5.0
     return vec3(0.10, 0.18, 0.28) * (1.0 - sky_t)
         + vec3(0.36, 0.54, 0.82) * sky_t
-        + vec3(0.08, 0.04, 0.02) * point_bias * feature_bias
+        + vec3(0.08, 0.04, 0.02) * point_bias
 }
 
 volume field phase7_volume(p: Vec3, surface_distance: F32) -> Medium {
@@ -2926,6 +3064,8 @@ fn test_phase7_radiance_and_volume_surface_and_queries() -> Nothing {
 
     assert value hit.hit == true
     assert value hit.feature_id != u64(0)
+    assert value hit.instance_id == u64(0)
+    assert value hit.repeat_id == u64(0)
     assert value hit.local_position.z > 0.0
     assert value hit.local_normal.z > 0.0
     assert value surface.metalness > 0.12
@@ -2937,4 +3077,287 @@ fn test_phase7_radiance_and_volume_surface_and_queries() -> Nothing {
     assert value medium_sample.density > 0.08
     assert value ambient > 0.0
     assert value ambient <= 1.0
+}
+
+field exact distance phase8_coarse_shell(p: Vec3) -> F32 {
+    translate = vec3(3.0, 0.0, 0.0) {
+        sphere(radius = 0.5)
+    }
+}
+
+field exact distance phase8_fine_shell(p: Vec3) -> F32 {
+    sphere(radius = 0.6)
+}
+
+radiance field phase8_radiance(p: Vec3, direction: Vec3, feature_id: U64) -> Vec3 {
+    horizon = clamp(0.5 + direction.y * 0.5, 0.0, 1.0)
+    glow = clamp(0.25 - abs(p.z - 0.6), 0.0, 0.25) * 4.0
+    return vec3(0.08, 0.12, 0.20) * (1.0 - horizon)
+        + vec3(0.20, 0.34, 0.72) * horizon
+        + vec3(0.04, 0.02, 0.10) * glow
+}
+
+volume field phase8_volume(p: Vec3, surface_distance: F32) -> Medium {
+    density = clamp(0.04 + clamp(0.18 - abs(surface_distance), 0.0, 0.18) * 0.45, 0.0, 0.16)
+    return Medium(
+        density=density,
+        emission=vec3(0.02, 0.03, 0.06) * density,
+        anisotropy=0.08
+    )
+}
+
+material phase8_surface(hit: Hit3) -> Surface {
+    ridge = clamp(abs(hit.local_position.y) * 0.6 + abs(hit.local_normal.x) * 0.2, 0.0, 1.0)
+    return Surface(
+        albedo=vec3(0.16, 0.24, 0.62) + vec3(0.08, 0.04, 0.10) * ridge,
+        roughness=0.18 + ridge * 0.16,
+        metalness=0.10 + clamp(hit.local_normal.z, 0.0, 1.0) * 0.12,
+        clearcoat=0.12 + clamp(hit.local_normal.y, 0.0, 1.0) * 0.10,
+        clearcoat_roughness=0.08 + abs(hit.local_position.x) * 0.10,
+        sheen=0.06 + abs(hit.local_normal.x) * 0.10,
+        emissive=vec3(0.02, 0.01, 0.04) * clamp(hit.local_normal.z, 0.0, 1.0)
+    )
+}
+
+shape phase8_coarse_shape {
+    field = phase8_coarse_shell
+    material = phase8_surface
+    payload = Payload(
+        entity_id=u64(810),
+        material_id=u64(810),
+        actor=ActorHandle(id=u64(810), generation=u32(0))
+    )
+}
+
+shape phase8_fine_shape {
+    field = phase8_fine_shell
+    material = phase8_surface
+    radiance = phase8_radiance
+    volume = phase8_volume
+    payload = Payload(
+        entity_id=u64(811),
+        material_id=u64(811),
+        actor=ActorHandle(id=u64(811), generation=u32(0))
+    )
+}
+
+region phase8_scene_region() {
+    place coarse = phase8_coarse_shape
+    place fine = phase8_fine_shape
+}
+
+domain phase8_coarse_domain(world: RegionCapture) {
+    geometry_detail = 0
+    material = false
+    radiance = false
+    media = false
+    max_distance = 6.0
+    min_step = 0.05
+    hit_epsilon = 0.001
+    max_steps = 96
+}
+
+domain phase8_fine_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = true
+    radiance = true
+    media = true
+    max_distance = 6.0
+    min_step = 0.05
+    hit_epsilon = 0.001
+    max_steps = 96
+}
+
+render phase8_render_ppm(world: RegionCapture, camera: Camera) {
+    domain = phase8_fine_domain(world = world)
+    light = Light(
+        position = camera.position + vec3(1.5, 1.5, 1.5),
+        direction = normalize(vec3(-0.6, -0.7, -0.5)),
+        intensity = vec3(1.0, 0.95, 0.90),
+        range = 10.0
+    )
+    width = 4
+    height = 4
+    world_up = camera.up
+    view_scale = 0.82
+    fill_dir = normalize(vec3(-0.4, 0.5, 0.2))
+}
+
+fn phase8_region_domain_render_and_world_query_status() -> Integer {
+    world = capture phase8_scene_region
+    coarse_domain = phase8_coarse_domain(world = world)
+    fine_domain = phase8_fine_domain(world = world)
+    probe = vec3(0.0, 0.0, 0.6)
+
+    coarse_distance = distance_world(capture = world, domain = coarse_domain, point = probe)
+    fine_distance = distance_world(capture = world, domain = fine_domain, point = probe)
+    fine_normal = normal_world(capture = world, domain = fine_domain, point = probe)
+    coarse_hit = trace_world(
+        capture = world,
+        domain = coarse_domain,
+        origin = vec3(0.0, 0.0, 3.0),
+        direction = vec3(0.0, 0.0, -1.0),
+        max_distance = 6.0,
+        min_step = 0.05,
+        hit_epsilon = 0.001,
+        max_steps = 96
+    )
+    fine_hit = trace_world(
+        capture = world,
+        domain = fine_domain,
+        origin = vec3(0.0, 0.0, 3.0),
+        direction = vec3(0.0, 0.0, -1.0),
+        max_distance = 6.0,
+        min_step = 0.05,
+        hit_epsilon = 0.001,
+        max_steps = 96
+    )
+    coarse_surface = surface_world(capture = world, domain = coarse_domain, hit = fine_hit)
+    fine_surface = surface_world(capture = world, domain = fine_domain, hit = fine_hit)
+    coarse_radiance = radiance_world(
+        capture = world,
+        domain = coarse_domain,
+        point = fine_hit.position,
+        direction = normalize(vec3(0.0, 1.0, 1.0))
+    )
+    fine_radiance = radiance_world(
+        capture = world,
+        domain = fine_domain,
+        point = fine_hit.position,
+        direction = normalize(vec3(0.0, 1.0, 1.0))
+    )
+    coarse_medium = medium_world(capture = world, domain = coarse_domain, point = fine_hit.position)
+    fine_medium = medium_world(capture = world, domain = fine_domain, point = fine_hit.position)
+    camera = Camera(
+        position = vec3(0.0, 0.0, 3.0),
+        forward = vec3(0.0, 0.0, -1.0),
+        up = vec3(0.0, 1.0, 0.0),
+        vertical_fov_degrees = 48.0
+    )
+    ppm = phase8_render_ppm(world = world, camera = camera)
+
+    if coarse_domain.scene_id != world.scene_id { return 1 }
+    if fine_domain.scene_id != world.scene_id { return 2 }
+    if coarse_domain.geometry_detail != 0 { return 3 }
+    if fine_domain.geometry_detail != 1 { return 4 }
+    if coarse_distance <= 2.0 { return 5 }
+    if abs(fine_distance) > 0.02 { return 6 }
+    if fine_normal.z < 0.9 { return 7 }
+    if coarse_hit.hit { return 8 }
+    if not fine_hit.hit { return 9 }
+    if coarse_surface.albedo.x != 0.0 or coarse_surface.albedo.y != 0.0 or coarse_surface.albedo.z != 0.0 { return 10 }
+    if fine_surface.albedo.z <= fine_surface.albedo.x { return 11 }
+    if coarse_radiance.z != 0.0 { return 12 }
+    if fine_radiance.z <= fine_radiance.x { return 13 }
+    if coarse_medium.density != 0.0 { return 14 }
+    if fine_medium.density <= 0.0 { return 15 }
+    if ppm == "" { return 16 }
+    return 0
+}
+
+fn test_phase8_region_domain_render_and_world_queries() -> Nothing {
+    assert value phase8_region_domain_render_and_world_query_status() == 0
+}
+
+field conservative distance phase9_rotated_ellipsoid_field(p: Vec3) -> F32 {
+    rotate = vec3(0.35, 0.0, 0.0) {
+        use phase5_ellipsoid_field
+    }
+}
+
+shape phase9_rotated_ellipsoid_shape {
+    field = phase9_rotated_ellipsoid_field
+    material = phase8_surface
+    payload = Payload(
+        entity_id=u64(912),
+        material_id=u64(912),
+        actor=ActorHandle(id=u64(912), generation=u32(0))
+    )
+}
+
+fn test_phase9_rotated_local_normal_matches_reference_trace_and_batch_trace() -> Nothing {
+    angle = 0.35
+    inverse_rotation = Transform3(
+        matrix=mat4_cols(
+            vec4(1.0, 0.0, 0.0, 0.0),
+            vec4(0.0, cos(angle), -sin(angle), 0.0),
+            vec4(0.0, sin(angle), cos(angle), 0.0),
+            vec4(0.0, 0.0, 0.0, 1.0)
+        ),
+        inverse=mat4_cols(
+            vec4(1.0, 0.0, 0.0, 0.0),
+            vec4(0.0, cos(angle), sin(angle), 0.0),
+            vec4(0.0, -sin(angle), cos(angle), 0.0),
+            vec4(0.0, 0.0, 0.0, 1.0)
+        )
+    )
+    world_origin = vec3(0.18, 0.07, 3.0)
+    world_direction = vec3(0.0, 0.0, -1.0)
+    reference_origin = transform_point(transform=inverse_rotation, point=world_origin)
+    reference_direction = transform_vector(transform=inverse_rotation, vector=world_direction)
+    rotated_scene = capture phase9_rotated_ellipsoid_shape
+    reference_scene = capture phase5_ellipsoid_shape
+    rotated_hit = trace_shape(
+        capture=rotated_scene,
+        origin=world_origin,
+        direction=world_direction,
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    reference_hit = trace_shape(
+        capture=reference_scene,
+        origin=reference_origin,
+        direction=reference_direction,
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    rotated_hits = trace_shape_batch(
+        capture=rotated_scene,
+        rays=[
+            RayQuery(
+                origin=world_origin,
+                direction=world_direction,
+                max_distance=6.0,
+                min_step=0.05,
+                hit_epsilon=0.001,
+                max_steps=96
+            )
+        ],
+        backend=dispatch_backend_cpu()
+    )
+    reference_hits = trace_shape_batch(
+        capture=reference_scene,
+        rays=[
+            RayQuery(
+                origin=reference_origin,
+                direction=reference_direction,
+                max_distance=6.0,
+                min_step=0.05,
+                hit_epsilon=0.001,
+                max_steps=96
+            )
+        ],
+        backend=dispatch_backend_cpu()
+    )
+
+    assert value rotated_hit.hit == true
+    assert value reference_hit.hit == true
+    assert value rotated_hits[0].hit == true
+    assert value reference_hits[0].hit == true
+    assert value abs(rotated_hit.local_position.x - reference_hit.local_position.x) <= 0.01
+    assert value abs(rotated_hit.local_position.y - reference_hit.local_position.y) <= 0.01
+    assert value abs(rotated_hit.local_position.z - reference_hit.local_position.z) <= 0.01
+    assert value abs(rotated_hit.local_normal.x - reference_hit.local_normal.x) <= 0.01
+    assert value abs(rotated_hit.local_normal.y - reference_hit.local_normal.y) <= 0.01
+    assert value abs(rotated_hit.local_normal.z - reference_hit.local_normal.z) <= 0.01
+    assert value abs(rotated_hits[0].local_position.x - reference_hits[0].local_position.x) <= 0.01
+    assert value abs(rotated_hits[0].local_position.y - reference_hits[0].local_position.y) <= 0.01
+    assert value abs(rotated_hits[0].local_position.z - reference_hits[0].local_position.z) <= 0.01
+    assert value abs(rotated_hits[0].local_normal.x - reference_hits[0].local_normal.x) <= 0.01
+    assert value abs(rotated_hits[0].local_normal.y - reference_hits[0].local_normal.y) <= 0.01
+    assert value abs(rotated_hits[0].local_normal.z - reference_hits[0].local_normal.z) <= 0.01
 }

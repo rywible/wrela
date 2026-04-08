@@ -558,6 +558,7 @@ fn f() -> Nothing {
 }
 
 domain Combat(world: RegionCapture) {
+    geometry_detail = 0
 }
 
 render View(world: RegionCapture, camera: Camera) {
@@ -585,6 +586,43 @@ fn run() -> Nothing {
 "#;
         let errors = check_source(input);
         assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_domain_geometry_detail_accepts_numeric_tiers() {
+        let input = r#"region Highlands() {
+}
+
+domain Coarse(world: RegionCapture) {
+    geometry_detail = 0
+}
+
+domain Fine(world: RegionCapture) {
+    geometry_detail = 1
+}
+"#;
+        let errors = check_source(input);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_domain_geometry_detail_rejects_unknown_values() {
+        let input = r#"region Highlands() {
+}
+
+domain Combat(world: RegionCapture) {
+    geometry_detail = 2
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::PortableConstructForbidden { construct, .. }
+                    if construct == "domain geometry_detail value"
+            )),
+            "expected invalid geometry_detail value to be rejected, got: {errors:?}"
+        );
     }
 
     #[test]
@@ -1118,7 +1156,7 @@ field exact distance sphere(p: Vec3) -> F32 {
     }
 
     #[test]
-    fn test_exact_field_allows_semantic_field_composition() {
+    fn test_exact_field_rejects_boolean_composition() {
         let input = r#"field exact distance orb(p: Vec3) -> F32 {
     sphere(radius=1.0)
 }
@@ -1127,45 +1165,74 @@ field exact distance frame(p: Vec3) -> F32 {
     box(half=vec3(1.1, 1.1, 1.1))
 }
 
-field exact distance cap(p: Vec3) -> F32 {
-    plane(normal=vec3(0.0, 0.0, 1.0), offset=0.0)
+field exact distance unioned(p: Vec3) -> F32 {
+    union {
+        use orb
+        use frame
+    }
 }
 
-field exact distance notch(p: Vec3) -> F32 {
-    torus(major_radius=1.5, minor_radius=0.25)
+field exact distance intersected(p: Vec3) -> F32 {
+    intersection {
+        use orb
+        use frame
+    }
 }
 
-field exact distance sculpted(p: Vec3) -> F32 {
+field exact distance subtracted(p: Vec3) -> F32 {
     subtract {
-        intersection {
-            union {
-                use orb
-                use frame
-            }
-            use cap
-        }
-        use notch
+        use orb
+        use frame
     }
 }
 "#;
         let errors = check_source(input);
-        assert!(errors.is_empty(), "{errors:?}");
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::FieldExactnessCapabilityViolation { function, node, detail, .. }
+                    if function.as_str() == "unioned"
+                        && node.as_str() == "union"
+                        && detail.contains("conservative-only")
+            )),
+            "expected exact union rejection, got: {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::FieldExactnessCapabilityViolation { function, node, detail, .. }
+                    if function.as_str() == "intersected"
+                        && node.as_str() == "intersection"
+                        && detail.contains("conservative-only")
+            )),
+            "expected exact intersection rejection, got: {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::FieldExactnessCapabilityViolation { function, node, detail, .. }
+                    if function.as_str() == "subtracted"
+                        && node.as_str() == "subtract"
+                        && detail.contains("conservative-only")
+            )),
+            "expected exact subtract rejection, got: {errors:?}"
+        );
     }
 
     #[test]
-    fn test_exact_field_allows_exact_warp_families_but_rejects_conservative_operators() {
+    fn test_exact_field_allows_semantically_constant_wrappers_but_rejects_conservative_operators() {
         let input = r#"field exact distance source(p: Vec3) -> F32 {
     sphere(radius=1.0)
 }
 
 field exact distance mirrored(p: Vec3) -> F32 {
-    mirror_array = vec3(0.0, 1.0, 0.0) {
+    mirror_array = vec3(length(value=vec3(0.0, 1.0, 0.0)), f32(1.0), f32(0.0)) {
         use source
     }
 }
 
 field exact distance rotated(p: Vec3) -> F32 {
-    rotate = vec3(0.0, 1.0, 0.0) {
+    rotate = vec3(f32(0.0), length(value=vec3(0.0, 1.0, 0.0)), f32(0.0)) {
         use source
     }
 }
@@ -1183,7 +1250,7 @@ field exact distance gridded(p: Vec3) -> F32 {
 }
 
 field exact distance shifted(p: Vec3) -> F32 {
-    translate = vec3(1.0, 0.0, 0.0) {
+    translate = vec3(length(value=vec3(1.0, 0.0, 0.0)), f32(0.0), f32(0.0)) {
         use source
     }
 }
@@ -1227,13 +1294,13 @@ field exact distance instanced(p: Vec3) -> F32 {
             "mirror should stay exact-preserving, got: {errors:?}"
         );
         assert!(
-            !errors.iter().any(|err| matches!(
+            errors.iter().any(|err| matches!(
                 err,
                 TypeError::FieldExactnessCapabilityViolation { function, node, .. }
                     if function.as_str() == "repeated"
                         && node.as_str() == "repeat_linear"
             )),
-            "repeat should stay exact-preserving, got: {errors:?}"
+            "repeat should now be conservative, got: {errors:?}"
         );
         assert!(
             !errors.iter().any(|err| matches!(
@@ -1245,13 +1312,13 @@ field exact distance instanced(p: Vec3) -> F32 {
             "rotate should stay exact-preserving, got: {errors:?}"
         );
         assert!(
-            !errors.iter().any(|err| matches!(
+            errors.iter().any(|err| matches!(
                 err,
                 TypeError::FieldExactnessCapabilityViolation { function, node, .. }
                     if function.as_str() == "gridded"
                         && node.as_str() == "repeat_grid"
             )),
-            "repeat_grid should stay exact-preserving, got: {errors:?}"
+            "repeat_grid should now be conservative, got: {errors:?}"
         );
     }
 
@@ -1267,7 +1334,7 @@ field exact distance scaled(p: Vec3) -> F32 {
     }
 }
 
-field exact distance scaled_unknown(p: Vec3) -> F32 {
+field exact distance scaled_proven(p: Vec3) -> F32 {
     uniform_scale = length(value=vec3(1.0, 0.0, 0.0)) {
         use source
     }
@@ -1285,14 +1352,14 @@ field exact distance scaled_unknown(p: Vec3) -> F32 {
             "expected uniform scale positivity rejection, got: {errors:?}"
         );
         assert!(
-            errors.iter().any(|err| matches!(
+            !errors.iter().any(|err| matches!(
                 err,
                 TypeError::FieldExactnessCapabilityViolation { function, node, detail, .. }
-                    if function.as_str() == "scaled_unknown"
+                    if function.as_str() == "scaled_proven"
                         && node.as_str() == "uniform_scale"
                         && detail.contains("prove")
             )),
-            "expected uniform scale proof rejection, got: {errors:?}"
+            "expected semantic constant uniform scale to stay exact-preserving, got: {errors:?}"
         );
     }
 
@@ -1353,9 +1420,9 @@ field exact distance warped_scale(p: Vec3) -> F32 {
                 TypeError::FieldExactnessCapabilityViolation { function, node, detail, .. }
                     if function.as_str() == "warped_repeat"
                         && node.as_str() == "repeat_grid"
-                        && detail.contains("references sample point")
+                        && detail.contains("conservative-only")
             )),
-            "expected repeat_grid sample-point rejection, got: {errors:?}"
+            "expected repeat_grid conservative rejection, got: {errors:?}"
         );
         assert!(
             errors.iter().any(|err| matches!(
@@ -3193,14 +3260,14 @@ fn f() -> Boolean {
             .exprs
             .iter()
             .find_map(|(id, expr)| match expr {
-                Expr::Call { .. } => Some(id.into_raw()),
+                Expr::Call { .. } => Some(id),
                 _ => None,
             })
             .expect("missing call");
         let fn_info = info
             .function(func_id)
             .expect("missing type info for function");
-        assert_eq!(fn_info.expr_types.get(&call_expr), Some(&Type::Boolean));
+        assert_eq!(fn_info.expr_type(body, call_expr), Some(&Type::Boolean));
     }
 
     #[test]
@@ -3230,14 +3297,14 @@ fn f() -> Integer {
             .exprs
             .iter()
             .find_map(|(id, expr)| match expr {
-                Expr::Call { .. } => Some(id.into_raw()),
+                Expr::Call { .. } => Some(id),
                 _ => None,
             })
             .expect("missing call");
         let fn_info = info
             .function(func_id)
             .expect("missing type info for function");
-        assert_eq!(fn_info.expr_types.get(&call_expr), Some(&Type::Integer));
+        assert_eq!(fn_info.expr_type(body, call_expr), Some(&Type::Integer));
     }
 
     #[test]

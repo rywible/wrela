@@ -246,12 +246,18 @@ fn phase7_authored_surface_contains_radiance_and_volume_names() {
         "local_position",
         "local_normal",
         "feature_id",
+        "instance_id",
+        "repeat_id",
     ] {
         assert!(
             spec_source.contains(needle),
             "expected phase7 authored surface to mention `{needle}`"
         );
     }
+    assert!(
+        !spec_source.contains("feature_bias"),
+        "expected phase7 authored surface to avoid feature-biased radiance shortcuts"
+    );
 
     for (main_path, main_needles, main_forbidden) in [
         (
@@ -270,6 +276,8 @@ fn phase7_authored_surface_contains_radiance_and_volume_names() {
                 "render render_ppm(",
                 "radiance field",
                 "volume field",
+                "local_position",
+                "local_normal",
                 "world = capture scene_region",
                 "world_up = camera.up",
                 "view_scale = 0.72",
@@ -298,6 +306,7 @@ fn phase7_authored_surface_contains_radiance_and_volume_names() {
                 "while y <",
                 "while x <",
                 "mutable ppm",
+                "feature_bias",
             ][..],
         ),
         (
@@ -316,6 +325,8 @@ fn phase7_authored_surface_contains_radiance_and_volume_names() {
                 "render render_ppm(",
                 "radiance field",
                 "volume field",
+                "local_position",
+                "local_normal",
                 "world = capture scene_region",
                 "world_up = camera.up",
                 "view_scale = 0.70",
@@ -344,6 +355,7 @@ fn phase7_authored_surface_contains_radiance_and_volume_names() {
                 "while y <",
                 "while x <",
                 "mutable ppm",
+                "feature_bias",
             ][..],
         ),
         (
@@ -362,6 +374,8 @@ fn phase7_authored_surface_contains_radiance_and_volume_names() {
                 "render render_ppm(",
                 "radiance field",
                 "volume field",
+                "local_position",
+                "local_normal",
                 "world = capture scene_region",
                 "world_up = camera.up",
                 "view_scale = 0.76",
@@ -390,6 +404,7 @@ fn phase7_authored_surface_contains_radiance_and_volume_names() {
                 "while y <",
                 "while x <",
                 "mutable ppm",
+                "feature_bias",
             ][..],
         ),
         (
@@ -408,6 +423,8 @@ fn phase7_authored_surface_contains_radiance_and_volume_names() {
                 "render render_ppm(",
                 "radiance field",
                 "volume field",
+                "local_position",
+                "local_normal",
                 "world = capture scene_region",
                 "world_up = camera.up",
                 "view_scale = 0.74",
@@ -436,6 +453,7 @@ fn phase7_authored_surface_contains_radiance_and_volume_names() {
                 "while y <",
                 "while x <",
                 "mutable ppm",
+                "feature_bias",
             ][..],
         ),
         (
@@ -465,5 +483,50 @@ fn phase7_authored_surface_contains_radiance_and_volume_names() {
                 "expected {main_path} to avoid phase8 shortcut `{needle}`"
             );
         }
+    }
+}
+
+#[test]
+fn phase8_authored_surface_contains_world_composition_names() {
+    let root = repo_root();
+    let spec_source =
+        fs::read_to_string(root.join("language/spec/tests/spec/language_spec_test.wr"))
+            .expect("read spec surface");
+    for needle in [
+        "region phase8_scene_region()",
+        "domain phase8_coarse_domain(world: RegionCapture)",
+        "domain phase8_fine_domain(world: RegionCapture)",
+        "render phase8_render_ppm(",
+        "distance_world(",
+        "normal_world(",
+        "trace_world(",
+        "surface_world(",
+        "radiance_world(",
+        "medium_world(",
+    ] {
+        assert!(
+            spec_source.contains(needle),
+            "expected phase8 authored surface to mention `{needle}`"
+        );
+    }
+
+    let codegen_source = fs::read_to_string(root.join("compiler/tests/codegen_v2.rs"))
+        .expect("read codegen_v2 source");
+    for needle in [
+        "region phase8_scene_region()",
+        "domain phase8_coarse_domain(world: RegionCapture)",
+        "domain phase8_fine_domain(world: RegionCapture)",
+        "render phase8_render_ppm(",
+        "distance_world(",
+        "normal_world(",
+        "trace_world(",
+        "surface_world(",
+        "radiance_world(",
+        "medium_world(",
+    ] {
+        assert!(
+            codegen_source.contains(needle),
+            "expected compiler/tests/codegen_v2.rs to mention `{needle}`"
+        );
     }
 }

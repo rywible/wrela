@@ -4,8 +4,8 @@ use super::ir::{
 };
 use crate::hir::typeck::{FunctionTypeInfo, Type, TypeInfo};
 use crate::hir::{
-    Arg, AssignOp, BinaryOp, Body, ClassRole, Expr, Function, FunctionLane, Idx, Literal, Module,
-    Stmt, TypeRef,
+    Arg, AssignOp, BinaryOp, Body, ClassRole, Expr, FieldExpr as HirFieldExpr, Function,
+    FunctionLane, FunctionRole, Idx, Literal, Module, Stmt, TypeRef,
 };
 use crate::portable;
 use rowan::TextRange;
@@ -397,6 +397,10 @@ impl<'a> PortableLowerer<'a> {
             }
         };
 
+        let semantic_field_graph = (function.role == FunctionRole::Field)
+            .then(|| function.field_graph.as_ref())
+            .flatten()
+            .filter(|graph| !matches!(graph.root, HirFieldExpr::Custom { .. }));
         let (pir_body, callees) = {
             let mut fn_lowerer = FunctionLowerer {
                 parent: self,
@@ -405,7 +409,14 @@ impl<'a> PortableLowerer<'a> {
                 body,
                 callees: BTreeSet::new(),
             };
-            let Some(pir_body) = fn_lowerer.lower_block(&body.root_stmts) else {
+            let pir_body = if semantic_field_graph.is_some() {
+                // Phase 9 hard cutover: semantic fields remain graph-backed declarations in PIR.
+                // Portable lowering must stop depending on synthesized executable statement bodies.
+                Some(Vec::new())
+            } else {
+                fn_lowerer.lower_block(&body.root_stmts)
+            };
+            let Some(pir_body) = pir_body else {
                 return;
             };
             (pir_body, fn_lowerer.callees)
@@ -817,7 +828,7 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
     }
 
     fn expr_type(&mut self, expr_id: Idx<Expr>, span: TextRange) -> Option<PirType> {
-        let Some(ty) = self.fn_info.expr_types.get(&expr_id.into_raw()) else {
+        let Some(ty) = self.fn_info.expr_type(self.body, expr_id) else {
             self.parent.errors.push(PirLowerError::MissingExprType {
                 function: self.function.name.clone(),
                 span,
@@ -997,7 +1008,7 @@ fn intrinsic_from_name(name: &str) -> Option<PirIntrinsic> {
         "mirror_array" => Some(PirIntrinsic::MirrorArray),
         "instance_array" => Some(PirIntrinsic::InstanceArray),
         "field_translate_point" => Some(PirIntrinsic::Translate),
-        "field_rotate_point" => Some(PirIntrinsic::Rotate),
+        "field_rotate_point" => Some(PirIntrinsic::FieldRotatePoint),
         "field_uniform_scale_point" => Some(PirIntrinsic::UniformScale),
         "field_affine_transform_point" => Some(PirIntrinsic::AffineTransform),
         "field_warp_point" => Some(PirIntrinsic::Warp),
@@ -1127,6 +1138,7 @@ fn intrinsic_param_names(intrinsic: PirIntrinsic) -> Vec<SmolStr> {
         PirIntrinsic::RadialRepeat => vec![SmolStr::new("radial"), SmolStr::new("point")],
         PirIntrinsic::MirrorArray => vec![SmolStr::new("mirror"), SmolStr::new("point")],
         PirIntrinsic::InstanceArray => vec![SmolStr::new("instance"), SmolStr::new("point")],
+        PirIntrinsic::FieldRotatePoint => vec![SmolStr::new("rotation"), SmolStr::new("point")],
         PirIntrinsic::Bend => vec![SmolStr::new("bend"), SmolStr::new("point")],
         PirIntrinsic::Twist => vec![SmolStr::new("twist"), SmolStr::new("point")],
         PirIntrinsic::Taper => vec![SmolStr::new("taper"), SmolStr::new("point")],

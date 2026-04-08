@@ -18,3 +18,5 @@ pub mod mir;
 pub mod parser;
 pub mod pir;
 pub mod portable;
+pub mod query_plan;
+pub mod scene_ir;

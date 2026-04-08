@@ -1313,15 +1313,9 @@ impl AstNode for RegionItem {
     fn cast(node: SyntaxNode) -> Option<Self> {
         match node.kind() {
             SyntaxKind::RegionPlaceStmt => RegionPlaceStmt::cast(node).map(RegionItem::Place),
-            SyntaxKind::RegionOverlayStmt => {
-                RegionOverlayStmt::cast(node).map(RegionItem::Overlay)
-            }
-            SyntaxKind::RegionReplaceStmt => {
-                RegionReplaceStmt::cast(node).map(RegionItem::Replace)
-            }
-            SyntaxKind::RegionScatterStmt => {
-                RegionScatterStmt::cast(node).map(RegionItem::Scatter)
-            }
+            SyntaxKind::RegionOverlayStmt => RegionOverlayStmt::cast(node).map(RegionItem::Overlay),
+            SyntaxKind::RegionReplaceStmt => RegionReplaceStmt::cast(node).map(RegionItem::Replace),
+            SyntaxKind::RegionScatterStmt => RegionScatterStmt::cast(node).map(RegionItem::Scatter),
             SyntaxKind::IfStmt => IfStmt::cast(node).map(RegionItem::If),
             _ => None,
         }

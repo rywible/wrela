@@ -944,11 +944,13 @@ impl<'a> Checker<'a> {
                 .and_then(|t| t.name_span)
                 .map(span_from_range)
                 .unwrap_or_else(|| span_from_option(func.name_span));
-            if let Some(cause) = func
-                .body
-                .as_ref()
-                .and_then(|body| first_boolean_impurity(body, &body.root_stmts))
-            {
+            let mut cause = None;
+            func.visit_analysis_bodies(|body| {
+                if cause.is_none() {
+                    cause = first_boolean_impurity(body, &body.root_stmts);
+                }
+            });
+            if let Some(cause) = cause {
                 let (impure_span, reason) = match cause {
                     BooleanImpurity::Keyword { keyword, span } => (span, format!("`{keyword}`")),
                     BooleanImpurity::Mutation { span } => (span, "mutation".to_string()),
@@ -995,9 +997,7 @@ impl<'a> Checker<'a> {
                 },
             );
         }
-        if let Some(body) = &func.body {
-            self.check_block(body, &body.root_stmts);
-        }
+        func.visit_analysis_bodies(|body| self.check_block(body, &body.root_stmts));
         self.exit_scope();
         self.in_method = prev_method;
         self.in_check = prev_check;
@@ -2342,7 +2342,7 @@ fn compute_objective_requirements(
     for (idx, func) in module.functions.iter() {
         let mut has_await = false;
         let mut callees = HashSet::new();
-        if let Some(body) = &func.body {
+        func.visit_analysis_bodies(|body| {
             collect_calls_and_awaits(
                 body,
                 &body.root_stmts,
@@ -2351,7 +2351,7 @@ fn compute_objective_requirements(
                 &mut has_await,
                 &mut callees,
             );
-        }
+        });
         direct_await.insert(idx.into_raw(), has_await);
         graph.insert(
             idx.into_raw(),
@@ -3654,10 +3654,9 @@ fn check_system_performance_lints(module: &Module) -> Vec<SemanticWarning> {
         if func.role != FunctionRole::System {
             continue;
         }
-        let Some(body) = func.body.as_ref() else {
-            continue;
-        };
-        scan_for_loop_allocations(body, &body.root_stmts, false, &func.name, &mut warnings);
+        func.visit_analysis_bodies(|body| {
+            scan_for_loop_allocations(body, &body.root_stmts, false, &func.name, &mut warnings);
+        });
     }
 
     warnings

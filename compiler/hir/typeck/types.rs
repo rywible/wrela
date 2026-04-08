@@ -1,4 +1,5 @@
 use crate::hir::{
+    body_key,
     Arg, BinaryOp, Body, ClassRole, Expr, FieldBounds, FieldClass, FieldDefault, FieldExpr,
     FieldGraph, FieldMetadata, FieldPrimitive, FieldSupport, Function, FunctionKind, FunctionLane,
     FunctionRole, Idx, InterfaceMethodKind, Literal, Module, Pattern, RegionItemMetadata, Shape,
@@ -82,6 +83,12 @@ fn portable_builtin_type_to_type(ty: PortableBuiltinType) -> Type {
         },
         PortableBuiltinType::Named(name) => portable_named_type(name),
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WrapperOperandConstant {
+    Scalar(f64),
+    Vec3([f64; 3]),
 }
 
 #[derive(Debug, Error, Diagnostic, Clone)]
@@ -814,8 +821,14 @@ impl TypeError {
 
 #[derive(Debug, Clone, Default)]
 pub struct FunctionTypeInfo {
-    pub expr_types: HashMap<usize, Type>,
+    pub expr_types: HashMap<(usize, usize), Type>,
     pub local_types: HashMap<SmolStr, Type>,
+}
+
+impl FunctionTypeInfo {
+    pub fn expr_type(&self, body: &Body, expr_id: Idx<Expr>) -> Option<&Type> {
+        self.expr_types.get(&(body_key(body), expr_id.into_raw()))
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -912,9 +925,9 @@ fn enforce_deterministic_fixed_lane_policy(module: &Module, errors: &mut Vec<Typ
         if let Some(ret) = &function.ret_type {
             collect_forbidden_float_type_refs(ret, errors);
         }
-        if let Some(body) = &function.body {
+        function.visit_analysis_bodies(|body| {
             collect_forbidden_float_literals_in_stmts(body, &body.root_stmts, errors);
-        }
+        });
     }
 
     for (_idx, class) in module.classes.iter() {
@@ -1392,7 +1405,7 @@ fn validate_portable_lane_functions(
         } else {
             validate_portable_function_boundary(func, classes, errors);
         }
-        if let Some(body) = &func.body {
+        func.visit_analysis_bodies(|body| {
             validate_portable_block(
                 body,
                 &body.root_stmts,
@@ -1403,7 +1416,7 @@ fn validate_portable_lane_functions(
                 classes,
                 errors,
             );
-        }
+        });
     }
 }
 
@@ -2022,9 +2035,10 @@ fn validate_world_decl_body(
 
     for stmt_id in &body.root_stmts {
         match &body.stmts[*stmt_id] {
-            Stmt::Let { name, .. } | Stmt::Assign { name, .. }
+            Stmt::Let { name, value, .. } | Stmt::Assign { name, value, .. }
                 if func.role == FunctionRole::Render && name == "lights" =>
             {
+                let _ = value;
                 errors.push(TypeError::PortableConstructForbidden {
                     function: func.name.clone(),
                     construct: "render lights metadata".to_string(),
@@ -2032,7 +2046,21 @@ fn validate_world_decl_body(
                     help: "Plural render lights metadata is not supported yet; keep render metadata to the typed single-light path or reject the construct before runtime.".to_string(),
                 });
             }
-            Stmt::Let { name, .. } | Stmt::Assign { name, .. } if allowed_names.contains(&name.as_str()) => {}
+            Stmt::Let { name, value, .. } | Stmt::Assign { name, value, .. }
+                if allowed_names.contains(&name.as_str()) =>
+            {
+                if func.role == FunctionRole::Domain
+                    && matches!(name.as_str(), "geometry" | "geometry_detail")
+                    && !matches_world_geometry_detail_expr(&body.exprs[*value])
+                {
+                    errors.push(TypeError::PortableConstructForbidden {
+                        function: func.name.clone(),
+                        construct: "domain geometry_detail value".to_string(),
+                        span: span_from_range(body.expr_span(*value)),
+                        help: "Domain geometry detail must be `coarse`, `fine`, `0`, or `1` so detail-tier routing stays compiler-visible.".to_string(),
+                    });
+                }
+            }
             Stmt::Let { name, .. } | Stmt::Assign { name, .. } => {
                 errors.push(TypeError::PortableConstructForbidden {
                     function: func.name.clone(),
@@ -2067,6 +2095,16 @@ fn validate_world_decl_body(
             }
         }
     }
+}
+
+fn matches_world_geometry_detail_expr(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::Variable(name) if matches!(name.as_str(), "coarse" | "fine")
+    ) || matches!(
+        expr,
+        Expr::Literal(Literal::Integer(value)) if matches!(value, 0 | 1)
+    )
 }
 
 fn validate_semantic_world_params<'a, I>(
@@ -2756,28 +2794,220 @@ fn field_wrapper_value_expr(body: &Body) -> Option<Idx<Expr>> {
     }
 }
 
-fn field_wrapper_numeric_literal(body: &Body, expr_id: Idx<Expr>) -> Option<f64> {
+pub fn classify_wrapper_operand_constant(body: &Body) -> Option<WrapperOperandConstant> {
+    let expr = field_wrapper_value_expr(body)?;
+    classify_wrapper_operand_expr(body, expr)
+}
+
+fn classify_wrapper_operand_expr(body: &Body, expr_id: Idx<Expr>) -> Option<WrapperOperandConstant> {
     match &body.exprs[expr_id] {
-        Expr::Literal(Literal::Integer(value)) => Some(*value as f64),
-        Expr::Literal(Literal::Float(value)) => Some(*value),
-        Expr::Unary { op: UnaryOp::Neg, expr, .. } => {
-            field_wrapper_numeric_literal(body, *expr).map(|value| -value)
+        Expr::Literal(Literal::Integer(value)) => Some(WrapperOperandConstant::Scalar(*value as f64)),
+        Expr::Literal(Literal::Float(value)) => Some(WrapperOperandConstant::Scalar(*value)),
+        Expr::Unary {
+            op: UnaryOp::Neg,
+            expr,
+            ..
+        } => match classify_wrapper_operand_expr(body, *expr)? {
+            WrapperOperandConstant::Scalar(value) => Some(WrapperOperandConstant::Scalar(-value)),
+            WrapperOperandConstant::Vec3(_) => None,
+        },
+        Expr::Binary { lhs, op, rhs, .. } => {
+            let lhs = match classify_wrapper_operand_expr(body, *lhs)? {
+                WrapperOperandConstant::Scalar(value) => value,
+                WrapperOperandConstant::Vec3(_) => return None,
+            };
+            let rhs = match classify_wrapper_operand_expr(body, *rhs)? {
+                WrapperOperandConstant::Scalar(value) => value,
+                WrapperOperandConstant::Vec3(_) => return None,
+            };
+            let value = match op {
+                BinaryOp::Add => lhs + rhs,
+                BinaryOp::Sub => lhs - rhs,
+                BinaryOp::Mul => lhs * rhs,
+                BinaryOp::Div => lhs / rhs,
+                _ => return None,
+            };
+            Some(WrapperOperandConstant::Scalar(value))
         }
+        Expr::TypeApply { callee, .. } => classify_wrapper_operand_expr(body, *callee),
+        Expr::Variable(_) => None,
         Expr::Call { callee, args, .. } => {
             let Expr::Variable(name) = &body.exprs[*callee] else {
                 return None;
             };
-            if name.as_str() != "f32" && name.as_str() != "to_f32" {
-                return None;
+            let values = args
+                .iter()
+                .map(|arg| match arg {
+                    Arg::Positional { value, .. } | Arg::Named { value, .. } => {
+                        classify_wrapper_operand_expr(body, *value)
+                    }
+                })
+                .collect::<Option<Vec<_>>>()?;
+            match name.as_str() {
+                "f32" | "to_f32" | "i32" | "u32" => {
+                    let [value] = values.as_slice() else {
+                        return None;
+                    };
+                    match value {
+                        WrapperOperandConstant::Scalar(value) => {
+                            Some(WrapperOperandConstant::Scalar(*value))
+                        }
+                        WrapperOperandConstant::Vec3(_) => None,
+                    }
+                }
+                "vec3" => {
+                    let [x, y, z] = values.as_slice() else {
+                        return None;
+                    };
+                    let x = match x {
+                        WrapperOperandConstant::Scalar(value) => *value,
+                        WrapperOperandConstant::Vec3(_) => return None,
+                    };
+                    let y = match y {
+                        WrapperOperandConstant::Scalar(value) => *value,
+                        WrapperOperandConstant::Vec3(_) => return None,
+                    };
+                    let z = match z {
+                        WrapperOperandConstant::Scalar(value) => *value,
+                        WrapperOperandConstant::Vec3(_) => return None,
+                    };
+                    Some(WrapperOperandConstant::Vec3([x, y, z]))
+                }
+                "length" => {
+                    let [value] = values.as_slice() else {
+                        return None;
+                    };
+                    match value {
+                        WrapperOperandConstant::Scalar(value) => {
+                            Some(WrapperOperandConstant::Scalar(value.abs()))
+                        }
+                        WrapperOperandConstant::Vec3([x, y, z]) => Some(
+                            WrapperOperandConstant::Scalar(
+                                (x * x + y * y + z * z).sqrt(),
+                            ),
+                        ),
+                    }
+                }
+                "abs" => {
+                    let [value] = values.as_slice() else {
+                        return None;
+                    };
+                    match value {
+                        WrapperOperandConstant::Scalar(value) => {
+                            Some(WrapperOperandConstant::Scalar(value.abs()))
+                        }
+                        WrapperOperandConstant::Vec3(_) => None,
+                    }
+                }
+                "sqrt" => {
+                    let [value] = values.as_slice() else {
+                        return None;
+                    };
+                    match value {
+                        WrapperOperandConstant::Scalar(value) if *value >= 0.0 => {
+                            Some(WrapperOperandConstant::Scalar(value.sqrt()))
+                        }
+                        WrapperOperandConstant::Scalar(_) => None,
+                        WrapperOperandConstant::Vec3(_) => None,
+                    }
+                }
+                "min" | "max" => {
+                    let [left, right] = values.as_slice() else {
+                        return None;
+                    };
+                    match (left, right) {
+                        (
+                            WrapperOperandConstant::Scalar(left),
+                            WrapperOperandConstant::Scalar(right),
+                        ) => Some(WrapperOperandConstant::Scalar(if name.as_str() == "min" {
+                            left.min(*right)
+                        } else {
+                            left.max(*right)
+                        })),
+                        _ => None,
+                    }
+                }
+                "clamp" => {
+                    let [value, min, max] = values.as_slice() else {
+                        return None;
+                    };
+                    match (value, min, max) {
+                        (
+                            WrapperOperandConstant::Scalar(value),
+                            WrapperOperandConstant::Scalar(min),
+                            WrapperOperandConstant::Scalar(max),
+                        ) => Some(WrapperOperandConstant::Scalar(value.clamp(*min, *max))),
+                        _ => None,
+                    }
+                }
+                "dot" => {
+                    let [left, right] = values.as_slice() else {
+                        return None;
+                    };
+                    match (left, right) {
+                        (
+                            WrapperOperandConstant::Scalar(left),
+                            WrapperOperandConstant::Scalar(right),
+                        ) => Some(WrapperOperandConstant::Scalar(left * right)),
+                        (
+                            WrapperOperandConstant::Vec3([lx, ly, lz]),
+                            WrapperOperandConstant::Vec3([rx, ry, rz]),
+                        ) => Some(WrapperOperandConstant::Scalar(
+                            lx * rx + ly * ry + lz * rz,
+                        )),
+                        _ => None,
+                    }
+                }
+                "distance" => {
+                    let [left, right] = values.as_slice() else {
+                        return None;
+                    };
+                    match (left, right) {
+                        (
+                            WrapperOperandConstant::Scalar(left),
+                            WrapperOperandConstant::Scalar(right),
+                        ) => Some(WrapperOperandConstant::Scalar((left - right).abs())),
+                        (
+                            WrapperOperandConstant::Vec3([lx, ly, lz]),
+                            WrapperOperandConstant::Vec3([rx, ry, rz]),
+                        ) => Some(WrapperOperandConstant::Scalar(
+                            ((lx - rx).powi(2) + (ly - ry).powi(2) + (lz - rz).powi(2)).sqrt(),
+                        )),
+                        _ => None,
+                    }
+                }
+                _ => None,
             }
-            let [arg] = args.as_slice() else {
+        }
+        Expr::Member { object, member, .. } => {
+            let WrapperOperandConstant::Vec3([x, y, z]) =
+                classify_wrapper_operand_expr(body, *object)?
+            else {
                 return None;
             };
-            match arg {
-                Arg::Positional { value, .. } | Arg::Named { value, .. } => {
-                    field_wrapper_numeric_literal(body, *value)
-                }
+            match member.as_str() {
+                "x" | "r" => Some(WrapperOperandConstant::Scalar(x)),
+                "y" | "g" => Some(WrapperOperandConstant::Scalar(y)),
+                "z" | "b" => Some(WrapperOperandConstant::Scalar(z)),
+                _ => None,
             }
+        }
+        Expr::Index { object, index, .. } => {
+            let WrapperOperandConstant::Vec3(values) =
+                classify_wrapper_operand_expr(body, *object)?
+            else {
+                return None;
+            };
+            let WrapperOperandConstant::Scalar(index) =
+                classify_wrapper_operand_expr(body, *index)?
+            else {
+                return None;
+            };
+            let index = index as usize;
+            values
+                .get(index)
+                .copied()
+                .map(WrapperOperandConstant::Scalar)
         }
         _ => None,
     }
@@ -2857,7 +3087,7 @@ fn field_exact_point_independent_vec3(
             node,
             format!("{} operand references sample point '{}'", node, point_param.expect("point param")),
             format!(
-                "Exact `{node}` fields must be point-independent. Use a constant Vec3 operand or downgrade the field to conservative handling."
+                "Exact `{node}` fields must be point-independent. Use a semantically constant Vec3 operand or downgrade the field to conservative handling."
             ),
         ));
     }
@@ -2867,7 +3097,7 @@ fn field_exact_point_independent_vec3(
         return Err(exactness_violation(
             node,
             format!("unable to infer the {node} operand type"),
-            format!("Exact `{node}` fields must use an explicit Vec3 operand so the compiler can classify exactness."),
+            format!("Exact `{node}` fields must use a Vec3 operand so the compiler can classify exactness."),
         ));
     };
     if ty != Type::Vec3 {
@@ -2877,7 +3107,18 @@ fn field_exact_point_independent_vec3(
             format!("Exact `{node}` fields accept only Vec3 operands in this phase."),
         ));
     }
-    field_exactness_capability(body, func, top_level, classes, enums, interfaces, functions)
+    match classify_wrapper_operand_constant(operand) {
+        Some(WrapperOperandConstant::Vec3(_)) => {
+            field_exactness_capability(body, func, top_level, classes, enums, interfaces, functions)
+        }
+        _ => Err(exactness_violation(
+            node,
+            format!("unable to prove the {node} operand is a point-independent Vec3 constant"),
+            format!(
+                "Exact `{node}` fields require a semantically constant Vec3 operand so the compiler can preserve exactness."
+            ),
+        )),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2919,23 +3160,41 @@ fn field_exactness_capability(
                 "Field composition may only reuse exact field declarations, not arbitrary portable functions.",
             )),
         },
-        FieldExpr::Primitive { primitive, .. } => Ok(field_primitive_exactness(*primitive)),
+        FieldExpr::Primitive { primitive, .. } => {
+            let exactness = field_primitive_exactness(*primitive);
+            if matches!(exactness, FieldClass::Conservative) {
+                Err(exactness_violation(
+                    "primitive",
+                    format!(
+                        "calling conservative field builtin '{}'",
+                        field_primitive_name(*primitive)
+                    ),
+                    "Exact fields may only use exact-preserving primitives in this phase.",
+                ))
+            } else {
+                Ok(exactness)
+            }
+        }
         FieldExpr::Custom { .. } => Err(exactness_violation(
             "custom",
             "custom field bodies remain opaque and conservative in this phase",
             "Rewrite the body using semantic field operators so the compiler can preserve exactness and prune branches.",
         )),
-        FieldExpr::Union { items } | FieldExpr::Intersection { items } => {
-            for item in items {
-                field_exactness_capability(item, func, top_level, classes, enums, interfaces, functions)?;
-            }
-            Ok(FieldClass::Exact)
-        }
-        FieldExpr::Subtract { left, right } => {
-            field_exactness_capability(left, func, top_level, classes, enums, interfaces, functions)?;
-            field_exactness_capability(right, func, top_level, classes, enums, interfaces, functions)?;
-            Ok(FieldClass::Exact)
-        }
+        FieldExpr::Union { .. } => Err(exactness_violation(
+            "union",
+            "boolean unions are conservative-only in this phase",
+            "Union composition is still conservative and does not prove exactness yet.",
+        )),
+        FieldExpr::Intersection { .. } => Err(exactness_violation(
+            "intersection",
+            "boolean intersections are conservative-only in this phase",
+            "Intersection composition is still conservative and does not prove exactness yet.",
+        )),
+        FieldExpr::Subtract { .. } => Err(exactness_violation(
+            "subtract",
+            "boolean subtraction is conservative-only in this phase",
+            "Subtract composition is still conservative and does not prove exactness yet.",
+        )),
         FieldExpr::Translate { translate, body } => {
             field_exact_point_independent_vec3(
                 "translate",
@@ -2967,16 +3226,16 @@ fn field_exactness_capability(
                 return Err(exactness_violation(
                     "uniform_scale",
                     "scale operand references the sample point",
-                    "Exact uniform scaling requires a point-independent positive scalar literal.",
+                    "Exact uniform scaling requires a point-independent positive scalar proof.",
                 ));
             }
-            let Some((expr_id, ty)) =
+            let Some((_expr_id, ty)) =
                 infer_field_wrapper_body_type(scale, func, classes, enums, interfaces, functions)
             else {
                 return Err(exactness_violation(
                     "uniform_scale",
                     "unable to infer the scale operand type",
-                    "Exact uniform scaling must use an explicit numeric operand so the compiler can confirm positivity.",
+                    "Exact uniform scaling must use a scalar operand so the compiler can confirm positivity.",
                 ));
             };
             if ty != Type::F32 {
@@ -2986,21 +3245,29 @@ fn field_exactness_capability(
                     "Exact uniform scaling must use a scalar F32 scale.",
                 ));
             }
-            let Some(value) = field_wrapper_numeric_literal(scale, expr_id) else {
-                return Err(exactness_violation(
-                    "uniform_scale",
-                    "unable to prove the scale operand is a positive literal",
-                    "Exact uniform scaling requires a point-independent positive scalar literal or casted literal.",
-                ));
-            };
-            if value <= 0.0 {
-                return Err(exactness_violation(
+            match classify_wrapper_operand_constant(scale) {
+                Some(WrapperOperandConstant::Scalar(value)) if value > 0.0 => {
+                    field_exactness_capability(
+                        body,
+                        func,
+                        top_level,
+                        classes,
+                        enums,
+                        interfaces,
+                        functions,
+                    )
+                }
+                Some(WrapperOperandConstant::Scalar(value)) => Err(exactness_violation(
                     "uniform_scale",
                     format!("scale operand must be positive for exact fields, found {value}"),
-                    "Exact uniform scaling requires a positive scale factor. Use a positive literal or downgrade the field to conservative handling.",
-                ));
+                    "Exact uniform scaling requires a positive scale proof. Use a positive scalar or downgrade the field to conservative handling.",
+                )),
+                Some(WrapperOperandConstant::Vec3(_)) | None => Err(exactness_violation(
+                    "uniform_scale",
+                    "unable to prove the scale operand is a positive scalar",
+                    "Exact uniform scaling requires a point-independent positive scalar proof.",
+                )),
             }
-            field_exactness_capability(body, func, top_level, classes, enums, interfaces, functions)
         }
         FieldExpr::AffineTransform { .. } => Err(exactness_violation(
             "affine_transform",
@@ -3012,30 +3279,16 @@ fn field_exactness_capability(
             "warp transforms are conservative-only in this phase",
             "Rewrite the body using exact-preserving transforms or accept conservative classification.",
         )),
-        FieldExpr::RepeatLinear { repeat, body } => field_exact_point_independent_vec3(
+        FieldExpr::RepeatLinear { .. } => Err(exactness_violation(
             "repeat_linear",
-            repeat,
-            body,
-            point_param,
-            func,
-            top_level,
-            classes,
-            enums,
-            interfaces,
-            functions,
-        ),
-        FieldExpr::RepeatGrid { repeat, body } => field_exact_point_independent_vec3(
+            "repeat_linear is conservative-only in this phase",
+            "Repeat operators remain conservative until the compiler can prove periodic exactness contracts.",
+        )),
+        FieldExpr::RepeatGrid { .. } => Err(exactness_violation(
             "repeat_grid",
-            repeat,
-            body,
-            point_param,
-            func,
-            top_level,
-            classes,
-            enums,
-            interfaces,
-            functions,
-        ),
+            "repeat_grid is conservative-only in this phase",
+            "Repeat operators remain conservative until the compiler can prove periodic exactness contracts.",
+        )),
         FieldExpr::RadialRepeat { .. } => Err(exactness_violation(
             "radial_repeat",
             "radial repeat is conservative-only in this phase",
@@ -3056,7 +3309,7 @@ fn field_exactness_capability(
         FieldExpr::InstanceArray { .. } => Err(exactness_violation(
             "instance_array",
             "instance arrays are conservative-only in this phase",
-            "Use repeat_linear, repeat_grid, or exact composition for exact fields.",
+            "Use exact-preserving transforms or accept conservative classification.",
         )),
         FieldExpr::SmoothUnion { .. } => Err(exactness_violation(
             "smooth_union",
@@ -3093,46 +3346,11 @@ fn field_exactness_capability(
             "displace deformation is conservative-only in this phase",
             "Deformation operators remain conservative because they alter local support tracing.",
         )),
-        FieldExpr::Extrude { height, .. } => {
-            if point_param.is_some_and(|name| body_references_variable(height, name)) {
-                return Err(exactness_violation(
-                    "extrude",
-                    "extrude height references the sample point",
-                    "Exact extrusions require a point-independent positive scalar height.",
-                ));
-            }
-            let Some((expr_id, ty)) =
-                infer_field_wrapper_body_type(height, func, classes, enums, interfaces, functions)
-            else {
-                return Err(exactness_violation(
-                    "extrude",
-                    "unable to infer the extrusion height type",
-                    "Exact extrusions require a point-independent positive scalar height.",
-                ));
-            };
-            if ty != Type::F32 {
-                return Err(exactness_violation(
-                    "extrude",
-                    format!("expected F32 height operand, found '{}'", type_label(&ty)),
-                    "Exact extrusions require a scalar F32 height.",
-                ));
-            }
-            let Some(value) = field_wrapper_numeric_literal(height, expr_id) else {
-                return Err(exactness_violation(
-                    "extrude",
-                    "unable to prove the extrusion height is a positive literal",
-                    "Exact extrusions require a point-independent positive scalar literal or casted literal.",
-                ));
-            };
-            if value <= 0.0 {
-                return Err(exactness_violation(
-                    "extrude",
-                    format!("extrude height must be positive for exact fields, found {value}"),
-                    "Exact extrusions require a positive height. Use a positive literal or downgrade the field to conservative handling.",
-                ));
-            }
-            Ok(FieldClass::Exact)
-        }
+        FieldExpr::Extrude { .. } => Err(exactness_violation(
+            "extrude",
+            "extrusions are conservative-only in this phase",
+            "Extrusions remain conservative until the compiler can prove their full silhouette contract.",
+        )),
         FieldExpr::Revolve { .. } => Err(exactness_violation(
             "revolve",
             "revolve is conservative-only in this phase",
@@ -4836,15 +5054,16 @@ fn field_builtin_exactness(name: &str) -> Option<FieldClass> {
         "field_translate_point"
         | "field_rotate_point"
         | "field_uniform_scale_point"
+        | "field_mirror_array_point" => Some(FieldClass::Exact),
+        "field_union"
+        | "field_intersection"
+        | "field_subtract"
         | "field_repeat_linear_point"
         | "field_repeat_grid_point"
-        | "field_mirror_array_point" => Some(FieldClass::Exact),
-        "ellipsoid" | "__wr_primitive_ellipsoid" => Some(FieldClass::Conservative),
-        "field_affine_transform_point"
+        | "field_instance_array_point"
+        | "field_affine_transform_point"
         | "field_warp_point"
         | "field_radial_repeat_point"
-        | "field_instance_array_point"
-        | "field_sweep_coords"
         | "field_smooth_union"
         | "field_smooth_intersection"
         | "field_smooth_subtract"
@@ -4852,6 +5071,8 @@ fn field_builtin_exactness(name: &str) -> Option<FieldClass> {
         | "field_twist_point"
         | "field_taper_point"
         | "field_displace_point" => Some(FieldClass::Conservative),
+        "ellipsoid" | "__wr_primitive_ellipsoid" => Some(FieldClass::Conservative),
+        "field_sweep_coords" => Some(FieldClass::Conservative),
         _ => None,
     }
 }

@@ -2151,6 +2151,11 @@ pub extern "C" fn wr_field_transform_point(transform: Value, point: Value) -> Va
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn wr_field_rotate_point(rotation: Value, point: Value) -> Value {
+    portable::field_rotate_point(rotation, point)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn wr_field_instance_point(instance: Value, point: Value) -> Value {
     portable::field_instance_point(instance, point)
 }
@@ -2206,8 +2211,18 @@ pub extern "C" fn wr_repeat_linear(period: Value, point: Value) -> Value {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn wr_repeat_linear_identity(period: Value, point: Value) -> Value {
+    portable::repeat_linear_identity(period, point)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn wr_repeat_grid(period: Value, point: Value) -> Value {
     portable::repeat_grid(period, point)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_repeat_grid_identity(period: Value, point: Value) -> Value {
+    portable::repeat_grid_identity(period, point)
 }
 
 #[unsafe(no_mangle)]
@@ -2216,13 +2231,28 @@ pub extern "C" fn wr_radial_repeat(period: Value, point: Value) -> Value {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn wr_radial_repeat_identity(period: Value, point: Value) -> Value {
+    portable::radial_repeat_identity(period, point)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn wr_mirror_array(mirror: Value, point: Value) -> Value {
     portable::mirror_array(mirror, point)
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn wr_mirror_array_identity(mirror: Value, point: Value) -> Value {
+    portable::mirror_array_identity(mirror, point)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn wr_instance_array(instance: Value, point: Value) -> Value {
     portable::instance_array(instance, point)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_instance_array_identity(instance: Value, point: Value) -> Value {
+    portable::instance_array_identity(instance, point)
 }
 
 #[unsafe(no_mangle)]

@@ -205,27 +205,57 @@ pub fn rotate(rotation: Value, point: Value) -> Value {
     let Some(point) = vec3_components(point) else {
         return Value::nil();
     };
-    if let Some((matrix, _inverse)) = transform3_fields(rotation) {
-        let Some(matrix) = mat4_components(matrix) else {
+    if let Some((_matrix, inverse)) = transform3_fields(rotation) {
+        let Some(inverse) = mat4_components(inverse) else {
             return Value::nil();
         };
-        let out = mat4_mul_vec4(matrix, [point[0], point[1], point[2], 0.0]);
+        let out = mat4_mul_vec4(inverse, [point[0], point[1], point[2], 0.0]);
         return vec3_value(out[0], out[1], out[2]);
     }
     if let Some(matrix) = mat3_components(rotation) {
-        let out = mat3_mul_vec3(matrix, point);
+        let out = mat3_mul_vec3(mat3_transpose(matrix), point);
         return vec3_value(out[0], out[1], out[2]);
     }
     if let Some(q) = vec4_components(rotation) {
-        let out = rotate_vec3_by_quat(point, q);
+        let out = rotate_vec3_by_quat(point, quat_inverse(q));
         return vec3_value(out[0], out[1], out[2]);
     }
     if let Some(euler) = vec3_components(rotation) {
-        let out = rotate_vec3_by_euler(point, euler);
+        let out = rotate_vec3_by_inverse_euler(point, euler);
         return vec3_value(out[0], out[1], out[2]);
     }
     if let Some(angle) = component_f32(rotation) {
-        let out = rotate_vec3_y(point, angle);
+        let out = rotate_vec3_y(point, -angle);
+        return vec3_value(out[0], out[1], out[2]);
+    }
+    Value::nil()
+}
+
+pub fn field_rotate_point(rotation: Value, point: Value) -> Value {
+    let Some(point) = vec3_components(point) else {
+        return Value::nil();
+    };
+    if let Some((_matrix, inverse)) = transform3_fields(rotation) {
+        let Some(inverse) = mat4_components(inverse) else {
+            return Value::nil();
+        };
+        let out = mat4_mul_vec4(inverse, [point[0], point[1], point[2], 1.0]);
+        return vec3_value(out[0], out[1], out[2]);
+    }
+    if let Some(matrix) = mat3_components(rotation) {
+        let out = mat3_mul_vec3(mat3_transpose(matrix), point);
+        return vec3_value(out[0], out[1], out[2]);
+    }
+    if let Some(q) = vec4_components(rotation) {
+        let out = rotate_vec3_by_quat(point, quat_inverse(q));
+        return vec3_value(out[0], out[1], out[2]);
+    }
+    if let Some(euler) = vec3_components(rotation) {
+        let out = rotate_vec3_by_inverse_euler(point, euler);
+        return vec3_value(out[0], out[1], out[2]);
+    }
+    if let Some(angle) = component_f32(rotation) {
+        let out = rotate_vec3_y(point, -angle);
         return vec3_value(out[0], out[1], out[2]);
     }
     Value::nil()
@@ -260,6 +290,14 @@ pub fn repeat_grid(period: Value, point: Value) -> Value {
     repeat_point(point, splat_period(period))
 }
 
+pub fn repeat_linear_identity(period: Value, point: Value) -> Value {
+    repeat_identity(splat_period(period), point)
+}
+
+pub fn repeat_grid_identity(period: Value, point: Value) -> Value {
+    repeat_identity(splat_period(period), point)
+}
+
 pub fn radial_repeat(period: Value, point: Value) -> Value {
     let Some(point) = vec3_components(point) else {
         return Value::nil();
@@ -281,12 +319,71 @@ pub fn radial_repeat(period: Value, point: Value) -> Value {
     vec3_value(radius * wrapped.cos(), point[1], radius * wrapped.sin())
 }
 
+pub fn radial_repeat_identity(period: Value, point: Value) -> Value {
+    let Some(point) = vec3_components(point) else {
+        return Value::nil();
+    };
+    let Some(period) = component_f32(period).or_else(|| vec3_components(period).map(|v| v[0]))
+    else {
+        return Value::nil();
+    };
+    if period <= 0.0 {
+        return Value::from_int(0);
+    }
+    let angle = point[2].atan2(point[0]);
+    let sector = std::f32::consts::TAU / period.max(1.0);
+    let sector_index = ((angle + 0.5 * sector) / sector).floor() as i64;
+    finalize_identity_hash(hash_identity_i64(IDENTITY_HASH_OFFSET, sector_index))
+}
+
 pub fn mirror_array(mirror: Value, point: Value) -> Value {
     field_mirror_point(mirror, point)
 }
 
+pub fn mirror_array_identity(mirror: Value, point: Value) -> Value {
+    let Some(point) = vec3_components(point) else {
+        return Value::nil();
+    };
+    let Some(normal) = vec3_components(mirror) else {
+        return Value::nil();
+    };
+    let len_sq = vec3_dot(normal, normal);
+    if len_sq == 0.0 {
+        return Value::from_int(0);
+    }
+    let inv_len = len_sq.sqrt().recip();
+    let unit = vec3_scale(normal, inv_len);
+    let distance = vec3_dot(point, unit);
+    let branch_id = if distance >= 0.0 { 1_i64 } else { 2_i64 };
+    finalize_identity_hash(hash_identity_i64(IDENTITY_HASH_OFFSET, branch_id))
+}
+
 pub fn instance_array(instance: Value, point: Value) -> Value {
     field_transform_point(instance, point)
+}
+
+pub fn instance_array_identity(instance: Value, _point: Value) -> Value {
+    if let Some(translation) = vec3_components(instance) {
+        let mut hash = IDENTITY_HASH_OFFSET;
+        hash = hash_identity_f32(hash, translation[0]);
+        hash = hash_identity_f32(hash, translation[1]);
+        hash = hash_identity_f32(hash, translation[2]);
+        return finalize_identity_hash(hash);
+    }
+    let Some((matrix, inverse)) = transform3_fields(instance) else {
+        return Value::from_int(0);
+    };
+    let Some(matrix) = mat4_components(matrix) else {
+        return Value::from_int(0);
+    };
+    let Some(inverse) = mat4_components(inverse) else {
+        return Value::from_int(0);
+    };
+    let mut hash = IDENTITY_HASH_OFFSET;
+    for value in matrix.into_iter().chain(inverse) {
+        hash = hash_identity_f32(hash, value);
+    }
+    finalize_identity_hash(hash)
 }
 
 pub fn smooth_union(left: Value, right: Value, k: Value) -> Value {
@@ -919,11 +1016,11 @@ fn rotate_vec3_y(point: [f32; 3], angle: f32) -> [f32; 3] {
     ]
 }
 
-fn rotate_vec3_by_euler(point: [f32; 3], euler: [f32; 3]) -> [f32; 3] {
+fn rotate_vec3_by_inverse_euler(point: [f32; 3], euler: [f32; 3]) -> [f32; 3] {
     let mut out = point;
-    out = rotate_vec3_x(out, euler[0]);
-    out = rotate_vec3_y(out, euler[1]);
-    rotate_vec3_z(out, euler[2])
+    out = rotate_vec3_z(out, -euler[2]);
+    out = rotate_vec3_y(out, -euler[1]);
+    rotate_vec3_x(out, -euler[0])
 }
 
 fn rotate_vec3_x(point: [f32; 3], angle: f32) -> [f32; 3] {
@@ -965,6 +1062,19 @@ fn rotate_vec3_by_quat(point: [f32; 3], quat: [f32; 4]) -> [f32; 3] {
         point[0] + 2.0 * (qw * uxv[0] + uuv[0]),
         point[1] + 2.0 * (qw * uxv[1] + uuv[1]),
         point[2] + 2.0 * (qw * uxv[2] + uuv[2]),
+    ]
+}
+
+fn quat_inverse(quat: [f32; 4]) -> [f32; 4] {
+    let len_sq = quat[0] * quat[0] + quat[1] * quat[1] + quat[2] * quat[2] + quat[3] * quat[3];
+    if len_sq == 0.0 {
+        return [0.0, 0.0, 0.0, 1.0];
+    }
+    [
+        -quat[0] / len_sq,
+        -quat[1] / len_sq,
+        -quat[2] / len_sq,
+        quat[3] / len_sq,
     ]
 }
 
@@ -1144,6 +1254,23 @@ fn vec3_cross(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
     ]
 }
 
+const IDENTITY_HASH_OFFSET: u64 = 0xcbf29ce484222325;
+const IDENTITY_HASH_PRIME: u64 = 0x100000001b3;
+
+fn hash_identity_i64(hash: u64, value: i64) -> u64 {
+    let zigzag = ((value << 1) ^ (value >> 63)) as u64;
+    (hash ^ zigzag).wrapping_mul(IDENTITY_HASH_PRIME)
+}
+
+fn hash_identity_f32(hash: u64, value: f32) -> u64 {
+    (hash ^ u64::from(value.to_bits())).wrapping_mul(IDENTITY_HASH_PRIME)
+}
+
+fn finalize_identity_hash(hash: u64) -> Value {
+    let masked = (hash & (i64::MAX as u64)).max(1);
+    Value::from_int(masked as i64)
+}
+
 fn repeat_axis(coord: f32, period: f32) -> f32 {
     if period <= 0.0 {
         return coord;
@@ -1151,11 +1278,40 @@ fn repeat_axis(coord: f32, period: f32) -> f32 {
     coord - period * (coord / period + 0.5).floor()
 }
 
+fn repeat_identity(period: Value, point: Value) -> Value {
+    let Some(point) = vec3_components(point) else {
+        return Value::nil();
+    };
+    let Some(period) = vec3_components(period) else {
+        return Value::nil();
+    };
+    let mut hash = IDENTITY_HASH_OFFSET;
+    let mut has_repeat = false;
+    for (coord, step) in point.into_iter().zip(period) {
+        if step > 0.0 {
+            has_repeat = true;
+            let cell = (coord / step + 0.5).floor() as i64;
+            hash = hash_identity_i64(hash, cell);
+        }
+    }
+    if !has_repeat {
+        return Value::from_int(0);
+    }
+    finalize_identity_hash(hash)
+}
+
 fn mat3_mul_vec3(matrix: [f32; 9], vector: [f32; 3]) -> [f32; 3] {
     [
         matrix[0] * vector[0] + matrix[3] * vector[1] + matrix[6] * vector[2],
         matrix[1] * vector[0] + matrix[4] * vector[1] + matrix[7] * vector[2],
         matrix[2] * vector[0] + matrix[5] * vector[1] + matrix[8] * vector[2],
+    ]
+}
+
+fn mat3_transpose(matrix: [f32; 9]) -> [f32; 9] {
+    [
+        matrix[0], matrix[3], matrix[6], matrix[1], matrix[4], matrix[7], matrix[2], matrix[5],
+        matrix[8],
     ]
 }
 
@@ -1376,6 +1532,13 @@ mod tests {
         assert_eq!(math::vec_y(translated).as_float(), -4.0);
         assert_eq!(math::vec_z(translated).as_float(), -2.0);
 
+        let rotated = field_rotate_point(
+            Value::from_float(std::f32::consts::FRAC_PI_2 as f64),
+            vec3_value(1.0, 0.0, 0.0),
+        );
+        assert!(math::vec_x(rotated).as_float().abs() < 0.0001);
+        assert!((math::vec_z(rotated).as_float() + 1.0).abs() < 0.0001);
+
         let mirrored = field_mirror_point(vec3_value(1.0, 0.0, 0.0), vec3_value(-2.0, 1.0, 0.0));
         assert_eq!(math::vec_x(mirrored).as_float(), 2.0);
         assert_eq!(math::vec_y(mirrored).as_float(), 1.0);
@@ -1403,7 +1566,7 @@ mod tests {
             vec3_value(1.0, 0.0, 0.0),
         );
         assert!(math::vec_x(rotated).as_float().abs() < 0.0001);
-        assert!((math::vec_z(rotated).as_float() - 1.0).abs() < 0.0001);
+        assert!((math::vec_z(rotated).as_float() + 1.0).abs() < 0.0001);
 
         let smooth = smooth_union(
             Value::from_float(1.0),

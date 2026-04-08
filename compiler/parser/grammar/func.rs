@@ -259,7 +259,11 @@ fn parse_radiance_signature_and_block(p: &mut Parser) {
 }
 
 fn parse_region_signature_and_block(p: &mut Parser) {
-    expect_ident_text(p, "region", "expected 'region' to start a region declaration");
+    expect_ident_text(
+        p,
+        "region",
+        "expected 'region' to start a region declaration",
+    );
     p.expect_with_message(SyntaxKind::Ident, "expected region name after 'region'");
     p.expect_with_message(SyntaxKind::LParen, "expected '(' after region name");
     parse_param_list(p);
@@ -270,7 +274,11 @@ fn parse_region_signature_and_block(p: &mut Parser) {
 }
 
 fn parse_domain_signature_and_block(p: &mut Parser) {
-    expect_ident_text(p, "domain", "expected 'domain' to start a domain declaration");
+    expect_ident_text(
+        p,
+        "domain",
+        "expected 'domain' to start a domain declaration",
+    );
     p.expect_with_message(SyntaxKind::Ident, "expected domain name after 'domain'");
     p.expect_with_message(SyntaxKind::LParen, "expected '(' after domain name");
     parse_param_list(p);
@@ -281,7 +289,11 @@ fn parse_domain_signature_and_block(p: &mut Parser) {
 }
 
 fn parse_render_signature_and_block(p: &mut Parser) {
-    expect_ident_text(p, "render", "expected 'render' to start a render declaration");
+    expect_ident_text(
+        p,
+        "render",
+        "expected 'render' to start a render declaration",
+    );
     p.expect_with_message(SyntaxKind::Ident, "expected render name after 'render'");
     p.expect_with_message(SyntaxKind::LParen, "expected '(' after render name");
     parse_param_list(p);
@@ -310,7 +322,9 @@ fn parse_region_body(p: &mut Parser) {
             break;
         }
         let cursor = p.cursor_pos();
-        p.error_with_message_no_bump("expected region statement: place, overlay, replace, scatter, or if");
+        p.error_with_message_no_bump(
+            "expected region statement: place, overlay, replace, scatter, or if",
+        );
         p.recover_until(&[SyntaxKind::Newline, SyntaxKind::RBrace]);
         p.expect_stmt_boundary();
         if p.cursor_pos() == cursor {
@@ -327,7 +341,12 @@ fn parse_region_item(p: &mut Parser) -> bool {
         return true;
     }
     if p.at_ident_text("place") {
-        parse_region_named_assignment(p, "place", SyntaxKind::RegionPlaceStmt, "expected region placement name");
+        parse_region_named_assignment(
+            p,
+            "place",
+            SyntaxKind::RegionPlaceStmt,
+            "expected region placement name",
+        );
         return true;
     }
     if p.at_ident_text("overlay") {
@@ -362,7 +381,11 @@ fn parse_region_named_assignment(
     missing_name_message: &str,
 ) {
     let m = p.start();
-    expect_ident_text(p, keyword, &format!("expected '{keyword}' to start a region statement"));
+    expect_ident_text(
+        p,
+        keyword,
+        &format!("expected '{keyword}' to start a region statement"),
+    );
     p.expect_with_message(SyntaxKind::Ident, missing_name_message);
     p.expect_with_message(SyntaxKind::Equals, "expected '=' after region item name");
     expr::expr(p);
@@ -372,7 +395,11 @@ fn parse_region_named_assignment(
 
 fn parse_region_scatter(p: &mut Parser) {
     let m = p.start();
-    expect_ident_text(p, "scatter", "expected 'scatter' to start a region scatter statement");
+    expect_ident_text(
+        p,
+        "scatter",
+        "expected 'scatter' to start a region scatter statement",
+    );
     p.expect_with_message(SyntaxKind::Ident, "expected scatter name after 'scatter'");
     let b = p.start();
     expect_block_intro(p, "expected '{' after scatter name");

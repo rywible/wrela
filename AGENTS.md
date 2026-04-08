@@ -1,12 +1,1 @@
-- Nothing you do should be backwards compatible. Hard cutovers only. No governance. No ceremony. Hard breaking changes.
-- Timelines do not matter. There is only ship.
-- When planning a project, always structure it for maximum parallelism with subagents. You are primarily orchestrating subagents to complete work and then reviewing their work and integrating it, not completing the work yourself. Write the plan with explicit tasks for each parallel worklane with their own explicit AC and tests. The plan should be long and comprehensive. It should be written such that a team of junior engineers could take it and run
-- Do not return until the full scope of a project is completed, even if there is ambiguity or the project is extremely large. If you complete a task, move onto the next one. The project is not complete until the full AC is met.
-- After completing AC for a given project, that project is not complete until you launch a new subagent to review your work for correctness, architecture, maintanability, and performance. It should also verify that the project has been fully completed based on the tasks in the plan and expected outcomes. Take that feedback into account and fix whatever comes up from this independent review. This should always be your last task.
-- If you have to stop and reconcile something yourself, mid-project, that's OK, but remember to continue work with subagents. You're an orchestrator primarily. You unblock things, then you delegate again. This is faster.
-- These instructions always need to survive compaction. They must be followed at all times, rigidly.
-- If a subagent exits early, relaunch that subagent to finish the task that it exited early on before reviewing it.
-- If you hit the subagent thread ceiling, audit to check that there aren't lingering subagent threads not doing any work. If there are, delete them and retry launching new subagents.
-- Always author for correctness, maintainability, and testability. Tests should always be comprehensive
-- Don't litter the repo with random docs or gate artifacts. We don't need more documentation or scripts. You can generate them for one off verification of the project scope, but then they should be removed
-- When developing via webgpu, use your playwright skill to verify that your changes are working correctly
+After completing AC for a given project, that project is not complete until you launch a new subagent to review your work for correctness, architecture, maintanability, and performance. It should also verify that the project has been fully completed based on the tasks in the plan and expected outcomes. Take that feedback into account and fix whatever comes up from this independent review. This should always be your last task.

@@ -1259,7 +1259,7 @@ fn infer_expr(
             Type::Unknown
         }
     };
-    ctx.record_expr(expr_id, ty.clone());
+    ctx.record_expr(body, expr_id, ty.clone());
     if matches!(ty, Type::Pending(_)) && !allow_pending {
         errors.push(TypeError::PendingNotAwaited {
             span: span_from_range(body.expr_span(expr_id)),
@@ -2515,83 +2515,6 @@ fn infer_shape_point_query_builtin(
                 expected: type_label(&shape_capture_type()),
                 found: type_label(&found),
                 span: span_from_range(body.expr_span(capture_expr)),
-            });
-        }
-    }
-
-    Some(ret)
-}
-
-fn infer_world_query_builtin(
-    body: &Body,
-    expr_id: Idx<Expr>,
-    query_name: &SmolStr,
-    args: &Vec<crate::hir::Arg>,
-    ctx: &mut TypeContext,
-    classes: &ClassIndex,
-    enums: &EnumIndex,
-    interfaces: &InterfaceIndex,
-    functions: &FunctionIndex,
-    errors: &mut Vec<TypeError>,
-    allow_result: bool,
-    in_result_fn: bool,
-    expected: &[(SmolStr, Type)],
-    ret: Type,
-) -> Option<Type> {
-    if ctx.in_portable_lane() {
-        errors.push(TypeError::PortableHostCallForbidden {
-            function: ctx.current_function_name(),
-            callee: query_name.clone(),
-            span: span_from_range(body.expr_span(expr_id)),
-            help: "World queries belong in the host lane. Capture a region, build a domain over it, then query that domain from host code.".to_string(),
-        });
-    }
-
-    infer_exact_builtin_call(
-        body,
-        expr_id,
-        args,
-        ctx,
-        classes,
-        enums,
-        interfaces,
-        functions,
-        errors,
-        allow_result,
-        in_result_fn,
-        expected,
-        ret.clone(),
-    )?;
-
-    if let Some(domain_expr) = call_named_arg_value(args, "domain") {
-        let found = infer_expr(
-            body,
-            domain_expr,
-            ctx,
-            classes,
-            enums,
-            interfaces,
-            functions,
-            errors,
-            false,
-            allow_result,
-            in_result_fn,
-        );
-        if types_known(&scene_domain_type(), &found)
-            && !is_assignable(&scene_domain_type(), &found, classes, interfaces)
-        {
-            errors.push(TypeError::ArgumentTypeMismatch {
-                name: SmolStr::new("domain"),
-                expected: type_label(&scene_domain_type()),
-                found: type_label(&found),
-                span: span_from_range(body.expr_span(domain_expr)),
-            });
-        } else if !types_known(&scene_domain_type(), &found) && found != Type::Unknown {
-            errors.push(TypeError::ArgumentTypeMismatch {
-                name: SmolStr::new("domain"),
-                expected: type_label(&scene_domain_type()),
-                found: type_label(&found),
-                span: span_from_range(body.expr_span(domain_expr)),
             });
         }
     }

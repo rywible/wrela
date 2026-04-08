@@ -538,6 +538,163 @@ impl Function {
             | FunctionRole::Material => FunctionLane::Portable,
         }
     }
+
+    pub fn visit_analysis_bodies<'a, F>(&'a self, mut visit: F)
+    where
+        F: FnMut(&'a Body),
+    {
+        let mut seen = Vec::new();
+        if let Some(body) = &self.body {
+            visit_body_once(body, &mut seen, &mut visit);
+        }
+        if let Some(field) = &self.field {
+            if let Some(support) = &field.authored_support {
+                visit_body_once(support, &mut seen, &mut visit);
+            }
+            if let Some(bounds) = &field.authored_bounds {
+                visit_body_once(bounds, &mut seen, &mut visit);
+            }
+        }
+        if let Some(graph) = &self.field_graph {
+            visit_field_expr_bodies(&graph.root, &mut seen, &mut visit);
+        }
+    }
+}
+
+pub fn body_key(body: &Body) -> usize {
+    body as *const Body as usize
+}
+
+fn visit_body_once<'a, F>(body: &'a Body, seen: &mut Vec<&'a Body>, visit: &mut F)
+where
+    F: FnMut(&'a Body),
+{
+    if seen.iter().any(|existing| *existing == body) {
+        return;
+    }
+    seen.push(body);
+    visit(body);
+}
+
+fn visit_field_expr_bodies<'a, F>(expr: &'a FieldExpr, seen: &mut Vec<&'a Body>, visit: &mut F)
+where
+    F: FnMut(&'a Body),
+{
+    match expr {
+        FieldExpr::Use { .. } | FieldExpr::Primitive { .. } => {}
+        FieldExpr::Union { items } | FieldExpr::Intersection { items } => {
+            for item in items {
+                visit_field_expr_bodies(item, seen, visit);
+            }
+        }
+        FieldExpr::Subtract { left, right } => {
+            visit_field_expr_bodies(left, seen, visit);
+            visit_field_expr_bodies(right, seen, visit);
+        }
+        FieldExpr::Translate { translate, body } => {
+            visit_body_once(translate, seen, visit);
+            visit_field_expr_bodies(body, seen, visit);
+        }
+        FieldExpr::Rotate { rotate, body } => {
+            visit_body_once(rotate, seen, visit);
+            visit_field_expr_bodies(body, seen, visit);
+        }
+        FieldExpr::UniformScale { scale, body } => {
+            visit_body_once(scale, seen, visit);
+            visit_field_expr_bodies(body, seen, visit);
+        }
+        FieldExpr::AffineTransform { transform, body } => {
+            visit_body_once(transform, seen, visit);
+            visit_field_expr_bodies(body, seen, visit);
+        }
+        FieldExpr::Warp { warp, body } => {
+            visit_body_once(warp, seen, visit);
+            visit_field_expr_bodies(body, seen, visit);
+        }
+        FieldExpr::RepeatLinear { repeat, body } => {
+            visit_body_once(repeat, seen, visit);
+            visit_field_expr_bodies(body, seen, visit);
+        }
+        FieldExpr::RepeatGrid { repeat, body } => {
+            visit_body_once(repeat, seen, visit);
+            visit_field_expr_bodies(body, seen, visit);
+        }
+        FieldExpr::RadialRepeat { radial, body } => {
+            visit_body_once(radial, seen, visit);
+            visit_field_expr_bodies(body, seen, visit);
+        }
+        FieldExpr::MirrorArray { mirror, body } => {
+            visit_body_once(mirror, seen, visit);
+            visit_field_expr_bodies(body, seen, visit);
+        }
+        FieldExpr::InstanceArray { instance, body } => {
+            visit_body_once(instance, seen, visit);
+            visit_field_expr_bodies(body, seen, visit);
+        }
+        FieldExpr::SmoothUnion { smoothing, items }
+        | FieldExpr::SmoothIntersection { smoothing, items } => {
+            visit_body_once(smoothing, seen, visit);
+            for item in items {
+                visit_field_expr_bodies(item, seen, visit);
+            }
+        }
+        FieldExpr::SmoothSubtract {
+            smoothing,
+            left,
+            right,
+        } => {
+            visit_body_once(smoothing, seen, visit);
+            visit_field_expr_bodies(left, seen, visit);
+            visit_field_expr_bodies(right, seen, visit);
+        }
+        FieldExpr::Bend { bend, body } => {
+            visit_body_once(bend, seen, visit);
+            visit_field_expr_bodies(body, seen, visit);
+        }
+        FieldExpr::Twist { twist, body } => {
+            visit_body_once(twist, seen, visit);
+            visit_field_expr_bodies(body, seen, visit);
+        }
+        FieldExpr::Taper { taper, body } => {
+            visit_body_once(taper, seen, visit);
+            visit_field_expr_bodies(body, seen, visit);
+        }
+        FieldExpr::Displace { displace, body } => {
+            visit_body_once(displace, seen, visit);
+            visit_field_expr_bodies(body, seen, visit);
+        }
+        FieldExpr::Extrude { height, profile } => {
+            visit_body_once(height, seen, visit);
+            visit_profile_expr_bodies(profile, seen, visit);
+        }
+        FieldExpr::Revolve { profile } => {
+            visit_profile_expr_bodies(profile, seen, visit);
+        }
+        FieldExpr::Sweep { path, profile } => {
+            visit_body_once(path, seen, visit);
+            visit_profile_expr_bodies(profile, seen, visit);
+        }
+        FieldExpr::Loft { height, from, to } => {
+            visit_body_once(height, seen, visit);
+            visit_profile_expr_bodies(from, seen, visit);
+            visit_profile_expr_bodies(to, seen, visit);
+        }
+        FieldExpr::Custom { body } => {
+            visit_body_once(body, seen, visit);
+        }
+    }
+}
+
+fn visit_profile_expr_bodies<'a, F>(
+    profile: &'a ProfileExpr,
+    _seen: &mut Vec<&'a Body>,
+    _visit: &mut F,
+) where
+    F: FnMut(&'a Body),
+{
+    match profile {
+        ProfileExpr::Primitive { .. } => {}
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

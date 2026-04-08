@@ -102,10 +102,9 @@ field conservative distance scene(p: Vec3) -> F32 {
 radiance field scene_radiance(p: Vec3, direction: Vec3, feature_id: U64) -> Vec3 {
     sky_t = clamp(0.5 + direction.y * 0.5, 0.0, 1.0)
     band = clamp(0.24 - abs(p.y - 0.82) * 0.16, 0.0, 0.24) / 0.24
-    feature_bias = clamp(f32(feature_id), 0.0, 1.0)
     return vec3(8.0, 10.0, 16.0) * (1.0 - sky_t)
         + vec3(58.0, 84.0, 130.0) * sky_t
-        + vec3(12.0, 10.0, 8.0) * band * (0.35 + 0.65 * feature_bias)
+        + vec3(12.0, 10.0, 8.0) * band
 }
 
 volume field scene_volume(p: Vec3, surface_distance: F32) -> Medium {

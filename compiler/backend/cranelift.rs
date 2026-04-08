@@ -4096,9 +4096,12 @@ fn runtime_builtin_func_id(
         "translate" | "field_translate_point" => {
             Some(runtime_fn_value_binary(module, runtime, "wr_translate")?)
         }
-        "rotate" | "field_rotate_point" => {
-            Some(runtime_fn_value_binary(module, runtime, "wr_rotate")?)
-        }
+        "rotate" => Some(runtime_fn_value_binary(module, runtime, "wr_rotate")?),
+        "field_rotate_point" => Some(runtime_fn_value_binary(
+            module,
+            runtime,
+            "wr_field_rotate_point",
+        )?),
         "uniform_scale" | "field_uniform_scale_point" => Some(runtime_fn_value_binary(
             module,
             runtime,
@@ -4115,21 +4118,46 @@ fn runtime_builtin_func_id(
             runtime,
             "wr_repeat_linear",
         )?),
+        "__wr_repeat_linear_identity" => Some(runtime_fn_value_binary(
+            module,
+            runtime,
+            "wr_repeat_linear_identity",
+        )?),
         "repeat_grid" | "field_repeat_grid_point" => {
             Some(runtime_fn_value_binary(module, runtime, "wr_repeat_grid")?)
         }
+        "__wr_repeat_grid_identity" => Some(runtime_fn_value_binary(
+            module,
+            runtime,
+            "wr_repeat_grid_identity",
+        )?),
         "radial_repeat" | "field_radial_repeat_point" => Some(runtime_fn_value_binary(
             module,
             runtime,
             "wr_radial_repeat",
         )?),
+        "__wr_radial_repeat_identity" => Some(runtime_fn_value_binary(
+            module,
+            runtime,
+            "wr_radial_repeat_identity",
+        )?),
         "mirror_array" | "field_mirror_array_point" => {
             Some(runtime_fn_value_binary(module, runtime, "wr_mirror_array")?)
         }
+        "__wr_mirror_array_identity" => Some(runtime_fn_value_binary(
+            module,
+            runtime,
+            "wr_mirror_array_identity",
+        )?),
         "instance_array" | "field_instance_array_point" => Some(runtime_fn_value_binary(
             module,
             runtime,
             "wr_instance_array",
+        )?),
+        "__wr_instance_array_identity" => Some(runtime_fn_value_binary(
+            module,
+            runtime,
+            "wr_instance_array_identity",
         )?),
         "field_bend_point" => Some(runtime_fn_value_binary(module, runtime, "wr_bend")?),
         "field_twist_point" => Some(runtime_fn_value_binary(module, runtime, "wr_twist")?),

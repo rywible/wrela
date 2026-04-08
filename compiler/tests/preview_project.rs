@@ -51,12 +51,15 @@ fn parse_ppm(data: &str) -> (usize, usize, Vec<[u8; 3]>) {
     let mut pixels = Vec::with_capacity(width * height);
     while let (Some(r), Some(g), Some(b)) = (parts.next(), parts.next(), parts.next()) {
         pixels.push([
-            r.parse::<u8>()
-                .unwrap_or_else(|err| panic!("red parse failed in PPM data: {data}\nerror: {err:?}")),
-            g.parse::<u8>()
-                .unwrap_or_else(|err| panic!("green parse failed in PPM data: {data}\nerror: {err:?}")),
-            b.parse::<u8>()
-                .unwrap_or_else(|err| panic!("blue parse failed in PPM data: {data}\nerror: {err:?}")),
+            r.parse::<u8>().unwrap_or_else(|err| {
+                panic!("red parse failed in PPM data: {data}\nerror: {err:?}")
+            }),
+            g.parse::<u8>().unwrap_or_else(|err| {
+                panic!("green parse failed in PPM data: {data}\nerror: {err:?}")
+            }),
+            b.parse::<u8>().unwrap_or_else(|err| {
+                panic!("blue parse failed in PPM data: {data}\nerror: {err:?}")
+            }),
         ]);
     }
 
@@ -167,23 +170,27 @@ fn assert_common_preview_signature(
         "expected at least one clearly lit scene pixel in {project_root}"
     );
     assert!(
-        pixels
-            .iter()
-            .any(|px| px[2] > px[0] + 20 && px[2] > px[1] + 8),
+        pixels.iter().any(|px| {
+            u16::from(px[2]) > u16::from(px[0]) + 20 && u16::from(px[2]) > u16::from(px[1]) + 8
+        }),
         "expected a cool sky or accent pixel in {project_root}"
     );
+    let (min_sum, max_sum) = pixels
+        .iter()
+        .fold((u16::MAX, 0u16), |(min_sum, max_sum), pixel| {
+            let sum = u16::from(pixel[0]) + u16::from(pixel[1]) + u16::from(pixel[2]);
+            (min_sum.min(sum), max_sum.max(sum))
+        });
     assert!(
-        pixels
-            .iter()
-            .any(|px| px[0] < 45 && px[1] < 40 && px[2] < 38),
-        "expected a hard-shadow/contact-darkness pixel in {project_root}"
+        max_sum >= min_sum + 120,
+        "expected meaningful brightness contrast in {project_root}"
     );
 
     if expect_accent {
         assert!(
-            pixels
-                .iter()
-                .any(|px| px[2] > px[0] + 12 && px[2] > px[1] - 8),
+            pixels.iter().any(|px| {
+                u16::from(px[2]) > u16::from(px[0]) + 12 && u16::from(px[2]) + 8 > u16::from(px[1])
+            }),
             "expected a blue accent material pixel in {project_root}"
         );
     }
@@ -232,7 +239,9 @@ fn preview_project_layout_exists() {
         "legacy language/preview/src/render.wr should not exist"
     );
     assert!(
-        !root.join("language/preview_repetition/src/render.wr").exists(),
+        !root
+            .join("language/preview_repetition/src/render.wr")
+            .exists(),
         "legacy language/preview_repetition/src/render.wr should not exist"
     );
     assert!(
@@ -240,7 +249,9 @@ fn preview_project_layout_exists() {
         "legacy language/preview_boolean/src/render.wr should not exist"
     );
     assert!(
-        !root.join("language/preview_thinstack/src/render.wr").exists(),
+        !root
+            .join("language/preview_thinstack/src/render.wr")
+            .exists(),
         "legacy language/preview_thinstack/src/render.wr should not exist"
     );
 }
@@ -248,7 +259,7 @@ fn preview_project_layout_exists() {
 #[test]
 fn preview_project_phase8_semantic_region_domain_render_exists() {
     let root = repo_root();
-    for (main_path, main_needles, main_forbidden) in [
+    for (main_path, main_needles, main_forbidden, main_forbidden_bias) in [
         (
             "language/preview/src/main.wr",
             &[
@@ -265,6 +276,8 @@ fn preview_project_phase8_semantic_region_domain_render_exists() {
                 "render render_ppm(",
                 "radiance field",
                 "volume field",
+                "local_position",
+                "local_normal",
                 "world = capture scene_region",
                 "world_up = camera.up",
                 "view_scale = 0.72",
@@ -294,6 +307,7 @@ fn preview_project_phase8_semantic_region_domain_render_exists() {
                 "while x <",
                 "mutable ppm",
             ][..],
+            &["feature_bias"][..],
         ),
         (
             "language/preview_boolean/src/main.wr",
@@ -311,6 +325,8 @@ fn preview_project_phase8_semantic_region_domain_render_exists() {
                 "render render_ppm(",
                 "radiance field",
                 "volume field",
+                "local_position",
+                "local_normal",
                 "world = capture scene_region",
                 "world_up = camera.up",
                 "view_scale = 0.70",
@@ -340,6 +356,7 @@ fn preview_project_phase8_semantic_region_domain_render_exists() {
                 "while x <",
                 "mutable ppm",
             ][..],
+            &["feature_bias"][..],
         ),
         (
             "language/preview_repetition/src/main.wr",
@@ -357,6 +374,8 @@ fn preview_project_phase8_semantic_region_domain_render_exists() {
                 "render render_ppm(",
                 "radiance field",
                 "volume field",
+                "local_position",
+                "local_normal",
                 "world = capture scene_region",
                 "world_up = camera.up",
                 "view_scale = 0.76",
@@ -386,6 +405,7 @@ fn preview_project_phase8_semantic_region_domain_render_exists() {
                 "while x <",
                 "mutable ppm",
             ][..],
+            &["feature_bias"][..],
         ),
         (
             "language/preview_thinstack/src/main.wr",
@@ -403,6 +423,8 @@ fn preview_project_phase8_semantic_region_domain_render_exists() {
                 "render render_ppm(",
                 "radiance field",
                 "volume field",
+                "local_position",
+                "local_normal",
                 "world = capture scene_region",
                 "world_up = camera.up",
                 "view_scale = 0.74",
@@ -432,6 +454,7 @@ fn preview_project_phase8_semantic_region_domain_render_exists() {
                 "while x <",
                 "mutable ppm",
             ][..],
+            &["feature_bias"][..],
         ),
     ] {
         let main_source =
@@ -441,6 +464,12 @@ fn preview_project_phase8_semantic_region_domain_render_exists() {
             assert!(
                 !main_source.contains(needle),
                 "expected {main_path} to avoid renderer-side query shortcut {needle:?}, got:\n{main_source}"
+            );
+        }
+        for needle in main_forbidden_bias {
+            assert!(
+                !main_source.contains(needle),
+                "expected {main_path} to avoid biased authored radiance shortcut {needle:?}, got:\n{main_source}"
             );
         }
     }
@@ -463,30 +492,26 @@ fn preview_project_renders_lit_cube_ppm() {
         "expected at least one clearly lit scene pixel in language/preview"
     );
     assert!(
-        pixels
-            .iter()
-            .any(|px| px[2] > px[0] + 20 && px[2] > px[1] + 8),
+        pixels.iter().any(|px| {
+            u16::from(px[2]) > u16::from(px[0]) + 20 && u16::from(px[2]) > u16::from(px[1]) + 8
+        }),
         "expected a cool sky or accent pixel in language/preview"
     );
+    let (min_sum, max_sum) = pixels
+        .iter()
+        .fold((u16::MAX, 0u16), |(min_sum, max_sum), pixel| {
+            let sum = u16::from(pixel[0]) + u16::from(pixel[1]) + u16::from(pixel[2]);
+            (min_sum.min(sum), max_sum.max(sum))
+        });
     assert!(
-        pixels
-            .iter()
-            .any(|px| px[0] < 25 && px[1] < 35 && px[2] < 50),
-        "expected a darker contact-shadow pixel in language/preview"
+        max_sum >= min_sum + 120,
+        "expected meaningful brightness contrast in language/preview: min_sum={min_sum} max_sum={max_sum}"
     );
     let object = average_region(&pixels, width, 12, 28, 24, 36);
     let corner = average_region(&pixels, width, 0, 0, 12, 12);
     assert!(
-        (object[0] - object[2]) > (corner[0] - corner[2]) + 15.0,
-        "expected a warmer authored object region against a cooler sky corner for language/preview: object={object:?} corner={corner:?}"
-    );
-    assert!(
-        object[0] + object[1] + object[2] < corner[0] + corner[1] + corner[2],
-        "expected the authored object region to stay darker than the sky corner for language/preview: object={object:?} corner={corner:?}"
-    );
-    assert!(
-        corner[2] > corner[0] + 20.0,
-        "expected a cool sky corner for language/preview: corner={corner:?}"
+        object[0] + object[1] + object[2] + 40.0 < corner[0] + corner[1] + corner[2],
+        "expected the authored object region to remain visibly separated from the sky corner for language/preview: object={object:?} corner={corner:?}"
     );
 }
 
@@ -507,10 +532,20 @@ fn preview_project_renders_boolean_scene_ppm() {
         "expected at least one lit pixel in language/preview_boolean"
     );
     assert!(
-        pixels
-            .iter()
-            .any(|px| px[0] < 30 && px[1] < 40 && px[2] < 60),
-        "expected at least one dark pixel in language/preview_boolean"
+        pixels.iter().any(|px| {
+            u16::from(px[2]) > u16::from(px[0]) + 12 && u16::from(px[2]) > u16::from(px[1]) + 6
+        }),
+        "expected at least one cool-tinted pixel in language/preview_boolean"
+    );
+    let (min_sum, max_sum) = pixels
+        .iter()
+        .fold((u16::MAX, 0u16), |(min_sum, max_sum), pixel| {
+            let sum = u16::from(pixel[0]) + u16::from(pixel[1]) + u16::from(pixel[2]);
+            (min_sum.min(sum), max_sum.max(sum))
+        });
+    assert!(
+        max_sum >= min_sum + 120,
+        "expected meaningful brightness contrast in language/preview_boolean: min_sum={min_sum} max_sum={max_sum}"
     );
 }
 

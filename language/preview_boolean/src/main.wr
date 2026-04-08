@@ -4,13 +4,13 @@ field exact distance ground(p: Vec3) -> F32 {
     plane(normal=vec3(0.0, 1.0, 0.0), offset=1.1)
 }
 
-field exact distance wall_panel(p: Vec3) -> F32 {
+field conservative distance wall_panel(p: Vec3) -> F32 {
     extrude = f32(0.36) {
         rounded_rect2(half = vec2(1.45, 1.08), radius = 0.12)
     }
 }
 
-field exact distance door_cut(p: Vec3) -> F32 {
+field conservative distance door_cut(p: Vec3) -> F32 {
     translate = vec3(0.0, -0.34, 0.0) {
         extrude = f32(0.52) {
             rect2(half = vec2(0.34, 0.60))
@@ -18,7 +18,7 @@ field exact distance door_cut(p: Vec3) -> F32 {
     }
 }
 
-field exact distance arch_cut(p: Vec3) -> F32 {
+field conservative distance arch_cut(p: Vec3) -> F32 {
     translate = vec3(0.0, 0.28, 0.0) {
         extrude = f32(0.52) {
             circle2(radius = 0.34)
@@ -81,10 +81,9 @@ field conservative distance scene(p: Vec3) -> F32 {
 radiance field scene_radiance(p: Vec3, direction: Vec3, feature_id: U64) -> Vec3 {
     sky_t = clamp(0.5 + direction.y * 0.5, 0.0, 1.0)
     carve = clamp(0.24 - abs(p.x) * 0.18 - abs(p.y) * 0.10, 0.0, 0.24) / 0.24
-    feature_bias = clamp(f32(feature_id), 0.0, 1.0)
     return vec3(12.0, 14.0, 22.0) * (1.0 - sky_t)
         + vec3(54.0, 82.0, 124.0) * sky_t
-        + vec3(14.0, 8.0, 4.0) * carve * (0.3 + 0.7 * feature_bias)
+        + vec3(14.0, 8.0, 4.0) * carve
 }
 
 volume field scene_volume(p: Vec3, surface_distance: F32) -> Medium {

@@ -182,21 +182,23 @@ fn check_function(
                     help: "Domain and render declarations stay metadata-only. Keep the body to compiler-understood policy assignments only.".to_string(),
                 });
             }
-            for stmt in &body.root_stmts {
-                check_stmt(
-                    body,
-                    *stmt,
-                    &mut ctx,
-                    classes,
-                    enums,
-                    interfaces,
-                    functions,
-                    errors,
-                    ret_type.as_ref(),
-                    returns_result,
-                    func.name_span,
-                );
-            }
+            func.visit_analysis_bodies(|body| {
+                for stmt in &body.root_stmts {
+                    check_stmt(
+                        body,
+                        *stmt,
+                        &mut ctx,
+                        classes,
+                        enums,
+                        interfaces,
+                        functions,
+                        errors,
+                        ret_type.as_ref(),
+                        returns_result,
+                        func.name_span,
+                    );
+                }
+            });
         }
     }
     ctx.exit_scope();
@@ -4132,10 +4134,6 @@ impl TypeContext {
         }
     }
 
-    fn current_function_role(&self) -> FunctionRole {
-        self.function_role
-    }
-
     fn enter_scope(&mut self) {
         self.scopes.push(HashMap::new());
     }
@@ -4198,10 +4196,12 @@ impl TypeContext {
         }
     }
 
-    fn record_expr(&mut self, expr_id: Idx<Expr>, ty: Type) {
+    fn record_expr(&mut self, body: &Body, expr_id: Idx<Expr>, ty: Type) {
         if let Some(info) = self.info {
             unsafe {
-                (*info).expr_types.insert(expr_id.into_raw(), ty);
+                (*info)
+                    .expr_types
+                    .insert((crate::hir::body_key(body), expr_id.into_raw()), ty);
             }
         }
     }
