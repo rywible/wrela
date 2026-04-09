@@ -424,7 +424,7 @@ pub enum TypeError {
         help: String,
     },
 
-    #[error("dispatch_compute requires `kernel fn`; '{callee}' is not portable-lane code")]
+    #[error("dispatch_compute requires `kernel fn`; '{callee}' is not a dispatch kernel")]
     #[diagnostic(code(lang::ty::dispatch_kernel_must_be_portable))]
     DispatchKernelMustBePortable {
         callee: SmolStr,
@@ -1400,6 +1400,8 @@ fn validate_portable_lane_functions(
             validate_volume_boundary(func, errors);
         } else if matches!(func.role, FunctionRole::Material) {
             validate_material_boundary(func, errors);
+        } else if matches!(func.role, FunctionRole::Pure) {
+            validate_pure_function_boundary(func, classes, errors);
         } else {
             validate_portable_function_boundary(func, classes, errors);
         }
@@ -2239,6 +2241,8 @@ fn shape_payload_value_expr(body: &Body) -> Option<Idx<Expr>> {
 struct PortableFunctionSets {
     all: HashSet<SmolStr>,
     portable: HashSet<SmolStr>,
+    pure_helpers: HashSet<SmolStr>,
+    kernels: HashSet<SmolStr>,
     domains: HashSet<SmolStr>,
     materials: HashSet<SmolStr>,
     radiances: HashSet<SmolStr>,
@@ -2256,6 +2260,8 @@ fn portable_function_sets(module: &Module) -> PortableFunctionSets {
 
     let mut all = HashSet::new();
     let mut portable = HashSet::new();
+    let mut pure_helpers = HashSet::new();
+    let mut kernels = HashSet::new();
     let mut domains = HashSet::new();
     let mut materials = HashSet::new();
     let mut radiances = HashSet::new();
@@ -2268,6 +2274,12 @@ fn portable_function_sets(module: &Module) -> PortableFunctionSets {
         all.insert(func.name.clone());
         if matches!(func.lane(), FunctionLane::Portable) {
             portable.insert(func.name.clone());
+        }
+        if matches!(func.role, FunctionRole::Pure) {
+            pure_helpers.insert(func.name.clone());
+        }
+        if matches!(func.role, FunctionRole::Kernel) {
+            kernels.insert(func.name.clone());
         }
         if matches!(func.role, FunctionRole::Domain) {
             domains.insert(func.name.clone());
@@ -2291,6 +2303,8 @@ fn portable_function_sets(module: &Module) -> PortableFunctionSets {
     PortableFunctionSets {
         all,
         portable,
+        pure_helpers,
+        kernels,
         domains,
         materials,
         radiances,
@@ -3858,6 +3872,65 @@ fn validate_portable_function_boundary(
     }
 }
 
+fn validate_pure_function_boundary(
+    func: &Function,
+    classes: &ClassIndex,
+    errors: &mut Vec<TypeError>,
+) {
+    for param in &func.params {
+        let (found, label) = match &param.ty {
+            Some(ty) => {
+                let found = type_from_ref(ty);
+                (found.clone(), type_label(&found))
+            }
+            None => (Type::Unknown, "inferred".to_string()),
+        };
+        let mut visiting = HashSet::new();
+        if !supports_pure_helper_boundary_type(&found, classes, &mut visiting) {
+            errors.push(TypeError::PortableBoundaryTypeForbidden {
+                function: func.name.clone(),
+                site: format!("parameter '{}'", param.name),
+                found: label,
+                span: param
+                    .ty
+                    .as_ref()
+                    .and_then(|ty| ty.name_span)
+                    .map(span_from_range)
+                    .unwrap_or_else(|| span_from_option_range(param.name_span)),
+                help: "Pure helpers use fixed-layout scalar/vector/matrix values, arrays, builtin portable records, and value records only. Keep buffers, atomics, captures, and host-only runtime types out of `pure fn` signatures.".to_string(),
+            });
+        }
+    }
+
+    let (ret_ty, ret_label, ret_span) = match &func.ret_type {
+        Some(ret) => {
+            let ty = type_from_ref(ret);
+            (
+                ty.clone(),
+                type_label(&ty),
+                ret.name_span
+                    .map(span_from_range)
+                    .unwrap_or_else(|| span_from_option_range(func.name_span)),
+            )
+        }
+        None => (
+            Type::Unknown,
+            "inferred".to_string(),
+            span_from_option_range(func.name_span),
+        ),
+    };
+    let mut visiting = HashSet::new();
+    if !supports_pure_helper_boundary_type(&ret_ty, classes, &mut visiting) {
+        errors.push(TypeError::PortableBoundaryTypeForbidden {
+            function: func.name.clone(),
+            site: "return type".to_string(),
+            found: ret_label,
+            span: ret_span,
+            help: "Pure helpers need explicit fixed-layout return types so host code, semantic portable code, and future GPU backends can share one deterministic value contract.".to_string(),
+        });
+    }
+}
+
 fn supports_portable_boundary_type(
     ty: &Type,
     classes: &ClassIndex,
@@ -3909,6 +3982,76 @@ fn supports_portable_boundary_type(
                 .iter()
                 .filter_map(|field| class_sig.fields.get(field))
                 .all(|field_ty| supports_portable_boundary_type(field_ty, classes, visiting));
+            visiting.remove(name);
+            ok
+        }
+    }
+}
+
+fn supports_pure_helper_boundary_type(
+    ty: &Type,
+    classes: &ClassIndex,
+    visiting: &mut HashSet<SmolStr>,
+) -> bool {
+    match ty {
+        Type::Unknown
+        | Type::Integer
+        | Type::Float
+        | Type::Number
+        | Type::String
+        | Type::List(_)
+        | Type::Map(_, _)
+        | Type::Result(_, _)
+        | Type::Actor(_)
+        | Type::Pending(_)
+        | Type::GpuBuffer(_)
+        | Type::GpuAtomicI32
+        | Type::GpuAtomicU32
+        | Type::GpuDispatchSchedule
+        | Type::Texture2D
+        | Type::Sampler
+        | Type::Param(_) => false,
+        Type::Never
+        | Type::Boolean
+        | Type::I32
+        | Type::U32
+        | Type::F32
+        | Type::Nil => true,
+        Type::I64 | Type::U64 => false,
+        Type::Vec2 | Type::Vec3 | Type::Vec4 | Type::Mat3 | Type::Mat4 | Type::Quat => true,
+        Type::Array(inner, len) => {
+            *len > 0 && supports_pure_helper_boundary_type(inner, classes, visiting)
+        }
+        Type::Named(name, args) => {
+            if !args.is_empty() {
+                return false;
+            }
+            if let Some(record) = builtin_record(name.as_str()) {
+                if !record.constructible {
+                    return false;
+                }
+                return record.fields.iter().all(|field| {
+                    supports_pure_helper_boundary_type(
+                        &portable_builtin_type_to_type(field.ty),
+                        classes,
+                        visiting,
+                    )
+                });
+            }
+            let Some(class_sig) = classes.get(name) else {
+                return false;
+            };
+            if !matches!(class_sig.role, ClassRole::Value) {
+                return false;
+            }
+            if !visiting.insert(name.clone()) {
+                return true;
+            }
+            let ok = class_sig
+                .field_order
+                .iter()
+                .filter_map(|field| class_sig.fields.get(field))
+                .all(|field_ty| supports_pure_helper_boundary_type(field_ty, classes, visiting));
             visiting.remove(name);
             ok
         }
@@ -4542,7 +4685,50 @@ fn validate_portable_call(
                 });
                 return;
             }
-            if let Some(current_field) = current_field {
+            if matches!(current_role, FunctionRole::Pure) {
+                if is_pure_helper_safe_builtin_call(name.as_str()) {
+                    return;
+                }
+                if is_field_composition_builtin_call(name.as_str()) {
+                    errors.push(TypeError::PortableConstructForbidden {
+                        function: function.clone(),
+                        construct: format!("field composition helper '{}'", name),
+                        span: span_from_range(body.expr_span(expr_id)),
+                        help: "Pure helpers stay numeric and reusable. Keep scene-structure composition in `field` declarations so the compiler can preserve semantic world structure.".to_string(),
+                    });
+                    return;
+                }
+                if is_portable_safe_builtin_call(name.as_str()) {
+                    errors.push(TypeError::PortableConstructForbidden {
+                        function: function.clone(),
+                        construct: format!("calling kernel-only builtin '{}'", name),
+                        span: span_from_range(body.expr_span(expr_id)),
+                        help: "Pure helpers are the shared math/value lane. Buffers, atomics, invocation IDs, and synchronization stay in `kernel fn`.".to_string(),
+                    });
+                    return;
+                }
+                if functions.pure_helpers.contains(name) {
+                    return;
+                }
+                if functions.kernels.contains(name) {
+                    errors.push(TypeError::PortableConstructForbidden {
+                        function: function.clone(),
+                        construct: format!("calling kernel declaration '{}'", name),
+                        span: span_from_range(body.expr_span(expr_id)),
+                        help: "Pure helpers must remain callable from host code, semantic portable code, and kernels. Keep low-level dispatch entry points in `kernel fn` and shared logic in `pure fn`.".to_string(),
+                    });
+                    return;
+                }
+                if functions.portable.contains(name) {
+                    errors.push(TypeError::PortableConstructForbidden {
+                        function: function.clone(),
+                        construct: format!("calling non-pure portable declaration '{}'", name),
+                        span: span_from_range(body.expr_span(expr_id)),
+                        help: "Pure helpers may call other `pure fn` helpers, value constructors, and pure math/geometry intrinsics only.".to_string(),
+                    });
+                    return;
+                }
+            } else if let Some(current_field) = current_field {
                 if is_field_safe_builtin_call(name.as_str()) {
                     if matches!(current_field.class, FieldClass::Exact)
                         && matches!(
@@ -4581,6 +4767,9 @@ fn validate_portable_call(
                     }
                     return;
                 }
+                if functions.pure_helpers.contains(name) {
+                    return;
+                }
                 if functions.portable.contains(name) {
                     errors.push(TypeError::PortableConstructForbidden {
                         function: function.clone(),
@@ -4613,6 +4802,9 @@ fn validate_portable_call(
                     return;
                 }
                 if functions.materials.contains(name) {
+                    return;
+                }
+                if functions.pure_helpers.contains(name) {
                     return;
                 }
                 if functions.portable.contains(name) {
@@ -4649,6 +4841,9 @@ fn validate_portable_call(
                 if functions.radiances.contains(name) || functions.field_classes.contains_key(name) {
                     return;
                 }
+                if functions.pure_helpers.contains(name) {
+                    return;
+                }
                 if functions.portable.contains(name) {
                     errors.push(TypeError::PortableConstructForbidden {
                         function: function.clone(),
@@ -4681,6 +4876,9 @@ fn validate_portable_call(
                     return;
                 }
                 if functions.volumes.contains(name) || functions.field_classes.contains_key(name) {
+                    return;
+                }
+                if functions.pure_helpers.contains(name) {
                     return;
                 }
                 if functions.portable.contains(name) {
@@ -4914,6 +5112,10 @@ fn is_portable_safe_builtin_call(name: &str) -> bool {
     )
 }
 
+fn is_pure_helper_safe_builtin_call(name: &str) -> bool {
+    is_field_safe_builtin_call(name) && !is_field_composition_builtin_call(name)
+}
+
 fn is_portable_64_bit_builtin_call(name: &str) -> bool {
     matches!(name, "i64" | "u64")
 }
@@ -5065,6 +5267,7 @@ fn is_kernel_query_builtin_call(name: &str) -> bool {
             | "normal_at_batch"
             | "dispatch_backend_cpu"
             | "dispatch_backend_virtual_gpu"
+            | "dispatch_backend_wgsl"
             | "dispatch_backend_auto"
     )
 }

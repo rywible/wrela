@@ -1,3 +1,5 @@
+use wrela::query_plan::DispatchBackend;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParsedCommandSpec {
     Help,
@@ -20,6 +22,7 @@ pub struct ParsedArgs {
     pub emit_bin: Option<String>,
     pub out_path: Option<String>,
     pub prefix_path: Option<String>,
+    pub query_backend: Option<DispatchBackend>,
     pub command: String,
     pub integration_mode: bool,
     pub path_arg: Option<String>,
@@ -113,6 +116,18 @@ fn apply_output_format_flag(
     }
 }
 
+fn parse_query_backend_flag(value: &str) -> Result<DispatchBackend, String> {
+    match value {
+        "cpu" => Ok(DispatchBackend::Cpu),
+        "virtual_gpu" => Ok(DispatchBackend::VirtualGpu),
+        "wgsl" => Ok(DispatchBackend::Wgsl),
+        "auto" => Ok(DispatchBackend::Auto),
+        _ => Err(format!(
+            "error: invalid --query-backend value `{value}` (expected one of: cpu, virtual_gpu, wgsl, auto)"
+        )),
+    }
+}
+
 pub fn parse(raw_args: Vec<String>) -> CommandSpec {
     let trace_enabled = std::env::var("WRELA_BUILD_TRACE").is_ok();
     if raw_args.first().is_some_and(|arg| arg == "help") {
@@ -140,6 +155,7 @@ pub fn parse(raw_args: Vec<String>) -> CommandSpec {
     let mut emit_bin: Option<String> = None;
     let mut out_path: Option<String> = None;
     let mut prefix_path: Option<String> = None;
+    let mut query_backend: Option<DispatchBackend> = None;
     let mut command: Option<String> = None;
     let mut integration_mode = false;
     let mut path_arg: Option<String> = None;
@@ -239,6 +255,18 @@ pub fn parse(raw_args: Vec<String>) -> CommandSpec {
         }
         if arg == "--workspace-diagnostics" {
             workspace_diagnostics = true;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--query-backend=") {
+            match parse_query_backend_flag(value) {
+                Ok(parsed) => query_backend = Some(parsed),
+                Err(err) => {
+                    return CommandSpec {
+                        trace_enabled,
+                        parsed: ParsedCommandSpec::Error(err),
+                    };
+                }
+            }
             continue;
         }
         if arg == "--error-format" {
@@ -826,6 +854,7 @@ pub fn parse(raw_args: Vec<String>) -> CommandSpec {
             emit_bin,
             out_path,
             prefix_path,
+            query_backend,
             command,
             integration_mode,
             path_arg,
@@ -1293,6 +1322,38 @@ mod tests {
                     parsed.path_arg.as_deref(),
                     Some("src/application/composition/main.wr")
                 );
+            }
+            other => panic!("unexpected parse result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_run_query_backend_flag() {
+        let spec = parse(vec![
+            "run".to_string(),
+            "--query-backend=wgsl".to_string(),
+            "language/preview".to_string(),
+        ]);
+        match spec.parsed {
+            ParsedCommandSpec::Ready(parsed) => {
+                assert_eq!(parsed.command, "run");
+                assert_eq!(parsed.query_backend, Some(DispatchBackend::Wgsl));
+                assert_eq!(parsed.path_arg.as_deref(), Some("language/preview"));
+            }
+            other => panic!("unexpected parse result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_rejects_invalid_query_backend_flag() {
+        let spec = parse(vec![
+            "run".to_string(),
+            "--query-backend=metal".to_string(),
+            "language/preview".to_string(),
+        ]);
+        match spec.parsed {
+            ParsedCommandSpec::Error(err) => {
+                assert!(err.contains("invalid --query-backend value"));
             }
             other => panic!("unexpected parse result: {other:?}"),
         }

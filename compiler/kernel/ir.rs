@@ -1,8 +1,11 @@
 use crate::hir::{self, Type};
 use crate::query_plan::{
-    BatchQueryKind, CandidateStrategy, CaptureKind, CaptureQueryKind, CaptureQueryPlan,
-    DerivedArtifact, DispatchBackend, InternalKernelKind, PlanExecutor, PlanStage, PruningStrategy,
-    QueryItemKind, QueryResultKind, SceneSummary, WorldQueryKind, WorldQueryPlan,
+    ArtifactContract, BatchItemContract, BatchQueryKind, CandidateRecordContract,
+    CandidateStrategy, CaptureKind, CaptureQueryKind, CaptureQueryPlan, DerivedArtifact,
+    DispatchBackend, DispatchRecordContract, HitContextContract, InternalKernelKind,
+    ParticipantSelectionContract, PlanExecutor, PlanStage, PlanningObservability, PruningStrategy,
+    QueryItemKind, QueryResultKind, ResultRecordContract, SceneDomainFlag, SceneSummary,
+    WorldQueryKind, WorldQueryPlan,
 };
 use rowan::TextRange;
 use smol_str::SmolStr;
@@ -306,6 +309,7 @@ impl From<&PlanStage> for KernelPlanStage {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KernelBatchQueryPlan {
+    pub contract_version: u32,
     pub helper_name: SmolStr,
     pub kind: BatchQueryKind,
     pub capture_kind: CaptureKind,
@@ -319,6 +323,15 @@ pub struct KernelBatchQueryPlan {
     pub pruning_strategy: PruningStrategy,
     pub stages: Vec<KernelPlanStage>,
     pub derived_artifacts: Vec<DerivedArtifact>,
+    pub dispatch_contract: DispatchRecordContract,
+    pub candidate_contract: CandidateRecordContract,
+    pub result_contract: ResultRecordContract,
+    pub hit_context_contract: Option<HitContextContract>,
+    pub participant_contract: Option<ParticipantSelectionContract>,
+    pub domain_flags: Vec<SceneDomainFlag>,
+    pub artifact_contracts: Vec<ArtifactContract>,
+    pub item_contract: KernelBatchItemContract,
+    pub observability: PlanningObservability,
     pub preserves_local_hit_context: bool,
 }
 
@@ -332,6 +345,7 @@ impl KernelBatchQueryPlan {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KernelCaptureQueryPlan {
+    pub contract_version: u32,
     pub helper_name: SmolStr,
     pub kind: CaptureQueryKind,
     pub capture_kind: CaptureKind,
@@ -342,32 +356,60 @@ pub struct KernelCaptureQueryPlan {
     pub pruning_strategy: PruningStrategy,
     pub stages: Vec<KernelPlanStage>,
     pub derived_artifacts: Vec<DerivedArtifact>,
+    pub candidate_contract: CandidateRecordContract,
+    pub result_contract: ResultRecordContract,
+    pub hit_context_contract: Option<HitContextContract>,
+    pub participant_contract: Option<ParticipantSelectionContract>,
+    pub artifact_contracts: Vec<ArtifactContract>,
+    pub observability: PlanningObservability,
     pub preserves_local_hit_context: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KernelWorldQueryPlan {
+    pub contract_version: u32,
     pub helper_name: SmolStr,
     pub kind: WorldQueryKind,
+    pub backend: DispatchBackend,
     pub result_kind: QueryResultKind,
     pub executor: PlanExecutor,
     pub stages: Vec<KernelPlanStage>,
+    pub dispatch_contract: DispatchRecordContract,
+    pub result_contract: ResultRecordContract,
+    pub hit_context_contract: Option<HitContextContract>,
+    pub participant_contract: Option<ParticipantSelectionContract>,
+    pub domain_flags: Vec<SceneDomainFlag>,
+    pub artifact_contracts: Vec<ArtifactContract>,
+    pub observability: PlanningObservability,
     pub preserves_local_hit_context: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KernelBatchItemContract {
+    CaptureQuery { plan: KernelCaptureQueryPlan },
+    TraceThenOcclusion { trace_plan: KernelCaptureQueryPlan },
 }
 
 impl From<&CaptureQueryPlan> for KernelCaptureQueryPlan {
     fn from(plan: &CaptureQueryPlan) -> Self {
         Self {
+            contract_version: plan.contract_version,
             helper_name: plan.helper_name.clone(),
             kind: plan.kind,
             capture_kind: plan.capture_kind,
             result_kind: plan.result_kind,
             executor: plan.executor,
             scene: plan.scene.clone(),
-            candidate_strategy: plan.candidate_strategy,
-            pruning_strategy: plan.pruning_strategy,
+            candidate_strategy: plan.candidate_contract.candidate_strategy,
+            pruning_strategy: plan.candidate_contract.pruning_strategy,
             stages: plan.stages.iter().map(KernelPlanStage::from).collect(),
             derived_artifacts: plan.derived_artifacts.clone(),
+            candidate_contract: plan.candidate_contract.clone(),
+            result_contract: plan.result_contract.clone(),
+            hit_context_contract: plan.hit_context_contract.clone(),
+            participant_contract: plan.participant_contract.clone(),
+            artifact_contracts: plan.artifact_contracts.clone(),
+            observability: plan.observability.clone(),
             preserves_local_hit_context: plan.preserves_local_hit_context,
         }
     }
@@ -376,12 +418,32 @@ impl From<&CaptureQueryPlan> for KernelCaptureQueryPlan {
 impl From<&WorldQueryPlan> for KernelWorldQueryPlan {
     fn from(plan: &WorldQueryPlan) -> Self {
         Self {
+            contract_version: plan.contract_version,
             helper_name: plan.helper_name.clone(),
             kind: plan.kind,
+            backend: plan.backend,
             result_kind: plan.result_kind,
             executor: plan.executor,
             stages: plan.stages.iter().map(KernelPlanStage::from).collect(),
+            dispatch_contract: plan.dispatch_contract.clone(),
+            result_contract: plan.result_contract.clone(),
+            hit_context_contract: plan.hit_context_contract.clone(),
+            participant_contract: plan.participant_contract.clone(),
+            domain_flags: plan.domain_flags.clone(),
+            artifact_contracts: plan.artifact_contracts.clone(),
+            observability: plan.observability.clone(),
             preserves_local_hit_context: plan.preserves_local_hit_context,
+        }
+    }
+}
+
+impl From<&BatchItemContract> for KernelBatchItemContract {
+    fn from(value: &BatchItemContract) -> Self {
+        match value {
+            BatchItemContract::CaptureQuery { plan } => Self::CaptureQuery { plan: plan.into() },
+            BatchItemContract::TraceThenOcclusion { trace_plan } => Self::TraceThenOcclusion {
+                trace_plan: trace_plan.into(),
+            },
         }
     }
 }

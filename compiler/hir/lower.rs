@@ -1082,7 +1082,11 @@ impl LoweringContext {
             attributes,
             visibility,
             kind: FunctionKind::Function,
-            role: FunctionRole::Function,
+            role: if f.is_pure() {
+                FunctionRole::Pure
+            } else {
+                FunctionRole::Function
+            },
             field: None,
             region: None,
             domain: None,
@@ -4280,6 +4284,26 @@ kernel fn shade[T](value: Integer) -> Integer {
 
         assert_eq!(func.name, "shade");
         assert_eq!(func.role, FunctionRole::Kernel);
+        assert_eq!(func.lane(), FunctionLane::Portable);
+        assert!(func.field.is_none());
+        assert_eq!(func.type_params.len(), 1);
+        assert_eq!(func.type_params[0].name, "T");
+    }
+
+    #[test]
+    fn test_lower_pure_function_marks_portable_lane() {
+        let input = "\
+pure fn normalize_step[T](value: F32) -> F32 {
+    return clamp(value, 0.0, 1.0)
+}
+";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let func = &module.functions[Idx::new(0)];
+
+        assert_eq!(func.name, "normalize_step");
+        assert_eq!(func.role, FunctionRole::Pure);
         assert_eq!(func.lane(), FunctionLane::Portable);
         assert!(func.field.is_none());
         assert_eq!(func.type_params.len(), 1);

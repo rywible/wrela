@@ -100,6 +100,9 @@ pub fn execute(spec: CommandSpec) {
     let emit_bin = parsed.emit_bin;
     let out_path = parsed.out_path;
     let prefix_path = parsed.prefix_path;
+    let query_backend = parsed
+        .query_backend
+        .unwrap_or(wrela::query_plan::DispatchBackend::Auto);
     let command = parsed.command;
     let integration_mode = parsed.integration_mode;
     let path_arg = parsed.path_arg;
@@ -349,6 +352,7 @@ pub fn execute(spec: CommandSpec) {
                 true,
                 strict_naming,
                 analysis_holes_only,
+                query_backend,
             );
             if let Err(code) = result {
                 std::process::exit(code);
@@ -558,6 +562,7 @@ pub fn execute(spec: CommandSpec) {
                     false,
                     false,
                     false,
+                    query_backend,
                 ) {
                     Ok(mir) => mir,
                     Err(code) => std::process::exit(code),
@@ -674,6 +679,7 @@ pub fn execute(spec: CommandSpec) {
                     true,
                     HttpCassetteMode::Replay,
                     None,
+                    query_backend,
                 );
                 if cert_result.exit != EXIT_OK {
                     eprintln!("build blocked: certification failed; no artifact emitted");
@@ -731,6 +737,7 @@ pub fn execute(spec: CommandSpec) {
                 !integration_mode,
                 strict_naming,
                 false,
+                query_backend,
             ) {
                 Ok(mir) => mir,
                 Err(code) => std::process::exit(code),
@@ -853,6 +860,7 @@ pub fn execute(spec: CommandSpec) {
                     false,
                     false,
                     false,
+                    query_backend,
                 ) {
                     Ok(mir) => mir,
                     Err(code) => std::process::exit(code),
@@ -867,11 +875,13 @@ pub fn execute(spec: CommandSpec) {
                     true,
                     strict_naming,
                     false,
+                    query_backend,
                 ) {
                     Ok(mir) => mir,
                     Err(code) => std::process::exit(code),
                 }
             };
+            let generated_temp_output = out_path.is_none();
             let output = out_path.unwrap_or_else(temp_exe_path);
             if let Err(err) =
                 wrela::backend::cranelift::compile_to_executable(&mir_module, output.as_ref())
@@ -886,6 +896,9 @@ pub fn execute(spec: CommandSpec) {
                     std::process::exit(EXIT_CODEGEN);
                 }
             };
+            if generated_temp_output {
+                let _ = fs::remove_file(&output);
+            }
             std::process::exit(status.code().unwrap_or(EXIT_RUNTIME_SIGNAL));
         }
         "dev" => {
@@ -908,6 +921,7 @@ pub fn execute(spec: CommandSpec) {
                 emit_mir,
                 emit_mir_opt,
                 strict_naming,
+                query_backend,
                 &program_args,
             );
         }
@@ -932,6 +946,7 @@ pub fn execute(spec: CommandSpec) {
                 perf_max_regression_pct,
                 kpi_thresholds,
                 test_seed,
+                query_backend,
             });
             std::process::exit(exit);
         }
@@ -963,6 +978,7 @@ pub fn execute(spec: CommandSpec) {
                 output_format,
                 perf_debug,
                 test_selection,
+                query_backend,
             });
             std::process::exit(exit);
         }

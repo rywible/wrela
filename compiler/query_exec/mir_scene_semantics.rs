@@ -162,18 +162,6 @@ impl FunctionLowerer {
         }
     }
 
-    pub(crate) fn shape_root_expr(&self, shape_name: &SmolStr) -> Option<hir::ShapeExpr> {
-        self.shape_graphs
-            .get(shape_name)
-            .map(|graph| graph.root.clone())
-    }
-
-    pub(crate) fn shape_root_provenance_expr(&self, shape_name: &SmolStr) -> Option<hir::ShapeProvenanceExpr> {
-        self.shape_graphs
-            .get(shape_name)
-            .and_then(|graph| graph.provenance.clone())
-    }
-
     pub(crate) fn field_root_expr(&self, field_name: &SmolStr) -> Option<hir::FieldExpr> {
         self.field_graphs
             .get(field_name)
@@ -191,122 +179,8 @@ impl FunctionLowerer {
         )
     }
 
-    pub(crate) fn shape_expr_has_opaque_boundary(&self, expr: &hir::ShapeExpr) -> bool {
-        match expr {
-            hir::ShapeExpr::Use { target } => match self.shape_root_expr(target) {
-                Some(hir::ShapeExpr::Leaf(leaf)) => self
-                    .field_scene(&leaf.field)
-                    .is_none_or(|scene| scene.opaque_boundary),
-                _ => self
-                    .shape_scene(target)
-                    .is_none_or(|scene| scene.opaque_boundary),
-            },
-            hir::ShapeExpr::Leaf(leaf) => self
-                .field_scene(&leaf.field)
-                .is_none_or(|scene| scene.opaque_boundary),
-            hir::ShapeExpr::Union { items, .. } | hir::ShapeExpr::Intersection { items, .. } => {
-                items
-                    .iter()
-                    .any(|item| self.shape_expr_has_opaque_boundary(item))
-            }
-            hir::ShapeExpr::Subtract { left, right } => {
-                self.shape_expr_has_opaque_boundary(left)
-                    || self.shape_expr_has_opaque_boundary(right)
-            }
-        }
-    }
-
-    pub(crate) fn shape_expr_can_coarse_support_prune(&self, expr: &hir::ShapeExpr) -> bool {
-        match expr {
-            hir::ShapeExpr::Use { target } => match self.shape_root_expr(target) {
-                Some(hir::ShapeExpr::Leaf(leaf)) => {
-                    self.field_scene(&leaf.field).is_some_and(|scene| {
-                        !scene.opaque_boundary && scene.can_coarse_support_pruning
-                    })
-                }
-                _ => self.shape_scene(target).is_some_and(|scene| {
-                    !scene.opaque_boundary && scene.can_coarse_support_pruning
-                }),
-            },
-            hir::ShapeExpr::Leaf(leaf) => self
-                .field_scene(&leaf.field)
-                .is_some_and(|scene| !scene.opaque_boundary && scene.can_coarse_support_pruning),
-            hir::ShapeExpr::Union { items, .. } | hir::ShapeExpr::Intersection { items, .. } => {
-                !items.is_empty()
-                    && items
-                        .iter()
-                        .all(|item| self.shape_expr_can_coarse_support_prune(item))
-            }
-            hir::ShapeExpr::Subtract { left, right } => {
-                !self.shape_expr_has_opaque_boundary(right)
-                    && self.shape_expr_can_coarse_support_prune(left)
-            }
-        }
-    }
-
     pub(crate) fn unprunable_support_lower_bound(&self) -> Value {
         Value::Const(Literal::Float(-1_000_000.0))
-    }
-
-    pub(crate) fn lower_shape_support_lower_bound_expr(
-        &mut self,
-        expr: &hir::ShapeExpr,
-        point: Value,
-        span: TextRange,
-    ) -> Value {
-        if !self.shape_expr_can_coarse_support_prune(expr) {
-            return self.unprunable_support_lower_bound();
-        }
-        match expr {
-            hir::ShapeExpr::Use { target } => {
-                let Some(root) = self.shape_root_expr(target) else {
-                    return self.unprunable_support_lower_bound();
-                };
-                self.lower_shape_support_lower_bound_expr(&root, point, span)
-            }
-            hir::ShapeExpr::Leaf(leaf) => {
-                self.lower_field_support_lower_bound_call(&leaf.field, point, span)
-            }
-            hir::ShapeExpr::Union { items, .. } => {
-                let mut iter = items.iter();
-                let Some(first) = iter.next() else {
-                    return self.unprunable_support_lower_bound();
-                };
-                let mut current =
-                    self.lower_shape_support_lower_bound_expr(first, point.clone(), span);
-                for item in iter {
-                    let rhs = self.lower_shape_support_lower_bound_expr(item, point.clone(), span);
-                    current = self.lower_call_temp(
-                        MirType::Float,
-                        SmolStr::new("field_union"),
-                        vec![current, rhs],
-                        span,
-                    );
-                }
-                current
-            }
-            hir::ShapeExpr::Intersection { items, .. } => {
-                let mut iter = items.iter();
-                let Some(first) = iter.next() else {
-                    return self.unprunable_support_lower_bound();
-                };
-                let mut current =
-                    self.lower_shape_support_lower_bound_expr(first, point.clone(), span);
-                for item in iter {
-                    let rhs = self.lower_shape_support_lower_bound_expr(item, point.clone(), span);
-                    current = self.lower_call_temp(
-                        MirType::Float,
-                        SmolStr::new("field_intersection"),
-                        vec![current, rhs],
-                        span,
-                    );
-                }
-                current
-            }
-            hir::ShapeExpr::Subtract { left, .. } => {
-                self.lower_shape_support_lower_bound_expr(left, point, span)
-            }
-        }
     }
 
     pub(crate) fn lower_field_support_lower_bound_call(
@@ -1164,6 +1038,7 @@ impl FunctionLowerer {
                 Literal::Boolean(_) => MirType::Boolean,
                 Literal::Nil => MirType::Nil,
             },
+            scene_ir::SceneValueExpr::List(_) => MirType::Named(SmolStr::new("List")),
             scene_ir::SceneValueExpr::Unary { expr, .. } => self.scene_value_mir_type(expr),
             scene_ir::SceneValueExpr::Binary { op, lhs, .. } => match op {
                 BinaryOp::Eq
@@ -1206,6 +1081,22 @@ impl FunctionLowerer {
     ) -> Value {
         match expr {
             scene_ir::SceneValueExpr::Literal(literal) => Value::Const(literal.clone()),
+            scene_ir::SceneValueExpr::List(items) => {
+                let temp = self.new_temp(MirType::Named(SmolStr::new("List")));
+                let items = items
+                    .iter()
+                    .map(|item| self.lower_scene_value_expr(item, span))
+                    .collect();
+                self.push_stmt(MirStmt::Assign {
+                    place: Place::Temp(temp),
+                    value: Rvalue::BuildList {
+                        items,
+                        alloc: AllocKind::LocalTemp,
+                    },
+                    span,
+                });
+                Value::Temp(temp)
+            }
             scene_ir::SceneValueExpr::Unary { op, expr } => {
                 let operand = self.lower_scene_value_expr(expr, span);
                 self.lower_unary_temp(self.scene_value_mir_type(expr), *op, operand, span)
@@ -3086,167 +2977,6 @@ impl FunctionLowerer {
         )
     }
 
-    pub(crate) fn lower_shape_distance_expr(
-        &mut self,
-        expr: &hir::ShapeExpr,
-        point: Value,
-        span: TextRange,
-    ) -> Value {
-        self.lower_shape_distance_expr_in_mode(expr, point, span, ShapeExecutionMode::SupportPruned)
-    }
-
-    pub(crate) fn lower_shape_distance_expr_in_mode(
-        &mut self,
-        expr: &hir::ShapeExpr,
-        point: Value,
-        span: TextRange,
-        mode: ShapeExecutionMode,
-    ) -> Value {
-        match expr {
-            hir::ShapeExpr::Use { target } => {
-                self.lower_shape_distance_call_with_mode(target, point, span, mode)
-            }
-            hir::ShapeExpr::Leaf(leaf) => self.lower_field_distance_call(&leaf.field, point, span),
-            hir::ShapeExpr::Union { items, .. } => {
-                let mut iter = items.iter();
-                let Some(first) = iter.next() else {
-                    return Value::Const(Literal::Float(1_000_000.0));
-                };
-                let _ = self.lower_call_temp(
-                    MirType::Nil,
-                    SmolStr::new("__wr_metrics_scene_trace_candidate_branch"),
-                    vec![],
-                    span,
-                );
-                let mut current =
-                    self.lower_shape_distance_expr_in_mode(first, point.clone(), span, mode);
-                for item in iter {
-                    let _ = self.lower_call_temp(
-                        MirType::Nil,
-                        SmolStr::new("__wr_metrics_scene_trace_candidate_branch"),
-                        vec![],
-                        span,
-                    );
-                    if !mode.allows_support_pruning()
-                        || !self.shape_expr_can_coarse_support_prune(item)
-                    {
-                        let rhs =
-                            self.lower_shape_distance_expr_in_mode(item, point.clone(), span, mode);
-                        current = self.lower_call_temp(
-                            MirType::Float,
-                            SmolStr::new("field_union"),
-                            vec![current, rhs],
-                            span,
-                        );
-                        continue;
-                    }
-                    let support_lower_bound =
-                        self.lower_shape_support_lower_bound_expr(item, point.clone(), span);
-                    let keep_pruned = self.lower_binary_temp(
-                        MirType::Boolean,
-                        BinaryOp::Ge,
-                        support_lower_bound,
-                        current.clone(),
-                        span,
-                    );
-                    let prune_block = self.new_block();
-                    let eval_block = self.new_block();
-                    let merge_block = self.new_block();
-                    let dist_local =
-                        self.new_local(SmolStr::new("$shape_union_dist"), true, MirType::Float);
-                    self.assign_use(Place::Local(dist_local), current, span);
-                    self.set_terminator(Terminator::Branch {
-                        cond: keep_pruned,
-                        then_target: prune_block,
-                        else_target: eval_block,
-                        span,
-                    });
-                    self.current_block = prune_block;
-                    let _ = self.lower_call_temp(
-                        MirType::Nil,
-                        SmolStr::new("__wr_metrics_scene_trace_support_pruned_branch"),
-                        vec![],
-                        span,
-                    );
-                    self.set_terminator(Terminator::Jump {
-                        target: merge_block,
-                        span,
-                    });
-                    self.current_block = eval_block;
-                    let rhs =
-                        self.lower_shape_distance_expr_in_mode(item, point.clone(), span, mode);
-                    let next = self.lower_call_temp(
-                        MirType::Float,
-                        SmolStr::new("field_union"),
-                        vec![Value::Local(dist_local), rhs],
-                        span,
-                    );
-                    self.assign_use(Place::Local(dist_local), next, span);
-                    self.set_terminator(Terminator::Jump {
-                        target: merge_block,
-                        span,
-                    });
-                    self.current_block = merge_block;
-                    current = Value::Local(dist_local);
-                }
-                current
-            }
-            hir::ShapeExpr::Intersection { items, .. } => {
-                let mut iter = items.iter();
-                let Some(first) = iter.next() else {
-                    return Value::Const(Literal::Float(1_000_000.0));
-                };
-                let _ = self.lower_call_temp(
-                    MirType::Nil,
-                    SmolStr::new("__wr_metrics_scene_trace_candidate_branch"),
-                    vec![],
-                    span,
-                );
-                let mut current =
-                    self.lower_shape_distance_expr_in_mode(first, point.clone(), span, mode);
-                for item in iter {
-                    let _ = self.lower_call_temp(
-                        MirType::Nil,
-                        SmolStr::new("__wr_metrics_scene_trace_candidate_branch"),
-                        vec![],
-                        span,
-                    );
-                    let rhs =
-                        self.lower_shape_distance_expr_in_mode(item, point.clone(), span, mode);
-                    current = self.lower_call_temp(
-                        MirType::Float,
-                        SmolStr::new("field_intersection"),
-                        vec![current, rhs],
-                        span,
-                    );
-                }
-                current
-            }
-            hir::ShapeExpr::Subtract { left, right, .. } => {
-                let _ = self.lower_call_temp(
-                    MirType::Nil,
-                    SmolStr::new("__wr_metrics_scene_trace_candidate_branch"),
-                    vec![],
-                    span,
-                );
-                let lhs = self.lower_shape_distance_expr_in_mode(left, point.clone(), span, mode);
-                let _ = self.lower_call_temp(
-                    MirType::Nil,
-                    SmolStr::new("__wr_metrics_scene_trace_candidate_branch"),
-                    vec![],
-                    span,
-                );
-                let rhs = self.lower_shape_distance_expr_in_mode(right, point, span, mode);
-                self.lower_call_temp(
-                    MirType::Float,
-                    SmolStr::new("field_subtract"),
-                    vec![lhs, rhs],
-                    span,
-                )
-            }
-        }
-    }
-
     pub(crate) fn lower_shape_normal_call(&mut self, shape: &SmolStr, point: Value, span: TextRange) -> Value {
         self.lower_shape_normal_call_with_mode(
             shape,
@@ -3387,17 +3117,9 @@ impl FunctionLowerer {
         self.lower_binary_temp(MirType::Float, BinaryOp::Sub, plus, minus, span)
     }
 
-    pub(crate) fn lower_shape_feature_id_value(
-        &self,
-        _feature_path: &[SmolStr],
-        leaf_feature_id: u32,
-    ) -> Value {
-        Value::Const(Literal::Integer(leaf_feature_id as i64))
-    }
-
-    pub(crate) fn lower_shape_merge_keep_current(
+    pub(crate) fn lower_shape_merge_keep_current_scene(
         &mut self,
-        provenance: hir::ShapeMergeProvenancePolicy,
+        provenance: scene_ir::ShapeMergeProvenancePolicy,
         current_dist: Value,
         next_dist: Value,
         prefer_larger: bool,
@@ -3405,7 +3127,7 @@ impl FunctionLowerer {
         span: TextRange,
     ) -> Value {
         match provenance {
-            hir::ShapeMergeProvenancePolicy::Nearest => self.lower_binary_temp(
+            scene_ir::ShapeMergeProvenancePolicy::Nearest => self.lower_binary_temp(
                 MirType::Boolean,
                 if prefer_larger {
                     BinaryOp::Ge
@@ -3416,52 +3138,312 @@ impl FunctionLowerer {
                 next_dist,
                 span,
             ),
-            hir::ShapeMergeProvenancePolicy::Ordered => Value::Const(Literal::Boolean(true)),
+            scene_ir::ShapeMergeProvenancePolicy::Ordered => {
+                Value::Const(Literal::Boolean(true))
+            }
         }
     }
 
-    pub(crate) fn lower_shape_payload_selection(
+    pub(crate) fn shape_node_has_opaque_boundary(&self, node: &scene_ir::ShapeNode) -> bool {
+        match node {
+            scene_ir::ShapeNode::Use { target } => {
+                self.shape_scene(target).is_none_or(|scene| scene.opaque_boundary)
+            }
+            scene_ir::ShapeNode::Leaf(leaf) => {
+                leaf.opaque_boundary
+                    || matches!(
+                        leaf.field_semantics,
+                        scene_ir::DistanceSemantics::UnknownOpaque
+                    )
+                    || self
+                        .field_scene(&leaf.field)
+                        .is_none_or(|scene| scene.opaque_boundary)
+            }
+            scene_ir::ShapeNode::Union { items } | scene_ir::ShapeNode::Intersection { items } => {
+                items.iter().any(|item| self.shape_node_has_opaque_boundary(item))
+            }
+            scene_ir::ShapeNode::Subtract { left, right } => {
+                self.shape_node_has_opaque_boundary(left) || self.shape_node_has_opaque_boundary(right)
+            }
+        }
+    }
+
+    pub(crate) fn shape_node_can_coarse_support_prune(&self, node: &scene_ir::ShapeNode) -> bool {
+        match node {
+            scene_ir::ShapeNode::Use { target } => self.shape_scene(target).is_some_and(|scene| {
+                !scene.opaque_boundary && scene.can_coarse_support_pruning
+            }),
+            scene_ir::ShapeNode::Leaf(leaf) => self.field_scene(&leaf.field).is_some_and(|scene| {
+                !scene.opaque_boundary && scene.can_coarse_support_pruning
+            }),
+            scene_ir::ShapeNode::Union { items }
+            | scene_ir::ShapeNode::Intersection { items } => {
+                !items.is_empty()
+                    && items
+                        .iter()
+                        .all(|item| self.shape_node_can_coarse_support_prune(item))
+            }
+            scene_ir::ShapeNode::Subtract { left, right } => {
+                !self.shape_node_has_opaque_boundary(right)
+                    && self.shape_node_can_coarse_support_prune(left)
+            }
+        }
+    }
+
+    pub(crate) fn lower_shape_support_lower_bound_scene(
         &mut self,
-        expr: &hir::ShapeExpr,
-        provenance: Option<&hir::ShapeProvenanceExpr>,
+        node: &scene_ir::ShapeNode,
+        point: Value,
+        span: TextRange,
+    ) -> Value {
+        if !self.shape_node_can_coarse_support_prune(node) {
+            return self.unprunable_support_lower_bound();
+        }
+        match node {
+            scene_ir::ShapeNode::Use { target } => {
+                let Some(scene) = self.shape_scene(target).cloned() else {
+                    return self.unprunable_support_lower_bound();
+                };
+                if scene.opaque_boundary || !scene.can_coarse_support_pruning {
+                    return self.unprunable_support_lower_bound();
+                }
+                self.lower_shape_support_lower_bound_scene(&scene.root, point, span)
+            }
+            scene_ir::ShapeNode::Leaf(leaf) => {
+                self.lower_field_support_lower_bound_call(&leaf.field, point, span)
+            }
+            scene_ir::ShapeNode::Union { items } => {
+                let mut iter = items.iter();
+                let Some(first) = iter.next() else {
+                    return self.unprunable_support_lower_bound();
+                };
+                let mut current =
+                    self.lower_shape_support_lower_bound_scene(first, point.clone(), span);
+                for item in iter {
+                    let rhs = self.lower_shape_support_lower_bound_scene(item, point.clone(), span);
+                    current = self.lower_call_temp(
+                        MirType::Float,
+                        SmolStr::new("field_union"),
+                        vec![current, rhs],
+                        span,
+                    );
+                }
+                current
+            }
+            scene_ir::ShapeNode::Intersection { items } => {
+                let mut iter = items.iter();
+                let Some(first) = iter.next() else {
+                    return self.unprunable_support_lower_bound();
+                };
+                let mut current =
+                    self.lower_shape_support_lower_bound_scene(first, point.clone(), span);
+                for item in iter {
+                    let rhs = self.lower_shape_support_lower_bound_scene(item, point.clone(), span);
+                    current = self.lower_call_temp(
+                        MirType::Float,
+                        SmolStr::new("field_intersection"),
+                        vec![current, rhs],
+                        span,
+                    );
+                }
+                current
+            }
+            scene_ir::ShapeNode::Subtract { left, .. } => {
+                self.lower_shape_support_lower_bound_scene(left, point, span)
+            }
+        }
+    }
+
+    pub(crate) fn lower_shape_distance_scene_in_mode(
+        &mut self,
+        node: &scene_ir::ShapeNode,
+        point: Value,
+        span: TextRange,
+        mode: ShapeExecutionMode,
+    ) -> Value {
+        match node {
+            scene_ir::ShapeNode::Use { target } => {
+                self.lower_shape_distance_call_with_mode(target, point, span, mode)
+            }
+            scene_ir::ShapeNode::Leaf(leaf) => {
+                self.lower_field_distance_call(&leaf.field, point, span)
+            }
+            scene_ir::ShapeNode::Union { items } => {
+                let mut iter = items.iter();
+                let Some(first) = iter.next() else {
+                    return Value::Const(Literal::Float(1_000_000.0));
+                };
+                let _ = self.lower_call_temp(
+                    MirType::Nil,
+                    SmolStr::new("__wr_metrics_scene_trace_candidate_branch"),
+                    vec![],
+                    span,
+                );
+                let mut current =
+                    self.lower_shape_distance_scene_in_mode(first, point.clone(), span, mode);
+                for item in iter {
+                    let _ = self.lower_call_temp(
+                        MirType::Nil,
+                        SmolStr::new("__wr_metrics_scene_trace_candidate_branch"),
+                        vec![],
+                        span,
+                    );
+                    if !mode.allows_support_pruning()
+                        || !self.shape_node_can_coarse_support_prune(item)
+                    {
+                        let rhs =
+                            self.lower_shape_distance_scene_in_mode(item, point.clone(), span, mode);
+                        current = self.lower_call_temp(
+                            MirType::Float,
+                            SmolStr::new("field_union"),
+                            vec![current, rhs],
+                            span,
+                        );
+                        continue;
+                    }
+                    let support_lower_bound =
+                        self.lower_shape_support_lower_bound_scene(item, point.clone(), span);
+                    let keep_pruned = self.lower_binary_temp(
+                        MirType::Boolean,
+                        BinaryOp::Ge,
+                        support_lower_bound,
+                        current.clone(),
+                        span,
+                    );
+                    let prune_block = self.new_block();
+                    let eval_block = self.new_block();
+                    let merge_block = self.new_block();
+                    let dist_local =
+                        self.new_local(SmolStr::new("$shape_union_dist"), true, MirType::Float);
+                    self.assign_use(Place::Local(dist_local), current, span);
+                    self.set_terminator(Terminator::Branch {
+                        cond: keep_pruned,
+                        then_target: prune_block,
+                        else_target: eval_block,
+                        span,
+                    });
+                    self.current_block = prune_block;
+                    let _ = self.lower_call_temp(
+                        MirType::Nil,
+                        SmolStr::new("__wr_metrics_scene_trace_support_pruned_branch"),
+                        vec![],
+                        span,
+                    );
+                    self.set_terminator(Terminator::Jump {
+                        target: merge_block,
+                        span,
+                    });
+                    self.current_block = eval_block;
+                    let rhs =
+                        self.lower_shape_distance_scene_in_mode(item, point.clone(), span, mode);
+                    let next = self.lower_call_temp(
+                        MirType::Float,
+                        SmolStr::new("field_union"),
+                        vec![Value::Local(dist_local), rhs],
+                        span,
+                    );
+                    self.assign_use(Place::Local(dist_local), next, span);
+                    self.set_terminator(Terminator::Jump {
+                        target: merge_block,
+                        span,
+                    });
+                    self.current_block = merge_block;
+                    current = Value::Local(dist_local);
+                }
+                current
+            }
+            scene_ir::ShapeNode::Intersection { items } => {
+                let mut iter = items.iter();
+                let Some(first) = iter.next() else {
+                    return Value::Const(Literal::Float(1_000_000.0));
+                };
+                let _ = self.lower_call_temp(
+                    MirType::Nil,
+                    SmolStr::new("__wr_metrics_scene_trace_candidate_branch"),
+                    vec![],
+                    span,
+                );
+                let mut current =
+                    self.lower_shape_distance_scene_in_mode(first, point.clone(), span, mode);
+                for item in iter {
+                    let _ = self.lower_call_temp(
+                        MirType::Nil,
+                        SmolStr::new("__wr_metrics_scene_trace_candidate_branch"),
+                        vec![],
+                        span,
+                    );
+                    let rhs =
+                        self.lower_shape_distance_scene_in_mode(item, point.clone(), span, mode);
+                    current = self.lower_call_temp(
+                        MirType::Float,
+                        SmolStr::new("field_intersection"),
+                        vec![current, rhs],
+                        span,
+                    );
+                }
+                current
+            }
+            scene_ir::ShapeNode::Subtract { left, right } => {
+                let _ = self.lower_call_temp(
+                    MirType::Nil,
+                    SmolStr::new("__wr_metrics_scene_trace_candidate_branch"),
+                    vec![],
+                    span,
+                );
+                let lhs = self.lower_shape_distance_scene_in_mode(left, point.clone(), span, mode);
+                let _ = self.lower_call_temp(
+                    MirType::Nil,
+                    SmolStr::new("__wr_metrics_scene_trace_candidate_branch"),
+                    vec![],
+                    span,
+                );
+                let rhs = self.lower_shape_distance_scene_in_mode(right, point, span, mode);
+                self.lower_call_temp(
+                    MirType::Float,
+                    SmolStr::new("field_subtract"),
+                    vec![lhs, rhs],
+                    span,
+                )
+            }
+        }
+    }
+
+    pub(crate) fn lower_shape_payload_selection_scene(
+        &mut self,
+        node: &scene_ir::ShapeNode,
+        provenance: Option<&scene_ir::ShapeProvenanceExpr>,
         point: Value,
         hit_epsilon: Value,
-        feature_path: &mut Vec<SmolStr>,
         span: TextRange,
     ) -> (Value, Value, Value) {
-        match expr {
-            hir::ShapeExpr::Use { target } => {
-                let Some(root) = self.shape_root_expr(target) else {
+        match node {
+            scene_ir::ShapeNode::Use { target } => {
+                let Some(scene) = self.shape_scene(target).cloned() else {
                     return (
                         Value::Const(Literal::Float(1_000_000.0)),
                         self.build_default_payload(span),
                         Value::Const(Literal::Integer(0)),
                     );
                 };
-                let root_provenance = self.shape_root_provenance_expr(target);
-                feature_path.push(SmolStr::new(format!("use[{target}]")));
-                let result = self.lower_shape_payload_selection(
-                    &root,
-                    root_provenance.as_ref(),
+                self.lower_shape_payload_selection_scene(
+                    &scene.root,
+                    scene.provenance.as_ref(),
                     point,
-                    hit_epsilon.clone(),
-                    feature_path,
+                    hit_epsilon,
                     span,
-                );
-                feature_path.pop();
-                result
+                )
             }
-            hir::ShapeExpr::Leaf(leaf) => (
+            scene_ir::ShapeNode::Leaf(leaf) => (
                 self.lower_field_distance_call(&leaf.field, point, span),
                 self.lower_shape_payload_body_value(&leaf.payload, span),
-                self.lower_shape_feature_id_value(feature_path, leaf.feature_id),
+                Value::Const(Literal::Integer(i64::from(leaf.feature_id))),
             ),
-            hir::ShapeExpr::Union { items, .. } => {
+            scene_ir::ShapeNode::Union { items } => {
                 let (merge_policy, provenance_items) = match provenance {
-                    Some(hir::ShapeProvenanceExpr::Union { provenance, items }) => {
+                    Some(scene_ir::ShapeProvenanceExpr::Union { provenance, items }) => {
                         (*provenance, Some(items.as_slice()))
                     }
-                    _ => (hir::ShapeMergeProvenancePolicy::Nearest, None),
+                    _ => (scene_ir::ShapeMergeProvenancePolicy::Nearest, None),
                 };
                 let mut iter = items.iter();
                 let Some(first) = iter.next() else {
@@ -3471,18 +3453,15 @@ impl FunctionLowerer {
                         Value::Const(Literal::Integer(0)),
                     );
                 };
-                feature_path.push(SmolStr::new("union[0]"));
                 let first_provenance = provenance_items.and_then(|items| items.first());
                 let (first_dist, first_payload, first_feature_id) = self
-                    .lower_shape_payload_selection(
+                    .lower_shape_payload_selection_scene(
                         first,
                         first_provenance,
                         point.clone(),
                         hit_epsilon.clone(),
-                        feature_path,
                         span,
                     );
-                feature_path.pop();
                 let dist_local = self.new_local(SmolStr::new("$shape_dist"), true, MirType::Float);
                 let payload_local = self.new_local(
                     SmolStr::new("$shape_payload"),
@@ -3495,20 +3474,17 @@ impl FunctionLowerer {
                 self.assign_use(Place::Local(payload_local), first_payload, span);
                 self.assign_use(Place::Local(feature_id_local), first_feature_id, span);
                 for (idx, item) in iter.enumerate().map(|(idx, item)| (idx + 1, item)) {
-                    feature_path.push(SmolStr::new(format!("union[{idx}]")));
                     let next_provenance = provenance_items.and_then(|items| items.get(idx));
                     let (next_dist, next_payload, next_feature_id) = self
-                        .lower_shape_payload_selection(
+                        .lower_shape_payload_selection_scene(
                             item,
                             next_provenance,
                             point.clone(),
                             hit_epsilon.clone(),
-                            feature_path,
                             span,
                         );
-                    feature_path.pop();
                     match merge_policy {
-                        hir::ShapeMergeProvenancePolicy::Ordered => {
+                        scene_ir::ShapeMergeProvenancePolicy::Ordered => {
                             let composed_dist = self.lower_call_temp(
                                 MirType::Float,
                                 SmolStr::new("field_union"),
@@ -3517,8 +3493,8 @@ impl FunctionLowerer {
                             );
                             self.assign_use(Place::Local(dist_local), composed_dist, span);
                         }
-                        hir::ShapeMergeProvenancePolicy::Nearest => {
-                            let keep_current = self.lower_shape_merge_keep_current(
+                        scene_ir::ShapeMergeProvenancePolicy::Nearest => {
+                            let keep_current = self.lower_shape_merge_keep_current_scene(
                                 merge_policy,
                                 Value::Local(dist_local),
                                 next_dist.clone(),
@@ -3558,12 +3534,12 @@ impl FunctionLowerer {
                     Value::Local(feature_id_local),
                 )
             }
-            hir::ShapeExpr::Intersection { items, .. } => {
+            scene_ir::ShapeNode::Intersection { items } => {
                 let (merge_policy, provenance_items) = match provenance {
-                    Some(hir::ShapeProvenanceExpr::Intersection { provenance, items }) => {
+                    Some(scene_ir::ShapeProvenanceExpr::Intersection { provenance, items }) => {
                         (*provenance, Some(items.as_slice()))
                     }
-                    _ => (hir::ShapeMergeProvenancePolicy::Nearest, None),
+                    _ => (scene_ir::ShapeMergeProvenancePolicy::Nearest, None),
                 };
                 let mut iter = items.iter();
                 let Some(first) = iter.next() else {
@@ -3573,18 +3549,15 @@ impl FunctionLowerer {
                         Value::Const(Literal::Integer(0)),
                     );
                 };
-                feature_path.push(SmolStr::new("intersection[0]"));
                 let first_provenance = provenance_items.and_then(|items| items.first());
                 let (first_dist, first_payload, first_feature_id) = self
-                    .lower_shape_payload_selection(
+                    .lower_shape_payload_selection_scene(
                         first,
                         first_provenance,
                         point.clone(),
                         hit_epsilon.clone(),
-                        feature_path,
                         span,
                     );
-                feature_path.pop();
                 let dist_local = self.new_local(SmolStr::new("$shape_dist"), true, MirType::Float);
                 let payload_local = self.new_local(
                     SmolStr::new("$shape_payload"),
@@ -3597,20 +3570,17 @@ impl FunctionLowerer {
                 self.assign_use(Place::Local(payload_local), first_payload, span);
                 self.assign_use(Place::Local(feature_id_local), first_feature_id, span);
                 for (idx, item) in iter.enumerate().map(|(idx, item)| (idx + 1, item)) {
-                    feature_path.push(SmolStr::new(format!("intersection[{idx}]")));
                     let next_provenance = provenance_items.and_then(|items| items.get(idx));
                     let (next_dist, next_payload, next_feature_id) = self
-                        .lower_shape_payload_selection(
+                        .lower_shape_payload_selection_scene(
                             item,
                             next_provenance,
                             point.clone(),
                             hit_epsilon.clone(),
-                            feature_path,
                             span,
                         );
-                    feature_path.pop();
                     match merge_policy {
-                        hir::ShapeMergeProvenancePolicy::Ordered => {
+                        scene_ir::ShapeMergeProvenancePolicy::Ordered => {
                             let composed_dist = self.lower_call_temp(
                                 MirType::Float,
                                 SmolStr::new("field_intersection"),
@@ -3619,8 +3589,8 @@ impl FunctionLowerer {
                             );
                             self.assign_use(Place::Local(dist_local), composed_dist, span);
                         }
-                        hir::ShapeMergeProvenancePolicy::Nearest => {
-                            let keep_current = self.lower_shape_merge_keep_current(
+                        scene_ir::ShapeMergeProvenancePolicy::Nearest => {
+                            let keep_current = self.lower_shape_merge_keep_current_scene(
                                 merge_policy,
                                 Value::Local(dist_local),
                                 next_dist.clone(),
@@ -3660,37 +3630,31 @@ impl FunctionLowerer {
                     Value::Local(feature_id_local),
                 )
             }
-            hir::ShapeExpr::Subtract { left, right, .. } => {
+            scene_ir::ShapeNode::Subtract { left, right } => {
                 let (subtract_policy, left_provenance, right_provenance) = match provenance {
-                    Some(hir::ShapeProvenanceExpr::Subtract {
+                    Some(scene_ir::ShapeProvenanceExpr::Subtract {
                         provenance,
                         left,
                         right,
                     }) => (*provenance, Some(left.as_ref()), Some(right.as_ref())),
-                    _ => (hir::ShapeSubtractProvenancePolicy::Left, None, None),
+                    _ => (scene_ir::ShapeSubtractProvenancePolicy::Left, None, None),
                 };
-                feature_path.push(SmolStr::new("subtract[left]"));
                 let (left_dist, left_payload, left_feature_id) = self
-                    .lower_shape_payload_selection(
+                    .lower_shape_payload_selection_scene(
                         left,
                         left_provenance,
                         point.clone(),
                         hit_epsilon.clone(),
-                        feature_path,
                         span,
                     );
-                feature_path.pop();
-                feature_path.push(SmolStr::new("subtract[right]"));
                 let (right_dist, right_payload, right_feature_id) = self
-                    .lower_shape_payload_selection(
+                    .lower_shape_payload_selection_scene(
                         right,
                         right_provenance,
                         point,
                         hit_epsilon,
-                        feature_path,
                         span,
                     );
-                feature_path.pop();
                 let neg_right = self.lower_binary_temp(
                     MirType::Float,
                     BinaryOp::Sub,
@@ -3725,11 +3689,7 @@ impl FunctionLowerer {
                 self.current_block = left_block;
                 self.assign_use(Place::Local(dist_local), left_dist, span);
                 self.assign_use(Place::Local(payload_local), left_payload.clone(), span);
-                self.assign_use(
-                    Place::Local(feature_id_local),
-                    left_feature_id.clone(),
-                    span,
-                );
+                self.assign_use(Place::Local(feature_id_local), left_feature_id.clone(), span);
                 self.set_terminator(Terminator::Jump {
                     target: merge_block,
                     span,
@@ -3737,11 +3697,11 @@ impl FunctionLowerer {
                 self.current_block = right_block;
                 self.assign_use(Place::Local(dist_local), neg_right, span);
                 match subtract_policy {
-                    hir::ShapeSubtractProvenancePolicy::Left => {
+                    scene_ir::ShapeSubtractProvenancePolicy::Left => {
                         self.assign_use(Place::Local(payload_local), left_payload, span);
                         self.assign_use(Place::Local(feature_id_local), left_feature_id, span);
                     }
-                    hir::ShapeSubtractProvenancePolicy::Right => {
+                    scene_ir::ShapeSubtractProvenancePolicy::Right => {
                         self.assign_use(Place::Local(payload_local), right_payload, span);
                         self.assign_use(Place::Local(feature_id_local), right_feature_id, span);
                     }
@@ -3760,36 +3720,29 @@ impl FunctionLowerer {
         }
     }
 
-    pub(crate) fn lower_shape_surface_selection(
+    pub(crate) fn lower_shape_surface_selection_scene(
         &mut self,
-        expr: &hir::ShapeExpr,
+        node: &scene_ir::ShapeNode,
         feature_id: Value,
         hit: Value,
-        feature_path: &mut Vec<SmolStr>,
         span: TextRange,
     ) -> (Value, Value) {
-        match expr {
-            hir::ShapeExpr::Use { target } => {
-                let Some(root) = self.shape_root_expr(target) else {
+        match node {
+            scene_ir::ShapeNode::Use { target } => {
+                let Some(scene) = self.shape_scene(target).cloned() else {
                     return (
                         Value::Const(Literal::Boolean(false)),
                         self.build_default_surface(span),
                     );
                 };
-                feature_path.push(SmolStr::new(format!("use[{target}]")));
-                let result =
-                    self.lower_shape_surface_selection(&root, feature_id, hit, feature_path, span);
-                feature_path.pop();
-                result
+                self.lower_shape_surface_selection_scene(&scene.root, feature_id, hit, span)
             }
-            hir::ShapeExpr::Leaf(leaf) => {
-                let leaf_feature_id =
-                    self.lower_shape_feature_id_value(feature_path, leaf.feature_id);
+            scene_ir::ShapeNode::Leaf(leaf) => {
                 let matched = self.lower_binary_temp(
                     MirType::Boolean,
                     BinaryOp::Eq,
                     feature_id,
-                    leaf_feature_id,
+                    Value::Const(Literal::Integer(i64::from(leaf.feature_id))),
                     span,
                 );
                 let surface_local = self.new_local(
@@ -3798,7 +3751,11 @@ impl FunctionLowerer {
                     MirType::Named(SmolStr::new("Surface")),
                 );
                 let default_surface = self.build_default_surface(span);
-                self.assign_use(Place::Local(surface_local), default_surface, span);
+                self.assign_use(
+                    Place::Local(surface_local),
+                    default_surface,
+                    span,
+                );
                 let matched_block = self.new_block();
                 let miss_block = self.new_block();
                 let merge_block = self.new_block();
@@ -3828,7 +3785,8 @@ impl FunctionLowerer {
                 self.current_block = merge_block;
                 (matched, Value::Local(surface_local))
             }
-            hir::ShapeExpr::Union { items, .. } => {
+            scene_ir::ShapeNode::Union { items }
+            | scene_ir::ShapeNode::Intersection { items } => {
                 let mut iter = items.iter();
                 let Some(first) = iter.next() else {
                     return (
@@ -3836,16 +3794,12 @@ impl FunctionLowerer {
                         self.build_default_surface(span),
                     );
                 };
-                feature_path.push(SmolStr::new("union[0]"));
-                let result = self.lower_shape_surface_selection(
+                let (first_matched, first_surface) = self.lower_shape_surface_selection_scene(
                     first,
                     feature_id.clone(),
                     hit.clone(),
-                    feature_path,
                     span,
                 );
-                feature_path.pop();
-                let (first_matched, first_surface) = result;
                 let matched_local =
                     self.new_local(SmolStr::new("$shape_surface_match"), true, MirType::Boolean);
                 let surface_local = self.new_local(
@@ -3855,16 +3809,13 @@ impl FunctionLowerer {
                 );
                 self.assign_use(Place::Local(matched_local), first_matched, span);
                 self.assign_use(Place::Local(surface_local), first_surface, span);
-                for (idx, item) in iter.enumerate().map(|(idx, item)| (idx + 1, item)) {
-                    feature_path.push(SmolStr::new(format!("union[{idx}]")));
-                    let (next_matched, next_surface) = self.lower_shape_surface_selection(
+                for item in iter {
+                    let (next_matched, next_surface) = self.lower_shape_surface_selection_scene(
                         item,
                         feature_id.clone(),
                         hit.clone(),
-                        feature_path,
                         span,
                     );
-                    feature_path.pop();
                     let already_matched = Value::Local(matched_local);
                     let keep_current = already_matched.clone();
                     let take_next = self.lower_unary_temp(
@@ -3912,101 +3863,13 @@ impl FunctionLowerer {
                 }
                 (Value::Local(matched_local), Value::Local(surface_local))
             }
-            hir::ShapeExpr::Intersection { items, .. } => {
-                let mut iter = items.iter();
-                let Some(first) = iter.next() else {
-                    return (
-                        Value::Const(Literal::Boolean(false)),
-                        self.build_default_surface(span),
-                    );
-                };
-                feature_path.push(SmolStr::new("intersection[0]"));
-                let result = self.lower_shape_surface_selection(
-                    first,
-                    feature_id.clone(),
-                    hit.clone(),
-                    feature_path,
-                    span,
-                );
-                feature_path.pop();
-                let (first_matched, first_surface) = result;
-                let matched_local =
-                    self.new_local(SmolStr::new("$shape_surface_match"), true, MirType::Boolean);
-                let surface_local = self.new_local(
-                    SmolStr::new("$shape_surface"),
-                    true,
-                    MirType::Named(SmolStr::new("Surface")),
-                );
-                self.assign_use(Place::Local(matched_local), first_matched, span);
-                self.assign_use(Place::Local(surface_local), first_surface, span);
-                for (idx, item) in iter.enumerate().map(|(idx, item)| (idx + 1, item)) {
-                    feature_path.push(SmolStr::new(format!("intersection[{idx}]")));
-                    let (next_matched, next_surface) = self.lower_shape_surface_selection(
-                        item,
-                        feature_id.clone(),
-                        hit.clone(),
-                        feature_path,
-                        span,
-                    );
-                    feature_path.pop();
-                    let already_matched = Value::Local(matched_local);
-                    let keep_current = already_matched.clone();
-                    let take_next = self.lower_unary_temp(
-                        MirType::Boolean,
-                        hir::UnaryOp::Not,
-                        already_matched,
-                        span,
-                    );
-                    let keep_block = self.new_block();
-                    let replace_block = self.new_block();
-                    let merge_block = self.new_block();
-                    self.set_terminator(Terminator::Branch {
-                        cond: keep_current,
-                        then_target: keep_block,
-                        else_target: replace_block,
-                        span,
-                    });
-                    self.current_block = keep_block;
-                    self.set_terminator(Terminator::Jump {
-                        target: merge_block,
-                        span,
-                    });
-                    self.current_block = replace_block;
-                    let matched_block = self.new_block();
-                    let miss_block = self.new_block();
-                    self.set_terminator(Terminator::Branch {
-                        cond: take_next,
-                        then_target: matched_block,
-                        else_target: miss_block,
-                        span,
-                    });
-                    self.current_block = matched_block;
-                    self.assign_use(Place::Local(matched_local), next_matched, span);
-                    self.assign_use(Place::Local(surface_local), next_surface, span);
-                    self.set_terminator(Terminator::Jump {
-                        target: merge_block,
-                        span,
-                    });
-                    self.current_block = miss_block;
-                    self.set_terminator(Terminator::Jump {
-                        target: merge_block,
-                        span,
-                    });
-                    self.current_block = merge_block;
-                }
-                (Value::Local(matched_local), Value::Local(surface_local))
-            }
-            hir::ShapeExpr::Subtract { left, right, .. } => {
-                feature_path.push(SmolStr::new("subtract[left]"));
-                let result = self.lower_shape_surface_selection(
+            scene_ir::ShapeNode::Subtract { left, right } => {
+                let (left_matched, left_surface) = self.lower_shape_surface_selection_scene(
                     left,
                     feature_id.clone(),
                     hit.clone(),
-                    feature_path,
                     span,
                 );
-                feature_path.pop();
-                let (left_matched, left_surface) = result;
                 let matched_local =
                     self.new_local(SmolStr::new("$shape_surface_match"), true, MirType::Boolean);
                 let surface_local = self.new_local(
@@ -4032,11 +3895,8 @@ impl FunctionLowerer {
                     span,
                 });
                 self.current_block = replace_block;
-                feature_path.push(SmolStr::new("subtract[right]"));
-                let result =
-                    self.lower_shape_surface_selection(right, feature_id, hit, feature_path, span);
-                feature_path.pop();
-                let (right_matched, right_surface) = result;
+                let (right_matched, right_surface) =
+                    self.lower_shape_surface_selection_scene(right, feature_id, hit, span);
                 self.assign_use(Place::Local(matched_local), right_matched, span);
                 self.assign_use(Place::Local(surface_local), right_surface, span);
                 self.set_terminator(Terminator::Jump {
@@ -4049,54 +3909,50 @@ impl FunctionLowerer {
         }
     }
 
-    pub(crate) fn lower_shape_hit_context_selection(
+    pub(crate) fn lower_shape_default_hit_context_selection(
         &mut self,
-        expr: &hir::ShapeExpr,
-        feature_id: Value,
         point: Value,
-        feature_path: &mut Vec<SmolStr>,
         span: TextRange,
     ) -> (Value, Value, Value, Value, Value) {
-        match expr {
-            hir::ShapeExpr::Use { target } => {
-                let Some(root) = self.shape_root_expr(target) else {
-                    let default_normal = self.lower_call_temp(
-                        MirType::Vec3,
-                        SmolStr::new("vec3"),
-                        vec![
-                            Value::Const(Literal::Float(0.0)),
-                            Value::Const(Literal::Float(0.0)),
-                            Value::Const(Literal::Float(1.0)),
-                        ],
-                        span,
-                    );
-                    return (
-                        Value::Const(Literal::Boolean(false)),
-                        point,
-                        default_normal,
-                        Value::Const(Literal::Integer(0)),
-                        Value::Const(Literal::Integer(0)),
-                    );
+        let default_normal = self.lower_call_temp(
+            MirType::Vec3,
+            SmolStr::new("vec3"),
+            vec![
+                Value::Const(Literal::Float(0.0)),
+                Value::Const(Literal::Float(0.0)),
+                Value::Const(Literal::Float(1.0)),
+            ],
+            span,
+        );
+        (
+            Value::Const(Literal::Boolean(false)),
+            point,
+            default_normal,
+            Value::Const(Literal::Integer(0)),
+            Value::Const(Literal::Integer(0)),
+        )
+    }
+
+    pub(crate) fn lower_shape_hit_context_selection_scene(
+        &mut self,
+        node: &scene_ir::ShapeNode,
+        feature_id: Value,
+        point: Value,
+        span: TextRange,
+    ) -> (Value, Value, Value, Value, Value) {
+        match node {
+            scene_ir::ShapeNode::Use { target } => {
+                let Some(scene) = self.shape_scene(target).cloned() else {
+                    return self.lower_shape_default_hit_context_selection(point, span);
                 };
-                feature_path.push(SmolStr::new(format!("use[{target}]")));
-                let result = self.lower_shape_hit_context_selection(
-                    &root,
-                    feature_id,
-                    point,
-                    feature_path,
-                    span,
-                );
-                feature_path.pop();
-                result
+                self.lower_shape_hit_context_selection_scene(&scene.root, feature_id, point, span)
             }
-            hir::ShapeExpr::Leaf(leaf) => {
-                let leaf_feature_id =
-                    self.lower_shape_feature_id_value(feature_path, leaf.feature_id);
+            scene_ir::ShapeNode::Leaf(leaf) => {
                 let matched = self.lower_binary_temp(
                     MirType::Boolean,
                     BinaryOp::Eq,
                     feature_id,
-                    leaf_feature_id,
+                    Value::Const(Literal::Integer(i64::from(leaf.feature_id))),
                     span,
                 );
                 let zero_id = Value::Const(Literal::Integer(0));
@@ -4110,41 +3966,19 @@ impl FunctionLowerer {
                 let local_normal = self.lower_field_local_normal_call(&leaf.field, point, span);
                 (matched, local_point, local_normal, instance_id, repeat_id)
             }
-            hir::ShapeExpr::Union { items, .. } | hir::ShapeExpr::Intersection { items, .. } => {
+            scene_ir::ShapeNode::Union { items }
+            | scene_ir::ShapeNode::Intersection { items } => {
                 let mut iter = items.iter();
                 let Some(first) = iter.next() else {
-                    let default_normal = self.lower_call_temp(
-                        MirType::Vec3,
-                        SmolStr::new("vec3"),
-                        vec![
-                            Value::Const(Literal::Float(0.0)),
-                            Value::Const(Literal::Float(0.0)),
-                            Value::Const(Literal::Float(1.0)),
-                        ],
-                        span,
-                    );
-                    return (
-                        Value::Const(Literal::Boolean(false)),
-                        point,
-                        default_normal,
-                        Value::Const(Literal::Integer(0)),
-                        Value::Const(Literal::Integer(0)),
-                    );
+                    return self.lower_shape_default_hit_context_selection(point, span);
                 };
-                let label = match expr {
-                    hir::ShapeExpr::Union { .. } => "union",
-                    _ => "intersection",
-                };
-                feature_path.push(SmolStr::new(format!("{label}[0]")));
                 let (first_matched, first_point, first_normal, first_instance, first_repeat) = self
-                    .lower_shape_hit_context_selection(
+                    .lower_shape_hit_context_selection_scene(
                         first,
                         feature_id.clone(),
                         point.clone(),
-                        feature_path,
                         span,
                     );
-                feature_path.pop();
                 let matched_local = self.new_local(
                     SmolStr::new("$shape_hit_context_match"),
                     true,
@@ -4175,17 +4009,14 @@ impl FunctionLowerer {
                 self.assign_use(Place::Local(normal_local), first_normal, span);
                 self.assign_use(Place::Local(instance_local), first_instance, span);
                 self.assign_use(Place::Local(repeat_local), first_repeat, span);
-                for (idx, item) in iter.enumerate().map(|(idx, item)| (idx + 1, item)) {
-                    feature_path.push(SmolStr::new(format!("{label}[{idx}]")));
+                for item in iter {
                     let (next_matched, next_point, next_normal, next_instance, next_repeat) = self
-                        .lower_shape_hit_context_selection(
+                        .lower_shape_hit_context_selection_scene(
                             item,
                             feature_id.clone(),
                             point.clone(),
-                            feature_path,
                             span,
                         );
-                    feature_path.pop();
                     let already_matched = Value::Local(matched_local);
                     let keep_block = self.new_block();
                     let replace_block = self.new_block();
@@ -4221,17 +4052,14 @@ impl FunctionLowerer {
                     Value::Local(repeat_local),
                 )
             }
-            hir::ShapeExpr::Subtract { left, right, .. } => {
-                feature_path.push(SmolStr::new("subtract[left]"));
+            scene_ir::ShapeNode::Subtract { left, right } => {
                 let (left_matched, left_point, left_normal, left_instance, left_repeat) = self
-                    .lower_shape_hit_context_selection(
+                    .lower_shape_hit_context_selection_scene(
                         left,
                         feature_id.clone(),
                         point.clone(),
-                        feature_path,
                         span,
                     );
-                feature_path.pop();
                 let matched_local = self.new_local(
                     SmolStr::new("$shape_hit_context_match"),
                     true,
@@ -4278,16 +4106,8 @@ impl FunctionLowerer {
                     span,
                 });
                 self.current_block = replace_block;
-                feature_path.push(SmolStr::new("subtract[right]"));
                 let (right_matched, right_point, right_normal, right_instance, right_repeat) = self
-                    .lower_shape_hit_context_selection(
-                        right,
-                        feature_id,
-                        point,
-                        feature_path,
-                        span,
-                    );
-                feature_path.pop();
+                    .lower_shape_hit_context_selection_scene(right, feature_id, point, span);
                 self.assign_use(Place::Local(matched_local), right_matched, span);
                 self.assign_use(Place::Local(point_local), right_point, span);
                 self.assign_use(Place::Local(normal_local), right_normal, span);
@@ -4309,17 +4129,16 @@ impl FunctionLowerer {
         }
     }
 
-    pub(crate) fn lower_shape_radiance_participation(
+    pub(crate) fn lower_shape_radiance_participation_scene(
         &mut self,
-        expr: &hir::ShapeExpr,
+        node: &scene_ir::ShapeNode,
         point: Value,
         direction: Value,
-        feature_path: &mut Vec<SmolStr>,
         span: TextRange,
     ) -> Value {
-        match expr {
-            hir::ShapeExpr::Use { target } => {
-                let Some(root) = self.shape_root_expr(target) else {
+        match node {
+            scene_ir::ShapeNode::Use { target } => {
+                let Some(scene) = self.shape_scene(target).cloned() else {
                     return self.lower_call_temp(
                         MirType::Vec3,
                         SmolStr::new("vec3"),
@@ -4331,18 +4150,14 @@ impl FunctionLowerer {
                         span,
                     );
                 };
-                feature_path.push(SmolStr::new(format!("use[{target}]")));
-                let result = self.lower_shape_radiance_participation(
-                    &root,
+                self.lower_shape_radiance_participation_scene(
+                    &scene.root,
                     point,
                     direction,
-                    feature_path,
                     span,
-                );
-                feature_path.pop();
-                result
+                )
             }
-            hir::ShapeExpr::Leaf(leaf) => {
+            scene_ir::ShapeNode::Leaf(leaf) => {
                 let black = self.lower_call_temp(
                     MirType::Vec3,
                     SmolStr::new("vec3"),
@@ -4363,15 +4178,16 @@ impl FunctionLowerer {
                     Value::Const(Literal::Integer(0)),
                     span,
                 );
-                let leaf_feature_id =
-                    self.lower_shape_feature_id_value(feature_path, leaf.feature_id);
-                self.lower_radiance_call(radiance, local_point, direction, leaf_feature_id, span)
+                self.lower_radiance_call(
+                    radiance,
+                    local_point,
+                    direction,
+                    Value::Const(Literal::Integer(i64::from(leaf.feature_id))),
+                    span,
+                )
             }
-            hir::ShapeExpr::Union { items, .. } | hir::ShapeExpr::Intersection { items, .. } => {
-                let label = match expr {
-                    hir::ShapeExpr::Union { .. } => "union",
-                    _ => "intersection",
-                };
+            scene_ir::ShapeNode::Union { items }
+            | scene_ir::ShapeNode::Intersection { items } => {
                 let mut total = self.lower_call_temp(
                     MirType::Vec3,
                     SmolStr::new("vec3"),
@@ -4382,105 +4198,74 @@ impl FunctionLowerer {
                     ],
                     span,
                 );
-                for (idx, item) in items.iter().enumerate() {
-                    feature_path.push(SmolStr::new(format!("{label}[{idx}]")));
-                    let next = self.lower_shape_radiance_participation(
+                for item in items {
+                    let next = self.lower_shape_radiance_participation_scene(
                         item,
                         point.clone(),
                         direction.clone(),
-                        feature_path,
                         span,
                     );
-                    feature_path.pop();
                     total = self.lower_binary_temp(MirType::Vec3, BinaryOp::Add, total, next, span);
                 }
                 total
             }
-            hir::ShapeExpr::Subtract { left, right, .. } => {
-                feature_path.push(SmolStr::new("subtract[left]"));
-                let left_value = self.lower_shape_radiance_participation(
+            scene_ir::ShapeNode::Subtract { left, right } => {
+                let left_value = self.lower_shape_radiance_participation_scene(
                     left,
                     point.clone(),
                     direction.clone(),
-                    feature_path,
                     span,
                 );
-                feature_path.pop();
-                feature_path.push(SmolStr::new("subtract[right]"));
-                let right_value = self.lower_shape_radiance_participation(
-                    right,
-                    point,
-                    direction,
-                    feature_path,
-                    span,
-                );
-                feature_path.pop();
+                let right_value =
+                    self.lower_shape_radiance_participation_scene(right, point, direction, span);
                 self.lower_binary_temp(MirType::Vec3, BinaryOp::Add, left_value, right_value, span)
             }
         }
     }
 
-    pub(crate) fn lower_shape_medium_participation(
+    pub(crate) fn lower_shape_medium_participation_scene(
         &mut self,
-        expr: &hir::ShapeExpr,
+        node: &scene_ir::ShapeNode,
         point: Value,
-        feature_path: &mut Vec<SmolStr>,
         span: TextRange,
     ) -> Value {
-        match expr {
-            hir::ShapeExpr::Use { target } => {
-                let Some(root) = self.shape_root_expr(target) else {
+        match node {
+            scene_ir::ShapeNode::Use { target } => {
+                let Some(scene) = self.shape_scene(target).cloned() else {
                     return self.build_default_medium(span);
                 };
-                feature_path.push(SmolStr::new(format!("use[{target}]")));
-                let result =
-                    self.lower_shape_medium_participation(&root, point, feature_path, span);
-                feature_path.pop();
-                result
+                self.lower_shape_medium_participation_scene(&scene.root, point, span)
             }
-            hir::ShapeExpr::Leaf(leaf) => {
+            scene_ir::ShapeNode::Leaf(leaf) => {
                 let Some(volume) = &leaf.volume else {
                     return self.build_default_medium(span);
                 };
                 let (local_point, _, _) = self.lower_field_local_context_call(
                     &leaf.field,
-                    point,
+                    point.clone(),
                     Value::Const(Literal::Integer(0)),
                     Value::Const(Literal::Integer(0)),
                     span,
                 );
                 let local_surface_distance =
-                    self.lower_field_distance_call(&leaf.field, local_point.clone(), span);
+                    self.lower_field_local_distance_call(&leaf.field, point, span);
                 self.lower_volume_call(volume, local_point, local_surface_distance, span)
             }
-            hir::ShapeExpr::Union { items, .. } | hir::ShapeExpr::Intersection { items, .. } => {
-                let label = match expr {
-                    hir::ShapeExpr::Union { .. } => "union",
-                    _ => "intersection",
-                };
+            scene_ir::ShapeNode::Union { items }
+            | scene_ir::ShapeNode::Intersection { items } => {
                 let mut total = self.build_default_medium(span);
-                for (idx, item) in items.iter().enumerate() {
-                    feature_path.push(SmolStr::new(format!("{label}[{idx}]")));
-                    let next = self.lower_shape_medium_participation(
-                        item,
-                        point.clone(),
-                        feature_path,
-                        span,
-                    );
-                    feature_path.pop();
+                for item in items {
+                    let next =
+                        self.lower_shape_medium_participation_scene(item, point.clone(), span);
                     total = self.lower_additive_medium_combine(total, next, span);
                 }
                 total
             }
-            hir::ShapeExpr::Subtract { left, right, .. } => {
-                feature_path.push(SmolStr::new("subtract[left]"));
+            scene_ir::ShapeNode::Subtract { left, right } => {
                 let left_value =
-                    self.lower_shape_medium_participation(left, point.clone(), feature_path, span);
-                feature_path.pop();
-                feature_path.push(SmolStr::new("subtract[right]"));
+                    self.lower_shape_medium_participation_scene(left, point.clone(), span);
                 let right_value =
-                    self.lower_shape_medium_participation(right, point, feature_path, span);
-                feature_path.pop();
+                    self.lower_shape_medium_participation_scene(right, point, span);
                 self.lower_additive_medium_combine(left_value, right_value, span)
             }
         }
@@ -5176,6 +4961,491 @@ impl FunctionLowerer {
         }
     }
 
+    pub(crate) fn lower_scene_profile_distance_expr(
+        &mut self,
+        profile: &scene_ir::SceneProfileExpr,
+        point: Value,
+        span: TextRange,
+    ) -> Value {
+        match profile {
+            scene_ir::SceneProfileExpr::Primitive { primitive, args } => match primitive {
+                hir::ProfilePrimitive::Circle2 => {
+                    let Some(radius) = self.lower_scene_named_arg_value(args, "radius", span)
+                    else {
+                        return Value::Const(Literal::Float(1_000_000.0));
+                    };
+                    self.lower_call_temp(
+                        MirType::Float,
+                        SmolStr::new("circle2"),
+                        vec![point, radius],
+                        span,
+                    )
+                }
+                hir::ProfilePrimitive::Rect2 => {
+                    let Some(half) = self.lower_scene_named_arg_value(args, "half", span) else {
+                        return Value::Const(Literal::Float(1_000_000.0));
+                    };
+                    self.lower_call_temp(
+                        MirType::Float,
+                        SmolStr::new("rect2"),
+                        vec![point, half],
+                        span,
+                    )
+                }
+                hir::ProfilePrimitive::RoundedRect2 => {
+                    let (Some(half), Some(radius)) = (
+                        self.lower_scene_named_arg_value(args, "half", span),
+                        self.lower_scene_named_arg_value(args, "radius", span),
+                    ) else {
+                        return Value::Const(Literal::Float(1_000_000.0));
+                    };
+                    self.lower_call_temp(
+                        MirType::Float,
+                        SmolStr::new("rounded_rect2"),
+                        vec![point, half, radius],
+                        span,
+                    )
+                }
+                hir::ProfilePrimitive::Capsule2 => {
+                    let (Some(a), Some(b), Some(radius)) = (
+                        self.lower_scene_named_arg_value(args, "a", span),
+                        self.lower_scene_named_arg_value(args, "b", span),
+                        self.lower_scene_named_arg_value(args, "radius", span),
+                    ) else {
+                        return Value::Const(Literal::Float(1_000_000.0));
+                    };
+                    self.lower_call_temp(
+                        MirType::Float,
+                        SmolStr::new("capsule2"),
+                        vec![point, a, b, radius],
+                        span,
+                    )
+                }
+                hir::ProfilePrimitive::Segment2 => {
+                    let (Some(a), Some(b)) = (
+                        self.lower_scene_named_arg_value(args, "a", span),
+                        self.lower_scene_named_arg_value(args, "b", span),
+                    ) else {
+                        return Value::Const(Literal::Float(1_000_000.0));
+                    };
+                    self.lower_call_temp(
+                        MirType::Float,
+                        SmolStr::new("segment2"),
+                        vec![point, a, b],
+                        span,
+                    )
+                }
+                hir::ProfilePrimitive::Polygon2 | hir::ProfilePrimitive::Polyline2 => {
+                    let Some(vertices) = self.lower_scene_named_arg_value(args, "vertices", span)
+                    else {
+                        return Value::Const(Literal::Float(1_000_000.0));
+                    };
+                    let callee = match primitive {
+                        hir::ProfilePrimitive::Polygon2 => "polygon2",
+                        hir::ProfilePrimitive::Polyline2 => "polyline2",
+                        _ => unreachable!(),
+                    };
+                    self.lower_call_temp(
+                        MirType::Float,
+                        SmolStr::new(callee),
+                        vec![point, vertices],
+                        span,
+                    )
+                }
+            },
+        }
+    }
+
+    pub(crate) fn lower_field_local_distance_call(
+        &mut self,
+        field: &SmolStr,
+        point: Value,
+        span: TextRange,
+    ) -> Value {
+        let Some(scene) = self.field_scene(field).cloned() else {
+            return self.lower_field_distance_call(field, point, span);
+        };
+        self.lower_field_local_distance_scene(field, &scene.root, point, span)
+    }
+
+    pub(crate) fn lower_field_local_distance_scene(
+        &mut self,
+        field: &SmolStr,
+        node: &scene_ir::FieldNode,
+        point: Value,
+        span: TextRange,
+    ) -> Value {
+        match node {
+            scene_ir::FieldNode::Use { target } => {
+                self.lower_field_local_distance_call(target, point, span)
+            }
+            scene_ir::FieldNode::Transform { kind, param, inner } => {
+                let Some(param) = param.as_ref() else {
+                    return self.lower_field_local_distance_scene(field, inner, point, span);
+                };
+                match kind {
+                    scene_ir::TransformKind::UniformScale => {
+                        let wrapper_value = self.lower_scene_value_expr(param, span);
+                        let local_point = self.lower_call_temp(
+                            MirType::Vec3,
+                            SmolStr::new("uniform_scale"),
+                            vec![wrapper_value.clone(), point],
+                            span,
+                        );
+                        let scaled =
+                            self.lower_field_local_distance_scene(field, inner, local_point, span);
+                        let abs_scale = self.lower_call_temp(
+                            MirType::Float,
+                            SmolStr::new("abs"),
+                            vec![wrapper_value],
+                            span,
+                        );
+                        self.lower_binary_temp(
+                            MirType::Float,
+                            BinaryOp::Mul,
+                            scaled,
+                            abs_scale,
+                            span,
+                        )
+                    }
+                    _ => {
+                        let local_point = match kind {
+                            scene_ir::TransformKind::Translate => {
+                                self.lower_scene_wrapped_support_point("translate", param, point, span)
+                            }
+                            scene_ir::TransformKind::Rotate => self
+                                .lower_scene_wrapped_support_point("field_rotate_point", param, point, span),
+                            scene_ir::TransformKind::AffineTransform => self
+                                .lower_scene_wrapped_support_point("affine_transform", param, point, span),
+                            scene_ir::TransformKind::Warp => {
+                                self.lower_scene_wrapped_support_point("warp", param, point, span)
+                            }
+                            scene_ir::TransformKind::Bend => {
+                                self.lower_scene_wrapped_support_point("bend", param, point, span)
+                            }
+                            scene_ir::TransformKind::Twist => {
+                                self.lower_scene_wrapped_support_point("twist", param, point, span)
+                            }
+                            scene_ir::TransformKind::Taper => {
+                                self.lower_scene_wrapped_support_point("taper", param, point, span)
+                            }
+                            scene_ir::TransformKind::Displace => self
+                                .lower_scene_wrapped_support_point("displace", param, point, span),
+                            scene_ir::TransformKind::UniformScale => unreachable!(),
+                        };
+                        self.lower_field_local_distance_scene(field, inner, local_point, span)
+                    }
+                }
+            }
+            scene_ir::FieldNode::Repeat { kind, param, inner } => {
+                let Some(param) = param.as_ref() else {
+                    return self.lower_field_local_distance_scene(field, inner, point, span);
+                };
+                let wrapper_value = self.lower_scene_value_expr(param, span);
+                let local_point = match kind {
+                    scene_ir::RepeatKind::RepeatLinear => self.lower_call_temp(
+                        MirType::Vec3,
+                        SmolStr::new("repeat_linear"),
+                        vec![wrapper_value, point],
+                        span,
+                    ),
+                    scene_ir::RepeatKind::RepeatGrid => self.lower_call_temp(
+                        MirType::Vec3,
+                        SmolStr::new("repeat_grid"),
+                        vec![wrapper_value, point],
+                        span,
+                    ),
+                    scene_ir::RepeatKind::RadialRepeat => self.lower_call_temp(
+                        MirType::Vec3,
+                        SmolStr::new("radial_repeat"),
+                        vec![wrapper_value, point],
+                        span,
+                    ),
+                    scene_ir::RepeatKind::MirrorArray => self.lower_call_temp(
+                        MirType::Vec3,
+                        SmolStr::new("mirror_array"),
+                        vec![wrapper_value, point],
+                        span,
+                    ),
+                    scene_ir::RepeatKind::InstanceArray => self.lower_call_temp(
+                        MirType::Vec3,
+                        SmolStr::new("instance_array"),
+                        vec![wrapper_value, point],
+                        span,
+                    ),
+                };
+                self.lower_field_local_distance_scene(field, inner, local_point, span)
+            }
+            scene_ir::FieldNode::Primitive { primitive, args } => {
+                let Some(args) = args.as_ref() else {
+                    return Value::Const(Literal::Float(1_000_000.0));
+                };
+                self.lower_field_primitive_distance_scene(*primitive, args, point, span)
+            }
+            scene_ir::FieldNode::Union { items } => {
+                let mut iter = items.iter();
+                let Some(first) = iter.next() else {
+                    return Value::Const(Literal::Float(1_000_000.0));
+                };
+                let mut current =
+                    self.lower_field_local_distance_scene(field, first, point.clone(), span);
+                for item in iter {
+                    let rhs =
+                        self.lower_field_local_distance_scene(field, item, point.clone(), span);
+                    current = self.lower_call_temp(
+                        MirType::Float,
+                        SmolStr::new("field_union"),
+                        vec![current, rhs],
+                        span,
+                    );
+                }
+                current
+            }
+            scene_ir::FieldNode::Intersection { items } => {
+                let mut iter = items.iter();
+                let Some(first) = iter.next() else {
+                    return Value::Const(Literal::Float(1_000_000.0));
+                };
+                let mut current =
+                    self.lower_field_local_distance_scene(field, first, point.clone(), span);
+                for item in iter {
+                    let rhs =
+                        self.lower_field_local_distance_scene(field, item, point.clone(), span);
+                    current = self.lower_call_temp(
+                        MirType::Float,
+                        SmolStr::new("field_intersection"),
+                        vec![current, rhs],
+                        span,
+                    );
+                }
+                current
+            }
+            scene_ir::FieldNode::Subtract { left, right } => {
+                let left =
+                    self.lower_field_local_distance_scene(field, left, point.clone(), span);
+                let right = self.lower_field_local_distance_scene(field, right, point, span);
+                self.lower_call_temp(
+                    MirType::Float,
+                    SmolStr::new("field_subtract"),
+                    vec![left, right],
+                    span,
+                )
+            }
+            scene_ir::FieldNode::Smooth {
+                kind,
+                smoothing,
+                items,
+            } => {
+                let Some(first) = items.first() else {
+                    return Value::Const(Literal::Float(1_000_000.0));
+                };
+                let Some(smoothing) = smoothing.as_ref() else {
+                    return self.lower_field_local_distance_scene(field, first, point, span);
+                };
+                let smoothing_value = self.lower_scene_value_expr(smoothing, span);
+                let mut current =
+                    self.lower_field_local_distance_scene(field, first, point.clone(), span);
+                for item in items.iter().skip(1) {
+                    let rhs =
+                        self.lower_field_local_distance_scene(field, item, point.clone(), span);
+                    let callee = match kind {
+                        scene_ir::SmoothKind::Union => "field_smooth_union",
+                        scene_ir::SmoothKind::Intersection => "field_smooth_intersection",
+                        scene_ir::SmoothKind::Subtract => "field_smooth_subtract",
+                    };
+                    current = self.lower_call_temp(
+                        MirType::Float,
+                        SmolStr::new(callee),
+                        vec![smoothing_value.clone(), current, rhs],
+                        span,
+                    );
+                }
+                current
+            }
+            scene_ir::FieldNode::Extrude { height, profile } => {
+                let (Some(height), Some(profile)) = (height.as_ref(), profile.as_ref()) else {
+                    return Value::Const(Literal::Float(1_000_000.0));
+                };
+                let height_value = self.lower_scene_value_expr(height, span);
+                let abs_height = self.lower_call_temp(
+                    MirType::Float,
+                    SmolStr::new("abs"),
+                    vec![height_value],
+                    span,
+                );
+                let half_height = self.lower_binary_temp(
+                    MirType::Float,
+                    BinaryOp::Mul,
+                    abs_height,
+                    Value::Const(Literal::Float(0.5)),
+                    span,
+                );
+                let profile_x = self.lower_get_component(point.clone(), MirType::Vec3, "x", span);
+                let profile_z = self.lower_get_component(point.clone(), MirType::Vec3, "z", span);
+                let profile_point = self.lower_vec2_value(profile_x, profile_z, span);
+                let profile_distance =
+                    self.lower_scene_profile_distance_expr(profile, profile_point, span);
+                let point_y = self.lower_get_component(point, MirType::Vec3, "y", span);
+                let abs_y = self.lower_call_temp(
+                    MirType::Float,
+                    SmolStr::new("abs"),
+                    vec![point_y],
+                    span,
+                );
+                let axial = self.lower_binary_temp(
+                    MirType::Float,
+                    BinaryOp::Sub,
+                    abs_y,
+                    half_height,
+                    span,
+                );
+                self.lower_profile_cap_distance_value(profile_distance, axial, span)
+            }
+            scene_ir::FieldNode::Revolve { profile } => {
+                let Some(profile) = profile.as_ref() else {
+                    return Value::Const(Literal::Float(1_000_000.0));
+                };
+                let x = self.lower_get_component(point.clone(), MirType::Vec3, "x", span);
+                let y = self.lower_get_component(point.clone(), MirType::Vec3, "y", span);
+                let z = self.lower_get_component(point, MirType::Vec3, "z", span);
+                let radial_input = self.lower_vec2_value(x, z, span);
+                let radial = self.lower_call_temp(
+                    MirType::Float,
+                    SmolStr::new("length"),
+                    vec![radial_input],
+                    span,
+                );
+                let profile_point = self.lower_vec2_value(radial, y, span);
+                self.lower_scene_profile_distance_expr(profile, profile_point, span)
+            }
+            scene_ir::FieldNode::Sweep { path, profile } => {
+                let (Some(path), Some(profile)) = (path.as_ref(), profile.as_ref()) else {
+                    return Value::Const(Literal::Float(1_000_000.0));
+                };
+                let path_value = self.lower_scene_value_expr(path, span);
+                let coords = self.lower_call_temp(
+                    MirType::Vec3,
+                    SmolStr::new("field_sweep_coords"),
+                    vec![path_value.clone(), point],
+                    span,
+                );
+                let coords_x = self.lower_get_component(coords.clone(), MirType::Vec3, "x", span);
+                let coords_y = self.lower_get_component(coords.clone(), MirType::Vec3, "y", span);
+                let profile_point = self.lower_vec2_value(coords_x, coords_y, span);
+                let profile_distance =
+                    self.lower_scene_profile_distance_expr(profile, profile_point, span);
+                let coords_z = self.lower_get_component(coords, MirType::Vec3, "z", span);
+                let path_length = self.lower_call_temp(
+                    MirType::Float,
+                    SmolStr::new("length"),
+                    vec![path_value],
+                    span,
+                );
+                let half_length = self.lower_binary_temp(
+                    MirType::Float,
+                    BinaryOp::Mul,
+                    path_length,
+                    Value::Const(Literal::Float(0.5)),
+                    span,
+                );
+                let abs_z = self.lower_call_temp(
+                    MirType::Float,
+                    SmolStr::new("abs"),
+                    vec![coords_z],
+                    span,
+                );
+                let axial = self.lower_binary_temp(
+                    MirType::Float,
+                    BinaryOp::Sub,
+                    abs_z,
+                    half_length,
+                    span,
+                );
+                self.lower_profile_cap_distance_value(profile_distance, axial, span)
+            }
+            scene_ir::FieldNode::Loft { height, from, to } => {
+                let (Some(height), Some(from), Some(to)) =
+                    (height.as_ref(), from.as_ref(), to.as_ref())
+                else {
+                    return Value::Const(Literal::Float(1_000_000.0));
+                };
+                let height_value = self.lower_scene_value_expr(height, span);
+                let abs_height = self.lower_call_temp(
+                    MirType::Float,
+                    SmolStr::new("abs"),
+                    vec![height_value.clone()],
+                    span,
+                );
+                let half_height = self.lower_binary_temp(
+                    MirType::Float,
+                    BinaryOp::Mul,
+                    abs_height.clone(),
+                    Value::Const(Literal::Float(0.5)),
+                    span,
+                );
+                let safe_height = self.lower_call_temp(
+                    MirType::Float,
+                    SmolStr::new("max"),
+                    vec![abs_height, Value::Const(Literal::Float(0.0001))],
+                    span,
+                );
+                let y = self.lower_get_component(point.clone(), MirType::Vec3, "y", span);
+                let y_plus_half = self.lower_binary_temp(
+                    MirType::Float,
+                    BinaryOp::Add,
+                    y.clone(),
+                    half_height.clone(),
+                    span,
+                );
+                let unclamped_t = self.lower_binary_temp(
+                    MirType::Float,
+                    BinaryOp::Div,
+                    y_plus_half,
+                    safe_height,
+                    span,
+                );
+                let clamped = self.lower_call_temp(
+                    MirType::Float,
+                    SmolStr::new("clamp"),
+                    vec![
+                        unclamped_t,
+                        Value::Const(Literal::Float(0.0)),
+                        Value::Const(Literal::Float(1.0)),
+                    ],
+                    span,
+                );
+                let point_x = self.lower_get_component(point.clone(), MirType::Vec3, "x", span);
+                let point_z = self.lower_get_component(point, MirType::Vec3, "z", span);
+                let profile_point = self.lower_vec2_value(point_x, point_z, span);
+                let from_distance =
+                    self.lower_scene_profile_distance_expr(from, profile_point.clone(), span);
+                let to_distance =
+                    self.lower_scene_profile_distance_expr(to, profile_point, span);
+                let mixed = self.lower_call_temp(
+                    MirType::Float,
+                    SmolStr::new("mix"),
+                    vec![from_distance, to_distance, clamped],
+                    span,
+                );
+                let abs_y = self.lower_call_temp(
+                    MirType::Float,
+                    SmolStr::new("abs"),
+                    vec![y],
+                    span,
+                );
+                let cap = self.lower_binary_temp(
+                    MirType::Float,
+                    BinaryOp::Sub,
+                    abs_y,
+                    half_height,
+                    span,
+                );
+                self.lower_profile_cap_distance_value(mixed, cap, span)
+            }
+            scene_ir::FieldNode::OpaqueLeaf => self.lower_field_distance_call(field, point, span),
+        }
+    }
+
     pub(crate) fn lower_field_local_normal_call(
         &mut self,
         field: &SmolStr,
@@ -5183,16 +5453,7 @@ impl FunctionLowerer {
         span: TextRange,
     ) -> Value {
         let Some(scene) = self.field_scene(field).cloned() else {
-            return self.lower_call_temp(
-                MirType::Vec3,
-                SmolStr::new("vec3"),
-                vec![
-                    Value::Const(Literal::Float(0.0)),
-                    Value::Const(Literal::Float(0.0)),
-                    Value::Const(Literal::Float(1.0)),
-                ],
-                span,
-            );
+            return self.lower_field_normal_call(field, point, span);
         };
         self.lower_field_local_normal_scene(field, &scene.root, point, span)
     }
@@ -5401,7 +5662,7 @@ impl FunctionLowerer {
             }
             scene_ir::FieldNode::Transform { kind, param, inner } => {
                 let Some(param) = param.as_ref() else {
-                    return self.lower_field_normal_call(field, point, span);
+                    return self.lower_field_local_normal_scene(field, inner, point, span);
                 };
                 let local_point = match kind {
                     scene_ir::TransformKind::Translate => {
@@ -5444,7 +5705,7 @@ impl FunctionLowerer {
             }
             scene_ir::FieldNode::Repeat { kind, param, inner } => {
                 let Some(param) = param.as_ref() else {
-                    return self.lower_field_normal_call(field, point, span);
+                    return self.lower_field_local_normal_scene(field, inner, point, span);
                 };
                 let wrapper_value = self.lower_scene_value_expr(param, span);
                 let local_point = match kind {
@@ -5481,29 +5742,47 @@ impl FunctionLowerer {
                 };
                 self.lower_field_local_normal_scene(field, inner, local_point, span)
             }
-            scene_ir::FieldNode::Primitive { primitive, args } => {
-                let Some(args) = args.as_ref() else {
-                    return self.lower_field_normal_call(field, point, span);
-                };
-                let dx = self.lower_field_primitive_normal_axis_difference_scene(
-                    *primitive,
-                    args,
-                    point.clone(),
-                    [0.001, 0.0, 0.0],
+            _ => {
+                let dx_plus_point = self.lower_offset_point(point.clone(), [0.001, 0.0, 0.0], span);
+                let dx_plus =
+                    self.lower_field_local_distance_scene(field, node, dx_plus_point, span);
+                let dx_minus_point =
+                    self.lower_offset_point(point.clone(), [-0.001, 0.0, 0.0], span);
+                let dx_minus =
+                    self.lower_field_local_distance_scene(field, node, dx_minus_point, span);
+                let dx = self.lower_binary_temp(
+                    MirType::Float,
+                    BinaryOp::Sub,
+                    dx_plus,
+                    dx_minus,
                     span,
                 );
-                let dy = self.lower_field_primitive_normal_axis_difference_scene(
-                    *primitive,
-                    args,
-                    point.clone(),
-                    [0.0, 0.001, 0.0],
+                let dy_plus_point = self.lower_offset_point(point.clone(), [0.0, 0.001, 0.0], span);
+                let dy_plus =
+                    self.lower_field_local_distance_scene(field, node, dy_plus_point, span);
+                let dy_minus_point =
+                    self.lower_offset_point(point.clone(), [0.0, -0.001, 0.0], span);
+                let dy_minus =
+                    self.lower_field_local_distance_scene(field, node, dy_minus_point, span);
+                let dy = self.lower_binary_temp(
+                    MirType::Float,
+                    BinaryOp::Sub,
+                    dy_plus,
+                    dy_minus,
                     span,
                 );
-                let dz = self.lower_field_primitive_normal_axis_difference_scene(
-                    *primitive,
-                    args,
-                    point,
-                    [0.0, 0.0, 0.001],
+                let dz_plus_point = self.lower_offset_point(point.clone(), [0.0, 0.0, 0.001], span);
+                let dz_plus =
+                    self.lower_field_local_distance_scene(field, node, dz_plus_point, span);
+                let dz_minus_point =
+                    self.lower_offset_point(point, [0.0, 0.0, -0.001], span);
+                let dz_minus =
+                    self.lower_field_local_distance_scene(field, node, dz_minus_point, span);
+                let dz = self.lower_binary_temp(
+                    MirType::Float,
+                    BinaryOp::Sub,
+                    dz_plus,
+                    dz_minus,
                     span,
                 );
                 let gradient = self.lower_call_temp(
@@ -5519,7 +5798,6 @@ impl FunctionLowerer {
                     span,
                 )
             }
-            _ => self.lower_field_normal_call(field, point, span),
         }
     }
 

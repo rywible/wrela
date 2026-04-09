@@ -204,6 +204,7 @@ options:\n\
   --emit-mir-opt        emit MIR after optimization\n\
   --emit-obj=PATH       emit object file\n\
   --emit-bin=PATH       emit executable\n\
+  --query-backend=NAME  compile direct world/render queries with backend (cpu|virtual_gpu|wgsl|auto)\n\
   --integration-mode    run/build fixture mode; bypasses strict naming policy for integration executables\n\
   --poll-ms=N           poll interval for dev (default: 500)\n\
   --jobs=N              test runner parallelism (default: 1)\n\
@@ -711,6 +712,7 @@ mod tests {
         assert!(help.contains("--target=NAME"));
         assert!(help.contains("--holes-only"));
         assert!(help.contains("--allow-review-fixes"));
+        assert!(help.contains("--query-backend=NAME"));
         assert!(help.contains("--strict-naming"));
     }
 }

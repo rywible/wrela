@@ -1,34 +1,651 @@
-use crate::kernel::{KernelStructValue, KernelValue};
 use crate::kernel::interp::KernelBatchQueryTrace;
+use crate::kernel::{KernelBatchQueryPlan, KernelCaptureQueryPlan, KernelWorldQueryPlan};
+use crate::kernel::{KernelStructValue, KernelValue};
 use crate::kernel::{
-    KernelBatchQueryPlan, KernelCaptureQueryPlan, KernelWorldQueryPlan, lower_capture_query_plan,
+    KernelValidationError, validate_batch_query_plan, validate_capture_query_plan,
+    validate_world_query_plan,
 };
-use crate::query_exec::cpu::{
-    DirectQueryOps, default_hit, default_surface, medium_value,
-};
-use crate::query_exec::capture::{self, CaptureQueryBackend};
-use crate::query_exec::{QueryExecContext, QueryExecError};
+use crate::query_exec::capture::{self, CaptureQueryBackend, execute_batch_item_contract};
+use crate::query_exec::cpu::{DirectQueryOps, default_hit, default_surface, medium_value};
 use crate::query_exec::world::{
     WorldDistanceBackend, WorldMediumBackend, WorldNormalBackend, WorldQueryBackend,
     WorldRadianceBackend, WorldSurfaceBackend, WorldTraceBackend, execute_world_distance,
     execute_world_medium, execute_world_normal, execute_world_radiance, execute_world_surface,
     execute_world_trace,
 };
-use crate::query_plan::{BatchQueryKind, CaptureQueryKind, CaptureQueryPlan, WorldQueryKind};
+use crate::query_exec::{QueryExecContext, QueryExecError, QueryExecutionObservability};
+use crate::query_plan::WorldQueryKind;
+use crate::scene_ir::{
+    ShapeLeafRef, ShapeMergeProvenancePolicy, ShapeNode, ShapeProvenanceExpr,
+    ShapeSubtractProvenancePolicy,
+};
 use smol_str::SmolStr;
+
+trait QueryContractRuntime {
+    fn resolve_field_or_shape_capture(
+        &self,
+        capture: Option<&KernelValue>,
+    ) -> Result<SmolStr, QueryExecError>;
+    fn resolve_shape_capture(
+        &self,
+        capture: Option<&KernelValue>,
+    ) -> Result<SmolStr, QueryExecError>;
+    fn resolve_region_capture(
+        &self,
+        capture: Option<&KernelValue>,
+    ) -> Result<SmolStr, QueryExecError>;
+    fn validate_world_domain(
+        &self,
+        capture: &SmolStr,
+        domain: &KernelStructValue,
+        query_name: &'static str,
+    ) -> Result<i32, QueryExecError>;
+    fn resolve_world_shapes(
+        &self,
+        capture: &SmolStr,
+        detail: i32,
+    ) -> Result<Vec<SmolStr>, QueryExecError>;
+    fn world_domain_flag_enabled(
+        &self,
+        domain: &KernelStructValue,
+        kind: WorldQueryKind,
+    ) -> Result<bool, QueryExecError>;
+    fn capture_distance(
+        &self,
+        capture: &SmolStr,
+        point: [f32; 3],
+        capture_kind: crate::query_plan::CaptureKind,
+    ) -> Result<f32, QueryExecError>;
+    fn capture_normal(
+        &self,
+        capture: &SmolStr,
+        point: [f32; 3],
+        capture_kind: crate::query_plan::CaptureKind,
+    ) -> Result<[f32; 3], QueryExecError>;
+    fn eval_shape_distance(&self, shape: &SmolStr, point: [f32; 3]) -> Result<f32, QueryExecError>;
+    fn trace_shape(
+        &self,
+        shape: &SmolStr,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        max_distance: f32,
+        min_step: f32,
+        hit_epsilon: f32,
+        max_steps: i32,
+    ) -> Result<KernelValue, QueryExecError>;
+    fn surface_at(
+        &self,
+        shape: &SmolStr,
+        hit: &KernelStructValue,
+    ) -> Result<KernelValue, QueryExecError>;
+    fn radiance_at(
+        &self,
+        shape: &SmolStr,
+        point: [f32; 3],
+        direction: [f32; 3],
+    ) -> Result<KernelValue, QueryExecError>;
+    fn medium_at(&self, shape: &SmolStr, point: [f32; 3]) -> Result<KernelValue, QueryExecError>;
+    fn snapshot_observability(&self) -> QueryExecutionObservability;
+    fn note_dispatch(&self);
+    fn note_contract_validation_failure(&self);
+}
+
+#[derive(Debug, Clone)]
+struct VirtualGpuShapeWinner {
+    distance: f32,
+    feature_id: u32,
+    leaf: Option<ShapeLeafRef>,
+}
+
+struct VirtualGpuRuntime<'a> {
+    ops: DirectQueryOps<'a>,
+}
+
+impl<'a> VirtualGpuRuntime<'a> {
+    fn new(ctx: &'a QueryExecContext) -> Self {
+        Self {
+            ops: DirectQueryOps::new(ctx),
+        }
+    }
+
+    fn note_candidate_count(&self, count: u32) {
+        self.ops.note_candidate_count(count);
+    }
+
+    fn eval_shape_distance_node(
+        &self,
+        node: &ShapeNode,
+        point: [f32; 3],
+    ) -> Result<f32, QueryExecError> {
+        self.ops.note_branch_visit();
+        match node {
+            ShapeNode::Use { target } => self.eval_shape_distance(target, point),
+            ShapeNode::Leaf(leaf) => self.ops.eval_field_distance(&leaf.field, point),
+            ShapeNode::Union { items } => {
+                let mut current = 1_000_000.0f32;
+                for item in items {
+                    current = current.min(self.eval_shape_distance_node(item, point)?);
+                }
+                Ok(current)
+            }
+            ShapeNode::Intersection { items } => {
+                let mut iter = items.iter();
+                let Some(first) = iter.next() else {
+                    return Ok(1_000_000.0);
+                };
+                let mut current = self.eval_shape_distance_node(first, point)?;
+                for item in iter {
+                    current = current.max(self.eval_shape_distance_node(item, point)?);
+                }
+                Ok(current)
+            }
+            ShapeNode::Subtract { left, right } => Ok(self
+                .eval_shape_distance_node(left, point)?
+                .max(-self.eval_shape_distance_node(right, point)?)),
+        }
+    }
+
+    fn eval_shape_winner(
+        &self,
+        shape: &SmolStr,
+        point: [f32; 3],
+    ) -> Result<VirtualGpuShapeWinner, QueryExecError> {
+        let scene = self.ops.shape_scene(shape)?;
+        self.eval_shape_winner_node(shape, &scene.root, scene.provenance.as_ref(), point)
+    }
+
+    fn eval_shape_winner_node(
+        &self,
+        scene_name: &SmolStr,
+        node: &ShapeNode,
+        provenance: Option<&ShapeProvenanceExpr>,
+        point: [f32; 3],
+    ) -> Result<VirtualGpuShapeWinner, QueryExecError> {
+        self.ops.note_branch_visit();
+        match node {
+            ShapeNode::Use { target } => {
+                let scene = self.ops.shape_scene(target)?;
+                self.eval_shape_winner_node(target, &scene.root, scene.provenance.as_ref(), point)
+            }
+            ShapeNode::Leaf(leaf) => Ok(VirtualGpuShapeWinner {
+                distance: self.ops.eval_field_distance(&leaf.field, point)?,
+                feature_id: leaf.feature_id,
+                leaf: Some(ShapeLeafRef {
+                    scene: scene_name.clone(),
+                    leaf: leaf.id,
+                }),
+            }),
+            ShapeNode::Union { items } => {
+                let merge_policy = match provenance {
+                    Some(ShapeProvenanceExpr::Union { provenance, .. }) => *provenance,
+                    _ => ShapeMergeProvenancePolicy::Nearest,
+                };
+                let provenance_items = match provenance {
+                    Some(ShapeProvenanceExpr::Union { items, .. }) => Some(items.as_slice()),
+                    _ => None,
+                };
+                let mut iter = items.iter().enumerate();
+                let Some((index, first)) = iter.next() else {
+                    return Ok(VirtualGpuShapeWinner {
+                        distance: 1_000_000.0,
+                        feature_id: 0,
+                        leaf: None,
+                    });
+                };
+                let mut current = self.eval_shape_winner_node(
+                    scene_name,
+                    first,
+                    provenance_items.and_then(|items| items.get(index)),
+                    point,
+                )?;
+                for (index, item) in iter {
+                    let next = self.eval_shape_winner_node(
+                        scene_name,
+                        item,
+                        provenance_items.and_then(|items| items.get(index)),
+                        point,
+                    )?;
+                    match merge_policy {
+                        ShapeMergeProvenancePolicy::Ordered => {
+                            current.distance = current.distance.min(next.distance);
+                        }
+                        ShapeMergeProvenancePolicy::Nearest => {
+                            if next.distance < current.distance {
+                                current = next;
+                            }
+                        }
+                    }
+                }
+                Ok(current)
+            }
+            ShapeNode::Intersection { items } => {
+                let merge_policy = match provenance {
+                    Some(ShapeProvenanceExpr::Intersection { provenance, .. }) => *provenance,
+                    _ => ShapeMergeProvenancePolicy::Nearest,
+                };
+                let provenance_items = match provenance {
+                    Some(ShapeProvenanceExpr::Intersection { items, .. }) => Some(items.as_slice()),
+                    _ => None,
+                };
+                let mut iter = items.iter().enumerate();
+                let Some((index, first)) = iter.next() else {
+                    return Ok(VirtualGpuShapeWinner {
+                        distance: 1_000_000.0,
+                        feature_id: 0,
+                        leaf: None,
+                    });
+                };
+                let mut current = self.eval_shape_winner_node(
+                    scene_name,
+                    first,
+                    provenance_items.and_then(|items| items.get(index)),
+                    point,
+                )?;
+                for (index, item) in iter {
+                    let next = self.eval_shape_winner_node(
+                        scene_name,
+                        item,
+                        provenance_items.and_then(|items| items.get(index)),
+                        point,
+                    )?;
+                    match merge_policy {
+                        ShapeMergeProvenancePolicy::Ordered => {
+                            current.distance = current.distance.max(next.distance);
+                        }
+                        ShapeMergeProvenancePolicy::Nearest => {
+                            if next.distance > current.distance {
+                                current = next;
+                            }
+                        }
+                    }
+                }
+                Ok(current)
+            }
+            ShapeNode::Subtract { left, right } => {
+                let (subtract_policy, left_provenance, right_provenance) = match provenance {
+                    Some(ShapeProvenanceExpr::Subtract {
+                        provenance,
+                        left,
+                        right,
+                    }) => (*provenance, Some(left.as_ref()), Some(right.as_ref())),
+                    _ => (ShapeSubtractProvenancePolicy::Left, None, None),
+                };
+                let left = self.eval_shape_winner_node(scene_name, left, left_provenance, point)?;
+                let right =
+                    self.eval_shape_winner_node(scene_name, right, right_provenance, point)?;
+                let neg_right = -right.distance;
+                if left.distance >= neg_right {
+                    Ok(left)
+                } else {
+                    Ok(VirtualGpuShapeWinner {
+                        distance: neg_right,
+                        feature_id: match subtract_policy {
+                            ShapeSubtractProvenancePolicy::Left => left.feature_id,
+                            ShapeSubtractProvenancePolicy::Right => right.feature_id,
+                        },
+                        leaf: match subtract_policy {
+                            ShapeSubtractProvenancePolicy::Left => left.leaf,
+                            ShapeSubtractProvenancePolicy::Right => right.leaf,
+                        },
+                    })
+                }
+            }
+        }
+    }
+
+    fn eval_shape_radiance_node(
+        &self,
+        node: &ShapeNode,
+        point: [f32; 3],
+        direction: [f32; 3],
+    ) -> Result<[f32; 3], QueryExecError> {
+        match node {
+            ShapeNode::Use { target } => {
+                let scene = self.ops.shape_scene(target)?;
+                self.eval_shape_radiance_node(&scene.root, point, direction)
+            }
+            ShapeNode::Leaf(leaf) => {
+                let Some(radiance) = &leaf.radiance else {
+                    return Ok([0.0, 0.0, 0.0]);
+                };
+                let local_frame = self.ops.eval_field_local_frame(&leaf.field, point)?;
+                let value = self.ops.execute_portable_function(
+                    radiance,
+                    vec![
+                        KernelValue::Vec3(local_frame.point),
+                        KernelValue::Vec3(direction),
+                        KernelValue::U32(leaf.feature_id),
+                    ],
+                )?;
+                match value {
+                    KernelValue::Vec3(value) => Ok(value),
+                    other => Err(QueryExecError::TypeMismatch {
+                        expected: "Vec3".to_string(),
+                        found: format!("{other:?}"),
+                    }),
+                }
+            }
+            ShapeNode::Union { items } | ShapeNode::Intersection { items } => {
+                let mut total = [0.0, 0.0, 0.0];
+                for item in items {
+                    let next = self.eval_shape_radiance_node(item, point, direction)?;
+                    total = [total[0] + next[0], total[1] + next[1], total[2] + next[2]];
+                }
+                Ok(total)
+            }
+            ShapeNode::Subtract { left, right } => {
+                let left = self.eval_shape_radiance_node(left, point, direction)?;
+                let right = self.eval_shape_radiance_node(right, point, direction)?;
+                Ok([left[0] + right[0], left[1] + right[1], left[2] + right[2]])
+            }
+        }
+    }
+
+    fn eval_shape_medium_node(
+        &self,
+        node: &ShapeNode,
+        point: [f32; 3],
+    ) -> Result<KernelValue, QueryExecError> {
+        match node {
+            ShapeNode::Use { target } => {
+                let scene = self.ops.shape_scene(target)?;
+                self.eval_shape_medium_node(&scene.root, point)
+            }
+            ShapeNode::Leaf(leaf) => {
+                let Some(volume) = &leaf.volume else {
+                    return Ok(crate::query_exec::cpu::default_medium());
+                };
+                let local_frame = self.ops.eval_field_local_frame(&leaf.field, point)?;
+                let local_surface_distance = self
+                    .ops
+                    .eval_field_node(local_frame.node, local_frame.point)?;
+                self.ops.execute_portable_function(
+                    volume,
+                    vec![
+                        KernelValue::Vec3(local_frame.point),
+                        KernelValue::F32(local_surface_distance),
+                    ],
+                )
+            }
+            ShapeNode::Union { items } | ShapeNode::Intersection { items } => {
+                let mut total = crate::query_exec::cpu::default_medium();
+                for item in items {
+                    total = crate::query_exec::cpu::combine_medium_values(
+                        total,
+                        self.eval_shape_medium_node(item, point)?,
+                    )?;
+                }
+                Ok(total)
+            }
+            ShapeNode::Subtract { left, right } => crate::query_exec::cpu::combine_medium_values(
+                self.eval_shape_medium_node(left, point)?,
+                self.eval_shape_medium_node(right, point)?,
+            ),
+        }
+    }
+}
+
+impl QueryContractRuntime for VirtualGpuRuntime<'_> {
+    fn resolve_field_or_shape_capture(
+        &self,
+        capture: Option<&KernelValue>,
+    ) -> Result<SmolStr, QueryExecError> {
+        self.ops.resolve_field_or_shape_capture(capture)
+    }
+
+    fn resolve_shape_capture(
+        &self,
+        capture: Option<&KernelValue>,
+    ) -> Result<SmolStr, QueryExecError> {
+        self.ops.resolve_shape_capture(capture)
+    }
+
+    fn resolve_region_capture(
+        &self,
+        capture: Option<&KernelValue>,
+    ) -> Result<SmolStr, QueryExecError> {
+        self.ops.resolve_region_capture(capture)
+    }
+
+    fn validate_world_domain(
+        &self,
+        capture: &SmolStr,
+        domain: &KernelStructValue,
+        query_name: &'static str,
+    ) -> Result<i32, QueryExecError> {
+        self.ops.validate_world_domain(capture, domain, query_name)
+    }
+
+    fn resolve_world_shapes(
+        &self,
+        capture: &SmolStr,
+        detail: i32,
+    ) -> Result<Vec<SmolStr>, QueryExecError> {
+        self.ops.resolve_world_shapes(capture, detail)
+    }
+
+    fn world_domain_flag_enabled(
+        &self,
+        domain: &KernelStructValue,
+        kind: WorldQueryKind,
+    ) -> Result<bool, QueryExecError> {
+        self.ops.world_domain_flag_enabled(domain, kind)
+    }
+
+    fn capture_distance(
+        &self,
+        capture: &SmolStr,
+        point: [f32; 3],
+        capture_kind: crate::query_plan::CaptureKind,
+    ) -> Result<f32, QueryExecError> {
+        match capture_kind {
+            crate::query_plan::CaptureKind::Field => self.ops.eval_field_distance(capture, point),
+            crate::query_plan::CaptureKind::Shape => self.eval_shape_distance(capture, point),
+            crate::query_plan::CaptureKind::Region => Err(QueryExecError::Unsupported {
+                message: "region captures are only valid for world queries".to_string(),
+            }),
+        }
+    }
+
+    fn capture_normal(
+        &self,
+        capture: &SmolStr,
+        point: [f32; 3],
+        capture_kind: crate::query_plan::CaptureKind,
+    ) -> Result<[f32; 3], QueryExecError> {
+        match capture_kind {
+            crate::query_plan::CaptureKind::Field => self.ops.eval_field_normal(capture, point),
+            crate::query_plan::CaptureKind::Shape => {
+                let eps = 0.001f32;
+                let dx = self.eval_shape_distance(capture, [point[0] + eps, point[1], point[2]])?
+                    - self.eval_shape_distance(capture, [point[0] - eps, point[1], point[2]])?;
+                let dy = self.eval_shape_distance(capture, [point[0], point[1] + eps, point[2]])?
+                    - self.eval_shape_distance(capture, [point[0], point[1] - eps, point[2]])?;
+                let dz = self.eval_shape_distance(capture, [point[0], point[1], point[2] + eps])?
+                    - self.eval_shape_distance(capture, [point[0], point[1], point[2] - eps])?;
+                Ok(crate::query_exec::cpu::normalize3([dx, dy, dz]))
+            }
+            crate::query_plan::CaptureKind::Region => Err(QueryExecError::Unsupported {
+                message: "region captures are only valid for world queries".to_string(),
+            }),
+        }
+    }
+
+    fn eval_shape_distance(&self, shape: &SmolStr, point: [f32; 3]) -> Result<f32, QueryExecError> {
+        let scene = self.ops.shape_scene(shape)?;
+        self.eval_shape_distance_node(&scene.root, point)
+    }
+
+    fn trace_shape(
+        &self,
+        shape: &SmolStr,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        max_distance: f32,
+        min_step: f32,
+        hit_epsilon: f32,
+        max_steps: i32,
+    ) -> Result<KernelValue, QueryExecError> {
+        let mut travel = 0.0f32;
+        let mut steps = 0i32;
+        while steps < max_steps && travel <= max_distance {
+            self.ops.note_trace_step();
+            let point = [
+                origin[0] + direction[0] * travel,
+                origin[1] + direction[1] * travel,
+                origin[2] + direction[2] * travel,
+            ];
+            let distance = self.eval_shape_distance(shape, point)?;
+            if distance <= hit_epsilon {
+                let normal =
+                    self.capture_normal(shape, point, crate::query_plan::CaptureKind::Shape)?;
+                let winner = self.eval_shape_winner(shape, point)?;
+                let feature_id = winner.feature_id;
+                let (payload, local_position, local_normal, instance_id, repeat_id) = winner
+                    .leaf
+                    .as_ref()
+                    .and_then(|leaf_ref| {
+                        self.ops
+                            .context()
+                            .shape_leaf(&leaf_ref.scene, leaf_ref.leaf)
+                            .map(|leaf| (leaf_ref, leaf))
+                    })
+                    .map(|(_, leaf)| {
+                        let local_frame = self.ops.eval_field_local_frame(&leaf.field, point)?;
+                        let local_normal = self.ops.eval_field_local_normal(&leaf.field, point)?;
+                        let payload = self
+                            .ops
+                            .eval_payload_body(&leaf.payload)
+                            .unwrap_or_else(|_| crate::query_exec::cpu::default_payload());
+                        Ok::<_, QueryExecError>((
+                            payload,
+                            local_frame.point,
+                            local_normal,
+                            local_frame.instance_id,
+                            local_frame.repeat_id,
+                        ))
+                    })
+                    .transpose()?
+                    .unwrap_or_else(|| {
+                        (
+                            crate::query_exec::cpu::default_payload(),
+                            point,
+                            normal,
+                            0,
+                            0,
+                        )
+                    });
+                return Ok(crate::query_exec::cpu::hit_value(
+                    true,
+                    travel,
+                    point,
+                    normal,
+                    local_position,
+                    local_normal,
+                    steps,
+                    feature_id,
+                    instance_id,
+                    repeat_id,
+                    crate::query_exec::stable_shape_capture_id(shape),
+                    payload,
+                ));
+            }
+            travel += distance.max(min_step);
+            steps += 1;
+        }
+        Ok(default_hit(origin))
+    }
+
+    fn surface_at(
+        &self,
+        shape: &SmolStr,
+        hit: &KernelStructValue,
+    ) -> Result<KernelValue, QueryExecError> {
+        let feature_id = expect_struct_u32(hit, "feature_id")?;
+        let Some(leaf) = self
+            .ops
+            .context()
+            .shape_leaf_ref(shape, feature_id)
+            .and_then(|leaf_ref| {
+                self.ops
+                    .context()
+                    .shape_leaf(&leaf_ref.scene, leaf_ref.leaf)
+            })
+        else {
+            return Ok(default_surface());
+        };
+        self.ops
+            .execute_portable_function(&leaf.material, vec![KernelValue::Struct(hit.clone())])
+    }
+
+    fn radiance_at(
+        &self,
+        shape: &SmolStr,
+        point: [f32; 3],
+        direction: [f32; 3],
+    ) -> Result<KernelValue, QueryExecError> {
+        let scene = self.ops.shape_scene(shape)?;
+        Ok(KernelValue::Vec3(self.eval_shape_radiance_node(
+            &scene.root,
+            point,
+            direction,
+        )?))
+    }
+
+    fn medium_at(&self, shape: &SmolStr, point: [f32; 3]) -> Result<KernelValue, QueryExecError> {
+        let scene = self.ops.shape_scene(shape)?;
+        self.eval_shape_medium_node(&scene.root, point)
+    }
+
+    fn snapshot_observability(&self) -> QueryExecutionObservability {
+        self.ops.snapshot_observability()
+    }
+
+    fn note_dispatch(&self) {
+        self.ops.note_dispatch();
+    }
+
+    fn note_contract_validation_failure(&self) {
+        self.ops.note_contract_validation_failure();
+    }
+}
+
+fn validation_error(label: &str, errors: Vec<KernelValidationError>) -> QueryExecError {
+    let messages = errors
+        .into_iter()
+        .map(|error| error.message)
+        .collect::<Vec<_>>()
+        .join("; ");
+    QueryExecError::Unsupported {
+        message: format!("virtual GPU contract validation failed for {label}: {messages}"),
+    }
+}
 
 pub(crate) fn execute_capture_query(
     ctx: &QueryExecContext,
     plan: &KernelCaptureQueryPlan,
     args: &[KernelValue],
 ) -> Result<KernelValue, QueryExecError> {
-    capture::execute_capture_query(
-        &VirtualGpuCaptureBackend {
-            direct: DirectQueryOps::new(ctx),
-        },
+    execute_capture_query_with_observability(ctx, plan, args).map(|(value, _)| value)
+}
+
+pub(crate) fn execute_capture_query_with_observability(
+    ctx: &QueryExecContext,
+    plan: &KernelCaptureQueryPlan,
+    args: &[KernelValue],
+) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
+    let runtime = VirtualGpuRuntime::new(ctx);
+    runtime.note_dispatch();
+    if let Err(errors) = validate_capture_query_plan(plan) {
+        runtime.note_contract_validation_failure();
+        return Err(validation_error("capture query", errors));
+    }
+    let value = capture::execute_capture_query(
+        &VirtualGpuCaptureBackend { runtime: &runtime },
         plan,
         args,
-    )
+    )?;
+    Ok((value, runtime.snapshot_observability()))
 }
 
 pub(crate) fn execute_world_query(
@@ -36,21 +653,36 @@ pub(crate) fn execute_world_query(
     plan: &KernelWorldQueryPlan,
     args: &[KernelValue],
 ) -> Result<KernelValue, QueryExecError> {
-    VirtualGpuDirectQueryEvaluator::new(ctx).execute_world_query(plan, args)
+    execute_world_query_with_observability(ctx, plan, args).map(|(value, _)| value)
+}
+
+pub(crate) fn execute_world_query_with_observability(
+    ctx: &QueryExecContext,
+    plan: &KernelWorldQueryPlan,
+    args: &[KernelValue],
+) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
+    let evaluator = VirtualGpuDirectQueryEvaluator::new(ctx);
+    evaluator.runtime.note_dispatch();
+    if let Err(errors) = validate_world_query_plan(plan) {
+        evaluator.runtime.note_contract_validation_failure();
+        return Err(validation_error("world query", errors));
+    }
+    let value = evaluator.execute_world_query(plan, args)?;
+    Ok((value, evaluator.runtime.snapshot_observability()))
 }
 
 struct VirtualGpuDirectQueryEvaluator<'a> {
-    direct: DirectQueryOps<'a>,
+    runtime: Box<dyn QueryContractRuntime + 'a>,
 }
 
 struct VirtualGpuCaptureBackend<'a> {
-    direct: DirectQueryOps<'a>,
+    runtime: &'a dyn QueryContractRuntime,
 }
 
 impl<'a> VirtualGpuDirectQueryEvaluator<'a> {
     fn new(ctx: &'a QueryExecContext) -> Self {
         Self {
-            direct: DirectQueryOps::new(ctx),
+            runtime: Box::new(VirtualGpuRuntime::new(ctx)),
         }
     }
 
@@ -59,16 +691,18 @@ impl<'a> VirtualGpuDirectQueryEvaluator<'a> {
         plan: &KernelWorldQueryPlan,
         args: &[KernelValue],
     ) -> Result<KernelValue, QueryExecError> {
-        let capture = self.direct.resolve_region_capture(args.first())?;
+        let capture = self.runtime.resolve_region_capture(args.first())?;
         let domain = expect_struct_ref_arg(args.get(1), "SceneDomain")?;
-        let detail = self
-            .direct
-            .validate_world_domain(&capture, domain, crate::query_exec::world::world_query_semantics(plan.kind).query_name)?;
+        let detail = self.runtime.validate_world_domain(
+            &capture,
+            domain,
+            crate::query_exec::world::world_query_semantics(plan.kind).query_name,
+        )?;
         match plan.kind {
             WorldQueryKind::Distance => {
                 let point = expect_vec3_arg(args.get(2), "point")?;
                 let mut backend = VirtualGpuWorldDistanceBackend {
-                    direct: &self.direct,
+                    runtime: self.runtime.as_ref(),
                     capture: &capture,
                     detail,
                     point,
@@ -80,7 +714,7 @@ impl<'a> VirtualGpuDirectQueryEvaluator<'a> {
             WorldQueryKind::Normal => {
                 let point = expect_vec3_arg(args.get(2), "point")?;
                 let mut backend = VirtualGpuWorldNormalBackend {
-                    direct: &self.direct,
+                    runtime: self.runtime.as_ref(),
                     capture: &capture,
                     detail,
                     point,
@@ -95,7 +729,7 @@ impl<'a> VirtualGpuDirectQueryEvaluator<'a> {
                 let hit_epsilon = expect_f32_arg(args.get(6), "hit_epsilon")?;
                 let max_steps = expect_i32(args.get(7), "max_steps")?;
                 let mut backend = VirtualGpuWorldTraceBackend {
-                    direct: &self.direct,
+                    runtime: self.runtime.as_ref(),
                     capture: &capture,
                     detail,
                     origin,
@@ -113,7 +747,7 @@ impl<'a> VirtualGpuDirectQueryEvaluator<'a> {
             WorldQueryKind::Surface => {
                 let hit = expect_struct_ref_arg(args.get(2), "Hit3")?;
                 let mut backend = VirtualGpuWorldSurfaceBackend {
-                    direct: &self.direct,
+                    runtime: self.runtime.as_ref(),
                     capture: &capture,
                     detail,
                     domain,
@@ -128,7 +762,7 @@ impl<'a> VirtualGpuDirectQueryEvaluator<'a> {
                 let point = expect_vec3_arg(args.get(2), "point")?;
                 let direction = expect_vec3_arg(args.get(3), "direction")?;
                 let mut backend = VirtualGpuWorldRadianceBackend {
-                    direct: &self.direct,
+                    runtime: self.runtime.as_ref(),
                     capture: &capture,
                     detail,
                     domain,
@@ -142,7 +776,7 @@ impl<'a> VirtualGpuDirectQueryEvaluator<'a> {
             WorldQueryKind::Medium => {
                 let point = expect_vec3_arg(args.get(2), "point")?;
                 let mut backend = VirtualGpuWorldMediumBackend {
-                    direct: &self.direct,
+                    runtime: self.runtime.as_ref(),
                     capture: &capture,
                     detail,
                     domain,
@@ -167,14 +801,14 @@ impl CaptureQueryBackend for VirtualGpuCaptureBackend<'_> {
         &self,
         capture: Option<&KernelValue>,
     ) -> Result<SmolStr, QueryExecError> {
-        self.direct.resolve_field_or_shape_capture(capture)
+        self.runtime.resolve_field_or_shape_capture(capture)
     }
 
     fn resolve_shape_capture(
         &self,
         capture: Option<&KernelValue>,
     ) -> Result<SmolStr, QueryExecError> {
-        self.direct.resolve_shape_capture(capture)
+        self.runtime.resolve_shape_capture(capture)
     }
 
     fn capture_distance(
@@ -183,7 +817,7 @@ impl CaptureQueryBackend for VirtualGpuCaptureBackend<'_> {
         point: [f32; 3],
         capture_kind: crate::query_plan::CaptureKind,
     ) -> Result<f32, QueryExecError> {
-        self.direct.eval_capture_distance(capture, point, capture_kind)
+        self.runtime.capture_distance(capture, point, capture_kind)
     }
 
     fn capture_normal(
@@ -192,7 +826,7 @@ impl CaptureQueryBackend for VirtualGpuCaptureBackend<'_> {
         point: [f32; 3],
         capture_kind: crate::query_plan::CaptureKind,
     ) -> Result<[f32; 3], QueryExecError> {
-        self.direct.eval_capture_normal(capture, point, capture_kind)
+        self.runtime.capture_normal(capture, point, capture_kind)
     }
 
     fn trace_shape(
@@ -205,7 +839,7 @@ impl CaptureQueryBackend for VirtualGpuCaptureBackend<'_> {
         hit_epsilon: f32,
         max_steps: i32,
     ) -> Result<KernelValue, QueryExecError> {
-        self.direct.trace_shape(
+        self.runtime.trace_shape(
             shape,
             origin,
             direction,
@@ -221,7 +855,7 @@ impl CaptureQueryBackend for VirtualGpuCaptureBackend<'_> {
         shape: &SmolStr,
         hit: &KernelStructValue,
     ) -> Result<KernelValue, QueryExecError> {
-        self.direct.surface_at(shape, hit)
+        self.runtime.surface_at(shape, hit)
     }
 
     fn radiance_at(
@@ -230,20 +864,16 @@ impl CaptureQueryBackend for VirtualGpuCaptureBackend<'_> {
         point: [f32; 3],
         direction: [f32; 3],
     ) -> Result<KernelValue, QueryExecError> {
-        self.direct.radiance_at(shape, point, direction)
+        self.runtime.radiance_at(shape, point, direction)
     }
 
-    fn medium_at(
-        &self,
-        shape: &SmolStr,
-        point: [f32; 3],
-    ) -> Result<KernelValue, QueryExecError> {
-        self.direct.medium_at(shape, point)
+    fn medium_at(&self, shape: &SmolStr, point: [f32; 3]) -> Result<KernelValue, QueryExecError> {
+        self.runtime.medium_at(shape, point)
     }
 }
 
 fn vgpu_backend_with_world_shapes<B, F>(
-    direct: &DirectQueryOps<'_>,
+    runtime: &dyn QueryContractRuntime,
     capture: &SmolStr,
     detail: i32,
     backend: &mut B,
@@ -252,12 +882,12 @@ fn vgpu_backend_with_world_shapes<B, F>(
 where
     F: FnMut(&mut B, &[SmolStr]) -> Result<(), QueryExecError>,
 {
-    let shapes = direct.resolve_world_shapes(capture, detail)?;
+    let shapes = runtime.resolve_world_shapes(capture, detail)?;
     emit_shapes(backend, &shapes)
 }
 
 fn vgpu_backend_with_domain_flag<B, F>(
-    direct: &DirectQueryOps<'_>,
+    runtime: &dyn QueryContractRuntime,
     domain: &KernelStructValue,
     kind: WorldQueryKind,
     backend: &mut B,
@@ -266,20 +896,20 @@ fn vgpu_backend_with_domain_flag<B, F>(
 where
     F: FnOnce(&mut B) -> Result<(), QueryExecError>,
 {
-    if direct.world_domain_flag_enabled(domain, kind)? {
+    if runtime.world_domain_flag_enabled(domain, kind)? {
         enabled(backend)?;
     }
     Ok(())
 }
 
 fn vgpu_world_distance(
-    direct: &DirectQueryOps<'_>,
+    runtime: &dyn QueryContractRuntime,
     capture: &SmolStr,
     detail: i32,
     point: [f32; 3],
 ) -> Result<f32, QueryExecError> {
     let mut backend = VirtualGpuWorldDistanceBackend {
-        direct,
+        runtime,
         capture,
         detail,
         point,
@@ -289,15 +919,15 @@ fn vgpu_world_distance(
     Ok(backend.result)
 }
 
-struct VirtualGpuWorldDistanceBackend<'a, 'ctx> {
-    direct: &'a DirectQueryOps<'ctx>,
+struct VirtualGpuWorldDistanceBackend<'a> {
+    runtime: &'a dyn QueryContractRuntime,
     capture: &'a SmolStr,
     detail: i32,
     point: [f32; 3],
     result: f32,
 }
 
-impl WorldQueryBackend for VirtualGpuWorldDistanceBackend<'_, '_> {
+impl WorldQueryBackend for VirtualGpuWorldDistanceBackend<'_> {
     type Error = QueryExecError;
 
     fn with_world_shapes<F>(
@@ -309,7 +939,7 @@ impl WorldQueryBackend for VirtualGpuWorldDistanceBackend<'_, '_> {
     where
         F: FnMut(&mut Self, &[SmolStr]) -> Result<(), Self::Error>,
     {
-        vgpu_backend_with_world_shapes(self.direct, self.capture, self.detail, self, emit_shapes)
+        vgpu_backend_with_world_shapes(self.runtime, self.capture, self.detail, self, emit_shapes)
     }
 
     fn with_domain_flag<F>(&mut self, _kind: WorldQueryKind, enabled: F) -> Result<(), Self::Error>
@@ -320,7 +950,7 @@ impl WorldQueryBackend for VirtualGpuWorldDistanceBackend<'_, '_> {
     }
 }
 
-impl WorldDistanceBackend for VirtualGpuWorldDistanceBackend<'_, '_> {
+impl WorldDistanceBackend for VirtualGpuWorldDistanceBackend<'_> {
     type Error = QueryExecError;
 
     fn init_world_distance(&mut self) -> Result<(), Self::Error> {
@@ -329,19 +959,21 @@ impl WorldDistanceBackend for VirtualGpuWorldDistanceBackend<'_, '_> {
     }
 
     fn accumulate_world_distance_shape(&mut self, shape: &SmolStr) -> Result<(), Self::Error> {
-        self.result = self.result.min(self.direct.eval_shape_distance(shape, self.point)?);
+        self.result = self
+            .result
+            .min(self.runtime.eval_shape_distance(shape, self.point)?);
         Ok(())
     }
 }
 
-struct VirtualGpuWorldNormalBackend<'a, 'ctx> {
-    direct: &'a DirectQueryOps<'ctx>,
+struct VirtualGpuWorldNormalBackend<'a> {
+    runtime: &'a dyn QueryContractRuntime,
     capture: &'a SmolStr,
     detail: i32,
     point: [f32; 3],
 }
 
-impl WorldNormalBackend for VirtualGpuWorldNormalBackend<'_, '_> {
+impl WorldNormalBackend for VirtualGpuWorldNormalBackend<'_> {
     type Error = QueryExecError;
     type Point = [f32; 3];
     type Distance = f32;
@@ -363,7 +995,7 @@ impl WorldNormalBackend for VirtualGpuWorldNormalBackend<'_, '_> {
     }
 
     fn sample_world_distance(&mut self, point: Self::Point) -> Result<Self::Distance, Self::Error> {
-        vgpu_world_distance(self.direct, self.capture, self.detail, point)
+        vgpu_world_distance(self.runtime, self.capture, self.detail, point)
     }
 
     fn subtract_distance(
@@ -393,8 +1025,8 @@ impl WorldNormalBackend for VirtualGpuWorldNormalBackend<'_, '_> {
     }
 }
 
-struct VirtualGpuWorldTraceBackend<'a, 'ctx> {
-    direct: &'a DirectQueryOps<'ctx>,
+struct VirtualGpuWorldTraceBackend<'a> {
+    runtime: &'a dyn QueryContractRuntime,
     capture: &'a SmolStr,
     detail: i32,
     origin: [f32; 3],
@@ -407,7 +1039,7 @@ struct VirtualGpuWorldTraceBackend<'a, 'ctx> {
     best_distance: f32,
 }
 
-impl WorldQueryBackend for VirtualGpuWorldTraceBackend<'_, '_> {
+impl WorldQueryBackend for VirtualGpuWorldTraceBackend<'_> {
     type Error = QueryExecError;
 
     fn with_world_shapes<F>(
@@ -419,7 +1051,7 @@ impl WorldQueryBackend for VirtualGpuWorldTraceBackend<'_, '_> {
     where
         F: FnMut(&mut Self, &[SmolStr]) -> Result<(), Self::Error>,
     {
-        vgpu_backend_with_world_shapes(self.direct, self.capture, self.detail, self, emit_shapes)
+        vgpu_backend_with_world_shapes(self.runtime, self.capture, self.detail, self, emit_shapes)
     }
 
     fn with_domain_flag<F>(&mut self, _kind: WorldQueryKind, enabled: F) -> Result<(), Self::Error>
@@ -430,7 +1062,7 @@ impl WorldQueryBackend for VirtualGpuWorldTraceBackend<'_, '_> {
     }
 }
 
-impl WorldTraceBackend for VirtualGpuWorldTraceBackend<'_, '_> {
+impl WorldTraceBackend for VirtualGpuWorldTraceBackend<'_> {
     type Error = QueryExecError;
 
     fn init_world_trace(&mut self) -> Result<(), Self::Error> {
@@ -440,7 +1072,7 @@ impl WorldTraceBackend for VirtualGpuWorldTraceBackend<'_, '_> {
     }
 
     fn consider_world_trace_shape(&mut self, shape: &SmolStr) -> Result<(), Self::Error> {
-        let hit = self.direct.trace_shape(
+        let hit = self.runtime.trace_shape(
             shape,
             self.origin,
             self.direction,
@@ -461,8 +1093,8 @@ impl WorldTraceBackend for VirtualGpuWorldTraceBackend<'_, '_> {
     }
 }
 
-struct VirtualGpuWorldSurfaceBackend<'a, 'ctx> {
-    direct: &'a DirectQueryOps<'ctx>,
+struct VirtualGpuWorldSurfaceBackend<'a> {
+    runtime: &'a dyn QueryContractRuntime,
     capture: &'a SmolStr,
     detail: i32,
     domain: &'a KernelStructValue,
@@ -471,7 +1103,7 @@ struct VirtualGpuWorldSurfaceBackend<'a, 'ctx> {
     result: KernelValue,
 }
 
-impl WorldQueryBackend for VirtualGpuWorldSurfaceBackend<'_, '_> {
+impl WorldQueryBackend for VirtualGpuWorldSurfaceBackend<'_> {
     type Error = QueryExecError;
 
     fn with_world_shapes<F>(
@@ -483,18 +1115,18 @@ impl WorldQueryBackend for VirtualGpuWorldSurfaceBackend<'_, '_> {
     where
         F: FnMut(&mut Self, &[SmolStr]) -> Result<(), Self::Error>,
     {
-        vgpu_backend_with_world_shapes(self.direct, self.capture, self.detail, self, emit_shapes)
+        vgpu_backend_with_world_shapes(self.runtime, self.capture, self.detail, self, emit_shapes)
     }
 
     fn with_domain_flag<F>(&mut self, kind: WorldQueryKind, enabled: F) -> Result<(), Self::Error>
     where
         F: FnOnce(&mut Self) -> Result<(), Self::Error>,
     {
-        vgpu_backend_with_domain_flag(self.direct, self.domain, kind, self, enabled)
+        vgpu_backend_with_domain_flag(self.runtime, self.domain, kind, self, enabled)
     }
 }
 
-impl WorldSurfaceBackend for VirtualGpuWorldSurfaceBackend<'_, '_> {
+impl WorldSurfaceBackend for VirtualGpuWorldSurfaceBackend<'_> {
     type Error = QueryExecError;
 
     fn init_world_surface(&mut self) -> Result<(), Self::Error> {
@@ -504,14 +1136,14 @@ impl WorldSurfaceBackend for VirtualGpuWorldSurfaceBackend<'_, '_> {
 
     fn consider_world_surface_shape(&mut self, shape: &SmolStr) -> Result<(), Self::Error> {
         if crate::query_exec::stable_shape_capture_id(shape) == self.root_shape_id {
-            self.result = self.direct.surface_at(shape, &self.hit)?;
+            self.result = self.runtime.surface_at(shape, &self.hit)?;
         }
         Ok(())
     }
 }
 
-struct VirtualGpuWorldRadianceBackend<'a, 'ctx> {
-    direct: &'a DirectQueryOps<'ctx>,
+struct VirtualGpuWorldRadianceBackend<'a> {
+    runtime: &'a dyn QueryContractRuntime,
     capture: &'a SmolStr,
     detail: i32,
     domain: &'a KernelStructValue,
@@ -520,7 +1152,7 @@ struct VirtualGpuWorldRadianceBackend<'a, 'ctx> {
     result: [f32; 3],
 }
 
-impl WorldQueryBackend for VirtualGpuWorldRadianceBackend<'_, '_> {
+impl WorldQueryBackend for VirtualGpuWorldRadianceBackend<'_> {
     type Error = QueryExecError;
 
     fn with_world_shapes<F>(
@@ -532,18 +1164,18 @@ impl WorldQueryBackend for VirtualGpuWorldRadianceBackend<'_, '_> {
     where
         F: FnMut(&mut Self, &[SmolStr]) -> Result<(), Self::Error>,
     {
-        vgpu_backend_with_world_shapes(self.direct, self.capture, self.detail, self, emit_shapes)
+        vgpu_backend_with_world_shapes(self.runtime, self.capture, self.detail, self, emit_shapes)
     }
 
     fn with_domain_flag<F>(&mut self, kind: WorldQueryKind, enabled: F) -> Result<(), Self::Error>
     where
         F: FnOnce(&mut Self) -> Result<(), Self::Error>,
     {
-        vgpu_backend_with_domain_flag(self.direct, self.domain, kind, self, enabled)
+        vgpu_backend_with_domain_flag(self.runtime, self.domain, kind, self, enabled)
     }
 }
 
-impl WorldRadianceBackend for VirtualGpuWorldRadianceBackend<'_, '_> {
+impl WorldRadianceBackend for VirtualGpuWorldRadianceBackend<'_> {
     type Error = QueryExecError;
 
     fn init_world_radiance(&mut self) -> Result<(), Self::Error> {
@@ -552,7 +1184,9 @@ impl WorldRadianceBackend for VirtualGpuWorldRadianceBackend<'_, '_> {
     }
 
     fn accumulate_world_radiance_shape(&mut self, shape: &SmolStr) -> Result<(), Self::Error> {
-        let KernelValue::Vec3(next) = self.direct.radiance_at(shape, self.point, self.direction)?
+        let KernelValue::Vec3(next) =
+            self.runtime
+                .radiance_at(shape, self.point, self.direction)?
         else {
             return Ok(());
         };
@@ -565,8 +1199,8 @@ impl WorldRadianceBackend for VirtualGpuWorldRadianceBackend<'_, '_> {
     }
 }
 
-struct VirtualGpuWorldMediumBackend<'a, 'ctx> {
-    direct: &'a DirectQueryOps<'ctx>,
+struct VirtualGpuWorldMediumBackend<'a> {
+    runtime: &'a dyn QueryContractRuntime,
     capture: &'a SmolStr,
     detail: i32,
     domain: &'a KernelStructValue,
@@ -576,7 +1210,7 @@ struct VirtualGpuWorldMediumBackend<'a, 'ctx> {
     anisotropy: f32,
 }
 
-impl WorldQueryBackend for VirtualGpuWorldMediumBackend<'_, '_> {
+impl WorldQueryBackend for VirtualGpuWorldMediumBackend<'_> {
     type Error = QueryExecError;
 
     fn with_world_shapes<F>(
@@ -588,18 +1222,18 @@ impl WorldQueryBackend for VirtualGpuWorldMediumBackend<'_, '_> {
     where
         F: FnMut(&mut Self, &[SmolStr]) -> Result<(), Self::Error>,
     {
-        vgpu_backend_with_world_shapes(self.direct, self.capture, self.detail, self, emit_shapes)
+        vgpu_backend_with_world_shapes(self.runtime, self.capture, self.detail, self, emit_shapes)
     }
 
     fn with_domain_flag<F>(&mut self, kind: WorldQueryKind, enabled: F) -> Result<(), Self::Error>
     where
         F: FnOnce(&mut Self) -> Result<(), Self::Error>,
     {
-        vgpu_backend_with_domain_flag(self.direct, self.domain, kind, self, enabled)
+        vgpu_backend_with_domain_flag(self.runtime, self.domain, kind, self, enabled)
     }
 }
 
-impl WorldMediumBackend for VirtualGpuWorldMediumBackend<'_, '_> {
+impl WorldMediumBackend for VirtualGpuWorldMediumBackend<'_> {
     type Error = QueryExecError;
 
     fn init_world_medium(&mut self) -> Result<(), Self::Error> {
@@ -610,17 +1244,25 @@ impl WorldMediumBackend for VirtualGpuWorldMediumBackend<'_, '_> {
     }
 
     fn accumulate_world_medium_shape(&mut self, shape: &SmolStr) -> Result<(), Self::Error> {
-        let KernelValue::Struct(next) = self.direct.medium_at(shape, self.point)? else {
+        let KernelValue::Struct(next) = self.runtime.medium_at(shape, self.point)? else {
             return Ok(());
         };
-        self.density += expect_struct_f32(&next, "density")?;
+        let next_density = expect_struct_f32(&next, "density")?;
         let next_emission = expect_struct_vec3_from_struct(&next, "emission")?;
-        self.anisotropy += expect_struct_f32(&next, "anisotropy")?;
+        let next_anisotropy = expect_struct_f32(&next, "anisotropy")?;
+        let density = self.density + next_density;
+        let anisotropy = if density > 0.0 {
+            (self.anisotropy * self.density + next_anisotropy * next_density) / density
+        } else {
+            0.0
+        };
+        self.density = density;
         self.emission = [
             self.emission[0] + next_emission[0],
             self.emission[1] + next_emission[1],
             self.emission[2] + next_emission[2],
         ];
+        self.anisotropy = anisotropy;
         Ok(())
     }
 }
@@ -631,6 +1273,21 @@ pub(crate) fn execute_batch_query(
     args: &[KernelValue],
     trace: &KernelBatchQueryTrace,
 ) -> Result<KernelValue, QueryExecError> {
+    execute_batch_query_with_observability(ctx, plan, args, trace).map(|(value, _)| value)
+}
+
+pub(crate) fn execute_batch_query_with_observability(
+    ctx: &QueryExecContext,
+    plan: &KernelBatchQueryPlan,
+    args: &[KernelValue],
+    trace: &KernelBatchQueryTrace,
+) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
+    let runtime = VirtualGpuRuntime::new(ctx);
+    runtime.note_dispatch();
+    if let Err(errors) = validate_batch_query_plan(plan) {
+        runtime.note_contract_validation_failure();
+        return Err(validation_error("batch query", errors));
+    }
     let items = match args.get(1) {
         Some(KernelValue::Array(items)) => items,
         Some(other) => {
@@ -645,6 +1302,7 @@ pub(crate) fn execute_batch_query(
             });
         }
     };
+    runtime.note_candidate_count(items.len() as u32);
 
     let mut out = vec![KernelValue::Nothing; items.len()];
     for iteration in &trace.iterations {
@@ -657,101 +1315,14 @@ pub(crate) fn execute_batch_query(
                 ),
             });
         };
-        out[item_index] = execute_batch_item(ctx, plan, args.first(), item)?;
+        out[item_index] = execute_batch_item_contract(
+            &VirtualGpuCaptureBackend { runtime: &runtime },
+            &plan.item_contract,
+            args.first(),
+            item,
+        )?;
     }
-    Ok(KernelValue::Array(out))
-}
-
-fn execute_batch_item(
-    ctx: &QueryExecContext,
-    plan: &KernelBatchQueryPlan,
-    capture: Option<&KernelValue>,
-    item: &KernelValue,
-) -> Result<KernelValue, QueryExecError> {
-    match plan.kind {
-        BatchQueryKind::Distance => {
-            let point = expect_struct_vec3(item, "PointQuery", "point")?;
-            let result = execute_capture_query(
-                ctx,
-                &capture_plan(CaptureQueryKind::Distance, plan)?,
-                &[required_capture(capture)?, KernelValue::Vec3(point)],
-            )?;
-            Ok(distance_result(expect_f32(&result, "distance")?))
-        }
-        BatchQueryKind::Normal => {
-            let point = expect_struct_vec3(item, "PointQuery", "point")?;
-            let result = execute_capture_query(
-                ctx,
-                &capture_plan(CaptureQueryKind::Normal, plan)?,
-                &[required_capture(capture)?, KernelValue::Vec3(point)],
-            )?;
-            Ok(normal_result(expect_vec3(&result, "normal")?))
-        }
-        BatchQueryKind::Trace => {
-            let ray = expect_struct(item, "RayQuery")?;
-            execute_capture_query(
-                ctx,
-                &capture_plan(CaptureQueryKind::Trace, plan)?,
-                &[
-                    required_capture(capture)?,
-                    field_value(ray, "origin")?.clone(),
-                    field_value(ray, "direction")?.clone(),
-                    field_value(ray, "max_distance")?.clone(),
-                    field_value(ray, "min_step")?.clone(),
-                    field_value(ray, "hit_epsilon")?.clone(),
-                    field_value(ray, "max_steps")?.clone(),
-                ],
-            )
-        }
-        BatchQueryKind::Surface => execute_capture_query(
-            ctx,
-            &capture_plan(CaptureQueryKind::Surface, plan)?,
-            &[required_capture(capture)?, item.clone()],
-        ),
-        BatchQueryKind::Occluded => {
-            let ray = expect_struct(item, "RayQuery")?;
-            let hit = execute_capture_query(
-                ctx,
-                &capture_plan(CaptureQueryKind::Trace, plan)?,
-                &[
-                    required_capture(capture)?,
-                    field_value(ray, "origin")?.clone(),
-                    field_value(ray, "direction")?.clone(),
-                    field_value(ray, "max_distance")?.clone(),
-                    field_value(ray, "min_step")?.clone(),
-                    field_value(ray, "hit_epsilon")?.clone(),
-                    field_value(ray, "max_steps")?.clone(),
-                ],
-            )?;
-            let hit = expect_struct(&hit, "Hit3")?;
-            Ok(occlusion_result(
-                expect_struct_bool(hit, "hit")?,
-                expect_struct_f32(hit, "distance")?,
-                expect_struct_i32(hit, "steps")?,
-            ))
-        }
-    }
-}
-
-fn capture_plan(
-    kind: CaptureQueryKind,
-    plan: &KernelBatchQueryPlan,
-) -> Result<crate::kernel::KernelCaptureQueryPlan, QueryExecError> {
-    let capture_plan =
-        CaptureQueryPlan::for_query(kind, plan.capture_kind, None).map_err(|message| {
-            QueryExecError::Unsupported {
-                message: message.to_string(),
-            }
-        })?;
-    Ok(lower_capture_query_plan(&capture_plan))
-}
-
-fn required_capture(capture: Option<&KernelValue>) -> Result<KernelValue, QueryExecError> {
-    capture
-        .cloned()
-        .ok_or(QueryExecError::MissingCaptureTarget {
-            kind: "batch query capture",
-        })
+    Ok((KernelValue::Array(out), runtime.snapshot_observability()))
 }
 
 fn expect_struct_ref_arg<'a>(

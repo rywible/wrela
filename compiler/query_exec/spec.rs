@@ -66,6 +66,7 @@ pub(crate) struct WorldPointQuerySpec {
     pub(crate) domain: hir::Idx<Expr>,
     pub(crate) point: hir::Idx<Expr>,
     pub(crate) direction: Option<hir::Idx<Expr>>,
+    pub(crate) backend: Option<hir::Idx<Expr>>,
 }
 
 #[derive(Clone, Copy)]
@@ -85,6 +86,7 @@ pub(crate) struct WorldShapeQuerySpec {
     pub(crate) hit_epsilon: Option<hir::Idx<Expr>>,
     pub(crate) max_steps: Option<hir::Idx<Expr>>,
     pub(crate) hit: Option<hir::Idx<Expr>>,
+    pub(crate) backend: Option<hir::Idx<Expr>>,
 }
 
 #[derive(Clone, Copy)]

@@ -46,8 +46,12 @@ pub(crate) fn lower_shape_distance_helper(
 
     let entry = lowerer.new_block();
     lowerer.current_block = entry;
-    let distance = lowerer.lower_shape_distance_expr_in_mode(
-        &shape.graph.as_ref().expect("shape graph").root,
+    let shape_scene = lowerer
+        .shape_scene(&shape.name)
+        .cloned()
+        .expect("shape scene");
+    let distance = lowerer.lower_shape_distance_scene_in_mode(
+        &shape_scene.root,
         Value::Local(point),
         span,
         mode,
@@ -140,9 +144,12 @@ pub(crate) fn lower_shape_trace_helper(
         vec![],
         span,
     );
-    let trace = shape.graph.as_ref().map(|graph| graph.trace);
-    match trace.map(|trace| trace.class) {
-        Some(FieldClass::Exact) => {
+    let shape_scene = lowerer
+        .shape_scene(&shape.name)
+        .cloned()
+        .expect("shape scene");
+    match shape_scene.analysis.trace_safety {
+        scene_ir::SceneTraceSafety::Exact => {
             let _ = lowerer.lower_call_temp(
                 MirType::Nil,
                 SmolStr::new("__wr_metrics_scene_trace_exact_path"),
@@ -185,43 +192,8 @@ pub(crate) fn lower_shape_trace_helper(
     let total = lowerer.new_local(SmolStr::new("$shape_total"), true, MirType::Float);
     lowerer.assign_use(Place::Local(total), Value::Const(Literal::Float(0.0)), span);
 
-    let has_hit = lowerer.new_local(SmolStr::new("$shape_hit"), true, MirType::Boolean);
-    lowerer.assign_use(
-        Place::Local(has_hit),
-        Value::Const(Literal::Boolean(false)),
-        span,
-    );
-
     let position = lowerer.new_local(SmolStr::new("$shape_position"), true, MirType::Vec3);
     lowerer.assign_use(Place::Local(position), Value::Local(origin), span);
-
-    let normal_default = lowerer.lower_call_temp(
-        MirType::Vec3,
-        SmolStr::new("vec3"),
-        vec![
-            Value::Const(Literal::Float(0.0)),
-            Value::Const(Literal::Float(0.0)),
-            Value::Const(Literal::Float(1.0)),
-        ],
-        span,
-    );
-    let normal = lowerer.new_local(SmolStr::new("$shape_normal"), true, MirType::Vec3);
-    lowerer.assign_use(Place::Local(normal), normal_default, span);
-
-    let payload = lowerer.new_local(
-        SmolStr::new("$shape_payload"),
-        true,
-        MirType::Named(SmolStr::new("Payload")),
-    );
-    let default_payload = lowerer.build_default_payload(span);
-    lowerer.assign_use(Place::Local(payload), default_payload, span);
-
-    let feature_id = lowerer.new_local(SmolStr::new("$shape_feature_id"), true, MirType::Integer);
-    lowerer.assign_use(
-        Place::Local(feature_id),
-        Value::Const(Literal::Integer(0)),
-        span,
-    );
 
     let step_count = lowerer.new_local(SmolStr::new("$shape_steps"), true, MirType::Integer);
     lowerer.assign_use(
@@ -244,22 +216,9 @@ pub(crate) fn lower_shape_trace_helper(
     lowerer.current_block = loop_check;
     let within_distance = lowerer.lower_binary_temp(
         MirType::Boolean,
-        BinaryOp::Lt,
+        BinaryOp::Le,
         Value::Local(total),
         Value::Local(max_distance),
-        span,
-    );
-    let not_hit = lowerer.lower_unary_temp(
-        MirType::Boolean,
-        hir::UnaryOp::Not,
-        Value::Local(has_hit),
-        span,
-    );
-    let cond_a = lowerer.lower_binary_temp(
-        MirType::Boolean,
-        BinaryOp::And,
-        within_distance,
-        not_hit,
         span,
     );
     let within_steps = lowerer.lower_binary_temp(
@@ -269,8 +228,13 @@ pub(crate) fn lower_shape_trace_helper(
         Value::Local(max_steps),
         span,
     );
-    let cond =
-        lowerer.lower_binary_temp(MirType::Boolean, BinaryOp::And, cond_a, within_steps, span);
+    let cond = lowerer.lower_binary_temp(
+        MirType::Boolean,
+        BinaryOp::And,
+        within_distance,
+        within_steps,
+        span,
+    );
     lowerer.set_terminator(Terminator::Branch {
         cond,
         then_target: loop_body,
@@ -302,7 +266,7 @@ pub(crate) fn lower_shape_trace_helper(
     );
     let is_hit = lowerer.lower_binary_temp(
         MirType::Boolean,
-        BinaryOp::Lt,
+        BinaryOp::Le,
         sampled_distance.clone(),
         Value::Local(hit_epsilon),
         span,
@@ -315,46 +279,76 @@ pub(crate) fn lower_shape_trace_helper(
     });
 
     lowerer.current_block = hit_block;
-    lowerer.assign_use(
-        Place::Local(has_hit),
-        Value::Const(Literal::Boolean(true)),
-        span,
-    );
-    let shape_graph = shape.graph.as_ref().expect("shape graph");
-    let (_, payload_value, feature_id_value) = lowerer.lower_shape_payload_selection(
-        &shape_graph.root,
-        shape_graph.provenance.as_ref(),
+    let (_, payload_value, feature_id_value) = lowerer.lower_shape_payload_selection_scene(
+        &shape_scene.root,
+        shape_scene.provenance.as_ref(),
         Value::Local(position),
         Value::Local(hit_epsilon),
-        &mut vec![shape.name.clone()],
         span,
     );
-    lowerer.assign_use(Place::Local(payload), payload_value, span);
-    lowerer.assign_use(Place::Local(feature_id), feature_id_value, span);
     let normal_value =
         lowerer.lower_shape_normal_call_with_mode(&shape.name, Value::Local(position), span, mode);
-    lowerer.assign_use(Place::Local(normal), normal_value, span);
-    lowerer.set_terminator(Terminator::Jump {
-        target: continue_block,
+    let (_, local_position_value, local_normal_value, instance_id_value, repeat_id_value) = lowerer
+        .lower_shape_hit_context_selection_scene(
+            &shape_scene.root,
+            feature_id_value.clone(),
+            Value::Local(position),
+            span,
+        );
+    let mut hit_class = lowerer.synthetic_class_target_info("Hit3");
+    FunctionLowerer::set_class_field_value(
+        &mut hit_class,
+        "hit",
+        Value::Const(Literal::Boolean(true)),
+    );
+    FunctionLowerer::set_class_field_value(&mut hit_class, "distance", Value::Local(total));
+    FunctionLowerer::set_class_field_value(&mut hit_class, "position", Value::Local(position));
+    FunctionLowerer::set_class_field_value(&mut hit_class, "normal", normal_value.clone());
+    FunctionLowerer::set_class_field_value(&mut hit_class, "local_position", local_position_value);
+    FunctionLowerer::set_class_field_value(&mut hit_class, "local_normal", local_normal_value);
+    let shading_frame =
+        lowerer.lower_stable_surface_frame(Value::Local(position), normal_value, span);
+    FunctionLowerer::set_class_field_value(&mut hit_class, "shading_frame", shading_frame);
+    FunctionLowerer::set_class_field_value(&mut hit_class, "steps", Value::Local(step_count));
+    FunctionLowerer::set_class_field_value(&mut hit_class, "feature_id", feature_id_value);
+    FunctionLowerer::set_class_field_value(&mut hit_class, "instance_id", instance_id_value);
+    FunctionLowerer::set_class_field_value(&mut hit_class, "repeat_id", repeat_id_value);
+    FunctionLowerer::set_class_field_value(
+        &mut hit_class,
+        "root_shape_id",
+        Value::Const(Literal::Integer(stable_shape_capture_id(&shape.name))),
+    );
+    FunctionLowerer::set_class_field_value(&mut hit_class, "payload", payload_value);
+    let hit_value = lowerer.build_class_instance(&hit_class, span);
+    let field_samples_after = lowerer.lower_call_temp(
+        MirType::Integer,
+        SmolStr::new("__wr_metrics_get"),
+        vec![field_sample_metric_id.clone()],
+        span,
+    );
+    let field_sample_delta = lowerer.lower_binary_temp(
+        MirType::Integer,
+        BinaryOp::Sub,
+        field_samples_after,
+        Value::Local(field_samples_before),
+        span,
+    );
+    let _ = lowerer.lower_call_temp(
+        MirType::Nil,
+        SmolStr::new("__wr_metrics_scene_trace_hit"),
+        vec![Value::Local(step_count), field_sample_delta],
+        span,
+    );
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(hit_value),
         span,
     });
 
     lowerer.current_block = advance_block;
-    let step_scale = match trace.map(|trace| trace.class) {
-        Some(FieldClass::Exact) => Value::Const(Literal::Float(1.0)),
-        _ => Value::Const(Literal::Float(0.75)),
-    };
-    let scaled_step = lowerer.lower_binary_temp(
-        MirType::Float,
-        BinaryOp::Mul,
-        sampled_distance,
-        step_scale,
-        span,
-    );
     let step = lowerer.lower_call_temp(
         MirType::Float,
         SmolStr::new("max"),
-        vec![scaled_step, Value::Local(min_step)],
+        vec![sampled_distance, Value::Local(min_step)],
         span,
     );
     let next_total = lowerer.lower_binary_temp(
@@ -365,12 +359,6 @@ pub(crate) fn lower_shape_trace_helper(
         span,
     );
     lowerer.assign_use(Place::Local(total), next_total, span);
-    lowerer.set_terminator(Terminator::Jump {
-        target: continue_block,
-        span,
-    });
-
-    lowerer.current_block = continue_block;
     let next_steps = lowerer.lower_binary_temp(
         MirType::Integer,
         BinaryOp::Add,
@@ -380,81 +368,20 @@ pub(crate) fn lower_shape_trace_helper(
     );
     lowerer.assign_use(Place::Local(step_count), next_steps, span);
     lowerer.set_terminator(Terminator::Jump {
+        target: continue_block,
+        span,
+    });
+
+    lowerer.current_block = continue_block;
+    lowerer.set_terminator(Terminator::Jump {
         target: loop_check,
         span,
     });
 
     lowerer.current_block = end_block;
-    let (_, local_position_value, local_normal_value, instance_id_value, repeat_id_value) = lowerer
-        .lower_shape_hit_context_selection(
-            &shape_graph.root,
-            Value::Local(feature_id),
-            Value::Local(position),
-            &mut vec![shape.name.clone()],
-            span,
-        );
-    let mut hit_class = lowerer.synthetic_class_target_info("Hit3");
-    FunctionLowerer::set_class_field_value(&mut hit_class, "hit", Value::Local(has_hit));
-    FunctionLowerer::set_class_field_value(&mut hit_class, "distance", Value::Local(total));
-    FunctionLowerer::set_class_field_value(&mut hit_class, "position", Value::Local(position));
-    FunctionLowerer::set_class_field_value(&mut hit_class, "normal", Value::Local(normal));
-    FunctionLowerer::set_class_field_value(&mut hit_class, "local_position", local_position_value);
-    FunctionLowerer::set_class_field_value(&mut hit_class, "local_normal", local_normal_value);
-    let shading_frame =
-        lowerer.lower_stable_surface_frame(Value::Local(position), Value::Local(normal), span);
-    FunctionLowerer::set_class_field_value(&mut hit_class, "shading_frame", shading_frame);
-    FunctionLowerer::set_class_field_value(&mut hit_class, "steps", Value::Local(step_count));
-    FunctionLowerer::set_class_field_value(&mut hit_class, "feature_id", Value::Local(feature_id));
-    FunctionLowerer::set_class_field_value(&mut hit_class, "instance_id", instance_id_value);
-    FunctionLowerer::set_class_field_value(&mut hit_class, "repeat_id", repeat_id_value);
-    FunctionLowerer::set_class_field_value(
-        &mut hit_class,
-        "root_shape_id",
-        Value::Const(Literal::Integer(stable_shape_capture_id(&shape.name))),
-    );
-    FunctionLowerer::set_class_field_value(&mut hit_class, "payload", Value::Local(payload));
-    let hit_value = lowerer.build_class_instance(&hit_class, span);
-    let field_samples_after = lowerer.lower_call_temp(
-        MirType::Integer,
-        SmolStr::new("__wr_metrics_get"),
-        vec![field_sample_metric_id],
-        span,
-    );
-    let field_sample_delta = lowerer.lower_binary_temp(
-        MirType::Integer,
-        BinaryOp::Sub,
-        field_samples_after,
-        Value::Local(field_samples_before),
-        span,
-    );
-    let record_hit_block = lowerer.new_block();
-    let skip_hit_block = lowerer.new_block();
-    let return_block = lowerer.new_block();
-    lowerer.set_terminator(Terminator::Branch {
-        cond: Value::Local(has_hit),
-        then_target: record_hit_block,
-        else_target: skip_hit_block,
-        span,
-    });
-    lowerer.current_block = record_hit_block;
-    let _ = lowerer.lower_call_temp(
-        MirType::Nil,
-        SmolStr::new("__wr_metrics_scene_trace_hit"),
-        vec![Value::Local(step_count), field_sample_delta],
-        span,
-    );
-    lowerer.set_terminator(Terminator::Jump {
-        target: return_block,
-        span,
-    });
-    lowerer.current_block = skip_hit_block;
-    lowerer.set_terminator(Terminator::Jump {
-        target: return_block,
-        span,
-    });
-    lowerer.current_block = return_block;
+    let miss_value = lowerer.build_default_hit(Value::Local(origin), span);
     lowerer.set_terminator(Terminator::Return {
-        value: Some(hit_value),
+        value: Some(miss_value),
         span,
     });
 
@@ -552,11 +479,14 @@ pub(crate) fn lower_shape_surface_helper(
         },
         span,
     });
-    let (_, surface) = lowerer.lower_shape_surface_selection(
-        &shape.graph.as_ref().expect("shape graph").root,
+    let shape_scene = lowerer
+        .shape_scene(&shape.name)
+        .cloned()
+        .expect("shape scene");
+    let (_, surface) = lowerer.lower_shape_surface_selection_scene(
+        &shape_scene.root,
         Value::Temp(feature_id_temp),
         Value::Local(hit),
-        &mut vec![shape.name.clone()],
         span,
     );
     lowerer.set_terminator(Terminator::Return {
@@ -983,11 +913,13 @@ pub(crate) fn lower_scene_distance_capture_helper(
         dispatch_block = next_block;
     }
 
-    for (_, shape) in module
+    let shapes_with_scene: Vec<SmolStr> = module
         .shapes
         .iter()
-        .filter(|(_, shape)| shape.graph.is_some())
-    {
+        .map(|(_, shape)| shape.name.clone())
+        .filter(|shape_name| lowerer.shape_scene(shape_name).is_some())
+        .collect();
+    for shape_name in shapes_with_scene {
         let match_block = lowerer.new_block();
         let next_block = lowerer.new_block();
         lowerer.current_block = dispatch_block;
@@ -995,7 +927,7 @@ pub(crate) fn lower_scene_distance_capture_helper(
             MirType::Boolean,
             BinaryOp::Eq,
             Value::Temp(scene_id),
-            Value::Const(Literal::Integer(stable_shape_scene_capture_id(&shape.name))),
+            Value::Const(Literal::Integer(stable_shape_scene_capture_id(&shape_name))),
             span,
         );
         lowerer.set_terminator(Terminator::Branch {
@@ -1005,9 +937,9 @@ pub(crate) fn lower_scene_distance_capture_helper(
             span,
         });
         lowerer.current_block = match_block;
-        let mode = lowerer.shape_capture_execution_mode(CaptureQueryKind::Distance, &shape.name);
+        let mode = lowerer.shape_capture_execution_mode(CaptureQueryKind::Distance, &shape_name);
         let distance = lowerer.lower_shape_distance_call_with_mode(
-            &shape.name,
+            &shape_name,
             Value::Local(point),
             span,
             mode,
@@ -1189,11 +1121,13 @@ pub(crate) fn lower_scene_normal_capture_helper(
         dispatch_block = next_block;
     }
 
-    for (_, shape) in module
+    let shapes_with_scene: Vec<SmolStr> = module
         .shapes
         .iter()
-        .filter(|(_, shape)| shape.graph.is_some())
-    {
+        .map(|(_, shape)| shape.name.clone())
+        .filter(|shape_name| lowerer.shape_scene(shape_name).is_some())
+        .collect();
+    for shape_name in shapes_with_scene {
         let match_block = lowerer.new_block();
         let next_block = lowerer.new_block();
         lowerer.current_block = dispatch_block;
@@ -1201,7 +1135,7 @@ pub(crate) fn lower_scene_normal_capture_helper(
             MirType::Boolean,
             BinaryOp::Eq,
             Value::Temp(scene_id),
-            Value::Const(Literal::Integer(stable_shape_scene_capture_id(&shape.name))),
+            Value::Const(Literal::Integer(stable_shape_scene_capture_id(&shape_name))),
             span,
         );
         lowerer.set_terminator(Terminator::Branch {
@@ -1211,9 +1145,9 @@ pub(crate) fn lower_scene_normal_capture_helper(
             span,
         });
         lowerer.current_block = match_block;
-        let mode = lowerer.shape_capture_execution_mode(CaptureQueryKind::Normal, &shape.name);
+        let mode = lowerer.shape_capture_execution_mode(CaptureQueryKind::Normal, &shape_name);
         let normal =
-            lowerer.lower_shape_normal_call_with_mode(&shape.name, Value::Local(point), span, mode);
+            lowerer.lower_shape_normal_call_with_mode(&shape_name, Value::Local(point), span, mode);
         lowerer.assign_use(Place::Local(result), normal, span);
         lowerer.set_terminator(Terminator::Jump {
             target: return_block,
@@ -1394,13 +1328,18 @@ pub(crate) fn lower_scene_trace_capture_helper(
     lowerer.assign_use(Place::Local(result), default_hit, span);
     let return_block = lowerer.new_block();
 
-    let shapes: Vec<&hir::Shape> = module.shapes.iter().map(|(_, shape)| shape).collect();
     let mut dispatch_block = lowerer.new_block();
     lowerer.set_terminator(Terminator::Jump {
         target: dispatch_block,
         span,
     });
-    for shape in shapes.iter().copied().filter(|shape| shape.graph.is_some()) {
+    let shapes_with_scene: Vec<SmolStr> = module
+        .shapes
+        .iter()
+        .map(|(_, shape)| shape.name.clone())
+        .filter(|shape_name| lowerer.shape_scene(shape_name).is_some())
+        .collect();
+    for shape_name in shapes_with_scene {
         let match_block = lowerer.new_block();
         let next_block = lowerer.new_block();
         lowerer.current_block = dispatch_block;
@@ -1408,7 +1347,7 @@ pub(crate) fn lower_scene_trace_capture_helper(
             MirType::Boolean,
             BinaryOp::Eq,
             Value::Temp(root_feature_id),
-            Value::Const(Literal::Integer(stable_shape_capture_id(&shape.name))),
+            Value::Const(Literal::Integer(stable_shape_capture_id(&shape_name))),
             span,
         );
         lowerer.set_terminator(Terminator::Branch {
@@ -1418,9 +1357,9 @@ pub(crate) fn lower_scene_trace_capture_helper(
             span,
         });
         lowerer.current_block = match_block;
-        let mode = lowerer.shape_capture_execution_mode(CaptureQueryKind::Trace, &shape.name);
+        let mode = lowerer.shape_capture_execution_mode(CaptureQueryKind::Trace, &shape_name);
         let hit = lowerer.lower_shape_trace_call_with_mode(
-            &shape.name,
+            &shape_name,
             Value::Local(origin),
             Value::Local(direction),
             Value::Local(max_distance),
@@ -1614,13 +1553,18 @@ pub(crate) fn lower_scene_surface_capture_helper(
     lowerer.assign_use(Place::Local(result), default_surface, span);
     let return_block = lowerer.new_block();
 
-    let shapes: Vec<&hir::Shape> = module.shapes.iter().map(|(_, shape)| shape).collect();
+    let shapes_with_scene: Vec<SmolStr> = module
+        .shapes
+        .iter()
+        .map(|(_, shape)| shape.name.clone())
+        .filter(|shape_name| lowerer.shape_scene(shape_name).is_some())
+        .collect();
     let mut dispatch_block = lowerer.new_block();
     lowerer.set_terminator(Terminator::Jump {
         target: dispatch_block,
         span,
     });
-    for shape in shapes.iter().copied().filter(|shape| shape.graph.is_some()) {
+    for shape_name in shapes_with_scene {
         let match_block = lowerer.new_block();
         let next_block = lowerer.new_block();
         lowerer.current_block = dispatch_block;
@@ -1628,7 +1572,7 @@ pub(crate) fn lower_scene_surface_capture_helper(
             MirType::Boolean,
             BinaryOp::Eq,
             Value::Temp(root_feature_id),
-            Value::Const(Literal::Integer(stable_shape_capture_id(&shape.name))),
+            Value::Const(Literal::Integer(stable_shape_capture_id(&shape_name))),
             span,
         );
         lowerer.set_terminator(Terminator::Branch {
@@ -1640,7 +1584,7 @@ pub(crate) fn lower_scene_surface_capture_helper(
         lowerer.current_block = match_block;
         let surface = lowerer.lower_call_temp(
             MirType::Named(SmolStr::new("Surface")),
-            SmolStr::new(format!("__wr_shape_surface_{}", shape.name)),
+            SmolStr::new(format!("__wr_shape_surface_{}", shape_name)),
             vec![Value::Local(hit)],
             span,
         );
@@ -1838,13 +1782,18 @@ pub(crate) fn lower_scene_radiance_capture_helper(
     lowerer.assign_use(Place::Local(result), default_radiance, span);
     let return_block = lowerer.new_block();
 
-    let shapes: Vec<&hir::Shape> = module.shapes.iter().map(|(_, shape)| shape).collect();
+    let shapes_with_scene: Vec<SmolStr> = module
+        .shapes
+        .iter()
+        .map(|(_, shape)| shape.name.clone())
+        .filter(|shape_name| lowerer.shape_scene(shape_name).is_some())
+        .collect();
     let mut dispatch_block = lowerer.new_block();
     lowerer.set_terminator(Terminator::Jump {
         target: dispatch_block,
         span,
     });
-    for shape in shapes.iter().copied().filter(|shape| shape.graph.is_some()) {
+    for shape_name in shapes_with_scene {
         let match_block = lowerer.new_block();
         let next_block = lowerer.new_block();
         lowerer.current_block = dispatch_block;
@@ -1852,7 +1801,7 @@ pub(crate) fn lower_scene_radiance_capture_helper(
             MirType::Boolean,
             BinaryOp::Eq,
             Value::Temp(root_feature_id),
-            Value::Const(Literal::Integer(stable_shape_capture_id(&shape.name))),
+            Value::Const(Literal::Integer(stable_shape_capture_id(&shape_name))),
             span,
         );
         lowerer.set_terminator(Terminator::Branch {
@@ -1862,12 +1811,14 @@ pub(crate) fn lower_scene_radiance_capture_helper(
             span,
         });
         lowerer.current_block = match_block;
-        let shape_graph = shape.graph.as_ref().expect("shape graph");
-        let radiance = lowerer.lower_shape_radiance_participation(
-            &shape_graph.root,
+        let shape_scene = lowerer
+            .shape_scene(&shape_name)
+            .cloned()
+            .expect("shape scene");
+        let radiance = lowerer.lower_shape_radiance_participation_scene(
+            &shape_scene.root,
             Value::Local(point),
             Value::Local(direction),
-            &mut vec![shape.name.clone()],
             span,
         );
         lowerer.assign_use(Place::Local(result), radiance, span);
@@ -2038,13 +1989,18 @@ pub(crate) fn lower_scene_medium_capture_helper(
     lowerer.assign_use(Place::Local(result), default_medium, span);
     let return_block = lowerer.new_block();
 
-    let shapes: Vec<&hir::Shape> = module.shapes.iter().map(|(_, shape)| shape).collect();
     let mut dispatch_block = lowerer.new_block();
     lowerer.set_terminator(Terminator::Jump {
         target: dispatch_block,
         span,
     });
-    for shape in shapes.iter().copied().filter(|shape| shape.graph.is_some()) {
+    let shapes_with_scene: Vec<SmolStr> = module
+        .shapes
+        .iter()
+        .map(|(_, shape)| shape.name.clone())
+        .filter(|shape_name| lowerer.shape_scene(shape_name).is_some())
+        .collect();
+    for shape_name in shapes_with_scene {
         let match_block = lowerer.new_block();
         let next_block = lowerer.new_block();
         lowerer.current_block = dispatch_block;
@@ -2052,7 +2008,7 @@ pub(crate) fn lower_scene_medium_capture_helper(
             MirType::Boolean,
             BinaryOp::Eq,
             Value::Temp(root_feature_id),
-            Value::Const(Literal::Integer(stable_shape_capture_id(&shape.name))),
+            Value::Const(Literal::Integer(stable_shape_capture_id(&shape_name))),
             span,
         );
         lowerer.set_terminator(Terminator::Branch {
@@ -2062,11 +2018,13 @@ pub(crate) fn lower_scene_medium_capture_helper(
             span,
         });
         lowerer.current_block = match_block;
-        let shape_graph = shape.graph.as_ref().expect("shape graph");
-        let medium = lowerer.lower_shape_medium_participation(
-            &shape_graph.root,
+        let shape_scene = lowerer
+            .shape_scene(&shape_name)
+            .cloned()
+            .expect("shape scene");
+        let medium = lowerer.lower_shape_medium_participation_scene(
+            &shape_scene.root,
             Value::Local(point),
-            &mut vec![shape.name.clone()],
             span,
         );
         lowerer.assign_use(Place::Local(result), medium, span);
@@ -2376,6 +2334,7 @@ struct MirWorldNormalBackend<'a> {
     capture: LocalId,
     domain: LocalId,
     point: LocalId,
+    backend: LocalId,
     span: TextRange,
 }
 
@@ -2440,7 +2399,12 @@ impl WorldNormalBackend for MirWorldNormalBackend<'_> {
         Ok(self.lowerer.lower_call_temp(
             MirType::Float,
             SmolStr::new("__wr_world_distance_capture"),
-            vec![Value::Local(self.capture), Value::Local(self.domain), point],
+            vec![
+                Value::Local(self.capture),
+                Value::Local(self.domain),
+                point,
+                Value::Local(self.backend),
+            ],
             self.span,
         ))
     }
@@ -2664,12 +2628,11 @@ impl WorldRadianceBackend for MirWorldRadianceBackend<'_> {
     }
 
     fn accumulate_world_radiance_shape(&mut self, shape: &SmolStr) -> Result<(), Self::Error> {
-        if let Some(graph) = self.lowerer.shape_graphs.get(shape).cloned() {
-            let radiance = self.lowerer.lower_shape_radiance_participation(
-                &graph.root,
+        if let Some(scene) = self.lowerer.shape_scene(shape).cloned() {
+            let radiance = self.lowerer.lower_shape_radiance_participation_scene(
+                &scene.root,
                 Value::Local(self.point),
                 Value::Local(self.direction),
-                &mut vec![shape.clone()],
                 self.span,
             );
             let sum = self.lowerer.lower_binary_temp(
@@ -2701,11 +2664,10 @@ impl WorldMediumBackend for MirWorldMediumBackend<'_> {
     }
 
     fn accumulate_world_medium_shape(&mut self, shape: &SmolStr) -> Result<(), Self::Error> {
-        if let Some(graph) = self.lowerer.shape_graphs.get(shape).cloned() {
-            let medium = self.lowerer.lower_shape_medium_participation(
-                &graph.root,
+        if let Some(scene) = self.lowerer.shape_scene(shape).cloned() {
+            let medium = self.lowerer.lower_shape_medium_participation_scene(
+                &scene.root,
                 Value::Local(self.point),
-                &mut vec![shape.clone()],
                 self.span,
             );
             let merged = self.lowerer.lower_additive_medium_combine(
@@ -2718,6 +2680,323 @@ impl WorldMediumBackend for MirWorldMediumBackend<'_> {
         }
         Ok(())
     }
+}
+
+fn lower_wgsl_bridge_failure(
+    lowerer: &mut FunctionLowerer,
+    message: SmolStr,
+    span: TextRange,
+) {
+    let crash_temp = lowerer.new_temp(MirType::Unknown);
+    lowerer.push_stmt(MirStmt::Assign {
+        place: Place::Temp(crash_temp),
+        value: Rvalue::Crash {
+            value: Value::Const(Literal::String(message)),
+        },
+        span,
+    });
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(Value::Temp(crash_temp)),
+        span,
+    });
+}
+
+fn world_auto_backend(default_backend: DispatchBackend) -> DispatchBackend {
+    match default_backend {
+        DispatchBackend::Wgsl => DispatchBackend::Wgsl,
+        DispatchBackend::Cpu | DispatchBackend::VirtualGpu | DispatchBackend::Auto => {
+            DispatchBackend::Cpu
+        }
+    }
+}
+
+fn batch_auto_backend(default_backend: DispatchBackend) -> DispatchBackend {
+    match default_backend {
+        DispatchBackend::Cpu => DispatchBackend::Cpu,
+        DispatchBackend::VirtualGpu => DispatchBackend::VirtualGpu,
+        DispatchBackend::Wgsl => DispatchBackend::Wgsl,
+        DispatchBackend::Auto => DispatchBackend::Cpu,
+    }
+}
+
+fn lower_runtime_u32_list(
+    lowerer: &mut FunctionLowerer,
+    debug_name: &str,
+    values: &[u32],
+    span: TextRange,
+) -> Value {
+    let local = lowerer.new_local(
+        SmolStr::new(format!("{debug_name}{}", lowerer.locals.len())),
+        true,
+        MirType::Named(SmolStr::new("List")),
+    );
+    lowerer.push_stmt(MirStmt::Assign {
+        place: Place::Local(local),
+        value: Rvalue::BuildList {
+            items: values
+                .iter()
+                .map(|value| Value::Const(Literal::Integer(i64::from(*value))))
+                .collect(),
+            alloc: AllocKind::Escaping,
+        },
+        span,
+    });
+    Value::Local(local)
+}
+
+fn lower_world_shape_index_list(
+    lowerer: &mut FunctionLowerer,
+    shapes: &[SmolStr],
+    shape_indices: &HashMap<SmolStr, u32>,
+    span: TextRange,
+) -> Value {
+    let values = shapes
+        .iter()
+        .map(|shape| {
+            *shape_indices.get(shape).unwrap_or_else(|| {
+                panic!("missing WGSL shape index for world shape '{}'", shape)
+            })
+        })
+        .collect::<Vec<_>>();
+    lower_runtime_u32_list(lowerer, "$world_shape_indices", &values, span)
+}
+
+fn lower_capture_index_lookup(
+    lowerer: &mut FunctionLowerer,
+    capture: LocalId,
+    capture_type: &str,
+    capture_field: &str,
+    capture_indices: &HashMap<SmolStr, u32>,
+    stable_capture_id: fn(&SmolStr) -> i64,
+    invalid_message: &str,
+    span: TextRange,
+) -> Value {
+    let capture_id = lowerer.lower_get_named_field(
+        Value::Local(capture),
+        capture_type,
+        capture_field,
+        MirType::Integer,
+        span,
+    );
+    let result = lowerer.new_local(
+        SmolStr::new(format!("$capture_index{}", lowerer.locals.len())),
+        true,
+        MirType::Integer,
+    );
+    let join_block = lowerer.new_block();
+    let mut dispatch_block = lowerer.new_block();
+    lowerer.set_terminator(Terminator::Jump {
+        target: dispatch_block,
+        span,
+    });
+
+    let mut cases = capture_indices
+        .iter()
+        .map(|(name, index)| (stable_capture_id(name), *index))
+        .collect::<Vec<_>>();
+    cases.sort_by_key(|(stable_id, _)| *stable_id);
+    for (stable_id, index) in cases {
+        let match_block = lowerer.new_block();
+        let next_block = lowerer.new_block();
+        lowerer.current_block = dispatch_block;
+        let matched = lowerer.lower_binary_temp(
+            MirType::Boolean,
+            BinaryOp::Eq,
+            capture_id.clone(),
+            Value::Const(Literal::Integer(stable_id)),
+            span,
+        );
+        lowerer.set_terminator(Terminator::Branch {
+            cond: matched,
+            then_target: match_block,
+            else_target: next_block,
+            span,
+        });
+
+        lowerer.current_block = match_block;
+        lowerer.assign_use(
+            Place::Local(result),
+            Value::Const(Literal::Integer(i64::from(index))),
+            span,
+        );
+        lowerer.set_terminator(Terminator::Jump {
+            target: join_block,
+            span,
+        });
+        dispatch_block = next_block;
+    }
+
+    lowerer.current_block = dispatch_block;
+    lower_wgsl_bridge_failure(lowerer, SmolStr::new(invalid_message), span);
+    lowerer.current_block = join_block;
+    Value::Local(result)
+}
+
+fn lower_world_wgsl_bridge_call(
+    lowerer: &mut FunctionLowerer,
+    result_type: MirType,
+    config: Option<&Result<NativeWgslBridgeConfig, SmolStr>>,
+    bridge_symbol: &str,
+    shapes: &[SmolStr],
+    shape_indices: &HashMap<SmolStr, u32>,
+    args: Vec<Value>,
+    span: TextRange,
+) -> Option<Value> {
+    let config = match config {
+        Some(Ok(config)) => config,
+        Some(Err(err)) => {
+            lower_wgsl_bridge_failure(lowerer, err.clone(), span);
+            return None;
+        }
+        None => {
+            lower_wgsl_bridge_failure(
+                lowerer,
+                SmolStr::new(format!("missing WGSL bridge config for {bridge_symbol}")),
+                span,
+            );
+            return None;
+        }
+    };
+    let world_shape_indices = lower_world_shape_index_list(lowerer, shapes, shape_indices, span);
+    let mut call_args = vec![
+        Value::Const(Literal::String(config.source.clone())),
+        Value::Const(Literal::Integer(config.workgroup_size)),
+        world_shape_indices,
+    ];
+    call_args.extend(args);
+    Some(lowerer.lower_call_temp(
+        result_type,
+        SmolStr::new(bridge_symbol),
+        call_args,
+        span,
+    ))
+}
+
+fn lower_batch_wgsl_bridge_call(
+    lowerer: &mut FunctionLowerer,
+    capture: LocalId,
+    items: LocalId,
+    config: Option<&Result<NativeWgslBridgeConfig, SmolStr>>,
+    bridge_symbol: &str,
+    capture_type: &str,
+    capture_field: &str,
+    capture_indices: &HashMap<SmolStr, u32>,
+    stable_capture_id: fn(&SmolStr) -> i64,
+    invalid_message: &str,
+    span: TextRange,
+) -> Option<Value> {
+    let config = match config {
+        Some(Ok(config)) => config,
+        Some(Err(err)) => {
+            lower_wgsl_bridge_failure(lowerer, err.clone(), span);
+            return None;
+        }
+        None => {
+            lower_wgsl_bridge_failure(
+                lowerer,
+                SmolStr::new(format!("missing WGSL bridge config for {bridge_symbol}")),
+                span,
+            );
+            return None;
+        }
+    };
+    let capture_index = lower_capture_index_lookup(
+        lowerer,
+        capture,
+        capture_type,
+        capture_field,
+        capture_indices,
+        stable_capture_id,
+        invalid_message,
+        span,
+    );
+    Some(lowerer.lower_call_temp(
+        MirType::Named(SmolStr::new("List")),
+        SmolStr::new(bridge_symbol),
+        vec![
+            Value::Const(Literal::String(config.source.clone())),
+            Value::Const(Literal::Integer(config.workgroup_size)),
+            capture_index,
+            Value::Local(items),
+        ],
+        span,
+    ))
+}
+
+fn lower_native_world_backend_guard(
+    lowerer: &mut FunctionLowerer,
+    backend: LocalId,
+    auto_backend: DispatchBackend,
+    cpu_block: BlockId,
+    wgsl_block: BlockId,
+    unsupported_block: BlockId,
+    span: TextRange,
+) {
+    let is_cpu = lowerer.lower_binary_temp(
+        MirType::Boolean,
+        BinaryOp::Eq,
+        Value::Local(backend),
+        Value::Const(Literal::Integer(0)),
+        span,
+    );
+    let is_auto = lowerer.lower_binary_temp(
+        MirType::Boolean,
+        BinaryOp::Eq,
+        Value::Local(backend),
+        Value::Const(Literal::Integer(3)),
+        span,
+    );
+    let is_wgsl = lowerer.lower_binary_temp(
+        MirType::Boolean,
+        BinaryOp::Eq,
+        Value::Local(backend),
+        Value::Const(Literal::Integer(2)),
+        span,
+    );
+    let auto_target = world_auto_backend(auto_backend);
+    let auto_block = lowerer.new_block();
+    let backend_check_block = lowerer.new_block();
+    lowerer.set_terminator(Terminator::Branch {
+        cond: is_auto,
+        then_target: auto_block,
+        else_target: backend_check_block,
+        span,
+    });
+
+    lowerer.current_block = auto_block;
+    lowerer.set_terminator(Terminator::Jump {
+        target: match auto_target {
+            DispatchBackend::Wgsl => wgsl_block,
+            DispatchBackend::Cpu | DispatchBackend::VirtualGpu | DispatchBackend::Auto => cpu_block,
+        },
+        span,
+    });
+
+    lowerer.current_block = backend_check_block;
+    let cpu_or_wgsl =
+        lowerer.lower_binary_temp(MirType::Boolean, BinaryOp::Or, is_cpu.clone(), is_wgsl, span);
+    let direct_block = lowerer.new_block();
+    lowerer.set_terminator(Terminator::Branch {
+        cond: cpu_or_wgsl,
+        then_target: direct_block,
+        else_target: unsupported_block,
+        span,
+    });
+
+    lowerer.current_block = direct_block;
+    lowerer.set_terminator(Terminator::Branch {
+        cond: is_cpu,
+        then_target: cpu_block,
+        else_target: wgsl_block,
+        span,
+    });
+
+    lowerer.current_block = unsupported_block;
+    lower_wgsl_bridge_failure(
+        lowerer,
+        SmolStr::new("native MIR world queries currently support only cpu, wgsl, or auto backends"),
+        span,
+    );
 }
 
 pub(crate) fn lower_world_distance_capture_helper(
@@ -2737,8 +3016,12 @@ pub(crate) fn lower_world_distance_capture_helper(
     result_functions: &HashSet<SmolStr>,
     class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
     interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
+    auto_backend: DispatchBackend,
+    wgsl_config: Option<&Result<NativeWgslBridgeConfig, SmolStr>>,
+    wgsl_shape_indices: &HashMap<SmolStr, u32>,
 ) -> MirFunction {
-    let helper_name = SmolStr::new("__wr_world_distance_capture");
+    let plan = crate::query_plan::WorldQueryPlan::for_query(WorldQueryKind::Distance);
+    let helper_name = plan.helper_name.clone();
     let semantics = world_query_semantics(WorldQueryKind::Distance);
     let span = TextRange::empty(0.into());
     let mut lowerer = FunctionLowerer::new(
@@ -2773,16 +3056,21 @@ pub(crate) fn lower_world_distance_capture_helper(
         MirType::Named(SmolStr::new("SceneDomain")),
     );
     let point = lowerer.new_local(SmolStr::new("point"), false, MirType::Vec3);
+    let backend = lowerer.new_local(SmolStr::new("backend"), false, MirType::Integer);
     for (name, local) in [
         (SmolStr::new("capture"), capture),
         (SmolStr::new("domain"), domain),
         (SmolStr::new("point"), point),
+        (SmolStr::new("backend"), backend),
     ] {
         lowerer.declare_local(name, local);
         lowerer.params.push(local);
     }
 
     let entry = lowerer.new_block();
+    let cpu_block = lowerer.new_block();
+    let wgsl_block = lowerer.new_block();
+    let unsupported_block = lowerer.new_block();
     lowerer.current_block = entry;
     let (capture_scene_id, detail) =
         lower_world_domain_validation(&mut lowerer, capture, domain, semantics.query_name, span);
@@ -2793,11 +3081,22 @@ pub(crate) fn lower_world_distance_capture_helper(
         span,
     );
     let return_block = lowerer.new_block();
+    lower_native_world_backend_guard(
+        &mut lowerer,
+        backend,
+        auto_backend,
+        cpu_block,
+        wgsl_block,
+        unsupported_block,
+        span,
+    );
+
+    lowerer.current_block = cpu_block;
     lower_world_region_dispatch(
         &mut lowerer,
         module,
-        capture_scene_id,
-        detail,
+        capture_scene_id.clone(),
+        detail.clone(),
         return_block,
         "distance_world requires a capture created from a region declaration",
         span,
@@ -2811,6 +3110,41 @@ pub(crate) fn lower_world_distance_capture_helper(
             walk_world_distance_shapes(&mut backend, shapes).expect("mir world distance walk");
         },
     );
+
+    lowerer.current_block = wgsl_block;
+    if let Some(Ok(config)) = wgsl_config {
+        lower_world_region_dispatch(
+            &mut lowerer,
+            module,
+            capture_scene_id,
+            detail,
+            return_block,
+            "distance_world requires a capture created from a region declaration",
+            span,
+            |lowerer, shapes, span| {
+                let value = lower_world_wgsl_bridge_call(
+                    lowerer,
+                    MirType::Float,
+                    Some(&Ok(config.clone())),
+                    "__wr_wgsl_world_distance_capture",
+                    shapes,
+                    wgsl_shape_indices,
+                    vec![Value::Local(point)],
+                    span,
+                )
+                .expect("validated WGSL world distance config");
+                lowerer.assign_use(Place::Local(result), value, span);
+            },
+        );
+    } else if let Some(Err(err)) = wgsl_config {
+        lower_wgsl_bridge_failure(&mut lowerer, err.clone(), span);
+    } else {
+        lower_wgsl_bridge_failure(
+            &mut lowerer,
+            SmolStr::new("missing WGSL bridge config for world distance"),
+            span,
+        );
+    }
 
     lowerer.current_block = return_block;
     lowerer.set_terminator(Terminator::Return {
@@ -2843,6 +3177,7 @@ pub(crate) fn lower_world_distance_capture_helper(
                 &mut HashSet::new(),
             ),
             PortableAbiType::Vec3,
+            PortableAbiType::I32,
         ],
         abi_return: PortableAbiType::F32,
         locals: lowerer.locals,
@@ -2870,8 +3205,13 @@ pub(crate) fn lower_world_normal_capture_helper(
     result_functions: &HashSet<SmolStr>,
     class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
     interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
+    auto_backend: DispatchBackend,
+    wgsl_config: Option<&Result<NativeWgslBridgeConfig, SmolStr>>,
+    wgsl_shape_indices: &HashMap<SmolStr, u32>,
 ) -> MirFunction {
-    let helper_name = SmolStr::new("__wr_world_normal_capture");
+    let plan = crate::query_plan::WorldQueryPlan::for_query(WorldQueryKind::Normal);
+    let helper_name = plan.helper_name.clone();
+    let semantics = world_query_semantics(WorldQueryKind::Normal);
     let span = TextRange::empty(0.into());
     let mut lowerer = FunctionLowerer::new(
         helper_name.clone(),
@@ -2905,27 +3245,90 @@ pub(crate) fn lower_world_normal_capture_helper(
         MirType::Named(SmolStr::new("SceneDomain")),
     );
     let point = lowerer.new_local(SmolStr::new("point"), false, MirType::Vec3);
+    let backend = lowerer.new_local(SmolStr::new("backend"), false, MirType::Integer);
     for (name, local) in [
         (SmolStr::new("capture"), capture),
         (SmolStr::new("domain"), domain),
         (SmolStr::new("point"), point),
+        (SmolStr::new("backend"), backend),
     ] {
         lowerer.declare_local(name, local);
         lowerer.params.push(local);
     }
 
     let entry = lowerer.new_block();
+    let cpu_block = lowerer.new_block();
+    let wgsl_block = lowerer.new_block();
+    let unsupported_block = lowerer.new_block();
     lowerer.current_block = entry;
+    let (capture_scene_id, detail) =
+        lower_world_domain_validation(&mut lowerer, capture, domain, semantics.query_name, span);
+    let result = lowerer.new_local(SmolStr::new("$world_normal_result"), true, MirType::Vec3);
+    lower_native_world_backend_guard(
+        &mut lowerer,
+        backend,
+        auto_backend,
+        cpu_block,
+        wgsl_block,
+        unsupported_block,
+        span,
+    );
+
+    lowerer.current_block = cpu_block;
     let mut backend = MirWorldNormalBackend {
         lowerer: &mut lowerer,
         capture,
         domain,
         point,
+        backend,
         span,
     };
     let normal = execute_world_normal(&mut backend).expect("mir world normal");
+    lowerer.assign_use(Place::Local(result), normal, span);
+    let return_block = lowerer.new_block();
+    lowerer.set_terminator(Terminator::Jump {
+        target: return_block,
+        span,
+    });
+
+    lowerer.current_block = wgsl_block;
+    if let Some(Ok(config)) = wgsl_config {
+        lower_world_region_dispatch(
+            &mut lowerer,
+            module,
+            capture_scene_id,
+            detail,
+            return_block,
+            "normal_world requires a capture created from a region declaration",
+            span,
+            |lowerer, shapes, span| {
+                let value = lower_world_wgsl_bridge_call(
+                    lowerer,
+                    MirType::Vec3,
+                    Some(&Ok(config.clone())),
+                    "__wr_wgsl_world_normal_capture",
+                    shapes,
+                    wgsl_shape_indices,
+                    vec![Value::Local(point)],
+                    span,
+                )
+                .expect("validated WGSL world normal config");
+                lowerer.assign_use(Place::Local(result), value, span);
+            },
+        );
+    } else if let Some(Err(err)) = wgsl_config {
+        lower_wgsl_bridge_failure(&mut lowerer, err.clone(), span);
+    } else {
+        lower_wgsl_bridge_failure(
+            &mut lowerer,
+            SmolStr::new("missing WGSL bridge config for world normal"),
+            span,
+        );
+    }
+
+    lowerer.current_block = return_block;
     lowerer.set_terminator(Terminator::Return {
-        value: Some(normal),
+        value: Some(Value::Local(result)),
         span,
     });
 
@@ -2954,6 +3357,7 @@ pub(crate) fn lower_world_normal_capture_helper(
                 &mut HashSet::new(),
             ),
             PortableAbiType::Vec3,
+            PortableAbiType::I32,
         ],
         abi_return: PortableAbiType::Vec3,
         locals: lowerer.locals,
@@ -2981,8 +3385,12 @@ pub(crate) fn lower_world_trace_capture_helper(
     result_functions: &HashSet<SmolStr>,
     class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
     interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
+    auto_backend: DispatchBackend,
+    wgsl_config: Option<&Result<NativeWgslBridgeConfig, SmolStr>>,
+    wgsl_shape_indices: &HashMap<SmolStr, u32>,
 ) -> MirFunction {
-    let helper_name = SmolStr::new("__wr_world_trace_capture");
+    let plan = crate::query_plan::WorldQueryPlan::for_query(WorldQueryKind::Trace);
+    let helper_name = plan.helper_name.clone();
     let semantics = world_query_semantics(WorldQueryKind::Trace);
     let span = TextRange::empty(0.into());
     let mut lowerer = FunctionLowerer::new(
@@ -3022,6 +3430,7 @@ pub(crate) fn lower_world_trace_capture_helper(
     let min_step = lowerer.new_local(SmolStr::new("min_step"), false, MirType::Float);
     let hit_epsilon = lowerer.new_local(SmolStr::new("hit_epsilon"), false, MirType::Float);
     let max_steps = lowerer.new_local(SmolStr::new("max_steps"), false, MirType::Integer);
+    let backend = lowerer.new_local(SmolStr::new("backend"), false, MirType::Integer);
     for (name, local) in [
         (SmolStr::new("capture"), capture),
         (SmolStr::new("domain"), domain),
@@ -3031,12 +3440,16 @@ pub(crate) fn lower_world_trace_capture_helper(
         (SmolStr::new("min_step"), min_step),
         (SmolStr::new("hit_epsilon"), hit_epsilon),
         (SmolStr::new("max_steps"), max_steps),
+        (SmolStr::new("backend"), backend),
     ] {
         lowerer.declare_local(name, local);
         lowerer.params.push(local);
     }
 
     let entry = lowerer.new_block();
+    let cpu_block = lowerer.new_block();
+    let wgsl_block = lowerer.new_block();
+    let unsupported_block = lowerer.new_block();
     lowerer.current_block = entry;
     let (capture_scene_id, detail) =
         lower_world_domain_validation(&mut lowerer, capture, domain, semantics.query_name, span);
@@ -3048,11 +3461,22 @@ pub(crate) fn lower_world_trace_capture_helper(
     let default_hit = lowerer.build_default_hit(Value::Local(origin), span);
     lowerer.assign_use(Place::Local(result), default_hit, span);
     let return_block = lowerer.new_block();
+    lower_native_world_backend_guard(
+        &mut lowerer,
+        backend,
+        auto_backend,
+        cpu_block,
+        wgsl_block,
+        unsupported_block,
+        span,
+    );
+
+    lowerer.current_block = cpu_block;
     lower_world_region_dispatch(
         &mut lowerer,
         module,
-        capture_scene_id,
-        detail,
+        capture_scene_id.clone(),
+        detail.clone(),
         return_block,
         "trace_world requires a capture created from a region declaration",
         span,
@@ -3071,6 +3495,48 @@ pub(crate) fn lower_world_trace_capture_helper(
             walk_world_trace_shapes(&mut backend, shapes).expect("mir world trace walk");
         },
     );
+
+    lowerer.current_block = wgsl_block;
+    if let Some(Ok(config)) = wgsl_config {
+        lower_world_region_dispatch(
+            &mut lowerer,
+            module,
+            capture_scene_id,
+            detail,
+            return_block,
+            "trace_world requires a capture created from a region declaration",
+            span,
+            |lowerer, shapes, span| {
+                let value = lower_world_wgsl_bridge_call(
+                    lowerer,
+                    MirType::Named(SmolStr::new("Hit3")),
+                    Some(&Ok(config.clone())),
+                    "__wr_wgsl_world_trace_capture",
+                    shapes,
+                    wgsl_shape_indices,
+                    vec![
+                        Value::Local(origin),
+                        Value::Local(direction),
+                        Value::Local(max_distance),
+                        Value::Local(min_step),
+                        Value::Local(hit_epsilon),
+                        Value::Local(max_steps),
+                    ],
+                    span,
+                )
+                .expect("validated WGSL world trace config");
+                lowerer.assign_use(Place::Local(result), value, span);
+            },
+        );
+    } else if let Some(Err(err)) = wgsl_config {
+        lower_wgsl_bridge_failure(&mut lowerer, err.clone(), span);
+    } else {
+        lower_wgsl_bridge_failure(
+            &mut lowerer,
+            SmolStr::new("missing WGSL bridge config for world trace"),
+            span,
+        );
+    }
 
     lowerer.current_block = return_block;
     lowerer.set_terminator(Terminator::Return {
@@ -3108,6 +3574,7 @@ pub(crate) fn lower_world_trace_capture_helper(
             PortableAbiType::F32,
             PortableAbiType::F32,
             PortableAbiType::I32,
+            PortableAbiType::I32,
         ],
         abi_return: portable_abi_from_type_ref(
             Some(&hir::TypeRef {
@@ -3144,8 +3611,12 @@ pub(crate) fn lower_world_surface_capture_helper(
     result_functions: &HashSet<SmolStr>,
     class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
     interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
+    auto_backend: DispatchBackend,
+    wgsl_config: Option<&Result<NativeWgslBridgeConfig, SmolStr>>,
+    wgsl_shape_indices: &HashMap<SmolStr, u32>,
 ) -> MirFunction {
-    let helper_name = SmolStr::new("__wr_world_surface_capture");
+    let plan = crate::query_plan::WorldQueryPlan::for_query(WorldQueryKind::Surface);
+    let helper_name = plan.helper_name.clone();
     let semantics = world_query_semantics(WorldQueryKind::Surface);
     let span = TextRange::empty(0.into());
     let mut lowerer = FunctionLowerer::new(
@@ -3184,16 +3655,21 @@ pub(crate) fn lower_world_surface_capture_helper(
         false,
         MirType::Named(SmolStr::new("Hit3")),
     );
+    let backend = lowerer.new_local(SmolStr::new("backend"), false, MirType::Integer);
     for (name, local) in [
         (SmolStr::new("capture"), capture),
         (SmolStr::new("domain"), domain),
         (SmolStr::new("hit"), hit),
+        (SmolStr::new("backend"), backend),
     ] {
         lowerer.declare_local(name, local);
         lowerer.params.push(local);
     }
 
     let entry = lowerer.new_block();
+    let cpu_block = lowerer.new_block();
+    let wgsl_block = lowerer.new_block();
+    let unsupported_block = lowerer.new_block();
     lowerer.current_block = entry;
     let default_surface = lowerer.build_default_surface(span);
     let (capture_scene_id, detail) =
@@ -3220,11 +3696,22 @@ pub(crate) fn lower_world_surface_capture_helper(
     let default_surface = lowerer.build_default_surface(span);
     lowerer.assign_use(Place::Local(result), default_surface, span);
     let return_block = lowerer.new_block();
+    lower_native_world_backend_guard(
+        &mut lowerer,
+        backend,
+        auto_backend,
+        cpu_block,
+        wgsl_block,
+        unsupported_block,
+        span,
+    );
+
+    lowerer.current_block = cpu_block;
     lower_world_region_dispatch(
         &mut lowerer,
         module,
-        capture_scene_id,
-        detail,
+        capture_scene_id.clone(),
+        detail.clone(),
         return_block,
         "surface_world requires a capture created from a region declaration",
         span,
@@ -3239,6 +3726,42 @@ pub(crate) fn lower_world_surface_capture_helper(
             walk_world_surface_shapes(&mut backend, shapes).expect("mir world surface walk");
         },
     );
+
+    lowerer.current_block = wgsl_block;
+    if let Some(Ok(config)) = wgsl_config {
+        lower_world_region_dispatch(
+            &mut lowerer,
+            module,
+            capture_scene_id,
+            detail,
+            return_block,
+            "surface_world requires a capture created from a region declaration",
+            span,
+            |lowerer, shapes, span| {
+                let value = lower_world_wgsl_bridge_call(
+                    lowerer,
+                    MirType::Named(SmolStr::new("Surface")),
+                    Some(&Ok(config.clone())),
+                    "__wr_wgsl_world_surface_capture",
+                    shapes,
+                    wgsl_shape_indices,
+                    vec![Value::Local(hit)],
+                    span,
+                )
+                .expect("validated WGSL world surface config");
+                lowerer.assign_use(Place::Local(result), value, span);
+            },
+        );
+    } else if let Some(Err(err)) = wgsl_config {
+        lower_wgsl_bridge_failure(&mut lowerer, err.clone(), span);
+    } else {
+        lower_wgsl_bridge_failure(
+            &mut lowerer,
+            SmolStr::new("missing WGSL bridge config for world surface"),
+            span,
+        );
+    }
+
     lowerer.current_block = return_block;
     lowerer.set_terminator(Terminator::Return {
         value: Some(Value::Local(result)),
@@ -3279,6 +3802,7 @@ pub(crate) fn lower_world_surface_capture_helper(
                 type_tags,
                 &mut HashSet::new(),
             ),
+            PortableAbiType::I32,
         ],
         abi_return: portable_abi_from_type_ref(
             Some(&hir::TypeRef {
@@ -3315,8 +3839,12 @@ pub(crate) fn lower_world_radiance_capture_helper(
     result_functions: &HashSet<SmolStr>,
     class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
     interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
+    auto_backend: DispatchBackend,
+    wgsl_config: Option<&Result<NativeWgslBridgeConfig, SmolStr>>,
+    wgsl_shape_indices: &HashMap<SmolStr, u32>,
 ) -> MirFunction {
-    let helper_name = SmolStr::new("__wr_world_radiance_capture");
+    let plan = crate::query_plan::WorldQueryPlan::for_query(WorldQueryKind::Radiance);
+    let helper_name = plan.helper_name.clone();
     let semantics = world_query_semantics(WorldQueryKind::Radiance);
     let span = TextRange::empty(0.into());
     let mut lowerer = FunctionLowerer::new(
@@ -3352,17 +3880,22 @@ pub(crate) fn lower_world_radiance_capture_helper(
     );
     let point = lowerer.new_local(SmolStr::new("point"), false, MirType::Vec3);
     let direction = lowerer.new_local(SmolStr::new("direction"), false, MirType::Vec3);
+    let backend = lowerer.new_local(SmolStr::new("backend"), false, MirType::Integer);
     for (name, local) in [
         (SmolStr::new("capture"), capture),
         (SmolStr::new("domain"), domain),
         (SmolStr::new("point"), point),
         (SmolStr::new("direction"), direction),
+        (SmolStr::new("backend"), backend),
     ] {
         lowerer.declare_local(name, local);
         lowerer.params.push(local);
     }
 
     let entry = lowerer.new_block();
+    let cpu_block = lowerer.new_block();
+    let wgsl_block = lowerer.new_block();
+    let unsupported_block = lowerer.new_block();
     lowerer.current_block = entry;
     let black = lowerer.lower_call_temp(
         MirType::Vec3,
@@ -3396,11 +3929,22 @@ pub(crate) fn lower_world_radiance_capture_helper(
     );
     lowerer.assign_use(Place::Local(result), zero, span);
     let return_block = lowerer.new_block();
+    lower_native_world_backend_guard(
+        &mut lowerer,
+        backend,
+        auto_backend,
+        cpu_block,
+        wgsl_block,
+        unsupported_block,
+        span,
+    );
+
+    lowerer.current_block = cpu_block;
     lower_world_region_dispatch(
         &mut lowerer,
         module,
-        capture_scene_id,
-        detail,
+        capture_scene_id.clone(),
+        detail.clone(),
         return_block,
         "radiance_world requires a capture created from a region declaration",
         span,
@@ -3415,6 +3959,42 @@ pub(crate) fn lower_world_radiance_capture_helper(
             walk_world_radiance_shapes(&mut backend, shapes).expect("mir world radiance walk");
         },
     );
+
+    lowerer.current_block = wgsl_block;
+    if let Some(Ok(config)) = wgsl_config {
+        lower_world_region_dispatch(
+            &mut lowerer,
+            module,
+            capture_scene_id,
+            detail,
+            return_block,
+            "radiance_world requires a capture created from a region declaration",
+            span,
+            |lowerer, shapes, span| {
+                let value = lower_world_wgsl_bridge_call(
+                    lowerer,
+                    MirType::Vec3,
+                    Some(&Ok(config.clone())),
+                    "__wr_wgsl_world_radiance_capture",
+                    shapes,
+                    wgsl_shape_indices,
+                    vec![Value::Local(point), Value::Local(direction)],
+                    span,
+                )
+                .expect("validated WGSL world radiance config");
+                lowerer.assign_use(Place::Local(result), value, span);
+            },
+        );
+    } else if let Some(Err(err)) = wgsl_config {
+        lower_wgsl_bridge_failure(&mut lowerer, err.clone(), span);
+    } else {
+        lower_wgsl_bridge_failure(
+            &mut lowerer,
+            SmolStr::new("missing WGSL bridge config for world radiance"),
+            span,
+        );
+    }
+
     lowerer.current_block = return_block;
     lowerer.set_terminator(Terminator::Return {
         value: Some(Value::Local(result)),
@@ -3447,6 +4027,7 @@ pub(crate) fn lower_world_radiance_capture_helper(
             ),
             PortableAbiType::Vec3,
             PortableAbiType::Vec3,
+            PortableAbiType::I32,
         ],
         abi_return: PortableAbiType::Vec3,
         locals: lowerer.locals,
@@ -3474,8 +4055,12 @@ pub(crate) fn lower_world_medium_capture_helper(
     result_functions: &HashSet<SmolStr>,
     class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
     interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
+    auto_backend: DispatchBackend,
+    wgsl_config: Option<&Result<NativeWgslBridgeConfig, SmolStr>>,
+    wgsl_shape_indices: &HashMap<SmolStr, u32>,
 ) -> MirFunction {
-    let helper_name = SmolStr::new("__wr_world_medium_capture");
+    let plan = crate::query_plan::WorldQueryPlan::for_query(WorldQueryKind::Medium);
+    let helper_name = plan.helper_name.clone();
     let semantics = world_query_semantics(WorldQueryKind::Medium);
     let span = TextRange::empty(0.into());
     let mut lowerer = FunctionLowerer::new(
@@ -3510,16 +4095,21 @@ pub(crate) fn lower_world_medium_capture_helper(
         MirType::Named(SmolStr::new("SceneDomain")),
     );
     let point = lowerer.new_local(SmolStr::new("point"), false, MirType::Vec3);
+    let backend = lowerer.new_local(SmolStr::new("backend"), false, MirType::Integer);
     for (name, local) in [
         (SmolStr::new("capture"), capture),
         (SmolStr::new("domain"), domain),
         (SmolStr::new("point"), point),
+        (SmolStr::new("backend"), backend),
     ] {
         lowerer.declare_local(name, local);
         lowerer.params.push(local);
     }
 
     let entry = lowerer.new_block();
+    let cpu_block = lowerer.new_block();
+    let wgsl_block = lowerer.new_block();
+    let unsupported_block = lowerer.new_block();
     lowerer.current_block = entry;
     let default_medium = lowerer.build_default_medium(span);
     let (capture_scene_id, detail) =
@@ -3539,11 +4129,22 @@ pub(crate) fn lower_world_medium_capture_helper(
     let default_medium = lowerer.build_default_medium(span);
     lowerer.assign_use(Place::Local(result), default_medium, span);
     let return_block = lowerer.new_block();
+    lower_native_world_backend_guard(
+        &mut lowerer,
+        backend,
+        auto_backend,
+        cpu_block,
+        wgsl_block,
+        unsupported_block,
+        span,
+    );
+
+    lowerer.current_block = cpu_block;
     lower_world_region_dispatch(
         &mut lowerer,
         module,
-        capture_scene_id,
-        detail,
+        capture_scene_id.clone(),
+        detail.clone(),
         return_block,
         "medium_world requires a capture created from a region declaration",
         span,
@@ -3557,6 +4158,42 @@ pub(crate) fn lower_world_medium_capture_helper(
             walk_world_medium_shapes(&mut backend, shapes).expect("mir world medium walk");
         },
     );
+
+    lowerer.current_block = wgsl_block;
+    if let Some(Ok(config)) = wgsl_config {
+        lower_world_region_dispatch(
+            &mut lowerer,
+            module,
+            capture_scene_id,
+            detail,
+            return_block,
+            "medium_world requires a capture created from a region declaration",
+            span,
+            |lowerer, shapes, span| {
+                let value = lower_world_wgsl_bridge_call(
+                    lowerer,
+                    MirType::Named(SmolStr::new("Medium")),
+                    Some(&Ok(config.clone())),
+                    "__wr_wgsl_world_medium_capture",
+                    shapes,
+                    wgsl_shape_indices,
+                    vec![Value::Local(point)],
+                    span,
+                )
+                .expect("validated WGSL world medium config");
+                lowerer.assign_use(Place::Local(result), value, span);
+            },
+        );
+    } else if let Some(Err(err)) = wgsl_config {
+        lower_wgsl_bridge_failure(&mut lowerer, err.clone(), span);
+    } else {
+        lower_wgsl_bridge_failure(
+            &mut lowerer,
+            SmolStr::new("missing WGSL bridge config for world medium"),
+            span,
+        );
+    }
+
     lowerer.current_block = return_block;
     lowerer.set_terminator(Terminator::Return {
         value: Some(Value::Local(result)),
@@ -3588,6 +4225,7 @@ pub(crate) fn lower_world_medium_capture_helper(
                 &mut HashSet::new(),
             ),
             PortableAbiType::Vec3,
+            PortableAbiType::I32,
         ],
         abi_return: portable_abi_from_type_ref(
             Some(&hir::TypeRef {
@@ -3971,6 +4609,92 @@ pub(crate) fn lower_scene_surface_queries_helper(
     }
 }
 
+fn lower_native_batch_backend_guard(
+    lowerer: &mut FunctionLowerer,
+    backend: LocalId,
+    auto_backend: DispatchBackend,
+    cpu_block: BlockId,
+    vgpu_block: BlockId,
+    wgsl_block: BlockId,
+    invalid_backend_block: BlockId,
+    span: TextRange,
+) {
+    let is_cpu = lowerer.lower_binary_temp(
+        MirType::Boolean,
+        BinaryOp::Eq,
+        Value::Local(backend),
+        Value::Const(Literal::Integer(0)),
+        span,
+    );
+    let is_vgpu = lowerer.lower_binary_temp(
+        MirType::Boolean,
+        BinaryOp::Eq,
+        Value::Local(backend),
+        Value::Const(Literal::Integer(1)),
+        span,
+    );
+    let is_wgsl = lowerer.lower_binary_temp(
+        MirType::Boolean,
+        BinaryOp::Eq,
+        Value::Local(backend),
+        Value::Const(Literal::Integer(2)),
+        span,
+    );
+    let is_auto = lowerer.lower_binary_temp(
+        MirType::Boolean,
+        BinaryOp::Eq,
+        Value::Local(backend),
+        Value::Const(Literal::Integer(3)),
+        span,
+    );
+
+    let auto_block = lowerer.new_block();
+    let vgpu_check_block = lowerer.new_block();
+    lowerer.set_terminator(Terminator::Branch {
+        cond: is_auto,
+        then_target: auto_block,
+        else_target: vgpu_check_block,
+        span,
+    });
+
+    lowerer.current_block = auto_block;
+    lowerer.set_terminator(Terminator::Jump {
+        target: match batch_auto_backend(auto_backend) {
+            DispatchBackend::Cpu => cpu_block,
+            DispatchBackend::VirtualGpu => vgpu_block,
+            DispatchBackend::Wgsl => wgsl_block,
+            DispatchBackend::Auto => cpu_block,
+        },
+        span,
+    });
+
+    let cpu_check_block = lowerer.new_block();
+    lowerer.current_block = vgpu_check_block;
+    lowerer.set_terminator(Terminator::Branch {
+        cond: is_vgpu,
+        then_target: vgpu_block,
+        else_target: cpu_check_block,
+        span,
+    });
+
+    let wgsl_check_block = lowerer.new_block();
+    lowerer.current_block = cpu_check_block;
+    lowerer.set_terminator(Terminator::Branch {
+        cond: is_cpu,
+        then_target: cpu_block,
+        else_target: wgsl_check_block,
+        span,
+    });
+
+    lowerer.current_block = wgsl_check_block;
+    lowerer.set_terminator(Terminator::Branch {
+        cond: is_wgsl,
+        then_target: wgsl_block,
+        else_target: invalid_backend_block,
+        span,
+    });
+}
+
 pub(crate) fn lower_field_batch_queries_helper(
     type_tags: &HashMap<SmolStr, TypeTagId>,
     class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
@@ -3988,6 +4712,9 @@ pub(crate) fn lower_field_batch_queries_helper(
     class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
     interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
     plan: &BatchQueryPlan,
+    auto_backend: DispatchBackend,
+    wgsl_config: Option<&Result<NativeWgslBridgeConfig, SmolStr>>,
+    capture_indices: &HashMap<SmolStr, u32>,
 ) -> MirFunction {
     debug_assert!(matches!(
         plan.kernel,
@@ -4028,10 +4755,28 @@ pub(crate) fn lower_field_batch_queries_helper(
     debug_assert!(!matches!(plan.capture_kind, CaptureKind::Region));
     debug_assert!(!plan.preserves_local_hit_context);
     let helper_name = plan.helper_name.clone();
-    let capture_type = match plan.capture_kind {
-        CaptureKind::Field => "FieldCapture",
-        CaptureKind::Shape => "ShapeCapture",
-        CaptureKind::Region => panic!("field batch helper does not support region captures"),
+    let (capture_type, capture_field, stable_capture_id, invalid_capture_message) =
+        match plan.capture_kind {
+            CaptureKind::Field => (
+                "FieldCapture",
+                "scene_id",
+                stable_field_scene_capture_id as fn(&SmolStr) -> i64,
+                "field batch WGSL dispatch requires a known field capture",
+            ),
+            CaptureKind::Shape => (
+                "ShapeCapture",
+                "scene_id",
+                stable_shape_scene_capture_id as fn(&SmolStr) -> i64,
+                "shape batch WGSL dispatch requires a known shape scene capture",
+            ),
+            CaptureKind::Region => panic!("field batch helper does not support region captures"),
+        };
+    let wgsl_bridge_symbol = match plan.kernel {
+        InternalKernelKind::FieldDistanceCapture => "__wr_wgsl_field_distance_batch_queries",
+        InternalKernelKind::ShapeDistanceCapture => "__wr_wgsl_shape_distance_batch_queries",
+        InternalKernelKind::FieldNormalCapture => "__wr_wgsl_field_normal_batch_queries",
+        InternalKernelKind::ShapeNormalCapture => "__wr_wgsl_shape_normal_batch_queries",
+        other => panic!("unexpected field batch kernel for WGSL bridge: {other:?}"),
     };
     debug_assert!(matches!(plan.item_kind, QueryItemKind::PointQuery));
     debug_assert!(matches!(
@@ -4099,78 +4844,28 @@ pub(crate) fn lower_field_batch_queries_helper(
 
     let cpu_block = lowerer.new_block();
     let vgpu_block = lowerer.new_block();
-    let backend_check_block = lowerer.new_block();
-    let auto_check_block = lowerer.new_block();
+    let wgsl_block = lowerer.new_block();
     let invalid_backend_block = lowerer.new_block();
     let merge_block = lowerer.new_block();
-    let is_vgpu = lowerer.lower_binary_temp(
-        MirType::Boolean,
-        BinaryOp::Eq,
-        Value::Local(backend),
-        Value::Const(Literal::Integer(1)),
+    lower_native_batch_backend_guard(
+        &mut lowerer,
+        backend,
+        auto_backend,
+        cpu_block,
+        vgpu_block,
+        wgsl_block,
+        invalid_backend_block,
         span,
     );
-    lowerer.set_terminator(Terminator::Branch {
-        cond: is_vgpu,
-        then_target: vgpu_block,
-        else_target: backend_check_block,
-        span,
-    });
-
-    lowerer.current_block = backend_check_block;
-    let is_cpu = lowerer.lower_binary_temp(
-        MirType::Boolean,
-        BinaryOp::Eq,
-        Value::Local(backend),
-        Value::Const(Literal::Integer(0)),
-        span,
-    );
-    let is_auto = lowerer.lower_binary_temp(
-        MirType::Boolean,
-        BinaryOp::Eq,
-        Value::Local(backend),
-        Value::Const(Literal::Integer(2)),
-        span,
-    );
-    let cpu_or_auto =
-        lowerer.lower_binary_temp(MirType::Boolean, BinaryOp::Or, is_cpu, is_auto, span);
-    lowerer.set_terminator(Terminator::Branch {
-        cond: cpu_or_auto,
-        then_target: auto_check_block,
-        else_target: invalid_backend_block,
-        span,
-    });
-
-    lowerer.current_block = auto_check_block;
-    let is_cpu = lowerer.lower_binary_temp(
-        MirType::Boolean,
-        BinaryOp::Eq,
-        Value::Local(backend),
-        Value::Const(Literal::Integer(0)),
-        span,
-    );
-    lowerer.set_terminator(Terminator::Branch {
-        cond: is_cpu,
-        then_target: cpu_block,
-        else_target: vgpu_block,
-        span,
-    });
 
     lowerer.current_block = invalid_backend_block;
-    let crash_temp = lowerer.new_temp(MirType::Unknown);
-    lowerer.push_stmt(MirStmt::Assign {
-        place: Place::Temp(crash_temp),
-        value: Rvalue::Crash {
-            value: Value::Const(Literal::String(SmolStr::new(
-                "scene batch dispatch backend must be cpu, virtual_gpu, or auto",
-            ))),
-        },
+    lower_wgsl_bridge_failure(
+        &mut lowerer,
+        SmolStr::new(
+            "scene batch dispatch backend must be cpu, virtual_gpu, wgsl, or auto",
+        ),
         span,
-    });
-    lowerer.set_terminator(Terminator::Return {
-        value: Some(Value::Temp(crash_temp)),
-        span,
-    });
+    );
 
     lowerer.current_block = cpu_block;
     lowerer.lower_batch_query_loop(
@@ -4193,6 +4888,27 @@ pub(crate) fn lower_field_batch_queries_helper(
         true,
         merge_block,
     );
+
+    lowerer.current_block = wgsl_block;
+    if let Some(value) = lower_batch_wgsl_bridge_call(
+        &mut lowerer,
+        capture,
+        items,
+        wgsl_config,
+        wgsl_bridge_symbol,
+        capture_type,
+        capture_field,
+        capture_indices,
+        stable_capture_id,
+        invalid_capture_message,
+        span,
+    ) {
+        lowerer.assign_use(Place::Local(result), value, span);
+        lowerer.set_terminator(Terminator::Jump {
+            target: merge_block,
+            span,
+        });
+    }
 
     lowerer.current_block = merge_block;
     lowerer.set_terminator(Terminator::Return {
@@ -4234,6 +4950,9 @@ pub(crate) fn lower_shape_batch_queries_helper(
     class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
     interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
     plan: &BatchQueryPlan,
+    auto_backend: DispatchBackend,
+    wgsl_config: Option<&Result<NativeWgslBridgeConfig, SmolStr>>,
+    capture_indices: &HashMap<SmolStr, u32>,
 ) -> MirFunction {
     debug_assert!(matches!(
         plan.kernel,
@@ -4292,6 +5011,12 @@ pub(crate) fn lower_shape_batch_queries_helper(
         plan.result_kind,
         QueryResultKind::Hit3 | QueryResultKind::Surface | QueryResultKind::OcclusionResult
     ));
+    let wgsl_bridge_symbol = match plan.kernel {
+        InternalKernelKind::ShapeTraceCapture => "__wr_wgsl_shape_trace_batch_queries",
+        InternalKernelKind::ShapeSurfaceCapture => "__wr_wgsl_shape_surface_batch_queries",
+        InternalKernelKind::ShapeOccludedCapture => "__wr_wgsl_shape_occluded_batch_queries",
+        other => panic!("unexpected shape batch kernel for WGSL bridge: {other:?}"),
+    };
     let span = TextRange::empty(0.into());
     let mut lowerer = FunctionLowerer::new(
         helper_name.clone(),
@@ -4353,78 +5078,28 @@ pub(crate) fn lower_shape_batch_queries_helper(
 
     let cpu_block = lowerer.new_block();
     let vgpu_block = lowerer.new_block();
-    let backend_check_block = lowerer.new_block();
-    let auto_check_block = lowerer.new_block();
+    let wgsl_block = lowerer.new_block();
     let invalid_backend_block = lowerer.new_block();
     let merge_block = lowerer.new_block();
-    let is_vgpu = lowerer.lower_binary_temp(
-        MirType::Boolean,
-        BinaryOp::Eq,
-        Value::Local(backend),
-        Value::Const(Literal::Integer(1)),
+    lower_native_batch_backend_guard(
+        &mut lowerer,
+        backend,
+        auto_backend,
+        cpu_block,
+        vgpu_block,
+        wgsl_block,
+        invalid_backend_block,
         span,
     );
-    lowerer.set_terminator(Terminator::Branch {
-        cond: is_vgpu,
-        then_target: vgpu_block,
-        else_target: backend_check_block,
-        span,
-    });
-
-    lowerer.current_block = backend_check_block;
-    let is_cpu = lowerer.lower_binary_temp(
-        MirType::Boolean,
-        BinaryOp::Eq,
-        Value::Local(backend),
-        Value::Const(Literal::Integer(0)),
-        span,
-    );
-    let is_auto = lowerer.lower_binary_temp(
-        MirType::Boolean,
-        BinaryOp::Eq,
-        Value::Local(backend),
-        Value::Const(Literal::Integer(2)),
-        span,
-    );
-    let cpu_or_auto =
-        lowerer.lower_binary_temp(MirType::Boolean, BinaryOp::Or, is_cpu, is_auto, span);
-    lowerer.set_terminator(Terminator::Branch {
-        cond: cpu_or_auto,
-        then_target: auto_check_block,
-        else_target: invalid_backend_block,
-        span,
-    });
-
-    lowerer.current_block = auto_check_block;
-    let is_cpu = lowerer.lower_binary_temp(
-        MirType::Boolean,
-        BinaryOp::Eq,
-        Value::Local(backend),
-        Value::Const(Literal::Integer(0)),
-        span,
-    );
-    lowerer.set_terminator(Terminator::Branch {
-        cond: is_cpu,
-        then_target: cpu_block,
-        else_target: vgpu_block,
-        span,
-    });
 
     lowerer.current_block = invalid_backend_block;
-    let crash_temp = lowerer.new_temp(MirType::Unknown);
-    lowerer.push_stmt(MirStmt::Assign {
-        place: Place::Temp(crash_temp),
-        value: Rvalue::Crash {
-            value: Value::Const(Literal::String(SmolStr::new(
-                "scene batch dispatch backend must be cpu, virtual_gpu, or auto",
-            ))),
-        },
+    lower_wgsl_bridge_failure(
+        &mut lowerer,
+        SmolStr::new(
+            "scene batch dispatch backend must be cpu, virtual_gpu, wgsl, or auto",
+        ),
         span,
-    });
-    lowerer.set_terminator(Terminator::Return {
-        value: Some(Value::Temp(crash_temp)),
-        span,
-    });
+    );
 
     lowerer.current_block = cpu_block;
     lowerer.lower_batch_query_loop(
@@ -4447,6 +5122,27 @@ pub(crate) fn lower_shape_batch_queries_helper(
         true,
         merge_block,
     );
+
+    lowerer.current_block = wgsl_block;
+    if let Some(value) = lower_batch_wgsl_bridge_call(
+        &mut lowerer,
+        capture,
+        items,
+        wgsl_config,
+        wgsl_bridge_symbol,
+        "ShapeCapture",
+        "root_feature_id",
+        capture_indices,
+        stable_shape_capture_id,
+        "shape batch WGSL dispatch requires a known shape capture",
+        span,
+    ) {
+        lowerer.assign_use(Place::Local(result), value, span);
+        lowerer.set_terminator(Terminator::Jump {
+            target: merge_block,
+            span,
+        });
+    }
 
     lowerer.current_block = merge_block;
     lowerer.set_terminator(Terminator::Return {

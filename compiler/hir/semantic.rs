@@ -2998,6 +2998,7 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
             SmolStr::new("dispatch_backend_virtual_gpu"),
             BindingKind::Function,
         ),
+        (SmolStr::new("dispatch_backend_wgsl"), BindingKind::Function),
         (SmolStr::new("dispatch_backend_auto"), BindingKind::Function),
         (SmolStr::new("sphere"), BindingKind::Function),
         (SmolStr::new("box"), BindingKind::Function),

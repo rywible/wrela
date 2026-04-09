@@ -30,6 +30,7 @@ pub(super) struct PerfCommandInput {
     pub(super) output_format: OutputFormat,
     pub(super) perf_debug: bool,
     pub(super) test_selection: TestSelection,
+    pub(super) query_backend: wrela::query_plan::DispatchBackend,
 }
 
 pub(super) fn execute_perf_command(mut input: PerfCommandInput) -> i32 {
@@ -117,6 +118,7 @@ pub(super) fn execute_perf_command(mut input: PerfCommandInput) -> i32 {
         gate_cfg.as_ref(),
         &input.test_selection,
         runtime_only_cv_gate,
+        input.query_backend,
     )
 }
 
@@ -133,6 +135,7 @@ pub(super) fn run_perf_harness(
     perf_gate: Option<&PerfGateConfig>,
     selection: &TestSelection,
     runtime_only_cv_gate: bool,
+    query_backend: wrela::query_plan::DispatchBackend,
 ) -> i32 {
     let mut samples = Vec::new();
     for idx in 0..runs {
@@ -150,6 +153,7 @@ pub(super) fn run_perf_harness(
             true,
             command_handlers::HttpCassetteMode::Replay,
             None,
+            query_backend,
             false,
             DifferentialPipeline::Baseline,
             None,

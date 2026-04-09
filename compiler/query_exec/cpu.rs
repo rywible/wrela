@@ -3,7 +3,8 @@ use crate::hir::body::{BinaryOp, Expr, Literal, UnaryOp};
 use crate::kernel::ir::{KernelBatchQueryPlan, KernelCaptureQueryPlan, KernelWorldQueryPlan};
 use crate::kernel::{KernelStructValue, KernelValue};
 use crate::portable;
-use crate::query_exec::capture::{self, CaptureQueryBackend};
+use crate::query_exec::QueryExecutionObservability;
+use crate::query_exec::capture::{self, CaptureQueryBackend, execute_batch_item_contract};
 use crate::query_exec::context::QueryExecContext;
 use crate::query_exec::ids::{
     stable_field_scene_capture_id, stable_region_scene_capture_id, stable_shape_capture_id,
@@ -18,20 +19,28 @@ use crate::query_exec::world::{
 };
 use crate::query_plan::{BatchQueryKind, WorldQueryKind};
 use crate::scene_ir::{
-    FieldNode, RepeatKind, SceneArgExpr, SceneValueExpr, ShapeNode, SmoothKind, TransformKind,
+    FieldNode, RepeatKind, SceneArgExpr, SceneProfileExpr, SceneValueExpr, ShapeLeafRef,
+    ShapeMergeProvenancePolicy, ShapeNode, ShapeProvenanceExpr, ShapeSubtractProvenancePolicy,
+    SmoothKind, TransformKind,
 };
 use smol_str::SmolStr;
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use thiserror::Error;
 use wrela_runtime::{
     TypeId, Value as RuntimeValue, wr_affine_transform, wr_bend, wr_box, wr_box_frame,
-    wr_capped_cone, wr_capsule, wr_cone, wr_cylinder, wr_displace, wr_ellipsoid,
-    wr_field_intersection, wr_field_subtract, wr_field_union, wr_hex_prism, wr_instance_array,
+    wr_capped_cone, wr_capsule, wr_capsule2, wr_circle2, wr_class_new, wr_class_set_slot, wr_cone,
+    wr_cylinder, wr_displace, wr_ellipsoid, wr_field_intersection, wr_field_subtract,
+    wr_field_sweep_coords, wr_field_union, wr_hex_prism, wr_instance_array,
+    wr_instance_array_identity, wr_list_get, wr_list_len, wr_list_new_local, wr_list_push,
     wr_mat3_component, wr_mat3_from_columns, wr_mat4_component, wr_mat4_from_columns,
-    wr_mirror_array, wr_plane, wr_quat_new, wr_radial_repeat, wr_repeat_grid, wr_repeat_linear,
-    wr_rotate, wr_rounded_box, wr_slab, wr_smooth_intersection, wr_smooth_subtract,
-    wr_smooth_union, wr_sphere, wr_taper, wr_torus, wr_translate, wr_triangle_prism, wr_twist,
-    wr_type_id, wr_uniform_scale, wr_vec_add, wr_vec_component, wr_vec_div, wr_vec_mul, wr_vec_sub,
+    wr_mirror_array, wr_mirror_array_identity, wr_plane, wr_polygon2, wr_polyline2, wr_quat_new,
+    wr_radial_repeat, wr_radial_repeat_identity, wr_rect2, wr_repeat_grid, wr_repeat_grid_identity,
+    wr_repeat_linear, wr_repeat_linear_identity, wr_rotate, wr_rounded_box, wr_rounded_rect2,
+    wr_segment2, wr_slab, wr_smooth_intersection, wr_smooth_subtract, wr_smooth_union, wr_sphere,
+    wr_taper, wr_torus, wr_transform_normal, wr_translate, wr_triangle_prism, wr_twist, wr_type_id,
+    wr_uniform_scale, wr_vec_add, wr_vec_component, wr_vec_div, wr_vec_mul, wr_vec_sub,
     wr_vec2_new, wr_vec3_new, wr_vec4_new, wr_warp,
 };
 
@@ -66,7 +75,7 @@ pub fn execute_capture_query(
     plan: &KernelCaptureQueryPlan,
     args: &[KernelValue],
 ) -> Result<KernelValue, QueryExecError> {
-    capture::execute_capture_query(&DirectQueryOps::new(ctx), plan, args)
+    execute_capture_query_with_observability(ctx, plan, args).map(|(value, _)| value)
 }
 
 pub fn execute_world_query(
@@ -74,7 +83,7 @@ pub fn execute_world_query(
     plan: &KernelWorldQueryPlan,
     args: &[KernelValue],
 ) -> Result<KernelValue, QueryExecError> {
-    DirectQueryEvaluator::new(ctx).execute_world_query(plan, args)
+    execute_world_query_with_observability(ctx, plan, args).map(|(value, _)| value)
 }
 
 pub(crate) fn execute_batch_query(
@@ -82,7 +91,40 @@ pub(crate) fn execute_batch_query(
     plan: &KernelBatchQueryPlan,
     args: &[KernelValue],
 ) -> Result<KernelValue, QueryExecError> {
-    DirectQueryEvaluator::new(ctx).execute_batch_query(plan, args)
+    execute_batch_query_with_observability(ctx, plan, args).map(|(value, _)| value)
+}
+
+pub(crate) fn execute_capture_query_with_observability(
+    ctx: &QueryExecContext,
+    plan: &KernelCaptureQueryPlan,
+    args: &[KernelValue],
+) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
+    let ops = DirectQueryOps::new(ctx);
+    ops.note_dispatch();
+    let value = capture::execute_capture_query(&ops, plan, args)?;
+    Ok((value, ops.snapshot_observability()))
+}
+
+pub(crate) fn execute_world_query_with_observability(
+    ctx: &QueryExecContext,
+    plan: &KernelWorldQueryPlan,
+    args: &[KernelValue],
+) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
+    let evaluator = DirectQueryEvaluator::new(ctx);
+    evaluator.note_dispatch();
+    let value = evaluator.execute_world_query(plan, args)?;
+    Ok((value, evaluator.snapshot_observability()))
+}
+
+pub(crate) fn execute_batch_query_with_observability(
+    ctx: &QueryExecContext,
+    plan: &KernelBatchQueryPlan,
+    args: &[KernelValue],
+) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
+    let evaluator = DirectQueryEvaluator::new(ctx);
+    evaluator.note_dispatch();
+    let value = evaluator.execute_batch_query(plan, args)?;
+    Ok((value, evaluator.snapshot_observability()))
 }
 
 pub(crate) fn resolve_batch_capture(
@@ -103,6 +145,7 @@ pub(crate) fn resolve_batch_capture(
 
 pub(crate) struct DirectQueryOps<'a> {
     ctx: &'a QueryExecContext,
+    observability: Rc<RefCell<QueryExecutionObservability>>,
 }
 
 pub(crate) struct DirectQueryEvaluator<'a> {
@@ -123,6 +166,22 @@ enum PortableFlow {
     Continue,
 }
 
+#[derive(Debug, Clone)]
+struct ShapeWinner {
+    distance: f32,
+    feature_id: u32,
+    leaf: Option<ShapeLeafRef>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct FieldLocalFrame<'a> {
+    pub(crate) field_name: SmolStr,
+    pub(crate) node: &'a FieldNode,
+    pub(crate) point: [f32; 3],
+    pub(crate) instance_id: u32,
+    pub(crate) repeat_id: u32,
+}
+
 impl<'a> std::ops::Deref for DirectQueryEvaluator<'a> {
     type Target = DirectQueryOps<'a>;
 
@@ -133,15 +192,82 @@ impl<'a> std::ops::Deref for DirectQueryEvaluator<'a> {
 
 impl<'a> DirectQueryEvaluator<'a> {
     pub(crate) fn new(ctx: &'a QueryExecContext) -> Self {
+        let observability = Rc::new(RefCell::new(QueryExecutionObservability::default()));
         Self {
-            ops: DirectQueryOps::new(ctx),
+            ops: DirectQueryOps::with_observability(ctx, observability),
         }
+    }
+
+    pub(crate) fn snapshot_observability(&self) -> QueryExecutionObservability {
+        self.ops.snapshot_observability()
+    }
+
+    pub(crate) fn note_dispatch(&self) {
+        self.ops.note_dispatch();
     }
 }
 
 impl<'a> DirectQueryOps<'a> {
     pub(crate) fn new(ctx: &'a QueryExecContext) -> Self {
-        Self { ctx }
+        Self::with_observability(
+            ctx,
+            Rc::new(RefCell::new(QueryExecutionObservability::default())),
+        )
+    }
+
+    pub(crate) fn with_observability(
+        ctx: &'a QueryExecContext,
+        observability: Rc<RefCell<QueryExecutionObservability>>,
+    ) -> Self {
+        Self { ctx, observability }
+    }
+
+    pub(crate) fn snapshot_observability(&self) -> QueryExecutionObservability {
+        self.observability.borrow().clone()
+    }
+
+    pub(crate) fn context(&self) -> &'a QueryExecContext {
+        self.ctx
+    }
+
+    fn update_observability<F>(&self, update: F)
+    where
+        F: FnOnce(&mut QueryExecutionObservability),
+    {
+        let mut observability = self.observability.borrow_mut();
+        update(&mut observability);
+    }
+
+    pub(crate) fn note_dispatch(&self) {
+        self.update_observability(|observability| observability.dispatch_count += 1);
+    }
+
+    pub(crate) fn note_candidate_count(&self, count: u32) {
+        self.update_observability(|observability| observability.candidate_count += count);
+    }
+
+    pub(crate) fn note_branch_visit(&self) {
+        self.update_observability(|observability| observability.branch_visits += 1);
+    }
+
+    pub(crate) fn note_artifact_load(&self) {
+        self.update_observability(|observability| observability.artifact_loads += 1);
+    }
+
+    pub(crate) fn note_opaque_fallback(&self) {
+        self.update_observability(|observability| observability.opaque_fallbacks += 1);
+    }
+
+    pub(crate) fn note_trace_step(&self) {
+        self.update_observability(|observability| observability.trace_steps += 1);
+    }
+
+    pub(crate) fn note_field_sample(&self) {
+        self.update_observability(|observability| observability.field_samples += 1);
+    }
+
+    pub(crate) fn note_contract_validation_failure(&self) {
+        self.update_observability(|observability| observability.contract_validation_failures += 1);
     }
 
     pub(crate) fn execute_world_query(
@@ -276,7 +402,14 @@ impl<'a> DirectQueryOps<'a> {
         plan: &KernelBatchQueryPlan,
         args: &[KernelValue],
     ) -> Result<KernelValue, QueryExecError> {
-        let capture = resolve_batch_capture(self.ctx, plan, args.first())?;
+        let capture = match plan.kind {
+            BatchQueryKind::Distance | BatchQueryKind::Normal => {
+                self.resolve_field_or_shape_capture(args.first())
+            }
+            BatchQueryKind::Trace | BatchQueryKind::Surface | BatchQueryKind::Occluded => {
+                self.resolve_shape_capture(args.first())
+            }
+        }?;
         let items = expect_array(
             args.get(1),
             if matches!(plan.kind, BatchQueryKind::Distance | BatchQueryKind::Normal) {
@@ -287,79 +420,25 @@ impl<'a> DirectQueryOps<'a> {
                 "rays"
             },
         )?;
+        self.note_candidate_count(items.len() as u32);
         let mut out = Vec::with_capacity(items.len());
+        let capture_value = KernelValue::Capture(capture.clone());
         for item in items {
-            out.push(self.execute_batch_item(plan, &capture, item)?);
+            out.push(execute_batch_item_contract(
+                self,
+                &plan.item_contract,
+                Some(&capture_value),
+                item,
+            )?);
         }
         Ok(KernelValue::Array(out))
-    }
-
-    fn execute_batch_item(
-        &self,
-        plan: &KernelBatchQueryPlan,
-        capture: &SmolStr,
-        item: &KernelValue,
-    ) -> Result<KernelValue, QueryExecError> {
-        match plan.kind {
-            BatchQueryKind::Distance => {
-                let point_query = expect_struct_ref(item, "PointQuery")?;
-                let point = expect_struct_vec3(point_query, "point")?;
-                Ok(distance_result(self.eval_capture_distance(
-                    capture,
-                    point,
-                    plan.capture_kind,
-                )?))
-            }
-            BatchQueryKind::Normal => {
-                let point_query = expect_struct_ref(item, "PointQuery")?;
-                let point = expect_struct_vec3(point_query, "point")?;
-                Ok(normal_result(self.eval_capture_normal(
-                    capture,
-                    point,
-                    plan.capture_kind,
-                )?))
-            }
-            BatchQueryKind::Trace => {
-                let ray = expect_struct_ref(item, "RayQuery")?;
-                self.trace_shape(
-                    capture,
-                    expect_struct_vec3(ray, "origin")?,
-                    expect_struct_vec3(ray, "direction")?,
-                    expect_struct_f32(ray, "max_distance")?,
-                    expect_struct_f32(ray, "min_step")?,
-                    expect_struct_f32(ray, "hit_epsilon")?,
-                    expect_struct_i32(ray, "max_steps")?,
-                )
-            }
-            BatchQueryKind::Surface => {
-                let hit = expect_struct_ref(item, "Hit3")?;
-                self.surface_at(capture, hit)
-            }
-            BatchQueryKind::Occluded => {
-                let ray = expect_struct_ref(item, "RayQuery")?;
-                let hit = self.trace_shape(
-                    capture,
-                    expect_struct_vec3(ray, "origin")?,
-                    expect_struct_vec3(ray, "direction")?,
-                    expect_struct_f32(ray, "max_distance")?,
-                    expect_struct_f32(ray, "min_step")?,
-                    expect_struct_f32(ray, "hit_epsilon")?,
-                    expect_struct_i32(ray, "max_steps")?,
-                )?;
-                let hit = expect_struct_ref(&hit, "Hit3")?;
-                Ok(occlusion_result(
-                    expect_struct_bool(hit, "hit")?,
-                    expect_struct_f32(hit, "distance")?,
-                    expect_struct_i32(hit, "steps")?,
-                ))
-            }
-        }
     }
 
     pub(crate) fn resolve_field_or_shape_capture(
         &self,
         capture: Option<&KernelValue>,
     ) -> Result<SmolStr, QueryExecError> {
+        self.note_artifact_load();
         match capture {
             Some(KernelValue::Capture(name)) => {
                 if self.ctx.field_names.contains(name) || self.ctx.shape_names.contains(name) {
@@ -402,6 +481,7 @@ impl<'a> DirectQueryOps<'a> {
         &self,
         capture: Option<&KernelValue>,
     ) -> Result<SmolStr, QueryExecError> {
+        self.note_artifact_load();
         match capture {
             Some(KernelValue::Capture(name)) if self.ctx.shape_names.contains(name) => {
                 Ok(name.clone())
@@ -430,6 +510,7 @@ impl<'a> DirectQueryOps<'a> {
         &self,
         capture: Option<&KernelValue>,
     ) -> Result<SmolStr, QueryExecError> {
+        self.note_artifact_load();
         match capture {
             Some(KernelValue::Capture(name)) if self.ctx.regions_by_name.contains_key(name) => {
                 Ok(name.clone())
@@ -489,14 +570,11 @@ impl<'a> DirectQueryOps<'a> {
         field: &SmolStr,
         point: [f32; 3],
     ) -> Result<f32, QueryExecError> {
-        let scene =
-            self.ctx
-                .scene
-                .fields
-                .get(field)
-                .ok_or_else(|| QueryExecError::MissingField {
-                    name: field.clone(),
-                })?;
+        self.note_field_sample();
+        let scene = self.field_scene(field)?;
+        if scene.root.contains_opaque_leaf() {
+            return self.eval_opaque_field_distance(field, point);
+        }
         self.eval_field_node(&scene.root, point)
     }
 
@@ -520,6 +598,7 @@ impl<'a> DirectQueryOps<'a> {
         shape: &SmolStr,
         point: [f32; 3],
     ) -> Result<f32, QueryExecError> {
+        self.note_field_sample();
         let scene =
             self.ctx
                 .scene
@@ -546,7 +625,12 @@ impl<'a> DirectQueryOps<'a> {
         Ok(normalize3([dx, dy, dz]))
     }
 
-    fn eval_field_node(&self, node: &FieldNode, point: [f32; 3]) -> Result<f32, QueryExecError> {
+    pub(crate) fn eval_field_node(
+        &self,
+        node: &FieldNode,
+        point: [f32; 3],
+    ) -> Result<f32, QueryExecError> {
+        self.note_branch_visit();
         match node {
             FieldNode::Use { target } => self.eval_field_distance(target, point),
             FieldNode::Primitive { primitive, args } => {
@@ -653,15 +737,63 @@ impl<'a> DirectQueryOps<'a> {
                 Ok(current)
             }
             FieldNode::OpaqueLeaf => Ok(1_000_000.0),
-            other => Err(QueryExecError::Unsupported {
-                message: format!(
-                    "field operation '{other:?}' is not implemented in query_exec::cpu"
-                ),
-            }),
+            FieldNode::Extrude { height, profile } => {
+                let (Some(height), Some(profile)) = (height.as_ref(), profile.as_ref()) else {
+                    return Ok(1_000_000.0);
+                };
+                let height_value = self.eval_scene_value_expr(height, &HashMap::new())?;
+                let abs_height = expect_abs_scalar(&height_value)?;
+                let half_height = abs_height * 0.5;
+                let profile_distance = self.eval_profile_expr(profile, [point[0], point[2]])?;
+                let axial = point[1].abs() - half_height;
+                Ok(self.eval_profile_cap_distance(profile_distance, axial))
+            }
+            FieldNode::Revolve { profile } => {
+                let Some(profile) = profile.as_ref() else {
+                    return Ok(1_000_000.0);
+                };
+                let radial = (point[0] * point[0] + point[2] * point[2]).sqrt();
+                self.eval_profile_expr(profile, [radial, point[1]])
+            }
+            FieldNode::Sweep { path, profile } => {
+                let (Some(path), Some(profile)) = (path.as_ref(), profile.as_ref()) else {
+                    return Ok(1_000_000.0);
+                };
+                let path_value = self.eval_scene_value_expr(path, &HashMap::new())?;
+                let coords = runtime_binary_value(
+                    path_value.clone(),
+                    KernelValue::Vec3(point),
+                    wr_field_sweep_coords,
+                )?;
+                let coords = expect_vec3(Some(&coords), "field_sweep_coords")?;
+                let profile_distance = self.eval_profile_expr(profile, [coords[0], coords[1]])?;
+                let path_length = length_of(&path_value)?;
+                let axial = coords[2].abs() - path_length * 0.5;
+                Ok(self.eval_profile_cap_distance(profile_distance, axial))
+            }
+            FieldNode::Loft { height, from, to } => {
+                let (Some(height), Some(from), Some(to)) =
+                    (height.as_ref(), from.as_ref(), to.as_ref())
+                else {
+                    return Ok(1_000_000.0);
+                };
+                let height_value = self.eval_scene_value_expr(height, &HashMap::new())?;
+                let abs_height = expect_abs_scalar(&height_value)?;
+                let half_height = abs_height * 0.5;
+                let safe_height = abs_height.max(0.0001);
+                let profile_point = [point[0], point[2]];
+                let from_distance = self.eval_profile_expr(from, profile_point)?;
+                let to_distance = self.eval_profile_expr(to, profile_point)?;
+                let t = ((point[1] + half_height) / safe_height).clamp(0.0, 1.0);
+                let mixed = from_distance + (to_distance - from_distance) * t;
+                let axial = point[1].abs() - half_height;
+                Ok(self.eval_profile_cap_distance(mixed, axial))
+            }
         }
     }
 
     fn eval_shape_node(&self, node: &ShapeNode, point: [f32; 3]) -> Result<f32, QueryExecError> {
+        self.note_branch_visit();
         match node {
             ShapeNode::Use { target } => self.eval_shape_distance(target, point),
             ShapeNode::Leaf(leaf) => self.eval_field_distance(&leaf.field, point),
@@ -699,7 +831,7 @@ impl<'a> DirectQueryOps<'a> {
         }
     }
 
-    fn eval_wrapped_point(
+    pub(crate) fn eval_wrapped_point(
         &self,
         kind: TransformKind,
         param: &SceneValueExpr,
@@ -725,7 +857,7 @@ impl<'a> DirectQueryOps<'a> {
         expect_vec3(Some(&value), "wrapped point")
     }
 
-    fn eval_repeat_point(
+    pub(crate) fn eval_repeat_point(
         &self,
         kind: RepeatKind,
         param: &SceneValueExpr,
@@ -747,6 +879,134 @@ impl<'a> DirectQueryOps<'a> {
             }
         };
         expect_vec3(Some(&value), "repeat point")
+    }
+
+    pub(crate) fn eval_repeat_identity(
+        &self,
+        kind: RepeatKind,
+        param: &SceneValueExpr,
+        point: [f32; 3],
+    ) -> Result<u32, QueryExecError> {
+        let config = self.eval_scene_value_expr(param, &HashMap::new())?;
+        let point_value = KernelValue::Vec3(point);
+        let value = match kind {
+            RepeatKind::RepeatLinear => {
+                runtime_binary_value(config, point_value, wr_repeat_linear_identity)?
+            }
+            RepeatKind::RepeatGrid => {
+                runtime_binary_value(config, point_value, wr_repeat_grid_identity)?
+            }
+            RepeatKind::RadialRepeat => {
+                runtime_binary_value(config, point_value, wr_radial_repeat_identity)?
+            }
+            RepeatKind::MirrorArray => {
+                runtime_binary_value(config, point_value, wr_mirror_array_identity)?
+            }
+            RepeatKind::InstanceArray => {
+                runtime_binary_value(config, point_value, wr_instance_array_identity)?
+            }
+        };
+        match value {
+            KernelValue::U32(value) => Ok(value),
+            KernelValue::I32(value) => Ok(value as u32),
+            other => Err(QueryExecError::TypeMismatch {
+                expected: "repeat identity: U32".to_string(),
+                found: format!("{other:?}"),
+            }),
+        }
+    }
+
+    fn eval_profile_expr(
+        &self,
+        profile: &SceneProfileExpr,
+        point: [f32; 2],
+    ) -> Result<f32, QueryExecError> {
+        match profile {
+            SceneProfileExpr::Primitive { primitive, args } => {
+                let point_value = KernelValue::Vec2(point);
+                match primitive {
+                    hir::ProfilePrimitive::Circle2 => {
+                        let radius = self.eval_scene_named_arg(args, "radius")?;
+                        runtime_binary_f32_from_values(point_value, radius, wr_circle2)
+                    }
+                    hir::ProfilePrimitive::Rect2 => {
+                        let half = self.eval_scene_named_arg(args, "half")?;
+                        runtime_binary_f32_from_values(point_value, half, wr_rect2)
+                    }
+                    hir::ProfilePrimitive::RoundedRect2 => {
+                        let half = self.eval_scene_named_arg(args, "half")?;
+                        let radius = self.eval_scene_named_arg(args, "radius")?;
+                        runtime_ternary_f32_from_values(point_value, half, radius, wr_rounded_rect2)
+                    }
+                    hir::ProfilePrimitive::Capsule2 => {
+                        let a = self.eval_scene_named_arg(args, "a")?;
+                        let b = self.eval_scene_named_arg(args, "b")?;
+                        let radius = self.eval_scene_named_arg(args, "radius")?;
+                        runtime_quaternary_f32(point_value, a, b, radius, wr_capsule2)
+                    }
+                    hir::ProfilePrimitive::Segment2 => {
+                        let a = self.eval_scene_named_arg(args, "a")?;
+                        let b = self.eval_scene_named_arg(args, "b")?;
+                        runtime_ternary_f32_from_values(point_value, a, b, wr_segment2)
+                    }
+                    hir::ProfilePrimitive::Polygon2 => {
+                        let vertices = self.eval_scene_named_arg(args, "vertices")?;
+                        polygon_profile_distance(point, &vertices, true)
+                    }
+                    hir::ProfilePrimitive::Polyline2 => {
+                        let vertices = self.eval_scene_named_arg(args, "vertices")?;
+                        polygon_profile_distance(point, &vertices, false)
+                    }
+                }
+            }
+        }
+    }
+
+    fn eval_profile_cap_distance(&self, profile_distance: f32, axial_distance: f32) -> f32 {
+        let outside_x = profile_distance.max(0.0);
+        let outside_y = axial_distance.max(0.0);
+        let outside_len = (outside_x * outside_x + outside_y * outside_y).sqrt();
+        let inside = profile_distance.max(axial_distance).min(0.0);
+        inside + outside_len
+    }
+
+    fn eval_opaque_field_distance(
+        &self,
+        field: &SmolStr,
+        point: [f32; 3],
+    ) -> Result<f32, QueryExecError> {
+        self.note_opaque_fallback();
+        let scene = self.field_scene(field)?;
+        let bounds_expr =
+            scene
+                .authored_bounds
+                .as_ref()
+                .ok_or_else(|| QueryExecError::Unsupported {
+                    message: format!("opaque field '{field}' is missing authored bounds"),
+                })?;
+        let bounds_value = self.eval_scene_value_expr(bounds_expr, &HashMap::new())?;
+        let bounds = expect_struct_ref(&bounds_value, "Bounds3")?;
+        let min = expect_struct_vec3(bounds, "min")?;
+        let max = expect_struct_vec3(bounds, "max")?;
+        let center = [
+            (min[0] + max[0]) * 0.5,
+            (min[1] + max[1]) * 0.5,
+            (min[2] + max[2]) * 0.5,
+        ];
+        let half = [
+            (max[0] - min[0]) * 0.5,
+            (max[1] - min[1]) * 0.5,
+            (max[2] - min[2]) * 0.5,
+        ];
+        runtime_binary_f32_from_values(
+            KernelValue::Vec3([
+                point[0] - center[0],
+                point[1] - center[1],
+                point[2] - center[2],
+            ]),
+            KernelValue::Vec3(half),
+            wr_box,
+        )
     }
 
     fn eval_field_primitive(
@@ -841,6 +1101,368 @@ impl<'a> DirectQueryOps<'a> {
         }
     }
 
+    pub(crate) fn field_scene(
+        &self,
+        field: &SmolStr,
+    ) -> Result<&crate::scene_ir::FieldScene, QueryExecError> {
+        self.ctx
+            .scene
+            .fields
+            .get(field)
+            .ok_or_else(|| QueryExecError::MissingField {
+                name: field.clone(),
+            })
+    }
+
+    pub(crate) fn shape_scene(
+        &self,
+        shape: &SmolStr,
+    ) -> Result<&crate::scene_ir::ShapeScene, QueryExecError> {
+        self.ctx
+            .scene
+            .shapes
+            .get(shape)
+            .ok_or_else(|| QueryExecError::MissingShape {
+                name: shape.clone(),
+            })
+    }
+
+    fn eval_shape_winner(
+        &self,
+        shape: &SmolStr,
+        point: [f32; 3],
+    ) -> Result<ShapeWinner, QueryExecError> {
+        let scene = self.shape_scene(shape)?;
+        self.eval_shape_winner_node(shape, &scene.root, scene.provenance.as_ref(), point)
+    }
+
+    fn eval_shape_winner_node(
+        &self,
+        scene_name: &SmolStr,
+        node: &ShapeNode,
+        provenance: Option<&ShapeProvenanceExpr>,
+        point: [f32; 3],
+    ) -> Result<ShapeWinner, QueryExecError> {
+        self.note_branch_visit();
+        match node {
+            ShapeNode::Use { target } => {
+                let scene = self.shape_scene(target)?;
+                self.eval_shape_winner_node(target, &scene.root, scene.provenance.as_ref(), point)
+            }
+            ShapeNode::Leaf(leaf) => Ok(ShapeWinner {
+                distance: self.eval_field_distance(&leaf.field, point)?,
+                feature_id: leaf.feature_id,
+                leaf: Some(ShapeLeafRef {
+                    scene: scene_name.clone(),
+                    leaf: leaf.id,
+                }),
+            }),
+            ShapeNode::Union { items } => {
+                let merge_policy = match provenance {
+                    Some(ShapeProvenanceExpr::Union { provenance, .. }) => *provenance,
+                    _ => ShapeMergeProvenancePolicy::Nearest,
+                };
+                let provenance_items = match provenance {
+                    Some(ShapeProvenanceExpr::Union { items, .. }) => Some(items.as_slice()),
+                    _ => None,
+                };
+                let mut iter = items.iter().enumerate();
+                let Some((idx, first)) = iter.next() else {
+                    return Ok(default_shape_winner());
+                };
+                let mut current = self.eval_shape_winner_node(
+                    scene_name,
+                    first,
+                    provenance_items.and_then(|items| items.get(idx)),
+                    point,
+                )?;
+                for (idx, item) in iter {
+                    let next = self.eval_shape_winner_node(
+                        scene_name,
+                        item,
+                        provenance_items.and_then(|items| items.get(idx)),
+                        point,
+                    )?;
+                    match merge_policy {
+                        ShapeMergeProvenancePolicy::Ordered => {
+                            current.distance = runtime_binary_f32(
+                                current.distance,
+                                next.distance,
+                                wr_field_union,
+                            )?;
+                        }
+                        ShapeMergeProvenancePolicy::Nearest => {
+                            if next.distance < current.distance {
+                                current = next;
+                            }
+                        }
+                    }
+                }
+                Ok(current)
+            }
+            ShapeNode::Intersection { items } => {
+                let merge_policy = match provenance {
+                    Some(ShapeProvenanceExpr::Intersection { provenance, .. }) => *provenance,
+                    _ => ShapeMergeProvenancePolicy::Nearest,
+                };
+                let provenance_items = match provenance {
+                    Some(ShapeProvenanceExpr::Intersection { items, .. }) => Some(items.as_slice()),
+                    _ => None,
+                };
+                let mut iter = items.iter().enumerate();
+                let Some((idx, first)) = iter.next() else {
+                    return Ok(default_shape_winner());
+                };
+                let mut current = self.eval_shape_winner_node(
+                    scene_name,
+                    first,
+                    provenance_items.and_then(|items| items.get(idx)),
+                    point,
+                )?;
+                for (idx, item) in iter {
+                    let next = self.eval_shape_winner_node(
+                        scene_name,
+                        item,
+                        provenance_items.and_then(|items| items.get(idx)),
+                        point,
+                    )?;
+                    match merge_policy {
+                        ShapeMergeProvenancePolicy::Ordered => {
+                            current.distance = runtime_binary_f32(
+                                current.distance,
+                                next.distance,
+                                wr_field_intersection,
+                            )?;
+                        }
+                        ShapeMergeProvenancePolicy::Nearest => {
+                            if next.distance > current.distance {
+                                current = next;
+                            }
+                        }
+                    }
+                }
+                Ok(current)
+            }
+            ShapeNode::Subtract { left, right } => {
+                let (subtract_policy, left_provenance, right_provenance) = match provenance {
+                    Some(ShapeProvenanceExpr::Subtract {
+                        provenance,
+                        left,
+                        right,
+                    }) => (*provenance, Some(left.as_ref()), Some(right.as_ref())),
+                    _ => (ShapeSubtractProvenancePolicy::Left, None, None),
+                };
+                let left = self.eval_shape_winner_node(scene_name, left, left_provenance, point)?;
+                let right =
+                    self.eval_shape_winner_node(scene_name, right, right_provenance, point)?;
+                let neg_right = -right.distance;
+                if left.distance >= neg_right {
+                    Ok(left)
+                } else {
+                    Ok(ShapeWinner {
+                        distance: neg_right,
+                        feature_id: match subtract_policy {
+                            ShapeSubtractProvenancePolicy::Left => left.feature_id,
+                            ShapeSubtractProvenancePolicy::Right => right.feature_id,
+                        },
+                        leaf: match subtract_policy {
+                            ShapeSubtractProvenancePolicy::Left => left.leaf,
+                            ShapeSubtractProvenancePolicy::Right => right.leaf,
+                        },
+                    })
+                }
+            }
+        }
+    }
+
+    pub(crate) fn eval_field_local_frame<'scene>(
+        &'scene self,
+        field: &SmolStr,
+        point: [f32; 3],
+    ) -> Result<FieldLocalFrame<'scene>, QueryExecError> {
+        let scene = self.field_scene(field)?;
+        self.eval_field_local_frame_node(field.clone(), &scene.root, point, 0, 0)
+    }
+
+    fn eval_field_local_frame_node<'scene>(
+        &'scene self,
+        field_name: SmolStr,
+        node: &'scene FieldNode,
+        point: [f32; 3],
+        instance_id: u32,
+        repeat_id: u32,
+    ) -> Result<FieldLocalFrame<'scene>, QueryExecError> {
+        match node {
+            FieldNode::Use { target } => {
+                let scene = self.field_scene(target)?;
+                self.eval_field_local_frame_node(
+                    target.clone(),
+                    &scene.root,
+                    point,
+                    instance_id,
+                    repeat_id,
+                )
+            }
+            FieldNode::Transform { kind, param, inner } => {
+                let Some(param) = param else {
+                    return self.eval_field_local_frame_node(
+                        field_name,
+                        inner,
+                        point,
+                        instance_id,
+                        repeat_id,
+                    );
+                };
+                let local_point = self.eval_wrapped_point(*kind, param, point)?;
+                self.eval_field_local_frame_node(
+                    field_name,
+                    inner,
+                    local_point,
+                    instance_id,
+                    repeat_id,
+                )
+            }
+            FieldNode::Repeat { kind, param, inner } => {
+                let Some(param) = param else {
+                    return self.eval_field_local_frame_node(
+                        field_name,
+                        inner,
+                        point,
+                        instance_id,
+                        repeat_id,
+                    );
+                };
+                let component = self.eval_repeat_identity(*kind, param, point)?;
+                let local_point = self.eval_repeat_point(*kind, param, point)?;
+                let (next_instance_id, next_repeat_id) = match kind {
+                    RepeatKind::InstanceArray => {
+                        (chain_identity_component(instance_id, component), repeat_id)
+                    }
+                    _ => (instance_id, chain_identity_component(repeat_id, component)),
+                };
+                self.eval_field_local_frame_node(
+                    field_name,
+                    inner,
+                    local_point,
+                    next_instance_id,
+                    next_repeat_id,
+                )
+            }
+            _ => Ok(FieldLocalFrame {
+                field_name,
+                node,
+                point,
+                instance_id,
+                repeat_id,
+            }),
+        }
+    }
+
+    pub(crate) fn eval_field_local_normal(
+        &self,
+        field: &SmolStr,
+        point: [f32; 3],
+    ) -> Result<[f32; 3], QueryExecError> {
+        let frame = self.eval_field_local_frame(field, point)?;
+        let eps = 0.001f32;
+        let sample = |sample_point: [f32; 3]| match frame.node {
+            FieldNode::OpaqueLeaf => {
+                self.eval_opaque_field_distance(&frame.field_name, sample_point)
+            }
+            _ => self.eval_field_node(frame.node, sample_point),
+        };
+        let dx = sample([frame.point[0] + eps, frame.point[1], frame.point[2]])?
+            - sample([frame.point[0] - eps, frame.point[1], frame.point[2]])?;
+        let dy = sample([frame.point[0], frame.point[1] + eps, frame.point[2]])?
+            - sample([frame.point[0], frame.point[1] - eps, frame.point[2]])?;
+        let dz = sample([frame.point[0], frame.point[1], frame.point[2] + eps])?
+            - sample([frame.point[0], frame.point[1], frame.point[2] - eps])?;
+        Ok(normalize3([dx, dy, dz]))
+    }
+
+    fn eval_shape_radiance_node(
+        &self,
+        node: &ShapeNode,
+        point: [f32; 3],
+        direction: [f32; 3],
+    ) -> Result<[f32; 3], QueryExecError> {
+        match node {
+            ShapeNode::Use { target } => {
+                let scene = self.shape_scene(target)?;
+                self.eval_shape_radiance_node(&scene.root, point, direction)
+            }
+            ShapeNode::Leaf(leaf) => {
+                let Some(radiance) = &leaf.radiance else {
+                    return Ok([0.0, 0.0, 0.0]);
+                };
+                let local_frame = self.eval_field_local_frame(&leaf.field, point)?;
+                let value = self.execute_portable_function(
+                    radiance,
+                    vec![
+                        KernelValue::Vec3(local_frame.point),
+                        KernelValue::Vec3(direction),
+                        KernelValue::U32(leaf.feature_id),
+                    ],
+                )?;
+                expect_vec3(Some(&value), "radiance")
+            }
+            ShapeNode::Union { items } | ShapeNode::Intersection { items } => {
+                let mut total = [0.0, 0.0, 0.0];
+                for item in items {
+                    total = add3(
+                        total,
+                        self.eval_shape_radiance_node(item, point, direction)?,
+                    );
+                }
+                Ok(total)
+            }
+            ShapeNode::Subtract { left, right } => Ok(add3(
+                self.eval_shape_radiance_node(left, point, direction)?,
+                self.eval_shape_radiance_node(right, point, direction)?,
+            )),
+        }
+    }
+
+    fn eval_shape_medium_node(
+        &self,
+        node: &ShapeNode,
+        point: [f32; 3],
+    ) -> Result<KernelValue, QueryExecError> {
+        match node {
+            ShapeNode::Use { target } => {
+                let scene = self.shape_scene(target)?;
+                self.eval_shape_medium_node(&scene.root, point)
+            }
+            ShapeNode::Leaf(leaf) => {
+                let Some(volume) = &leaf.volume else {
+                    return Ok(default_medium());
+                };
+                let local_frame = self.eval_field_local_frame(&leaf.field, point)?;
+                let local_surface_distance =
+                    self.eval_field_node(local_frame.node, local_frame.point)?;
+                self.execute_portable_function(
+                    volume,
+                    vec![
+                        KernelValue::Vec3(local_frame.point),
+                        KernelValue::F32(local_surface_distance),
+                    ],
+                )
+            }
+            ShapeNode::Union { items } | ShapeNode::Intersection { items } => {
+                let mut total = default_medium();
+                for item in items {
+                    total =
+                        combine_medium_values(total, self.eval_shape_medium_node(item, point)?)?;
+                }
+                Ok(total)
+            }
+            ShapeNode::Subtract { left, right } => combine_medium_values(
+                self.eval_shape_medium_node(left, point)?,
+                self.eval_shape_medium_node(right, point)?,
+            ),
+        }
+    }
+
     pub(crate) fn trace_shape(
         &self,
         shape: &SmolStr,
@@ -857,6 +1479,7 @@ impl<'a> DirectQueryOps<'a> {
         let mut travel = 0.0f32;
         let mut steps = 0i32;
         while steps < max_steps && travel <= max_distance {
+            self.note_trace_step();
             let point = [
                 origin[0] + direction[0] * travel,
                 origin[1] + direction[1] * travel,
@@ -865,22 +1488,37 @@ impl<'a> DirectQueryOps<'a> {
             let distance = self.eval_shape_distance(shape, point)?;
             if distance <= hit_epsilon {
                 let normal = self.eval_shape_normal(shape, point)?;
-                let feature_id = self.first_shape_feature_id(shape).unwrap_or(0);
-                let payload = self
-                    .lookup_shape_leaf(shape, feature_id)
-                    .and_then(|leaf| self.eval_payload_body(&leaf.payload).ok())
-                    .unwrap_or_else(default_payload);
+                let winner = self.eval_shape_winner(shape, point)?;
+                let feature_id = winner.feature_id;
+                let (payload, local_position, local_normal, instance_id, repeat_id) = self
+                    .shape_leaf_from_winner(shape, feature_id, winner.leaf.as_ref())
+                    .map(|leaf| {
+                        let local_frame = self.eval_field_local_frame(&leaf.field, point)?;
+                        let local_normal = self.eval_field_local_normal(&leaf.field, point)?;
+                        let payload = self
+                            .eval_payload_body(&leaf.payload)
+                            .unwrap_or_else(|_| default_payload());
+                        Ok::<_, QueryExecError>((
+                            payload,
+                            local_frame.point,
+                            local_normal,
+                            local_frame.instance_id,
+                            local_frame.repeat_id,
+                        ))
+                    })
+                    .transpose()?
+                    .unwrap_or_else(|| (default_payload(), point, normal, 0, 0));
                 return Ok(hit_value(
                     true,
                     travel,
                     point,
                     normal,
-                    point,
-                    normal,
+                    local_position,
+                    local_normal,
                     steps,
                     feature_id,
-                    0,
-                    0,
+                    instance_id,
+                    repeat_id,
                     stable_shape_capture_id(shape),
                     payload,
                 ));
@@ -897,7 +1535,11 @@ impl<'a> DirectQueryOps<'a> {
         hit: &KernelStructValue,
     ) -> Result<KernelValue, QueryExecError> {
         let feature_id = expect_struct_u32(hit, "feature_id")?;
-        let Some(leaf) = self.lookup_shape_leaf(shape, feature_id) else {
+        let Some(leaf) = self
+            .ctx
+            .shape_leaf_ref(shape, feature_id)
+            .and_then(|leaf_ref| self.ctx.shape_leaf(&leaf_ref.scene, leaf_ref.leaf))
+        else {
             return Ok(default_surface());
         };
         self.execute_portable_function(&leaf.material, vec![KernelValue::Struct(hit.clone())])
@@ -909,20 +1551,12 @@ impl<'a> DirectQueryOps<'a> {
         point: [f32; 3],
         direction: [f32; 3],
     ) -> Result<KernelValue, QueryExecError> {
-        let Some(leaf) = self.lookup_first_leaf(shape) else {
-            return Ok(KernelValue::Vec3([0.0, 0.0, 0.0]));
-        };
-        let Some(radiance) = &leaf.radiance else {
-            return Ok(KernelValue::Vec3([0.0, 0.0, 0.0]));
-        };
-        self.execute_portable_function(
-            radiance,
-            vec![
-                KernelValue::Vec3(point),
-                KernelValue::Vec3(direction),
-                KernelValue::U32(leaf.feature_id),
-            ],
-        )
+        let scene = self.shape_scene(shape)?;
+        Ok(KernelValue::Vec3(self.eval_shape_radiance_node(
+            &scene.root,
+            point,
+            direction,
+        )?))
     }
 
     pub(crate) fn medium_at(
@@ -930,17 +1564,8 @@ impl<'a> DirectQueryOps<'a> {
         shape: &SmolStr,
         point: [f32; 3],
     ) -> Result<KernelValue, QueryExecError> {
-        let Some(leaf) = self.lookup_first_leaf(shape) else {
-            return Ok(default_medium());
-        };
-        let Some(volume) = &leaf.volume else {
-            return Ok(default_medium());
-        };
-        let surface_distance = self.eval_field_distance(&leaf.field, point)?;
-        self.execute_portable_function(
-            volume,
-            vec![KernelValue::Vec3(point), KernelValue::F32(surface_distance)],
-        )
+        let scene = self.shape_scene(shape)?;
+        self.eval_shape_medium_node(&scene.root, point)
     }
 
     pub(crate) fn resolve_world_shapes(
@@ -948,6 +1573,7 @@ impl<'a> DirectQueryOps<'a> {
         capture: &SmolStr,
         detail: i32,
     ) -> Result<Vec<SmolStr>, QueryExecError> {
+        self.note_artifact_load();
         let scene_id = stable_region_scene_capture_id(capture);
         let Some(region_case) = select_region_exec_case(&self.ctx.region_cases, scene_id) else {
             return Err(QueryExecError::MissingRegion {
@@ -956,7 +1582,10 @@ impl<'a> DirectQueryOps<'a> {
         };
         region_case
             .shapes_for_detail(detail)
-            .map(|shapes| shapes.to_vec())
+            .map(|shapes| {
+                self.note_candidate_count(shapes.len() as u32);
+                shapes.to_vec()
+            })
             .map_err(|message| QueryExecError::Unsupported {
                 message: message.to_string(),
             })
@@ -979,48 +1608,25 @@ impl<'a> DirectQueryOps<'a> {
         Ok(backend.result)
     }
 
-    pub(crate) fn lookup_shape_leaf(
+    fn shape_leaf_from_winner(
         &self,
         shape: &SmolStr,
         feature_id: u32,
-    ) -> Option<&hir::ShapeLeaf> {
-        fn visit<'a>(expr: &'a hir::ShapeExpr, feature_id: u32) -> Option<&'a hir::ShapeLeaf> {
-            match expr {
-                hir::ShapeExpr::Use { .. } => None,
-                hir::ShapeExpr::Leaf(leaf) if leaf.feature_id == feature_id => Some(leaf),
-                hir::ShapeExpr::Leaf(_) => None,
-                hir::ShapeExpr::Union { items } | hir::ShapeExpr::Intersection { items } => {
-                    items.iter().find_map(|item| visit(item, feature_id))
-                }
-                hir::ShapeExpr::Subtract { left, right } => {
-                    visit(left, feature_id).or_else(|| visit(right, feature_id))
-                }
-            }
-        }
-        let graph = self.ctx.shape_graphs.get(shape)?;
-        visit(&graph.root, feature_id)
+        leaf_ref: Option<&ShapeLeafRef>,
+    ) -> Option<&crate::scene_ir::ShapeLeafScene> {
+        leaf_ref
+            .and_then(|leaf_ref| self.ctx.shape_leaf(&leaf_ref.scene, leaf_ref.leaf))
+            .or_else(|| {
+                self.ctx
+                    .shape_leaf_ref(shape, feature_id)
+                    .and_then(|leaf_ref| self.ctx.shape_leaf(&leaf_ref.scene, leaf_ref.leaf))
+            })
     }
 
-    pub(crate) fn lookup_first_leaf(&self, shape: &SmolStr) -> Option<&hir::ShapeLeaf> {
-        fn visit(expr: &hir::ShapeExpr) -> Option<&hir::ShapeLeaf> {
-            match expr {
-                hir::ShapeExpr::Use { .. } => None,
-                hir::ShapeExpr::Leaf(leaf) => Some(leaf),
-                hir::ShapeExpr::Union { items } | hir::ShapeExpr::Intersection { items } => {
-                    items.iter().find_map(visit)
-                }
-                hir::ShapeExpr::Subtract { left, right } => visit(left).or_else(|| visit(right)),
-            }
-        }
-        let graph = self.ctx.shape_graphs.get(shape)?;
-        visit(&graph.root)
-    }
-
-    pub(crate) fn first_shape_feature_id(&self, shape: &SmolStr) -> Option<u32> {
-        self.lookup_first_leaf(shape).map(|leaf| leaf.feature_id)
-    }
-
-    pub(crate) fn eval_payload_body(&self, body: &hir::Body) -> Result<KernelValue, QueryExecError> {
+    pub(crate) fn eval_payload_body(
+        &self,
+        body: &hir::Body,
+    ) -> Result<KernelValue, QueryExecError> {
         let mut scopes = vec![HashMap::new()];
         self.eval_portable_body_expr(body, &mut scopes)
     }
@@ -1300,6 +1906,13 @@ impl<'a> DirectQueryOps<'a> {
             .transpose()
     }
 
+    pub(crate) fn eval_scene_constant(
+        &self,
+        expr: &SceneValueExpr,
+    ) -> Result<KernelValue, QueryExecError> {
+        self.eval_scene_value_expr(expr, &HashMap::new())
+    }
+
     fn eval_scene_value_expr(
         &self,
         expr: &SceneValueExpr,
@@ -1307,6 +1920,12 @@ impl<'a> DirectQueryOps<'a> {
     ) -> Result<KernelValue, QueryExecError> {
         match expr {
             SceneValueExpr::Literal(literal) => Ok(literal_to_kernel(literal)),
+            SceneValueExpr::List(items) => Ok(KernelValue::Array(
+                items
+                    .iter()
+                    .map(|item| self.eval_scene_value_expr(item, env))
+                    .collect::<Result<Vec<_>, _>>()?,
+            )),
             SceneValueExpr::Unary { op, expr } => {
                 let value = self.eval_scene_value_expr(expr, env)?;
                 eval_unary_value(*op, value)
@@ -1351,27 +1970,7 @@ impl<'a> DirectQueryOps<'a> {
         }
         if portable::builtin_record_is_constructible(name.as_str()) {
             let record = portable::builtin_record(name.as_str()).expect("constructible record");
-            let fields = record
-                .fields
-                .iter()
-                .enumerate()
-                .map(|(index, field)| {
-                    let value =
-                        args.get(index)
-                            .cloned()
-                            .ok_or_else(|| QueryExecError::Unsupported {
-                                message: format!(
-                                    "missing constructor arg {} for builtin '{}'",
-                                    index, name
-                                ),
-                            })?;
-                    Ok((SmolStr::new(field.name), value))
-                })
-                .collect::<Result<Vec<_>, QueryExecError>>()?;
-            return Ok(Some(KernelValue::Struct(KernelStructValue {
-                name: name.clone(),
-                fields,
-            })));
+            return Ok(Some(construct_builtin_record_value(record, args)?));
         }
         if let Some(field_names) = self.ctx.value_class_fields.get(name) {
             let fields = field_names
@@ -1529,11 +2128,7 @@ impl CaptureQueryBackend for DirectQueryOps<'_> {
         DirectQueryOps::radiance_at(self, shape, point, direction)
     }
 
-    fn medium_at(
-        &self,
-        shape: &SmolStr,
-        point: [f32; 3],
-    ) -> Result<KernelValue, QueryExecError> {
+    fn medium_at(&self, shape: &SmolStr, point: [f32; 3]) -> Result<KernelValue, QueryExecError> {
         DirectQueryOps::medium_at(self, shape, point)
     }
 }
@@ -1585,6 +2180,27 @@ fn eval_builtin_callable(
         "transform3_identity" => Some(transform3_identity_value()),
         "compose_transform3" => Some(compose_transform3_value(args)?),
         "inverse_transform3" => Some(inverse_transform3_value(args)?),
+        "transform_normal" => Some(runtime_binary_builtin(args, wr_transform_normal)?),
+        "field_sweep_coords" => Some(runtime_binary_builtin(args, wr_field_sweep_coords)?),
+        "circle2" => Some(runtime_binary_builtin(args, wr_circle2)?),
+        "rect2" => Some(runtime_binary_builtin(args, wr_rect2)?),
+        "rounded_rect2" => Some(runtime_ternary_builtin(args, wr_rounded_rect2)?),
+        "capsule2" => {
+            let [point, a, b, radius] = args else {
+                return Err(QueryExecError::Unsupported {
+                    message: "capsule2 expects four arguments".to_string(),
+                });
+            };
+            Some(runtime_to_kernel_value(wr_capsule2(
+                kernel_to_runtime(point)?,
+                kernel_to_runtime(a)?,
+                kernel_to_runtime(b)?,
+                kernel_to_runtime(radius)?,
+            ))?)
+        }
+        "segment2" => Some(runtime_ternary_builtin(args, wr_segment2)?),
+        "polygon2" => Some(runtime_binary_builtin(args, wr_polygon2)?),
+        "polyline2" => Some(runtime_binary_builtin(args, wr_polyline2)?),
         "abs" => Some(unary_componentwise(args, "abs", |value| value.abs())?),
         "min" => Some(binary_componentwise(args, "min", |lhs, rhs| lhs.min(rhs))?),
         "max" => Some(binary_componentwise(args, "max", |lhs, rhs| lhs.max(rhs))?),
@@ -1914,9 +2530,9 @@ impl WorldRadianceBackend for CpuWorldRadianceBackend<'_, '_> {
     }
 
     fn accumulate_world_radiance_shape(&mut self, shape: &SmolStr) -> Result<(), Self::Error> {
-        let KernelValue::Vec3(next) = self
-            .evaluator
-            .radiance_at(shape, self.point, self.direction)?
+        let KernelValue::Vec3(next) =
+            self.evaluator
+                .radiance_at(shape, self.point, self.direction)?
         else {
             return Ok(());
         };
@@ -1977,14 +2593,22 @@ impl WorldMediumBackend for CpuWorldMediumBackend<'_, '_> {
         let KernelValue::Struct(next) = self.evaluator.medium_at(shape, self.point)? else {
             return Ok(());
         };
-        self.density += expect_struct_f32(&next, "density")?;
+        let next_density = expect_struct_f32(&next, "density")?;
         let next_emission = expect_struct_vec3(&next, "emission")?;
-        self.anisotropy += expect_struct_f32(&next, "anisotropy")?;
+        let next_anisotropy = expect_struct_f32(&next, "anisotropy")?;
+        let density = self.density + next_density;
+        let anisotropy = if density > 0.0 {
+            (self.anisotropy * self.density + next_anisotropy * next_density) / density
+        } else {
+            0.0
+        };
+        self.density = density;
         self.emission = [
             self.emission[0] + next_emission[0],
             self.emission[1] + next_emission[1],
             self.emission[2] + next_emission[2],
         ];
+        self.anisotropy = anisotropy;
         Ok(())
     }
 }
@@ -1998,24 +2622,7 @@ fn construct_builtin_record(
             message: format!("unknown builtin record constructor '{name}'"),
         });
     };
-    let fields = record
-        .fields
-        .iter()
-        .enumerate()
-        .map(|(index, field)| {
-            let value = args
-                .get(index)
-                .cloned()
-                .ok_or_else(|| QueryExecError::Unsupported {
-                    message: format!("missing constructor arg {} for '{}'", index, record.name),
-                })?;
-            Ok((SmolStr::new(field.name), value))
-        })
-        .collect::<Result<Vec<_>, QueryExecError>>()?;
-    Ok(KernelValue::Struct(KernelStructValue {
-        name: SmolStr::new(record.name),
-        fields,
-    }))
+    construct_builtin_record_value(record, args)
 }
 
 fn default_actor_handle() -> KernelValue {
@@ -2058,6 +2665,82 @@ pub(crate) fn default_medium() -> KernelValue {
     medium_value(0.0, [0.0, 0.0, 0.0], 0.0)
 }
 
+fn default_builtin_record_value(name: &str) -> Result<KernelValue, QueryExecError> {
+    Ok(match name {
+        "ActorHandle" => default_actor_handle(),
+        "Payload" => default_payload(),
+        "Surface" => default_surface(),
+        "Medium" => default_medium(),
+        "Transform3" => transform3_identity_value(),
+        "Hit3" => default_hit([0.0, 0.0, 0.0]),
+        other => {
+            let record =
+                portable::builtin_record(other).ok_or_else(|| QueryExecError::Unsupported {
+                    message: format!("unknown builtin record constructor '{other}'"),
+                })?;
+            let fields = record
+                .fields
+                .iter()
+                .map(|field| {
+                    Ok((
+                        SmolStr::new(field.name),
+                        default_builtin_field_value(field.ty)?,
+                    ))
+                })
+                .collect::<Result<Vec<_>, QueryExecError>>()?;
+            KernelValue::Struct(KernelStructValue {
+                name: SmolStr::new(record.name),
+                fields,
+            })
+        }
+    })
+}
+
+fn default_builtin_field_value(
+    ty: portable::PortableBuiltinType,
+) -> Result<KernelValue, QueryExecError> {
+    use portable::PortableBuiltinAtom as Atom;
+    use portable::PortableBuiltinType::{Atom as BuiltinAtom, Named as BuiltinNamed};
+
+    match ty {
+        BuiltinAtom(Atom::Bool) => Ok(KernelValue::Bool(false)),
+        BuiltinAtom(Atom::I32) => Ok(KernelValue::I32(0)),
+        BuiltinAtom(Atom::U32) => Ok(KernelValue::U32(0)),
+        BuiltinAtom(Atom::F32) => Ok(KernelValue::F32(0.0)),
+        BuiltinAtom(Atom::Vec2) => Ok(KernelValue::Vec2([0.0, 0.0])),
+        BuiltinAtom(Atom::Vec3) => Ok(KernelValue::Vec3([0.0, 0.0, 0.0])),
+        BuiltinAtom(Atom::Vec4) => Ok(KernelValue::Vec4([0.0, 0.0, 0.0, 0.0])),
+        BuiltinAtom(Atom::Quat) => Ok(KernelValue::Quat([0.0, 0.0, 0.0, 0.0])),
+        BuiltinAtom(Atom::Mat3) => Ok(KernelValue::Mat3([0.0; 9])),
+        BuiltinAtom(Atom::Mat4) => Ok(KernelValue::Mat4([0.0; 16])),
+        BuiltinNamed(name) => default_builtin_record_value(name),
+    }
+}
+
+fn construct_builtin_record_value(
+    record: &portable::PortableBuiltinRecord,
+    args: &[KernelValue],
+) -> Result<KernelValue, QueryExecError> {
+    let fields = record
+        .fields
+        .iter()
+        .enumerate()
+        .map(|(index, field)| {
+            Ok((
+                SmolStr::new(field.name),
+                match args.get(index) {
+                    Some(value) => value.clone(),
+                    None => default_builtin_field_value(field.ty)?,
+                },
+            ))
+        })
+        .collect::<Result<Vec<_>, QueryExecError>>()?;
+    Ok(KernelValue::Struct(KernelStructValue {
+        name: SmolStr::new(record.name),
+        fields,
+    }))
+}
+
 pub(crate) fn medium_value(density: f32, emission: [f32; 3], anisotropy: f32) -> KernelValue {
     KernelValue::Struct(KernelStructValue {
         name: SmolStr::new("Medium"),
@@ -2067,6 +2750,73 @@ pub(crate) fn medium_value(density: f32, emission: [f32; 3], anisotropy: f32) ->
             (SmolStr::new("anisotropy"), KernelValue::F32(anisotropy)),
         ],
     })
+}
+
+fn polygon_profile_distance(
+    point: [f32; 2],
+    vertices: &KernelValue,
+    closed: bool,
+) -> Result<f32, QueryExecError> {
+    let KernelValue::Array(items) = vertices else {
+        return Err(QueryExecError::TypeMismatch {
+            expected: "Array<Vec2>".to_string(),
+            found: format!("{vertices:?}"),
+        });
+    };
+    let vertices = items
+        .iter()
+        .map(|value| match value {
+            KernelValue::Vec2(value) => Ok(*value),
+            other => Err(QueryExecError::TypeMismatch {
+                expected: "Vec2".to_string(),
+                found: format!("{other:?}"),
+            }),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let min_len = if closed { 3 } else { 2 };
+    if vertices.len() < min_len {
+        return Err(QueryExecError::Unsupported {
+            message: format!(
+                "{} expects at least {min_len} vertices",
+                if closed { "polygon2" } else { "polyline2" }
+            ),
+        });
+    }
+    let mut best = f32::INFINITY;
+    if closed {
+        let mut inside = false;
+        for index in 0..vertices.len() {
+            let a = vertices[index];
+            let b = vertices[(index + 1) % vertices.len()];
+            best = best.min(segment_distance_2d(point, a, b));
+            let crosses = ((a[1] > point[1]) != (b[1] > point[1]))
+                && (point[0]
+                    < (b[0] - a[0]) * (point[1] - a[1]) / (b[1] - a[1] + f32::EPSILON) + a[0]);
+            if crosses {
+                inside = !inside;
+            }
+        }
+        Ok(if inside { -best } else { best })
+    } else {
+        for pair in vertices.windows(2) {
+            best = best.min(segment_distance_2d(point, pair[0], pair[1]));
+        }
+        Ok(best)
+    }
+}
+
+fn segment_distance_2d(point: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
+    let edge = [b[0] - a[0], b[1] - a[1]];
+    let ap = [point[0] - a[0], point[1] - a[1]];
+    let denom = edge[0] * edge[0] + edge[1] * edge[1];
+    let t = if denom == 0.0 {
+        0.0
+    } else {
+        ((ap[0] * edge[0] + ap[1] * edge[1]) / denom).clamp(0.0, 1.0)
+    };
+    let closest = [a[0] + edge[0] * t, a[1] + edge[1] * t];
+    let delta = [point[0] - closest[0], point[1] - closest[1]];
+    (delta[0] * delta[0] + delta[1] * delta[1]).sqrt()
 }
 
 fn distance_result(distance: f32) -> KernelValue {
@@ -2118,6 +2868,7 @@ pub(crate) fn hit_value(
     root_shape_id: u32,
     payload: KernelValue,
 ) -> KernelValue {
+    let shading_frame = stable_surface_frame(position, normal);
     KernelValue::Struct(KernelStructValue {
         name: SmolStr::new("Hit3"),
         fields: vec![
@@ -2133,7 +2884,7 @@ pub(crate) fn hit_value(
                 SmolStr::new("local_normal"),
                 KernelValue::Vec3(local_normal),
             ),
-            (SmolStr::new("shading_frame"), transform3_identity_value()),
+            (SmolStr::new("shading_frame"), shading_frame),
             (SmolStr::new("steps"), KernelValue::I32(steps)),
             (SmolStr::new("feature_id"), KernelValue::U32(feature_id)),
             (SmolStr::new("instance_id"), KernelValue::U32(instance_id)),
@@ -2813,7 +3564,42 @@ fn value_label(value: &KernelValue) -> String {
     }
 }
 
-fn normalize3(value: [f32; 3]) -> [f32; 3] {
+fn default_shape_winner() -> ShapeWinner {
+    ShapeWinner {
+        distance: 1_000_000.0,
+        feature_id: 0,
+        leaf: None,
+    }
+}
+
+fn chain_identity_component(current: u32, component: u32) -> u32 {
+    if component == 0 {
+        return current;
+    }
+    if current == 0 {
+        return component;
+    }
+    let mixed = (current ^ component).wrapping_mul(16_777_619);
+    if mixed == 0 { 1 } else { mixed }
+}
+
+fn add3(lhs: [f32; 3], rhs: [f32; 3]) -> [f32; 3] {
+    [lhs[0] + rhs[0], lhs[1] + rhs[1], lhs[2] + rhs[2]]
+}
+
+fn dot3(lhs: [f32; 3], rhs: [f32; 3]) -> f32 {
+    lhs[0] * rhs[0] + lhs[1] * rhs[1] + lhs[2] * rhs[2]
+}
+
+fn cross3(lhs: [f32; 3], rhs: [f32; 3]) -> [f32; 3] {
+    [
+        lhs[1] * rhs[2] - lhs[2] * rhs[1],
+        lhs[2] * rhs[0] - lhs[0] * rhs[2],
+        lhs[0] * rhs[1] - lhs[1] * rhs[0],
+    ]
+}
+
+pub(crate) fn normalize3(value: [f32; 3]) -> [f32; 3] {
     let len = (value[0] * value[0] + value[1] * value[1] + value[2] * value[2]).sqrt();
     if len <= f32::EPSILON {
         [0.0, 0.0, 1.0]
@@ -2822,7 +3608,104 @@ fn normalize3(value: [f32; 3]) -> [f32; 3] {
     }
 }
 
-fn kernel_to_runtime(value: &KernelValue) -> Result<RuntimeValue, QueryExecError> {
+fn stable_surface_frame(position: [f32; 3], normal: [f32; 3]) -> KernelValue {
+    let unit_normal = normalize3(normal);
+    let world_up = [0.0, 1.0, 0.0];
+    let world_right = [1.0, 0.0, 0.0];
+    let tangent_seed = cross3(world_up, unit_normal);
+    let tangent = if tangent_seed == [0.0, 0.0, 0.0] {
+        normalize3(cross3(world_right, unit_normal))
+    } else {
+        normalize3(tangent_seed)
+    };
+    let bitangent = cross3(unit_normal, tangent);
+    let inverse_translation = [
+        -dot3(tangent, position),
+        -dot3(bitangent, position),
+        -dot3(unit_normal, position),
+        1.0,
+    ];
+    KernelValue::Struct(KernelStructValue {
+        name: SmolStr::new("Transform3"),
+        fields: vec![
+            (
+                SmolStr::new("matrix"),
+                KernelValue::Mat4([
+                    tangent[0],
+                    tangent[1],
+                    tangent[2],
+                    0.0,
+                    bitangent[0],
+                    bitangent[1],
+                    bitangent[2],
+                    0.0,
+                    unit_normal[0],
+                    unit_normal[1],
+                    unit_normal[2],
+                    0.0,
+                    position[0],
+                    position[1],
+                    position[2],
+                    1.0,
+                ]),
+            ),
+            (
+                SmolStr::new("inverse"),
+                KernelValue::Mat4([
+                    tangent[0],
+                    bitangent[0],
+                    unit_normal[0],
+                    0.0,
+                    tangent[1],
+                    bitangent[1],
+                    unit_normal[1],
+                    0.0,
+                    tangent[2],
+                    bitangent[2],
+                    unit_normal[2],
+                    0.0,
+                    inverse_translation[0],
+                    inverse_translation[1],
+                    inverse_translation[2],
+                    inverse_translation[3],
+                ]),
+            ),
+        ],
+    })
+}
+
+fn length_of(value: &KernelValue) -> Result<f32, QueryExecError> {
+    let components = kernel_components(value, "length")?;
+    Ok((components
+        .iter()
+        .map(|component| component * component)
+        .sum::<f32>())
+    .sqrt())
+}
+
+pub(crate) fn combine_medium_values(
+    current: KernelValue,
+    next: KernelValue,
+) -> Result<KernelValue, QueryExecError> {
+    let current = expect_struct_ref(&current, "Medium")?;
+    let next = expect_struct_ref(&next, "Medium")?;
+    let current_density = expect_struct_f32(current, "density")?;
+    let current_emission = expect_struct_vec3(current, "emission")?;
+    let current_anisotropy = expect_struct_f32(current, "anisotropy")?;
+    let next_density = expect_struct_f32(next, "density")?;
+    let next_emission = expect_struct_vec3(next, "emission")?;
+    let next_anisotropy = expect_struct_f32(next, "anisotropy")?;
+    let density = current_density + next_density;
+    let emission = add3(current_emission, next_emission);
+    let anisotropy = if density > 0.0 {
+        (current_anisotropy * current_density + next_anisotropy * next_density) / density
+    } else {
+        0.0
+    };
+    Ok(medium_value(density, emission, anisotropy))
+}
+
+pub(crate) fn kernel_to_runtime(value: &KernelValue) -> Result<RuntimeValue, QueryExecError> {
     match value {
         KernelValue::Nothing => Ok(RuntimeValue::nil()),
         KernelValue::Bool(value) => Ok(RuntimeValue::from_bool(*value)),
@@ -2869,9 +3752,15 @@ fn kernel_to_runtime(value: &KernelValue) -> Result<RuntimeValue, QueryExecError
                 values[12], values[13], values[14], values[15],
             ]))?,
         )),
-        KernelValue::Array(_)
-        | KernelValue::Struct(_)
-        | KernelValue::Capture(_)
+        KernelValue::Struct(value) => kernel_struct_to_runtime(value),
+        KernelValue::Array(items) => {
+            let list = wr_list_new_local(0);
+            for item in items {
+                wr_list_push(list, kernel_to_runtime(item)?);
+            }
+            Ok(list)
+        }
+        KernelValue::Capture(_)
         | KernelValue::DispatchBackend(_)
         | KernelValue::GpuBuffer(_)
         | KernelValue::GpuAtomicI32(_)
@@ -2881,12 +3770,49 @@ fn kernel_to_runtime(value: &KernelValue) -> Result<RuntimeValue, QueryExecError
     }
 }
 
-fn runtime_to_kernel_value(value: RuntimeValue) -> Result<KernelValue, QueryExecError> {
+fn kernel_struct_to_runtime(value: &KernelStructValue) -> Result<RuntimeValue, QueryExecError> {
+    let names = value
+        .fields
+        .iter()
+        .map(|(name, _)| name.as_bytes().as_ptr())
+        .collect::<Vec<_>>();
+    let lens = value
+        .fields
+        .iter()
+        .map(|(name, _)| name.len())
+        .collect::<Vec<_>>();
+    let obj = wr_class_new(
+        TypeId::UserBase as u32,
+        names.as_ptr(),
+        lens.as_ptr(),
+        names.len(),
+    );
+    for (index, (_, field_value)) in value.fields.iter().enumerate() {
+        wr_class_set_slot(
+            obj,
+            std::ptr::null(),
+            0,
+            index,
+            kernel_to_runtime(field_value)?,
+        );
+    }
+    Ok(obj)
+}
+
+pub(crate) fn runtime_to_kernel_value(value: RuntimeValue) -> Result<KernelValue, QueryExecError> {
     match wr_type_id(value) as u32 {
         id if id == TypeId::Nil as u32 => Ok(KernelValue::Nothing),
         id if id == TypeId::Boolean as u32 => Ok(KernelValue::Bool(value.as_bool())),
         id if id == TypeId::Integer as u32 => Ok(KernelValue::I32(value.as_int() as i32)),
         id if id == TypeId::Float as u32 => Ok(KernelValue::F32(value.as_float() as f32)),
+        id if id == TypeId::List as u32 => {
+            let len = wr_list_len(value).as_int();
+            let mut items = Vec::with_capacity(len.max(0) as usize);
+            for index in 0..len {
+                items.push(runtime_to_kernel_value(wr_list_get(value, index as usize))?);
+            }
+            Ok(KernelValue::Array(items))
+        }
         id if id == TypeId::Vec2 as u32 => Ok(KernelValue::Vec2([
             component_as_f32(wr_vec_component(value, RuntimeValue::from_int(0)))?,
             component_as_f32(wr_vec_component(value, RuntimeValue::from_int(1)))?,

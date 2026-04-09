@@ -187,6 +187,7 @@ pub fn parse_dispatch_compute(
 
 pub fn lower_batch_query_plan(plan: &BatchQueryPlan) -> KernelBatchQueryPlan {
     KernelBatchQueryPlan {
+        contract_version: plan.contract_version,
         helper_name: plan.helper_name.clone(),
         kind: plan.kind,
         capture_kind: plan.capture_kind,
@@ -196,10 +197,19 @@ pub fn lower_batch_query_plan(plan: &BatchQueryPlan) -> KernelBatchQueryPlan {
         result_kind: plan.result_kind,
         executor: plan.executor,
         scene: plan.scene.clone(),
-        candidate_strategy: plan.candidate_strategy,
-        pruning_strategy: plan.pruning_strategy,
+        candidate_strategy: plan.candidate_contract.candidate_strategy,
+        pruning_strategy: plan.candidate_contract.pruning_strategy,
         stages: plan.stages.iter().map(KernelPlanStage::from).collect(),
         derived_artifacts: plan.derived_artifacts.clone(),
+        dispatch_contract: plan.dispatch_contract.clone(),
+        candidate_contract: plan.candidate_contract.clone(),
+        result_contract: plan.result_contract.clone(),
+        hit_context_contract: plan.hit_context_contract.clone(),
+        participant_contract: plan.participant_contract.clone(),
+        domain_flags: plan.domain_flags.clone(),
+        artifact_contracts: plan.artifact_contracts.clone(),
+        item_contract: (&plan.item_contract).into(),
+        observability: plan.observability.clone(),
         preserves_local_hit_context: plan.preserves_local_hit_context,
     }
 }
@@ -523,7 +533,11 @@ impl<'a, 'b> KernelFunctionLowerer<'a, 'b> {
                 ty,
                 span,
             }),
-            Expr::Call { callee, args, type_args } if type_args.is_empty() => {
+            Expr::Call {
+                callee,
+                args,
+                type_args,
+            } if type_args.is_empty() => {
                 let Expr::Variable(target) = &body.exprs[*callee] else {
                     return None;
                 };
@@ -1022,6 +1036,7 @@ impl<'a, 'b> KernelFunctionLowerer<'a, 'b> {
         match name.as_str() {
             "dispatch_backend_cpu" => Some(DispatchBackend::Cpu),
             "dispatch_backend_virtual_gpu" => Some(DispatchBackend::VirtualGpu),
+            "dispatch_backend_wgsl" => Some(DispatchBackend::Wgsl),
             "dispatch_backend_auto" => Some(DispatchBackend::Auto),
             _ => None,
         }
@@ -1128,7 +1143,11 @@ impl<'a, 'b> KernelFunctionLowerer<'a, 'b> {
             _ => return None,
         };
         let named = self.collect_named_expr_args(args)?;
-        let plan = lower_world_query_plan(&WorldQueryPlan::for_query(kind));
+        let backend_expr = named.get("backend").copied();
+        let backend = backend_expr
+            .and_then(|expr_id| self.parse_dispatch_backend_builtin(expr_id))
+            .unwrap_or(DispatchBackend::Auto);
+        let plan = lower_world_query_plan(&WorldQueryPlan::for_query_with_backend(kind, backend));
         let mut ordered_args = vec![
             self.lower_expr(*named.get("capture")?)?,
             self.lower_expr(*named.get("domain")?)?,
@@ -1136,6 +1155,9 @@ impl<'a, 'b> KernelFunctionLowerer<'a, 'b> {
         ];
         if expects_direction {
             ordered_args.push(self.lower_expr(*named.get("direction")?)?);
+        }
+        if let Some(backend_expr) = backend_expr {
+            ordered_args.push(self.lower_expr(backend_expr)?);
         }
         Some((plan, ordered_args))
     }
@@ -1157,8 +1179,12 @@ impl<'a, 'b> KernelFunctionLowerer<'a, 'b> {
             _ => return None,
         };
         let named = self.collect_named_expr_args(args)?;
-        let plan = lower_world_query_plan(&WorldQueryPlan::for_query(kind));
-        let ordered_args = match kind {
+        let backend_expr = named.get("backend").copied();
+        let backend = backend_expr
+            .and_then(|expr_id| self.parse_dispatch_backend_builtin(expr_id))
+            .unwrap_or(DispatchBackend::Auto);
+        let plan = lower_world_query_plan(&WorldQueryPlan::for_query_with_backend(kind, backend));
+        let mut ordered_args = match kind {
             WorldQueryKind::Trace => vec![
                 self.lower_expr(*named.get("capture")?)?,
                 self.lower_expr(*named.get("domain")?)?,
@@ -1176,6 +1202,9 @@ impl<'a, 'b> KernelFunctionLowerer<'a, 'b> {
             ],
             _ => return None,
         };
+        if let Some(backend_expr) = backend_expr {
+            ordered_args.push(self.lower_expr(backend_expr)?);
+        }
         Some((plan, ordered_args))
     }
 
@@ -1283,33 +1312,72 @@ impl<'a, 'b> KernelFunctionLowerer<'a, 'b> {
     ) -> Option<SceneSummary> {
         let target = self.parse_capture_builtin(capture_expr)?;
         match capture_kind {
-            CaptureKind::Field => {
-                self.parent
-                    .context
-                    .field_scenes
-                    .get(&target)
-                    .map(|scene| SceneSummary {
-                        name: Some(target),
-                        semantics: scene.semantics,
-                        support_class: scene.support_class,
-                        can_coarse_support_pruning: scene.can_coarse_support_pruning,
-                        opaque_boundary: scene.opaque_boundary,
-                    })
-            }
-            CaptureKind::Shape => {
+            CaptureKind::Field => self
+                .parent
+                .context
+                .field_scenes
+                .get(&target)
+                .map(|scene| self.scene_summary_from_field(target.clone(), scene)),
+            CaptureKind::Shape => self
+                .parent
+                .context
+                .shape_scenes
+                .get(&target)
+                .map(|scene| self.scene_summary_from_shape(target.clone(), scene)),
+            CaptureKind::Region => None,
+        }
+    }
+
+    fn scene_summary_from_field(
+        &self,
+        name: SmolStr,
+        scene: &crate::scene_ir::FieldScene,
+    ) -> SceneSummary {
+        SceneSummary {
+            name: Some(name),
+            semantics: scene.semantics,
+            support_class: scene.support_class,
+            can_coarse_support_pruning: scene.can_coarse_support_pruning,
+            opaque_boundary: scene.opaque_boundary,
+            semantic_root: scene.root_node_id.0,
+            support_root: scene.root_support_id.0,
+            node_count: scene.node_records.len() as u32,
+            support_node_count: scene.support_records.len() as u32,
+            leaf_count: 0,
+            identity_source_count: scene.identity_sources.len() as u32,
+        }
+    }
+
+    fn scene_summary_from_shape(
+        &self,
+        name: SmolStr,
+        scene: &crate::scene_ir::ShapeScene,
+    ) -> SceneSummary {
+        let identity_source_count = scene
+            .feature_leaves
+            .values()
+            .filter_map(|leaf_ref| {
                 self.parent
                     .context
                     .shape_scenes
-                    .get(&target)
-                    .map(|scene| SceneSummary {
-                        name: Some(target),
-                        semantics: scene.semantics,
-                        support_class: scene.support_class,
-                        can_coarse_support_pruning: scene.can_coarse_support_pruning,
-                        opaque_boundary: scene.opaque_boundary,
-                    })
-            }
-            CaptureKind::Region => None,
+                    .get(&leaf_ref.scene)
+                    .and_then(|shape_scene| shape_scene.leaves.get(&leaf_ref.leaf))
+                    .and_then(|leaf| self.parent.context.field_scenes.get(&leaf.field))
+            })
+            .map(|field| field.identity_sources.len() as u32)
+            .sum();
+        SceneSummary {
+            name: Some(name),
+            semantics: scene.semantics,
+            support_class: scene.support_class,
+            can_coarse_support_pruning: scene.can_coarse_support_pruning,
+            opaque_boundary: scene.opaque_boundary,
+            semantic_root: scene.root_node_id.0,
+            support_root: scene.root_support_id.0,
+            node_count: scene.node_records.len() as u32,
+            support_node_count: scene.support_records.len() as u32,
+            leaf_count: scene.feature_leaves.len() as u32,
+            identity_source_count,
         }
     }
 
@@ -1475,6 +1543,7 @@ fn builtin_param_names(name: &str) -> Option<Vec<SmolStr>> {
         | "storage_barrier"
         | "dispatch_backend_cpu"
         | "dispatch_backend_virtual_gpu"
+        | "dispatch_backend_wgsl"
         | "dispatch_backend_auto" => &[],
         _ => return None,
     };

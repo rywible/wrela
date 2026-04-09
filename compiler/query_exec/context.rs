@@ -6,6 +6,7 @@ use crate::query_exec::ids::{
 };
 use crate::query_exec::region::{RegionExecCase, build_region_exec_cases};
 use crate::scene_ir;
+use crate::scene_ir::{ShapeLeafId, ShapeLeafRef, ShapeLeafScene};
 use smol_str::SmolStr;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -29,7 +30,14 @@ pub struct QueryExecContext {
 
 impl QueryExecContext {
     pub fn compile(module: &hir::Module, type_info: &TypeInfo) -> Self {
-        let scene = scene_ir::lower_module(module);
+        let module = module.clone();
+        let (rechecked_errors, module_type_info) =
+            crate::hir::typeck::check_module_with_info(&module);
+        debug_assert!(
+            rechecked_errors.is_empty(),
+            "query_exec context typecheck on cloned module failed: {rechecked_errors:?}"
+        );
+        let scene = scene_ir::lower_module(&module);
         let functions_by_name = module
             .functions
             .iter()
@@ -99,7 +107,7 @@ impl QueryExecContext {
             .filter(|(_, func)| matches!(func.role, hir::FunctionRole::Region))
             .map(|(_, func)| (func.name.clone(), func.clone()))
             .collect::<HashMap<_, _>>();
-        let region_cases = build_region_exec_cases(module);
+        let region_cases = build_region_exec_cases(&module);
         let field_names = fields_by_name.keys().cloned().collect::<HashSet<_>>();
         let shape_names = module
             .shapes
@@ -108,8 +116,12 @@ impl QueryExecContext {
             .collect::<HashSet<_>>();
 
         Self {
-            module: module.clone(),
-            type_info: type_info.clone(),
+            module,
+            type_info: if rechecked_errors.is_empty() {
+                module_type_info
+            } else {
+                type_info.clone()
+            },
             scene,
             functions_by_name,
             field_graphs,
@@ -139,5 +151,19 @@ impl QueryExecContext {
 
     pub fn region_scene_id(&self, name: &SmolStr) -> u32 {
         stable_region_scene_capture_id(name)
+    }
+
+    pub fn shape_leaf_ref(&self, shape: &SmolStr, feature_id: u32) -> Option<&ShapeLeafRef> {
+        self.scene
+            .shapes
+            .get(shape)
+            .and_then(|scene| scene.feature_leaves.get(&feature_id))
+    }
+
+    pub fn shape_leaf(&self, scene: &SmolStr, leaf: ShapeLeafId) -> Option<&ShapeLeafScene> {
+        self.scene
+            .shapes
+            .get(scene)
+            .and_then(|shape_scene| shape_scene.leaves.get(&leaf))
     }
 }

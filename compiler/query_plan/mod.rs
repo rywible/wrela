@@ -1,4 +1,4 @@
-use self::DispatchBackend::{Auto, Cpu, VirtualGpu};
+use self::DispatchBackend::{Auto, Cpu, VirtualGpu, Wgsl};
 use self::PlanExecutor::{
     FieldDistanceCapture, FieldNormalCapture, SceneMediumCapture, SceneRadianceCapture,
     SceneSurfaceCapture, SceneTraceCapture, ShapeDistanceCapture, ShapeNormalCapture,
@@ -9,6 +9,7 @@ use crate::scene_ir::{DistanceSemantics, SceneCaptureKind, SupportClass};
 use smol_str::SmolStr;
 
 pub type CaptureKind = SceneCaptureKind;
+pub const QUERY_PLAN_CONTRACT_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum BatchQueryKind {
@@ -56,6 +57,7 @@ pub enum WorldQueryKind {
 pub enum DispatchBackend {
     Cpu,
     VirtualGpu,
+    Wgsl,
     Auto,
 }
 
@@ -64,7 +66,8 @@ impl DispatchBackend {
         match id {
             0 => Some(Cpu),
             1 => Some(VirtualGpu),
-            2 => Some(Auto),
+            2 => Some(Wgsl),
+            3 => Some(Auto),
             _ => None,
         }
     }
@@ -180,6 +183,139 @@ pub enum PlanStage {
     EndVirtualGpuDispatch,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SceneDomainFlag {
+    Material,
+    Radiance,
+    Media,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CandidateSource {
+    CaptureScene,
+    WorldRegionShapes,
+    SurfaceHit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum WinnerSelectionMode {
+    None,
+    Nearest,
+    Ordered,
+    SurfaceReuse,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CandidateRecordContract {
+    pub source: CandidateSource,
+    pub item_kind: QueryItemKind,
+    pub candidate_strategy: CandidateStrategy,
+    pub pruning_strategy: PruningStrategy,
+    pub winner_mode: WinnerSelectionMode,
+    pub stable_leaf_identity: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResultRecordContract {
+    pub result_kind: QueryResultKind,
+    pub preserves_local_hit_context: bool,
+    pub stable_feature_id: bool,
+    pub stable_instance_id: bool,
+    pub stable_repeat_id: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HitContextContract {
+    pub world_position: bool,
+    pub world_normal: bool,
+    pub local_position: bool,
+    pub local_normal: bool,
+    pub shading_frame: bool,
+    pub payload: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParticipantSelectionContract {
+    pub kind: CaptureQueryKind,
+    pub provenance_aware: bool,
+    pub additive: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DispatchRecordContract {
+    pub backend: DispatchBackend,
+    pub kernel: InternalKernelKind,
+    pub item_kind: QueryItemKind,
+    pub result_kind: QueryResultKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArtifactSchema {
+    SupportSummary {
+        semantics: DistanceSemantics,
+        support_class: SupportClass,
+        can_coarse_support_pruning: bool,
+        semantic_root: u32,
+        support_root: u32,
+        node_count: u32,
+        support_node_count: u32,
+        leaf_count: u32,
+        identity_source_count: u32,
+    },
+    CaptureCache {
+        capture_kind: CaptureKind,
+        semantic_root: u32,
+    },
+    CullingTable {
+        candidate_strategy: CandidateStrategy,
+        pruning_strategy: PruningStrategy,
+        support_class: SupportClass,
+        semantics: DistanceSemantics,
+        support_root: u32,
+        support_node_count: u32,
+        leaf_count: u32,
+        identity_source_count: u32,
+    },
+    DispatchRecord {
+        item_kind: QueryItemKind,
+        result_kind: QueryResultKind,
+    },
+    HitResultBuffer {
+        result_kind: QueryResultKind,
+        preserves_local_hit_context: bool,
+    },
+    OpaquePessimizationBoundary {
+        support_root: u32,
+        support_node_count: u32,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactContract {
+    pub id: SmolStr,
+    pub schema: ArtifactSchema,
+    pub producer: SmolStr,
+    pub consumer: SmolStr,
+    pub deterministic: bool,
+    pub version: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanningObservability {
+    pub candidate_count: bool,
+    pub branch_visits: bool,
+    pub support_prune_effectiveness: bool,
+    pub culling_hit_rate: bool,
+    pub artifact_sizes: bool,
+    pub dispatch_overhead: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BatchItemContract {
+    CaptureQuery { plan: CaptureQueryPlan },
+    TraceThenOcclusion { trace_plan: CaptureQueryPlan },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SceneSummary {
     pub name: Option<SmolStr>,
@@ -187,10 +323,17 @@ pub struct SceneSummary {
     pub support_class: SupportClass,
     pub can_coarse_support_pruning: bool,
     pub opaque_boundary: bool,
+    pub semantic_root: u32,
+    pub support_root: u32,
+    pub node_count: u32,
+    pub support_node_count: u32,
+    pub leaf_count: u32,
+    pub identity_source_count: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BatchQueryPlan {
+    pub contract_version: u32,
     pub helper_name: SmolStr,
     pub kind: BatchQueryKind,
     pub capture_kind: CaptureKind,
@@ -204,11 +347,21 @@ pub struct BatchQueryPlan {
     pub pruning_strategy: PruningStrategy,
     pub stages: Vec<PlanStage>,
     pub derived_artifacts: Vec<DerivedArtifact>,
+    pub dispatch_contract: DispatchRecordContract,
+    pub candidate_contract: CandidateRecordContract,
+    pub result_contract: ResultRecordContract,
+    pub hit_context_contract: Option<HitContextContract>,
+    pub participant_contract: Option<ParticipantSelectionContract>,
+    pub domain_flags: Vec<SceneDomainFlag>,
+    pub artifact_contracts: Vec<ArtifactContract>,
+    pub item_contract: BatchItemContract,
+    pub observability: PlanningObservability,
     pub preserves_local_hit_context: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CaptureQueryPlan {
+    pub contract_version: u32,
     pub helper_name: SmolStr,
     pub kind: CaptureQueryKind,
     pub capture_kind: CaptureKind,
@@ -219,16 +372,31 @@ pub struct CaptureQueryPlan {
     pub pruning_strategy: PruningStrategy,
     pub stages: Vec<PlanStage>,
     pub derived_artifacts: Vec<DerivedArtifact>,
+    pub candidate_contract: CandidateRecordContract,
+    pub result_contract: ResultRecordContract,
+    pub hit_context_contract: Option<HitContextContract>,
+    pub participant_contract: Option<ParticipantSelectionContract>,
+    pub artifact_contracts: Vec<ArtifactContract>,
+    pub observability: PlanningObservability,
     pub preserves_local_hit_context: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorldQueryPlan {
+    pub contract_version: u32,
     pub helper_name: SmolStr,
     pub kind: WorldQueryKind,
+    pub backend: DispatchBackend,
     pub result_kind: QueryResultKind,
     pub executor: PlanExecutor,
     pub stages: Vec<PlanStage>,
+    pub dispatch_contract: DispatchRecordContract,
+    pub result_contract: ResultRecordContract,
+    pub hit_context_contract: Option<HitContextContract>,
+    pub participant_contract: Option<ParticipantSelectionContract>,
+    pub domain_flags: Vec<SceneDomainFlag>,
+    pub artifact_contracts: Vec<ArtifactContract>,
+    pub observability: PlanningObservability,
     pub preserves_local_hit_context: bool,
 }
 
@@ -294,7 +462,7 @@ impl BatchQueryPlan {
             pruning_strategy,
         );
         let mut stages = vec![PlanStage::SelectBackend];
-        if matches!(backend, VirtualGpu | Auto) {
+        if matches!(backend, VirtualGpu | Wgsl | Auto) {
             stages.push(PlanStage::BeginVirtualGpuDispatch);
         }
         stages.push(PlanStage::LoadCapture);
@@ -310,10 +478,40 @@ impl BatchQueryPlan {
         });
         stages.push(PlanStage::Execute { executor });
         stages.push(PlanStage::AppendResult { result_kind });
-        if matches!(backend, VirtualGpu | Auto) {
+        if matches!(backend, VirtualGpu | Wgsl | Auto) {
             stages.push(PlanStage::EndVirtualGpuDispatch);
         }
+        let candidate_contract = build_candidate_contract(
+            CandidateSource::CaptureScene,
+            QueryItemKind::PointQuery,
+            candidate_strategy,
+            pruning_strategy,
+            WinnerSelectionMode::Nearest,
+            true,
+        );
+        let result_contract = build_result_contract(result_kind, false);
+        let artifact_contracts = derive_artifact_contracts(
+            &derived_artifacts,
+            scene.as_ref(),
+            QueryItemKind::PointQuery,
+            result_kind,
+            false,
+            helper_name,
+        );
+        let item_contract = BatchItemContract::CaptureQuery {
+            plan: CaptureQueryPlan::for_query(
+                match kind {
+                    BatchQueryKind::Distance => CaptureQueryKind::Distance,
+                    BatchQueryKind::Normal => CaptureQueryKind::Normal,
+                    _ => unreachable!(),
+                },
+                capture_kind,
+                scene.clone(),
+            )
+            .expect("field batch item contract"),
+        };
         Self {
+            contract_version: QUERY_PLAN_CONTRACT_VERSION,
             helper_name: SmolStr::new(helper_name),
             kind,
             capture_kind,
@@ -327,6 +525,20 @@ impl BatchQueryPlan {
             pruning_strategy,
             stages,
             derived_artifacts,
+            dispatch_contract: DispatchRecordContract {
+                backend,
+                kernel,
+                item_kind: QueryItemKind::PointQuery,
+                result_kind,
+            },
+            candidate_contract,
+            result_contract,
+            hit_context_contract: None,
+            participant_contract: None,
+            domain_flags: Vec::new(),
+            artifact_contracts,
+            item_contract,
+            observability: default_planning_observability(pruning_strategy),
             preserves_local_hit_context: false,
         }
     }
@@ -376,7 +588,7 @@ impl BatchQueryPlan {
             pruning_strategy,
         );
         let mut stages = vec![PlanStage::SelectBackend];
-        if matches!(backend, VirtualGpu | Auto) {
+        if matches!(backend, VirtualGpu | Wgsl | Auto) {
             stages.push(PlanStage::BeginVirtualGpuDispatch);
         }
         stages.push(PlanStage::LoadCapture);
@@ -393,10 +605,61 @@ impl BatchQueryPlan {
             stages.push(PlanStage::AssembleHitContext);
         }
         stages.push(PlanStage::AppendResult { result_kind });
-        if matches!(backend, VirtualGpu | Auto) {
+        if matches!(backend, VirtualGpu | Wgsl | Auto) {
             stages.push(PlanStage::EndVirtualGpuDispatch);
         }
+        let winner_mode = match kind {
+            BatchQueryKind::Surface => WinnerSelectionMode::SurfaceReuse,
+            BatchQueryKind::Trace | BatchQueryKind::Occluded => WinnerSelectionMode::Nearest,
+            _ => WinnerSelectionMode::None,
+        };
+        let candidate_contract = build_candidate_contract(
+            CandidateSource::CaptureScene,
+            item_kind,
+            candidate_strategy,
+            pruning_strategy,
+            winner_mode,
+            true,
+        );
+        let result_contract = build_result_contract(result_kind, preserves_local_hit_context);
+        let hit_context_contract = preserves_local_hit_context.then(hit_context_contract);
+        let artifact_contracts = derive_artifact_contracts(
+            &derived_artifacts,
+            scene.as_ref(),
+            item_kind,
+            result_kind,
+            preserves_local_hit_context,
+            helper_name,
+        );
+        let item_contract = match kind {
+            BatchQueryKind::Trace => BatchItemContract::CaptureQuery {
+                plan: CaptureQueryPlan::for_query(
+                    CaptureQueryKind::Trace,
+                    CaptureKind::Shape,
+                    scene.clone(),
+                )
+                .expect("trace batch contract"),
+            },
+            BatchQueryKind::Surface => BatchItemContract::CaptureQuery {
+                plan: CaptureQueryPlan::for_query(
+                    CaptureQueryKind::Surface,
+                    CaptureKind::Shape,
+                    scene.clone(),
+                )
+                .expect("surface batch contract"),
+            },
+            BatchQueryKind::Occluded => BatchItemContract::TraceThenOcclusion {
+                trace_plan: CaptureQueryPlan::for_query(
+                    CaptureQueryKind::Trace,
+                    CaptureKind::Shape,
+                    scene.clone(),
+                )
+                .expect("occlusion trace contract"),
+            },
+            _ => unreachable!(),
+        };
         Self {
+            contract_version: QUERY_PLAN_CONTRACT_VERSION,
             helper_name: SmolStr::new(helper_name),
             kind,
             capture_kind: CaptureKind::Shape,
@@ -410,6 +673,20 @@ impl BatchQueryPlan {
             pruning_strategy,
             stages,
             derived_artifacts,
+            dispatch_contract: DispatchRecordContract {
+                backend,
+                kernel,
+                item_kind,
+                result_kind,
+            },
+            candidate_contract,
+            result_contract,
+            hit_context_contract,
+            participant_contract: None,
+            domain_flags: Vec::new(),
+            artifact_contracts,
+            item_contract,
+            observability: default_planning_observability(pruning_strategy),
             preserves_local_hit_context,
         }
     }
@@ -421,23 +698,26 @@ impl BatchQueryPlan {
     }
 
     pub fn candidate_strategy(&self) -> CandidateStrategy {
-        self.candidate_strategy
+        self.candidate_contract.candidate_strategy
     }
 
     pub fn pruning_strategy(&self) -> PruningStrategy {
-        self.pruning_strategy
+        self.candidate_contract.pruning_strategy
     }
 
     pub fn requests_culling_table(&self) -> bool {
-        self.derived_artifacts
+        self.artifact_contracts
             .iter()
-            .any(|artifact| matches!(artifact, DerivedArtifact::CullingTable { .. }))
+            .any(|artifact| matches!(artifact.schema, ArtifactSchema::CullingTable { .. }))
     }
 
     pub fn has_opaque_pessimization_boundary(&self) -> bool {
-        self.derived_artifacts
-            .iter()
-            .any(|artifact| matches!(artifact, DerivedArtifact::OpaquePessimizationBoundary))
+        self.artifact_contracts.iter().any(|artifact| {
+            matches!(
+                artifact.schema,
+                ArtifactSchema::OpaquePessimizationBoundary { .. }
+            )
+        })
     }
 
     pub fn from_field_plan_kind(kind: FieldBatchPlanKind, capture_kind: CaptureKind) -> Self {
@@ -583,7 +863,44 @@ impl CaptureQueryPlan {
             stages.push(PlanStage::AssembleHitContext);
         }
         stages.push(PlanStage::AppendResult { result_kind });
+        let candidate_contract = build_candidate_contract(
+            if matches!(kind, CaptureQueryKind::Surface) {
+                CandidateSource::SurfaceHit
+            } else {
+                CandidateSource::CaptureScene
+            },
+            match kind {
+                CaptureQueryKind::Surface => QueryItemKind::Hit3,
+                CaptureQueryKind::Trace => QueryItemKind::RayQuery,
+                _ => QueryItemKind::PointQuery,
+            },
+            candidate_strategy,
+            pruning_strategy,
+            match kind {
+                CaptureQueryKind::Surface => WinnerSelectionMode::SurfaceReuse,
+                CaptureQueryKind::Trace => WinnerSelectionMode::Nearest,
+                _ => WinnerSelectionMode::None,
+            },
+            true,
+        );
+        let result_contract = build_result_contract(result_kind, preserves_local_hit_context);
+        let hit_context_contract = preserves_local_hit_context.then(hit_context_contract);
+        let participant_contract = match kind {
+            CaptureQueryKind::Radiance | CaptureQueryKind::Medium => {
+                Some(build_participant_contract(kind))
+            }
+            _ => None,
+        };
+        let artifact_contracts = derive_artifact_contracts(
+            &derived_artifacts,
+            scene.as_ref(),
+            candidate_contract.item_kind,
+            result_kind,
+            preserves_local_hit_context,
+            helper_name,
+        );
         Ok(Self {
+            contract_version: QUERY_PLAN_CONTRACT_VERSION,
             helper_name: SmolStr::new(helper_name),
             kind,
             capture_kind,
@@ -594,6 +911,12 @@ impl CaptureQueryPlan {
             pruning_strategy,
             stages,
             derived_artifacts,
+            candidate_contract,
+            result_contract,
+            hit_context_contract,
+            participant_contract,
+            artifact_contracts,
+            observability: default_planning_observability(pruning_strategy),
             preserves_local_hit_context,
         })
     }
@@ -601,28 +924,35 @@ impl CaptureQueryPlan {
 
 impl CaptureQueryPlan {
     pub fn candidate_strategy(&self) -> CandidateStrategy {
-        self.candidate_strategy
+        self.candidate_contract.candidate_strategy
     }
 
     pub fn pruning_strategy(&self) -> PruningStrategy {
-        self.pruning_strategy
+        self.candidate_contract.pruning_strategy
     }
 
     pub fn requests_culling_table(&self) -> bool {
-        self.derived_artifacts
+        self.artifact_contracts
             .iter()
-            .any(|artifact| matches!(artifact, DerivedArtifact::CullingTable { .. }))
+            .any(|artifact| matches!(artifact.schema, ArtifactSchema::CullingTable { .. }))
     }
 
     pub fn has_opaque_pessimization_boundary(&self) -> bool {
-        self.derived_artifacts
-            .iter()
-            .any(|artifact| matches!(artifact, DerivedArtifact::OpaquePessimizationBoundary))
+        self.artifact_contracts.iter().any(|artifact| {
+            matches!(
+                artifact.schema,
+                ArtifactSchema::OpaquePessimizationBoundary { .. }
+            )
+        })
     }
 }
 
 impl WorldQueryPlan {
     pub fn for_query(kind: WorldQueryKind) -> Self {
+        Self::for_query_with_backend(kind, DispatchBackend::Auto)
+    }
+
+    pub fn for_query_with_backend(kind: WorldQueryKind, backend: DispatchBackend) -> Self {
         let (helper_name, result_kind, executor, preserves_local_hit_context) = match kind {
             WorldQueryKind::Distance => (
                 "__wr_world_distance_capture",
@@ -677,12 +1007,72 @@ impl WorldQueryPlan {
             stages.push(PlanStage::AssembleHitContext);
         }
         stages.push(PlanStage::AppendResult { result_kind });
+        let participant_contract = match kind {
+            WorldQueryKind::Radiance => {
+                Some(build_participant_contract(CaptureQueryKind::Radiance))
+            }
+            WorldQueryKind::Medium => Some(build_participant_contract(CaptureQueryKind::Medium)),
+            _ => None,
+        };
+        let domain_flags = world_domain_flags(kind);
         Self {
+            contract_version: QUERY_PLAN_CONTRACT_VERSION,
             helper_name: SmolStr::new(helper_name),
             kind,
+            backend,
             result_kind,
             executor,
             stages,
+            dispatch_contract: DispatchRecordContract {
+                backend,
+                kernel: match kind {
+                    WorldQueryKind::Distance => InternalKernelKind::WorldDistanceCapture,
+                    WorldQueryKind::Normal => InternalKernelKind::WorldNormalCapture,
+                    WorldQueryKind::Trace => InternalKernelKind::WorldTraceCapture,
+                    WorldQueryKind::Surface => InternalKernelKind::WorldSurfaceCapture,
+                    WorldQueryKind::Radiance => InternalKernelKind::WorldRadianceCapture,
+                    WorldQueryKind::Medium => InternalKernelKind::WorldMediumCapture,
+                },
+                item_kind: match kind {
+                    WorldQueryKind::Surface => QueryItemKind::Hit3,
+                    WorldQueryKind::Trace => QueryItemKind::RayQuery,
+                    _ => QueryItemKind::PointQuery,
+                },
+                result_kind,
+            },
+            result_contract: build_result_contract(result_kind, preserves_local_hit_context),
+            hit_context_contract: preserves_local_hit_context.then(hit_context_contract),
+            participant_contract,
+            domain_flags: domain_flags.clone(),
+            artifact_contracts: vec![
+                ArtifactContract {
+                    id: SmolStr::new(format!("{}::dispatch", helper_name)),
+                    schema: ArtifactSchema::DispatchRecord {
+                        item_kind: match kind {
+                            WorldQueryKind::Surface => QueryItemKind::Hit3,
+                            WorldQueryKind::Trace => QueryItemKind::RayQuery,
+                            _ => QueryItemKind::PointQuery,
+                        },
+                        result_kind,
+                    },
+                    producer: SmolStr::new(helper_name),
+                    consumer: SmolStr::new(helper_name),
+                    deterministic: true,
+                    version: QUERY_PLAN_CONTRACT_VERSION,
+                },
+                ArtifactContract {
+                    id: SmolStr::new(format!("{}::result", helper_name)),
+                    schema: ArtifactSchema::HitResultBuffer {
+                        result_kind,
+                        preserves_local_hit_context,
+                    },
+                    producer: SmolStr::new(helper_name),
+                    consumer: SmolStr::new(helper_name),
+                    deterministic: true,
+                    version: QUERY_PLAN_CONTRACT_VERSION,
+                },
+            ],
+            observability: default_planning_observability(PruningStrategy::None),
             preserves_local_hit_context,
         }
     }
@@ -757,6 +1147,187 @@ fn derive_artifacts(
         artifacts.push(DerivedArtifact::OpaquePessimizationBoundary);
     }
     artifacts
+}
+
+fn build_candidate_contract(
+    source: CandidateSource,
+    item_kind: QueryItemKind,
+    candidate_strategy: CandidateStrategy,
+    pruning_strategy: PruningStrategy,
+    winner_mode: WinnerSelectionMode,
+    stable_leaf_identity: bool,
+) -> CandidateRecordContract {
+    CandidateRecordContract {
+        source,
+        item_kind,
+        candidate_strategy,
+        pruning_strategy,
+        winner_mode,
+        stable_leaf_identity,
+    }
+}
+
+fn build_result_contract(
+    result_kind: QueryResultKind,
+    preserves_local_hit_context: bool,
+) -> ResultRecordContract {
+    ResultRecordContract {
+        result_kind,
+        preserves_local_hit_context,
+        stable_feature_id: matches!(
+            result_kind,
+            QueryResultKind::Hit3 | QueryResultKind::Surface | QueryResultKind::RadianceResult
+        ),
+        stable_instance_id: preserves_local_hit_context,
+        stable_repeat_id: preserves_local_hit_context,
+    }
+}
+
+fn hit_context_contract() -> HitContextContract {
+    HitContextContract {
+        world_position: true,
+        world_normal: true,
+        local_position: true,
+        local_normal: true,
+        shading_frame: true,
+        payload: true,
+    }
+}
+
+fn build_participant_contract(kind: CaptureQueryKind) -> ParticipantSelectionContract {
+    ParticipantSelectionContract {
+        kind,
+        provenance_aware: true,
+        additive: matches!(kind, CaptureQueryKind::Radiance | CaptureQueryKind::Medium),
+    }
+}
+
+fn world_domain_flags(kind: WorldQueryKind) -> Vec<SceneDomainFlag> {
+    match kind {
+        WorldQueryKind::Surface => vec![SceneDomainFlag::Material],
+        WorldQueryKind::Radiance => vec![SceneDomainFlag::Radiance],
+        WorldQueryKind::Medium => vec![SceneDomainFlag::Media],
+        _ => Vec::new(),
+    }
+}
+
+fn default_planning_observability(pruning_strategy: PruningStrategy) -> PlanningObservability {
+    PlanningObservability {
+        candidate_count: true,
+        branch_visits: true,
+        support_prune_effectiveness: !matches!(pruning_strategy, PruningStrategy::None),
+        culling_hit_rate: matches!(pruning_strategy, PruningStrategy::CullingTable),
+        artifact_sizes: true,
+        dispatch_overhead: true,
+    }
+}
+
+fn derive_artifact_contracts(
+    artifacts: &[DerivedArtifact],
+    scene: Option<&SceneSummary>,
+    item_kind: QueryItemKind,
+    result_kind: QueryResultKind,
+    preserves_local_hit_context: bool,
+    producer: &str,
+) -> Vec<ArtifactContract> {
+    let mut out = artifacts
+        .iter()
+        .enumerate()
+        .map(|(index, artifact)| ArtifactContract {
+            id: SmolStr::new(format!("{producer}::artifact::{index}")),
+            schema: match artifact {
+                DerivedArtifact::SupportSummary {
+                    semantics,
+                    support_class,
+                    can_coarse_support_pruning,
+                } => ArtifactSchema::SupportSummary {
+                    semantics: *semantics,
+                    support_class: *support_class,
+                    can_coarse_support_pruning: *can_coarse_support_pruning,
+                    semantic_root: scene
+                        .map(|summary| summary.semantic_root)
+                        .unwrap_or_default(),
+                    support_root: scene
+                        .map(|summary| summary.support_root)
+                        .unwrap_or_default(),
+                    node_count: scene.map(|summary| summary.node_count).unwrap_or_default(),
+                    support_node_count: scene
+                        .map(|summary| summary.support_node_count)
+                        .unwrap_or_default(),
+                    leaf_count: scene.map(|summary| summary.leaf_count).unwrap_or_default(),
+                    identity_source_count: scene
+                        .map(|summary| summary.identity_source_count)
+                        .unwrap_or_default(),
+                },
+                DerivedArtifact::CaptureCache { capture_kind } => ArtifactSchema::CaptureCache {
+                    capture_kind: *capture_kind,
+                    semantic_root: scene
+                        .map(|summary| summary.semantic_root)
+                        .unwrap_or_default(),
+                },
+                DerivedArtifact::CullingTable {
+                    candidate_strategy,
+                    pruning_strategy,
+                } => ArtifactSchema::CullingTable {
+                    candidate_strategy: *candidate_strategy,
+                    pruning_strategy: *pruning_strategy,
+                    support_class: scene
+                        .map(|summary| summary.support_class)
+                        .unwrap_or(SupportClass::Unknown),
+                    semantics: scene
+                        .map(|summary| summary.semantics)
+                        .unwrap_or(DistanceSemantics::ConservativeLowerBound),
+                    support_root: scene
+                        .map(|summary| summary.support_root)
+                        .unwrap_or_default(),
+                    support_node_count: scene
+                        .map(|summary| summary.support_node_count)
+                        .unwrap_or_default(),
+                    leaf_count: scene.map(|summary| summary.leaf_count).unwrap_or_default(),
+                    identity_source_count: scene
+                        .map(|summary| summary.identity_source_count)
+                        .unwrap_or_default(),
+                },
+                DerivedArtifact::OpaquePessimizationBoundary => {
+                    ArtifactSchema::OpaquePessimizationBoundary {
+                        support_root: scene
+                            .map(|summary| summary.support_root)
+                            .unwrap_or_default(),
+                        support_node_count: scene
+                            .map(|summary| summary.support_node_count)
+                            .unwrap_or_default(),
+                    }
+                }
+            },
+            producer: SmolStr::new(producer),
+            consumer: SmolStr::new(producer),
+            deterministic: true,
+            version: QUERY_PLAN_CONTRACT_VERSION,
+        })
+        .collect::<Vec<_>>();
+    out.push(ArtifactContract {
+        id: SmolStr::new(format!("{producer}::dispatch")),
+        schema: ArtifactSchema::DispatchRecord {
+            item_kind,
+            result_kind,
+        },
+        producer: SmolStr::new(producer),
+        consumer: SmolStr::new(producer),
+        deterministic: true,
+        version: QUERY_PLAN_CONTRACT_VERSION,
+    });
+    out.push(ArtifactContract {
+        id: SmolStr::new(format!("{producer}::result")),
+        schema: ArtifactSchema::HitResultBuffer {
+            result_kind,
+            preserves_local_hit_context,
+        },
+        producer: SmolStr::new(producer),
+        consumer: SmolStr::new(producer),
+        deterministic: true,
+        version: QUERY_PLAN_CONTRACT_VERSION,
+    });
+    out
 }
 
 fn candidate_strategy_for_field_query(
@@ -848,6 +1419,12 @@ mod tests {
             support_class: SupportClass::Bounded,
             can_coarse_support_pruning: true,
             opaque_boundary: false,
+            semantic_root: 1,
+            support_root: 1,
+            node_count: 1,
+            support_node_count: 1,
+            leaf_count: 1,
+            identity_source_count: 0,
         };
         let left = BatchQueryPlan::for_shape_query(
             BatchQueryKind::Trace,
@@ -873,6 +1450,12 @@ mod tests {
                 support_class: SupportClass::Bounded,
                 can_coarse_support_pruning: false,
                 opaque_boundary: true,
+                semantic_root: 1,
+                support_root: 1,
+                node_count: 1,
+                support_node_count: 1,
+                leaf_count: 1,
+                identity_source_count: 0,
             }),
         );
         assert_eq!(plan.kernel, InternalKernelKind::ShapeTraceCapture);

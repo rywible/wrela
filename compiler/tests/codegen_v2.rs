@@ -7,6 +7,7 @@ use wrela::mir;
 use wrela::parser::ast;
 use wrela::parser::ast::AstNode;
 use wrela::parser::parse;
+use wrela::query_plan::DispatchBackend;
 
 fn load_module_from_source(source: &str) -> hir::Module {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -86,20 +87,68 @@ fn compile_and_run_native_module(
     module: hir::Module,
     executable_name: &str,
 ) -> std::process::Output {
-    compile_and_run_native_module_impl(module, executable_name, false)
+    compile_and_run_native_module_impl(module, executable_name, false, DispatchBackend::Auto)
+}
+
+fn compile_and_run_native_module_with_backend(
+    module: hir::Module,
+    executable_name: &str,
+    default_query_backend: DispatchBackend,
+) -> std::process::Output {
+    compile_and_run_native_module_impl(module, executable_name, false, default_query_backend)
 }
 
 fn compile_and_run_native_module_with_indirect_calls(
     module: hir::Module,
     executable_name: &str,
 ) -> std::process::Output {
-    compile_and_run_native_module_impl(module, executable_name, true)
+    compile_and_run_native_module_impl(module, executable_name, true, DispatchBackend::Auto)
+}
+
+fn compile_and_run_native_inline_source_with_backend(
+    source: &str,
+    executable_name: &str,
+    default_query_backend: DispatchBackend,
+) -> std::process::Output {
+    let module = lower_inline_module_from_source(source);
+    compile_and_run_native_module_with_backend(module, executable_name, default_query_backend)
+}
+
+fn compile_and_run_native_project_source_with_backend(
+    source: &str,
+    executable_name: &str,
+    default_query_backend: DispatchBackend,
+) -> std::process::Output {
+    let module = load_module_from_source(source);
+    compile_and_run_native_module_with_backend(module, executable_name, default_query_backend)
+}
+
+fn compile_and_run_native_project_with_replaced_run(
+    project_root: &str,
+    run_source: &str,
+    executable_name: &str,
+    default_query_backend: DispatchBackend,
+) -> std::process::Output {
+    let entry_path = repo_root().join(project_root).join("src").join("main.wr");
+    let mut source = fs::read_to_string(&entry_path)
+        .unwrap_or_else(|err| panic!("read project source {} failed: {err}", entry_path.display()));
+    let run_start = source
+        .rfind("fn run() -> Integer {")
+        .unwrap_or_else(|| panic!("missing run() in {}", entry_path.display()));
+    source.truncate(run_start);
+    source.push_str(run_source);
+    compile_and_run_native_project_source_with_backend(
+        &source,
+        executable_name,
+        default_query_backend,
+    )
 }
 
 fn compile_and_run_native_module_impl(
     module: hir::Module,
     executable_name: &str,
     allow_indirect_calls: bool,
+    default_query_backend: DispatchBackend,
 ) -> std::process::Output {
     let semantic = hir::semantic::check_module(&module);
     assert!(
@@ -111,7 +160,8 @@ fn compile_and_run_native_module_impl(
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
 
     let check_ir = hir::checkir::extract_module(&module);
-    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
+    let mut mir_module =
+        mir::lower::lower_module_with_types_and_backend(&module, &type_info, default_query_backend);
     let analysis = mir::analysis::analyze_module(&mir_module);
     for func in &mut mir_module.functions {
         let types = analysis.type_map.function(&func.name);
@@ -170,6 +220,75 @@ fn run() -> Integer {
     let output = compile_and_run_native_source(source, "wr_v2_numeric_range_smoke");
     let expected = expected_int_exit(106);
     assert_eq!(output.status.code().unwrap_or(-1), expected);
+}
+
+#[test]
+fn native_v2_loop_carried_branch_local_boolean_smoke() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+
+    let source = r#"
+fn run() -> Integer {
+    mutable seen = false
+    mutable step = 0
+    while step < 1 {
+        if true {
+            seen = true
+        }
+        step += 1
+    }
+    if seen {
+        return 1
+    }
+    return 0
+}
+"#;
+
+    let output =
+        compile_and_run_native_source(source, "wr_v2_loop_carried_branch_local_boolean_smoke");
+    let expected = expected_int_exit(1);
+    assert_eq!(
+        output.status.code().unwrap_or(-1),
+        expected,
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn native_v2_loop_exit_boolean_smoke() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+
+    let source = r#"
+fn run() -> Integer {
+    mutable seen = false
+    mutable step = 0
+    while step < 4 and not seen {
+        if step == 2 {
+            seen = true
+        }
+        step += 1
+    }
+    if seen {
+        return step
+    }
+    return 0
+}
+"#;
+
+    let output = compile_and_run_native_source(source, "wr_v2_loop_exit_boolean_smoke");
+    let expected = expected_int_exit(3);
+    assert_eq!(
+        output.status.code().unwrap_or(-1),
+        expected,
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -3231,6 +3350,243 @@ fn main() -> Integer {
 }
 
 #[test]
+fn native_v2_phase10_wgsl_batch_queries_smoke() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = r#"
+field exact distance scene_field(p: Vec3) -> F32 {
+    sphere(radius = 1.0)
+}
+
+material scene_surface(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.25, 0.35, 0.45),
+        roughness=0.5,
+        metalness=0.1,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape scene_shape {
+    field = scene_field
+    material = scene_surface
+    payload = Payload(
+        entity_id=u32(11),
+        material_id=u32(22),
+        actor=ActorHandle(id=u32(33), generation=u32(0))
+    )
+}
+
+fn main() -> Integer {
+    scene_capture = capture scene_shape
+    field = capture scene_field
+    points = [
+        PointQuery(point=vec3(0.0, 0.0, 2.0)),
+        PointQuery(point=vec3(0.0, 0.0, 3.0))
+    ]
+    rays = [
+        RayQuery(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        ),
+        RayQuery(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 1.0, 0.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
+    ]
+    cpu_field_distances = distance_at_batch(
+        capture=field,
+        points=points,
+        backend=dispatch_backend_cpu()
+    )
+    auto_field_distances = distance_at_batch(
+        capture=field,
+        points=points,
+        backend=dispatch_backend_auto()
+    )
+    cpu_shape_normals = normal_at_batch(
+        capture=scene_capture,
+        points=points,
+        backend=dispatch_backend_cpu()
+    )
+    auto_shape_normals = normal_at_batch(
+        capture=scene_capture,
+        points=points,
+        backend=dispatch_backend_auto()
+    )
+    cpu_hits = trace_shape_batch(
+        capture=scene_capture,
+        rays=rays,
+        backend=dispatch_backend_cpu()
+    )
+    auto_hits = trace_shape_batch(
+        capture=scene_capture,
+        rays=rays,
+        backend=dispatch_backend_auto()
+    )
+    cpu_surfaces = surface_at_batch(
+        capture=scene_capture,
+        hits=cpu_hits,
+        backend=dispatch_backend_cpu()
+    )
+    auto_surfaces = surface_at_batch(
+        capture=scene_capture,
+        hits=auto_hits,
+        backend=dispatch_backend_auto()
+    )
+    cpu_occlusions = occluded_batch(
+        capture=scene_capture,
+        rays=rays,
+        backend=dispatch_backend_cpu()
+    )
+    auto_occlusions = occluded_batch(
+        capture=scene_capture,
+        rays=rays,
+        backend=dispatch_backend_auto()
+    )
+
+    if abs(cpu_field_distances[0].distance - auto_field_distances[0].distance) > 0.01 { return 1 }
+    if abs(cpu_field_distances[1].distance - auto_field_distances[1].distance) > 0.01 { return 2 }
+    if abs(cpu_shape_normals[0].normal.z - auto_shape_normals[0].normal.z) > 0.01 { return 3 }
+    if cpu_hits[0].hit != auto_hits[0].hit { return 4 }
+    if abs(cpu_hits[0].distance - auto_hits[0].distance) > 0.01 { return 5 }
+    if cpu_hits[0].feature_id != auto_hits[0].feature_id { return 6 }
+    if abs(cpu_surfaces[0].albedo.x - auto_surfaces[0].albedo.x) > 0.01 { return 7 }
+    if cpu_occlusions[0].occluded != auto_occlusions[0].occluded { return 8 }
+    if cpu_occlusions[1].occluded != auto_occlusions[1].occluded { return 9 }
+    return 0
+}
+"#;
+
+    let output = compile_and_run_native_inline_source_with_backend(
+        source,
+        "wr_v2_phase10_wgsl_batch_queries_smoke",
+        DispatchBackend::Wgsl,
+    );
+    let expected = expected_int_exit(0);
+    assert_eq!(
+        output.status.code().unwrap_or(-1),
+        expected,
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn native_v2_phase10_wgsl_capture_queries_smoke() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = r#"
+field exact distance scene_field(p: Vec3) -> F32 {
+    sphere(radius = 0.6)
+}
+
+material scene_surface(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.18, 0.28, 0.58),
+        roughness=0.24,
+        metalness=0.06,
+        clearcoat=0.08,
+        clearcoat_roughness=0.05,
+        sheen=0.02,
+        emissive=vec3(0.01, 0.02, 0.03)
+    )
+}
+
+radiance field scene_radiance(p: Vec3, direction: Vec3, feature_id: U32) -> Vec3 {
+    horizon = clamp(0.5 + direction.y * 0.5, 0.0, 1.0)
+    return vec3(0.06, 0.09, 0.16) * (1.0 - horizon) + vec3(0.14, 0.24, 0.48) * horizon
+}
+
+volume field scene_medium(p: Vec3, surface_distance: F32) -> Medium {
+    density = clamp(0.04 + clamp(0.18 - abs(surface_distance), 0.0, 0.18) * 0.45, 0.0, 0.12)
+    return Medium(
+        density=density,
+        emission=vec3(0.03, 0.02, 0.01) * density,
+        anisotropy=0.12
+    )
+}
+
+shape scene_shape {
+    field = scene_field
+    material = scene_surface
+    radiance = scene_radiance
+    volume = scene_medium
+    payload = Payload(
+        entity_id=u32(17),
+        material_id=u32(23),
+        actor=ActorHandle(id=u32(31), generation=u32(0))
+    )
+}
+
+fn main() -> Integer {
+    scene_capture = capture scene_shape
+    field_capture = capture scene_field
+    probe = vec3(0.0, 0.0, 1.2)
+
+    sampled_distance = distance_at(capture=field_capture, point=probe)
+    sampled_normal = normal_at(capture=scene_capture, point=probe)
+    sampled_hit = trace_shape(
+        capture=scene_capture,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    sampled_surface = surface_at(capture=scene_capture, hit=sampled_hit)
+    sampled_radiance = radiance_at(
+        capture=scene_capture,
+        point=sampled_hit.position,
+        direction=normalize(vec3(0.0, 1.0, 1.0))
+    )
+    sampled_medium = medium_at(capture=scene_capture, point=sampled_hit.position)
+
+    if abs(sampled_distance - 0.6) > 0.01 { return 1 }
+    if abs(sampled_normal.z - 1.0) > 0.01 { return 2 }
+    if not sampled_hit.hit { return 3 }
+    if abs(sampled_hit.distance - 2.4) > 0.01 { return 4 }
+    if abs(sampled_hit.position.z - 0.6) > 0.02 { return 5 }
+    if abs(sampled_surface.albedo.z - 0.58) > 0.01 { return 6 }
+    if abs(sampled_radiance.y - 0.218) > 0.02 { return 7 }
+    if abs(sampled_medium.density - 0.12) > 0.01 { return 8 }
+    if abs(sampled_medium.emission.x - 0.0036) > 0.005 { return 9 }
+    if abs(sampled_medium.anisotropy - 0.12) > 0.01 { return 10 }
+    return 0
+}
+"#;
+
+    let output = compile_and_run_native_inline_source_with_backend(
+        source,
+        "wr_v2_phase10_wgsl_capture_queries_smoke",
+        DispatchBackend::Wgsl,
+    );
+    let expected = expected_int_exit(0);
+    assert_eq!(
+        output.status.code().unwrap_or(-1),
+        expected,
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn native_v2_shape_queries_require_shape_capture_smoke() {
     let source = r#"
 field exact distance sphere_field(p: Vec3) -> F32 {
@@ -4497,6 +4853,423 @@ fn main() -> Integer {
         stdout.starts_with("P3\n4 4\n255\n"),
         "expected compiler-owned render ppm prefix, got:\n{}\nstderr={}",
         stdout,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn native_v2_phase10_wgsl_world_queries_and_render_smoke() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = r#"
+field exact distance scene_field(p: Vec3) -> F32 {
+    sphere(radius = 0.6)
+}
+
+material scene_surface(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.20, 0.30, 0.65),
+        roughness=0.22,
+        metalness=0.08,
+        clearcoat=0.10,
+        clearcoat_roughness=0.08,
+        sheen=0.04,
+        emissive=vec3(0.01, 0.01, 0.02)
+    )
+}
+
+radiance field scene_radiance(p: Vec3, direction: Vec3, feature_id: U32) -> Vec3 {
+    horizon = clamp(0.5 + direction.y * 0.5, 0.0, 1.0)
+    return vec3(0.05, 0.08, 0.16) * (1.0 - horizon) + vec3(0.18, 0.30, 0.70) * horizon
+}
+
+volume field scene_medium(p: Vec3, surface_distance: F32) -> Medium {
+    density = clamp(0.05 + clamp(0.2 - abs(surface_distance), 0.0, 0.2) * 0.4, 0.0, 0.14)
+    return Medium(
+        density=density,
+        emission=vec3(0.02, 0.03, 0.05) * density,
+        anisotropy=0.1
+    )
+}
+
+shape scene_shape {
+    field = scene_field
+    material = scene_surface
+    radiance = scene_radiance
+    volume = scene_medium
+    payload = Payload(
+        entity_id=u32(7),
+        material_id=u32(8),
+        actor=ActorHandle(id=u32(9), generation=u32(0))
+    )
+}
+
+region scene_region() {
+    place scene = scene_shape
+}
+
+domain scene_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = true
+    radiance = true
+    media = true
+    max_distance = 6.0
+    min_step = 0.05
+    hit_epsilon = 0.001
+    max_steps = 96
+}
+
+render render_ppm(world: RegionCapture, camera: Camera) {
+    domain = scene_domain(world = world)
+    light = Light(
+        position = camera.position + vec3(1.0, 1.25, 1.0),
+        direction = normalize(vec3(-0.5, -0.8, -0.4)),
+        intensity = vec3(1.0, 0.95, 0.90),
+        range = 8.0
+    )
+    width = 4
+    height = 4
+    world_up = camera.up
+    view_scale = 0.82
+    fill_dir = normalize(vec3(-0.4, 0.5, 0.2))
+}
+
+fn main() -> Integer {
+    world = capture scene_region
+    domain = scene_domain(world = world)
+    probe = vec3(0.0, 0.0, 0.6)
+
+    cpu_distance = distance_world(
+        capture=world,
+        domain=domain,
+        point=probe,
+        backend=dispatch_backend_cpu()
+    )
+    auto_distance = distance_world(capture=world, domain=domain, point=probe)
+    cpu_normal = normal_world(
+        capture=world,
+        domain=domain,
+        point=probe,
+        backend=dispatch_backend_cpu()
+    )
+    auto_normal = normal_world(capture=world, domain=domain, point=probe)
+    cpu_hit = trace_world(
+        capture=world,
+        domain=domain,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96,
+        backend=dispatch_backend_cpu()
+    )
+    auto_hit = trace_world(
+        capture=world,
+        domain=domain,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    cpu_surface = surface_world(
+        capture=world,
+        domain=domain,
+        hit=cpu_hit,
+        backend=dispatch_backend_cpu()
+    )
+    auto_surface = surface_world(capture=world, domain=domain, hit=auto_hit)
+    cpu_radiance = radiance_world(
+        capture=world,
+        domain=domain,
+        point=auto_hit.position,
+        direction=normalize(vec3(0.0, 1.0, 1.0)),
+        backend=dispatch_backend_cpu()
+    )
+    auto_radiance = radiance_world(
+        capture=world,
+        domain=domain,
+        point=auto_hit.position,
+        direction=normalize(vec3(0.0, 1.0, 1.0))
+    )
+    cpu_medium = medium_world(
+        capture=world,
+        domain=domain,
+        point=auto_hit.position,
+        backend=dispatch_backend_cpu()
+    )
+    auto_medium = medium_world(capture=world, domain=domain, point=auto_hit.position)
+    camera = Camera(
+        position=vec3(0.0, 0.0, 3.0),
+        forward=vec3(0.0, 0.0, -1.0),
+        up=vec3(0.0, 1.0, 0.0),
+        vertical_fov_degrees=48.0
+    )
+    ppm = render_ppm(world=world, camera=camera)
+
+    if abs(cpu_distance - auto_distance) > 0.01 { return 1 }
+    if abs(cpu_normal.z - auto_normal.z) > 0.01 { return 2 }
+    if cpu_hit.hit != auto_hit.hit { return 3 }
+    if abs(cpu_hit.distance - auto_hit.distance) > 0.01 { return 4 }
+    if cpu_hit.feature_id != auto_hit.feature_id { return 5 }
+    if abs(cpu_surface.albedo.z - auto_surface.albedo.z) > 0.01 { return 6 }
+    if abs(cpu_radiance.z - auto_radiance.z) > 0.01 { return 7 }
+    if abs(cpu_medium.density - auto_medium.density) > 0.01 { return 8 }
+    if ppm == "" { return 9 }
+
+    __wr_print(ppm)
+    return 0
+}
+"#;
+
+    let output = compile_and_run_native_inline_source_with_backend(
+        source,
+        "wr_v2_phase10_wgsl_world_queries_and_render_smoke",
+        DispatchBackend::Wgsl,
+    );
+    let expected = expected_int_exit(0);
+    assert_eq!(
+        output.status.code().unwrap_or(-1),
+        expected,
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.starts_with("P3\n4 4\n255\n"),
+        "expected WGSL world/render ppm prefix, got:\n{}\nstderr={}",
+        stdout,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn native_v2_phase10_wgsl_preview_project_sampled_queries_match_cpu() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+
+    let run_source = r#"
+fn fail(code: Integer) -> Integer {
+    print_line(text="{code}")
+    return code
+}
+
+fn approx_vec3(a: Vec3, b: Vec3, tolerance: F32) -> Boolean {
+    if abs(a.x - b.x) > tolerance { return false }
+    if abs(a.y - b.y) > tolerance { return false }
+    if abs(a.z - b.z) > tolerance { return false }
+    return true
+}
+
+fn probe(world: RegionCapture, domain: SceneDomain, direction: Vec3, code_base: Integer) -> Integer {
+    cpu_hit = trace_world(
+        capture=world,
+        domain=domain,
+        origin=vec3(0.0, 0.1, 2.7),
+        direction=direction,
+        max_distance=12.0,
+        min_step=0.02,
+        hit_epsilon=0.0008,
+        max_steps=96,
+        backend=dispatch_backend_cpu()
+    )
+    auto_hit = trace_world(
+        capture=world,
+        domain=domain,
+        origin=vec3(0.0, 0.1, 2.7),
+        direction=direction,
+        max_distance=12.0,
+        min_step=0.02,
+        hit_epsilon=0.0008,
+        max_steps=96
+    )
+    if cpu_hit.hit != auto_hit.hit { return fail(code=code_base + 1) }
+    if abs(cpu_hit.distance - auto_hit.distance) > 0.01 { return code_base + 2 }
+    if approx_vec3(a=cpu_hit.position, b=auto_hit.position, tolerance=0.01) == false { return code_base + 3 }
+    if approx_vec3(a=cpu_hit.normal, b=auto_hit.normal, tolerance=0.01) == false { return code_base + 4 }
+    if cpu_hit.feature_id != auto_hit.feature_id { return code_base + 5 }
+    if cpu_hit.root_shape_id != auto_hit.root_shape_id { return code_base + 6 }
+
+    if cpu_hit.hit == false {
+        miss_point = vec3(0.0, 0.1, 2.7) + direction * 4.0
+        cpu_radiance = radiance_world(
+            capture=world,
+            domain=domain,
+            point=miss_point,
+            direction=direction,
+            backend=dispatch_backend_cpu()
+        )
+        auto_radiance = radiance_world(
+            capture=world,
+            domain=domain,
+            point=miss_point,
+            direction=direction
+        )
+        if approx_vec3(a=cpu_radiance, b=auto_radiance, tolerance=0.01) == false { return code_base + 7 }
+        cpu_medium = medium_world(
+            capture=world,
+            domain=domain,
+            point=miss_point,
+            backend=dispatch_backend_cpu()
+        )
+        auto_medium = medium_world(capture=world, domain=domain, point=miss_point)
+        if abs(cpu_medium.density - auto_medium.density) > 0.01 { return code_base + 8 }
+        if approx_vec3(a=cpu_medium.emission, b=auto_medium.emission, tolerance=0.01) == false { return code_base + 9 }
+        return 0
+    }
+
+    cpu_surface = surface_world(
+        capture=world,
+        domain=domain,
+        hit=cpu_hit,
+        backend=dispatch_backend_cpu()
+    )
+    auto_surface = surface_world(capture=world, domain=domain, hit=auto_hit)
+    if approx_vec3(a=cpu_surface.albedo, b=auto_surface.albedo, tolerance=0.01) == false { return code_base + 10 }
+    if abs(cpu_surface.roughness - auto_surface.roughness) > 0.01 { return code_base + 11 }
+    if abs(cpu_surface.metalness - auto_surface.metalness) > 0.01 { return code_base + 12 }
+    if approx_vec3(a=cpu_surface.emissive, b=auto_surface.emissive, tolerance=0.01) == false { return code_base + 13 }
+
+    cpu_radiance = radiance_world(
+        capture=world,
+        domain=domain,
+        point=cpu_hit.position,
+        direction=direction,
+        backend=dispatch_backend_cpu()
+    )
+    auto_radiance = radiance_world(
+        capture=world,
+        domain=domain,
+        point=cpu_hit.position,
+        direction=direction
+    )
+    if approx_vec3(a=cpu_radiance, b=auto_radiance, tolerance=0.01) == false { return code_base + 14 }
+
+    cpu_medium = medium_world(
+        capture=world,
+        domain=domain,
+        point=cpu_hit.position,
+        backend=dispatch_backend_cpu()
+    )
+    auto_medium = medium_world(capture=world, domain=domain, point=cpu_hit.position)
+    if abs(cpu_medium.density - auto_medium.density) > 0.01 { return code_base + 15 }
+    if approx_vec3(a=cpu_medium.emission, b=auto_medium.emission, tolerance=0.01) == false { return code_base + 16 }
+
+    ao_a_point = cpu_hit.position + cpu_hit.normal * 0.06
+    ao_b_point = cpu_hit.position + cpu_hit.normal * 0.14
+    ao_c_point = cpu_hit.position + cpu_hit.normal * 0.28
+    cpu_ao_a = distance_world(
+        capture=world,
+        domain=domain,
+        point=ao_a_point,
+        backend=dispatch_backend_cpu()
+    )
+    auto_ao_a = distance_world(capture=world, domain=domain, point=ao_a_point)
+    if abs(cpu_ao_a - auto_ao_a) > 0.01 { return code_base + 17 }
+    cpu_ao_b = distance_world(
+        capture=world,
+        domain=domain,
+        point=ao_b_point,
+        backend=dispatch_backend_cpu()
+    )
+    auto_ao_b = distance_world(capture=world, domain=domain, point=ao_b_point)
+    if abs(cpu_ao_b - auto_ao_b) > 0.01 { return code_base + 18 }
+    cpu_ao_c = distance_world(
+        capture=world,
+        domain=domain,
+        point=ao_c_point,
+        backend=dispatch_backend_cpu()
+    )
+    auto_ao_c = distance_world(capture=world, domain=domain, point=ao_c_point)
+    if abs(cpu_ao_c - auto_ao_c) > 0.01 { return code_base + 19 }
+
+    shadow_origin = cpu_hit.position + cpu_hit.normal * 0.01
+    light_delta = vec3(2.4, 2.8, 2.4) - shadow_origin
+    shadow_direction = normalize(light_delta)
+    shadow_limit = min(length(light_delta), 12.0)
+    cpu_shadow = trace_world(
+        capture=world,
+        domain=domain,
+        origin=shadow_origin,
+        direction=shadow_direction,
+        max_distance=shadow_limit,
+        min_step=0.02,
+        hit_epsilon=0.0008,
+        max_steps=96,
+        backend=dispatch_backend_cpu()
+    )
+    auto_shadow = trace_world(
+        capture=world,
+        domain=domain,
+        origin=shadow_origin,
+        direction=shadow_direction,
+        max_distance=shadow_limit,
+        min_step=0.02,
+        hit_epsilon=0.0008,
+        max_steps=96
+    )
+    if cpu_shadow.hit != auto_shadow.hit { return code_base + 20 }
+    if abs(cpu_shadow.distance - auto_shadow.distance) > 0.01 { return code_base + 21 }
+    return 0
+}
+
+fn run() -> Integer {
+    world = capture scene_region
+    domain = scene_domain(world=world)
+
+    probe_a = probe(
+        world=world,
+        domain=domain,
+        direction=vec3(-0.405183, -0.375170, -0.833711),
+        code_base=100
+    )
+    if probe_a != 0 { return probe_a }
+
+    probe_b = probe(
+        world=world,
+        domain=domain,
+        direction=vec3(-0.379642, -0.379642, -0.843649),
+        code_base=200
+    )
+    if probe_b != 0 { return probe_b }
+
+    probe_c = probe(
+        world=world,
+        domain=domain,
+        direction=vec3(0.017994, -0.017994, -0.999676),
+        code_base=300
+    )
+    if probe_c != 0 { return probe_c }
+
+    probe_d = probe(
+        world=world,
+        domain=domain,
+        direction=vec3(-0.498185, 0.498185, -0.709665),
+        code_base=400
+    )
+    if probe_d != 0 { return probe_d }
+
+    return 0
+}
+"#;
+
+    let output = compile_and_run_native_project_with_replaced_run(
+        "language/preview",
+        run_source,
+        "wr_v2_phase10_wgsl_preview_project_sampled_queries_match_cpu",
+        DispatchBackend::Wgsl,
+    );
+    let expected = expected_int_exit(0);
+    assert_eq!(
+        output.status.code().unwrap_or(-1),
+        expected,
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
 }

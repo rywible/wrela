@@ -11,9 +11,10 @@ pub use interp::{
     interpret_batch_query, interpret_dispatch,
 };
 pub use ir::{
-    KernelBatchQueryPlan, KernelBlock, KernelCaptureQueryPlan, KernelDispatchGrid,
-    KernelDispatchSchedule, KernelExpr, KernelFunction, KernelModule, KernelParam, KernelPlanStage,
-    KernelStmt, KernelWorldQueryPlan, ParsedKernelDispatch, ResolvedKernelDispatch,
+    KernelBatchItemContract, KernelBatchQueryPlan, KernelBlock, KernelCaptureQueryPlan,
+    KernelDispatchGrid, KernelDispatchSchedule, KernelExpr, KernelFunction, KernelModule,
+    KernelParam, KernelPlanStage, KernelStmt, KernelWorldQueryPlan, ParsedKernelDispatch,
+    ResolvedKernelDispatch,
 };
 pub use lower::{
     KernelLowerError, lower_batch_query_plan, lower_capture_query_plan, lower_kernel_entry_by_name,

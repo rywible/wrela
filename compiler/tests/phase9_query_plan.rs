@@ -147,6 +147,8 @@ shape scene_shape {
         sphere_scene.semantics,
         scene_ir::DistanceSemantics::ExactSignedDistance
     );
+    assert!(!sphere_scene.node_records.is_empty());
+    assert!(!sphere_scene.support_records.is_empty());
     match &sphere_scene.root {
         scene_ir::FieldNode::Primitive {
             primitive: hir::FieldPrimitive::Sphere,
@@ -194,6 +196,14 @@ shape scene_shape {
             .map(|shape| shape.opaque_boundary)
             .unwrap_or(false),
         "expected scene shape to preserve opaque-leaf quarantine"
+    );
+    let shape_scene = scene_a.shapes.get("scene_shape").expect("scene shape");
+    assert!(!shape_scene.node_records.is_empty());
+    assert!(!shape_scene.support_records.is_empty());
+    assert!(!shape_scene.feature_leaves.is_empty());
+    assert_eq!(
+        shape_scene,
+        scene_b.shapes.get("scene_shape").expect("scene shape")
     );
 }
 
@@ -384,6 +394,12 @@ fn main() -> Integer {
         support_class: scene_ir::SupportClass::Bounded,
         can_coarse_support_pruning: true,
         opaque_boundary: false,
+        semantic_root: 1,
+        support_root: 1,
+        node_count: 2,
+        support_node_count: 1,
+        leaf_count: 1,
+        identity_source_count: 0,
     };
     let distance_plan = query_plan::BatchQueryPlan::for_field(
         query_plan::FieldBatchPlanKind::Distance,
@@ -684,6 +700,12 @@ fn phase9_query_plan_matrix_covers_every_batch_family() {
         support_class: scene_ir::SupportClass::Bounded,
         can_coarse_support_pruning: true,
         opaque_boundary: false,
+        semantic_root: 1,
+        support_root: 1,
+        node_count: 1,
+        support_node_count: 1,
+        leaf_count: 0,
+        identity_source_count: 0,
     };
     let shape_summary = query_plan::SceneSummary {
         name: Some("shape_scene".into()),
@@ -691,6 +713,12 @@ fn phase9_query_plan_matrix_covers_every_batch_family() {
         support_class: scene_ir::SupportClass::Bounded,
         can_coarse_support_pruning: true,
         opaque_boundary: false,
+        semantic_root: 2,
+        support_root: 2,
+        node_count: 2,
+        support_node_count: 2,
+        leaf_count: 1,
+        identity_source_count: 0,
     };
     let opaque_summary = query_plan::SceneSummary {
         name: Some("opaque_shape_scene".into()),
@@ -698,6 +726,12 @@ fn phase9_query_plan_matrix_covers_every_batch_family() {
         support_class: scene_ir::SupportClass::Bounded,
         can_coarse_support_pruning: false,
         opaque_boundary: true,
+        semantic_root: 3,
+        support_root: 3,
+        node_count: 2,
+        support_node_count: 2,
+        leaf_count: 1,
+        identity_source_count: 0,
     };
 
     let cases = [
@@ -931,6 +965,76 @@ fn phase9_query_plan_matrix_covers_every_batch_family() {
 }
 
 #[test]
+fn phase9_contract_accessors_follow_explicit_contracts() {
+    let summary = query_plan::SceneSummary {
+        name: Some("shape_scene".into()),
+        semantics: scene_ir::DistanceSemantics::ConservativeLowerBound,
+        support_class: scene_ir::SupportClass::Bounded,
+        can_coarse_support_pruning: true,
+        opaque_boundary: false,
+        semantic_root: 1,
+        support_root: 1,
+        node_count: 2,
+        support_node_count: 2,
+        leaf_count: 1,
+        identity_source_count: 0,
+    };
+    let mut batch_plan = query_plan::BatchQueryPlan::for_shape_query(
+        query_plan::BatchQueryKind::Trace,
+        query_plan::DispatchBackend::VirtualGpu,
+        Some(summary.clone()),
+    );
+    assert!(batch_plan.requests_culling_table());
+
+    batch_plan.candidate_contract.candidate_strategy =
+        query_plan::CandidateStrategy::ShapeBranchTraversal;
+    batch_plan.candidate_contract.pruning_strategy =
+        query_plan::PruningStrategy::ConservativeTraversal;
+    batch_plan.artifact_contracts.clear();
+    assert_eq!(
+        batch_plan.candidate_strategy(),
+        query_plan::CandidateStrategy::ShapeBranchTraversal
+    );
+    assert_eq!(
+        batch_plan.pruning_strategy(),
+        query_plan::PruningStrategy::ConservativeTraversal
+    );
+    assert!(!batch_plan.requests_culling_table());
+    assert!(!batch_plan.has_opaque_pessimization_boundary());
+
+    let mut capture_plan = query_plan::CaptureQueryPlan::for_query(
+        query_plan::CaptureQueryKind::Trace,
+        query_plan::CaptureKind::Shape,
+        Some(summary),
+    )
+    .expect("capture trace plan");
+    capture_plan.candidate_contract.candidate_strategy =
+        query_plan::CandidateStrategy::OpaqueFallback;
+    capture_plan.candidate_contract.pruning_strategy =
+        query_plan::PruningStrategy::OpaquePessimizationBoundary;
+    capture_plan.artifact_contracts = vec![query_plan::ArtifactContract {
+        id: "opaque-boundary".into(),
+        schema: query_plan::ArtifactSchema::OpaquePessimizationBoundary {
+            support_root: 1,
+            support_node_count: 1,
+        },
+        producer: "test".into(),
+        consumer: "test".into(),
+        deterministic: true,
+        version: query_plan::QUERY_PLAN_CONTRACT_VERSION,
+    }];
+    assert_eq!(
+        capture_plan.candidate_strategy(),
+        query_plan::CandidateStrategy::OpaqueFallback
+    );
+    assert_eq!(
+        capture_plan.pruning_strategy(),
+        query_plan::PruningStrategy::OpaquePessimizationBoundary
+    );
+    assert!(capture_plan.has_opaque_pessimization_boundary());
+}
+
+#[test]
 fn phase9_shape_trace_plan_captures_support_pruning_when_scene_summary_allows_it() {
     let plan = query_plan::BatchQueryPlan::for_shape_query(
         query_plan::BatchQueryKind::Trace,
@@ -941,6 +1045,12 @@ fn phase9_shape_trace_plan_captures_support_pruning_when_scene_summary_allows_it
             support_class: scene_ir::SupportClass::Bounded,
             can_coarse_support_pruning: true,
             opaque_boundary: false,
+            semantic_root: 1,
+            support_root: 1,
+            node_count: 2,
+            support_node_count: 2,
+            leaf_count: 1,
+            identity_source_count: 0,
         }),
     );
 
@@ -991,6 +1101,12 @@ fn phase9_capture_query_plans_cover_field_shape_and_participant_paths() {
         support_class: scene_ir::SupportClass::Bounded,
         can_coarse_support_pruning: true,
         opaque_boundary: false,
+        semantic_root: 1,
+        support_root: 1,
+        node_count: 1,
+        support_node_count: 1,
+        leaf_count: 0,
+        identity_source_count: 0,
     };
     let shape_summary = query_plan::SceneSummary {
         name: Some("shape_scene".into()),
@@ -998,6 +1114,12 @@ fn phase9_capture_query_plans_cover_field_shape_and_participant_paths() {
         support_class: scene_ir::SupportClass::Bounded,
         can_coarse_support_pruning: true,
         opaque_boundary: false,
+        semantic_root: 2,
+        support_root: 2,
+        node_count: 2,
+        support_node_count: 2,
+        leaf_count: 1,
+        identity_source_count: 0,
     };
     let opaque_summary = query_plan::SceneSummary {
         name: Some("opaque_shape_scene".into()),
@@ -1005,6 +1127,12 @@ fn phase9_capture_query_plans_cover_field_shape_and_participant_paths() {
         support_class: scene_ir::SupportClass::Bounded,
         can_coarse_support_pruning: false,
         opaque_boundary: true,
+        semantic_root: 3,
+        support_root: 3,
+        node_count: 2,
+        support_node_count: 2,
+        leaf_count: 1,
+        identity_source_count: 0,
     };
 
     let field_distance = query_plan::CaptureQueryPlan::for_query(
@@ -1312,8 +1440,13 @@ fn phase9_world_query_plans_cover_domain_backed_queries() {
 
     for (plan, helper_name, result_kind, executor, preserves_local_hit_context) in cases {
         assert_eq!(plan.helper_name, helper_name);
+        assert_eq!(plan.backend, query_plan::DispatchBackend::Auto);
         assert_eq!(plan.result_kind, result_kind);
         assert_eq!(plan.executor, executor);
+        assert_eq!(
+            plan.dispatch_contract.backend,
+            query_plan::DispatchBackend::Auto
+        );
         assert_eq!(
             plan.preserves_local_hit_context,
             preserves_local_hit_context

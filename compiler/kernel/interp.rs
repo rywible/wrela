@@ -7,7 +7,7 @@ use crate::kernel::program::KernelProgram;
 use crate::query_exec::{
     QueryExecError, execute_batch_query_on, execute_capture_query_on, execute_world_query_on,
 };
-use crate::query_plan::DispatchBackend;
+use crate::query_plan::{DispatchBackend, WorldQueryKind};
 use smol_str::SmolStr;
 use std::collections::{BTreeMap, HashMap};
 use thiserror::Error;
@@ -173,7 +173,13 @@ pub fn execute_entry_on(
     args: Vec<KernelValue>,
     runtime: &mut KernelRuntimeState,
 ) -> Result<KernelValue, KernelExecError> {
-    execute_function_on(program, query_backend, program.entry.as_str(), args, runtime)
+    execute_function_on(
+        program,
+        query_backend,
+        program.entry.as_str(),
+        args,
+        runtime,
+    )
 }
 
 pub fn execute_function(
@@ -753,20 +759,21 @@ impl<'a> KernelExecutor<'a> {
                     .iter()
                     .map(|arg| self.execute_expr(arg, scopes))
                     .collect::<Result<Vec<_>, _>>()?;
-                execute_capture_query_on(
-                    &self.program.query_exec,
-                    self.query_backend,
-                    plan,
-                    &args,
-                )
-                .map_err(query_error)
+                execute_capture_query_on(&self.program.query_exec, self.query_backend, plan, &args)
+                    .map_err(query_error)
             }
             KernelExpr::WorldQuery { plan, args, .. } => {
                 let args = args
                     .iter()
                     .map(|arg| self.execute_expr(arg, scopes))
                     .collect::<Result<Vec<_>, _>>()?;
-                execute_world_query_on(&self.program.query_exec, self.query_backend, plan, &args)
+                let (requested_backend, query_args) =
+                    split_query_backend_arg(&args, world_query_input_count(plan.kind))?;
+                let backend = requested_backend.unwrap_or(match plan.backend {
+                    DispatchBackend::Auto => self.query_backend,
+                    explicit => explicit,
+                });
+                execute_world_query_on(&self.program.query_exec, backend, plan, query_args)
                     .map_err(query_error)
             }
             KernelExpr::BatchQuery { plan, args, .. } => {
@@ -774,11 +781,12 @@ impl<'a> KernelExecutor<'a> {
                     .iter()
                     .map(|arg| self.execute_expr(arg, scopes))
                     .collect::<Result<Vec<_>, _>>()?;
-                let backend = match plan.backend {
+                let (requested_backend, query_args) = split_query_backend_arg(&args, 2)?;
+                let backend = requested_backend.unwrap_or(match plan.backend {
                     DispatchBackend::Auto => self.query_backend,
                     explicit => explicit,
-                };
-                execute_batch_query_on(&self.program.query_exec, backend, plan, &args)
+                });
+                execute_batch_query_on(&self.program.query_exec, backend, plan, query_args)
                     .map_err(query_error)
             }
             KernelExpr::Member { base, member, .. } => {
@@ -1434,6 +1442,38 @@ fn infer_buffer_element_type(value: &KernelValue, ty: &Type) -> Result<Type, Ker
 fn query_error(error: QueryExecError) -> KernelExecError {
     KernelExecError::UnsupportedOperation {
         message: error.to_string(),
+    }
+}
+
+fn expect_dispatch_backend_value(value: &KernelValue) -> Result<DispatchBackend, KernelExecError> {
+    match value {
+        KernelValue::DispatchBackend(backend) => Ok(*backend),
+        other => Err(KernelExecError::TypeMismatch {
+            expected: "DispatchBackend".to_string(),
+            found: value_label(other),
+        }),
+    }
+}
+
+fn world_query_input_count(kind: WorldQueryKind) -> usize {
+    match kind {
+        WorldQueryKind::Distance | WorldQueryKind::Normal | WorldQueryKind::Medium => 3,
+        WorldQueryKind::Radiance => 4,
+        WorldQueryKind::Trace => 8,
+        WorldQueryKind::Surface => 3,
+    }
+}
+
+fn split_query_backend_arg<'a>(
+    args: &'a [KernelValue],
+    base_count: usize,
+) -> Result<(Option<DispatchBackend>, &'a [KernelValue]), KernelExecError> {
+    match args.get(base_count) {
+        Some(value) => Ok((
+            Some(expect_dispatch_backend_value(value)?),
+            &args[..base_count],
+        )),
+        None => Ok((None, args)),
     }
 }
 

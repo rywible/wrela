@@ -751,7 +751,7 @@ fn eval_polygon_or_polyline(
     let runtime_point = runtime_value_from_pir(point)?;
     let runtime_vertices = match vertices {
         PirValue::Array(items) => {
-            let list = wr_list_new_local(items.len());
+            let list = wr_list_new_local(0);
             for item in items {
                 let value = runtime_value_from_pir(item)?;
                 wr_list_push(list, value);

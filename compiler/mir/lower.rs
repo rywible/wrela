@@ -3,8 +3,9 @@ use crate::hir::{
     Stmt as HirStmt, Type, TypeInfo, UnaryOp,
 };
 use crate::kernel::{
-    KernelExpr, KernelStmt, ParsedKernelDispatch, lower_kernel_function,
-    parse_dispatch_compute as parse_kernel_dispatch_compute, validate_module as validate_kernel_module,
+    KernelExpr, KernelStmt, ParsedKernelDispatch, lower_batch_query_plan, lower_kernel_function,
+    lower_world_query_plan, parse_dispatch_compute as parse_kernel_dispatch_compute,
+    validate_module as validate_kernel_module,
 };
 use crate::mir::ir::Stmt as MirStmt;
 use crate::mir::ir::*;
@@ -13,28 +14,20 @@ use crate::portable::{
     portable_builtin_type_abi,
 };
 use crate::query_exec::mir::{
-    lower_field_batch_queries_helper,
-    lower_scene_distance_capture_helper,
-    lower_scene_medium_capture_helper,
-    lower_scene_normal_capture_helper,
-    lower_scene_radiance_capture_helper,
-    lower_scene_surface_capture_helper,
-    lower_scene_surface_queries_helper,
-    lower_scene_trace_capture_helper,
-    lower_scene_trace_queries_helper,
-    lower_shape_batch_queries_helper,
-    lower_shape_distance_helper,
-    lower_shape_surface_helper,
-    lower_shape_trace_helper,
-    lower_world_distance_capture_helper,
-    lower_world_medium_capture_helper,
-    lower_world_normal_capture_helper,
-    lower_world_radiance_capture_helper,
-    lower_world_surface_capture_helper,
-    lower_world_trace_capture_helper,
+    lower_field_batch_queries_helper, lower_scene_distance_capture_helper,
+    lower_scene_medium_capture_helper, lower_scene_normal_capture_helper,
+    lower_scene_radiance_capture_helper, lower_scene_surface_capture_helper,
+    lower_scene_surface_queries_helper, lower_scene_trace_capture_helper,
+    lower_scene_trace_queries_helper, lower_shape_batch_queries_helper,
+    lower_shape_distance_helper, lower_shape_surface_helper, lower_shape_trace_helper,
+    lower_world_distance_capture_helper, lower_world_medium_capture_helper,
+    lower_world_normal_capture_helper, lower_world_radiance_capture_helper,
+    lower_world_surface_capture_helper, lower_world_trace_capture_helper,
 };
+use crate::query_exec::{QueryExecContext, wgsl};
 use crate::query_plan::{
     BatchQueryPlan, CaptureKind, DispatchBackend, FieldBatchPlanKind, ShapeBatchPlanKind,
+    WorldQueryKind, WorldQueryPlan,
 };
 use crate::scene_ir;
 use rowan::TextRange;
@@ -56,6 +49,14 @@ pub fn lower_module(module: &Module) -> MirModule {
 }
 
 pub fn lower_module_with_types(module: &Module, type_info: &TypeInfo) -> MirModule {
+    lower_module_with_types_and_backend(module, type_info, DispatchBackend::Auto)
+}
+
+pub fn lower_module_with_types_and_backend(
+    module: &Module,
+    type_info: &TypeInfo,
+    default_query_backend: DispatchBackend,
+) -> MirModule {
     const CLASS_ID_BASE: usize = 100;
     let mut type_tags = Vec::new();
     let mut tag_map = HashMap::new();
@@ -281,6 +282,89 @@ pub fn lower_module_with_types(module: &Module, type_info: &TypeInfo) -> MirModu
             }
         })
         .collect();
+    let wgsl_query_ctx = Some(QueryExecContext::compile(module, type_info));
+    let wgsl_field_indices = wgsl_query_ctx
+        .as_ref()
+        .map(|ctx| {
+            ctx.scene
+                .fields
+                .keys()
+                .enumerate()
+                .map(|(index, name)| (name.clone(), index as u32))
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
+    let wgsl_shape_indices = wgsl_query_ctx
+        .as_ref()
+        .map(|ctx| {
+            ctx.scene
+                .shapes
+                .keys()
+                .enumerate()
+                .map(|(index, name)| (name.clone(), index as u32))
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
+    let world_wgsl_configs = wgsl_query_ctx
+        .as_ref()
+        .map(|ctx| {
+            [
+                WorldQueryKind::Distance,
+                WorldQueryKind::Normal,
+                WorldQueryKind::Trace,
+                WorldQueryKind::Surface,
+                WorldQueryKind::Radiance,
+                WorldQueryKind::Medium,
+            ]
+            .into_iter()
+            .map(|kind| {
+                let plan = lower_world_query_plan(&WorldQueryPlan::for_query_with_backend(
+                    kind,
+                    DispatchBackend::Wgsl,
+                ));
+                (
+                    kind,
+                    wgsl::compile_world_shader(ctx, &plan)
+                        .map(|shader| wgsl::bridge_config(&shader))
+                        .map_err(|err| SmolStr::new(err.to_string())),
+                )
+            })
+            .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+    let field_batch_plans = vec![
+        BatchQueryPlan::for_field(FieldBatchPlanKind::Distance, CaptureKind::Field)
+            .expect("field distance plan"),
+        BatchQueryPlan::for_field(FieldBatchPlanKind::Distance, CaptureKind::Shape)
+            .expect("shape distance plan"),
+        BatchQueryPlan::for_field(FieldBatchPlanKind::Normal, CaptureKind::Field)
+            .expect("field normal plan"),
+        BatchQueryPlan::for_field(FieldBatchPlanKind::Normal, CaptureKind::Shape)
+            .expect("shape normal plan"),
+    ];
+    let shape_batch_plans = vec![
+        BatchQueryPlan::for_shape(ShapeBatchPlanKind::Trace),
+        BatchQueryPlan::for_shape(ShapeBatchPlanKind::Surface),
+        BatchQueryPlan::for_shape(ShapeBatchPlanKind::Occluded),
+    ];
+    let batch_wgsl_configs = wgsl_query_ctx
+        .as_ref()
+        .map(|ctx| {
+            field_batch_plans
+                .iter()
+                .chain(shape_batch_plans.iter())
+                .map(|plan| {
+                    let lowered = lower_batch_query_plan(plan);
+                    (
+                        plan.helper_name.clone(),
+                        wgsl::compile_batch_shader(ctx, &lowered)
+                            .map(|shader| wgsl::bridge_config(&shader))
+                            .map_err(|err| SmolStr::new(err.to_string())),
+                    )
+                })
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
     for (_idx, func) in module.functions.iter() {
         let Some(body) = &func.body else {
             continue;
@@ -304,6 +388,7 @@ pub fn lower_module_with_types(module: &Module, type_info: &TypeInfo) -> MirModu
             name,
             body,
             type_info,
+            default_query_backend,
             &tag_map,
             &class_fields,
             &class_field_defaults,
@@ -596,6 +681,9 @@ pub fn lower_module_with_types(module: &Module, type_info: &TypeInfo) -> MirModu
         &result_functions,
         &class_method_ids,
         &interface_methods,
+        default_query_backend,
+        world_wgsl_configs.get(&WorldQueryKind::Distance),
+        &wgsl_shape_indices,
     ));
     functions.push(lower_world_normal_capture_helper(
         module,
@@ -614,6 +702,9 @@ pub fn lower_module_with_types(module: &Module, type_info: &TypeInfo) -> MirModu
         &result_functions,
         &class_method_ids,
         &interface_methods,
+        default_query_backend,
+        world_wgsl_configs.get(&WorldQueryKind::Normal),
+        &wgsl_shape_indices,
     ));
     functions.push(lower_world_trace_capture_helper(
         module,
@@ -632,6 +723,9 @@ pub fn lower_module_with_types(module: &Module, type_info: &TypeInfo) -> MirModu
         &result_functions,
         &class_method_ids,
         &interface_methods,
+        default_query_backend,
+        world_wgsl_configs.get(&WorldQueryKind::Trace),
+        &wgsl_shape_indices,
     ));
     functions.push(lower_world_surface_capture_helper(
         module,
@@ -650,6 +744,9 @@ pub fn lower_module_with_types(module: &Module, type_info: &TypeInfo) -> MirModu
         &result_functions,
         &class_method_ids,
         &interface_methods,
+        default_query_backend,
+        world_wgsl_configs.get(&WorldQueryKind::Surface),
+        &wgsl_shape_indices,
     ));
     functions.push(lower_world_radiance_capture_helper(
         module,
@@ -668,6 +765,9 @@ pub fn lower_module_with_types(module: &Module, type_info: &TypeInfo) -> MirModu
         &result_functions,
         &class_method_ids,
         &interface_methods,
+        default_query_backend,
+        world_wgsl_configs.get(&WorldQueryKind::Radiance),
+        &wgsl_shape_indices,
     ));
     functions.push(lower_world_medium_capture_helper(
         module,
@@ -686,9 +786,13 @@ pub fn lower_module_with_types(module: &Module, type_info: &TypeInfo) -> MirModu
         &result_functions,
         &class_method_ids,
         &interface_methods,
+        default_query_backend,
+        world_wgsl_configs.get(&WorldQueryKind::Medium),
+        &wgsl_shape_indices,
     ));
     functions.push(lower_render_shadow_visibility_helper(
         module,
+        default_query_backend,
         &tag_map,
         &class_fields,
         &class_field_defaults,
@@ -707,6 +811,7 @@ pub fn lower_module_with_types(module: &Module, type_info: &TypeInfo) -> MirModu
     ));
     functions.push(lower_render_ambient_occlusion_helper(
         module,
+        default_query_backend,
         &tag_map,
         &class_fields,
         &class_field_defaults,
@@ -725,6 +830,7 @@ pub fn lower_module_with_types(module: &Module, type_info: &TypeInfo) -> MirModu
     ));
     functions.push(lower_render_scene_color_helper(
         module,
+        default_query_backend,
         &tag_map,
         &class_fields,
         &class_field_defaults,
@@ -743,6 +849,7 @@ pub fn lower_module_with_types(module: &Module, type_info: &TypeInfo) -> MirModu
     ));
     functions.push(lower_render_capture_to_ppm_helper(
         module,
+        default_query_backend,
         &tag_map,
         &class_fields,
         &class_field_defaults,
@@ -795,16 +902,7 @@ pub fn lower_module_with_types(module: &Module, type_info: &TypeInfo) -> MirModu
         &class_method_ids,
         &interface_methods,
     ));
-    for plan in [
-        BatchQueryPlan::for_field(FieldBatchPlanKind::Distance, CaptureKind::Field)
-            .expect("field distance plan"),
-        BatchQueryPlan::for_field(FieldBatchPlanKind::Distance, CaptureKind::Shape)
-            .expect("shape distance plan"),
-        BatchQueryPlan::for_field(FieldBatchPlanKind::Normal, CaptureKind::Field)
-            .expect("field normal plan"),
-        BatchQueryPlan::for_field(FieldBatchPlanKind::Normal, CaptureKind::Shape)
-            .expect("shape normal plan"),
-    ] {
+    for plan in &field_batch_plans {
         functions.push(lower_field_batch_queries_helper(
             &tag_map,
             &class_fields,
@@ -821,14 +919,17 @@ pub fn lower_module_with_types(module: &Module, type_info: &TypeInfo) -> MirModu
             &result_functions,
             &class_method_ids,
             &interface_methods,
-            &plan,
+            plan,
+            default_query_backend,
+            batch_wgsl_configs.get(&plan.helper_name),
+            match plan.capture_kind {
+                CaptureKind::Field => &wgsl_field_indices,
+                CaptureKind::Shape => &wgsl_shape_indices,
+                CaptureKind::Region => unreachable!("field batch helpers do not support region"),
+            },
         ));
     }
-    for plan in [
-        BatchQueryPlan::for_shape(ShapeBatchPlanKind::Trace),
-        BatchQueryPlan::for_shape(ShapeBatchPlanKind::Surface),
-        BatchQueryPlan::for_shape(ShapeBatchPlanKind::Occluded),
-    ] {
+    for plan in &shape_batch_plans {
         functions.push(lower_shape_batch_queries_helper(
             &tag_map,
             &class_fields,
@@ -845,7 +946,10 @@ pub fn lower_module_with_types(module: &Module, type_info: &TypeInfo) -> MirModu
             &result_functions,
             &class_method_ids,
             &interface_methods,
-            &plan,
+            plan,
+            default_query_backend,
+            batch_wgsl_configs.get(&plan.helper_name),
+            &wgsl_shape_indices,
         ));
     }
 
@@ -867,6 +971,7 @@ fn lower_function(
     name: SmolStr,
     body: &hir::Body,
     module_type_info: &TypeInfo,
+    default_query_backend: DispatchBackend,
     type_tags: &HashMap<SmolStr, TypeTagId>,
     class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
     class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
@@ -892,6 +997,7 @@ fn lower_function(
             func,
             name,
             module_type_info,
+            default_query_backend,
             type_tags,
             class_fields,
             class_field_defaults,
@@ -916,6 +1022,7 @@ fn lower_function(
             module,
             func,
             name,
+            default_query_backend,
             type_tags,
             class_fields,
             class_field_defaults,
@@ -939,6 +1046,7 @@ fn lower_function(
             module,
             func,
             name,
+            default_query_backend,
             type_tags,
             class_fields,
             class_field_defaults,
@@ -962,6 +1070,7 @@ fn lower_function(
             module,
             func,
             name,
+            default_query_backend,
             type_tags,
             class_fields,
             class_field_defaults,
@@ -989,6 +1098,7 @@ fn lower_function(
                     name,
                     &graph.root,
                     body,
+                    default_query_backend,
                     type_tags,
                     class_fields,
                     class_field_defaults,
@@ -1033,6 +1143,7 @@ fn lower_function(
         ),
         Some(type_info),
     );
+    lowerer.default_query_backend = default_query_backend;
 
     if is_method {
         let local = lowerer.new_local(
@@ -1103,6 +1214,7 @@ fn lower_kernel_ir_function(
     func: &hir::Function,
     name: SmolStr,
     module_type_info: &TypeInfo,
+    default_query_backend: DispatchBackend,
     type_tags: &HashMap<SmolStr, TypeTagId>,
     class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
     class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
@@ -1156,6 +1268,7 @@ fn lower_kernel_ir_function(
         ),
         Some(type_info),
     );
+    lowerer.default_query_backend = default_query_backend;
     for param in &kernel.params {
         let local = lowerer.new_local(param.name.clone(), false, mir_type_from_type(&param.ty));
         lowerer.declare_local(param.name.clone(), local);
@@ -1207,6 +1320,7 @@ fn lower_semantic_field_function(
     name: SmolStr,
     graph: &hir::FieldExpr,
     body: &hir::Body,
+    default_query_backend: DispatchBackend,
     type_tags: &HashMap<SmolStr, TypeTagId>,
     class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
     class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
@@ -1248,6 +1362,7 @@ fn lower_semantic_field_function(
         ),
         Some(type_info),
     );
+    lowerer.default_query_backend = default_query_backend;
 
     if is_method {
         let local = lowerer.new_local(
@@ -1331,6 +1446,7 @@ fn lower_region_function(
     module: &hir::Module,
     func: &hir::Function,
     name: SmolStr,
+    default_query_backend: DispatchBackend,
     type_tags: &HashMap<SmolStr, TypeTagId>,
     class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
     class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
@@ -1369,6 +1485,7 @@ fn lower_region_function(
         false,
         Some(type_info),
     );
+    lowerer.default_query_backend = default_query_backend;
 
     for param in &func.params {
         let local = lowerer.new_local(
@@ -1435,6 +1552,7 @@ fn lower_domain_function(
     module: &hir::Module,
     func: &hir::Function,
     name: SmolStr,
+    default_query_backend: DispatchBackend,
     type_tags: &HashMap<SmolStr, TypeTagId>,
     class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
     class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
@@ -1473,6 +1591,7 @@ fn lower_domain_function(
         false,
         Some(type_info),
     );
+    lowerer.default_query_backend = default_query_backend;
 
     for param in &func.params {
         let local = lowerer.new_local(
@@ -1618,6 +1737,7 @@ fn lower_render_function(
     module: &hir::Module,
     func: &hir::Function,
     name: SmolStr,
+    default_query_backend: DispatchBackend,
     type_tags: &HashMap<SmolStr, TypeTagId>,
     class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
     class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
@@ -1656,6 +1776,7 @@ fn lower_render_function(
         false,
         Some(type_info),
     );
+    lowerer.default_query_backend = default_query_backend;
 
     for param in &func.params {
         let local = lowerer.new_local(
@@ -1892,10 +2013,19 @@ fn lower_render_world_distance_call(
     point: Value,
     span: TextRange,
 ) -> Value {
+    let plan = WorldQueryPlan::for_query(WorldQueryKind::Distance);
+    let backend = Value::Const(Literal::Integer(
+        match lowerer.resolve_default_query_backend(DispatchBackend::Auto) {
+            DispatchBackend::Cpu => 0,
+            DispatchBackend::VirtualGpu => 1,
+            DispatchBackend::Wgsl => 2,
+            DispatchBackend::Auto => 3,
+        },
+    ));
     lowerer.lower_call_temp(
         MirType::Float,
-        SmolStr::new("__wr_world_distance_capture"),
-        vec![world, domain, point],
+        plan.helper_name,
+        vec![world, domain, point, backend],
         span,
     )
 }
@@ -1912,9 +2042,18 @@ fn lower_render_world_trace_call(
     max_steps: Value,
     span: TextRange,
 ) -> Value {
+    let plan = WorldQueryPlan::for_query(WorldQueryKind::Trace);
+    let backend = Value::Const(Literal::Integer(
+        match lowerer.resolve_default_query_backend(DispatchBackend::Auto) {
+            DispatchBackend::Cpu => 0,
+            DispatchBackend::VirtualGpu => 1,
+            DispatchBackend::Wgsl => 2,
+            DispatchBackend::Auto => 3,
+        },
+    ));
     lowerer.lower_call_temp(
         MirType::Named(SmolStr::new("Hit3")),
-        SmolStr::new("__wr_world_trace_capture"),
+        plan.helper_name,
         vec![
             world,
             domain,
@@ -1924,6 +2063,7 @@ fn lower_render_world_trace_call(
             min_step,
             hit_epsilon,
             max_steps,
+            backend,
         ],
         span,
     )
@@ -1936,10 +2076,19 @@ fn lower_render_world_surface_call(
     hit: Value,
     span: TextRange,
 ) -> Value {
+    let plan = WorldQueryPlan::for_query(WorldQueryKind::Surface);
+    let backend = Value::Const(Literal::Integer(
+        match lowerer.resolve_default_query_backend(DispatchBackend::Auto) {
+            DispatchBackend::Cpu => 0,
+            DispatchBackend::VirtualGpu => 1,
+            DispatchBackend::Wgsl => 2,
+            DispatchBackend::Auto => 3,
+        },
+    ));
     lowerer.lower_call_temp(
         MirType::Named(SmolStr::new("Surface")),
-        SmolStr::new("__wr_world_surface_capture"),
-        vec![world, domain, hit],
+        plan.helper_name,
+        vec![world, domain, hit, backend],
         span,
     )
 }
@@ -1952,10 +2101,19 @@ fn lower_render_world_radiance_call(
     direction: Value,
     span: TextRange,
 ) -> Value {
+    let plan = WorldQueryPlan::for_query(WorldQueryKind::Radiance);
+    let backend = Value::Const(Literal::Integer(
+        match lowerer.resolve_default_query_backend(DispatchBackend::Auto) {
+            DispatchBackend::Cpu => 0,
+            DispatchBackend::VirtualGpu => 1,
+            DispatchBackend::Wgsl => 2,
+            DispatchBackend::Auto => 3,
+        },
+    ));
     lowerer.lower_call_temp(
         MirType::Vec3,
-        SmolStr::new("__wr_world_radiance_capture"),
-        vec![world, domain, point, direction],
+        plan.helper_name,
+        vec![world, domain, point, direction, backend],
         span,
     )
 }
@@ -1967,16 +2125,26 @@ fn lower_render_world_medium_call(
     point: Value,
     span: TextRange,
 ) -> Value {
+    let plan = WorldQueryPlan::for_query(WorldQueryKind::Medium);
+    let backend = Value::Const(Literal::Integer(
+        match lowerer.resolve_default_query_backend(DispatchBackend::Auto) {
+            DispatchBackend::Cpu => 0,
+            DispatchBackend::VirtualGpu => 1,
+            DispatchBackend::Wgsl => 2,
+            DispatchBackend::Auto => 3,
+        },
+    ));
     lowerer.lower_call_temp(
         MirType::Named(SmolStr::new("Medium")),
-        SmolStr::new("__wr_world_medium_capture"),
-        vec![world, domain, point],
+        plan.helper_name,
+        vec![world, domain, point, backend],
         span,
     )
 }
 
 fn lower_render_shadow_visibility_helper(
     module: &hir::Module,
+    default_query_backend: DispatchBackend,
     type_tags: &HashMap<SmolStr, TypeTagId>,
     class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
     class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
@@ -2014,6 +2182,7 @@ fn lower_render_shadow_visibility_helper(
         false,
         None,
     );
+    lowerer.default_query_backend = default_query_backend;
 
     let world = declare_internal_param(
         &mut lowerer,
@@ -2181,6 +2350,7 @@ fn lower_render_shadow_visibility_helper(
 
 fn lower_render_ambient_occlusion_helper(
     module: &hir::Module,
+    default_query_backend: DispatchBackend,
     type_tags: &HashMap<SmolStr, TypeTagId>,
     class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
     class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
@@ -2218,6 +2388,7 @@ fn lower_render_ambient_occlusion_helper(
         false,
         None,
     );
+    lowerer.default_query_backend = default_query_backend;
 
     let world = declare_internal_param(
         &mut lowerer,
@@ -2392,6 +2563,7 @@ fn lower_render_ambient_occlusion_helper(
 
 fn lower_render_scene_color_helper(
     module: &hir::Module,
+    default_query_backend: DispatchBackend,
     type_tags: &HashMap<SmolStr, TypeTagId>,
     class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
     class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
@@ -2429,6 +2601,7 @@ fn lower_render_scene_color_helper(
         false,
         None,
     );
+    lowerer.default_query_backend = default_query_backend;
 
     let world = declare_internal_param(
         &mut lowerer,
@@ -3155,6 +3328,7 @@ fn lower_render_scene_color_helper(
 
 fn lower_render_capture_to_ppm_helper(
     module: &hir::Module,
+    default_query_backend: DispatchBackend,
     type_tags: &HashMap<SmolStr, TypeTagId>,
     class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
     class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
@@ -3192,6 +3366,7 @@ fn lower_render_capture_to_ppm_helper(
         false,
         None,
     );
+    lowerer.default_query_backend = default_query_backend;
 
     let world = declare_internal_param(
         &mut lowerer,
@@ -3672,6 +3847,7 @@ pub(crate) struct FunctionLowerer {
     pub(crate) radiance_param_counts: HashMap<SmolStr, usize>,
     pub(crate) volume_param_counts: HashMap<SmolStr, usize>,
     pub(crate) result_functions: HashSet<SmolStr>,
+    pub(crate) default_query_backend: DispatchBackend,
     pub(crate) returns_result: bool,
     pub(crate) type_info: Option<FunctionTypeInfo>,
     pub(crate) defers: Vec<hir::Idx<hir::Expr>>,
@@ -3749,6 +3925,7 @@ impl FunctionLowerer {
             radiance_param_counts: radiance_param_counts.clone(),
             volume_param_counts: volume_param_counts.clone(),
             result_functions: result_functions.clone(),
+            default_query_backend: DispatchBackend::Auto,
             returns_result,
             type_info: type_info.cloned(),
             defers: Vec::new(),
@@ -3758,6 +3935,69 @@ impl FunctionLowerer {
 
     pub(crate) fn current_objective(&self) -> Option<hir::Objective> {
         self.objective_stack.last().copied()
+    }
+
+    pub(crate) fn resolve_default_query_backend(
+        &self,
+        backend: DispatchBackend,
+    ) -> DispatchBackend {
+        match backend {
+            DispatchBackend::Auto => match self.default_query_backend {
+                DispatchBackend::Auto | DispatchBackend::Cpu => DispatchBackend::Cpu,
+                DispatchBackend::VirtualGpu => DispatchBackend::VirtualGpu,
+                DispatchBackend::Wgsl => DispatchBackend::Wgsl,
+            },
+            explicit => explicit,
+        }
+    }
+
+    pub(crate) fn dispatch_backend_id(backend: DispatchBackend) -> i64 {
+        match backend {
+            DispatchBackend::Cpu => 0,
+            DispatchBackend::VirtualGpu => 1,
+            DispatchBackend::Wgsl => 2,
+            DispatchBackend::Auto => 3,
+        }
+    }
+
+    pub(crate) fn world_query_plan_backend(
+        &self,
+        body: &hir::Body,
+        backend_expr: Option<hir::Idx<hir::Expr>>,
+    ) -> DispatchBackend {
+        match backend_expr {
+            Some(expr_id) => self
+                .parse_dispatch_backend_builtin(body, expr_id)
+                .and_then(|id| i32::try_from(id).ok().and_then(DispatchBackend::from_id))
+                .map(|backend| self.resolve_default_query_backend(backend))
+                .unwrap_or(DispatchBackend::Auto),
+            None => self.resolve_default_query_backend(DispatchBackend::Auto),
+        }
+    }
+
+    pub(crate) fn lower_world_query_backend_value(
+        &mut self,
+        body: &hir::Body,
+        backend_expr: Option<hir::Idx<hir::Expr>>,
+        span: TextRange,
+    ) -> Value {
+        match backend_expr {
+            Some(expr_id) => {
+                if let Some(backend) = self
+                    .parse_dispatch_backend_builtin(body, expr_id)
+                    .and_then(|id| i32::try_from(id).ok().and_then(DispatchBackend::from_id))
+                    .map(|backend| self.resolve_default_query_backend(backend))
+                {
+                    Value::Const(Literal::Integer(Self::dispatch_backend_id(backend)))
+                } else {
+                    let backend = self.lower_expr(body, expr_id);
+                    self.lower_dispatch_backend_id(backend, span)
+                }
+            }
+            None => Value::Const(Literal::Integer(Self::dispatch_backend_id(
+                self.resolve_default_query_backend(DispatchBackend::Auto),
+            ))),
+        }
     }
 
     pub(crate) fn new_block(&mut self) -> BlockId {
@@ -3802,7 +4042,10 @@ impl FunctionLowerer {
             .unwrap_or(MirType::Unknown)
     }
 
-    pub(crate) fn proven_range_induction_type(lhs_ty: &MirType, rhs_ty: &MirType) -> Option<MirType> {
+    pub(crate) fn proven_range_induction_type(
+        lhs_ty: &MirType,
+        rhs_ty: &MirType,
+    ) -> Option<MirType> {
         match (lhs_ty, rhs_ty) {
             (MirType::Integer, MirType::Integer) => Some(MirType::Integer),
             (MirType::Float, MirType::Float) => Some(MirType::Float),
@@ -3810,7 +4053,11 @@ impl FunctionLowerer {
         }
     }
 
-    pub(crate) fn new_temp_for_expr(&mut self, body: &hir::Body, expr_id: hir::Idx<Expr>) -> TempId {
+    pub(crate) fn new_temp_for_expr(
+        &mut self,
+        body: &hir::Body,
+        expr_id: hir::Idx<Expr>,
+    ) -> TempId {
         let ty = self.expr_type(body, expr_id);
         self.new_temp(ty)
     }
@@ -4169,7 +4416,8 @@ impl FunctionLowerer {
                 let id = match backend {
                     DispatchBackend::Cpu => 0,
                     DispatchBackend::VirtualGpu => 1,
-                    DispatchBackend::Auto => 2,
+                    DispatchBackend::Wgsl => 2,
+                    DispatchBackend::Auto => 3,
                 };
                 self.build_dispatch_backend_value(id, *span)
             }
@@ -4196,14 +4444,29 @@ impl FunctionLowerer {
                 ty,
                 span,
             } => {
-                let args = args
+                let query_arg_count = match plan.kind {
+                    WorldQueryKind::Distance | WorldQueryKind::Normal | WorldQueryKind::Medium => 3,
+                    WorldQueryKind::Radiance => 4,
+                    WorldQueryKind::Trace => 8,
+                    WorldQueryKind::Surface => 3,
+                };
+                let mut lowered_args = args
                     .iter()
+                    .take(query_arg_count)
                     .map(|arg| self.lower_kernel_expr(arg))
                     .collect::<Vec<_>>();
+                let backend = match args.get(query_arg_count) {
+                    Some(backend) => {
+                        let backend = self.lower_kernel_expr(backend);
+                        self.lower_dispatch_backend_id(backend, *span)
+                    }
+                    None => Value::Const(Literal::Integer(Self::dispatch_backend_id(plan.backend))),
+                };
+                lowered_args.push(backend);
                 self.lower_call_temp(
                     mir_type_from_type(ty),
                     plan.helper_name.clone(),
-                    args,
+                    lowered_args,
                     *span,
                 )
             }
@@ -4213,14 +4476,24 @@ impl FunctionLowerer {
                 ty,
                 span,
             } => {
-                let args = args
-                    .iter()
-                    .map(|arg| self.lower_kernel_expr(arg))
-                    .collect::<Vec<_>>();
+                let lowered_args = match args.split_last() {
+                    Some((backend, query_args)) => {
+                        let mut lowered_args = query_args
+                            .iter()
+                            .map(|arg| self.lower_kernel_expr(arg))
+                            .collect::<Vec<_>>();
+                        let backend = self.lower_kernel_expr(backend);
+                        lowered_args.push(self.lower_dispatch_backend_id(backend, *span));
+                        lowered_args
+                    }
+                    None => vec![Value::Const(Literal::Integer(Self::dispatch_backend_id(
+                        plan.backend,
+                    )))],
+                };
                 self.lower_call_temp(
                     mir_type_from_type(ty),
                     plan.helper_name.clone(),
-                    args,
+                    lowered_args,
                     *span,
                 )
             }
@@ -6646,7 +6919,11 @@ impl FunctionLowerer {
         }
     }
 
-    pub(crate) fn build_class_instance(&mut self, class: &ClassTargetInfo, span: TextRange) -> Value {
+    pub(crate) fn build_class_instance(
+        &mut self,
+        class: &ClassTargetInfo,
+        span: TextRange,
+    ) -> Value {
         let temp = self.new_temp(MirType::Unknown);
         self.push_stmt(MirStmt::Assign {
             place: Place::Temp(temp),
@@ -6692,7 +6969,11 @@ impl FunctionLowerer {
         Value::Temp(temp)
     }
 
-    pub(crate) fn lower_field_default(&mut self, default: &hir::FieldDefault, span: TextRange) -> Value {
+    pub(crate) fn lower_field_default(
+        &mut self,
+        default: &hir::FieldDefault,
+        span: TextRange,
+    ) -> Value {
         match default {
             hir::FieldDefault::Literal(lit) => Value::Const(lit.clone()),
             hir::FieldDefault::List(items) => {
@@ -6734,7 +7015,12 @@ impl FunctionLowerer {
         }
     }
 
-    pub(crate) fn maybe_call_configure(&mut self, class_name: &SmolStr, receiver: Value, span: TextRange) {
+    pub(crate) fn maybe_call_configure(
+        &mut self,
+        class_name: &SmolStr,
+        receiver: Value,
+        span: TextRange,
+    ) {
         if self.name == SmolStr::new(format!("{}.{}", class_name, "__configure__")) {
             return;
         }
@@ -6762,7 +7048,11 @@ impl FunctionLowerer {
         });
     }
 
-    pub(crate) fn parse_pool_of(&self, body: &hir::Body, expr_id: hir::Idx<Expr>) -> Option<PoolOfSpec> {
+    pub(crate) fn parse_pool_of(
+        &self,
+        body: &hir::Body,
+        expr_id: hir::Idx<Expr>,
+    ) -> Option<PoolOfSpec> {
         let (callee, args) = match &body.exprs[expr_id] {
             Expr::Call { callee, args, .. } => (callee, args),
             _ => return None,
@@ -6907,7 +7197,11 @@ impl FunctionLowerer {
         Value::Temp(temp)
     }
 
-    pub(crate) fn lower_string_interp_temp(&mut self, parts: Vec<StringPartValue>, span: TextRange) -> Value {
+    pub(crate) fn lower_string_interp_temp(
+        &mut self,
+        parts: Vec<StringPartValue>,
+        span: TextRange,
+    ) -> Value {
         let temp = self.new_temp(MirType::String);
         self.push_stmt(MirStmt::Assign {
             place: Place::Temp(temp),
@@ -6920,7 +7214,12 @@ impl FunctionLowerer {
         Value::Temp(temp)
     }
 
-    pub(crate) fn lower_string_concat_temp(&mut self, lhs: Value, rhs: Value, span: TextRange) -> Value {
+    pub(crate) fn lower_string_concat_temp(
+        &mut self,
+        lhs: Value,
+        rhs: Value,
+        span: TextRange,
+    ) -> Value {
         let temp = self.new_temp(MirType::String);
         self.push_stmt(MirStmt::Assign {
             place: Place::Temp(temp),
@@ -6952,7 +7251,11 @@ impl FunctionLowerer {
         }
     }
 
-    pub(crate) fn set_class_field_value(class: &mut ClassTargetInfo, field_name: &str, value: Value) {
+    pub(crate) fn set_class_field_value(
+        class: &mut ClassTargetInfo,
+        field_name: &str,
+        value: Value,
+    ) {
         if let Some(idx) = class
             .fields
             .iter()
@@ -7241,7 +7544,12 @@ impl FunctionLowerer {
         Value::Const(Literal::Nil)
     }
 
-    pub(crate) fn lower_await(&mut self, body: &hir::Body, expr_id: hir::Idx<Expr>, span: TextRange) -> Value {
+    pub(crate) fn lower_await(
+        &mut self,
+        body: &hir::Body,
+        expr_id: hir::Idx<Expr>,
+        span: TextRange,
+    ) -> Value {
         let pending = self.lower_pending_call_or_value(body, expr_id, span);
         let temp = self.new_temp_for_expr(body, expr_id);
         self.push_stmt(MirStmt::Await {
@@ -7431,7 +7739,10 @@ impl FunctionLowerer {
             .and_then(|methods| methods.get(method).copied())
     }
 
-    pub(crate) fn resolve_unique_interface_dispatch_target(&self, method: &SmolStr) -> Option<SmolStr> {
+    pub(crate) fn resolve_unique_interface_dispatch_target(
+        &self,
+        method: &SmolStr,
+    ) -> Option<SmolStr> {
         let mut matched_interface: Option<&SmolStr> = None;
         for (interface_name, methods) in &self.interface_methods {
             if !methods.contains(method) {

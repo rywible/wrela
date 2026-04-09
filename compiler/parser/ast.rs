@@ -773,10 +773,18 @@ impl FuncDef {
     }
 
     pub fn name(&self) -> Option<SyntaxToken> {
-        self.0
-            .children_with_tokens()
-            .filter_map(|it| it.into_token())
-            .find(|it| it.kind() == SyntaxKind::Ident)
+        function_like_name_token(&self.0)
+    }
+
+    pub fn is_pure(&self) -> bool {
+        let tokens = function_like_tokens(&self.0);
+        matches!(
+            tokens.as_slice(),
+            [first, second, ..]
+                if first.kind() == SyntaxKind::Ident
+                    && first.text() == "pure"
+                    && second.kind() == SyntaxKind::FnKw
+        )
     }
 
     pub fn type_params(&self) -> impl Iterator<Item = SyntaxToken> {
@@ -827,6 +835,39 @@ impl FuncDef {
             _ => None,
         }
     }
+}
+
+fn function_like_tokens(node: &SyntaxNode) -> Vec<SyntaxToken> {
+    node.children_with_tokens()
+        .filter_map(|it| it.into_token())
+        .filter(|token| !token.kind().is_trivia())
+        .collect()
+}
+
+fn function_like_name_token(node: &SyntaxNode) -> Option<SyntaxToken> {
+    let tokens = function_like_tokens(node);
+    let mut idx = 0usize;
+    if tokens
+        .first()
+        .is_some_and(|token| token.kind() == SyntaxKind::Ident && token.text() == "pure")
+    {
+        idx += 1;
+    }
+    match tokens.get(idx)?.kind() {
+        SyntaxKind::FnKw | SyntaxKind::SystemKw => {}
+        SyntaxKind::KernelKw => {
+            if tokens.get(idx + 1)?.kind() != SyntaxKind::FnKw {
+                return None;
+            }
+            idx += 1;
+        }
+        _ => return None,
+    }
+    tokens
+        .iter()
+        .skip(idx + 1)
+        .find(|token| token.kind() == SyntaxKind::Ident)
+        .cloned()
 }
 
 macro_rules! impl_function_like_def {

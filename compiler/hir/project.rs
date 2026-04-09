@@ -1963,6 +1963,7 @@ fn effect_for_builtin_symbol(name: &str) -> FunctionEffect {
         | "occluded_batch"
         | "dispatch_backend_cpu"
         | "dispatch_backend_virtual_gpu"
+        | "dispatch_backend_wgsl"
         | "dispatch_backend_auto" => FunctionEffect::HostRead,
         "gpu_schedule_deterministic"
         | "gpu_schedule_reverse"
@@ -2336,6 +2337,7 @@ fn is_host_only_portable_builtin_symbol(name: &str) -> bool {
                 | "occluded_batch"
                 | "dispatch_backend_cpu"
                 | "dispatch_backend_virtual_gpu"
+                | "dispatch_backend_wgsl"
                 | "dispatch_backend_auto"
                 | "gpu_buffer_new"
                 | "gpu_atomic_i32_new"
@@ -3827,6 +3829,7 @@ fn is_builtin_value_name(name: &SmolStr) -> bool {
             | "occluded_batch"
             | "dispatch_backend_cpu"
             | "dispatch_backend_virtual_gpu"
+            | "dispatch_backend_wgsl"
             | "dispatch_backend_auto"
             | "sphere"
             | "box"

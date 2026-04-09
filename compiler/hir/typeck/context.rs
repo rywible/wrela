@@ -576,6 +576,7 @@ fn check_interface_conformance(
 struct FunctionIndex {
     functions: HashMap<SmolStr, FunctionSig>,
     portable_functions: HashSet<SmolStr>,
+    kernel_functions: HashSet<SmolStr>,
     field_functions: HashSet<SmolStr>,
     shape_functions: HashSet<SmolStr>,
     region_functions: HashSet<SmolStr>,
@@ -593,6 +594,7 @@ impl FunctionIndex {
 
         let mut functions = HashMap::new();
         let mut portable_functions = HashSet::new();
+        let mut kernel_functions = HashSet::new();
         let mut field_functions = HashSet::new();
         let mut shape_functions = HashSet::new();
         let mut region_functions = HashSet::new();
@@ -642,6 +644,9 @@ impl FunctionIndex {
             if matches!(func.lane(), FunctionLane::Portable) {
                 portable_functions.insert(func.name.clone());
             }
+            if matches!(func.role, FunctionRole::Kernel) {
+                kernel_functions.insert(func.name.clone());
+            }
             if matches!(func.role, FunctionRole::Field) && func.field.is_some() {
                 field_functions.insert(func.name.clone());
             }
@@ -664,6 +669,7 @@ impl FunctionIndex {
         Self {
             functions,
             portable_functions,
+            kernel_functions,
             field_functions,
             shape_functions,
             region_functions,
@@ -677,6 +683,10 @@ impl FunctionIndex {
 
     fn is_portable(&self, name: &SmolStr) -> bool {
         self.portable_functions.contains(name)
+    }
+
+    fn is_kernel(&self, name: &SmolStr) -> bool {
+        self.kernel_functions.contains(name)
     }
 
     fn is_field(&self, name: &SmolStr) -> bool {
@@ -3816,6 +3826,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("capture"), portable_named_type("RegionCapture")),
                     (SmolStr::new("domain"), portable_named_type("SceneDomain")),
                     (SmolStr::new("point"), Type::Vec3),
+                    (
+                        SmolStr::new("backend"),
+                        portable_named_type("DispatchBackend"),
+                    ),
                 ],
                 ret: Type::F32,
                 kind: FunctionKind::Function,
@@ -3830,6 +3844,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("capture"), portable_named_type("RegionCapture")),
                     (SmolStr::new("domain"), portable_named_type("SceneDomain")),
                     (SmolStr::new("point"), Type::Vec3),
+                    (
+                        SmolStr::new("backend"),
+                        portable_named_type("DispatchBackend"),
+                    ),
                 ],
                 ret: Type::Vec3,
                 kind: FunctionKind::Function,
@@ -3849,6 +3867,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("min_step"), Type::F32),
                     (SmolStr::new("hit_epsilon"), Type::F32),
                     (SmolStr::new("max_steps"), Type::Integer),
+                    (
+                        SmolStr::new("backend"),
+                        portable_named_type("DispatchBackend"),
+                    ),
                 ],
                 ret: portable_named_type("Hit3"),
                 kind: FunctionKind::Function,
@@ -3863,6 +3885,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("capture"), portable_named_type("RegionCapture")),
                     (SmolStr::new("domain"), portable_named_type("SceneDomain")),
                     (SmolStr::new("hit"), portable_named_type("Hit3")),
+                    (
+                        SmolStr::new("backend"),
+                        portable_named_type("DispatchBackend"),
+                    ),
                 ],
                 ret: portable_named_type("Surface"),
                 kind: FunctionKind::Function,
@@ -3878,6 +3904,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("domain"), portable_named_type("SceneDomain")),
                     (SmolStr::new("point"), Type::Vec3),
                     (SmolStr::new("direction"), Type::Vec3),
+                    (
+                        SmolStr::new("backend"),
+                        portable_named_type("DispatchBackend"),
+                    ),
                 ],
                 ret: Type::Vec3,
                 kind: FunctionKind::Function,
@@ -3892,6 +3922,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     (SmolStr::new("capture"), portable_named_type("RegionCapture")),
                     (SmolStr::new("domain"), portable_named_type("SceneDomain")),
                     (SmolStr::new("point"), Type::Vec3),
+                    (
+                        SmolStr::new("backend"),
+                        portable_named_type("DispatchBackend"),
+                    ),
                 ],
                 ret: portable_named_type("Medium"),
                 kind: FunctionKind::Function,
@@ -3996,6 +4030,16 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
         ),
         (
             SmolStr::new("dispatch_backend_virtual_gpu"),
+            FunctionSig {
+                params: Vec::new(),
+                ret: portable_named_type("DispatchBackend"),
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("dispatch_backend_wgsl"),
             FunctionSig {
                 params: Vec::new(),
                 ret: portable_named_type("DispatchBackend"),
@@ -4146,6 +4190,10 @@ impl TypeContext {
         } else {
             self.function_name.clone()
         }
+    }
+
+    fn current_function_role(&self) -> FunctionRole {
+        self.function_role
     }
 
     fn enter_scope(&mut self) {

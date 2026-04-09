@@ -52,6 +52,7 @@ pub enum ClassRole {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FunctionRole {
     Function,
+    Pure,
     Kernel,
     System,
     Field,
@@ -530,7 +531,8 @@ impl Function {
             | FunctionRole::Region
             | FunctionRole::Domain
             | FunctionRole::Render => FunctionLane::Host,
-            FunctionRole::Kernel
+            FunctionRole::Pure
+            | FunctionRole::Kernel
             | FunctionRole::Field
             | FunctionRole::Radiance
             | FunctionRole::Volume

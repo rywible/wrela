@@ -1,9 +1,13 @@
 pub mod abi;
 
 pub use abi::{
-    PortableAbiLayout, PortableAbiType, PortableStructField, align_to_u32,
-    portable_abi_array_stride, portable_abi_field_offset, portable_abi_lane_offset,
-    portable_abi_layout,
+    PortableAbiError, PortableAbiLayout, PortableAbiType, PortableStructField, align_to_u32,
+    portable_abi_array_stride, portable_abi_decode_slice, portable_abi_decode_value,
+    portable_abi_emit_wgsl_structs, portable_abi_encode_slice, portable_abi_encode_value,
+    portable_abi_field_offset, portable_abi_lane_offset, portable_abi_layout,
+    portable_abi_wgsl_type_name, portable_artifact_contract_abi, portable_candidate_contract_abi,
+    portable_dispatch_contract_abi, portable_hit_context_contract_abi,
+    portable_participant_contract_abi, portable_result_contract_abi,
 };
 use smol_str::SmolStr;
 

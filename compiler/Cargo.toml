@@ -12,6 +12,7 @@ path = "bin/wrela.rs"
 
 [lib]
 path = "lib.rs"
+crate-type = ["rlib", "staticlib"]
 
 [dependencies]
 wrela_runtime = { path = "../runtime" }
@@ -33,6 +34,9 @@ toml = "0.8"
 wat = "1"
 crc32fast = "1"
 wasm-bindgen-cli-support = "0.2"
+pollster = "0.4"
+wgpu = "29.0.1"
+naga = { version = "29.0.1", features = ["wgsl-in"] }
 
 [dev-dependencies]
 proptest = "1.9.0"

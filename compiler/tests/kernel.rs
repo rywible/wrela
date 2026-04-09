@@ -2,8 +2,8 @@ use smol_str::SmolStr;
 use wrela::hir;
 use wrela::hir::lower as hir_lower;
 use wrela::kernel::{
-    KernelDispatchGrid, KernelDispatchSchedule, KernelExpr, KernelRuntimeState, KernelStmt,
-    KernelValue, ResolvedKernelDispatch, execute_dispatch, interpret_batch_query,
+    KernelDispatchGrid, KernelDispatchSchedule, KernelExpr, KernelPlanStage, KernelRuntimeState,
+    KernelStmt, KernelValue, ResolvedKernelDispatch, execute_dispatch, interpret_batch_query,
     interpret_dispatch, lower_batch_query_plan, lower_capture_query_plan,
     lower_kernel_entry_by_name, lower_world_query_plan, validate_batch_query_plan,
     validate_capture_query_plan, validate_dispatch, validate_module, validate_world_query_plan,
@@ -12,8 +12,8 @@ use wrela::parser::ast;
 use wrela::parser::ast::AstNode;
 use wrela::parser::parse;
 use wrela::query_plan::{
-    BatchQueryKind, BatchQueryPlan, CaptureKind, CaptureQueryKind, CaptureQueryPlan,
-    DispatchBackend, WorldQueryKind, WorldQueryPlan,
+    ArtifactSchema, BatchQueryKind, BatchQueryPlan, CaptureKind, CaptureQueryKind,
+    CaptureQueryPlan, DispatchBackend, WorldQueryKind, WorldQueryPlan,
 };
 
 fn lower_inline_module_from_source(source: &str) -> hir::Module {
@@ -82,6 +82,10 @@ fn batch_query_plan_lowers_into_kernel_contract_and_traces_iterations() {
     let kernel_plan = lower_batch_query_plan(&plan);
     assert!(validate_batch_query_plan(&kernel_plan).is_ok());
     assert!(kernel_plan.requires_virtual_gpu_dispatch());
+    assert!(matches!(
+        kernel_plan.item_contract,
+        wrela::kernel::KernelBatchItemContract::CaptureQuery { .. }
+    ));
 
     let trace = interpret_batch_query(&kernel_plan, 2);
     assert!(trace.begins_virtual_gpu_dispatch);
@@ -110,6 +114,98 @@ fn batch_query_plan_lowers_into_kernel_contract_and_traces_iterations() {
 }
 
 #[test]
+fn occluded_batch_query_lowers_trace_then_occlusion_contract() {
+    let plan = BatchQueryPlan::for_shape_query(
+        BatchQueryKind::Occluded,
+        DispatchBackend::VirtualGpu,
+        None,
+    );
+    let kernel_plan = lower_batch_query_plan(&plan);
+    assert!(validate_batch_query_plan(&kernel_plan).is_ok());
+    assert!(matches!(
+        kernel_plan.item_contract,
+        wrela::kernel::KernelBatchItemContract::TraceThenOcclusion { .. }
+    ));
+}
+
+#[test]
+fn batch_query_validation_rejects_missing_dispatch_artifact_contract() {
+    let mut plan = lower_batch_query_plan(&BatchQueryPlan::for_shape_query(
+        BatchQueryKind::Trace,
+        DispatchBackend::VirtualGpu,
+        None,
+    ));
+    plan.artifact_contracts
+        .retain(|artifact| !matches!(artifact.schema, ArtifactSchema::DispatchRecord { .. }));
+
+    let errors = validate_batch_query_plan(&plan).expect_err("missing dispatch artifact");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("dispatch artifact contract does not match")
+    }));
+}
+
+#[test]
+fn batch_query_validation_rejects_zero_version_and_unbalanced_dispatch_stages() {
+    let mut plan = lower_batch_query_plan(&BatchQueryPlan::for_shape_query(
+        BatchQueryKind::Trace,
+        DispatchBackend::VirtualGpu,
+        None,
+    ));
+    plan.contract_version = 0;
+    plan.stages
+        .retain(|stage| !matches!(stage, KernelPlanStage::EndVirtualGpuDispatch));
+
+    let errors = validate_batch_query_plan(&plan).expect_err("invalid batch plan");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("contract version must be greater than zero")
+    }));
+    assert!(
+        errors
+            .iter()
+            .any(|error| { error.message.contains("both begin and end stages") })
+    );
+}
+
+#[test]
+fn batch_query_validation_rejects_invalid_nested_item_contracts() {
+    let mut plan = lower_batch_query_plan(&BatchQueryPlan::for_shape_query(
+        BatchQueryKind::Trace,
+        DispatchBackend::VirtualGpu,
+        None,
+    ));
+    let wrela::kernel::KernelBatchItemContract::CaptureQuery { plan: nested } =
+        &mut plan.item_contract
+    else {
+        panic!("expected capture item contract");
+    };
+    nested.contract_version = 0;
+    nested
+        .artifact_contracts
+        .retain(|artifact| !matches!(artifact.schema, ArtifactSchema::HitResultBuffer { .. }));
+
+    let errors = validate_batch_query_plan(&plan).expect_err("invalid nested capture plan");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("capture query contract version must be greater than zero")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("result artifact contract does not match the result record contract")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("batch capture item contract version does not match")
+    }));
+}
+
+#[test]
 fn capture_query_plan_lowers_into_kernel_contract() {
     let plan =
         CaptureQueryPlan::for_query(CaptureQueryKind::Trace, CaptureKind::Shape, None).unwrap();
@@ -132,9 +228,20 @@ fn capture_query_plan_lowers_into_kernel_contract() {
 
 #[test]
 fn world_query_plan_lowers_into_kernel_contract() {
-    let plan = WorldQueryPlan::for_query(WorldQueryKind::Radiance);
+    let plan = WorldQueryPlan::for_query_with_backend(
+        WorldQueryKind::Radiance,
+        wrela::query_plan::DispatchBackend::Wgsl,
+    );
     let kernel_plan = lower_world_query_plan(&plan);
     assert!(validate_world_query_plan(&kernel_plan).is_ok());
+    assert_eq!(
+        kernel_plan.backend,
+        wrela::query_plan::DispatchBackend::Wgsl
+    );
+    assert_eq!(
+        kernel_plan.dispatch_contract.backend,
+        wrela::query_plan::DispatchBackend::Wgsl
+    );
     assert!(matches!(
         kernel_plan.stages.first(),
         Some(wrela::kernel::KernelPlanStage::LoadDomainFlags)
@@ -151,6 +258,56 @@ fn world_query_plan_lowers_into_kernel_contract() {
             .iter()
             .any(|stage| matches!(stage, wrela::kernel::KernelPlanStage::AppendResult { .. }))
     );
+}
+
+#[test]
+fn kernel_lowering_preserves_dynamic_world_query_backend_arguments() {
+    let source = r#"
+kernel fn world_query_backend_passthrough(
+    world_capture: RegionCapture,
+    domain: SceneDomain,
+    query_backend: DispatchBackend
+) -> F32 {
+    return distance_world(
+        capture=world_capture,
+        domain=domain,
+        point=vec3(0.0, 0.0, 0.0),
+        backend=query_backend
+    )
+}
+"#;
+
+    let module = lower_inline_module_from_source(source);
+    let semantic = hir::semantic::check_module(&module);
+    assert!(
+        semantic.errors.is_empty(),
+        "semantic errors: {:?}",
+        semantic.errors
+    );
+    let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+    assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
+    let program =
+        lower_kernel_entry_by_name(&module, &type_info, "world_query_backend_passthrough")
+            .expect("kernel program");
+    let function = program
+        .function("world_query_backend_passthrough")
+        .expect("lowered kernel function");
+    let KernelStmt::Return {
+        value: Some(KernelExpr::WorldQuery { plan, args, .. }),
+        ..
+    } = function.body.last().expect("kernel return")
+    else {
+        panic!(
+            "expected lowered world query return, got: {:?}",
+            function.body
+        );
+    };
+    assert_eq!(plan.backend, DispatchBackend::Auto);
+    assert_eq!(args.len(), 4);
+    assert!(matches!(
+        args.last(),
+        Some(KernelExpr::Var { name, .. }) if name.as_str() == "query_backend"
+    ));
 }
 
 #[test]

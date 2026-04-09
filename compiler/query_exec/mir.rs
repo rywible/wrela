@@ -30,6 +30,7 @@ use crate::query_exec::spec::{
     ShapeQuerySpec, WorldPointQueryKind, WorldPointQuerySpec, WorldShapeQueryKind,
     WorldShapeQuerySpec,
 };
+use crate::query_exec::wgsl::NativeWgslBridgeConfig;
 use crate::query_exec::world::{
     WorldDistanceBackend, WorldMediumBackend, WorldNormalBackend, WorldRadianceBackend,
     WorldSurfaceBackend, WorldTraceBackend, execute_world_normal, walk_world_distance_shapes,

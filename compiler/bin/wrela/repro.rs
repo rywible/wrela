@@ -260,6 +260,7 @@ fn run_typed_repro_case(
         output_format,
         http_mode,
         DifferentialPipeline::Baseline,
+        wrela::query_plan::DispatchBackend::Auto,
     );
     let duration_ms = started.elapsed().as_millis();
     match result {

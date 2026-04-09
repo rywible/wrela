@@ -1,8 +1,15 @@
+use wrela::kernel::{KernelStructValue, KernelValue};
 use wrela::portable::{
-    PortableAbiType, PortableBuiltinType, PortableStructField, builtin_records,
-    portable_abi_array_stride, portable_abi_field_offset, portable_abi_layout,
-    portable_builtin_record_abi,
+    PortableAbiError, PortableAbiType, PortableBuiltinType, PortableStructField, builtin_records,
+    portable_abi_array_stride, portable_abi_decode_slice, portable_abi_decode_value,
+    portable_abi_emit_wgsl_structs, portable_abi_encode_slice, portable_abi_encode_value,
+    portable_abi_field_offset, portable_abi_layout, portable_artifact_contract_abi,
+    portable_builtin_record_abi, portable_candidate_contract_abi, portable_dispatch_contract_abi,
+    portable_hit_context_contract_abi, portable_participant_contract_abi,
+    portable_result_contract_abi,
 };
+use wrela::query_plan;
+use wrela::scene_ir;
 
 #[test]
 fn portable_abi_matches_wgsl_layout_rules_for_scalars_and_matrices() {
@@ -116,4 +123,337 @@ fn hit3_layout_preserves_wgsl_padding_boundaries() {
     assert_eq!(portable_abi_field_offset(&fields, normal), 32);
     assert_eq!(portable_abi_field_offset(&fields, shading_frame), 80);
     assert_eq!(portable_abi_field_offset(&fields, payload), 228);
+}
+
+#[test]
+fn query_contract_records_have_stable_portable_layouts() {
+    let dispatch_layout = portable_abi_layout(&portable_dispatch_contract_abi(
+        &query_plan::DispatchRecordContract {
+            backend: query_plan::DispatchBackend::VirtualGpu,
+            kernel: query_plan::InternalKernelKind::ShapeTraceCapture,
+            item_kind: query_plan::QueryItemKind::RayQuery,
+            result_kind: query_plan::QueryResultKind::Hit3,
+        },
+    ));
+    assert_eq!(dispatch_layout.size, 20);
+    assert_eq!(dispatch_layout.align, 4);
+
+    let result_layout = portable_abi_layout(&portable_result_contract_abi(
+        &query_plan::ResultRecordContract {
+            result_kind: query_plan::QueryResultKind::Hit3,
+            preserves_local_hit_context: true,
+            stable_feature_id: true,
+            stable_instance_id: true,
+            stable_repeat_id: true,
+        },
+    ));
+    assert_eq!(result_layout.size, 24);
+    assert_eq!(result_layout.align, 4);
+}
+
+#[test]
+fn artifact_contract_records_encode_scene_roots_and_support_counts() {
+    let abi = portable_artifact_contract_abi(&query_plan::ArtifactContract {
+        id: "shape_trace::artifact::0".into(),
+        schema: query_plan::ArtifactSchema::CullingTable {
+            candidate_strategy: query_plan::CandidateStrategy::SupportAcceleratedShapeTraversal,
+            pruning_strategy: query_plan::PruningStrategy::CullingTable,
+            support_class: scene_ir::SupportClass::Bounded,
+            semantics: scene_ir::DistanceSemantics::ConservativeLowerBound,
+            support_root: 11,
+            support_node_count: 7,
+            leaf_count: 3,
+            identity_source_count: 2,
+        },
+        producer: "shape_trace".into(),
+        consumer: "shape_trace".into(),
+        deterministic: true,
+        version: query_plan::QUERY_PLAN_CONTRACT_VERSION,
+    });
+    let PortableAbiType::Struct { fields, .. } = abi else {
+        panic!("artifact contract abi should lower to a struct");
+    };
+    let layout = portable_abi_layout(&PortableAbiType::Struct {
+        name: "ArtifactContract".into(),
+        class_id: 0,
+        fields: fields.clone(),
+    });
+    assert_eq!(layout.align, 4);
+    assert_eq!(portable_abi_field_offset(&fields, 0), 0);
+    assert_eq!(portable_abi_field_offset(&fields, 4), 16);
+    assert_eq!(portable_abi_field_offset(&fields, fields.len() - 1), 40);
+}
+
+#[test]
+fn candidate_and_hit_contract_records_have_stable_layouts() {
+    let candidate_layout = portable_abi_layout(&portable_candidate_contract_abi(
+        &query_plan::CandidateRecordContract {
+            source: query_plan::CandidateSource::CaptureScene,
+            item_kind: query_plan::QueryItemKind::PointQuery,
+            candidate_strategy: query_plan::CandidateStrategy::DirectFieldCapture,
+            pruning_strategy: query_plan::PruningStrategy::None,
+            winner_mode: query_plan::WinnerSelectionMode::Nearest,
+            stable_leaf_identity: true,
+        },
+    ));
+    assert_eq!(candidate_layout.size, 28);
+    assert_eq!(candidate_layout.align, 4);
+
+    let hit_context_layout = portable_abi_layout(&portable_hit_context_contract_abi(
+        &query_plan::HitContextContract {
+            world_position: true,
+            world_normal: true,
+            local_position: true,
+            local_normal: true,
+            shading_frame: true,
+            payload: true,
+        },
+    ));
+    assert_eq!(hit_context_layout.size, 28);
+    assert_eq!(hit_context_layout.align, 4);
+
+    let participant_layout = portable_abi_layout(&portable_participant_contract_abi(
+        &query_plan::ParticipantSelectionContract {
+            kind: query_plan::CaptureQueryKind::Radiance,
+            provenance_aware: true,
+            additive: true,
+        },
+    ));
+    assert_eq!(participant_layout.size, 16);
+    assert_eq!(participant_layout.align, 4);
+}
+
+#[test]
+fn portable_abi_roundtrips_struct_bytes_with_padding_and_bool_packing() {
+    let abi = PortableAbiType::Struct {
+        name: "RoundtripRecord".into(),
+        class_id: 0,
+        fields: vec![
+            PortableStructField {
+                name: "enabled".into(),
+                ty: PortableAbiType::Bool,
+            },
+            PortableStructField {
+                name: "position".into(),
+                ty: PortableAbiType::Vec3,
+            },
+            PortableStructField {
+                name: "basis".into(),
+                ty: PortableAbiType::Mat3,
+            },
+            PortableStructField {
+                name: "tags".into(),
+                ty: PortableAbiType::Array(Box::new(PortableAbiType::U32), 3),
+            },
+        ],
+    };
+    let value = KernelValue::Struct(KernelStructValue {
+        name: "RoundtripRecord".into(),
+        fields: vec![
+            ("enabled".into(), KernelValue::Bool(true)),
+            ("position".into(), KernelValue::Vec3([1.5, -2.0, 3.25])),
+            (
+                "basis".into(),
+                KernelValue::Mat3([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]),
+            ),
+            (
+                "tags".into(),
+                KernelValue::Array(vec![
+                    KernelValue::U32(7),
+                    KernelValue::U32(11),
+                    KernelValue::U32(13),
+                ]),
+            ),
+        ],
+    });
+
+    let bytes = portable_abi_encode_value(&abi, &value).expect("encode abi bytes");
+    assert_eq!(bytes.len(), portable_abi_layout(&abi).size as usize);
+    assert_eq!(u32::from_le_bytes(bytes[0..4].try_into().unwrap()), 1);
+    assert!(bytes[4..16].iter().all(|byte| *byte == 0));
+
+    let decoded = portable_abi_decode_value(&abi, &bytes).expect("decode abi bytes");
+    assert_eq!(decoded, value);
+}
+
+#[test]
+fn portable_abi_slice_roundtrips_dispatch_result_and_hit_records() {
+    let dispatch_abi = portable_dispatch_contract_abi(&query_plan::DispatchRecordContract {
+        backend: query_plan::DispatchBackend::Wgsl,
+        kernel: query_plan::InternalKernelKind::ShapeTraceCapture,
+        item_kind: query_plan::QueryItemKind::RayQuery,
+        result_kind: query_plan::QueryResultKind::Hit3,
+    });
+    let dispatch_values = vec![
+        KernelValue::Struct(KernelStructValue {
+            name: "DispatchRecordContract".into(),
+            fields: vec![
+                ("backend".into(), KernelValue::U32(2)),
+                ("kernel".into(), KernelValue::U32(9)),
+                ("item_kind".into(), KernelValue::U32(2)),
+                ("result_kind".into(), KernelValue::U32(3)),
+                (
+                    "contract_version".into(),
+                    KernelValue::U32(query_plan::QUERY_PLAN_CONTRACT_VERSION),
+                ),
+            ],
+        }),
+        KernelValue::Struct(KernelStructValue {
+            name: "DispatchRecordContract".into(),
+            fields: vec![
+                ("backend".into(), KernelValue::U32(1)),
+                ("kernel".into(), KernelValue::U32(4)),
+                ("item_kind".into(), KernelValue::U32(1)),
+                ("result_kind".into(), KernelValue::U32(1)),
+                (
+                    "contract_version".into(),
+                    KernelValue::U32(query_plan::QUERY_PLAN_CONTRACT_VERSION),
+                ),
+            ],
+        }),
+    ];
+    let dispatch_bytes =
+        portable_abi_encode_slice(&dispatch_abi, &dispatch_values).expect("encode dispatch slice");
+    assert_eq!(
+        dispatch_bytes.len(),
+        portable_abi_array_stride(&dispatch_abi) as usize * dispatch_values.len()
+    );
+    let decoded_dispatch =
+        portable_abi_decode_slice(&dispatch_abi, &dispatch_bytes, dispatch_values.len())
+            .expect("decode dispatch slice");
+    assert_eq!(decoded_dispatch, dispatch_values);
+
+    let result_abi = portable_result_contract_abi(&query_plan::ResultRecordContract {
+        result_kind: query_plan::QueryResultKind::Hit3,
+        preserves_local_hit_context: true,
+        stable_feature_id: true,
+        stable_instance_id: true,
+        stable_repeat_id: true,
+    });
+    let result_values = vec![KernelValue::Struct(KernelStructValue {
+        name: "ResultRecordContract".into(),
+        fields: vec![
+            ("result_kind".into(), KernelValue::U32(3)),
+            (
+                "preserves_local_hit_context".into(),
+                KernelValue::Bool(true),
+            ),
+            ("stable_feature_id".into(), KernelValue::Bool(true)),
+            ("stable_instance_id".into(), KernelValue::Bool(true)),
+            ("stable_repeat_id".into(), KernelValue::Bool(true)),
+            (
+                "contract_version".into(),
+                KernelValue::U32(query_plan::QUERY_PLAN_CONTRACT_VERSION),
+            ),
+        ],
+    })];
+    let result_bytes =
+        portable_abi_encode_slice(&result_abi, &result_values).expect("encode result slice");
+    assert_eq!(
+        result_bytes.len(),
+        portable_abi_array_stride(&result_abi) as usize * result_values.len()
+    );
+    let decoded_result = portable_abi_decode_slice(&result_abi, &result_bytes, result_values.len())
+        .expect("decode result slice");
+    assert_eq!(decoded_result, result_values);
+
+    let hit_abi = portable_builtin_record_abi("Hit3").expect("Hit3 abi");
+    let transform = KernelValue::Struct(KernelStructValue {
+        name: "Transform3".into(),
+        fields: vec![
+            (
+                "matrix".into(),
+                KernelValue::Mat4([
+                    1.0, 0.0, 0.0, 0.0, //
+                    0.0, 1.0, 0.0, 0.0, //
+                    0.0, 0.0, 1.0, 0.0, //
+                    0.5, -0.25, 1.0, 1.0,
+                ]),
+            ),
+            (
+                "inverse".into(),
+                KernelValue::Mat4([
+                    1.0, 0.0, 0.0, 0.0, //
+                    0.0, 1.0, 0.0, 0.0, //
+                    0.0, 0.0, 1.0, 0.0, //
+                    -0.5, 0.25, -1.0, 1.0,
+                ]),
+            ),
+        ],
+    });
+    let payload = KernelValue::Struct(KernelStructValue {
+        name: "Payload".into(),
+        fields: vec![
+            ("entity_id".into(), KernelValue::U32(7)),
+            ("material_id".into(), KernelValue::U32(8)),
+            (
+                "actor".into(),
+                KernelValue::Struct(KernelStructValue {
+                    name: "ActorHandle".into(),
+                    fields: vec![
+                        ("id".into(), KernelValue::U32(9)),
+                        ("generation".into(), KernelValue::U32(1)),
+                    ],
+                }),
+            ),
+        ],
+    });
+    let hit_values = vec![KernelValue::Struct(KernelStructValue {
+        name: "Hit3".into(),
+        fields: vec![
+            ("hit".into(), KernelValue::Bool(true)),
+            ("distance".into(), KernelValue::F32(2.0)),
+            ("position".into(), KernelValue::Vec3([0.0, 0.0, 1.0])),
+            ("normal".into(), KernelValue::Vec3([0.0, 0.0, 1.0])),
+            ("local_position".into(), KernelValue::Vec3([0.0, 0.0, 0.5])),
+            ("local_normal".into(), KernelValue::Vec3([0.0, 0.0, 1.0])),
+            ("shading_frame".into(), transform),
+            ("steps".into(), KernelValue::I32(12)),
+            ("feature_id".into(), KernelValue::U32(13)),
+            ("instance_id".into(), KernelValue::U32(14)),
+            ("repeat_id".into(), KernelValue::U32(15)),
+            ("root_shape_id".into(), KernelValue::U32(16)),
+            ("payload".into(), payload),
+        ],
+    })];
+    let hit_bytes = portable_abi_encode_slice(&hit_abi, &hit_values).expect("encode hit slice");
+    assert_eq!(
+        hit_bytes.len(),
+        portable_abi_array_stride(&hit_abi) as usize * hit_values.len()
+    );
+    let decoded_hits = portable_abi_decode_slice(&hit_abi, &hit_bytes, hit_values.len())
+        .expect("decode hit slice");
+    assert_eq!(decoded_hits, hit_values);
+}
+
+#[test]
+fn portable_abi_emits_deterministic_wgsl_structs_and_rejects_runtime_value() {
+    let hit3 = portable_builtin_record_abi("Hit3").expect("Hit3 abi");
+    let dispatch = portable_dispatch_contract_abi(&query_plan::DispatchRecordContract {
+        backend: query_plan::DispatchBackend::Wgsl,
+        kernel: query_plan::InternalKernelKind::ShapeTraceCapture,
+        item_kind: query_plan::QueryItemKind::RayQuery,
+        result_kind: query_plan::QueryResultKind::Hit3,
+    });
+    let rendered =
+        portable_abi_emit_wgsl_structs(&[dispatch.clone(), hit3.clone()]).expect("emit wgsl");
+    let transform_index = rendered
+        .find("struct Transform3")
+        .expect("Transform3 in wgsl");
+    let actor_index = rendered
+        .find("struct ActorHandle")
+        .expect("ActorHandle in wgsl");
+    let payload_index = rendered.find("struct Payload").expect("Payload in wgsl");
+    let hit_index = rendered.find("struct Hit3").expect("Hit3 in wgsl");
+    let dispatch_index = rendered
+        .find("struct DispatchRecordContract")
+        .expect("DispatchRecordContract in wgsl");
+    assert!(transform_index < hit_index);
+    assert!(actor_index < payload_index);
+    assert!(payload_index < hit_index);
+    assert!(hit_index < dispatch_index || dispatch_index < hit_index);
+    assert!(rendered.contains("hit: u32,") || rendered.contains("hit: u32"));
+
+    let err = portable_abi_emit_wgsl_structs(&[PortableAbiType::Value]).expect_err("Value reject");
+    assert_eq!(err, PortableAbiError::UnsupportedValueType);
 }

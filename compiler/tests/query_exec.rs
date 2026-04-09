@@ -1,22 +1,26 @@
 use smol_str::SmolStr;
+use std::path::PathBuf;
 use wrela::hir;
 use wrela::hir::lower as hir_lower;
+use wrela::hir::project::load_project;
 use wrela::kernel::{
-    KernelStructValue, KernelValue, execute_entry, execute_entry_on, lower_batch_query_plan,
-    lower_capture_query_plan, lower_kernel_entry_by_name, lower_world_query_plan,
+    KernelBatchItemContract, KernelPlanStage, KernelStructValue, KernelValue, execute_entry,
+    execute_entry_on, lower_batch_query_plan, lower_capture_query_plan, lower_kernel_entry_by_name,
+    lower_world_query_plan,
 };
 use wrela::parser::ast;
 use wrela::parser::ast::AstNode;
 use wrela::parser::parse;
 use wrela::query_exec::{
     DirectQueryExecutor, QueryExecContext, executable_region_shape_lists,
-    execute_batch_query_with_trace, execute_capture_query, execute_capture_query_with_trace_on,
-    execute_world_query, execute_world_query_with_trace_on, stable_field_scene_capture_id,
+    execute_batch_query_with_trace, execute_batch_query_with_trace_on, execute_capture_query,
+    execute_capture_query_on, execute_capture_query_with_trace_on, execute_world_query,
+    execute_world_query_on, execute_world_query_with_trace_on, stable_field_scene_capture_id,
     stable_region_scene_capture_id, stable_shape_capture_id, stable_shape_scene_capture_id,
 };
 use wrela::query_plan::{
-    BatchQueryKind, BatchQueryPlan, CaptureKind, CaptureQueryKind, CaptureQueryPlan,
-    DispatchBackend, WorldQueryKind, WorldQueryPlan,
+    ArtifactSchema, BatchQueryKind, BatchQueryPlan, CaptureKind, CaptureQueryKind,
+    CaptureQueryPlan, DispatchBackend, WorldQueryKind, WorldQueryPlan,
 };
 
 fn lower_inline_module_from_source(source: &str) -> hir::Module {
@@ -27,6 +31,31 @@ fn lower_inline_module_from_source(source: &str) -> hir::Module {
 
 fn typed_query_module(source: &str) -> (hir::Module, hir::TypeInfo, QueryExecContext) {
     let module = lower_inline_module_from_source(source);
+    let semantic = hir::semantic::check_module(&module);
+    assert!(
+        semantic.errors.is_empty(),
+        "semantic errors: {:?}",
+        semantic.errors
+    );
+    let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+    assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
+    let ctx = QueryExecContext::compile(&module, &type_info);
+    (module, type_info, ctx)
+}
+
+fn repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("compiler crate should have repo parent")
+        .to_path_buf()
+}
+
+fn typed_project_query_module(
+    project_root: &str,
+) -> (hir::Module, hir::TypeInfo, QueryExecContext) {
+    let entry_path = repo_root().join(project_root).join("src").join("main.wr");
+    let project = load_project(&entry_path).expect("load project");
+    let module = project.module;
     let semantic = hir::semantic::check_module(&module);
     assert!(
         semantic.errors.is_empty(),
@@ -200,6 +229,22 @@ fn scene_domain(
     radiance: bool,
     media: bool,
 ) -> KernelValue {
+    scene_domain_with_limits(
+        scene_id, detail, material, radiance, media, 6.0, 0.05, 0.001, 96,
+    )
+}
+
+fn scene_domain_with_limits(
+    scene_id: u32,
+    detail: i32,
+    material: bool,
+    radiance: bool,
+    media: bool,
+    max_distance: f32,
+    min_step: f32,
+    hit_epsilon: f32,
+    max_steps: i32,
+) -> KernelValue {
     KernelValue::Struct(KernelStructValue {
         name: SmolStr::new("SceneDomain"),
         fields: vec![
@@ -219,10 +264,10 @@ fn scene_domain(
             (SmolStr::new("material"), KernelValue::Bool(material)),
             (SmolStr::new("radiance"), KernelValue::Bool(radiance)),
             (SmolStr::new("media"), KernelValue::Bool(media)),
-            (SmolStr::new("max_distance"), KernelValue::F32(6.0)),
-            (SmolStr::new("min_step"), KernelValue::F32(0.05)),
-            (SmolStr::new("hit_epsilon"), KernelValue::F32(0.001)),
-            (SmolStr::new("max_steps"), KernelValue::I32(96)),
+            (SmolStr::new("max_distance"), KernelValue::F32(max_distance)),
+            (SmolStr::new("min_step"), KernelValue::F32(min_step)),
+            (SmolStr::new("hit_epsilon"), KernelValue::F32(hit_epsilon)),
+            (SmolStr::new("max_steps"), KernelValue::I32(max_steps)),
         ],
     })
 }
@@ -285,12 +330,227 @@ fn expect_vec3(value: &KernelValue) -> [f32; 3] {
     }
 }
 
+fn expect_u32(value: &KernelValue) -> u32 {
+    match value {
+        KernelValue::U32(value) => *value,
+        other => panic!("expected U32, got {other:?}"),
+    }
+}
+
+fn expect_mat4(value: &KernelValue) -> [f32; 16] {
+    match value {
+        KernelValue::Mat4(value) => *value,
+        other => panic!("expected Mat4, got {other:?}"),
+    }
+}
+
+fn expect_array(value: &KernelValue) -> &[KernelValue] {
+    match value {
+        KernelValue::Array(items) => items,
+        other => panic!("expected Array, got {other:?}"),
+    }
+}
+
 fn assert_approx_eq(lhs: f32, rhs: f32) {
     assert!(
         (lhs - rhs).abs() < 0.01,
         "expected {lhs} ~= {rhs}, delta={}",
         (lhs - rhs).abs()
     );
+}
+
+fn assert_approx_eq_at(lhs: f32, rhs: f32, label: &str, x: usize, y: usize) {
+    let delta = (lhs - rhs).abs();
+    assert!(
+        delta < 0.01,
+        "{label} mismatch at pixel ({x}, {y}): lhs={lhs} rhs={rhs} delta={delta}"
+    );
+}
+
+fn assert_vec3_approx_eq(lhs: [f32; 3], rhs: [f32; 3]) {
+    for (lhs, rhs) in lhs.into_iter().zip(rhs) {
+        assert_approx_eq(lhs, rhs);
+    }
+}
+
+fn assert_vec3_approx_eq_at(lhs: [f32; 3], rhs: [f32; 3], label: &str, x: usize, y: usize) {
+    for (index, (lhs, rhs)) in lhs.into_iter().zip(rhs).enumerate() {
+        assert_approx_eq_at(lhs, rhs, &format!("{label}[{index}]"), x, y);
+    }
+}
+
+fn assert_mat4_approx_eq(lhs: [f32; 16], rhs: [f32; 16]) {
+    for (lhs, rhs) in lhs.into_iter().zip(rhs) {
+        assert_approx_eq(lhs, rhs);
+    }
+}
+
+fn assert_hit3_approx_eq(lhs: &KernelValue, rhs: &KernelValue) {
+    let lhs = expect_struct(lhs, "Hit3");
+    let rhs = expect_struct(rhs, "Hit3");
+    assert_eq!(
+        expect_bool(field(lhs, "hit")),
+        expect_bool(field(rhs, "hit"))
+    );
+    assert_approx_eq(
+        expect_f32(field(lhs, "distance")),
+        expect_f32(field(rhs, "distance")),
+    );
+    assert_vec3_approx_eq(
+        expect_vec3(field(lhs, "position")),
+        expect_vec3(field(rhs, "position")),
+    );
+    assert_vec3_approx_eq(
+        expect_vec3(field(lhs, "normal")),
+        expect_vec3(field(rhs, "normal")),
+    );
+    assert_vec3_approx_eq(
+        expect_vec3(field(lhs, "local_position")),
+        expect_vec3(field(rhs, "local_position")),
+    );
+    assert_vec3_approx_eq(
+        expect_vec3(field(lhs, "local_normal")),
+        expect_vec3(field(rhs, "local_normal")),
+    );
+    assert_eq!(
+        expect_u32(field(lhs, "feature_id")),
+        expect_u32(field(rhs, "feature_id"))
+    );
+    assert_eq!(
+        expect_u32(field(lhs, "instance_id")),
+        expect_u32(field(rhs, "instance_id"))
+    );
+    assert_eq!(
+        expect_u32(field(lhs, "repeat_id")),
+        expect_u32(field(rhs, "repeat_id"))
+    );
+    assert_eq!(
+        expect_u32(field(lhs, "root_shape_id")),
+        expect_u32(field(rhs, "root_shape_id"))
+    );
+    assert_eq!(field(lhs, "payload"), field(rhs, "payload"));
+
+    let lhs_frame = expect_struct(field(lhs, "shading_frame"), "Transform3");
+    let rhs_frame = expect_struct(field(rhs, "shading_frame"), "Transform3");
+    assert_mat4_approx_eq(
+        expect_mat4(field(lhs_frame, "matrix")),
+        expect_mat4(field(rhs_frame, "matrix")),
+    );
+    assert_mat4_approx_eq(
+        expect_mat4(field(lhs_frame, "inverse")),
+        expect_mat4(field(rhs_frame, "inverse")),
+    );
+}
+
+fn assert_surface_approx_eq(lhs: &KernelValue, rhs: &KernelValue) {
+    let lhs = expect_struct(lhs, "Surface");
+    let rhs = expect_struct(rhs, "Surface");
+    assert_vec3_approx_eq(
+        expect_vec3(field(lhs, "albedo")),
+        expect_vec3(field(rhs, "albedo")),
+    );
+    assert_approx_eq(
+        expect_f32(field(lhs, "roughness")),
+        expect_f32(field(rhs, "roughness")),
+    );
+    assert_approx_eq(
+        expect_f32(field(lhs, "metalness")),
+        expect_f32(field(rhs, "metalness")),
+    );
+    assert_approx_eq(
+        expect_f32(field(lhs, "clearcoat")),
+        expect_f32(field(rhs, "clearcoat")),
+    );
+    assert_approx_eq(
+        expect_f32(field(lhs, "clearcoat_roughness")),
+        expect_f32(field(rhs, "clearcoat_roughness")),
+    );
+    assert_approx_eq(
+        expect_f32(field(lhs, "sheen")),
+        expect_f32(field(rhs, "sheen")),
+    );
+    assert_vec3_approx_eq(
+        expect_vec3(field(lhs, "emissive")),
+        expect_vec3(field(rhs, "emissive")),
+    );
+}
+
+fn assert_medium_approx_eq(lhs: &KernelValue, rhs: &KernelValue) {
+    let lhs = expect_struct(lhs, "Medium");
+    let rhs = expect_struct(rhs, "Medium");
+    assert_approx_eq(
+        expect_f32(field(lhs, "density")),
+        expect_f32(field(rhs, "density")),
+    );
+    assert_vec3_approx_eq(
+        expect_vec3(field(lhs, "emission")),
+        expect_vec3(field(rhs, "emission")),
+    );
+    assert_approx_eq(
+        expect_f32(field(lhs, "anisotropy")),
+        expect_f32(field(rhs, "anisotropy")),
+    );
+}
+
+fn add3(lhs: [f32; 3], rhs: [f32; 3]) -> [f32; 3] {
+    [lhs[0] + rhs[0], lhs[1] + rhs[1], lhs[2] + rhs[2]]
+}
+
+fn sub3(lhs: [f32; 3], rhs: [f32; 3]) -> [f32; 3] {
+    [lhs[0] - rhs[0], lhs[1] - rhs[1], lhs[2] - rhs[2]]
+}
+
+fn mul3(value: [f32; 3], scalar: f32) -> [f32; 3] {
+    [value[0] * scalar, value[1] * scalar, value[2] * scalar]
+}
+
+fn dot3(lhs: [f32; 3], rhs: [f32; 3]) -> f32 {
+    lhs[0] * rhs[0] + lhs[1] * rhs[1] + lhs[2] * rhs[2]
+}
+
+fn cross3(lhs: [f32; 3], rhs: [f32; 3]) -> [f32; 3] {
+    [
+        lhs[1] * rhs[2] - lhs[2] * rhs[1],
+        lhs[2] * rhs[0] - lhs[0] * rhs[2],
+        lhs[0] * rhs[1] - lhs[1] * rhs[0],
+    ]
+}
+
+fn length3(value: [f32; 3]) -> f32 {
+    dot3(value, value).sqrt()
+}
+
+fn normalize3(value: [f32; 3]) -> [f32; 3] {
+    let len = length3(value);
+    if len <= f32::EPSILON {
+        [0.0, 0.0, 1.0]
+    } else {
+        [value[0] / len, value[1] / len, value[2] / len]
+    }
+}
+
+fn preview_ray(
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    camera_forward: [f32; 3],
+    world_up: [f32; 3],
+    view_scale: f32,
+) -> [f32; 3] {
+    let width_float = width as f32;
+    let height_float = height as f32;
+    let aspect = width_float / height_float;
+    let right = normalize3(cross3(camera_forward, world_up));
+    let up = normalize3(cross3(right, camera_forward));
+    let sample_u = (x as f32 + 0.5) / width_float;
+    let sample_v = (y as f32 + 0.5) / height_float;
+    let screen_x = ((sample_u - 0.5) * 2.0) * aspect * view_scale;
+    let screen_y = ((0.5 - sample_v) * 2.0) * view_scale;
+    normalize3(add3(
+        add3(camera_forward, mul3(right, screen_x)),
+        mul3(up, screen_y),
+    ))
 }
 
 #[test]
@@ -659,7 +919,10 @@ fn query_exec_explicit_virtual_gpu_backend_matches_cpu_for_direct_queries() {
     )
     .expect("vgpu field capture distance");
     assert_eq!(cpu_field_capture, vgpu_field_capture);
-    assert_eq!(vgpu_field_capture_trace.backend, DispatchBackend::VirtualGpu);
+    assert_eq!(
+        vgpu_field_capture_trace.backend,
+        DispatchBackend::VirtualGpu
+    );
     assert_eq!(
         vgpu_field_capture_trace.executor,
         DirectQueryExecutor::VirtualGpu
@@ -737,7 +1000,10 @@ fn query_exec_explicit_virtual_gpu_backend_matches_cpu_for_direct_queries() {
     )
     .expect("vgpu capture normal");
     assert_eq!(cpu_capture_normal, vgpu_capture_normal);
-    assert_eq!(vgpu_capture_normal_trace.backend, DispatchBackend::VirtualGpu);
+    assert_eq!(
+        vgpu_capture_normal_trace.backend,
+        DispatchBackend::VirtualGpu
+    );
     assert_eq!(
         vgpu_capture_normal_trace.executor,
         DirectQueryExecutor::VirtualGpu
@@ -769,7 +1035,8 @@ fn query_exec_explicit_virtual_gpu_backend_matches_cpu_for_direct_queries() {
     assert_eq!(vgpu_world_trace.backend, DispatchBackend::VirtualGpu);
     assert_eq!(vgpu_world_trace.executor, DirectQueryExecutor::VirtualGpu);
 
-    let world_normal_plan = lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Normal));
+    let world_normal_plan =
+        lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Normal));
     let cpu_world_normal = execute_world_query(
         &ctx,
         &world_normal_plan,
@@ -821,7 +1088,10 @@ fn query_exec_explicit_virtual_gpu_backend_matches_cpu_for_direct_queries() {
     )
     .expect("vgpu trace");
     assert_eq!(cpu_capture_trace, vgpu_capture_trace);
-    assert_eq!(vgpu_capture_trace_trace.backend, DispatchBackend::VirtualGpu);
+    assert_eq!(
+        vgpu_capture_trace_trace.backend,
+        DispatchBackend::VirtualGpu
+    );
     assert_eq!(
         vgpu_capture_trace_trace.executor,
         DirectQueryExecutor::VirtualGpu
@@ -835,8 +1105,9 @@ fn query_exec_explicit_virtual_gpu_backend_matches_cpu_for_direct_queries() {
         KernelValue::Capture(SmolStr::new("scene_shape")),
         cpu_capture_trace.clone(),
     ];
-    let cpu_capture_surface = execute_capture_query(&ctx, &capture_surface_plan, &capture_surface_args)
-        .expect("cpu capture surface");
+    let cpu_capture_surface =
+        execute_capture_query(&ctx, &capture_surface_plan, &capture_surface_args)
+            .expect("cpu capture surface");
     let (vgpu_capture_surface, vgpu_capture_surface_trace) = execute_capture_query_with_trace_on(
         &ctx,
         DispatchBackend::VirtualGpu,
@@ -845,7 +1116,10 @@ fn query_exec_explicit_virtual_gpu_backend_matches_cpu_for_direct_queries() {
     )
     .expect("vgpu capture surface");
     assert_eq!(cpu_capture_surface, vgpu_capture_surface);
-    assert_eq!(vgpu_capture_surface_trace.backend, DispatchBackend::VirtualGpu);
+    assert_eq!(
+        vgpu_capture_surface_trace.backend,
+        DispatchBackend::VirtualGpu
+    );
     assert_eq!(
         vgpu_capture_surface_trace.executor,
         DirectQueryExecutor::VirtualGpu
@@ -863,14 +1137,13 @@ fn query_exec_explicit_virtual_gpu_backend_matches_cpu_for_direct_queries() {
     let cpu_capture_radiance =
         execute_capture_query(&ctx, &capture_radiance_plan, &capture_radiance_args)
             .expect("cpu capture radiance");
-    let (vgpu_capture_radiance, vgpu_capture_radiance_trace) =
-        execute_capture_query_with_trace_on(
-            &ctx,
-            DispatchBackend::VirtualGpu,
-            &capture_radiance_plan,
-            &capture_radiance_args,
-        )
-        .expect("vgpu capture radiance");
+    let (vgpu_capture_radiance, vgpu_capture_radiance_trace) = execute_capture_query_with_trace_on(
+        &ctx,
+        DispatchBackend::VirtualGpu,
+        &capture_radiance_plan,
+        &capture_radiance_args,
+    )
+    .expect("vgpu capture radiance");
     assert_eq!(cpu_capture_radiance, vgpu_capture_radiance);
     assert_eq!(
         vgpu_capture_radiance_trace.backend,
@@ -889,8 +1162,9 @@ fn query_exec_explicit_virtual_gpu_backend_matches_cpu_for_direct_queries() {
         KernelValue::Capture(SmolStr::new("scene_shape")),
         KernelValue::Vec3([0.0, 0.0, 1.0]),
     ];
-    let cpu_capture_medium = execute_capture_query(&ctx, &capture_medium_plan, &capture_medium_args)
-        .expect("cpu capture medium");
+    let cpu_capture_medium =
+        execute_capture_query(&ctx, &capture_medium_plan, &capture_medium_args)
+            .expect("cpu capture medium");
     let (vgpu_capture_medium, vgpu_capture_medium_trace) = execute_capture_query_with_trace_on(
         &ctx,
         DispatchBackend::VirtualGpu,
@@ -899,13 +1173,17 @@ fn query_exec_explicit_virtual_gpu_backend_matches_cpu_for_direct_queries() {
     )
     .expect("vgpu capture medium");
     assert_eq!(cpu_capture_medium, vgpu_capture_medium);
-    assert_eq!(vgpu_capture_medium_trace.backend, DispatchBackend::VirtualGpu);
+    assert_eq!(
+        vgpu_capture_medium_trace.backend,
+        DispatchBackend::VirtualGpu
+    );
     assert_eq!(
         vgpu_capture_medium_trace.executor,
         DirectQueryExecutor::VirtualGpu
     );
 
-    let world_trace_plan = lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Trace));
+    let world_trace_plan =
+        lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Trace));
     let world_trace_args = vec![
         KernelValue::Capture(SmolStr::new("scene_region")),
         scene_domain(region_scene_id, 1, true, true, true),
@@ -939,9 +1217,8 @@ fn query_exec_explicit_virtual_gpu_backend_matches_cpu_for_direct_queries() {
         scene_domain(region_scene_id, 1, true, true, true),
         cpu_world_trace.clone(),
     ];
-    let cpu_world_surface =
-        execute_world_query(&ctx, &world_surface_plan, &world_surface_args)
-            .expect("cpu world surface");
+    let cpu_world_surface = execute_world_query(&ctx, &world_surface_plan, &world_surface_args)
+        .expect("cpu world surface");
     let (vgpu_world_surface, vgpu_world_surface_trace) = execute_world_query_with_trace_on(
         &ctx,
         DispatchBackend::VirtualGpu,
@@ -950,7 +1227,10 @@ fn query_exec_explicit_virtual_gpu_backend_matches_cpu_for_direct_queries() {
     )
     .expect("vgpu world surface");
     assert_eq!(cpu_world_surface, vgpu_world_surface);
-    assert_eq!(vgpu_world_surface_trace.backend, DispatchBackend::VirtualGpu);
+    assert_eq!(
+        vgpu_world_surface_trace.backend,
+        DispatchBackend::VirtualGpu
+    );
     assert_eq!(
         vgpu_world_surface_trace.executor,
         DirectQueryExecutor::VirtualGpu
@@ -964,9 +1244,8 @@ fn query_exec_explicit_virtual_gpu_backend_matches_cpu_for_direct_queries() {
         KernelValue::Vec3([0.0, 0.0, 1.0]),
         KernelValue::Vec3([0.0, 0.0, -1.0]),
     ];
-    let cpu_world_radiance =
-        execute_world_query(&ctx, &world_radiance_plan, &world_radiance_args)
-            .expect("cpu world radiance");
+    let cpu_world_radiance = execute_world_query(&ctx, &world_radiance_plan, &world_radiance_args)
+        .expect("cpu world radiance");
     let (vgpu_world_radiance, vgpu_world_radiance_trace) = execute_world_query_with_trace_on(
         &ctx,
         DispatchBackend::VirtualGpu,
@@ -975,7 +1254,10 @@ fn query_exec_explicit_virtual_gpu_backend_matches_cpu_for_direct_queries() {
     )
     .expect("vgpu world radiance");
     assert_eq!(cpu_world_radiance, vgpu_world_radiance);
-    assert_eq!(vgpu_world_radiance_trace.backend, DispatchBackend::VirtualGpu);
+    assert_eq!(
+        vgpu_world_radiance_trace.backend,
+        DispatchBackend::VirtualGpu
+    );
     assert_eq!(
         vgpu_world_radiance_trace.executor,
         DirectQueryExecutor::VirtualGpu
@@ -988,9 +1270,8 @@ fn query_exec_explicit_virtual_gpu_backend_matches_cpu_for_direct_queries() {
         scene_domain(region_scene_id, 1, true, true, true),
         KernelValue::Vec3([0.0, 0.0, 1.0]),
     ];
-    let cpu_world_medium =
-        execute_world_query(&ctx, &world_medium_plan, &world_medium_args)
-            .expect("cpu world medium");
+    let cpu_world_medium = execute_world_query(&ctx, &world_medium_plan, &world_medium_args)
+        .expect("cpu world medium");
     let (vgpu_world_medium, vgpu_world_medium_trace) = execute_world_query_with_trace_on(
         &ctx,
         DispatchBackend::VirtualGpu,
@@ -1003,6 +1284,1474 @@ fn query_exec_explicit_virtual_gpu_backend_matches_cpu_for_direct_queries() {
     assert_eq!(
         vgpu_world_medium_trace.executor,
         DirectQueryExecutor::VirtualGpu
+    );
+}
+
+#[test]
+fn query_exec_virtual_gpu_batch_execution_uses_lowered_item_contracts() {
+    let (_module, _type_info, ctx) = typed_query_module(query_fixture_source());
+    let mut plan = lower_batch_query_plan(&BatchQueryPlan::for_shape_query(
+        BatchQueryKind::Trace,
+        DispatchBackend::VirtualGpu,
+        None,
+    ));
+    plan.item_contract = KernelBatchItemContract::CaptureQuery {
+        plan: lower_capture_query_plan(
+            &CaptureQueryPlan::for_query(CaptureQueryKind::Surface, CaptureKind::Shape, None)
+                .expect("surface capture plan"),
+        ),
+    };
+
+    let capture = KernelValue::Capture(SmolStr::new("scene_shape"));
+    let rays = KernelValue::Array(vec![ray_query([0.0, 0.0, 3.0], [0.0, 0.0, -1.0])]);
+    let error = execute_batch_query_with_trace(&ctx, &plan, &[capture, rays])
+        .expect_err("mismatched item contract should fail");
+    assert!(
+        format!("{error:?}").contains("result kind does not match"),
+        "expected contract validation mismatch, got {error:?}"
+    );
+}
+
+#[test]
+fn query_exec_traces_report_observability_counters() {
+    let (_, _, ctx) = typed_query_module(query_fixture_source());
+
+    let shape_trace_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Trace, CaptureKind::Shape, None)
+            .expect("shape trace plan"),
+    );
+    let (_cpu_hit, cpu_trace) = execute_capture_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Cpu,
+        &shape_trace_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("scene_shape")),
+            KernelValue::Vec3([0.0, 0.0, 3.0]),
+            KernelValue::Vec3([0.0, 0.0, -1.0]),
+            KernelValue::F32(6.0),
+            KernelValue::F32(0.05),
+            KernelValue::F32(0.001),
+            KernelValue::I32(96),
+        ],
+    )
+    .expect("cpu trace");
+    assert_eq!(cpu_trace.observability.dispatch_count, 1);
+    assert!(cpu_trace.observability.trace_steps > 0);
+    assert!(cpu_trace.observability.field_samples > 0);
+    assert!(cpu_trace.observability.branch_visits > 0);
+    assert!(cpu_trace.observability.artifact_loads > 0);
+
+    let region_scene_id = stable_region_scene_capture_id(&SmolStr::new("scene_region"));
+    let world_trace_plan =
+        lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Trace));
+    let (_vgpu_world_hit, vgpu_world_trace) = execute_world_query_with_trace_on(
+        &ctx,
+        DispatchBackend::VirtualGpu,
+        &world_trace_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("scene_region")),
+            scene_domain(region_scene_id, 1, true, true, true),
+            KernelValue::Vec3([0.0, 0.0, 3.0]),
+            KernelValue::Vec3([0.0, 0.0, -1.0]),
+            KernelValue::F32(6.0),
+            KernelValue::F32(0.05),
+            KernelValue::F32(0.001),
+            KernelValue::I32(96),
+        ],
+    )
+    .expect("vgpu world trace");
+    assert_eq!(vgpu_world_trace.observability.dispatch_count, 1);
+    assert!(vgpu_world_trace.observability.candidate_count > 0);
+    assert!(vgpu_world_trace.observability.trace_steps > 0);
+    assert!(vgpu_world_trace.observability.artifact_loads > 0);
+
+    let (_wgsl_world_hit, wgsl_world_trace) = execute_world_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &world_trace_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("scene_region")),
+            scene_domain(region_scene_id, 1, true, true, true),
+            KernelValue::Vec3([0.0, 0.0, 3.0]),
+            KernelValue::Vec3([0.0, 0.0, -1.0]),
+            KernelValue::F32(6.0),
+            KernelValue::F32(0.05),
+            KernelValue::F32(0.001),
+            KernelValue::I32(96),
+        ],
+    )
+    .expect("wgsl world trace");
+    assert_eq!(wgsl_world_trace.observability.dispatch_count, 1);
+    assert!(wgsl_world_trace.observability.candidate_count > 0);
+    assert!(wgsl_world_trace.observability.trace_steps > 0);
+    assert!(wgsl_world_trace.observability.artifact_loads > 0);
+
+    let batch_plan = lower_batch_query_plan(&BatchQueryPlan::for_shape_query(
+        BatchQueryKind::Trace,
+        DispatchBackend::VirtualGpu,
+        None,
+    ));
+    let (_batch_hits, batch_trace) = execute_batch_query_with_trace(
+        &ctx,
+        &batch_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("scene_shape")),
+            KernelValue::Array(vec![
+                ray_query([0.0, 0.0, 3.0], [0.0, 0.0, -1.0]),
+                ray_query([0.0, 0.0, 3.0], [0.0, 1.0, 0.0]),
+            ]),
+        ],
+    )
+    .expect("vgpu batch trace");
+    assert_eq!(batch_trace.observability.dispatch_count, 1);
+    assert_eq!(batch_trace.observability.candidate_count, 2);
+    assert!(batch_trace.observability.artifact_loads > 0);
+
+    let wgsl_batch_plan = lower_batch_query_plan(&BatchQueryPlan::for_shape_query(
+        BatchQueryKind::Trace,
+        DispatchBackend::Wgsl,
+        None,
+    ));
+    let (_wgsl_batch_hits, wgsl_batch_trace) = execute_batch_query_with_trace(
+        &ctx,
+        &wgsl_batch_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("scene_shape")),
+            KernelValue::Array(vec![
+                ray_query([0.0, 0.0, 3.0], [0.0, 0.0, -1.0]),
+                ray_query([0.0, 0.0, 3.0], [0.0, 1.0, 0.0]),
+            ]),
+        ],
+    )
+    .expect("wgsl batch trace");
+    assert_eq!(wgsl_batch_trace.observability.dispatch_count, 1);
+    assert_eq!(wgsl_batch_trace.observability.candidate_count, 2);
+    assert!(wgsl_batch_trace.observability.trace_steps > 0);
+    assert!(wgsl_batch_trace.observability.artifact_loads > 0);
+}
+
+#[test]
+fn query_exec_explicit_wgsl_backend_matches_cpu_for_capture_and_world_queries() {
+    let (_, _, ctx) = typed_query_module(query_fixture_source());
+    let field_capture = KernelValue::Capture(SmolStr::new("sphere_field"));
+    let shape_capture = KernelValue::Capture(SmolStr::new("scene_shape"));
+    let region_capture = KernelValue::Capture(SmolStr::new("scene_region"));
+    let region_scene_id = stable_region_scene_capture_id(&SmolStr::new("scene_region"));
+    let fine_domain = scene_domain(region_scene_id, 1, true, true, true);
+
+    let field_distance_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Distance, CaptureKind::Field, None)
+            .expect("field capture distance plan"),
+    );
+    let cpu_field_distance = execute_capture_query(
+        &ctx,
+        &field_distance_plan,
+        &[field_capture.clone(), KernelValue::Vec3([0.0, 0.0, 2.0])],
+    )
+    .expect("cpu field capture distance");
+    let (wgsl_field_distance, wgsl_field_distance_trace) = execute_capture_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &field_distance_plan,
+        &[field_capture.clone(), KernelValue::Vec3([0.0, 0.0, 2.0])],
+    )
+    .expect("wgsl field capture distance");
+    assert_approx_eq(
+        expect_f32(&cpu_field_distance),
+        expect_f32(&wgsl_field_distance),
+    );
+    assert_eq!(wgsl_field_distance_trace.backend, DispatchBackend::Wgsl);
+
+    let field_normal_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Normal, CaptureKind::Field, None)
+            .expect("field capture normal plan"),
+    );
+    let cpu_field_normal = execute_capture_query(
+        &ctx,
+        &field_normal_plan,
+        &[field_capture, KernelValue::Vec3([0.0, 0.0, 2.0])],
+    )
+    .expect("cpu field capture normal");
+    let wgsl_field_normal = execute_capture_query_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &field_normal_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("sphere_field")),
+            KernelValue::Vec3([0.0, 0.0, 2.0]),
+        ],
+    )
+    .expect("wgsl field capture normal");
+    assert_vec3_approx_eq(
+        expect_vec3(&cpu_field_normal),
+        expect_vec3(&wgsl_field_normal),
+    );
+
+    let capture_distance_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Distance, CaptureKind::Shape, None)
+            .expect("shape capture distance plan"),
+    );
+    let cpu_capture_distance = execute_capture_query(
+        &ctx,
+        &capture_distance_plan,
+        &[shape_capture.clone(), KernelValue::Vec3([0.0, 0.0, 2.0])],
+    )
+    .expect("cpu shape capture distance");
+    let wgsl_capture_distance = execute_capture_query_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &capture_distance_plan,
+        &[shape_capture.clone(), KernelValue::Vec3([0.0, 0.0, 2.0])],
+    )
+    .expect("wgsl shape capture distance");
+    assert_approx_eq(
+        expect_f32(&cpu_capture_distance),
+        expect_f32(&wgsl_capture_distance),
+    );
+
+    let capture_normal_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Normal, CaptureKind::Shape, None)
+            .expect("shape capture normal plan"),
+    );
+    let cpu_capture_normal = execute_capture_query(
+        &ctx,
+        &capture_normal_plan,
+        &[shape_capture.clone(), KernelValue::Vec3([0.0, 0.0, 2.0])],
+    )
+    .expect("cpu shape capture normal");
+    let wgsl_capture_normal = execute_capture_query_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &capture_normal_plan,
+        &[shape_capture.clone(), KernelValue::Vec3([0.0, 0.0, 2.0])],
+    )
+    .expect("wgsl shape capture normal");
+    assert_vec3_approx_eq(
+        expect_vec3(&cpu_capture_normal),
+        expect_vec3(&wgsl_capture_normal),
+    );
+
+    let capture_trace_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Trace, CaptureKind::Shape, None)
+            .expect("capture trace plan"),
+    );
+    let capture_trace_args = vec![
+        shape_capture.clone(),
+        KernelValue::Vec3([0.0, 0.0, 3.0]),
+        KernelValue::Vec3([0.0, 0.0, -1.0]),
+        KernelValue::F32(6.0),
+        KernelValue::F32(0.05),
+        KernelValue::F32(0.001),
+        KernelValue::I32(96),
+    ];
+    let cpu_capture_hit =
+        execute_capture_query(&ctx, &capture_trace_plan, &capture_trace_args).expect("cpu trace");
+    let (wgsl_capture_hit, wgsl_capture_trace) = execute_capture_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &capture_trace_plan,
+        &capture_trace_args,
+    )
+    .expect("wgsl trace");
+    assert_hit3_approx_eq(&cpu_capture_hit, &wgsl_capture_hit);
+    assert_eq!(wgsl_capture_trace.backend, DispatchBackend::Wgsl);
+    assert_eq!(wgsl_capture_trace.executor, DirectQueryExecutor::Wgsl);
+
+    let capture_surface_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Surface, CaptureKind::Shape, None)
+            .expect("capture surface plan"),
+    );
+    let cpu_capture_surface = execute_capture_query(
+        &ctx,
+        &capture_surface_plan,
+        &[shape_capture.clone(), cpu_capture_hit.clone()],
+    )
+    .expect("cpu capture surface");
+    let wgsl_capture_surface = execute_capture_query_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &capture_surface_plan,
+        &[shape_capture.clone(), wgsl_capture_hit.clone()],
+    )
+    .expect("wgsl capture surface");
+    assert_surface_approx_eq(&cpu_capture_surface, &wgsl_capture_surface);
+
+    let capture_radiance_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Radiance, CaptureKind::Shape, None)
+            .expect("capture radiance plan"),
+    );
+    let capture_radiance_args = vec![
+        shape_capture.clone(),
+        KernelValue::Vec3([0.0, 0.0, 1.0]),
+        KernelValue::Vec3([0.0, 0.0, -1.0]),
+    ];
+    let cpu_capture_radiance =
+        execute_capture_query(&ctx, &capture_radiance_plan, &capture_radiance_args)
+            .expect("cpu capture radiance");
+    let wgsl_capture_radiance = execute_capture_query_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &capture_radiance_plan,
+        &capture_radiance_args,
+    )
+    .expect("wgsl capture radiance");
+    assert_vec3_approx_eq(
+        expect_vec3(&cpu_capture_radiance),
+        expect_vec3(&wgsl_capture_radiance),
+    );
+
+    let capture_medium_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Medium, CaptureKind::Shape, None)
+            .expect("capture medium plan"),
+    );
+    let capture_medium_args = vec![shape_capture.clone(), KernelValue::Vec3([0.0, 0.0, 1.0])];
+    let cpu_capture_medium =
+        execute_capture_query(&ctx, &capture_medium_plan, &capture_medium_args)
+            .expect("cpu capture medium");
+    let wgsl_capture_medium = execute_capture_query_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &capture_medium_plan,
+        &capture_medium_args,
+    )
+    .expect("wgsl capture medium");
+    assert_medium_approx_eq(&cpu_capture_medium, &wgsl_capture_medium);
+
+    let world_distance_plan =
+        lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Distance));
+    let cpu_world_distance = execute_world_query(
+        &ctx,
+        &world_distance_plan,
+        &[
+            region_capture.clone(),
+            fine_domain.clone(),
+            KernelValue::Vec3([0.0, 0.0, 2.0]),
+        ],
+    )
+    .expect("cpu world distance");
+    let wgsl_world_distance = execute_world_query_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &world_distance_plan,
+        &[
+            region_capture.clone(),
+            fine_domain.clone(),
+            KernelValue::Vec3([0.0, 0.0, 2.0]),
+        ],
+    )
+    .expect("wgsl world distance");
+    assert_approx_eq(
+        expect_f32(&cpu_world_distance),
+        expect_f32(&wgsl_world_distance),
+    );
+
+    let world_normal_plan =
+        lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Normal));
+    let cpu_world_normal = execute_world_query(
+        &ctx,
+        &world_normal_plan,
+        &[
+            region_capture.clone(),
+            fine_domain.clone(),
+            KernelValue::Vec3([0.0, 0.0, 2.0]),
+        ],
+    )
+    .expect("cpu world normal");
+    let wgsl_world_normal = execute_world_query_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &world_normal_plan,
+        &[
+            region_capture.clone(),
+            fine_domain.clone(),
+            KernelValue::Vec3([0.0, 0.0, 2.0]),
+        ],
+    )
+    .expect("wgsl world normal");
+    assert_vec3_approx_eq(
+        expect_vec3(&cpu_world_normal),
+        expect_vec3(&wgsl_world_normal),
+    );
+
+    let world_trace_plan =
+        lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Trace));
+    let world_trace_args = vec![
+        region_capture.clone(),
+        fine_domain.clone(),
+        KernelValue::Vec3([0.0, 0.0, 3.0]),
+        KernelValue::Vec3([0.0, 0.0, -1.0]),
+        KernelValue::F32(6.0),
+        KernelValue::F32(0.05),
+        KernelValue::F32(0.001),
+        KernelValue::I32(96),
+    ];
+    let cpu_world_hit =
+        execute_world_query(&ctx, &world_trace_plan, &world_trace_args).expect("cpu world trace");
+    let (wgsl_world_hit, wgsl_world_trace) = execute_world_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &world_trace_plan,
+        &world_trace_args,
+    )
+    .expect("wgsl world trace");
+    assert_hit3_approx_eq(&cpu_world_hit, &wgsl_world_hit);
+    assert_eq!(wgsl_world_trace.backend, DispatchBackend::Wgsl);
+    assert_eq!(wgsl_world_trace.executor, DirectQueryExecutor::Wgsl);
+
+    let world_surface_plan =
+        lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Surface));
+    let cpu_world_surface = execute_world_query(
+        &ctx,
+        &world_surface_plan,
+        &[
+            region_capture.clone(),
+            fine_domain.clone(),
+            cpu_world_hit.clone(),
+        ],
+    )
+    .expect("cpu world surface");
+    let wgsl_world_surface = execute_world_query_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &world_surface_plan,
+        &[
+            region_capture.clone(),
+            fine_domain.clone(),
+            wgsl_world_hit.clone(),
+        ],
+    )
+    .expect("wgsl world surface");
+    assert_surface_approx_eq(&cpu_world_surface, &wgsl_world_surface);
+
+    let world_radiance_plan =
+        lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Radiance));
+    let world_radiance_args = vec![
+        region_capture.clone(),
+        fine_domain.clone(),
+        KernelValue::Vec3([0.0, 0.0, 1.0]),
+        KernelValue::Vec3([0.0, 0.0, -1.0]),
+    ];
+    let cpu_world_radiance = execute_world_query(&ctx, &world_radiance_plan, &world_radiance_args)
+        .expect("cpu world radiance");
+    let wgsl_world_radiance = execute_world_query_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &world_radiance_plan,
+        &world_radiance_args,
+    )
+    .expect("wgsl world radiance");
+    assert_vec3_approx_eq(
+        expect_vec3(&cpu_world_radiance),
+        expect_vec3(&wgsl_world_radiance),
+    );
+
+    let world_medium_plan =
+        lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Medium));
+    let world_medium_args = vec![
+        region_capture,
+        fine_domain,
+        KernelValue::Vec3([0.0, 0.0, 1.0]),
+    ];
+    let cpu_world_medium = execute_world_query(&ctx, &world_medium_plan, &world_medium_args)
+        .expect("cpu world medium");
+    let wgsl_world_medium = execute_world_query_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &world_medium_plan,
+        &world_medium_args,
+    )
+    .expect("wgsl world medium");
+    assert_medium_approx_eq(&cpu_world_medium, &wgsl_world_medium);
+}
+
+#[test]
+fn query_exec_wgsl_matches_cpu_for_preview_project_render_sampling() {
+    let (_, _, ctx) = typed_project_query_module("language/preview");
+    let region_capture = KernelValue::Capture(SmolStr::new("scene_region"));
+    let domain = scene_domain_with_limits(
+        stable_region_scene_capture_id(&SmolStr::new("scene_region")),
+        1,
+        true,
+        true,
+        true,
+        12.0,
+        0.02,
+        0.0008,
+        96,
+    );
+    let distance_plan =
+        lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Distance));
+    let trace_plan = lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Trace));
+    let surface_plan = lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Surface));
+    let radiance_plan =
+        lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Radiance));
+    let medium_plan = lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Medium));
+
+    let camera_position = [0.0, 0.1, 2.7];
+    let camera_forward = normalize3([0.0, 0.0, -1.0]);
+    let world_up = [0.0, 1.0, 0.0];
+    let light_position = [2.4, 2.8, 2.4];
+    let light_range = 12.0;
+    let sample_xs = [0usize, 6, 12, 18, 24, 30, 36, 39];
+    let sample_ys = [0usize, 8, 16, 24, 31, 32, 33, 39];
+
+    for y in sample_ys {
+        for x in sample_xs {
+            let ray = preview_ray(x, y, 40, 40, camera_forward, world_up, 0.72);
+            let trace_args = vec![
+                region_capture.clone(),
+                domain.clone(),
+                KernelValue::Vec3(camera_position),
+                KernelValue::Vec3(ray),
+                KernelValue::F32(12.0),
+                KernelValue::F32(0.02),
+                KernelValue::F32(0.0008),
+                KernelValue::I32(96),
+            ];
+            let cpu_hit =
+                execute_world_query(&ctx, &trace_plan, &trace_args).expect("cpu preview trace");
+            let wgsl_hit =
+                execute_world_query_on(&ctx, DispatchBackend::Wgsl, &trace_plan, &trace_args)
+                    .expect("wgsl preview trace");
+
+            let cpu_hit_ref = expect_struct(&cpu_hit, "Hit3");
+            let wgsl_hit_ref = expect_struct(&wgsl_hit, "Hit3");
+            assert_eq!(
+                expect_bool(field(cpu_hit_ref, "hit")),
+                expect_bool(field(wgsl_hit_ref, "hit")),
+                "hit flag mismatch at pixel ({x}, {y})"
+            );
+            assert_approx_eq_at(
+                expect_f32(field(cpu_hit_ref, "distance")),
+                expect_f32(field(wgsl_hit_ref, "distance")),
+                "hit.distance",
+                x,
+                y,
+            );
+            assert_vec3_approx_eq_at(
+                expect_vec3(field(cpu_hit_ref, "position")),
+                expect_vec3(field(wgsl_hit_ref, "position")),
+                "hit.position",
+                x,
+                y,
+            );
+            assert_vec3_approx_eq_at(
+                expect_vec3(field(cpu_hit_ref, "normal")),
+                expect_vec3(field(wgsl_hit_ref, "normal")),
+                "hit.normal",
+                x,
+                y,
+            );
+            assert_eq!(
+                expect_u32(field(cpu_hit_ref, "feature_id")),
+                expect_u32(field(wgsl_hit_ref, "feature_id")),
+                "feature_id mismatch at pixel ({x}, {y})"
+            );
+            assert_eq!(
+                expect_u32(field(cpu_hit_ref, "root_shape_id")),
+                expect_u32(field(wgsl_hit_ref, "root_shape_id")),
+                "root_shape_id mismatch at pixel ({x}, {y})"
+            );
+
+            if !expect_bool(field(cpu_hit_ref, "hit")) {
+                let miss_point = add3(camera_position, mul3(ray, 4.0));
+                let radiance_args = vec![
+                    region_capture.clone(),
+                    domain.clone(),
+                    KernelValue::Vec3(miss_point),
+                    KernelValue::Vec3(ray),
+                ];
+                let medium_args = vec![
+                    region_capture.clone(),
+                    domain.clone(),
+                    KernelValue::Vec3(miss_point),
+                ];
+                let cpu_radiance = execute_world_query(&ctx, &radiance_plan, &radiance_args)
+                    .expect("cpu miss radiance");
+                let wgsl_radiance = execute_world_query_on(
+                    &ctx,
+                    DispatchBackend::Wgsl,
+                    &radiance_plan,
+                    &radiance_args,
+                )
+                .expect("wgsl miss radiance");
+                assert_vec3_approx_eq_at(
+                    expect_vec3(&cpu_radiance),
+                    expect_vec3(&wgsl_radiance),
+                    "miss.radiance",
+                    x,
+                    y,
+                );
+
+                let cpu_medium =
+                    execute_world_query(&ctx, &medium_plan, &medium_args).expect("cpu miss medium");
+                let wgsl_medium =
+                    execute_world_query_on(&ctx, DispatchBackend::Wgsl, &medium_plan, &medium_args)
+                        .expect("wgsl miss medium");
+                let cpu_medium_ref = expect_struct(&cpu_medium, "Medium");
+                let wgsl_medium_ref = expect_struct(&wgsl_medium, "Medium");
+                assert_approx_eq_at(
+                    expect_f32(field(cpu_medium_ref, "density")),
+                    expect_f32(field(wgsl_medium_ref, "density")),
+                    "miss.medium.density",
+                    x,
+                    y,
+                );
+                assert_vec3_approx_eq_at(
+                    expect_vec3(field(cpu_medium_ref, "emission")),
+                    expect_vec3(field(wgsl_medium_ref, "emission")),
+                    "miss.medium.emission",
+                    x,
+                    y,
+                );
+                continue;
+            }
+
+            let hit_position = expect_vec3(field(cpu_hit_ref, "position"));
+            let hit_normal = expect_vec3(field(cpu_hit_ref, "normal"));
+            let cpu_surface = execute_world_query(
+                &ctx,
+                &surface_plan,
+                &[region_capture.clone(), domain.clone(), cpu_hit.clone()],
+            )
+            .expect("cpu preview surface");
+            let wgsl_surface = execute_world_query_on(
+                &ctx,
+                DispatchBackend::Wgsl,
+                &surface_plan,
+                &[region_capture.clone(), domain.clone(), wgsl_hit.clone()],
+            )
+            .expect("wgsl preview surface");
+            let cpu_surface_ref = expect_struct(&cpu_surface, "Surface");
+            let wgsl_surface_ref = expect_struct(&wgsl_surface, "Surface");
+            assert_vec3_approx_eq_at(
+                expect_vec3(field(cpu_surface_ref, "albedo")),
+                expect_vec3(field(wgsl_surface_ref, "albedo")),
+                "surface.albedo",
+                x,
+                y,
+            );
+            assert_approx_eq_at(
+                expect_f32(field(cpu_surface_ref, "roughness")),
+                expect_f32(field(wgsl_surface_ref, "roughness")),
+                "surface.roughness",
+                x,
+                y,
+            );
+            assert_approx_eq_at(
+                expect_f32(field(cpu_surface_ref, "metalness")),
+                expect_f32(field(wgsl_surface_ref, "metalness")),
+                "surface.metalness",
+                x,
+                y,
+            );
+            assert_vec3_approx_eq_at(
+                expect_vec3(field(cpu_surface_ref, "emissive")),
+                expect_vec3(field(wgsl_surface_ref, "emissive")),
+                "surface.emissive",
+                x,
+                y,
+            );
+
+            let radiance_args = vec![
+                region_capture.clone(),
+                domain.clone(),
+                KernelValue::Vec3(hit_position),
+                KernelValue::Vec3(ray),
+            ];
+            let cpu_radiance =
+                execute_world_query(&ctx, &radiance_plan, &radiance_args).expect("cpu radiance");
+            let wgsl_radiance =
+                execute_world_query_on(&ctx, DispatchBackend::Wgsl, &radiance_plan, &radiance_args)
+                    .expect("wgsl radiance");
+            assert_vec3_approx_eq_at(
+                expect_vec3(&cpu_radiance),
+                expect_vec3(&wgsl_radiance),
+                "radiance",
+                x,
+                y,
+            );
+
+            let medium_args = vec![
+                region_capture.clone(),
+                domain.clone(),
+                KernelValue::Vec3(hit_position),
+            ];
+            let cpu_medium =
+                execute_world_query(&ctx, &medium_plan, &medium_args).expect("cpu medium");
+            let wgsl_medium =
+                execute_world_query_on(&ctx, DispatchBackend::Wgsl, &medium_plan, &medium_args)
+                    .expect("wgsl medium");
+            let cpu_medium_ref = expect_struct(&cpu_medium, "Medium");
+            let wgsl_medium_ref = expect_struct(&wgsl_medium, "Medium");
+            assert_approx_eq_at(
+                expect_f32(field(cpu_medium_ref, "density")),
+                expect_f32(field(wgsl_medium_ref, "density")),
+                "medium.density",
+                x,
+                y,
+            );
+            assert_vec3_approx_eq_at(
+                expect_vec3(field(cpu_medium_ref, "emission")),
+                expect_vec3(field(wgsl_medium_ref, "emission")),
+                "medium.emission",
+                x,
+                y,
+            );
+
+            for offset in [0.06f32, 0.14, 0.28] {
+                let sample_point = add3(hit_position, mul3(hit_normal, offset));
+                let distance_args = vec![
+                    region_capture.clone(),
+                    domain.clone(),
+                    KernelValue::Vec3(sample_point),
+                ];
+                let cpu_distance = execute_world_query(&ctx, &distance_plan, &distance_args)
+                    .expect("cpu ao distance");
+                let wgsl_distance = execute_world_query_on(
+                    &ctx,
+                    DispatchBackend::Wgsl,
+                    &distance_plan,
+                    &distance_args,
+                )
+                .expect("wgsl ao distance");
+                assert_approx_eq_at(
+                    expect_f32(&cpu_distance),
+                    expect_f32(&wgsl_distance),
+                    &format!("ao.distance@{offset:.2}"),
+                    x,
+                    y,
+                );
+            }
+
+            let shadow_origin = add3(hit_position, mul3(hit_normal, 0.01));
+            let light_delta = sub3(light_position, shadow_origin);
+            let shadow_direction = normalize3(light_delta);
+            let shadow_limit = length3(light_delta).min(light_range);
+            let shadow_args = vec![
+                region_capture.clone(),
+                domain.clone(),
+                KernelValue::Vec3(shadow_origin),
+                KernelValue::Vec3(shadow_direction),
+                KernelValue::F32(shadow_limit),
+                KernelValue::F32(0.02),
+                KernelValue::F32(0.0008),
+                KernelValue::I32(96),
+            ];
+            let cpu_shadow =
+                execute_world_query(&ctx, &trace_plan, &shadow_args).expect("cpu shadow trace");
+            let wgsl_shadow =
+                execute_world_query_on(&ctx, DispatchBackend::Wgsl, &trace_plan, &shadow_args)
+                    .expect("wgsl shadow trace");
+            let cpu_shadow_ref = expect_struct(&cpu_shadow, "Hit3");
+            let wgsl_shadow_ref = expect_struct(&wgsl_shadow, "Hit3");
+            assert_eq!(
+                expect_bool(field(cpu_shadow_ref, "hit")),
+                expect_bool(field(wgsl_shadow_ref, "hit")),
+                "shadow hit flag mismatch at pixel ({x}, {y})"
+            );
+            assert_approx_eq_at(
+                expect_f32(field(cpu_shadow_ref, "distance")),
+                expect_f32(field(wgsl_shadow_ref, "distance")),
+                "shadow.distance",
+                x,
+                y,
+            );
+        }
+    }
+}
+
+#[test]
+fn query_exec_wgsl_matches_cpu_for_preview_probe_b_world_and_scene_medium() {
+    let (_, _, ctx) = typed_project_query_module("language/preview");
+    let region_capture = KernelValue::Capture(SmolStr::new("scene_region"));
+    let domain = scene_domain_with_limits(
+        stable_region_scene_capture_id(&SmolStr::new("scene_region")),
+        1,
+        true,
+        true,
+        true,
+        12.0,
+        0.02,
+        0.0008,
+        96,
+    );
+    let trace_plan = lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Trace));
+    let medium_plan = lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Medium));
+    let capture_medium_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Medium, CaptureKind::Shape, None)
+            .expect("shape capture medium plan"),
+    );
+
+    let origin = [0.0, 0.1, 2.7];
+    let direction = [-0.379642, -0.379642, -0.843649];
+    let trace_args = vec![
+        region_capture.clone(),
+        domain.clone(),
+        KernelValue::Vec3(origin),
+        KernelValue::Vec3(direction),
+        KernelValue::F32(12.0),
+        KernelValue::F32(0.02),
+        KernelValue::F32(0.0008),
+        KernelValue::I32(96),
+    ];
+    let cpu_hit = execute_world_query(&ctx, &trace_plan, &trace_args).expect("cpu probe_b trace");
+    let wgsl_hit = execute_world_query_on(&ctx, DispatchBackend::Wgsl, &trace_plan, &trace_args)
+        .expect("wgsl probe_b trace");
+
+    let cpu_hit_ref = expect_struct(&cpu_hit, "Hit3");
+    let wgsl_hit_ref = expect_struct(&wgsl_hit, "Hit3");
+    assert_vec3_approx_eq(
+        expect_vec3(field(cpu_hit_ref, "position")),
+        expect_vec3(field(wgsl_hit_ref, "position")),
+    );
+
+    let hit_position = expect_vec3(field(cpu_hit_ref, "position"));
+    let medium_args = vec![region_capture, domain, KernelValue::Vec3(hit_position)];
+    let cpu_medium =
+        execute_world_query(&ctx, &medium_plan, &medium_args).expect("cpu probe_b medium");
+    let wgsl_medium =
+        execute_world_query_on(&ctx, DispatchBackend::Wgsl, &medium_plan, &medium_args)
+            .expect("wgsl probe_b medium");
+
+    assert_medium_approx_eq(&cpu_medium, &wgsl_medium);
+
+    let scene_medium_args = vec![
+        KernelValue::Capture(SmolStr::new("scene_shape")),
+        KernelValue::Vec3(hit_position),
+    ];
+    let cpu_scene_medium = execute_capture_query(&ctx, &capture_medium_plan, &scene_medium_args)
+        .expect("cpu probe_b scene medium");
+    let wgsl_scene_medium = execute_capture_query_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &capture_medium_plan,
+        &scene_medium_args,
+    )
+    .expect("wgsl probe_b scene medium");
+    assert_medium_approx_eq(&cpu_scene_medium, &wgsl_scene_medium);
+
+    let foot_medium_args = vec![
+        KernelValue::Capture(SmolStr::new("foot_shape")),
+        KernelValue::Vec3(hit_position),
+    ];
+    let cpu_foot_medium = execute_capture_query(&ctx, &capture_medium_plan, &foot_medium_args)
+        .expect("cpu probe_b foot medium");
+    let wgsl_foot_medium = execute_capture_query_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &capture_medium_plan,
+        &foot_medium_args,
+    )
+    .expect("wgsl probe_b foot medium");
+    assert_medium_approx_eq(&cpu_foot_medium, &wgsl_foot_medium);
+}
+
+#[test]
+fn query_exec_wgsl_batch_queries_match_cpu_results() {
+    let (_, _, ctx) = typed_query_module(query_fixture_source());
+    let shape_capture = KernelValue::Capture(SmolStr::new("scene_shape"));
+    let field_capture = KernelValue::Capture(SmolStr::new("sphere_field"));
+    let point_items = KernelValue::Array(vec![
+        point_query([0.0, 0.0, 2.0]),
+        point_query([0.0, 0.0, 3.0]),
+    ]);
+    let ray_items = KernelValue::Array(vec![
+        ray_query([0.0, 0.0, 3.0], [0.0, 0.0, -1.0]),
+        ray_query([0.0, 0.0, 3.0], [0.0, 1.0, 0.0]),
+    ]);
+
+    let cpu_field_distance = lower_batch_query_plan(&BatchQueryPlan::for_field_query(
+        BatchQueryKind::Distance,
+        CaptureKind::Field,
+        DispatchBackend::Cpu,
+        None,
+    ));
+    let wgsl_field_distance = lower_batch_query_plan(&BatchQueryPlan::for_field_query(
+        BatchQueryKind::Distance,
+        CaptureKind::Field,
+        DispatchBackend::Wgsl,
+        None,
+    ));
+    let (cpu_field_distances, _) = execute_batch_query_with_trace(
+        &ctx,
+        &cpu_field_distance,
+        &[field_capture.clone(), point_items.clone()],
+    )
+    .expect("cpu field distance batch");
+    let (wgsl_field_distances, wgsl_field_distance_trace) = execute_batch_query_with_trace(
+        &ctx,
+        &wgsl_field_distance,
+        &[field_capture.clone(), point_items.clone()],
+    )
+    .expect("wgsl field distance batch");
+    for (cpu, wgsl) in expect_array(&cpu_field_distances)
+        .iter()
+        .zip(expect_array(&wgsl_field_distances))
+    {
+        assert_approx_eq(
+            expect_f32(field(expect_struct(cpu, "DistanceResult"), "distance")),
+            expect_f32(field(expect_struct(wgsl, "DistanceResult"), "distance")),
+        );
+    }
+    assert_eq!(wgsl_field_distance_trace.backend, DispatchBackend::Wgsl);
+
+    let cpu_shape_distance = lower_batch_query_plan(&BatchQueryPlan::for_field_query(
+        BatchQueryKind::Distance,
+        CaptureKind::Shape,
+        DispatchBackend::Cpu,
+        None,
+    ));
+    let wgsl_shape_distance = lower_batch_query_plan(&BatchQueryPlan::for_field_query(
+        BatchQueryKind::Distance,
+        CaptureKind::Shape,
+        DispatchBackend::Wgsl,
+        None,
+    ));
+    let (cpu_shape_distances, _) = execute_batch_query_with_trace(
+        &ctx,
+        &cpu_shape_distance,
+        &[shape_capture.clone(), point_items.clone()],
+    )
+    .expect("cpu shape distance batch");
+    let (wgsl_shape_distances, _) = execute_batch_query_with_trace(
+        &ctx,
+        &wgsl_shape_distance,
+        &[shape_capture.clone(), point_items.clone()],
+    )
+    .expect("wgsl shape distance batch");
+    for (cpu, wgsl) in expect_array(&cpu_shape_distances)
+        .iter()
+        .zip(expect_array(&wgsl_shape_distances))
+    {
+        assert_approx_eq(
+            expect_f32(field(expect_struct(cpu, "DistanceResult"), "distance")),
+            expect_f32(field(expect_struct(wgsl, "DistanceResult"), "distance")),
+        );
+    }
+
+    let cpu_field_normal = lower_batch_query_plan(&BatchQueryPlan::for_field_query(
+        BatchQueryKind::Normal,
+        CaptureKind::Field,
+        DispatchBackend::Cpu,
+        None,
+    ));
+    let wgsl_field_normal = lower_batch_query_plan(&BatchQueryPlan::for_field_query(
+        BatchQueryKind::Normal,
+        CaptureKind::Field,
+        DispatchBackend::Wgsl,
+        None,
+    ));
+    let (cpu_field_normals, _) = execute_batch_query_with_trace(
+        &ctx,
+        &cpu_field_normal,
+        &[field_capture, point_items.clone()],
+    )
+    .expect("cpu field normal batch");
+    let (wgsl_field_normals, _) = execute_batch_query_with_trace(
+        &ctx,
+        &wgsl_field_normal,
+        &[
+            KernelValue::Capture(SmolStr::new("sphere_field")),
+            point_items.clone(),
+        ],
+    )
+    .expect("wgsl field normal batch");
+    for (cpu, wgsl) in expect_array(&cpu_field_normals)
+        .iter()
+        .zip(expect_array(&wgsl_field_normals))
+    {
+        assert_vec3_approx_eq(
+            expect_vec3(field(expect_struct(cpu, "NormalResult"), "normal")),
+            expect_vec3(field(expect_struct(wgsl, "NormalResult"), "normal")),
+        );
+    }
+
+    let cpu_shape_normal = lower_batch_query_plan(&BatchQueryPlan::for_field_query(
+        BatchQueryKind::Normal,
+        CaptureKind::Shape,
+        DispatchBackend::Cpu,
+        None,
+    ));
+    let wgsl_shape_normal = lower_batch_query_plan(&BatchQueryPlan::for_field_query(
+        BatchQueryKind::Normal,
+        CaptureKind::Shape,
+        DispatchBackend::Wgsl,
+        None,
+    ));
+    let (cpu_shape_normals, _) = execute_batch_query_with_trace(
+        &ctx,
+        &cpu_shape_normal,
+        &[shape_capture.clone(), point_items.clone()],
+    )
+    .expect("cpu shape normal batch");
+    let (wgsl_shape_normals, _) = execute_batch_query_with_trace(
+        &ctx,
+        &wgsl_shape_normal,
+        &[shape_capture.clone(), point_items.clone()],
+    )
+    .expect("wgsl shape normal batch");
+    for (cpu, wgsl) in expect_array(&cpu_shape_normals)
+        .iter()
+        .zip(expect_array(&wgsl_shape_normals))
+    {
+        assert_vec3_approx_eq(
+            expect_vec3(field(expect_struct(cpu, "NormalResult"), "normal")),
+            expect_vec3(field(expect_struct(wgsl, "NormalResult"), "normal")),
+        );
+    }
+
+    let cpu_trace_plan = lower_batch_query_plan(&BatchQueryPlan::for_shape_query(
+        BatchQueryKind::Trace,
+        DispatchBackend::Cpu,
+        None,
+    ));
+    let wgsl_trace_plan = lower_batch_query_plan(&BatchQueryPlan::for_shape_query(
+        BatchQueryKind::Trace,
+        DispatchBackend::Wgsl,
+        None,
+    ));
+    let (cpu_hits, _) = execute_batch_query_with_trace(
+        &ctx,
+        &cpu_trace_plan,
+        &[shape_capture.clone(), ray_items.clone()],
+    )
+    .expect("cpu trace batch");
+    let (wgsl_hits, wgsl_trace_batch) = execute_batch_query_with_trace(
+        &ctx,
+        &wgsl_trace_plan,
+        &[shape_capture.clone(), ray_items.clone()],
+    )
+    .expect("wgsl trace batch");
+    for (cpu, wgsl) in expect_array(&cpu_hits).iter().zip(expect_array(&wgsl_hits)) {
+        assert_hit3_approx_eq(cpu, wgsl);
+    }
+    assert_eq!(wgsl_trace_batch.backend, DispatchBackend::Wgsl);
+
+    let cpu_surface_plan = lower_batch_query_plan(&BatchQueryPlan::for_shape_query(
+        BatchQueryKind::Surface,
+        DispatchBackend::Cpu,
+        None,
+    ));
+    let wgsl_surface_plan = lower_batch_query_plan(&BatchQueryPlan::for_shape_query(
+        BatchQueryKind::Surface,
+        DispatchBackend::Wgsl,
+        None,
+    ));
+    let (cpu_surfaces, _) = execute_batch_query_with_trace(
+        &ctx,
+        &cpu_surface_plan,
+        &[shape_capture.clone(), cpu_hits.clone()],
+    )
+    .expect("cpu surface batch");
+    let (wgsl_surfaces, _) = execute_batch_query_with_trace(
+        &ctx,
+        &wgsl_surface_plan,
+        &[shape_capture.clone(), wgsl_hits.clone()],
+    )
+    .expect("wgsl surface batch");
+    for (cpu, wgsl) in expect_array(&cpu_surfaces)
+        .iter()
+        .zip(expect_array(&wgsl_surfaces))
+    {
+        assert_surface_approx_eq(cpu, wgsl);
+    }
+
+    let cpu_occluded_plan = lower_batch_query_plan(&BatchQueryPlan::for_shape_query(
+        BatchQueryKind::Occluded,
+        DispatchBackend::Cpu,
+        None,
+    ));
+    let wgsl_occluded_plan = lower_batch_query_plan(&BatchQueryPlan::for_shape_query(
+        BatchQueryKind::Occluded,
+        DispatchBackend::Wgsl,
+        None,
+    ));
+    let (cpu_occlusions, _) =
+        execute_batch_query_with_trace(&ctx, &cpu_occluded_plan, &[shape_capture, ray_items])
+            .expect("cpu occluded batch");
+    let (wgsl_occlusions, _) = execute_batch_query_with_trace(
+        &ctx,
+        &wgsl_occluded_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("scene_shape")),
+            KernelValue::Array(vec![
+                ray_query([0.0, 0.0, 3.0], [0.0, 0.0, -1.0]),
+                ray_query([0.0, 0.0, 3.0], [0.0, 1.0, 0.0]),
+            ]),
+        ],
+    )
+    .expect("wgsl occluded batch");
+    for (cpu, wgsl) in expect_array(&cpu_occlusions)
+        .iter()
+        .zip(expect_array(&wgsl_occlusions))
+    {
+        let cpu = expect_struct(cpu, "OcclusionResult");
+        let wgsl = expect_struct(wgsl, "OcclusionResult");
+        assert_eq!(
+            expect_bool(field(cpu, "occluded")),
+            expect_bool(field(wgsl, "occluded"))
+        );
+        assert_approx_eq(
+            expect_f32(field(cpu, "distance")),
+            expect_f32(field(wgsl, "distance")),
+        );
+    }
+}
+
+#[test]
+fn query_exec_wgsl_matches_virtual_gpu_for_world_and_batch_queries() {
+    let (_, _, ctx) = typed_query_module(query_fixture_source());
+    let region_capture = KernelValue::Capture(SmolStr::new("scene_region"));
+    let shape_capture = KernelValue::Capture(SmolStr::new("scene_shape"));
+    let fine_domain = scene_domain(
+        stable_region_scene_capture_id(&SmolStr::new("scene_region")),
+        1,
+        true,
+        true,
+        true,
+    );
+    let point_items = KernelValue::Array(vec![
+        point_query([0.0, 0.0, 2.0]),
+        point_query([0.0, 0.0, 3.0]),
+    ]);
+    let ray_items = KernelValue::Array(vec![
+        ray_query([0.0, 0.0, 3.0], [0.0, 0.0, -1.0]),
+        ray_query([0.0, 0.0, 3.0], [0.0, 1.0, 0.0]),
+    ]);
+
+    let world_distance_plan = lower_world_query_plan(&WorldQueryPlan::for_query_with_backend(
+        WorldQueryKind::Distance,
+        DispatchBackend::Wgsl,
+    ));
+    let vgpu_world_distance = execute_world_query_on(
+        &ctx,
+        DispatchBackend::VirtualGpu,
+        &world_distance_plan,
+        &[
+            region_capture.clone(),
+            fine_domain.clone(),
+            KernelValue::Vec3([0.0, 0.0, 2.0]),
+        ],
+    )
+    .expect("vgpu world distance");
+    let wgsl_world_distance = execute_world_query_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &world_distance_plan,
+        &[
+            region_capture.clone(),
+            fine_domain.clone(),
+            KernelValue::Vec3([0.0, 0.0, 2.0]),
+        ],
+    )
+    .expect("wgsl world distance");
+    assert_approx_eq(
+        expect_f32(&vgpu_world_distance),
+        expect_f32(&wgsl_world_distance),
+    );
+
+    let world_trace_plan = lower_world_query_plan(&WorldQueryPlan::for_query_with_backend(
+        WorldQueryKind::Trace,
+        DispatchBackend::Wgsl,
+    ));
+    let world_trace_args = vec![
+        region_capture.clone(),
+        fine_domain.clone(),
+        KernelValue::Vec3([0.0, 0.0, 3.0]),
+        KernelValue::Vec3([0.0, 0.0, -1.0]),
+        KernelValue::F32(6.0),
+        KernelValue::F32(0.05),
+        KernelValue::F32(0.001),
+        KernelValue::I32(96),
+    ];
+    let vgpu_world_hit = execute_world_query_on(
+        &ctx,
+        DispatchBackend::VirtualGpu,
+        &world_trace_plan,
+        &world_trace_args,
+    )
+    .expect("vgpu world trace");
+    let wgsl_world_hit = execute_world_query_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &world_trace_plan,
+        &world_trace_args,
+    )
+    .expect("wgsl world trace");
+    assert_hit3_approx_eq(&vgpu_world_hit, &wgsl_world_hit);
+
+    let world_surface_plan = lower_world_query_plan(&WorldQueryPlan::for_query_with_backend(
+        WorldQueryKind::Surface,
+        DispatchBackend::Wgsl,
+    ));
+    let vgpu_world_surface = execute_world_query_on(
+        &ctx,
+        DispatchBackend::VirtualGpu,
+        &world_surface_plan,
+        &[
+            region_capture.clone(),
+            fine_domain.clone(),
+            vgpu_world_hit.clone(),
+        ],
+    )
+    .expect("vgpu world surface");
+    let wgsl_world_surface = execute_world_query_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &world_surface_plan,
+        &[
+            region_capture.clone(),
+            fine_domain.clone(),
+            wgsl_world_hit.clone(),
+        ],
+    )
+    .expect("wgsl world surface");
+    assert_surface_approx_eq(&vgpu_world_surface, &wgsl_world_surface);
+
+    let world_medium_plan = lower_world_query_plan(&WorldQueryPlan::for_query_with_backend(
+        WorldQueryKind::Medium,
+        DispatchBackend::Wgsl,
+    ));
+    let vgpu_world_medium = execute_world_query_on(
+        &ctx,
+        DispatchBackend::VirtualGpu,
+        &world_medium_plan,
+        &[
+            region_capture.clone(),
+            fine_domain.clone(),
+            KernelValue::Vec3([0.0, 0.1, 0.75]),
+        ],
+    )
+    .expect("vgpu world medium");
+    let wgsl_world_medium = execute_world_query_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &world_medium_plan,
+        &[
+            region_capture,
+            fine_domain,
+            KernelValue::Vec3([0.0, 0.1, 0.75]),
+        ],
+    )
+    .expect("wgsl world medium");
+    assert_medium_approx_eq(&vgpu_world_medium, &wgsl_world_medium);
+
+    let shape_distance_plan = lower_batch_query_plan(&BatchQueryPlan::for_field_query(
+        BatchQueryKind::Distance,
+        CaptureKind::Shape,
+        DispatchBackend::Wgsl,
+        None,
+    ));
+    let (vgpu_shape_distances, _) = execute_batch_query_with_trace_on(
+        &ctx,
+        DispatchBackend::VirtualGpu,
+        &shape_distance_plan,
+        &[shape_capture.clone(), point_items.clone()],
+    )
+    .expect("vgpu shape distance batch");
+    let (wgsl_shape_distances, _) = execute_batch_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &shape_distance_plan,
+        &[shape_capture.clone(), point_items.clone()],
+    )
+    .expect("wgsl shape distance batch");
+    for (vgpu, wgsl) in expect_array(&vgpu_shape_distances)
+        .iter()
+        .zip(expect_array(&wgsl_shape_distances))
+    {
+        assert_approx_eq(
+            expect_f32(field(expect_struct(vgpu, "DistanceResult"), "distance")),
+            expect_f32(field(expect_struct(wgsl, "DistanceResult"), "distance")),
+        );
+    }
+
+    let trace_plan = lower_batch_query_plan(&BatchQueryPlan::for_shape_query(
+        BatchQueryKind::Trace,
+        DispatchBackend::Wgsl,
+        None,
+    ));
+    let (vgpu_hits, _) = execute_batch_query_with_trace_on(
+        &ctx,
+        DispatchBackend::VirtualGpu,
+        &trace_plan,
+        &[shape_capture.clone(), ray_items.clone()],
+    )
+    .expect("vgpu trace batch");
+    let (wgsl_hits, _) = execute_batch_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &trace_plan,
+        &[shape_capture.clone(), ray_items.clone()],
+    )
+    .expect("wgsl trace batch");
+    for (vgpu, wgsl) in expect_array(&vgpu_hits)
+        .iter()
+        .zip(expect_array(&wgsl_hits))
+    {
+        assert_hit3_approx_eq(vgpu, wgsl);
+    }
+
+    let surface_plan = lower_batch_query_plan(&BatchQueryPlan::for_shape_query(
+        BatchQueryKind::Surface,
+        DispatchBackend::Wgsl,
+        None,
+    ));
+    let (vgpu_surfaces, _) = execute_batch_query_with_trace_on(
+        &ctx,
+        DispatchBackend::VirtualGpu,
+        &surface_plan,
+        &[shape_capture.clone(), vgpu_hits.clone()],
+    )
+    .expect("vgpu surface batch");
+    let (wgsl_surfaces, _) = execute_batch_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &surface_plan,
+        &[shape_capture.clone(), wgsl_hits.clone()],
+    )
+    .expect("wgsl surface batch");
+    for (vgpu, wgsl) in expect_array(&vgpu_surfaces)
+        .iter()
+        .zip(expect_array(&wgsl_surfaces))
+    {
+        assert_surface_approx_eq(vgpu, wgsl);
+    }
+
+    let occluded_plan = lower_batch_query_plan(&BatchQueryPlan::for_shape_query(
+        BatchQueryKind::Occluded,
+        DispatchBackend::Wgsl,
+        None,
+    ));
+    let (vgpu_occlusions, _) = execute_batch_query_with_trace_on(
+        &ctx,
+        DispatchBackend::VirtualGpu,
+        &occluded_plan,
+        &[shape_capture, ray_items.clone()],
+    )
+    .expect("vgpu occluded batch");
+    let (wgsl_occlusions, _) = execute_batch_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &occluded_plan,
+        &[KernelValue::Capture(SmolStr::new("scene_shape")), ray_items],
+    )
+    .expect("wgsl occluded batch");
+    for (vgpu, wgsl) in expect_array(&vgpu_occlusions)
+        .iter()
+        .zip(expect_array(&wgsl_occlusions))
+    {
+        let vgpu = expect_struct(vgpu, "OcclusionResult");
+        let wgsl = expect_struct(wgsl, "OcclusionResult");
+        assert_eq!(
+            expect_bool(field(vgpu, "occluded")),
+            expect_bool(field(wgsl, "occluded"))
+        );
+        assert_approx_eq(
+            expect_f32(field(vgpu, "distance")),
+            expect_f32(field(wgsl, "distance")),
+        );
+    }
+}
+
+#[test]
+fn query_exec_opaque_fallback_updates_observability_counters() {
+    let (_, _, ctx) = typed_query_module(opaque_fallback_source());
+    let distance_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Distance, CaptureKind::Field, None)
+            .expect("distance plan"),
+    );
+
+    let (_value, trace) = execute_capture_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Cpu,
+        &distance_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("opaque_field")),
+            KernelValue::Vec3([0.0, 0.0, 0.0]),
+        ],
+    )
+    .expect("opaque distance");
+    assert_eq!(trace.observability.dispatch_count, 1);
+    assert!(trace.observability.opaque_fallbacks > 0);
+    assert!(trace.observability.artifact_loads > 0);
+    assert!(trace.observability.field_samples > 0);
+}
+
+#[test]
+fn query_exec_virtual_gpu_rejects_invalid_batch_contracts_before_execution() {
+    let (_, _, ctx) = typed_query_module(query_fixture_source());
+    let capture = KernelValue::Capture(SmolStr::new("scene_shape"));
+    let rays = KernelValue::Array(vec![ray_query([0.0, 0.0, 3.0], [0.0, 0.0, -1.0])]);
+
+    let mut version_plan = lower_batch_query_plan(&BatchQueryPlan::for_shape_query(
+        BatchQueryKind::Trace,
+        DispatchBackend::VirtualGpu,
+        None,
+    ));
+    version_plan.contract_version = 0;
+    let version_error =
+        execute_batch_query_with_trace(&ctx, &version_plan, &[capture.clone(), rays.clone()])
+            .expect_err("invalid contract version should fail");
+    assert!(
+        format!("{version_error:?}").contains("contract version"),
+        "expected contract-version validation failure, got {version_error:?}"
+    );
+
+    let mut artifact_plan = lower_batch_query_plan(&BatchQueryPlan::for_shape_query(
+        BatchQueryKind::Trace,
+        DispatchBackend::VirtualGpu,
+        None,
+    ));
+    artifact_plan
+        .artifact_contracts
+        .retain(|artifact| !matches!(artifact.schema, ArtifactSchema::DispatchRecord { .. }));
+    let artifact_error =
+        execute_batch_query_with_trace(&ctx, &artifact_plan, &[capture.clone(), rays.clone()])
+            .expect_err("missing dispatch artifact should fail");
+    assert!(
+        format!("{artifact_error:?}").contains("dispatch artifact contract"),
+        "expected dispatch artifact validation failure, got {artifact_error:?}"
+    );
+
+    let mut stage_plan = lower_batch_query_plan(&BatchQueryPlan::for_shape_query(
+        BatchQueryKind::Trace,
+        DispatchBackend::VirtualGpu,
+        None,
+    ));
+    stage_plan
+        .stages
+        .retain(|stage| !matches!(stage, KernelPlanStage::EndVirtualGpuDispatch));
+    let stage_error = execute_batch_query_with_trace(&ctx, &stage_plan, &[capture, rays])
+        .expect_err("missing virtual GPU end stage should fail");
+    assert!(
+        format!("{stage_error:?}").contains("both begin and end stages"),
+        "expected stage validation failure, got {stage_error:?}"
+    );
+
+    let mut nested_plan = lower_batch_query_plan(&BatchQueryPlan::for_shape_query(
+        BatchQueryKind::Trace,
+        DispatchBackend::VirtualGpu,
+        None,
+    ));
+    let KernelBatchItemContract::CaptureQuery { plan: nested } = &mut nested_plan.item_contract
+    else {
+        panic!("expected capture item contract");
+    };
+    nested.contract_version = 0;
+    let nested_error = execute_batch_query_with_trace(
+        &ctx,
+        &nested_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("scene_shape")),
+            KernelValue::Array(vec![ray_query([0.0, 0.0, 3.0], [0.0, 0.0, -1.0])]),
+        ],
+    )
+    .expect_err("invalid nested item contract should fail");
+    assert!(
+        format!("{nested_error:?}").contains("capture query contract version"),
+        "expected nested capture-plan validation failure, got {nested_error:?}"
     );
 }
 
@@ -1050,4 +2799,775 @@ fn kernel_entry_can_route_direct_queries_through_virtual_gpu_backend() {
     .expect("virtual gpu execute");
 
     assert_eq!(cpu_value, vgpu_value);
+}
+
+#[test]
+fn direct_world_queries_use_plan_backend_and_auto_can_resolve_to_wgsl() {
+    let (_, _, ctx) = typed_query_module(query_fixture_source());
+    let region_capture = KernelValue::Capture(SmolStr::new("scene_region"));
+    let fine_domain = scene_domain(
+        stable_region_scene_capture_id(&SmolStr::new("scene_region")),
+        1,
+        true,
+        true,
+        true,
+    );
+    let query_point = KernelValue::Vec3([0.0, 0.0, 2.0]);
+
+    let vgpu_plan = lower_world_query_plan(&WorldQueryPlan::for_query_with_backend(
+        WorldQueryKind::Distance,
+        DispatchBackend::VirtualGpu,
+    ));
+    let (vgpu_value, vgpu_trace) = execute_world_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Auto,
+        &vgpu_plan,
+        &[
+            region_capture.clone(),
+            fine_domain.clone(),
+            query_point.clone(),
+        ],
+    )
+    .expect("auto should resolve to plan virtual gpu backend");
+    assert_approx_eq(expect_f32(&vgpu_value), 1.0);
+    assert_eq!(vgpu_trace.backend, DispatchBackend::VirtualGpu);
+    assert_eq!(vgpu_trace.executor, DirectQueryExecutor::VirtualGpu);
+
+    let wgsl_plan = lower_world_query_plan(&WorldQueryPlan::for_query_with_backend(
+        WorldQueryKind::Distance,
+        DispatchBackend::Wgsl,
+    ));
+    let (wgsl_value, wgsl_trace) = execute_world_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Auto,
+        &wgsl_plan,
+        &[region_capture, fine_domain, query_point],
+    )
+    .expect("auto should resolve to plan wgsl backend");
+    assert_approx_eq(expect_f32(&wgsl_value), 1.0);
+    assert_eq!(wgsl_trace.backend, DispatchBackend::Wgsl);
+    assert_eq!(wgsl_trace.executor, DirectQueryExecutor::Wgsl);
+    assert_eq!(wgsl_trace.observability.dispatch_count, 1);
+}
+
+fn direct_semantics_source() -> &'static str {
+    r#"
+field exact distance near_field(p: Vec3) -> F32 {
+    sphere(radius = 0.6)
+}
+field exact distance far_field(p: Vec3) -> F32 {
+    translate = vec3(0.0, 0.0, -0.35) {
+        sphere(radius = 0.8)
+    }
+}
+
+field conservative distance identity_field(p: Vec3) -> F32 {
+    instance_array = Transform3(
+        matrix=mat4_cols(
+            vec4(1.0, 0.0, 0.0, 0.0),
+            vec4(0.0, 1.0, 0.0, 0.0),
+            vec4(0.0, 0.0, 1.0, 0.0),
+            vec4(1.0, 0.0, 0.0, 1.0)
+        ),
+        inverse=mat4_cols(
+            vec4(1.0, 0.0, 0.0, 0.0),
+            vec4(0.0, 1.0, 0.0, 0.0),
+            vec4(0.0, 0.0, 1.0, 0.0),
+            vec4(-1.0, 0.0, 0.0, 1.0)
+        )
+    ) {
+        repeat_linear = vec3(2.0, 0.0, 0.0) {
+            translate = vec3(0.25, 0.0, 0.0) {
+                sphere(radius = 0.5)
+            }
+        }
+    }
+}
+
+field exact distance left_glow_field(p: Vec3) -> F32 {
+    translate = vec3(-1.5, 0.0, 0.0) {
+        sphere(radius = 0.25)
+    }
+}
+
+field exact distance right_glow_field(p: Vec3) -> F32 {
+    translate = vec3(0.25, 0.0, 0.0) {
+        sphere(radius = 0.25)
+    }
+}
+
+material near_surface(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.1, 0.2, 0.3),
+        roughness=0.0,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+material far_surface(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.9, 0.1, 0.1),
+        roughness=0.0,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+material identity_surface(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.3, 0.3, 0.3),
+        roughness=0.0,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+radiance field glow_local(p: Vec3, direction: Vec3, feature_id: U32) -> Vec3 {
+    return vec3(abs(p.x), abs(p.x) * 0.5, f32(feature_id) * 0.0) + direction * 0.0
+}
+
+volume field fog_local(p: Vec3, surface_distance: F32) -> Medium {
+    return Medium(
+        density=abs(p.x),
+        emission=vec3(abs(surface_distance), 0.0, 0.0),
+        anisotropy=0.25
+    )
+}
+
+shape near_shape {
+    field = near_field
+    material = near_surface
+    payload = Payload(
+        entity_id=u32(101),
+        material_id=u32(101),
+        actor=ActorHandle(id=u32(101), generation=u32(0))
+    )
+}
+
+shape far_shape {
+    field = far_field
+    material = far_surface
+    payload = Payload(
+        entity_id=u32(202),
+        material_id=u32(202),
+        actor=ActorHandle(id=u32(202), generation=u32(0))
+    )
+}
+
+shape nearest_scene {
+    union {
+        provenance_policy = nearest
+        use far_shape
+        use near_shape
+    }
+}
+
+shape ordered_scene {
+    union {
+        provenance_policy = ordered
+        use far_shape
+        use near_shape
+    }
+}
+
+shape identity_shape {
+    field = identity_field
+    material = identity_surface
+    payload = Payload(
+        entity_id=u32(303),
+        material_id=u32(303),
+        actor=ActorHandle(id=u32(303), generation=u32(0))
+    )
+}
+
+shape left_glow_shape {
+    field = left_glow_field
+    material = identity_surface
+    radiance = glow_local
+    volume = fog_local
+    payload = Payload()
+}
+
+shape right_glow_shape {
+    field = right_glow_field
+    material = identity_surface
+    radiance = glow_local
+    volume = fog_local
+    payload = Payload()
+}
+
+shape lighting_scene {
+    union {
+        provenance_policy = nearest
+        use left_glow_shape
+        use right_glow_shape
+    }
+}
+"#
+}
+
+fn wgsl_profile_fixture_source() -> &'static str {
+    r#"
+field conservative distance polygon_plate(p: Vec3) -> F32 {
+    extrude = f32(0.4) {
+        polygon2(vertices = [
+            vec2(-0.4, -0.3),
+            vec2(0.5, -0.2),
+            vec2(0.3, 0.4),
+            vec2(-0.3, 0.35)
+        ])
+    }
+}
+
+field conservative distance polyline_strip(p: Vec3) -> F32 {
+    extrude = f32(0.16) {
+        polyline2(vertices = [
+            vec2(-0.28, -0.10),
+            vec2(0.0, 0.14),
+            vec2(0.28, -0.10)
+        ])
+    }
+}
+
+field conservative distance repeated_plate(p: Vec3) -> F32 {
+    instance_array = Transform3(
+        matrix=mat4_cols(
+            vec4(1.0, 0.0, 0.0, 0.0),
+            vec4(0.0, 1.0, 0.0, 0.0),
+            vec4(0.0, 0.0, 1.0, 0.0),
+            vec4(0.5, 0.0, 0.0, 1.0)
+        ),
+        inverse=mat4_cols(
+            vec4(1.0, 0.0, 0.0, 0.0),
+            vec4(0.0, 1.0, 0.0, 0.0),
+            vec4(0.0, 0.0, 1.0, 0.0),
+            vec4(-0.5, 0.0, 0.0, 1.0)
+        )
+    ) {
+        repeat_linear = vec3(1.0, 0.0, 0.0) {
+            use polygon_plate
+        }
+    }
+}
+"#
+}
+
+fn profile_ops_source() -> &'static str {
+    r#"
+field conservative distance extruded_disc(p: Vec3) -> F32 {
+    extrude = f32(1.6) {
+        circle2(radius = 0.75)
+    }
+}
+
+field conservative distance revolved_orb(p: Vec3) -> F32 {
+    revolve {
+        circle2(radius = 0.5)
+    }
+}
+
+field conservative distance swept_beam(p: Vec3) -> F32 {
+    sweep = vec3(0.0, 1.6, 0.0) {
+        circle2(radius = 0.15)
+    }
+}
+
+field conservative distance lofted_form(p: Vec3) -> F32 {
+    loft = f32(1.2) {
+        from circle2(radius = 0.32)
+        to rounded_rect2(half = vec2(0.42, 0.28), radius = 0.08)
+    }
+}
+"#
+}
+
+fn opaque_fallback_source() -> &'static str {
+    r#"
+field conservative distance opaque_field(p: Vec3) -> F32 {
+    support = Support3(bounds=Bounds3(
+        min=vec3(-1.0, -1.0, -1.0),
+        max=vec3(1.0, 1.0, 1.0)
+    ))
+    bounds = Bounds3(
+        min=vec3(-1.0, -1.0, -1.0),
+        max=vec3(1.0, 1.0, 1.0)
+    )
+    return length(p - vec3(3.0, 0.0, 0.0)) - 0.5
+}
+"#
+}
+
+#[test]
+fn query_exec_direct_trace_preserves_local_context_and_shape_provenance() {
+    let (_, _, ctx) = typed_query_module(direct_semantics_source());
+    let trace_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Trace, CaptureKind::Shape, None)
+            .expect("trace plan"),
+    );
+    let surface_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Surface, CaptureKind::Shape, None)
+            .expect("surface plan"),
+    );
+
+    let nearest_hit = execute_capture_query(
+        &ctx,
+        &trace_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("nearest_scene")),
+            KernelValue::Vec3([0.0, 0.0, 3.0]),
+            KernelValue::Vec3([0.0, 0.0, -1.0]),
+            KernelValue::F32(6.0),
+            KernelValue::F32(0.05),
+            KernelValue::F32(0.001),
+            KernelValue::I32(96),
+        ],
+    )
+    .expect("nearest trace");
+    let ordered_hit = execute_capture_query(
+        &ctx,
+        &trace_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("ordered_scene")),
+            KernelValue::Vec3([0.0, 0.0, 3.0]),
+            KernelValue::Vec3([0.0, 0.0, -1.0]),
+            KernelValue::F32(6.0),
+            KernelValue::F32(0.05),
+            KernelValue::F32(0.001),
+            KernelValue::I32(96),
+        ],
+    )
+    .expect("ordered trace");
+
+    let nearest_hit = expect_struct(&nearest_hit, "Hit3");
+    let ordered_hit = expect_struct(&ordered_hit, "Hit3");
+    let nearest_payload = expect_struct(field(nearest_hit, "payload"), "Payload");
+    let ordered_payload = expect_struct(field(ordered_hit, "payload"), "Payload");
+
+    assert_eq!(expect_u32(field(nearest_payload, "entity_id")), 101);
+    assert_eq!(expect_u32(field(ordered_payload, "entity_id")), 202);
+
+    let ordered_surface = execute_capture_query(
+        &ctx,
+        &surface_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("ordered_scene")),
+            KernelValue::Struct(ordered_hit.clone()),
+        ],
+    )
+    .expect("ordered surface");
+    let ordered_surface = expect_struct(&ordered_surface, "Surface");
+    assert_vec3_approx_eq(
+        expect_vec3(field(ordered_surface, "albedo")),
+        [0.9, 0.1, 0.1],
+    );
+
+    let identity_hit = execute_capture_query(
+        &ctx,
+        &trace_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("identity_shape")),
+            KernelValue::Vec3([3.25, 0.0, 3.0]),
+            KernelValue::Vec3([0.0, 0.0, -1.0]),
+            KernelValue::F32(6.0),
+            KernelValue::F32(0.05),
+            KernelValue::F32(0.001),
+            KernelValue::I32(96),
+        ],
+    )
+    .expect("identity trace");
+    let identity_hit = expect_struct(&identity_hit, "Hit3");
+    assert_vec3_approx_eq(
+        expect_vec3(field(identity_hit, "local_position")),
+        [0.0, 0.0, 0.5],
+    );
+    assert_vec3_approx_eq(
+        expect_vec3(field(identity_hit, "local_normal")),
+        [0.0, 0.0, 1.0],
+    );
+    assert!(expect_u32(field(identity_hit, "instance_id")) != 0);
+    assert!(expect_u32(field(identity_hit, "repeat_id")) != 0);
+
+    let shading_frame = expect_struct(field(identity_hit, "shading_frame"), "Transform3");
+    let shading_matrix = expect_mat4(field(shading_frame, "matrix"));
+    assert_ne!(
+        shading_matrix,
+        [
+            1.0, 0.0, 0.0, 0.0, //
+            0.0, 1.0, 0.0, 0.0, //
+            0.0, 0.0, 1.0, 0.0, //
+            0.0, 0.0, 0.0, 1.0,
+        ]
+    );
+    assert_vec3_approx_eq(
+        [shading_matrix[12], shading_matrix[13], shading_matrix[14]],
+        expect_vec3(field(identity_hit, "position")),
+    );
+}
+
+#[test]
+fn query_exec_virtual_gpu_matches_cpu_for_local_context_and_provenance_sensitive_queries() {
+    let (_, _, ctx) = typed_query_module(direct_semantics_source());
+    let trace_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Trace, CaptureKind::Shape, None)
+            .expect("trace plan"),
+    );
+    let surface_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Surface, CaptureKind::Shape, None)
+            .expect("surface plan"),
+    );
+    let radiance_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Radiance, CaptureKind::Shape, None)
+            .expect("radiance plan"),
+    );
+    let medium_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Medium, CaptureKind::Shape, None)
+            .expect("medium plan"),
+    );
+
+    let ordered_trace_args = vec![
+        KernelValue::Capture(SmolStr::new("ordered_scene")),
+        KernelValue::Vec3([0.0, 0.0, 3.0]),
+        KernelValue::Vec3([0.0, 0.0, -1.0]),
+        KernelValue::F32(6.0),
+        KernelValue::F32(0.05),
+        KernelValue::F32(0.001),
+        KernelValue::I32(96),
+    ];
+    let cpu_ordered_hit =
+        execute_capture_query(&ctx, &trace_plan, &ordered_trace_args).expect("cpu ordered trace");
+    let (vgpu_ordered_hit, vgpu_ordered_trace) = execute_capture_query_with_trace_on(
+        &ctx,
+        DispatchBackend::VirtualGpu,
+        &trace_plan,
+        &ordered_trace_args,
+    )
+    .expect("vgpu ordered trace");
+    assert_eq!(cpu_ordered_hit, vgpu_ordered_hit);
+    assert_eq!(vgpu_ordered_trace.backend, DispatchBackend::VirtualGpu);
+    assert_eq!(vgpu_ordered_trace.executor, DirectQueryExecutor::VirtualGpu);
+
+    let cpu_surface = execute_capture_query(
+        &ctx,
+        &surface_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("ordered_scene")),
+            cpu_ordered_hit.clone(),
+        ],
+    )
+    .expect("cpu ordered surface");
+    let vgpu_surface = execute_capture_query_on(
+        &ctx,
+        DispatchBackend::VirtualGpu,
+        &surface_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("ordered_scene")),
+            vgpu_ordered_hit.clone(),
+        ],
+    )
+    .expect("vgpu ordered surface");
+    assert_eq!(cpu_surface, vgpu_surface);
+
+    let identity_trace_args = vec![
+        KernelValue::Capture(SmolStr::new("identity_shape")),
+        KernelValue::Vec3([3.25, 0.0, 3.0]),
+        KernelValue::Vec3([0.0, 0.0, -1.0]),
+        KernelValue::F32(6.0),
+        KernelValue::F32(0.05),
+        KernelValue::F32(0.001),
+        KernelValue::I32(96),
+    ];
+    let cpu_identity_hit =
+        execute_capture_query(&ctx, &trace_plan, &identity_trace_args).expect("cpu identity trace");
+    let vgpu_identity_hit = execute_capture_query_on(
+        &ctx,
+        DispatchBackend::VirtualGpu,
+        &trace_plan,
+        &identity_trace_args,
+    )
+    .expect("vgpu identity trace");
+    assert_eq!(cpu_identity_hit, vgpu_identity_hit);
+
+    let radiance_args = vec![
+        KernelValue::Capture(SmolStr::new("lighting_scene")),
+        KernelValue::Vec3([0.25, 0.0, 0.0]),
+        KernelValue::Vec3([0.0, 0.0, 1.0]),
+    ];
+    let cpu_radiance =
+        execute_capture_query(&ctx, &radiance_plan, &radiance_args).expect("cpu radiance");
+    let vgpu_radiance = execute_capture_query_on(
+        &ctx,
+        DispatchBackend::VirtualGpu,
+        &radiance_plan,
+        &radiance_args,
+    )
+    .expect("vgpu radiance");
+    assert_eq!(cpu_radiance, vgpu_radiance);
+
+    let medium_args = vec![
+        KernelValue::Capture(SmolStr::new("lighting_scene")),
+        KernelValue::Vec3([0.25, 0.0, 0.0]),
+    ];
+    let cpu_medium = execute_capture_query(&ctx, &medium_plan, &medium_args).expect("cpu medium");
+    let vgpu_medium = execute_capture_query_on(
+        &ctx,
+        DispatchBackend::VirtualGpu,
+        &medium_plan,
+        &medium_args,
+    )
+    .expect("vgpu medium");
+    assert_eq!(cpu_medium, vgpu_medium);
+}
+
+#[test]
+fn query_exec_wgsl_matches_cpu_for_local_context_and_provenance_sensitive_queries() {
+    let (_, _, ctx) = typed_query_module(direct_semantics_source());
+    let trace_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Trace, CaptureKind::Shape, None)
+            .expect("trace plan"),
+    );
+    let surface_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Surface, CaptureKind::Shape, None)
+            .expect("surface plan"),
+    );
+    let radiance_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Radiance, CaptureKind::Shape, None)
+            .expect("radiance plan"),
+    );
+    let medium_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Medium, CaptureKind::Shape, None)
+            .expect("medium plan"),
+    );
+
+    let ordered_trace_args = vec![
+        KernelValue::Capture(SmolStr::new("ordered_scene")),
+        KernelValue::Vec3([0.0, 0.0, 3.0]),
+        KernelValue::Vec3([0.0, 0.0, -1.0]),
+        KernelValue::F32(6.0),
+        KernelValue::F32(0.05),
+        KernelValue::F32(0.001),
+        KernelValue::I32(96),
+    ];
+    let cpu_ordered_hit =
+        execute_capture_query(&ctx, &trace_plan, &ordered_trace_args).expect("cpu ordered trace");
+    let (wgsl_ordered_hit, wgsl_ordered_trace) = execute_capture_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &trace_plan,
+        &ordered_trace_args,
+    )
+    .expect("wgsl ordered trace");
+    assert_hit3_approx_eq(&cpu_ordered_hit, &wgsl_ordered_hit);
+    assert_eq!(wgsl_ordered_trace.backend, DispatchBackend::Wgsl);
+    assert_eq!(wgsl_ordered_trace.executor, DirectQueryExecutor::Wgsl);
+
+    let cpu_surface = execute_capture_query(
+        &ctx,
+        &surface_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("ordered_scene")),
+            cpu_ordered_hit.clone(),
+        ],
+    )
+    .expect("cpu ordered surface");
+    let wgsl_surface = execute_capture_query_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &surface_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("ordered_scene")),
+            wgsl_ordered_hit.clone(),
+        ],
+    )
+    .expect("wgsl ordered surface");
+    assert_surface_approx_eq(&cpu_surface, &wgsl_surface);
+
+    let identity_trace_args = vec![
+        KernelValue::Capture(SmolStr::new("identity_shape")),
+        KernelValue::Vec3([3.25, 0.0, 3.0]),
+        KernelValue::Vec3([0.0, 0.0, -1.0]),
+        KernelValue::F32(6.0),
+        KernelValue::F32(0.05),
+        KernelValue::F32(0.001),
+        KernelValue::I32(96),
+    ];
+    let cpu_identity_hit =
+        execute_capture_query(&ctx, &trace_plan, &identity_trace_args).expect("cpu identity trace");
+    let wgsl_identity_hit = execute_capture_query_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &trace_plan,
+        &identity_trace_args,
+    )
+    .expect("wgsl identity trace");
+    assert_hit3_approx_eq(&cpu_identity_hit, &wgsl_identity_hit);
+
+    let radiance_args = vec![
+        KernelValue::Capture(SmolStr::new("lighting_scene")),
+        KernelValue::Vec3([0.25, 0.0, 0.0]),
+        KernelValue::Vec3([0.0, 0.0, 1.0]),
+    ];
+    let cpu_radiance =
+        execute_capture_query(&ctx, &radiance_plan, &radiance_args).expect("cpu radiance");
+    let wgsl_radiance =
+        execute_capture_query_on(&ctx, DispatchBackend::Wgsl, &radiance_plan, &radiance_args)
+            .expect("wgsl radiance");
+    assert_vec3_approx_eq(expect_vec3(&cpu_radiance), expect_vec3(&wgsl_radiance));
+
+    let medium_args = vec![
+        KernelValue::Capture(SmolStr::new("lighting_scene")),
+        KernelValue::Vec3([0.25, 0.0, 0.0]),
+    ];
+    let cpu_medium = execute_capture_query(&ctx, &medium_plan, &medium_args).expect("cpu medium");
+    let wgsl_medium =
+        execute_capture_query_on(&ctx, DispatchBackend::Wgsl, &medium_plan, &medium_args)
+            .expect("wgsl medium");
+    assert_medium_approx_eq(&cpu_medium, &wgsl_medium);
+}
+
+#[test]
+fn query_exec_wgsl_supports_polygon2_polyline2_and_repeat_wrappers() {
+    let (_, _, ctx) = typed_query_module(wgsl_profile_fixture_source());
+    let distance_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Distance, CaptureKind::Field, None)
+            .expect("distance plan"),
+    );
+
+    for (capture, point) in [
+        ("polygon_plate", [0.05, 0.0, 0.05]),
+        ("polyline_strip", [0.0, 0.0, 0.0]),
+        ("repeated_plate", [0.55, 0.0, 0.05]),
+    ] {
+        let args = [
+            KernelValue::Capture(SmolStr::new(capture)),
+            KernelValue::Vec3(point),
+        ];
+        let cpu = execute_capture_query(&ctx, &distance_plan, &args)
+            .unwrap_or_else(|err| panic!("cpu profile distance for {capture}: {err:?}"));
+        let wgsl = execute_capture_query_on(&ctx, DispatchBackend::Wgsl, &distance_plan, &args)
+            .unwrap_or_else(|err| panic!("wgsl profile distance for {capture}: {err:?}"));
+        assert_approx_eq(expect_f32(&cpu), expect_f32(&wgsl));
+    }
+}
+
+#[test]
+fn query_exec_direct_radiance_and_medium_use_local_participation() {
+    let (_, _, ctx) = typed_query_module(direct_semantics_source());
+    let radiance_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Radiance, CaptureKind::Shape, None)
+            .expect("radiance plan"),
+    );
+    let medium_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Medium, CaptureKind::Shape, None)
+            .expect("medium plan"),
+    );
+
+    let radiance = execute_capture_query(
+        &ctx,
+        &radiance_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("lighting_scene")),
+            KernelValue::Vec3([0.25, 0.0, 0.0]),
+            KernelValue::Vec3([0.0, 0.0, 1.0]),
+        ],
+    )
+    .expect("radiance");
+    assert_vec3_approx_eq(expect_vec3(&radiance), [1.75, 0.875, 0.0]);
+
+    let medium = execute_capture_query(
+        &ctx,
+        &medium_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("lighting_scene")),
+            KernelValue::Vec3([0.25, 0.0, 0.0]),
+        ],
+    )
+    .expect("medium");
+    let medium = expect_struct(&medium, "Medium");
+    assert_approx_eq(expect_f32(field(medium, "density")), 1.75);
+    assert_vec3_approx_eq(expect_vec3(field(medium, "emission")), [1.75, 0.0, 0.0]);
+    assert_approx_eq(expect_f32(field(medium, "anisotropy")), 0.25);
+}
+
+#[test]
+fn query_exec_direct_cpu_closes_profile_op_distance_gaps() {
+    let (_, _, ctx) = typed_query_module(profile_ops_source());
+    let distance_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Distance, CaptureKind::Field, None)
+            .expect("distance plan"),
+    );
+
+    for (field_name, center, far) in [
+        ("extruded_disc", [0.0, 0.0, 0.0], [2.0, 0.0, 0.0]),
+        ("revolved_orb", [0.0, 0.0, 0.0], [2.0, 0.0, 0.0]),
+        ("swept_beam", [0.0, 0.0, 0.0], [0.0, 2.0, 0.0]),
+        ("lofted_form", [0.0, 0.0, 0.0], [2.0, 0.0, 0.0]),
+    ] {
+        let center_distance = execute_capture_query(
+            &ctx,
+            &distance_plan,
+            &[
+                KernelValue::Capture(SmolStr::new(field_name)),
+                KernelValue::Vec3(center),
+            ],
+        )
+        .unwrap_or_else(|error| panic!("center distance for {field_name} failed: {error}"));
+        let far_distance = execute_capture_query(
+            &ctx,
+            &distance_plan,
+            &[
+                KernelValue::Capture(SmolStr::new(field_name)),
+                KernelValue::Vec3(far),
+            ],
+        )
+        .unwrap_or_else(|error| panic!("far distance for {field_name} failed: {error}"));
+        assert!(
+            expect_f32(&center_distance) < 0.0,
+            "{field_name} center should be inside"
+        );
+        assert!(
+            expect_f32(&far_distance) > 0.0,
+            "{field_name} far point should be outside"
+        );
+    }
+}
+
+#[test]
+fn query_exec_opaque_fields_use_authored_bounds_fallback() {
+    let (_, _, ctx) = typed_query_module(opaque_fallback_source());
+    let distance_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Distance, CaptureKind::Field, None)
+            .expect("distance plan"),
+    );
+
+    let inside = execute_capture_query(
+        &ctx,
+        &distance_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("opaque_field")),
+            KernelValue::Vec3([0.0, 0.0, 0.0]),
+        ],
+    )
+    .expect("inside distance");
+    let outside = execute_capture_query(
+        &ctx,
+        &distance_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("opaque_field")),
+            KernelValue::Vec3([2.0, 0.0, 0.0]),
+        ],
+    )
+    .expect("outside distance");
+
+    assert_approx_eq(expect_f32(&inside), -1.0);
+    assert_approx_eq(expect_f32(&outside), 1.0);
 }

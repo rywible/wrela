@@ -2,6 +2,21 @@ use crate::hir;
 use smol_str::SmolStr;
 use std::collections::{BTreeMap, BTreeSet};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FieldNodeId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ShapeNodeId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SupportNodeId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ShapeLeafId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SceneIdentitySourceId(pub u32);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DistanceSemantics {
     ExactSignedDistance,
@@ -14,6 +29,153 @@ pub enum SceneCaptureKind {
     Field,
     Shape,
     Region,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SceneTraceSafety {
+    Exact,
+    Conservative,
+    Opaque,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SceneAnalysis {
+    pub trace_safety: SceneTraceSafety,
+    pub support_class: SupportClass,
+    pub opaque_boundary: bool,
+    pub can_coarse_support_pruning: bool,
+    pub preserves_local_hit_context: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FieldNodeRecord {
+    pub id: FieldNodeId,
+    pub kind: FieldNodeKindSummary,
+    pub target: Option<SmolStr>,
+    pub children: Vec<FieldNodeId>,
+    pub payload: Option<SceneOperatorPayload>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FieldNodeKindSummary {
+    Use,
+    Primitive(hir::FieldPrimitive),
+    Union,
+    Intersection,
+    Subtract,
+    Transform(TransformKind),
+    Repeat(RepeatKind),
+    Smooth(SmoothKind),
+    Extrude,
+    Revolve,
+    Sweep,
+    Loft,
+    OpaqueLeaf,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShapeNodeRecord {
+    pub id: ShapeNodeId,
+    pub kind: ShapeNodeKindSummary,
+    pub target: Option<SmolStr>,
+    pub children: Vec<ShapeNodeId>,
+    pub leaf: Option<ShapeLeafId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShapeNodeKindSummary {
+    Use,
+    Union,
+    Intersection,
+    Subtract,
+    Leaf,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SupportNodeRecord {
+    pub id: SupportNodeId,
+    pub kind: SupportNodeKindSummary,
+    pub target: Option<SmolStr>,
+    pub children: Vec<SupportNodeId>,
+    pub payload: Option<SupportPayload>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SupportNodeKindSummary {
+    Unknown,
+    Unbounded,
+    Use,
+    Aabb,
+    Sphere,
+    Union,
+    Intersection,
+    Difference,
+    Transform(TransformKind),
+    Periodic(RepeatKind),
+    Repeat(RepeatKind),
+    OpaqueBoundary,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SceneOperatorPayload {
+    Primitive {
+        args: Option<Vec<SceneArgExpr>>,
+    },
+    Transform {
+        param: Option<SceneValueExpr>,
+    },
+    Repeat {
+        param: Option<SceneValueExpr>,
+    },
+    Smooth {
+        smoothing: Option<SceneValueExpr>,
+    },
+    Extrude {
+        height: Option<SceneValueExpr>,
+        profile: Option<SceneProfileExpr>,
+    },
+    Revolve {
+        profile: Option<SceneProfileExpr>,
+    },
+    Sweep {
+        path: Option<SceneValueExpr>,
+        profile: Option<SceneProfileExpr>,
+    },
+    Loft {
+        height: Option<SceneValueExpr>,
+        from: Option<SceneProfileExpr>,
+        to: Option<SceneProfileExpr>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SupportPayload {
+    Aabb {
+        min: SceneValueExpr,
+        max: SceneValueExpr,
+    },
+    Sphere {
+        center: SceneValueExpr,
+        radius: SceneValueExpr,
+    },
+    Transform {
+        param: Option<SceneValueExpr>,
+    },
+    Periodic {
+        period: Option<SceneValueExpr>,
+    },
+    Repeat {
+        param: Option<SceneValueExpr>,
+    },
+    OpaqueBoundary {
+        bounds: Option<SceneValueExpr>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShapeLeafRef {
+    pub scene: SmolStr,
+    pub leaf: ShapeLeafId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -72,6 +234,84 @@ pub enum ProfileOpKind {
     Loft,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ShapeMergeProvenancePolicy {
+    Nearest,
+    Ordered,
+}
+
+impl From<hir::ShapeMergeProvenancePolicy> for ShapeMergeProvenancePolicy {
+    fn from(value: hir::ShapeMergeProvenancePolicy) -> Self {
+        match value {
+            hir::ShapeMergeProvenancePolicy::Nearest => ShapeMergeProvenancePolicy::Nearest,
+            hir::ShapeMergeProvenancePolicy::Ordered => ShapeMergeProvenancePolicy::Ordered,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ShapeSubtractProvenancePolicy {
+    Left,
+    Right,
+}
+
+impl From<hir::ShapeSubtractProvenancePolicy> for ShapeSubtractProvenancePolicy {
+    fn from(value: hir::ShapeSubtractProvenancePolicy) -> Self {
+        match value {
+            hir::ShapeSubtractProvenancePolicy::Left => ShapeSubtractProvenancePolicy::Left,
+            hir::ShapeSubtractProvenancePolicy::Right => ShapeSubtractProvenancePolicy::Right,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ShapeNodeProvenancePolicy {
+    Union(ShapeMergeProvenancePolicy),
+    Intersection(ShapeMergeProvenancePolicy),
+    Subtract(ShapeSubtractProvenancePolicy),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShapeNodeProvenanceRecord {
+    pub node: ShapeNodeId,
+    pub policy: ShapeNodeProvenancePolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SceneIdentitySourceKind {
+    Repeat,
+    Instance,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SceneIdentitySourceRecord {
+    pub id: SceneIdentitySourceId,
+    pub node: FieldNodeId,
+    pub kind: SceneIdentitySourceKind,
+    pub repeat_kind: RepeatKind,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ShapeProvenanceExpr {
+    Use {
+        target: SmolStr,
+    },
+    Union {
+        provenance: ShapeMergeProvenancePolicy,
+        items: Vec<ShapeProvenanceExpr>,
+    },
+    Intersection {
+        provenance: ShapeMergeProvenancePolicy,
+        items: Vec<ShapeProvenanceExpr>,
+    },
+    Subtract {
+        provenance: ShapeSubtractProvenancePolicy,
+        left: Box<ShapeProvenanceExpr>,
+        right: Box<ShapeProvenanceExpr>,
+    },
+    Leaf,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum SceneArgExpr {
     Positional(SceneValueExpr),
@@ -84,6 +324,7 @@ pub enum SceneArgExpr {
 #[derive(Debug, Clone, PartialEq)]
 pub enum SceneValueExpr {
     Literal(hir::Literal),
+    List(Vec<SceneValueExpr>),
     Unary {
         op: hir::UnaryOp,
         expr: Box<SceneValueExpr>,
@@ -110,14 +351,17 @@ pub enum SceneProfileExpr {
 #[derive(Debug, Clone, PartialEq)]
 pub enum SupportExpr {
     Unknown,
-    Bounded,
-    Periodic,
     Unbounded,
     Use {
         target: SmolStr,
     },
-    Primitive {
-        primitive: hir::FieldPrimitive,
+    Aabb {
+        min: SceneValueExpr,
+        max: SceneValueExpr,
+    },
+    Sphere {
+        center: SceneValueExpr,
+        radius: SceneValueExpr,
     },
     Union {
         items: Vec<SupportExpr>,
@@ -131,44 +375,42 @@ pub enum SupportExpr {
     },
     Transform {
         kind: TransformKind,
+        param: Option<SceneValueExpr>,
+        inner: Box<SupportExpr>,
+    },
+    Periodic {
+        kind: RepeatKind,
+        period: Option<SceneValueExpr>,
         inner: Box<SupportExpr>,
     },
     Repeat {
         kind: RepeatKind,
+        param: Option<SceneValueExpr>,
         inner: Box<SupportExpr>,
     },
-    Smooth {
-        kind: SmoothKind,
-        items: Vec<SupportExpr>,
+    OpaqueBoundary {
+        bounds: Option<SceneValueExpr>,
     },
-    ProfileOp {
-        kind: ProfileOpKind,
-    },
-    OpaqueLeaf,
 }
 
 impl SupportExpr {
     pub fn contains_opaque_leaf(&self) -> bool {
         match self {
-            SupportExpr::OpaqueLeaf => true,
-            SupportExpr::Union { items }
-            | SupportExpr::Intersection { items }
-            | SupportExpr::Smooth { items, .. } => {
+            SupportExpr::OpaqueBoundary { .. } => true,
+            SupportExpr::Union { items } | SupportExpr::Intersection { items } => {
                 items.iter().any(SupportExpr::contains_opaque_leaf)
             }
             SupportExpr::Difference { left, right } => {
                 left.contains_opaque_leaf() || right.contains_opaque_leaf()
             }
-            SupportExpr::Transform { inner, .. } | SupportExpr::Repeat { inner, .. } => {
-                inner.contains_opaque_leaf()
-            }
+            SupportExpr::Transform { inner, .. }
+            | SupportExpr::Periodic { inner, .. }
+            | SupportExpr::Repeat { inner, .. } => inner.contains_opaque_leaf(),
             SupportExpr::Unknown
-            | SupportExpr::Bounded
-            | SupportExpr::Periodic
             | SupportExpr::Unbounded
             | SupportExpr::Use { .. }
-            | SupportExpr::Primitive { .. }
-            | SupportExpr::ProfileOp { .. } => false,
+            | SupportExpr::Aabb { .. }
+            | SupportExpr::Sphere { .. } => false,
         }
     }
 }
@@ -253,13 +495,18 @@ impl FieldNode {
 pub struct FieldScene {
     pub name: SmolStr,
     pub root: FieldNode,
+    pub root_node_id: FieldNodeId,
     pub semantics: DistanceSemantics,
     pub support_class: SupportClass,
     pub support_expr: SupportExpr,
+    pub root_support_id: SupportNodeId,
     pub authored_bounds: Option<SceneValueExpr>,
     pub opaque_boundary: bool,
     pub can_coarse_support_pruning: bool,
-    pub trace: hir::GraphTraceMetadata,
+    pub analysis: SceneAnalysis,
+    pub node_records: Vec<FieldNodeRecord>,
+    pub support_records: Vec<SupportNodeRecord>,
+    pub identity_sources: Vec<SceneIdentitySourceRecord>,
 }
 
 impl FieldScene {
@@ -287,10 +534,12 @@ impl FieldScene {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShapeLeafScene {
+    pub id: ShapeLeafId,
     pub field: SmolStr,
     pub material: SmolStr,
     pub radiance: Option<SmolStr>,
     pub volume: Option<SmolStr>,
+    pub payload: hir::Body,
     pub feature_id: u32,
     pub field_semantics: DistanceSemantics,
     pub opaque_boundary: bool,
@@ -336,12 +585,20 @@ impl ShapeNode {
 pub struct ShapeScene {
     pub name: SmolStr,
     pub root: ShapeNode,
+    pub root_node_id: ShapeNodeId,
+    pub provenance: Option<ShapeProvenanceExpr>,
+    pub provenance_records: Vec<ShapeNodeProvenanceRecord>,
+    pub leaves: BTreeMap<ShapeLeafId, ShapeLeafScene>,
+    pub feature_leaves: BTreeMap<u32, ShapeLeafRef>,
     pub support_expr: SupportExpr,
+    pub root_support_id: SupportNodeId,
     pub semantics: DistanceSemantics,
     pub support_class: SupportClass,
     pub opaque_boundary: bool,
     pub can_coarse_support_pruning: bool,
-    pub trace: hir::GraphTraceMetadata,
+    pub analysis: SceneAnalysis,
+    pub node_records: Vec<ShapeNodeRecord>,
+    pub support_records: Vec<SupportNodeRecord>,
 }
 
 impl ShapeScene {
@@ -434,6 +691,32 @@ impl SceneIrModule {
     }
 }
 
+impl FieldScene {
+    pub fn field_node_record(&self, id: FieldNodeId) -> Option<&FieldNodeRecord> {
+        self.node_records.iter().find(|record| record.id == id)
+    }
+
+    pub fn support_node_record(&self, id: SupportNodeId) -> Option<&SupportNodeRecord> {
+        self.support_records.iter().find(|record| record.id == id)
+    }
+}
+
+impl ShapeScene {
+    pub fn shape_node_record(&self, id: ShapeNodeId) -> Option<&ShapeNodeRecord> {
+        self.node_records.iter().find(|record| record.id == id)
+    }
+
+    pub fn support_node_record(&self, id: SupportNodeId) -> Option<&SupportNodeRecord> {
+        self.support_records.iter().find(|record| record.id == id)
+    }
+
+    pub fn provenance_record(&self, id: ShapeNodeId) -> Option<&ShapeNodeProvenanceRecord> {
+        self.provenance_records
+            .iter()
+            .find(|record| record.node == id)
+    }
+}
+
 pub fn lower_module(module: &hir::Module) -> SceneIrModule {
     SceneIrModule::from_hir(module)
 }
@@ -445,7 +728,6 @@ struct FieldSceneDraft {
     root: FieldNode,
     support_expr: SupportExpr,
     authored_bounds: Option<SceneValueExpr>,
-    trace: hir::GraphTraceMetadata,
     declared_class: hir::FieldClass,
     authored_bounded: bool,
 }
@@ -453,8 +735,9 @@ struct FieldSceneDraft {
 #[derive(Debug, Clone)]
 struct ShapeSceneDraft {
     root: ShapeNode,
+    provenance: Option<ShapeProvenanceExpr>,
+    leaves: BTreeMap<ShapeLeafId, ShapeLeafScene>,
     support_expr: SupportExpr,
-    trace: hir::GraphTraceMetadata,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -463,6 +746,492 @@ struct CapabilitySummary {
     support_class: SupportClass,
     opaque_boundary: bool,
     can_coarse_support_pruning: bool,
+}
+
+fn build_scene_analysis(
+    summary: CapabilitySummary,
+    preserves_local_hit_context: bool,
+) -> SceneAnalysis {
+    SceneAnalysis {
+        trace_safety: match summary.semantics {
+            DistanceSemantics::ExactSignedDistance => SceneTraceSafety::Exact,
+            DistanceSemantics::ConservativeLowerBound => SceneTraceSafety::Conservative,
+            DistanceSemantics::UnknownOpaque => SceneTraceSafety::Opaque,
+        },
+        support_class: summary.support_class,
+        opaque_boundary: summary.opaque_boundary,
+        can_coarse_support_pruning: summary.can_coarse_support_pruning,
+        preserves_local_hit_context,
+    }
+}
+
+fn build_field_node_records(
+    root: &FieldNode,
+) -> (
+    FieldNodeId,
+    Vec<FieldNodeRecord>,
+    Vec<SceneIdentitySourceRecord>,
+) {
+    fn visit(
+        node: &FieldNode,
+        next_id: &mut u32,
+        next_identity_id: &mut u32,
+        out: &mut Vec<FieldNodeRecord>,
+        identity_sources: &mut Vec<SceneIdentitySourceRecord>,
+    ) -> FieldNodeId {
+        let id = FieldNodeId(*next_id);
+        *next_id += 1;
+        let (kind, target, payload, children) = match node {
+            FieldNode::Use { target } => (
+                FieldNodeKindSummary::Use,
+                Some(target.clone()),
+                None,
+                Vec::new(),
+            ),
+            FieldNode::Primitive { primitive, args } => (
+                FieldNodeKindSummary::Primitive(*primitive),
+                None,
+                Some(SceneOperatorPayload::Primitive { args: args.clone() }),
+                Vec::new(),
+            ),
+            FieldNode::Union { items } => (
+                FieldNodeKindSummary::Union,
+                None,
+                None,
+                items
+                    .iter()
+                    .map(|item| visit(item, next_id, next_identity_id, out, identity_sources))
+                    .collect(),
+            ),
+            FieldNode::Intersection { items } => (
+                FieldNodeKindSummary::Intersection,
+                None,
+                None,
+                items
+                    .iter()
+                    .map(|item| visit(item, next_id, next_identity_id, out, identity_sources))
+                    .collect(),
+            ),
+            FieldNode::Subtract { left, right } => (
+                FieldNodeKindSummary::Subtract,
+                None,
+                None,
+                vec![
+                    visit(left, next_id, next_identity_id, out, identity_sources),
+                    visit(right, next_id, next_identity_id, out, identity_sources),
+                ],
+            ),
+            FieldNode::Transform { kind, param, inner } => (
+                FieldNodeKindSummary::Transform(*kind),
+                None,
+                Some(SceneOperatorPayload::Transform {
+                    param: param.clone(),
+                }),
+                vec![visit(
+                    inner,
+                    next_id,
+                    next_identity_id,
+                    out,
+                    identity_sources,
+                )],
+            ),
+            FieldNode::Repeat { kind, param, inner } => (
+                FieldNodeKindSummary::Repeat(*kind),
+                None,
+                Some(SceneOperatorPayload::Repeat {
+                    param: param.clone(),
+                }),
+                vec![visit(
+                    inner,
+                    next_id,
+                    next_identity_id,
+                    out,
+                    identity_sources,
+                )],
+            ),
+            FieldNode::Smooth {
+                kind,
+                smoothing,
+                items,
+            } => (
+                FieldNodeKindSummary::Smooth(*kind),
+                None,
+                Some(SceneOperatorPayload::Smooth {
+                    smoothing: smoothing.clone(),
+                }),
+                items
+                    .iter()
+                    .map(|item| visit(item, next_id, next_identity_id, out, identity_sources))
+                    .collect(),
+            ),
+            FieldNode::Extrude { height, profile } => (
+                FieldNodeKindSummary::Extrude,
+                None,
+                Some(SceneOperatorPayload::Extrude {
+                    height: height.clone(),
+                    profile: profile.clone(),
+                }),
+                Vec::new(),
+            ),
+            FieldNode::Revolve { profile } => (
+                FieldNodeKindSummary::Revolve,
+                None,
+                Some(SceneOperatorPayload::Revolve {
+                    profile: profile.clone(),
+                }),
+                Vec::new(),
+            ),
+            FieldNode::Sweep { path, profile } => (
+                FieldNodeKindSummary::Sweep,
+                None,
+                Some(SceneOperatorPayload::Sweep {
+                    path: path.clone(),
+                    profile: profile.clone(),
+                }),
+                Vec::new(),
+            ),
+            FieldNode::Loft { height, from, to } => (
+                FieldNodeKindSummary::Loft,
+                None,
+                Some(SceneOperatorPayload::Loft {
+                    height: height.clone(),
+                    from: from.clone(),
+                    to: to.clone(),
+                }),
+                Vec::new(),
+            ),
+            FieldNode::OpaqueLeaf => (FieldNodeKindSummary::OpaqueLeaf, None, None, Vec::new()),
+        };
+        if let FieldNode::Repeat { kind, .. } = node {
+            let identity_id = SceneIdentitySourceId(*next_identity_id);
+            *next_identity_id += 1;
+            identity_sources.push(SceneIdentitySourceRecord {
+                id: identity_id,
+                node: id,
+                kind: match kind {
+                    RepeatKind::InstanceArray => SceneIdentitySourceKind::Instance,
+                    _ => SceneIdentitySourceKind::Repeat,
+                },
+                repeat_kind: *kind,
+            });
+        }
+        out.push(FieldNodeRecord {
+            id,
+            kind,
+            target,
+            children,
+            payload,
+        });
+        id
+    }
+
+    let mut out = Vec::new();
+    let mut next_id = 0u32;
+    let mut next_identity_id = 0u32;
+    let mut identity_sources = Vec::new();
+    let root_id = visit(
+        root,
+        &mut next_id,
+        &mut next_identity_id,
+        &mut out,
+        &mut identity_sources,
+    );
+    (root_id, out, identity_sources)
+}
+
+fn build_shape_node_records(
+    root: &ShapeNode,
+    provenance: Option<&ShapeProvenanceExpr>,
+) -> (
+    ShapeNodeId,
+    Vec<ShapeNodeRecord>,
+    Vec<ShapeNodeProvenanceRecord>,
+) {
+    fn visit(
+        node: &ShapeNode,
+        provenance: Option<&ShapeProvenanceExpr>,
+        next_id: &mut u32,
+        out: &mut Vec<ShapeNodeRecord>,
+        provenance_records: &mut Vec<ShapeNodeProvenanceRecord>,
+    ) -> ShapeNodeId {
+        let id = ShapeNodeId(*next_id);
+        *next_id += 1;
+        let (kind, target, children, leaf) = match node {
+            ShapeNode::Use { target } => (
+                ShapeNodeKindSummary::Use,
+                Some(target.clone()),
+                Vec::new(),
+                None,
+            ),
+            ShapeNode::Union { items } => (
+                ShapeNodeKindSummary::Union,
+                None,
+                items
+                    .iter()
+                    .enumerate()
+                    .map(|(index, item)| {
+                        visit(
+                            item,
+                            provenance.and_then(|expr| match expr {
+                                ShapeProvenanceExpr::Union { items, .. } => items.get(index),
+                                _ => None,
+                            }),
+                            next_id,
+                            out,
+                            provenance_records,
+                        )
+                    })
+                    .collect(),
+                None,
+            ),
+            ShapeNode::Intersection { items } => (
+                ShapeNodeKindSummary::Intersection,
+                None,
+                items
+                    .iter()
+                    .enumerate()
+                    .map(|(index, item)| {
+                        visit(
+                            item,
+                            provenance.and_then(|expr| match expr {
+                                ShapeProvenanceExpr::Intersection { items, .. } => items.get(index),
+                                _ => None,
+                            }),
+                            next_id,
+                            out,
+                            provenance_records,
+                        )
+                    })
+                    .collect(),
+                None,
+            ),
+            ShapeNode::Subtract { left, right } => (
+                ShapeNodeKindSummary::Subtract,
+                None,
+                vec![
+                    visit(
+                        left,
+                        provenance.and_then(|expr| match expr {
+                            ShapeProvenanceExpr::Subtract { left, .. } => Some(left.as_ref()),
+                            _ => None,
+                        }),
+                        next_id,
+                        out,
+                        provenance_records,
+                    ),
+                    visit(
+                        right,
+                        provenance.and_then(|expr| match expr {
+                            ShapeProvenanceExpr::Subtract { right, .. } => Some(right.as_ref()),
+                            _ => None,
+                        }),
+                        next_id,
+                        out,
+                        provenance_records,
+                    ),
+                ],
+                None,
+            ),
+            ShapeNode::Leaf(leaf) => (ShapeNodeKindSummary::Leaf, None, Vec::new(), Some(leaf.id)),
+        };
+        match provenance {
+            Some(ShapeProvenanceExpr::Union { provenance, .. }) => {
+                provenance_records.push(ShapeNodeProvenanceRecord {
+                    node: id,
+                    policy: ShapeNodeProvenancePolicy::Union(*provenance),
+                });
+            }
+            Some(ShapeProvenanceExpr::Intersection { provenance, .. }) => {
+                provenance_records.push(ShapeNodeProvenanceRecord {
+                    node: id,
+                    policy: ShapeNodeProvenancePolicy::Intersection(*provenance),
+                });
+            }
+            Some(ShapeProvenanceExpr::Subtract { provenance, .. }) => {
+                provenance_records.push(ShapeNodeProvenanceRecord {
+                    node: id,
+                    policy: ShapeNodeProvenancePolicy::Subtract(*provenance),
+                });
+            }
+            _ => {}
+        }
+        out.push(ShapeNodeRecord {
+            id,
+            kind,
+            target,
+            children,
+            leaf,
+        });
+        id
+    }
+
+    let mut out = Vec::new();
+    let mut next_id = 0u32;
+    let mut provenance_records = Vec::new();
+    let root_id = visit(
+        root,
+        provenance,
+        &mut next_id,
+        &mut out,
+        &mut provenance_records,
+    );
+    (root_id, out, provenance_records)
+}
+
+fn build_support_records(root: &SupportExpr) -> (SupportNodeId, Vec<SupportNodeRecord>) {
+    fn visit(
+        node: &SupportExpr,
+        next_id: &mut u32,
+        out: &mut Vec<SupportNodeRecord>,
+    ) -> SupportNodeId {
+        let id = SupportNodeId(*next_id);
+        *next_id += 1;
+        let (kind, target, payload, children) = match node {
+            SupportExpr::Unknown => (SupportNodeKindSummary::Unknown, None, None, Vec::new()),
+            SupportExpr::Unbounded => (SupportNodeKindSummary::Unbounded, None, None, Vec::new()),
+            SupportExpr::Use { target } => (
+                SupportNodeKindSummary::Use,
+                Some(target.clone()),
+                None,
+                Vec::new(),
+            ),
+            SupportExpr::Aabb { min, max } => (
+                SupportNodeKindSummary::Aabb,
+                None,
+                Some(SupportPayload::Aabb {
+                    min: min.clone(),
+                    max: max.clone(),
+                }),
+                Vec::new(),
+            ),
+            SupportExpr::Sphere { center, radius } => (
+                SupportNodeKindSummary::Sphere,
+                None,
+                Some(SupportPayload::Sphere {
+                    center: center.clone(),
+                    radius: radius.clone(),
+                }),
+                Vec::new(),
+            ),
+            SupportExpr::Union { items } => (
+                SupportNodeKindSummary::Union,
+                None,
+                None,
+                items.iter().map(|item| visit(item, next_id, out)).collect(),
+            ),
+            SupportExpr::Intersection { items } => (
+                SupportNodeKindSummary::Intersection,
+                None,
+                None,
+                items.iter().map(|item| visit(item, next_id, out)).collect(),
+            ),
+            SupportExpr::Difference { left, right } => (
+                SupportNodeKindSummary::Difference,
+                None,
+                None,
+                vec![visit(left, next_id, out), visit(right, next_id, out)],
+            ),
+            SupportExpr::Transform { kind, param, inner } => (
+                SupportNodeKindSummary::Transform(*kind),
+                None,
+                Some(SupportPayload::Transform {
+                    param: param.clone(),
+                }),
+                vec![visit(inner, next_id, out)],
+            ),
+            SupportExpr::Periodic {
+                kind,
+                period,
+                inner,
+            } => (
+                SupportNodeKindSummary::Periodic(*kind),
+                None,
+                Some(SupportPayload::Periodic {
+                    period: period.clone(),
+                }),
+                vec![visit(inner, next_id, out)],
+            ),
+            SupportExpr::Repeat { kind, param, inner } => (
+                SupportNodeKindSummary::Repeat(*kind),
+                None,
+                Some(SupportPayload::Repeat {
+                    param: param.clone(),
+                }),
+                vec![visit(inner, next_id, out)],
+            ),
+            SupportExpr::OpaqueBoundary { bounds } => (
+                SupportNodeKindSummary::OpaqueBoundary,
+                None,
+                Some(SupportPayload::OpaqueBoundary {
+                    bounds: bounds.clone(),
+                }),
+                Vec::new(),
+            ),
+        };
+        out.push(SupportNodeRecord {
+            id,
+            kind,
+            target,
+            children,
+            payload,
+        });
+        id
+    }
+
+    let mut out = Vec::new();
+    let mut next_id = 0u32;
+    let root_id = visit(root, &mut next_id, &mut out);
+    (root_id, out)
+}
+
+fn build_shape_feature_leaf_index(
+    shape: &SmolStr,
+    drafts: &BTreeMap<SmolStr, ShapeSceneDraft>,
+) -> BTreeMap<u32, ShapeLeafRef> {
+    fn visit(
+        scene_name: &SmolStr,
+        node: &ShapeNode,
+        drafts: &BTreeMap<SmolStr, ShapeSceneDraft>,
+        visiting: &mut BTreeSet<SmolStr>,
+        out: &mut BTreeMap<u32, ShapeLeafRef>,
+    ) {
+        match node {
+            ShapeNode::Use { target } => {
+                if !visiting.insert(target.clone()) {
+                    return;
+                }
+                if let Some(draft) = drafts.get(target) {
+                    visit(target, &draft.root, drafts, visiting, out);
+                }
+                visiting.remove(target);
+            }
+            ShapeNode::Leaf(leaf) => {
+                out.insert(
+                    leaf.feature_id,
+                    ShapeLeafRef {
+                        scene: scene_name.clone(),
+                        leaf: leaf.id,
+                    },
+                );
+            }
+            ShapeNode::Union { items } | ShapeNode::Intersection { items } => {
+                for item in items {
+                    visit(scene_name, item, drafts, visiting, out);
+                }
+            }
+            ShapeNode::Subtract { left, right } => {
+                visit(scene_name, left, drafts, visiting, out);
+                visit(scene_name, right, drafts, visiting, out);
+            }
+        }
+    }
+
+    let mut out = BTreeMap::new();
+    let mut visiting = BTreeSet::from([shape.clone()]);
+    if let Some(draft) = drafts.get(shape) {
+        visit(shape, &draft.root, drafts, &mut visiting, &mut out);
+    }
+    out
 }
 
 pub fn lower_field_scenes(
@@ -474,13 +1243,15 @@ pub fn lower_field_scenes(
         .iter()
         .map(|(name, graph)| {
             let metadata = field_metadata.get(name);
+            let field_body = field_bodies.get(name);
+            let root = lower_field_node(&graph.root, field_body);
+            let support_expr = lower_support_expr(&graph.root, field_body, metadata);
             (
                 name.clone(),
                 FieldSceneDraft {
-                    root: lower_field_node(&graph.root, field_bodies.get(name)),
-                    support_expr: lower_support_expr(&graph.root),
+                    root,
+                    support_expr,
                     authored_bounds: metadata.and_then(lower_authored_bounds_expr),
-                    trace: graph.trace,
                     declared_class: metadata
                         .map(|field| field.class)
                         .unwrap_or(hir::FieldClass::Conservative),
@@ -493,21 +1264,29 @@ pub fn lower_field_scenes(
         .collect::<BTreeMap<_, _>>();
     let mut cache = BTreeMap::new();
     let mut fields = BTreeMap::new();
-    for (name, graph) in field_graphs {
+    for (name, _graph) in field_graphs {
         let summary = analyze_field_scene(name, &drafts, &mut cache, &mut BTreeSet::new());
         let draft = drafts.get(name).expect("field draft");
+        let analysis = build_scene_analysis(summary, true);
+        let (root_node_id, node_records, identity_sources) = build_field_node_records(&draft.root);
+        let (root_support_id, support_records) = build_support_records(&draft.support_expr);
         fields.insert(
             name.clone(),
             FieldScene {
                 name: name.clone(),
                 root: draft.root.clone(),
+                root_node_id,
                 semantics: summary.semantics,
                 support_class: summary.support_class,
                 support_expr: draft.support_expr.clone(),
+                root_support_id,
                 authored_bounds: draft.authored_bounds.clone(),
                 opaque_boundary: summary.opaque_boundary,
                 can_coarse_support_pruning: summary.can_coarse_support_pruning,
-                trace: graph.trace,
+                analysis,
+                node_records,
+                support_records,
+                identity_sources,
             },
         );
     }
@@ -523,10 +1302,14 @@ pub fn lower_shape_scenes(
     let drafts = shape_graphs
         .iter()
         .map(|(name, graph)| {
+            let mut next_leaf_id = 0u32;
+            let mut leaves = BTreeMap::new();
             (
                 name.clone(),
                 ShapeSceneDraft {
-                    root: lower_shape_node(&graph.root, fields),
+                    root: lower_shape_node(&graph.root, fields, &mut next_leaf_id, &mut leaves),
+                    provenance: graph.provenance.as_ref().map(lower_shape_provenance_expr),
+                    leaves,
                     support_expr: lower_shape_support_expr(
                         &graph.root,
                         shape_graphs,
@@ -534,27 +1317,38 @@ pub fn lower_shape_scenes(
                         &mut support_cache,
                         &mut support_visiting,
                     ),
-                    trace: graph.trace,
                 },
             )
         })
         .collect::<BTreeMap<_, _>>();
     let mut cache = BTreeMap::new();
     let mut shapes = BTreeMap::new();
-    for (name, graph) in shape_graphs {
+    for (name, _graph) in shape_graphs {
         let summary = analyze_shape_scene(name, &drafts, fields, &mut cache, &mut BTreeSet::new());
         let draft = drafts.get(name).expect("shape draft");
+        let analysis = build_scene_analysis(summary, true);
+        let (root_node_id, node_records, provenance_records) =
+            build_shape_node_records(&draft.root, draft.provenance.as_ref());
+        let (root_support_id, support_records) = build_support_records(&draft.support_expr);
         shapes.insert(
             name.clone(),
             ShapeScene {
                 name: name.clone(),
                 root: draft.root.clone(),
+                root_node_id,
+                provenance: draft.provenance.clone(),
+                provenance_records,
+                leaves: draft.leaves.clone(),
+                feature_leaves: build_shape_feature_leaf_index(name, &drafts),
                 support_expr: draft.support_expr.clone(),
+                root_support_id,
                 semantics: summary.semantics,
                 support_class: summary.support_class,
                 opaque_boundary: summary.opaque_boundary,
                 can_coarse_support_pruning: summary.can_coarse_support_pruning,
-                trace: graph.trace,
+                analysis,
+                node_records,
+                support_records,
             },
         );
     }
@@ -1122,6 +1916,12 @@ fn lower_scene_body_expr(body: &hir::Body) -> Option<SceneValueExpr> {
 fn lower_scene_expr(body: &hir::Body, expr: hir::Idx<hir::Expr>) -> Option<SceneValueExpr> {
     match &body.exprs[expr] {
         hir::Expr::Literal(literal) => Some(SceneValueExpr::Literal(literal.clone())),
+        hir::Expr::List(items) => Some(SceneValueExpr::List(
+            items
+                .iter()
+                .map(|item| lower_scene_expr(body, *item))
+                .collect::<Option<Vec<_>>>()?,
+        )),
         hir::Expr::Unary { op, expr, .. } => Some(SceneValueExpr::Unary {
             op: *op,
             expr: Box::new(lower_scene_expr(body, *expr)?),
@@ -1169,109 +1969,241 @@ fn extract_support_bounds_expr(value: &SceneValueExpr) -> Option<SceneValueExpr>
     })
 }
 
-fn lower_support_expr(expr: &hir::FieldExpr) -> SupportExpr {
+fn literal_f32(value: f32) -> SceneValueExpr {
+    SceneValueExpr::Literal(hir::Literal::Float(value.into()))
+}
+
+fn literal_vec3(x: f32, y: f32, z: f32) -> SceneValueExpr {
+    SceneValueExpr::Call {
+        callee: SmolStr::new("vec3"),
+        args: vec![
+            SceneArgExpr::Positional(literal_f32(x)),
+            SceneArgExpr::Positional(literal_f32(y)),
+            SceneArgExpr::Positional(literal_f32(z)),
+        ],
+    }
+}
+
+fn negate_expr(value: SceneValueExpr) -> SceneValueExpr {
+    SceneValueExpr::Unary {
+        op: hir::UnaryOp::Neg,
+        expr: Box::new(value),
+    }
+}
+
+fn get_named_scene_arg(
+    args: &[hir::Arg],
+    body: Option<&hir::Body>,
+    name: &str,
+) -> Option<SceneValueExpr> {
+    args.iter().find_map(|arg| match arg {
+        hir::Arg::Named {
+            name: arg_name,
+            value,
+            ..
+        } if arg_name.as_str() == name => {
+            let body = body?;
+            lower_scene_expr(body, *value)
+        }
+        _ => None,
+    })
+}
+
+fn lower_primitive_support_expr(
+    primitive: hir::FieldPrimitive,
+    args: &[hir::Arg],
+    body: Option<&hir::Body>,
+) -> SupportExpr {
+    match primitive {
+        hir::FieldPrimitive::Sphere => SupportExpr::Sphere {
+            center: literal_vec3(0.0, 0.0, 0.0),
+            radius: get_named_scene_arg(args, body, "radius").unwrap_or_else(|| literal_f32(1.0)),
+        },
+        hir::FieldPrimitive::Box
+        | hir::FieldPrimitive::RoundedBox
+        | hir::FieldPrimitive::BoxFrame => {
+            let half = get_named_scene_arg(args, body, "half_size")
+                .unwrap_or_else(|| literal_vec3(1.0, 1.0, 1.0));
+            SupportExpr::Aabb {
+                min: negate_expr(half.clone()),
+                max: half,
+            }
+        }
+        hir::FieldPrimitive::Capsule
+        | hir::FieldPrimitive::Cylinder
+        | hir::FieldPrimitive::CappedCone
+        | hir::FieldPrimitive::Ellipsoid
+        | hir::FieldPrimitive::Torus
+        | hir::FieldPrimitive::TrianglePrism
+        | hir::FieldPrimitive::HexPrism => {
+            let radius = get_named_scene_arg(args, body, "radius")
+                .or_else(|| get_named_scene_arg(args, body, "major_radius"))
+                .unwrap_or_else(|| literal_f32(1.0));
+            SupportExpr::Sphere {
+                center: literal_vec3(0.0, 0.0, 0.0),
+                radius,
+            }
+        }
+        hir::FieldPrimitive::Plane | hir::FieldPrimitive::Cone | hir::FieldPrimitive::Slab => {
+            SupportExpr::Unbounded
+        }
+    }
+}
+
+fn lower_profile_support_expr(metadata: Option<&hir::FieldMetadata>) -> SupportExpr {
+    metadata
+        .and_then(lower_authored_bounds_expr)
+        .and_then(|bounds| match bounds {
+            SceneValueExpr::Call { callee, args } if callee.as_str() == "Bounds3" => {
+                let min = args.iter().find_map(|arg| match arg {
+                    SceneArgExpr::Named { name, value } if name.as_str() == "min" => {
+                        Some(value.clone())
+                    }
+                    _ => None,
+                })?;
+                let max = args.iter().find_map(|arg| match arg {
+                    SceneArgExpr::Named { name, value } if name.as_str() == "max" => {
+                        Some(value.clone())
+                    }
+                    _ => None,
+                })?;
+                Some(SupportExpr::Aabb { min, max })
+            }
+            _ => None,
+        })
+        .unwrap_or(SupportExpr::Unknown)
+}
+
+fn lower_support_expr(
+    expr: &hir::FieldExpr,
+    field_body: Option<&hir::Body>,
+    metadata: Option<&hir::FieldMetadata>,
+) -> SupportExpr {
     match expr {
         hir::FieldExpr::Use { target } => SupportExpr::Use {
             target: target.clone(),
         },
-        hir::FieldExpr::Primitive { primitive, .. } => SupportExpr::Primitive {
-            primitive: *primitive,
-        },
+        hir::FieldExpr::Primitive { primitive, args } => {
+            lower_primitive_support_expr(*primitive, args, field_body)
+        }
         hir::FieldExpr::Union { items } => SupportExpr::Union {
-            items: items.iter().map(lower_support_expr).collect(),
+            items: items
+                .iter()
+                .map(|item| lower_support_expr(item, field_body, metadata))
+                .collect(),
         },
         hir::FieldExpr::Intersection { items } => SupportExpr::Intersection {
-            items: items.iter().map(lower_support_expr).collect(),
+            items: items
+                .iter()
+                .map(|item| lower_support_expr(item, field_body, metadata))
+                .collect(),
         },
         hir::FieldExpr::Subtract { left, right } => SupportExpr::Difference {
-            left: Box::new(lower_support_expr(left)),
-            right: Box::new(lower_support_expr(right)),
+            left: Box::new(lower_support_expr(left, field_body, metadata)),
+            right: Box::new(lower_support_expr(right, field_body, metadata)),
         },
-        hir::FieldExpr::Translate { body, .. } => SupportExpr::Transform {
+        hir::FieldExpr::Translate { translate, body } => SupportExpr::Transform {
             kind: TransformKind::Translate,
-            inner: Box::new(lower_support_expr(body)),
+            param: lower_scene_body_expr(translate),
+            inner: Box::new(lower_support_expr(body, field_body, metadata)),
         },
-        hir::FieldExpr::Rotate { body, .. } => SupportExpr::Transform {
+        hir::FieldExpr::Rotate { rotate, body } => SupportExpr::Transform {
             kind: TransformKind::Rotate,
-            inner: Box::new(lower_support_expr(body)),
+            param: lower_scene_body_expr(rotate),
+            inner: Box::new(lower_support_expr(body, field_body, metadata)),
         },
-        hir::FieldExpr::UniformScale { body, .. } => SupportExpr::Transform {
+        hir::FieldExpr::UniformScale { scale, body } => SupportExpr::Transform {
             kind: TransformKind::UniformScale,
-            inner: Box::new(lower_support_expr(body)),
+            param: lower_scene_body_expr(scale),
+            inner: Box::new(lower_support_expr(body, field_body, metadata)),
         },
-        hir::FieldExpr::AffineTransform { body, .. } => SupportExpr::Transform {
+        hir::FieldExpr::AffineTransform { transform, body } => SupportExpr::Transform {
             kind: TransformKind::AffineTransform,
-            inner: Box::new(lower_support_expr(body)),
+            param: lower_scene_body_expr(transform),
+            inner: Box::new(lower_support_expr(body, field_body, metadata)),
         },
-        hir::FieldExpr::Warp { body, .. } => SupportExpr::Transform {
+        hir::FieldExpr::Warp { warp, body } => SupportExpr::Transform {
             kind: TransformKind::Warp,
-            inner: Box::new(lower_support_expr(body)),
+            param: lower_scene_body_expr(warp),
+            inner: Box::new(lower_support_expr(body, field_body, metadata)),
         },
-        hir::FieldExpr::RepeatLinear { body, .. } => SupportExpr::Repeat {
+        hir::FieldExpr::RepeatLinear { repeat, body } => SupportExpr::Periodic {
             kind: RepeatKind::RepeatLinear,
-            inner: Box::new(lower_support_expr(body)),
+            period: lower_scene_body_expr(repeat),
+            inner: Box::new(lower_support_expr(body, field_body, metadata)),
         },
-        hir::FieldExpr::RepeatGrid { body, .. } => SupportExpr::Repeat {
+        hir::FieldExpr::RepeatGrid { repeat, body } => SupportExpr::Periodic {
             kind: RepeatKind::RepeatGrid,
-            inner: Box::new(lower_support_expr(body)),
+            period: lower_scene_body_expr(repeat),
+            inner: Box::new(lower_support_expr(body, field_body, metadata)),
         },
-        hir::FieldExpr::RadialRepeat { body, .. } => SupportExpr::Repeat {
+        hir::FieldExpr::RadialRepeat { radial, body } => SupportExpr::Periodic {
             kind: RepeatKind::RadialRepeat,
-            inner: Box::new(lower_support_expr(body)),
+            period: lower_scene_body_expr(radial),
+            inner: Box::new(lower_support_expr(body, field_body, metadata)),
         },
-        hir::FieldExpr::MirrorArray { body, .. } => SupportExpr::Repeat {
+        hir::FieldExpr::MirrorArray { mirror, body } => SupportExpr::Repeat {
             kind: RepeatKind::MirrorArray,
-            inner: Box::new(lower_support_expr(body)),
+            param: lower_scene_body_expr(mirror),
+            inner: Box::new(lower_support_expr(body, field_body, metadata)),
         },
-        hir::FieldExpr::InstanceArray { body, .. } => SupportExpr::Repeat {
+        hir::FieldExpr::InstanceArray { instance, body } => SupportExpr::Repeat {
             kind: RepeatKind::InstanceArray,
-            inner: Box::new(lower_support_expr(body)),
+            param: lower_scene_body_expr(instance),
+            inner: Box::new(lower_support_expr(body, field_body, metadata)),
         },
-        hir::FieldExpr::SmoothUnion { items, .. } => SupportExpr::Smooth {
-            kind: SmoothKind::Union,
-            items: items.iter().map(lower_support_expr).collect(),
+        hir::FieldExpr::SmoothUnion { items, .. } => SupportExpr::Union {
+            items: items
+                .iter()
+                .map(|item| lower_support_expr(item, field_body, metadata))
+                .collect(),
         },
-        hir::FieldExpr::SmoothIntersection { items, .. } => SupportExpr::Smooth {
-            kind: SmoothKind::Intersection,
-            items: items.iter().map(lower_support_expr).collect(),
+        hir::FieldExpr::SmoothIntersection { items, .. } => SupportExpr::Intersection {
+            items: items
+                .iter()
+                .map(|item| lower_support_expr(item, field_body, metadata))
+                .collect(),
         },
-        hir::FieldExpr::SmoothSubtract { left, right, .. } => SupportExpr::Smooth {
-            kind: SmoothKind::Subtract,
-            items: vec![lower_support_expr(left), lower_support_expr(right)],
+        hir::FieldExpr::SmoothSubtract { left, right, .. } => SupportExpr::Difference {
+            left: Box::new(lower_support_expr(left, field_body, metadata)),
+            right: Box::new(lower_support_expr(right, field_body, metadata)),
         },
-        hir::FieldExpr::Bend { body, .. } => SupportExpr::Transform {
+        hir::FieldExpr::Bend { bend, body } => SupportExpr::Transform {
             kind: TransformKind::Bend,
-            inner: Box::new(lower_support_expr(body)),
+            param: lower_scene_body_expr(bend),
+            inner: Box::new(lower_support_expr(body, field_body, metadata)),
         },
-        hir::FieldExpr::Twist { body, .. } => SupportExpr::Transform {
+        hir::FieldExpr::Twist { twist, body } => SupportExpr::Transform {
             kind: TransformKind::Twist,
-            inner: Box::new(lower_support_expr(body)),
+            param: lower_scene_body_expr(twist),
+            inner: Box::new(lower_support_expr(body, field_body, metadata)),
         },
-        hir::FieldExpr::Taper { body, .. } => SupportExpr::Transform {
+        hir::FieldExpr::Taper { taper, body } => SupportExpr::Transform {
             kind: TransformKind::Taper,
-            inner: Box::new(lower_support_expr(body)),
+            param: lower_scene_body_expr(taper),
+            inner: Box::new(lower_support_expr(body, field_body, metadata)),
         },
-        hir::FieldExpr::Displace { body, .. } => SupportExpr::Transform {
+        hir::FieldExpr::Displace { displace, body } => SupportExpr::Transform {
             kind: TransformKind::Displace,
-            inner: Box::new(lower_support_expr(body)),
+            param: lower_scene_body_expr(displace),
+            inner: Box::new(lower_support_expr(body, field_body, metadata)),
         },
-        hir::FieldExpr::Extrude { .. } => SupportExpr::ProfileOp {
-            kind: ProfileOpKind::Extrude,
+        hir::FieldExpr::Extrude { .. }
+        | hir::FieldExpr::Revolve { .. }
+        | hir::FieldExpr::Sweep { .. }
+        | hir::FieldExpr::Loft { .. } => lower_profile_support_expr(metadata),
+        hir::FieldExpr::Custom { .. } => SupportExpr::OpaqueBoundary {
+            bounds: metadata.and_then(lower_authored_bounds_expr),
         },
-        hir::FieldExpr::Revolve { .. } => SupportExpr::ProfileOp {
-            kind: ProfileOpKind::Revolve,
-        },
-        hir::FieldExpr::Sweep { .. } => SupportExpr::ProfileOp {
-            kind: ProfileOpKind::Sweep,
-        },
-        hir::FieldExpr::Loft { .. } => SupportExpr::ProfileOp {
-            kind: ProfileOpKind::Loft,
-        },
-        hir::FieldExpr::Custom { .. } => SupportExpr::OpaqueLeaf,
     }
 }
 
-fn lower_shape_node(expr: &hir::ShapeExpr, fields: &BTreeMap<SmolStr, FieldScene>) -> ShapeNode {
+fn lower_shape_node(
+    expr: &hir::ShapeExpr,
+    fields: &BTreeMap<SmolStr, FieldScene>,
+    next_leaf_id: &mut u32,
+    leaves: &mut BTreeMap<ShapeLeafId, ShapeLeafScene>,
+) -> ShapeNode {
     match expr {
         hir::ShapeExpr::Use { target } => ShapeNode::Use {
             target: target.clone(),
@@ -1279,26 +2211,30 @@ fn lower_shape_node(expr: &hir::ShapeExpr, fields: &BTreeMap<SmolStr, FieldScene
         hir::ShapeExpr::Union { items, .. } => ShapeNode::Union {
             items: items
                 .iter()
-                .map(|item| lower_shape_node(item, fields))
+                .map(|item| lower_shape_node(item, fields, next_leaf_id, leaves))
                 .collect(),
         },
         hir::ShapeExpr::Intersection { items, .. } => ShapeNode::Intersection {
             items: items
                 .iter()
-                .map(|item| lower_shape_node(item, fields))
+                .map(|item| lower_shape_node(item, fields, next_leaf_id, leaves))
                 .collect(),
         },
         hir::ShapeExpr::Subtract { left, right, .. } => ShapeNode::Subtract {
-            left: Box::new(lower_shape_node(left, fields)),
-            right: Box::new(lower_shape_node(right, fields)),
+            left: Box::new(lower_shape_node(left, fields, next_leaf_id, leaves)),
+            right: Box::new(lower_shape_node(right, fields, next_leaf_id, leaves)),
         },
         hir::ShapeExpr::Leaf(leaf) => {
             let field_scene = fields.get(&leaf.field);
-            ShapeNode::Leaf(ShapeLeafScene {
+            let id = ShapeLeafId(*next_leaf_id);
+            *next_leaf_id += 1;
+            let lowered = ShapeLeafScene {
+                id,
                 field: leaf.field.clone(),
                 material: leaf.material.clone(),
                 radiance: leaf.radiance.clone(),
                 volume: leaf.volume.clone(),
+                payload: leaf.payload.clone(),
                 feature_id: leaf.feature_id,
                 field_semantics: field_scene
                     .map(|field| field.semantics)
@@ -1306,7 +2242,9 @@ fn lower_shape_node(expr: &hir::ShapeExpr, fields: &BTreeMap<SmolStr, FieldScene
                 opaque_boundary: field_scene
                     .map(|field| field.opaque_boundary)
                     .unwrap_or(true),
-            })
+            };
+            leaves.insert(id, lowered.clone());
+            ShapeNode::Leaf(lowered)
         }
     }
 }
@@ -1370,6 +2308,34 @@ fn lower_shape_support_expr(
                 visiting,
             )),
         },
+    }
+}
+
+fn lower_shape_provenance_expr(expr: &hir::ShapeProvenanceExpr) -> ShapeProvenanceExpr {
+    match expr {
+        hir::ShapeProvenanceExpr::Use { target } => ShapeProvenanceExpr::Use {
+            target: target.clone(),
+        },
+        hir::ShapeProvenanceExpr::Union { provenance, items } => ShapeProvenanceExpr::Union {
+            provenance: (*provenance).into(),
+            items: items.iter().map(lower_shape_provenance_expr).collect(),
+        },
+        hir::ShapeProvenanceExpr::Intersection { provenance, items } => {
+            ShapeProvenanceExpr::Intersection {
+                provenance: (*provenance).into(),
+                items: items.iter().map(lower_shape_provenance_expr).collect(),
+            }
+        }
+        hir::ShapeProvenanceExpr::Subtract {
+            provenance,
+            left,
+            right,
+        } => ShapeProvenanceExpr::Subtract {
+            provenance: (*provenance).into(),
+            left: Box::new(lower_shape_provenance_expr(left)),
+            right: Box::new(lower_shape_provenance_expr(right)),
+        },
+        hir::ShapeProvenanceExpr::Leaf => ShapeProvenanceExpr::Leaf,
     }
 }
 
@@ -1685,6 +2651,7 @@ field conservative distance transform_family_field(p: Vec3) -> F32 {
             SupportExpr::Transform {
                 kind: TransformKind::AffineTransform,
                 inner,
+                ..
             } => assert!(matches!(
                 inner.as_ref(),
                 SupportExpr::Use {
@@ -1738,9 +2705,10 @@ field conservative distance instance_array_field(p: Vec3) -> F32 {
             .expect("repeat linear field");
         assert_eq!(repeat_linear.support_class, SupportClass::Periodic);
         match &repeat_linear.support_expr {
-            SupportExpr::Repeat {
+            SupportExpr::Periodic {
                 kind: RepeatKind::RepeatLinear,
                 inner,
+                ..
             } => assert!(matches!(
                 inner.as_ref(),
                 SupportExpr::Use {
@@ -1756,9 +2724,10 @@ field conservative distance instance_array_field(p: Vec3) -> F32 {
             .expect("radial repeat field");
         assert_eq!(radial_repeat.support_class, SupportClass::Periodic);
         match &radial_repeat.support_expr {
-            SupportExpr::Repeat {
+            SupportExpr::Periodic {
                 kind: RepeatKind::RadialRepeat,
                 inner,
+                ..
             } => assert!(matches!(
                 inner.as_ref(),
                 SupportExpr::Use {
@@ -1778,6 +2747,7 @@ field conservative distance instance_array_field(p: Vec3) -> F32 {
             SupportExpr::Repeat {
                 kind: RepeatKind::MirrorArray,
                 inner,
+                ..
             } => assert!(matches!(
                 inner.as_ref(),
                 SupportExpr::Use {
@@ -1797,6 +2767,7 @@ field conservative distance instance_array_field(p: Vec3) -> F32 {
             SupportExpr::Repeat {
                 kind: RepeatKind::InstanceArray,
                 inner,
+                ..
             } => assert!(matches!(
                 inner.as_ref(),
                 SupportExpr::Use {
@@ -1875,22 +2846,16 @@ shape subtract_shape {
         match &union_shape.support_expr {
             SupportExpr::Union { items } => {
                 assert_eq!(items.len(), 2);
-                assert!(matches!(
-                    &items[0],
-                    SupportExpr::Primitive {
-                        primitive: hir::FieldPrimitive::Sphere
-                    }
-                ));
+                assert!(matches!(&items[0], SupportExpr::Sphere { .. }));
                 assert!(matches!(
                     &items[1],
                     SupportExpr::Transform {
                         kind: TransformKind::Translate,
                         inner,
+                        ..
                     } if matches!(
                         inner.as_ref(),
-                        SupportExpr::Primitive {
-                            primitive: hir::FieldPrimitive::Box
-                        }
+                        SupportExpr::Aabb { .. }
                     )
                 ));
             }
@@ -1904,22 +2869,16 @@ shape subtract_shape {
         match &intersection_shape.support_expr {
             SupportExpr::Intersection { items } => {
                 assert_eq!(items.len(), 2);
-                assert!(matches!(
-                    &items[0],
-                    SupportExpr::Primitive {
-                        primitive: hir::FieldPrimitive::Sphere
-                    }
-                ));
+                assert!(matches!(&items[0], SupportExpr::Sphere { .. }));
                 assert!(matches!(
                     &items[1],
                     SupportExpr::Transform {
                         kind: TransformKind::Translate,
                         inner,
+                        ..
                     } if matches!(
                         inner.as_ref(),
-                        SupportExpr::Primitive {
-                            primitive: hir::FieldPrimitive::Box
-                        }
+                        SupportExpr::Aabb { .. }
                     )
                 ));
             }
@@ -1929,22 +2888,16 @@ shape subtract_shape {
         let subtract_shape = scene.shapes.get("subtract_shape").expect("subtract shape");
         match &subtract_shape.support_expr {
             SupportExpr::Difference { left, right } => {
-                assert!(matches!(
-                    left.as_ref(),
-                    SupportExpr::Primitive {
-                        primitive: hir::FieldPrimitive::Sphere
-                    }
-                ));
+                assert!(matches!(left.as_ref(), SupportExpr::Sphere { .. }));
                 assert!(matches!(
                     right.as_ref(),
                     SupportExpr::Transform {
                         kind: TransformKind::Translate,
                         inner,
+                        ..
                     } if matches!(
                         inner.as_ref(),
-                        SupportExpr::Primitive {
-                            primitive: hir::FieldPrimitive::Box
-                        }
+                        SupportExpr::Aabb { .. }
                     )
                 ));
             }
@@ -1975,32 +2928,122 @@ field conservative distance wrapped_support_field(p: Vec3) -> F32 {
         match &field.support_expr {
             SupportExpr::Union { items } => {
                 assert_eq!(items.len(), 2);
-                assert!(matches!(
-                    &items[0],
-                    SupportExpr::Primitive {
-                        primitive: hir::FieldPrimitive::Sphere
-                    }
-                ));
+                assert!(matches!(&items[0], SupportExpr::Sphere { .. }));
                 match &items[1] {
-                    SupportExpr::Repeat {
+                    SupportExpr::Periodic {
                         kind: RepeatKind::RepeatGrid,
                         inner,
+                        ..
                     } => match inner.as_ref() {
                         SupportExpr::Transform {
                             kind: TransformKind::Translate,
                             inner,
-                        } => assert!(matches!(
-                            inner.as_ref(),
-                            SupportExpr::Primitive {
-                                primitive: hir::FieldPrimitive::Box
-                            }
-                        )),
+                            ..
+                        } => assert!(matches!(inner.as_ref(), SupportExpr::Aabb { .. })),
                         other => panic!("expected translate support node, got {other:?}"),
                     },
                     other => panic!("expected repeat support node, got {other:?}"),
                 }
             }
             other => panic!("expected union support expression, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lowers_shape_provenance_policies_into_scene_ir() {
+        let source = r#"
+field exact distance near_field(p: Vec3) -> F32 {
+    sphere(radius = 0.6)
+}
+
+field exact distance far_field(p: Vec3) -> F32 {
+    translate = vec3(0.0, 0.0, -0.35) {
+        sphere(radius = 0.8)
+    }
+}
+
+material shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.2, 0.4, 0.6),
+        roughness=0.0,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape near_shape {
+    field = near_field
+    material = shade
+    payload = Payload()
+}
+
+shape far_shape {
+    field = far_field
+    material = shade
+    payload = Payload()
+}
+
+shape ordered_scene {
+    union {
+        provenance_policy = ordered
+        use far_shape
+        use near_shape
+    }
+}
+
+shape carved_scene {
+    subtract {
+        provenance_policy = right
+        use near_shape
+        use far_shape
+    }
+}
+"#;
+        let module = lower_inline_module_from_source(source);
+        let scene = lower_module(&module);
+
+        let ordered_scene = scene.shapes.get("ordered_scene").expect("ordered scene");
+        match ordered_scene
+            .provenance
+            .as_ref()
+            .expect("ordered provenance")
+        {
+            ShapeProvenanceExpr::Union { provenance, items } => {
+                assert_eq!(*provenance, ShapeMergeProvenancePolicy::Ordered);
+                assert_eq!(items.len(), 2);
+                assert!(matches!(
+                    &items[0],
+                    ShapeProvenanceExpr::Use { target } if target.as_str() == "far_shape"
+                ));
+                assert!(matches!(
+                    &items[1],
+                    ShapeProvenanceExpr::Use { target } if target.as_str() == "near_shape"
+                ));
+            }
+            other => panic!("expected ordered union provenance, got {other:?}"),
+        }
+
+        let carved_scene = scene.shapes.get("carved_scene").expect("carved scene");
+        match carved_scene.provenance.as_ref().expect("carved provenance") {
+            ShapeProvenanceExpr::Subtract {
+                provenance,
+                left,
+                right,
+            } => {
+                assert_eq!(*provenance, ShapeSubtractProvenancePolicy::Right);
+                assert!(matches!(
+                    left.as_ref(),
+                    ShapeProvenanceExpr::Use { target } if target.as_str() == "near_shape"
+                ));
+                assert!(matches!(
+                    right.as_ref(),
+                    ShapeProvenanceExpr::Use { target } if target.as_str() == "far_shape"
+                ));
+            }
+            other => panic!("expected subtract provenance, got {other:?}"),
         }
     }
 

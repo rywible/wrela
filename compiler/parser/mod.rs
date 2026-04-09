@@ -1396,6 +1396,66 @@ kernel fn shade() -> Nothing {
     }
 
     #[test]
+    fn test_pure_function_parses_without_errors() {
+        let text = "\
+pure fn normalize_step(value: F32) -> F32 {
+    return clamp(value, 0.0, 1.0)
+}
+";
+        let (_node, errors) = parse_with_errors(text);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_pure_function_attaches_to_ast() {
+        use ast::{AstNode, Stmt};
+        let text = "\
+pure fn normalize_step[T](value: F32) -> F32 {
+    return clamp(value, 0.0, 1.0)
+}
+";
+        let node = parse(text);
+        let root = ast::Root::cast(node).unwrap();
+        let func = match root.statements().next().unwrap() {
+            Stmt::FuncDef(func) => func,
+            _ => panic!("Expected function definition"),
+        };
+        let type_params: Vec<String> = func
+            .type_params()
+            .map(|token| token.text().to_string())
+            .collect();
+        assert!(func.is_pure());
+        assert_eq!(func.name().unwrap().text(), "normalize_step");
+        assert_eq!(type_params, vec!["T".to_string()]);
+        assert_eq!(func.params().count(), 1);
+    }
+
+    #[test]
+    fn test_attributed_pure_function_attaches_to_ast() {
+        use ast::{AstNode, Stmt};
+        let text = "\
+@serial
+pure fn normalize_step(value: F32) -> F32 {
+    return clamp(value, 0.0, 1.0)
+}
+";
+        let node = parse(text);
+        let root = ast::Root::cast(node).unwrap();
+        let func = match root.statements().next().unwrap() {
+            Stmt::FuncDef(func) => func,
+            _ => panic!("Expected function definition"),
+        };
+        let attrs: Vec<String> = func
+            .attributes()
+            .filter_map(|attr| attr.name())
+            .map(|token| token.text().to_string())
+            .collect();
+        assert!(func.is_pure());
+        assert_eq!(func.name().unwrap().text(), "normalize_step");
+        assert_eq!(attrs, vec!["serial".to_string()]);
+    }
+
+    #[test]
     fn test_field_declarations_parse_and_attach_to_ast() {
         use ast::{AstNode, FieldClass, FieldKind, Stmt};
         let text = "\

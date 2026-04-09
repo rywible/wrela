@@ -1548,6 +1548,7 @@ pub(super) fn run_tests_once(
     emit_pretty_output: bool,
     http_mode: HttpCassetteMode,
     sim_seed_override: Option<u64>,
+    query_backend: wrela::query_plan::DispatchBackend,
     certify_mode: bool,
     pipeline: DifferentialPipeline,
     mut run_timing_out: Option<&mut RunOnceTimings>,
@@ -1731,6 +1732,7 @@ pub(super) fn run_tests_once(
         tests_root.as_deref(),
         &tests,
         output_format,
+        query_backend,
         harness_cache,
     ) {
         Ok(harness) => harness,
@@ -1781,6 +1783,7 @@ pub(super) fn run_tests_once(
                     http_mode,
                     pipeline,
                     certify_mode,
+                    query_backend,
                 );
                 let _ = tx.send((test, ok, start.elapsed(), err, run));
             }
@@ -1855,6 +1858,7 @@ pub(super) fn run_tests_once(
             http_mode,
             pipeline,
             certify_mode,
+            query_backend,
         );
         let dur = start.elapsed();
         let compile_slice_ns = if completed < compile_ns_remainder as usize {
@@ -3531,6 +3535,7 @@ fn compile_test_harness(
     tests_root: Option<&Path>,
     tests: &[TestCase],
     output_format: OutputFormat,
+    query_backend: wrela::query_plan::DispatchBackend,
     harness_cache: Option<&mut HashMap<String, TestHarness>>,
 ) -> Result<TestHarness, String> {
     let temp_dir = workspace_root.join("target").join("wrela_tests");
@@ -3677,7 +3682,13 @@ fn compile_test_harness(
         );
     }
     let compile_start = Instant::now();
-    let mir_module = compile_to_mir_with_root(&entry_path, compile_root, tests_root, output_format)
+    let mir_module = compile_to_mir_with_root(
+        &entry_path,
+        compile_root,
+        tests_root,
+        output_format,
+        query_backend,
+    )
         .map_err(|_| "compile failed".to_string())?;
     wrela::backend::cranelift::compile_to_executable(&mir_module, &exe_path)
         .map_err(|err| format!("codegen error: {}", err.0))?;
@@ -3818,6 +3829,7 @@ fn run_single_test(
     output_format: OutputFormat,
     http_mode: HttpCassetteMode,
     pipeline: DifferentialPipeline,
+    query_backend: wrela::query_plan::DispatchBackend,
 ) -> Result<TestRun, String> {
     let temp_dir = harness_exe_path
         .parent()
@@ -3891,6 +3903,7 @@ fn run_single_test(
             &src_root,
             tests_root.is_dir().then_some(tests_root.as_path()),
             output_format,
+            query_backend,
         )
         .map_err(|_| format!("autogen compile failed: {}", test.name))?;
         wrela::backend::cranelift::compile_to_executable(&mir_module, &autogen_exe)
@@ -3925,6 +3938,7 @@ fn run_single_test_with_timeout_retry(
     output_format: OutputFormat,
     http_mode: HttpCassetteMode,
     pipeline: DifferentialPipeline,
+    query_backend: wrela::query_plan::DispatchBackend,
 ) -> Result<TestRun, String> {
     // Keep retries for replay/normal execution, but use a single bounded
     // record-mode attempt so cassette capture does not become non-deterministic
@@ -3944,6 +3958,7 @@ fn run_single_test_with_timeout_retry(
             output_format,
             http_mode,
             pipeline,
+            query_backend,
         ) {
             Ok(run) => return Ok(run),
             Err(err) if err == "timeout" => continue,
@@ -3962,6 +3977,7 @@ fn execute_test_case(
     http_mode: HttpCassetteMode,
     pipeline: DifferentialPipeline,
     certify_mode: bool,
+    query_backend: wrela::query_plan::DispatchBackend,
 ) -> (bool, String, Option<TestRun>) {
     let result = run_single_test_with_timeout_retry(
         harness_exe_path,
@@ -3971,6 +3987,7 @@ fn execute_test_case(
         output_format,
         http_mode,
         pipeline,
+        query_backend,
     );
     match result {
         Ok(run) => (true, String::new(), Some(run)),
@@ -3991,6 +4008,7 @@ fn execute_test_case(
                             output_format,
                             http_mode,
                             pipeline,
+                            query_backend,
                         )
                         .is_ok()
                         {
@@ -4167,6 +4185,7 @@ fn shrink_autogen_call(
                     output_format,
                     http_mode,
                     &trial_call,
+                    wrela::query_plan::DispatchBackend::Auto,
                 ) {
                     args = trial_args;
                     changed = true;
@@ -4199,6 +4218,7 @@ fn autogen_call_still_fails(
     output_format: OutputFormat,
     http_mode: HttpCassetteMode,
     candidate_call: &str,
+    query_backend: wrela::query_plan::DispatchBackend,
 ) -> bool {
     let Some(candidate_test) = autogen_test_with_call(test, candidate_call) else {
         return false;
@@ -4211,6 +4231,7 @@ fn autogen_call_still_fails(
         output_format,
         http_mode,
         DifferentialPipeline::Baseline,
+        query_backend,
     )
     .is_err()
 }
@@ -4944,6 +4965,7 @@ fn compile_mutation_discovery_module(
         &src_root,
         tests_root.is_dir().then_some(tests_root.as_path()),
         OutputFormat::Pretty,
+        wrela::query_plan::DispatchBackend::Auto,
     )
     .map_err(|code| {
         format!(
@@ -5222,6 +5244,7 @@ fn run_mutation_job(
             OutputFormat::Pretty,
             HttpCassetteMode::Replay,
             DifferentialPipeline::Baseline,
+            wrela::query_plan::DispatchBackend::Auto,
         );
         if run.is_err() {
             killed = true;
@@ -5357,6 +5380,7 @@ fn compile_mutant_binary_for_tests(
         &src_root,
         tests_root.is_dir().then_some(tests_root.as_path()),
         OutputFormat::Pretty,
+        wrela::query_plan::DispatchBackend::Auto,
     )
     .map_err(|code| MutantCompileFailure {
         reason: format!("mutant compile failed before mutation (exit code {code})"),
@@ -5861,6 +5885,7 @@ fn compile_to_mir_with_root(
     root_dir: &Path,
     tests_dir: Option<&Path>,
     output_format: OutputFormat,
+    query_backend: wrela::query_plan::DispatchBackend,
 ) -> Result<mir::ir::MirModule, i32> {
     let project = match hir::project::load_project_with_roots(
         entry_path,
@@ -5959,7 +5984,11 @@ fn compile_to_mir_with_root(
     if had_errors {
         return Err(EXIT_TYPE);
     }
-    let mir_module = mir::lower::lower_module_with_types(&module, &type_info);
+    let mir_module = mir::lower::lower_module_with_types_and_backend(
+        &module,
+        &type_info,
+        query_backend,
+    );
     had_errors = false;
     for err in mir::validate::validate_module(&mir_module) {
         let desc = mir_descriptor(err.kind);

@@ -310,6 +310,7 @@ impl<'a> Checker<'a> {
             let kind = match func.role {
                 FunctionRole::Field => "field",
                 FunctionRole::Material => "material",
+                FunctionRole::Pure => "pure function",
                 FunctionRole::Radiance => "radiance field",
                 FunctionRole::Volume => "volume field",
                 _ => function_kind_label(func.kind),

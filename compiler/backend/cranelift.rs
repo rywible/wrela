@@ -418,8 +418,8 @@ pub fn compile_to_executable(mir: &MirModule, output: &Path) -> Result<(), Codeg
     let mut linker = linker_command()?;
     let cmd = &mut linker.cmd;
     cmd.arg(&obj_path).arg("-o").arg(output);
-    let runtime_lib = ensure_runtime_built()?;
-    cmd.arg(runtime_lib);
+    let support_lib = ensure_native_support_built()?;
+    cmd.arg(support_lib);
     if cfg!(all(unix, not(target_os = "macos"))) {
         cmd.arg("-lm");
     }
@@ -429,10 +429,7 @@ pub fn compile_to_executable(mir: &MirModule, output: &Path) -> Result<(), Codeg
         }
         cmd.env("MACOSX_DEPLOYMENT_TARGET", "11.0");
         cmd.arg("-Wl,-w");
-        cmd.arg("-framework").arg("Security");
-        cmd.arg("-framework").arg("CoreFoundation");
-        cmd.arg("-framework").arg("SystemConfiguration");
-        cmd.arg("-lc++");
+        append_macos_native_support_link_args(cmd);
     }
     if std::env::var("WRELA_LINKER_DEBUG").is_ok() {
         eprintln!("linker: {:?}", cmd);
@@ -481,8 +478,8 @@ pub fn compile_to_shared_library(mir: &MirModule, output: &Path) -> Result<(), C
         .arg("-o")
         .arg(&output_path)
         .arg(&obj_path);
-    let runtime_lib = ensure_runtime_built()?;
-    cmd.arg(runtime_lib);
+    let support_lib = ensure_native_support_built()?;
+    cmd.arg(support_lib);
     if cfg!(all(unix, not(target_os = "macos"))) {
         cmd.arg("-lm");
     }
@@ -492,10 +489,7 @@ pub fn compile_to_shared_library(mir: &MirModule, output: &Path) -> Result<(), C
         }
         cmd.env("MACOSX_DEPLOYMENT_TARGET", "11.0");
         cmd.arg("-Wl,-w");
-        cmd.arg("-framework").arg("Security");
-        cmd.arg("-framework").arg("CoreFoundation");
-        cmd.arg("-framework").arg("SystemConfiguration");
-        cmd.arg("-lc++");
+        append_macos_native_support_link_args(cmd);
     }
     if std::env::var("WRELA_LINKER_DEBUG").is_ok() {
         eprintln!("linker (shared): {:?}", cmd);
@@ -557,11 +551,11 @@ fn run_linker_with_timeout(
     }
 }
 
-fn ensure_runtime_built() -> Result<PathBuf, CodegenError> {
+fn ensure_native_support_built() -> Result<PathBuf, CodegenError> {
     let lib_name = if cfg!(target_os = "windows") {
-        "wrela_runtime.lib"
+        "wrela.lib"
     } else {
-        "libwrela_runtime.a"
+        "libwrela.a"
     };
 
     // 1. Check WRELA_RUNTIME_PATH env var
@@ -576,15 +570,15 @@ fn ensure_runtime_built() -> Result<PathBuf, CodegenError> {
     if let Ok(exe_path) = env::current_exe()
         && let Some(exe_dir) = exe_path.parent()
     {
-        // bin/wrela -> lib/libwrela_runtime.a
+        // bin/wrela -> lib/libwrela.a
         let lib_path = exe_dir.parent().map(|p| p.join("lib").join(lib_name));
         if let Some(path) = lib_path
             && path.exists()
         {
             let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
             let workspace_root = manifest_dir.join("..");
-            let runtime_root = workspace_root.join("runtime");
-            if runtime_root.exists() && runtime_needs_rebuild(&path, &runtime_root) {
+            let compiler_root = workspace_root.join("compiler");
+            if compiler_root.exists() && native_support_needs_rebuild(&path, &compiler_root) {
                 // Fall through to rebuild in dev contexts.
             } else {
                 return Ok(path);
@@ -597,12 +591,14 @@ fn ensure_runtime_built() -> Result<PathBuf, CodegenError> {
     let workspace_root = manifest_dir.join("..");
     let profile = env::var("WRELA_RUNTIME_PROFILE").unwrap_or_else(|_| "debug".to_string());
     let lib_path = workspace_root.join("target").join(&profile).join(lib_name);
-    if lib_path.exists() && !runtime_needs_rebuild(&lib_path, &workspace_root.join("runtime")) {
+    if lib_path.exists()
+        && !native_support_needs_rebuild(&lib_path, &workspace_root.join("compiler"))
+    {
         return Ok(lib_path);
     }
 
     let mut cmd = Command::new("cargo");
-    cmd.args(["build", "-p", "wrela_runtime"]);
+    cmd.args(["build", "-p", "wrela", "--lib"]);
     if profile == "release" {
         cmd.arg("--release");
         let metrics_env = env::var("WRELA_RUNTIME_METRICS")
@@ -620,20 +616,22 @@ fn ensure_runtime_built() -> Result<PathBuf, CodegenError> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let message = if stderr.trim().is_empty() {
-            "runtime build failed".to_string()
+            "native support build failed".to_string()
         } else {
-            format!("runtime build failed: {}", stderr.trim())
+            format!("native support build failed: {}", stderr.trim())
         };
         return Err(CodegenError(message));
     }
     if lib_path.exists() {
         return Ok(lib_path);
     }
-    if let Some(fallback) = find_runtime_archive(&workspace_root.join("target").join(&profile)) {
+    if let Some(fallback) =
+        find_native_support_archive(&workspace_root.join("target").join(&profile))
+    {
         return Ok(fallback);
     }
     Err(CodegenError(
-        "runtime library not found after build".to_string(),
+        "native support library not found after build".to_string(),
     ))
 }
 
@@ -656,6 +654,22 @@ fn linker_command() -> Result<LinkerCommand, CodegenError> {
         name: "cc".to_string(),
     })
 }
+
+#[cfg(target_os = "macos")]
+fn append_macos_native_support_link_args(cmd: &mut Command) {
+    cmd.arg("-framework").arg("QuartzCore");
+    cmd.arg("-framework").arg("Metal");
+    cmd.arg("-framework").arg("Foundation");
+    cmd.arg("-framework").arg("Security");
+    cmd.arg("-framework").arg("CoreFoundation");
+    cmd.arg("-framework").arg("SystemConfiguration");
+    cmd.arg("-lobjc");
+    cmd.arg("-liconv");
+    cmd.arg("-lc++");
+}
+
+#[cfg(not(target_os = "macos"))]
+fn append_macos_native_support_link_args(_cmd: &mut Command) {}
 
 fn macos_clang_path() -> Result<Option<String>, CodegenError> {
     let output = Command::new("xcrun")
@@ -712,13 +726,13 @@ fn temp_object_path(output: &Path) -> PathBuf {
     dir
 }
 
-fn find_runtime_archive(target_dir: &Path) -> Option<PathBuf> {
+fn find_native_support_archive(target_dir: &Path) -> Option<PathBuf> {
     let deps = target_dir.join("deps");
     if let Ok(entries) = fs::read_dir(&deps) {
         for entry in entries.flatten() {
             let path = entry.path();
             let name = path.file_name()?.to_string_lossy();
-            if name.starts_with("libwrela_runtime") && name.ends_with(".a") {
+            if (name == "libwrela.a" || name.starts_with("libwrela-")) && name.ends_with(".a") {
                 return Some(path);
             }
         }
@@ -726,16 +740,15 @@ fn find_runtime_archive(target_dir: &Path) -> Option<PathBuf> {
     None
 }
 
-fn runtime_needs_rebuild(lib_path: &Path, runtime_root: &Path) -> bool {
+fn native_support_needs_rebuild(lib_path: &Path, compiler_root: &Path) -> bool {
     let lib_time = match fs::metadata(lib_path).and_then(|meta| meta.modified()) {
         Ok(time) => time,
         Err(_) => return true,
     };
-    let src_dir = runtime_root.join("src");
-    if newest_mtime_in_tree(&src_dir).is_none_or(|time| time > lib_time) {
+    if newest_mtime_in_tree(compiler_root).is_none_or(|time| time > lib_time) {
         return true;
     }
-    let manifest = runtime_root.join("Cargo.toml");
+    let manifest = compiler_root.join("Cargo.toml");
     if let Some(time) = mtime(&manifest)
         && time > lib_time
     {
@@ -3996,6 +4009,16 @@ fn runtime_fn_gpu_dispatch_end(
     runtime_fn_symbol(module, runtime, "wr_gpu_dispatch_end", &[], &[types::I64])
 }
 
+fn runtime_fn_wgsl_bridge(
+    module: &mut ObjectModule,
+    runtime: &mut RuntimeRegistry,
+    symbol: &'static str,
+    arg_count: usize,
+) -> Result<cranelift_module::FuncId, CodegenError> {
+    let params = vec![types::I64; arg_count];
+    runtime_fn_symbol(module, runtime, symbol, &params, &[types::I64])
+}
+
 fn runtime_builtin_func_id(
     name: &SmolStr,
     module: &mut ObjectModule,
@@ -4378,6 +4401,84 @@ fn runtime_builtin_func_id(
             Some(runtime_fn_gpu_dispatch_select_invocation(module, runtime)?)
         }
         "__wr_gpu_dispatch_end" => Some(runtime_fn_gpu_dispatch_end(module, runtime)?),
+        "__wr_wgsl_world_distance_capture" => Some(runtime_fn_wgsl_bridge(
+            module,
+            runtime,
+            "wr_wgsl_world_distance_capture",
+            4,
+        )?),
+        "__wr_wgsl_world_normal_capture" => Some(runtime_fn_wgsl_bridge(
+            module,
+            runtime,
+            "wr_wgsl_world_normal_capture",
+            4,
+        )?),
+        "__wr_wgsl_world_trace_capture" => Some(runtime_fn_wgsl_bridge(
+            module,
+            runtime,
+            "wr_wgsl_world_trace_capture",
+            9,
+        )?),
+        "__wr_wgsl_world_surface_capture" => Some(runtime_fn_wgsl_bridge(
+            module,
+            runtime,
+            "wr_wgsl_world_surface_capture",
+            4,
+        )?),
+        "__wr_wgsl_world_radiance_capture" => Some(runtime_fn_wgsl_bridge(
+            module,
+            runtime,
+            "wr_wgsl_world_radiance_capture",
+            5,
+        )?),
+        "__wr_wgsl_world_medium_capture" => Some(runtime_fn_wgsl_bridge(
+            module,
+            runtime,
+            "wr_wgsl_world_medium_capture",
+            4,
+        )?),
+        "__wr_wgsl_field_distance_batch_queries" => Some(runtime_fn_wgsl_bridge(
+            module,
+            runtime,
+            "wr_wgsl_field_distance_batch_queries",
+            4,
+        )?),
+        "__wr_wgsl_shape_distance_batch_queries" => Some(runtime_fn_wgsl_bridge(
+            module,
+            runtime,
+            "wr_wgsl_shape_distance_batch_queries",
+            4,
+        )?),
+        "__wr_wgsl_field_normal_batch_queries" => Some(runtime_fn_wgsl_bridge(
+            module,
+            runtime,
+            "wr_wgsl_field_normal_batch_queries",
+            4,
+        )?),
+        "__wr_wgsl_shape_normal_batch_queries" => Some(runtime_fn_wgsl_bridge(
+            module,
+            runtime,
+            "wr_wgsl_shape_normal_batch_queries",
+            4,
+        )?),
+        "__wr_wgsl_shape_trace_batch_queries" => Some(runtime_fn_wgsl_bridge(
+            module,
+            runtime,
+            "wr_wgsl_shape_trace_batch_queries",
+            4,
+        )?),
+        "__wr_wgsl_shape_surface_batch_queries" => Some(runtime_fn_wgsl_bridge(
+            module,
+            runtime,
+            "wr_wgsl_shape_surface_batch_queries",
+            4,
+        )?),
+        "__wr_wgsl_shape_occluded_batch_queries" => Some(runtime_fn_wgsl_bridge(
+            module,
+            runtime,
+            "wr_wgsl_shape_occluded_batch_queries",
+            4,
+        )?),
         "f32" => Some(runtime_fn_cast_f32(module, runtime)?),
         "i32" => Some(runtime_fn_cast_i32(module, runtime)?),
         "i64" => Some(runtime_fn_cast_i64(module, runtime)?),

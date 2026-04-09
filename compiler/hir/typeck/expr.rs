@@ -615,6 +615,17 @@ fn infer_expr(
                             help: "Portable declarations may only call other portable declarations or portable-safe intrinsics.".to_string(),
                         });
                     }
+                    if ctx.in_portable_lane()
+                        && matches!(ctx.current_function_role(), FunctionRole::Pure)
+                        && functions.is_kernel(name)
+                    {
+                        errors.push(TypeError::PortableConstructForbidden {
+                            function: ctx.current_function_name(),
+                            construct: format!("calling kernel declaration '{}'", name),
+                            span: span_from_range(body.expr_span(expr_id)),
+                            help: "Pure helpers stay reusable across host code, semantic portable code, and kernels. Call other `pure fn` helpers instead of jumping into low-level `kernel fn` entry points.".to_string(),
+                        });
+                    }
                     if !type_args.is_empty() {
                         if function.type_params.is_empty() {
                             errors.push(TypeError::UnexpectedTypeArgs {
@@ -2089,7 +2100,7 @@ fn infer_compute_builtin_call(
                 });
                 return Some(Type::Nil);
             };
-            if !functions.is_portable(kernel_name) {
+            if !functions.is_kernel(kernel_name) {
                 errors.push(TypeError::DispatchKernelMustBePortable {
                     callee: kernel_name.clone(),
                     span: span_from_range(body.expr_span(kernel_expr)),
@@ -2587,6 +2598,17 @@ fn infer_world_distance_query_builtin(
             help: "World queries belong in the host lane. Capture the region first, derive a domain plan, then query that captured world.".to_string(),
         });
     }
+    let mut expected = vec![
+        (SmolStr::new("capture"), region_capture_type()),
+        (SmolStr::new("domain"), scene_domain_type()),
+        (SmolStr::new("point"), Type::Vec3),
+    ];
+    if call_named_arg_value(args, "backend").is_some() {
+        expected.push((
+            SmolStr::new("backend"),
+            portable_named_type("DispatchBackend"),
+        ));
+    }
     infer_exact_builtin_call(
         body,
         expr_id,
@@ -2599,11 +2621,7 @@ fn infer_world_distance_query_builtin(
         errors,
         allow_result,
         in_result_fn,
-        &[
-            (SmolStr::new("capture"), region_capture_type()),
-            (SmolStr::new("domain"), scene_domain_type()),
-            (SmolStr::new("point"), Type::Vec3),
-        ],
+        &expected,
         ret.clone(),
     )?;
     if let Some(capture_expr) = call_named_arg_value(args, "capture") {
@@ -2677,6 +2695,13 @@ fn infer_world_shape_query_builtin(
             (SmolStr::new("hit"), portable_named_type("Hit3")),
         ],
     };
+    let mut expected = expected;
+    if call_named_arg_value(args, "backend").is_some() {
+        expected.push((
+            SmolStr::new("backend"),
+            portable_named_type("DispatchBackend"),
+        ));
+    }
     infer_exact_builtin_call(
         body,
         expr_id,
@@ -2759,6 +2784,13 @@ fn infer_world_point_query_builtin(
             (SmolStr::new("point"), Type::Vec3),
         ],
     };
+    let mut expected = expected;
+    if call_named_arg_value(args, "backend").is_some() {
+        expected.push((
+            SmolStr::new("backend"),
+            portable_named_type("DispatchBackend"),
+        ));
+    }
     infer_exact_builtin_call(
         body,
         expr_id,
@@ -4215,7 +4247,10 @@ fn infer_math_builtin_call(
             allow_result,
             in_result_fn,
         ),
-        "dispatch_backend_cpu" | "dispatch_backend_virtual_gpu" | "dispatch_backend_auto" => {
+        "dispatch_backend_cpu"
+        | "dispatch_backend_virtual_gpu"
+        | "dispatch_backend_wgsl"
+        | "dispatch_backend_auto" => {
             infer_scene_backend_builtin(
                 body,
                 expr_id,

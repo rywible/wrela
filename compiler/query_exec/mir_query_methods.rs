@@ -114,7 +114,8 @@ impl FunctionLowerer {
         match name.as_str() {
             "dispatch_backend_cpu" => Some(0),
             "dispatch_backend_virtual_gpu" => Some(1),
-            "dispatch_backend_auto" => Some(2),
+            "dispatch_backend_wgsl" => Some(2),
+            "dispatch_backend_auto" => Some(3),
             _ => None,
         }
     }
@@ -199,6 +200,7 @@ impl FunctionLowerer {
         let mut domain = None;
         let mut point = None;
         let mut direction = None;
+        let mut backend = None;
         for arg in args {
             let hir::Arg::Named { name, value, .. } = arg else {
                 return None;
@@ -210,6 +212,7 @@ impl FunctionLowerer {
                 "direction" if matches!(kind, WorldPointQueryKind::Radiance) => {
                     direction = Some(*value)
                 }
+                "backend" => backend = Some(*value),
                 _ => return None,
             }
         }
@@ -219,6 +222,7 @@ impl FunctionLowerer {
             domain: domain?,
             point: point?,
             direction,
+            backend,
         })
     }
 
@@ -248,6 +252,7 @@ impl FunctionLowerer {
         let mut hit_epsilon = None;
         let mut max_steps = None;
         let mut hit = None;
+        let mut backend = None;
         for arg in args {
             let hir::Arg::Named { name, value, .. } = arg else {
                 return None;
@@ -262,6 +267,7 @@ impl FunctionLowerer {
                 "hit_epsilon" => hit_epsilon = Some(*value),
                 "max_steps" => max_steps = Some(*value),
                 "hit" => hit = Some(*value),
+                "backend" => backend = Some(*value),
                 _ => return None,
             }
         }
@@ -276,6 +282,7 @@ impl FunctionLowerer {
             hit_epsilon,
             max_steps,
             hit,
+            backend,
         })
     }
 
@@ -473,7 +480,8 @@ impl FunctionLowerer {
         let capture = self.lower_expr(body, spec.capture);
         let domain = self.lower_expr(body, spec.domain);
         let point = self.lower_expr(body, spec.point);
-        let plan = self.build_world_point_query_plan(spec);
+        let backend = self.lower_world_query_backend_value(body, spec.backend, span);
+        let plan = self.build_world_point_query_plan(body, spec);
         let kernel_plan = lower_world_query_plan(&plan);
         debug_assert!(
             validate_world_query_plan(&kernel_plan).is_ok(),
@@ -483,13 +491,13 @@ impl FunctionLowerer {
             WorldPointQueryKind::Distance => self.lower_call_temp(
                 MirType::Float,
                 plan.helper_name,
-                vec![capture, domain, point],
+                vec![capture, domain, point, backend],
                 span,
             ),
             WorldPointQueryKind::Normal => self.lower_call_temp(
                 MirType::Vec3,
                 plan.helper_name,
-                vec![capture, domain, point],
+                vec![capture, domain, point, backend],
                 span,
             ),
             WorldPointQueryKind::Radiance => {
@@ -500,14 +508,14 @@ impl FunctionLowerer {
                 self.lower_call_temp(
                     MirType::Vec3,
                     plan.helper_name,
-                    vec![capture, domain, point, direction],
+                    vec![capture, domain, point, direction, backend],
                     span,
                 )
             }
             WorldPointQueryKind::Medium => self.lower_call_temp(
                 MirType::Named(SmolStr::new("Medium")),
                 plan.helper_name,
-                vec![capture, domain, point],
+                vec![capture, domain, point, backend],
                 span,
             ),
         }
@@ -521,7 +529,8 @@ impl FunctionLowerer {
     ) -> Value {
         let capture = self.lower_expr(body, spec.capture);
         let domain = self.lower_expr(body, spec.domain);
-        let plan = self.build_world_shape_query_plan(spec);
+        let backend = self.lower_world_query_backend_value(body, spec.backend, span);
+        let plan = self.build_world_shape_query_plan(body, spec);
         let kernel_plan = lower_world_query_plan(&plan);
         debug_assert!(
             validate_world_query_plan(&kernel_plan).is_ok(),
@@ -557,6 +566,7 @@ impl FunctionLowerer {
                         min_step,
                         hit_epsilon,
                         max_steps,
+                        backend,
                     ],
                     span,
                 )
@@ -566,7 +576,7 @@ impl FunctionLowerer {
                 self.lower_call_temp(
                     MirType::Named(SmolStr::new("Surface")),
                     plan.helper_name,
-                    vec![capture, domain, hit],
+                    vec![capture, domain, hit, backend],
                     span,
                 )
             }
@@ -618,61 +628,102 @@ impl FunctionLowerer {
     ) -> Option<SceneSummary> {
         let target = self.parse_capture_builtin(body, capture_expr)?;
         match capture_kind {
-            CaptureKind::Field => self.field_scene(&target).map(|scene| SceneSummary {
-                name: Some(target),
-                semantics: scene.semantics,
-                support_class: scene.support_class,
-                can_coarse_support_pruning: scene.can_coarse_support_pruning,
-                opaque_boundary: scene.opaque_boundary,
+            CaptureKind::Field => self.field_scene(&target).map(|scene| {
+                self.scene_summary_from_field(target.clone(), scene)
             }),
-            CaptureKind::Shape => self.shape_scene(&target).map(|scene| SceneSummary {
-                name: Some(target),
-                semantics: scene.semantics,
-                support_class: scene.support_class,
-                can_coarse_support_pruning: scene.can_coarse_support_pruning,
-                opaque_boundary: scene.opaque_boundary,
+            CaptureKind::Shape => self.shape_scene(&target).map(|scene| {
+                self.scene_summary_from_shape(target.clone(), scene)
             }),
             CaptureKind::Region => None,
         }
     }
 
     pub(crate) fn shape_scene_summary(&self, shape: &SmolStr) -> Option<SceneSummary> {
-        self.shape_scene(shape).map(|scene| SceneSummary {
-            name: Some(shape.clone()),
+        self.shape_scene(shape)
+            .map(|scene| self.scene_summary_from_shape(shape.clone(), scene))
+    }
+
+    fn scene_summary_from_field(
+        &self,
+        name: SmolStr,
+        scene: &scene_ir::FieldScene,
+    ) -> SceneSummary {
+        SceneSummary {
+            name: Some(name),
             semantics: scene.semantics,
             support_class: scene.support_class,
             can_coarse_support_pruning: scene.can_coarse_support_pruning,
             opaque_boundary: scene.opaque_boundary,
-        })
+            semantic_root: scene.root_node_id.0,
+            support_root: scene.root_support_id.0,
+            node_count: scene.node_records.len() as u32,
+            support_node_count: scene.support_records.len() as u32,
+            leaf_count: 0,
+            identity_source_count: scene.identity_sources.len() as u32,
+        }
+    }
+
+    fn scene_summary_from_shape(
+        &self,
+        name: SmolStr,
+        scene: &scene_ir::ShapeScene,
+    ) -> SceneSummary {
+        let identity_source_count = scene
+            .feature_leaves
+            .values()
+            .filter_map(|leaf_ref| self.shape_scene(&leaf_ref.scene).and_then(|shape_scene| {
+                shape_scene
+                    .leaves
+                    .get(&leaf_ref.leaf)
+                    .and_then(|leaf| self.field_scene(&leaf.field))
+            }))
+            .map(|field| field.identity_sources.len() as u32)
+            .sum();
+        SceneSummary {
+            name: Some(name),
+            semantics: scene.semantics,
+            support_class: scene.support_class,
+            can_coarse_support_pruning: scene.can_coarse_support_pruning,
+            opaque_boundary: scene.opaque_boundary,
+            semantic_root: scene.root_node_id.0,
+            support_root: scene.root_support_id.0,
+            node_count: scene.node_records.len() as u32,
+            support_node_count: scene.support_records.len() as u32,
+            leaf_count: scene.feature_leaves.len() as u32,
+            identity_source_count,
+        }
     }
 
     pub(crate) fn shape_execution_mode_from_plan_artifacts(
-        pruning_strategy: PruningStrategy,
-        derived_artifacts: &[crate::query_plan::DerivedArtifact],
+        pruning_strategy: crate::query_plan::PruningStrategy,
+        artifact_contracts: &[crate::query_plan::ArtifactContract],
     ) -> ShapeExecutionMode {
-        if derived_artifacts.iter().any(|artifact| {
+        if artifact_contracts.iter().any(|artifact| {
             matches!(
-                artifact,
-                crate::query_plan::DerivedArtifact::OpaquePessimizationBoundary
+                artifact.schema,
+                crate::query_plan::ArtifactSchema::OpaquePessimizationBoundary { .. }
             )
         }) {
             return ShapeExecutionMode::Conservative;
         }
-        if derived_artifacts.iter().any(|artifact| {
+        if artifact_contracts.iter().any(|artifact| {
             matches!(
-                artifact,
-                crate::query_plan::DerivedArtifact::CullingTable { .. }
+                artifact.schema,
+                crate::query_plan::ArtifactSchema::CullingTable { .. }
             )
         }) {
             return ShapeExecutionMode::SupportPruned;
         }
         match pruning_strategy {
-            PruningStrategy::SupportLowerBound | PruningStrategy::CullingTable => {
+            crate::query_plan::PruningStrategy::SupportLowerBound
+            | crate::query_plan::PruningStrategy::CullingTable => {
                 ShapeExecutionMode::SupportPruned
             }
-            PruningStrategy::None
-            | PruningStrategy::ConservativeTraversal
-            | PruningStrategy::OpaquePessimizationBoundary => ShapeExecutionMode::Conservative,
+            crate::query_plan::PruningStrategy::None
+            | crate::query_plan::PruningStrategy::ConservativeTraversal
+            | crate::query_plan::PruningStrategy::OpaquePessimizationBoundary => {
+                ShapeExecutionMode::Conservative
+            }
         }
     }
 
@@ -686,10 +737,7 @@ impl FunctionLowerer {
             DispatchBackend::Auto,
             self.shape_scene_summary(shape),
         );
-        Self::shape_execution_mode_from_plan_artifacts(
-            plan.pruning_strategy(),
-            &plan.derived_artifacts,
-        )
+        Self::shape_execution_mode_from_plan_artifacts(plan.pruning_strategy(), &plan.artifact_contracts)
     }
 
     pub(crate) fn shape_point_batch_execution_mode(
@@ -703,10 +751,7 @@ impl FunctionLowerer {
             DispatchBackend::Auto,
             self.shape_scene_summary(shape),
         );
-        Self::shape_execution_mode_from_plan_artifacts(
-            plan.pruning_strategy(),
-            &plan.derived_artifacts,
-        )
+        Self::shape_execution_mode_from_plan_artifacts(plan.pruning_strategy(), &plan.artifact_contracts)
     }
 
     pub(crate) fn shape_capture_execution_mode(
@@ -719,7 +764,7 @@ impl FunctionLowerer {
                 .expect("shape capture execution mode requires a valid shape capture plan");
         Self::shape_execution_mode_from_plan_artifacts(
             plan.pruning_strategy(),
-            &plan.derived_artifacts,
+            &plan.artifact_contracts,
         )
     }
 
@@ -762,22 +807,32 @@ impl FunctionLowerer {
             .expect("shape query plan must use shape captures")
     }
 
-    pub(crate) fn build_world_point_query_plan(&self, spec: &WorldPointQuerySpec) -> WorldQueryPlan {
+    pub(crate) fn build_world_point_query_plan(
+        &self,
+        body: &hir::Body,
+        spec: &WorldPointQuerySpec,
+    ) -> WorldQueryPlan {
         let kind = match spec.kind {
             WorldPointQueryKind::Distance => WorldQueryKind::Distance,
             WorldPointQueryKind::Normal => WorldQueryKind::Normal,
             WorldPointQueryKind::Radiance => WorldQueryKind::Radiance,
             WorldPointQueryKind::Medium => WorldQueryKind::Medium,
         };
-        WorldQueryPlan::for_query(kind)
+        let backend = self.world_query_plan_backend(body, spec.backend);
+        WorldQueryPlan::for_query_with_backend(kind, backend)
     }
 
-    pub(crate) fn build_world_shape_query_plan(&self, spec: &WorldShapeQuerySpec) -> WorldQueryPlan {
+    pub(crate) fn build_world_shape_query_plan(
+        &self,
+        body: &hir::Body,
+        spec: &WorldShapeQuerySpec,
+    ) -> WorldQueryPlan {
         let kind = match spec.kind {
             WorldShapeQueryKind::Trace => WorldQueryKind::Trace,
             WorldShapeQueryKind::Surface => WorldQueryKind::Surface,
         };
-        WorldQueryPlan::for_query(kind)
+        let backend = self.world_query_plan_backend(body, spec.backend);
+        WorldQueryPlan::for_query_with_backend(kind, backend)
     }
 
     pub(crate) fn build_field_batch_query_plan(
@@ -925,14 +980,32 @@ impl FunctionLowerer {
                         candidate_strategy,
                         pruning_strategy,
                     } => {
-                        debug_assert_eq!(*candidate_strategy, plan.candidate_strategy());
-                        debug_assert_eq!(*pruning_strategy, plan.pruning_strategy());
+                        debug_assert!(plan.artifact_contracts.iter().any(|contract| matches!(
+                            contract.schema,
+                            crate::query_plan::ArtifactSchema::CullingTable {
+                                candidate_strategy: contract_candidate_strategy,
+                                pruning_strategy: contract_pruning_strategy,
+                                ..
+                            } if contract_candidate_strategy == *candidate_strategy
+                                && contract_pruning_strategy == *pruning_strategy
+                        )));
                     }
                     crate::query_plan::DerivedArtifact::SupportSummary {
-                        semantics: _,
-                        support_class: _,
+                        semantics,
+                        support_class,
                         can_coarse_support_pruning,
                     } => {
+                        debug_assert!(plan.artifact_contracts.iter().any(|contract| matches!(
+                            contract.schema,
+                            crate::query_plan::ArtifactSchema::SupportSummary {
+                                semantics: contract_semantics,
+                                support_class: contract_support_class,
+                                can_coarse_support_pruning: contract_pruning,
+                                ..
+                            } if contract_semantics == *semantics
+                                && contract_support_class == *support_class
+                                && contract_pruning == *can_coarse_support_pruning
+                        )));
                         if *can_coarse_support_pruning {
                             debug_assert!(matches!(
                                 plan.candidate_strategy(),
@@ -942,7 +1015,13 @@ impl FunctionLowerer {
                         }
                     }
                     crate::query_plan::DerivedArtifact::CaptureCache { capture_kind } => {
-                        debug_assert_eq!(*capture_kind, plan.capture_kind);
+                        debug_assert!(plan.artifact_contracts.iter().any(|contract| matches!(
+                            contract.schema,
+                            crate::query_plan::ArtifactSchema::CaptureCache {
+                                capture_kind: contract_capture_kind,
+                                ..
+                            } if contract_capture_kind == *capture_kind
+                        )));
                     }
                 },
                 KernelPlanStage::IterateItems { item_kind } => {

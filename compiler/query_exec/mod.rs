@@ -1,4 +1,5 @@
 mod capture;
+mod native_bridge;
 
 pub mod context;
 pub mod cpu;
@@ -7,6 +8,7 @@ pub mod mir;
 pub mod region;
 pub mod spec;
 pub mod vgpu;
+pub mod wgsl;
 pub mod world;
 
 use crate::kernel::KernelValue;
@@ -30,18 +32,34 @@ pub use world::{WorldQuerySemantics, world_query_semantics};
 pub struct BatchQueryExecutionTrace {
     pub backend: DispatchBackend,
     pub plan_trace: KernelBatchQueryTrace,
+    pub observability: QueryExecutionObservability,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirectQueryExecutionTrace {
     pub backend: DispatchBackend,
     pub executor: DirectQueryExecutor,
+    pub observability: QueryExecutionObservability,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct QueryExecutionObservability {
+    pub dispatch_count: u32,
+    pub candidate_count: u32,
+    pub branch_visits: u32,
+    pub support_pruned_candidates: u32,
+    pub artifact_loads: u32,
+    pub opaque_fallbacks: u32,
+    pub trace_steps: u32,
+    pub field_samples: u32,
+    pub contract_validation_failures: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DirectQueryExecutor {
     Cpu,
     VirtualGpu,
+    Wgsl,
 }
 
 pub fn execute_capture_query(
@@ -69,19 +87,31 @@ pub fn execute_capture_query_with_trace_on(
     args: &[KernelValue],
 ) -> Result<(KernelValue, DirectQueryExecutionTrace), QueryExecError> {
     let backend = resolve_direct_backend(backend);
-    let (value, executor) = match backend {
-        DispatchBackend::VirtualGpu => (
-            vgpu::execute_capture_query(ctx, plan, args)?,
-            DirectQueryExecutor::VirtualGpu,
-        ),
+    let (value, executor, observability) = match backend {
+        DispatchBackend::VirtualGpu => {
+            let (value, observability) =
+                vgpu::execute_capture_query_with_observability(ctx, plan, args)?;
+            (value, DirectQueryExecutor::VirtualGpu, observability)
+        }
+        DispatchBackend::Wgsl => {
+            let (value, observability) =
+                wgsl::execute_capture_query_with_observability(ctx, plan, args)?;
+            (value, DirectQueryExecutor::Wgsl, observability)
+        }
         DispatchBackend::Cpu | DispatchBackend::Auto => {
-            (
-                cpu::execute_capture_query(ctx, plan, args)?,
-                DirectQueryExecutor::Cpu,
-            )
+            let (value, observability) =
+                cpu::execute_capture_query_with_observability(ctx, plan, args)?;
+            (value, DirectQueryExecutor::Cpu, observability)
         }
     };
-    Ok((value, DirectQueryExecutionTrace { backend, executor }))
+    Ok((
+        value,
+        DirectQueryExecutionTrace {
+            backend,
+            executor,
+            observability,
+        },
+    ))
 }
 
 pub fn execute_world_query(
@@ -89,7 +119,7 @@ pub fn execute_world_query(
     plan: &KernelWorldQueryPlan,
     args: &[KernelValue],
 ) -> Result<KernelValue, QueryExecError> {
-    execute_world_query_with_trace_on(ctx, DispatchBackend::Cpu, plan, args).map(|(value, _)| value)
+    execute_world_query_with_trace_on(ctx, plan.backend, plan, args).map(|(value, _)| value)
 }
 
 pub fn execute_world_query_on(
@@ -103,22 +133,36 @@ pub fn execute_world_query_on(
 
 pub fn execute_world_query_with_trace_on(
     ctx: &QueryExecContext,
-    backend: DispatchBackend,
+    requested_backend: DispatchBackend,
     plan: &KernelWorldQueryPlan,
     args: &[KernelValue],
 ) -> Result<(KernelValue, DirectQueryExecutionTrace), QueryExecError> {
-    let backend = resolve_direct_backend(backend);
-    let (value, executor) = match backend {
-        DispatchBackend::VirtualGpu => (
-            vgpu::execute_world_query(ctx, plan, args)?,
-            DirectQueryExecutor::VirtualGpu,
-        ),
-        DispatchBackend::Cpu | DispatchBackend::Auto => (
-            cpu::execute_world_query(ctx, plan, args)?,
-            DirectQueryExecutor::Cpu,
-        ),
+    let backend = resolve_world_backend(requested_backend, plan);
+    let (value, executor, observability) = match backend {
+        DispatchBackend::VirtualGpu => {
+            let (value, observability) =
+                vgpu::execute_world_query_with_observability(ctx, plan, args)?;
+            (value, DirectQueryExecutor::VirtualGpu, observability)
+        }
+        DispatchBackend::Wgsl => {
+            let (value, observability) =
+                wgsl::execute_world_query_with_observability(ctx, plan, args)?;
+            (value, DirectQueryExecutor::Wgsl, observability)
+        }
+        DispatchBackend::Cpu | DispatchBackend::Auto => {
+            let (value, observability) =
+                cpu::execute_world_query_with_observability(ctx, plan, args)?;
+            (value, DirectQueryExecutor::Cpu, observability)
+        }
     };
-    Ok((value, DirectQueryExecutionTrace { backend, executor }))
+    Ok((
+        value,
+        DirectQueryExecutionTrace {
+            backend,
+            executor,
+            observability,
+        },
+    ))
 }
 
 pub fn execute_batch_query(
@@ -155,15 +199,23 @@ pub fn execute_batch_query_with_trace_on(
     let item_count = batch_query_item_count(args)?;
     let plan_trace = interpret_batch_query(plan, item_count);
     let backend = resolve_batch_backend(requested_backend, plan);
-    let value = match backend {
-        DispatchBackend::VirtualGpu => vgpu::execute_batch_query(ctx, plan, args, &plan_trace)?,
-        DispatchBackend::Cpu | DispatchBackend::Auto => cpu::execute_batch_query(ctx, plan, args)?,
+    let (value, observability) = match backend {
+        DispatchBackend::VirtualGpu => {
+            vgpu::execute_batch_query_with_observability(ctx, plan, args, &plan_trace)?
+        }
+        DispatchBackend::Wgsl => {
+            wgsl::execute_batch_query_with_observability(ctx, plan, args, &plan_trace)?
+        }
+        DispatchBackend::Cpu | DispatchBackend::Auto => {
+            cpu::execute_batch_query_with_observability(ctx, plan, args)?
+        }
     };
     Ok((
         value,
         BatchQueryExecutionTrace {
             backend,
             plan_trace,
+            observability,
         },
     ))
 }
@@ -171,7 +223,24 @@ pub fn execute_batch_query_with_trace_on(
 fn resolve_direct_backend(backend: DispatchBackend) -> DispatchBackend {
     match backend {
         DispatchBackend::VirtualGpu => DispatchBackend::VirtualGpu,
+        DispatchBackend::Wgsl => DispatchBackend::Wgsl,
         DispatchBackend::Cpu | DispatchBackend::Auto => DispatchBackend::Cpu,
+    }
+}
+
+fn resolve_world_backend(
+    requested_backend: DispatchBackend,
+    plan: &KernelWorldQueryPlan,
+) -> DispatchBackend {
+    match requested_backend {
+        DispatchBackend::Cpu => DispatchBackend::Cpu,
+        DispatchBackend::VirtualGpu => DispatchBackend::VirtualGpu,
+        DispatchBackend::Wgsl => DispatchBackend::Wgsl,
+        DispatchBackend::Auto => match plan.backend {
+            DispatchBackend::Cpu | DispatchBackend::Auto => DispatchBackend::Cpu,
+            DispatchBackend::VirtualGpu => DispatchBackend::VirtualGpu,
+            DispatchBackend::Wgsl => DispatchBackend::Wgsl,
+        },
     }
 }
 
@@ -182,8 +251,11 @@ fn resolve_batch_backend(
     match requested_backend {
         DispatchBackend::Cpu => DispatchBackend::Cpu,
         DispatchBackend::VirtualGpu => DispatchBackend::VirtualGpu,
+        DispatchBackend::Wgsl => DispatchBackend::Wgsl,
         DispatchBackend::Auto => {
-            if matches!(plan.backend, DispatchBackend::VirtualGpu)
+            if matches!(plan.backend, DispatchBackend::Wgsl) {
+                DispatchBackend::Wgsl
+            } else if matches!(plan.backend, DispatchBackend::VirtualGpu)
                 || plan.requires_virtual_gpu_dispatch()
             {
                 DispatchBackend::VirtualGpu

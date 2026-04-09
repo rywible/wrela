@@ -6,6 +6,7 @@ use crate::parser::kind::SyntaxKind;
 #[derive(Clone, Copy)]
 enum FunctionDeclHead {
     Function,
+    Pure,
     Kernel,
     System,
 }
@@ -13,7 +14,12 @@ enum FunctionDeclHead {
 pub fn func_def(p: &mut Parser) {
     let m = p.start();
     parse_func_attributes(p);
-    parse_func_signature_and_block(p, FunctionDeclHead::Function);
+    let head = if is_pure_function_start(p) {
+        FunctionDeclHead::Pure
+    } else {
+        FunctionDeclHead::Function
+    };
+    parse_func_signature_and_block(p, head);
     m.complete(p, SyntaxKind::FuncDef);
 }
 
@@ -85,11 +91,17 @@ pub fn attributed_func_or_check_def(p: &mut Parser) -> bool {
     }
     let m = p.start();
     parse_func_attributes(p);
-    if p.at(SyntaxKind::FnKw) || p.at(SyntaxKind::KernelKw) || p.at(SyntaxKind::SystemKw) {
+    if is_pure_function_start(p)
+        || p.at(SyntaxKind::FnKw)
+        || p.at(SyntaxKind::KernelKw)
+        || p.at(SyntaxKind::SystemKw)
+    {
         let (head, node_kind) = if p.at(SyntaxKind::KernelKw) {
             (FunctionDeclHead::Kernel, SyntaxKind::KernelDef)
         } else if p.at(SyntaxKind::SystemKw) {
             (FunctionDeclHead::System, SyntaxKind::SystemDef)
+        } else if is_pure_function_start(p) {
+            (FunctionDeclHead::Pure, SyntaxKind::FuncDef)
         } else {
             (FunctionDeclHead::Function, SyntaxKind::FuncDef)
         };
@@ -97,7 +109,9 @@ pub fn attributed_func_or_check_def(p: &mut Parser) -> bool {
         m.complete(p, node_kind);
         return true;
     }
-    p.error_with_message_no_bump("expected `fn`, `kernel fn`, or `system` after attributes");
+    p.error_with_message_no_bump(
+        "expected `fn`, `pure fn`, `kernel fn`, or `system` after attributes",
+    );
     m.complete(p, SyntaxKind::Error);
     true
 }
@@ -1610,6 +1624,14 @@ fn parse_function_decl_head(p: &mut Parser, head: FunctionDeclHead) {
             SyntaxKind::FnKw,
             "expected 'fn' to start a function definition",
         ),
+        FunctionDeclHead::Pure => {
+            expect_ident_text(
+                p,
+                "pure",
+                "expected 'pure fn' to start a portable pure helper declaration",
+            );
+            p.expect_with_message(SyntaxKind::FnKw, "expected 'fn' after 'pure'");
+        }
         FunctionDeclHead::Kernel => {
             p.expect_with_message(
                 SyntaxKind::KernelKw,
@@ -1627,9 +1649,14 @@ fn parse_function_decl_head(p: &mut Parser, head: FunctionDeclHead) {
 fn expected_name_error(head: FunctionDeclHead) -> &'static str {
     match head {
         FunctionDeclHead::Function => "expected function name after 'fn'",
+        FunctionDeclHead::Pure => "expected function name after 'pure fn'",
         FunctionDeclHead::Kernel => "expected function name after 'kernel fn'",
         FunctionDeclHead::System => "expected system name after 'system'",
     }
+}
+
+pub(crate) fn is_pure_function_start(p: &Parser) -> bool {
+    p.at_ident_text("pure") && p.peek_nth_non_trivia(1) == SyntaxKind::FnKw
 }
 
 fn expect_ident_text(p: &mut Parser, expected: &str, message: &str) {

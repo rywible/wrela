@@ -740,7 +740,7 @@ fn is_value_start(p: &mut Parser) -> bool {
 }
 
 fn is_func_start(p: &mut Parser) -> bool {
-    p.at(SyntaxKind::FnKw) || p.at(SyntaxKind::SystemKw)
+    p.at(SyntaxKind::FnKw) || p.at(SyntaxKind::SystemKw) || func::is_pure_function_start(p)
 }
 
 fn parse_require(p: &mut Parser) {

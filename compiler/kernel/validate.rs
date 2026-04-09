@@ -1,10 +1,13 @@
 use crate::kernel::ir::{
-    KernelBatchQueryPlan, KernelBlock, KernelCaptureQueryPlan, KernelDispatchGrid, KernelExpr,
-    KernelFunction, KernelModule, KernelPlanStage, KernelStmt, KernelWorldQueryPlan,
-    ResolvedKernelDispatch,
+    KernelBatchItemContract, KernelBatchQueryPlan, KernelBlock, KernelCaptureQueryPlan,
+    KernelDispatchGrid, KernelExpr, KernelFunction, KernelModule, KernelPlanStage, KernelStmt,
+    KernelWorldQueryPlan, ResolvedKernelDispatch,
 };
 use crate::portable::{
     BUILTIN_FIELD_PRIMITIVE_FUNCTIONS, BUILTIN_HELPER_FUNCTIONS, builtin_record_by_function,
+};
+use crate::query_plan::{
+    ArtifactContract, ArtifactSchema, DerivedArtifact, DispatchRecordContract, ResultRecordContract,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +69,14 @@ pub fn validate_batch_query_plan(
 ) -> Result<(), Vec<KernelValidationError>> {
     let mut errors = Vec::new();
     validate_plan_stages(&plan.stages, &mut errors);
+    validate_contract_version(plan.contract_version, "batch query", &mut errors);
+    validate_artifact_contracts(
+        &plan.artifact_contracts,
+        Some(&plan.dispatch_contract),
+        &plan.result_contract,
+        &plan.derived_artifacts,
+        &mut errors,
+    );
     if !matches!(plan.stages.first(), Some(KernelPlanStage::SelectBackend)) {
         errors.push(KernelValidationError {
             message: format!(
@@ -74,6 +85,12 @@ pub fn validate_batch_query_plan(
             ),
         });
     }
+    validate_batch_item_contract(
+        &plan.item_contract,
+        &plan.result_contract,
+        plan.contract_version,
+        &mut errors,
+    );
     if errors.is_empty() {
         Ok(())
     } else {
@@ -86,6 +103,14 @@ pub fn validate_capture_query_plan(
 ) -> Result<(), Vec<KernelValidationError>> {
     let mut errors = Vec::new();
     validate_plan_stages(&plan.stages, &mut errors);
+    validate_contract_version(plan.contract_version, "capture query", &mut errors);
+    validate_artifact_contracts(
+        &plan.artifact_contracts,
+        None,
+        &plan.result_contract,
+        &plan.derived_artifacts,
+        &mut errors,
+    );
     if errors.is_empty() {
         Ok(())
     } else {
@@ -98,10 +123,214 @@ pub fn validate_world_query_plan(
 ) -> Result<(), Vec<KernelValidationError>> {
     let mut errors = Vec::new();
     validate_plan_stages(&plan.stages, &mut errors);
+    validate_contract_version(plan.contract_version, "world query", &mut errors);
+    validate_artifact_contracts(
+        &plan.artifact_contracts,
+        Some(&plan.dispatch_contract),
+        &plan.result_contract,
+        &[],
+        &mut errors,
+    );
     if errors.is_empty() {
         Ok(())
     } else {
         Err(errors)
+    }
+}
+
+fn validate_contract_version(version: u32, label: &str, errors: &mut Vec<KernelValidationError>) {
+    if version == 0 {
+        errors.push(KernelValidationError {
+            message: format!("{label} contract version must be greater than zero"),
+        });
+    }
+}
+
+fn validate_batch_item_contract(
+    contract: &KernelBatchItemContract,
+    result: &crate::query_plan::ResultRecordContract,
+    batch_contract_version: u32,
+    errors: &mut Vec<KernelValidationError>,
+) {
+    match contract {
+        KernelBatchItemContract::CaptureQuery { plan } => {
+            if let Err(plan_errors) = validate_capture_query_plan(plan) {
+                errors.extend(plan_errors);
+            }
+            if plan.result_kind != result.result_kind {
+                errors.push(KernelValidationError {
+                    message: "batch capture item contract result kind does not match batch result contract".to_string(),
+                });
+            }
+            if plan.contract_version != batch_contract_version {
+                errors.push(KernelValidationError {
+                    message: "batch capture item contract version does not match the parent batch contract".to_string(),
+                });
+            }
+        }
+        KernelBatchItemContract::TraceThenOcclusion { trace_plan } => {
+            if let Err(plan_errors) = validate_capture_query_plan(trace_plan) {
+                errors.extend(plan_errors);
+            }
+            if !matches!(
+                result.result_kind,
+                crate::query_plan::QueryResultKind::OcclusionResult
+            ) {
+                errors.push(KernelValidationError {
+                    message: "TraceThenOcclusion contracts must produce OcclusionResult"
+                        .to_string(),
+                });
+            }
+            if !matches!(
+                trace_plan.result_kind,
+                crate::query_plan::QueryResultKind::Hit3
+            ) {
+                errors.push(KernelValidationError {
+                    message: "TraceThenOcclusion contracts must embed a Hit3 trace plan"
+                        .to_string(),
+                });
+            }
+            if trace_plan.contract_version != batch_contract_version {
+                errors.push(KernelValidationError {
+                    message: "TraceThenOcclusion trace plan version does not match the parent batch contract".to_string(),
+                });
+            }
+        }
+    }
+}
+
+fn validate_artifact_contracts(
+    artifacts: &[ArtifactContract],
+    dispatch: Option<&DispatchRecordContract>,
+    result: &ResultRecordContract,
+    derived: &[DerivedArtifact],
+    errors: &mut Vec<KernelValidationError>,
+) {
+    for artifact in artifacts {
+        if artifact.id.is_empty() {
+            errors.push(KernelValidationError {
+                message: "artifact contracts must carry a stable id".to_string(),
+            });
+        }
+        if artifact.version == 0 {
+            errors.push(KernelValidationError {
+                message: format!(
+                    "artifact contract '{}' must have a non-zero version",
+                    artifact.id
+                ),
+            });
+        }
+    }
+
+    if let Some(dispatch) = dispatch {
+        let has_dispatch_contract = artifacts.iter().any(|artifact| {
+            matches!(
+                artifact.schema,
+                ArtifactSchema::DispatchRecord {
+                    item_kind,
+                    result_kind,
+                } if item_kind == dispatch.item_kind && result_kind == dispatch.result_kind
+            )
+        });
+        if !has_dispatch_contract {
+            errors.push(KernelValidationError {
+                message: "dispatch artifact contract does not match the dispatch record contract"
+                    .to_string(),
+            });
+        }
+    }
+
+    let has_result_contract = artifacts.iter().any(|artifact| {
+        matches!(
+            artifact.schema,
+            ArtifactSchema::HitResultBuffer {
+                result_kind,
+                preserves_local_hit_context,
+            } if result_kind == result.result_kind
+                && preserves_local_hit_context == result.preserves_local_hit_context
+        )
+    });
+    if !has_result_contract {
+        errors.push(KernelValidationError {
+            message: "result artifact contract does not match the result record contract"
+                .to_string(),
+        });
+    }
+
+    for artifact in derived {
+        let matches_schema = artifacts
+            .iter()
+            .any(|contract| match (&contract.schema, artifact) {
+                (
+                    ArtifactSchema::SupportSummary {
+                        semantics,
+                        support_class,
+                        can_coarse_support_pruning,
+                        semantic_root,
+                        support_root,
+                        node_count,
+                        support_node_count,
+                        leaf_count,
+                        identity_source_count,
+                    },
+                    DerivedArtifact::SupportSummary {
+                        semantics: expected_semantics,
+                        support_class: expected_support_class,
+                        can_coarse_support_pruning: expected_pruning,
+                    },
+                ) => {
+                    semantics == expected_semantics
+                        && support_class == expected_support_class
+                        && can_coarse_support_pruning == expected_pruning
+                        && (*semantic_root == 0 || *node_count != 0)
+                        && (*support_root == 0 || *support_node_count != 0)
+                        && *leaf_count <= *node_count
+                        && *identity_source_count <= *node_count
+                }
+                (
+                    ArtifactSchema::CaptureCache {
+                        capture_kind,
+                        semantic_root: _,
+                    },
+                    DerivedArtifact::CaptureCache {
+                        capture_kind: expected_capture_kind,
+                    },
+                ) => capture_kind == expected_capture_kind,
+                (
+                    ArtifactSchema::CullingTable {
+                        candidate_strategy,
+                        pruning_strategy,
+                        support_root,
+                        support_node_count,
+                        leaf_count,
+                        identity_source_count,
+                        ..
+                    },
+                    DerivedArtifact::CullingTable {
+                        candidate_strategy: expected_candidate_strategy,
+                        pruning_strategy: expected_pruning_strategy,
+                    },
+                ) => {
+                    candidate_strategy == expected_candidate_strategy
+                        && pruning_strategy == expected_pruning_strategy
+                        && (*support_root == 0 || *support_node_count != 0)
+                        && *leaf_count <= *support_node_count
+                        && *identity_source_count <= *support_node_count
+                }
+                (
+                    ArtifactSchema::OpaquePessimizationBoundary {
+                        support_root,
+                        support_node_count,
+                    },
+                    DerivedArtifact::OpaquePessimizationBoundary,
+                ) => *support_root == 0 || *support_node_count != 0,
+                _ => false,
+            });
+        if !matches_schema {
+            errors.push(KernelValidationError {
+                message: format!("missing artifact contract for derived artifact '{artifact:?}'"),
+            });
+        }
     }
 }
 

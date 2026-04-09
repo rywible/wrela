@@ -5,6 +5,7 @@ fn run_dev_loop(
     emit_mir: bool,
     emit_mir_opt: bool,
     strict_naming: bool,
+    query_backend: wrela::query_plan::DispatchBackend,
     program_args: &[String],
 ) {
     let src_root = find_src_root(entry_path)
@@ -27,6 +28,7 @@ fn run_dev_loop(
                 true,
                 strict_naming,
                 false,
+                query_backend,
             ) {
                 Ok(mir) => mir,
                 Err(code) => {

@@ -48,6 +48,7 @@ fn compile_to_mir(
     enforce_naming: bool,
     strict_naming: bool,
     holes_only: bool,
+    query_backend: wrela::query_plan::DispatchBackend,
 ) -> Result<mir::ir::MirModule, i32> {
     let trace = std::env::var("WRELA_BUILD_TRACE").is_ok();
     let stage = |name: &str, start: &Instant| {
@@ -173,7 +174,11 @@ fn compile_to_mir(
         if had_errors {
             return Err(EXIT_TYPE);
         }
-        return Ok(mir::lower::lower_module(&module));
+        return Ok(mir::lower::lower_module_with_types_and_backend(
+            &module,
+            &type_info,
+            query_backend,
+        ));
     }
 
     for err in type_errors {
@@ -270,7 +275,8 @@ fn compile_to_mir(
         }
     }
 
-    let mut mir_module = mir::lower::lower_module_with_types(&module, &type_info);
+    let mut mir_module =
+        mir::lower::lower_module_with_types_and_backend(&module, &type_info, query_backend);
     stage("mir_lower", &start);
     if emit_mir {
         println!("{:#?}", mir_module);

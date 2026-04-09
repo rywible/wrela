@@ -365,8 +365,8 @@ fn run() -> Nothing {
     }
 
     #[test]
-    fn test_host_may_call_portable_helper_shared_with_kernel() {
-        let input = r#"kernel fn add_one(value: I32) -> I32 {
+    fn test_host_and_kernel_may_call_pure_helper() {
+        let input = r#"pure fn add_one(value: I32) -> I32 {
     return value + i32(1)
 }
 
@@ -393,6 +393,196 @@ fn run() -> Nothing {
 "#;
         let errors = check_source(input);
         assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_field_material_radiance_and_volume_may_call_pure_helpers() {
+        let input = r#"pure fn clamp_unit(value: F32) -> F32 {
+    return clamp(value, 0.0, 1.0)
+}
+
+pure fn tinted(color: Vec3, strength: F32) -> Vec3 {
+    return color * clamp_unit(value=strength)
+}
+
+field exact distance sphere_field(p: Vec3) -> F32 {
+    sphere(radius=clamp_unit(value=1.0))
+}
+
+radiance field emit_glow(p: Vec3, direction: Vec3, feature_id: U32) -> Vec3 {
+    return tinted(color=direction + p * 0.0, strength=1.0 + f32(feature_id) * 0.0)
+}
+
+volume field fog(p: Vec3, surface_distance: F32) -> Medium {
+    return Medium(
+        density=clamp_unit(value=0.2 + abs(surface_distance) * 0.0),
+        emission=tinted(color=vec3(0.0, 0.0, 0.0), strength=1.0),
+        anisotropy=0.0
+    )
+}
+
+material shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=tinted(color=vec3(1.0, 0.5, 0.25), strength=1.0),
+        roughness=clamp_unit(value=0.5),
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+"#;
+        let errors = check_source(input);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_pure_helpers_reject_field_query_builtins() {
+        let input = r#"field conservative distance sphere_field(p: Vec3) -> F32 {
+    sphere(radius=1.0)
+}
+
+pure fn sample_scene() -> F32 {
+    scene = capture sphere_field
+    return distance_at(capture=scene, point=vec3(0.0, 0.0, 0.0))
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::PortableHostCallForbidden { function, callee, .. }
+                    if function.as_str() == "sample_scene" && callee.as_str() == "capture"
+            )),
+            "expected pure helper capture rejection, got: {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::PortableHostCallForbidden { function, callee, .. }
+                    if function.as_str() == "sample_scene" && callee.as_str() == "distance_at"
+            )),
+            "expected pure helper query builtin rejection, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_pure_helpers_reject_kernel_only_builtins_and_boundary_types() {
+        let input = r#"pure fn write_counter(counter: GpuAtomicU32) -> U32 {
+    gpu_atomic_u32_store(atomic=counter, value=u32(1))
+    return global_invocation_id().x
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::PortableBoundaryTypeForbidden { function, found, .. }
+                    if function.as_str() == "write_counter" && found == "GpuAtomicU32"
+            )),
+            "expected pure helper buffer boundary rejection, got: {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::PortableConstructForbidden { function, construct, .. }
+                    if function.as_str() == "write_counter"
+                        && (construct.contains("gpu_atomic_u32_store")
+                            || construct.contains("global_invocation_id"))
+            )),
+            "expected pure helper kernel builtin rejection, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_pure_helpers_reject_opaque_portable_handle_boundaries() {
+        let input = r#"pure fn bad_handles(
+    capture: FieldCapture,
+    backend: DispatchBackend,
+    domain: SceneDomain
+) -> F32 {
+    return f32(capture.scene_id + u32(i32(backend.id)) + u32(i32(domain.geometry_detail))) * 0.0
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::PortableBoundaryTypeForbidden { function, found, .. }
+                    if function.as_str() == "bad_handles" && found == "FieldCapture"
+            )),
+            "expected FieldCapture rejection, got: {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::PortableBoundaryTypeForbidden { function, found, .. }
+                    if function.as_str() == "bad_handles" && found == "DispatchBackend"
+            )),
+            "expected DispatchBackend rejection, got: {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::PortableBoundaryTypeForbidden { function, found, .. }
+                    if function.as_str() == "bad_handles" && found == "SceneDomain"
+            )),
+            "expected SceneDomain rejection, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_dispatch_compute_rejects_pure_helper() {
+        let input = r#"pure fn helper(value: I32) -> I32 {
+    return value + i32(1)
+}
+
+fn run() -> Nothing {
+    dispatch_compute(
+        kernel=helper,
+        schedule=gpu_schedule_deterministic(),
+        workgroups_x=u32(1),
+        workgroups_y=u32(1),
+        workgroups_z=u32(1),
+        workgroup_size_x=u32(1),
+        workgroup_size_y=u32(1),
+        workgroup_size_z=u32(1),
+        value=i32(2)
+    )
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::DispatchKernelMustBePortable { callee, .. }
+                    if callee.as_str() == "helper"
+            )),
+            "expected dispatch rejection for pure helper, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_pure_helpers_reject_calling_kernel_functions() {
+        let input = r#"kernel fn low_level(value: I32) -> I32 {
+    return value + i32(1)
+}
+
+pure fn helper(value: I32) -> I32 {
+    return low_level(value=value)
+}
+"#;
+        let errors = check_source(input);
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                TypeError::PortableConstructForbidden { function, construct, .. }
+                    if function.as_str() == "helper"
+                        && construct.contains("calling kernel declaration 'low_level'")
+            )),
+            "expected pure helper kernel-call rejection, got: {errors:?}"
+        );
     }
 
     #[test]

@@ -32,6 +32,7 @@ pub(super) struct TestCommandInput {
     pub(super) perf_max_regression_pct: Option<f64>,
     pub(super) kpi_thresholds: KpiThresholds,
     pub(super) test_seed: Option<u64>,
+    pub(super) query_backend: wrela::query_plan::DispatchBackend,
 }
 
 pub(super) fn execute_test_command(input: TestCommandInput) -> i32 {
@@ -154,6 +155,7 @@ pub(super) fn execute_test_command(input: TestCommandInput) -> i32 {
             HttpCassetteMode::Replay
         },
         input.test_seed,
+        input.query_backend,
     );
     let exit = result.exit;
     if input.test_record || input.test_update_public_surface {
@@ -202,6 +204,7 @@ pub(super) fn run_tests(
     enforce_determinism_gate: bool,
     http_mode: HttpCassetteMode,
     sim_seed_override: Option<u64>,
+    query_backend: wrela::query_plan::DispatchBackend,
 ) -> TestExecution {
     let mut cert_timings = CertPerfTimings::default();
     let mut harness_cache = std::collections::HashMap::new();
@@ -219,6 +222,7 @@ pub(super) fn run_tests(
         true,
         http_mode,
         sim_seed_override,
+        query_backend,
         enforce_determinism_gate,
         DifferentialPipeline::Baseline,
         Some(&mut first_run_timings),
@@ -263,6 +267,7 @@ pub(super) fn run_tests(
             false,
             http_mode,
             sim_seed_override,
+            query_backend,
             enforce_determinism_gate,
             DifferentialPipeline::Alt,
             Some(&mut alt_timings),
@@ -318,6 +323,7 @@ pub(super) fn run_tests(
             false,
             http_mode,
             sim_seed_override,
+            query_backend,
             enforce_determinism_gate,
             DifferentialPipeline::Baseline,
             Some(&mut replay_timings),

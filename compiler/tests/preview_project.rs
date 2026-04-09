@@ -89,14 +89,64 @@ fn average_region(
     [total[0] / count, total[1] / count, total[2] / count]
 }
 
-fn run_preview_project(project_root: &str) -> (usize, usize, Vec<[u8; 3]>) {
+fn preview_diff_stats(lhs: &[[u8; 3]], rhs: &[[u8; 3]]) -> (u8, f32) {
+    assert_eq!(lhs.len(), rhs.len(), "preview pixel counts must match");
+    let mut max_channel_delta = 0u8;
+    let mut total_delta = 0u64;
+    for (lhs, rhs) in lhs.iter().zip(rhs) {
+        for (lhs, rhs) in lhs.into_iter().zip(rhs) {
+            let delta = lhs.abs_diff(*rhs);
+            max_channel_delta = max_channel_delta.max(delta);
+            total_delta += u64::from(delta);
+        }
+    }
+    let mean_channel_delta = total_delta as f32 / (lhs.len() * 3) as f32;
+    (max_channel_delta, mean_channel_delta)
+}
+
+fn assert_preview_backend_matches_cpu(
+    project_root: &str,
+    query_backend: &str,
+    max_channel_tolerance: u8,
+    mean_channel_tolerance: f32,
+) {
+    let cpu_output = run_preview_project_with_backend(project_root, Some("cpu"));
+    let backend_output = run_preview_project_with_backend(project_root, Some(query_backend));
+    assert_eq!(
+        cpu_output.0, backend_output.0,
+        "preview width drift for {project_root} backend={query_backend}"
+    );
+    assert_eq!(
+        cpu_output.1, backend_output.1,
+        "preview height drift for {project_root} backend={query_backend}"
+    );
+    let (max_channel_delta, mean_channel_delta) =
+        preview_diff_stats(&cpu_output.2, &backend_output.2);
+    assert!(
+        max_channel_delta <= max_channel_tolerance,
+        "preview max channel delta exceeded tolerance for {project_root} backend={query_backend}: max={max_channel_delta} tolerance={max_channel_tolerance}"
+    );
+    assert!(
+        mean_channel_delta <= mean_channel_tolerance,
+        "preview mean channel delta exceeded tolerance for {project_root} backend={query_backend}: mean={mean_channel_delta} tolerance={mean_channel_tolerance}"
+    );
+}
+
+fn run_preview_project_command(
+    project_root: &str,
+    query_backend: Option<&str>,
+) -> (std::process::ExitStatus, String, String) {
     let _guard = preview_run_lock()
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
     let root = repo_root();
     let preview_root = root.join(project_root);
-    let mut child = Command::new(env!("CARGO_BIN_EXE_wrela"))
-        .arg("run")
+    let mut command = Command::new(env!("CARGO_BIN_EXE_wrela"));
+    command.arg("run");
+    if let Some(query_backend) = query_backend {
+        command.arg(format!("--query-backend={query_backend}"));
+    }
+    let mut child = command
         .arg(&preview_root)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -140,6 +190,14 @@ fn run_preview_project(project_root: &str) -> (usize, usize, Vec<[u8; 3]>) {
     let stdout = stdout_reader.join().expect("join preview stdout");
     let stderr = stderr_reader.join().expect("join preview stderr");
 
+    (status, stdout, stderr)
+}
+
+fn run_preview_project_with_backend(
+    project_root: &str,
+    query_backend: Option<&str>,
+) -> (usize, usize, Vec<[u8; 3]>) {
+    let (status, stdout, stderr) = run_preview_project_command(project_root, query_backend);
     assert!(
         status.success(),
         "preview project failed: project={project_root}\ncode={:?}\nstdout={}\nstderr={}",
@@ -147,8 +205,22 @@ fn run_preview_project(project_root: &str) -> (usize, usize, Vec<[u8; 3]>) {
         stdout,
         stderr
     );
-
     parse_ppm(&stdout)
+}
+
+fn run_preview_project(project_root: &str) -> (usize, usize, Vec<[u8; 3]>) {
+    run_preview_project_with_backend(project_root, None)
+}
+
+fn run_preview_project_expect_failure(project_root: &str, query_backend: &str) -> String {
+    let (status, stdout, stderr) = run_preview_project_command(project_root, Some(query_backend));
+    assert!(
+        !status.success(),
+        "preview project unexpectedly succeeded: project={project_root}\nstdout={}\nstderr={}",
+        stdout,
+        stderr
+    );
+    format!("stdout={stdout}\nstderr={stderr}")
 }
 
 fn assert_common_preview_signature(
@@ -518,6 +590,25 @@ fn preview_project_renders_lit_cube_ppm() {
 #[test]
 fn preview_project_renders_lit_cube_stably_across_runs() {
     assert_preview_is_stable_across_runs("language/preview");
+}
+
+#[test]
+fn preview_project_cpu_query_backend_matches_default_output() {
+    let default_output = run_preview_project("language/preview");
+    let cpu_output = run_preview_project_with_backend("language/preview", Some("cpu"));
+    assert_eq!(default_output, cpu_output);
+}
+
+#[test]
+fn preview_project_wgsl_query_backend_matches_cpu_output_with_tolerance() {
+    for project_root in [
+        "language/preview",
+        "language/preview_boolean",
+        "language/preview_repetition",
+        "language/preview_thinstack",
+    ] {
+        assert_preview_backend_matches_cpu(project_root, "wgsl", 12, 1.5);
+    }
 }
 
 #[test]
