@@ -1,9 +1,0 @@
-//
-// Response security hardening helpers.
-
-use apply_default_web_security_headers from host/web_security_headers
-
-
-fn apply_security_headers(headers: Map[Any, Any]) -> Map[Any, Any] {
-    return apply_default_web_security_headers(headers)
-}

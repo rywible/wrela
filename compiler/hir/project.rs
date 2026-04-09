@@ -337,7 +337,6 @@ pub fn load_project_with_roots(
     loader.validate_uses();
     loader.detect_cycles();
     loader.analyze_imports();
-    loader.enforce_db_api_split_import_policy();
     loader.enforce_architecture_rules();
     loader.enforce_external_call_policy();
     loader.enforce_intrinsic_boundary();
@@ -1353,53 +1352,6 @@ impl ProjectLoader {
         }
     }
 
-    fn enforce_db_api_split_import_policy(&mut self) {
-        let mut module_names: Vec<SmolStr> = self.modules.keys().cloned().collect();
-        module_names.sort_by(|a, b| a.as_str().cmp(b.as_str()));
-        for module_name in module_names {
-            let Some(module) = self.modules.get(&module_name) else {
-                continue;
-            };
-            let source = module.name.as_str();
-            for use_site in &module.uses {
-                let target = use_site.module.as_str();
-                if is_pkg_db_core_module(source) && is_db_admin_or_explain_module(target) {
-                    self.errors.push(ProjectError {
-                        kind: ProjectDiagKind::LoadError,
-                        path: module.path.clone(),
-                        source: module.source.clone(),
-                        message: db_core_import_violation_message(source, target),
-                        span: span_from_range(use_site.module_span.unwrap_or(use_site.span)),
-                    });
-                    continue;
-                }
-                if is_db_admin_or_explain_kernel_module(target)
-                    && !is_pkg_db_admin_or_explain_module(source)
-                {
-                    self.errors.push(ProjectError {
-                        kind: ProjectDiagKind::LoadError,
-                        path: module.path.clone(),
-                        source: module.source.clone(),
-                        message: db_kernel_import_violation_message(source, target),
-                        span: span_from_range(use_site.module_span.unwrap_or(use_site.span)),
-                    });
-                    continue;
-                }
-                if is_db_core_kernel_module(target)
-                    && !db_core_kernel_import_allowed(source, &module.path)
-                {
-                    self.errors.push(ProjectError {
-                        kind: ProjectDiagKind::LoadError,
-                        path: module.path.clone(),
-                        source: module.source.clone(),
-                        message: db_core_kernel_import_violation_message(source, target),
-                        span: span_from_range(use_site.module_span.unwrap_or(use_site.span)),
-                    });
-                }
-            }
-        }
-    }
-
     fn enforce_external_call_policy(&mut self) {
         if self.project_mode != ProjectMode::Project {
             return;
@@ -1914,8 +1866,6 @@ fn effect_for_builtin_symbol(name: &str) -> FunctionEffect {
         }
         "try_to_http_call" => FunctionEffect::Network,
         _ if name.starts_with("__wr_http_")
-            || name.starts_with("__wr_web_")
-            || name.starts_with("__wr_auth_")
             || name.starts_with("__wr_net_")
             || name.contains("external_call") =>
         {
@@ -2025,16 +1975,7 @@ fn effect_for_imported_symbol(module_name: &str, function_name: &str) -> Functio
 }
 
 fn is_host_http_module(module_name: &str) -> bool {
-    module_name == "host/http"
-        || module_name.starts_with("host/http/")
-        || module_name == "host/web_server"
-        || module_name.starts_with("host/web_server/")
-        || module_name == "host/web_authentication"
-        || module_name.starts_with("host/web_authentication/")
-        || module_name == "host/web_security_headers"
-        || module_name.starts_with("host/web_security_headers/")
-        || module_name == "host/web_static_assets"
-        || module_name.starts_with("host/web_static_assets/")
+    module_name == "host/http" || module_name.starts_with("host/http/")
 }
 
 fn is_infrastructure_integration_module(module_name: &str) -> bool {
@@ -2046,14 +1987,8 @@ fn is_frontend_integration_module(module_name: &str) -> bool {
     module_name == "frontend/integrations" || module_name.starts_with("frontend/integrations/")
 }
 
-fn is_web_package_module(module_name: &str) -> bool {
-    module_name == "pkg/web" || module_name.starts_with("pkg/web/")
-}
-
 fn is_network_integration_module(module_name: &str) -> bool {
-    is_infrastructure_integration_module(module_name)
-        || is_frontend_integration_module(module_name)
-        || is_web_package_module(module_name)
+    is_infrastructure_integration_module(module_name) || is_frontend_integration_module(module_name)
 }
 
 fn is_stdlib_host_module(module_name: &str) -> bool {
@@ -3401,73 +3336,6 @@ fn is_host_module(module_name: &str) -> bool {
     module_name == "host" || module_name.starts_with("host/")
 }
 
-fn is_db_admin_or_explain_kernel_module(module_name: &str) -> bool {
-    matches!(module_name, "db/admin_kernel" | "db/explain_kernel")
-}
-
-fn is_db_core_kernel_module(module_name: &str) -> bool {
-    module_name == "db/core_kernel"
-}
-
-fn is_pkg_db_core_module(module_name: &str) -> bool {
-    module_name == "pkg/db/core" || module_name.starts_with("pkg/db/core/")
-}
-
-fn is_pkg_db_admin_or_explain_module(module_name: &str) -> bool {
-    module_name == "pkg/db/admin"
-        || module_name.starts_with("pkg/db/admin/")
-        || module_name == "pkg/db/explain"
-        || module_name.starts_with("pkg/db/explain/")
-}
-
-fn is_db_admin_or_explain_module(module_name: &str) -> bool {
-    is_pkg_db_admin_or_explain_module(module_name)
-        || is_db_admin_or_explain_kernel_module(module_name)
-}
-
-fn path_is_in_repo_tree(path: &Path, segment: &str) -> bool {
-    let normalized = path.to_string_lossy().replace('\\', "/");
-    let relative_prefix = format!("{segment}/");
-    let absolute_infix = format!("/{segment}/");
-    normalized.starts_with(&relative_prefix) || normalized.contains(&absolute_infix)
-}
-
-fn is_approved_stdlib_internal_for_db_core_kernel(source_module: &str, source_path: &Path) -> bool {
-    if !path_is_in_repo_tree(source_path, "language/stdlib") {
-        return false;
-    }
-    matches!(
-        source_module,
-        "db/core_kernel" | "db/admin_kernel" | "db/explain_kernel"
-    )
-}
-
-fn db_core_kernel_import_allowed(source_module: &str, source_path: &Path) -> bool {
-    is_pkg_db_core_module(source_module)
-        || is_approved_stdlib_internal_for_db_core_kernel(source_module, source_path)
-}
-
-fn db_kernel_import_violation_message(source_module: &str, imported_module: &str) -> String {
-    format!(
-        "module '{}' cannot import '{}'. only pkg/db/admin/* and pkg/db/explain/* may import db/admin_kernel or db/explain_kernel",
-        source_module, imported_module
-    )
-}
-
-fn db_core_import_violation_message(source_module: &str, imported_module: &str) -> String {
-    format!(
-        "module '{}' cannot import admin/explain module '{}'. pkg/db/core/* must not depend on pkg/db/admin/*, pkg/db/explain/*, db/admin_kernel, or db/explain_kernel",
-        source_module, imported_module
-    )
-}
-
-fn db_core_kernel_import_violation_message(source_module: &str, imported_module: &str) -> String {
-    format!(
-        "module '{}' cannot import '{}'. only pkg/db/core/* and approved stdlib internals (db/core_kernel, db/admin_kernel, db/explain_kernel) may import db/core_kernel",
-        source_module, imported_module
-    )
-}
-
 fn architecture_layer_violation_message(
     source: ModuleLayer,
     target: ModuleLayer,
@@ -3519,7 +3387,7 @@ fn host_import_violation_message(source: ModuleLayer, imported_module: &str) -> 
 
 fn host_http_import_violation_message(source_module: &str) -> String {
     format!(
-        "module '{}' cannot import host/http outside infrastructure/integrations or frontend/integrations (same applies to host/web_*). help: move this module under src/infrastructure/integrations/** or src/frontend/integrations/**, or route through an integration adapter",
+        "module '{}' cannot import host/http outside infrastructure/integrations or frontend/integrations. help: move this module under src/infrastructure/integrations/** or src/frontend/integrations/**, or route through an integration adapter",
         source_module
     )
 }
@@ -3911,38 +3779,6 @@ fn is_builtin_value_name(name: &SmolStr) -> bool {
             | "__wr_env_get"
             | "__wr_env_set"
             | "__wr_runtime_configure"
-            | "__wr_db_core_open"
-            | "__wr_db_core_close"
-            | "__wr_db_core_submit_batch"
-            | "__wr_db_core_read_point"
-            | "__wr_db_core_read_range"
-            | "__wr_db_core_txn_begin"
-            | "__wr_db_core_txn_prepare"
-            | "__wr_db_core_txn_commit"
-            | "__wr_db_core_txn_abort"
-            | "__wr_db_admin_snapshot_start"
-            | "__wr_db_admin_snapshot_status"
-            | "__wr_db_admin_restore"
-            | "__wr_db_admin_checkpoint_create"
-            | "__wr_db_admin_checkpoint_restore_latest"
-            | "__wr_db_admin_schema_epoch_set"
-            | "__wr_db_admin_schema_set_all_voters_on_target_binary"
-            | "__wr_db_admin_autoscale_tick"
-            | "__wr_db_admin_plan_rehome"
-            | "__wr_db_admin_advance_rehome"
-            | "__wr_db_admin_promote_async_failover"
-            | "__wr_db_explain_checkpoint_count"
-            | "__wr_db_explain_schema_epoch_get"
-            | "__wr_db_explain_health_has_checkpoint_or_schema_error"
-            | "__wr_db_explain_private_mesh_status"
-            | "__wr_db_explain_logical_shard_count"
-            | "__wr_db_explain_active_group_count"
-            | "__wr_db_explain_autoscale_status"
-            | "__wr_db_explain_topology_status"
-            | "__wr_db_explain_shard_map_epoch"
-            | "__wr_db_explain_shard_for_key"
-            | "__wr_db_explain_resolve_owner"
-            | "__wr_db_explain_global_route_lookup"
             | "__wr_external_call"
             | "__wr_http_call"
             | "__wr_metrics_scene_trace"
@@ -3952,16 +3788,6 @@ fn is_builtin_value_name(name: &SmolStr) -> bool {
             | "__wr_metrics_scene_trace_exact_path"
             | "__wr_metrics_scene_trace_conservative_path"
             | "__wr_metrics_scene_trace_hit"
-            | "__wr_metrics_web_writev_calls_id"
-            | "__wr_metrics_web_sendfile_calls_id"
-            | "__wr_web_parse_json_text"
-            | "__wr_web_render_json_text"
-            | "__wr_auth_hash_password"
-            | "__wr_auth_verify_password_hash"
-            | "__wr_auth_sign_jwt"
-            | "__wr_auth_verify_jwt"
-            | "__wr_auth_generate_secure_token"
-            | "__wr_auth_render_jwks_document"
             | "Pool"
             | "queue"
             | "drop"
@@ -4523,8 +4349,6 @@ mod tests {
         assert!(is_network_integration_module(
             "frontend/integrations/browser"
         ));
-        assert!(is_network_integration_module("pkg/web/core/server"));
-        assert!(is_network_integration_module("pkg/web/auth/session"));
         assert!(!is_network_integration_module("application/service/orders"));
     }
 

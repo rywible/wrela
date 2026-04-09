@@ -42,32 +42,6 @@ fn run() -> Integer {
 }
 
 #[test]
-fn project_imports_from_pkg_namespace() {
-    let base = tempfile::tempdir().expect("tempdir");
-    let entry_path = base.path().join("src").join("main.wr");
-
-    write_temp(
-        &entry_path,
-        r#"use open from pkg/db/core/kv
-
-fn run() -> Integer {
-    return 1
-}
-"#,
-    );
-
-    let project = load_project(&entry_path).expect("load project");
-    let mut found = false;
-    for (_, func) in project.module.functions.iter() {
-        if func.name == "open" {
-            found = true;
-            break;
-        }
-    }
-    assert!(found);
-}
-
-#[test]
 fn project_provenance_tracks_owner_paths_for_merged_symbols() {
     let base = tempfile::tempdir().expect("tempdir");
     let entry_path = base.path().join("src").join("main.wr");

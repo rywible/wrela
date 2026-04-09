@@ -2,7 +2,7 @@ use super::cli_args::{CommandSpec, ParsedCommandSpec};
 use super::contracts::{
     EXIT_CODEGEN, EXIT_OK, EXIT_PARSE, EXIT_RUNTIME_SIGNAL, EXIT_TYPE, EXIT_USAGE, OutputFormat,
 };
-use super::{cert_engine, deploy, diag_emit, perf_engine, replay_trace};
+use super::{cert_engine, diag_emit, perf_engine, replay_trace};
 use miette::SourceSpan;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
@@ -20,6 +20,24 @@ use wrela::mir;
 use wrela::parser;
 #[path = "../repro.rs"]
 mod repro;
+
+pub(super) fn run_repro_artifact(
+    workspace_root: &Path,
+    repro_artifact_path: &Path,
+    timeout: Duration,
+    output_format: OutputFormat,
+    http_mode: HttpCassetteMode,
+    budget_policy: &BudgetPolicyV1,
+) -> i32 {
+    repro::run_repro_artifact(
+        workspace_root,
+        repro_artifact_path,
+        timeout,
+        output_format,
+        http_mode,
+        budget_policy,
+    )
+}
 
 fn naming_policy_tier(error: &hir::naming::NamingError) -> &'static str {
     match error {
@@ -143,17 +161,6 @@ pub fn execute(spec: CommandSpec) {
     let perfcmp_measure_pairs = parsed.perfcmp_measure_pairs;
     let perfcmp_min_effect_pct = parsed.perfcmp_min_effect_pct;
     let perfcmp_confidence_pct = parsed.perfcmp_confidence_pct;
-    let deploy_target = parsed.deploy_target;
-    let deploy_app = parsed.deploy_app;
-    let deploy_region = parsed.deploy_region;
-    let deploy_machines = parsed.deploy_machines;
-    let deploy_policy = parsed.deploy_policy;
-    let deploy_replication_factor = parsed.deploy_replication_factor;
-    let deploy_write_quorum = parsed.deploy_write_quorum;
-    let deploy_logical_shards = parsed.deploy_logical_shards;
-    let deploy_active_groups = parsed.deploy_active_groups;
-    let deploy_force = parsed.deploy_force;
-    let deploy_generate_only = parsed.deploy_generate_only;
     let analysis_holes_only = parsed.analysis_holes_only;
     let strict_naming = parsed.strict_naming;
     let fix_allow_review_fixes = parsed.fix_allow_review_fixes;
@@ -223,24 +230,6 @@ pub fn execute(spec: CommandSpec) {
     {
         eprintln!(
             "error: --baseline-ref, --candidate-ref, --warmup-pairs, --measure-pairs, --min-effect-pct, and --confidence are only valid with `wrela perfcmp`"
-        );
-        std::process::exit(EXIT_USAGE);
-    }
-    if command != "deploy"
-        && (deploy_target.is_some()
-            || deploy_app.is_some()
-            || deploy_region.is_some()
-            || deploy_machines.is_some()
-            || deploy_policy.is_some()
-            || deploy_replication_factor.is_some()
-            || deploy_write_quorum.is_some()
-            || deploy_logical_shards.is_some()
-            || deploy_active_groups.is_some()
-            || deploy_force
-            || deploy_generate_only)
-    {
-        eprintln!(
-            "error: --target, --app, --region, --machines, --deploy-policy, --rf, --wq, --logical-shards, --active-groups, --force, and --generate-only are only valid with `wrela deploy`"
         );
         std::process::exit(EXIT_USAGE);
     }
@@ -1011,25 +1000,6 @@ pub fn execute(spec: CommandSpec) {
                 perf_gate_path,
                 perf_max_regression_pct,
                 kpi_thresholds,
-            });
-            std::process::exit(exit);
-        }
-        "deploy" => {
-            let exit = deploy::execute_deploy_command(deploy::DeployCommandInput {
-                trace,
-                path_arg,
-                program_args,
-                target: deploy_target,
-                app: deploy_app,
-                region: deploy_region,
-                machines: deploy_machines,
-                deploy_policy,
-                replication_factor: deploy_replication_factor,
-                write_quorum: deploy_write_quorum,
-                logical_shards: deploy_logical_shards,
-                active_groups: deploy_active_groups,
-                force: deploy_force,
-                generate_only: deploy_generate_only,
             });
             std::process::exit(exit);
         }

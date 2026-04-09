@@ -2897,32 +2897,6 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
         (SmolStr::new("__wr_fs_write_bytes"), BindingKind::Function),
         (SmolStr::new("__wr_external_call"), BindingKind::Function),
         (SmolStr::new("__wr_http_call"), BindingKind::Function),
-        (
-            SmolStr::new("__wr_web_parse_json_text"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_web_render_json_text"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_auth_hash_password"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_auth_verify_password_hash"),
-            BindingKind::Function,
-        ),
-        (SmolStr::new("__wr_auth_sign_jwt"), BindingKind::Function),
-        (SmolStr::new("__wr_auth_verify_jwt"), BindingKind::Function),
-        (
-            SmolStr::new("__wr_auth_generate_secure_token"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_auth_render_jwks_document"),
-            BindingKind::Function,
-        ),
         (SmolStr::new("coarse"), BindingKind::Implicit),
         (SmolStr::new("fine"), BindingKind::Implicit),
         (SmolStr::new("vec2"), BindingKind::Function),
@@ -3145,125 +3119,6 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
             SmolStr::new("__wr_runtime_configure"),
             BindingKind::Function,
         ),
-        (SmolStr::new("__wr_db_core_open"), BindingKind::Function),
-        (SmolStr::new("__wr_db_core_close"), BindingKind::Function),
-        (
-            SmolStr::new("__wr_db_core_submit_batch"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_db_core_read_point"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_db_core_read_range"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_db_core_txn_begin"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_db_core_txn_prepare"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_db_core_txn_commit"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_db_core_txn_abort"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_db_admin_snapshot_start"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_db_admin_snapshot_status"),
-            BindingKind::Function,
-        ),
-        (SmolStr::new("__wr_db_admin_restore"), BindingKind::Function),
-        (
-            SmolStr::new("__wr_db_admin_checkpoint_create"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_db_admin_checkpoint_restore_latest"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_db_admin_schema_epoch_set"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_db_admin_schema_set_all_voters_on_target_binary"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_db_admin_autoscale_tick"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_db_admin_plan_rehome"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_db_admin_advance_rehome"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_db_admin_promote_async_failover"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_db_explain_checkpoint_count"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_db_explain_schema_epoch_get"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_db_explain_health_has_checkpoint_or_schema_error"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_db_explain_private_mesh_status"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_db_explain_logical_shard_count"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_db_explain_active_group_count"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_db_explain_autoscale_status"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_db_explain_topology_status"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_db_explain_shard_map_epoch"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_db_explain_shard_for_key"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_db_explain_resolve_owner"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_db_explain_global_route_lookup"),
-            BindingKind::Function,
-        ),
         (
             SmolStr::new("__wr_runtime_cpu_count"),
             BindingKind::Function,
@@ -3397,14 +3252,6 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
         ),
         (
             SmolStr::new("__wr_metrics_scene_trace_steps_gt_16_id"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_metrics_web_writev_calls_id"),
-            BindingKind::Function,
-        ),
-        (
-            SmolStr::new("__wr_metrics_web_sendfile_calls_id"),
             BindingKind::Function,
         ),
         (SmolStr::new("__wr_clock_ns"), BindingKind::Function),

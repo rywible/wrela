@@ -64,17 +64,6 @@ pub struct ParsedArgs {
     pub perfcmp_min_effect_pct: Option<f64>,
     pub perfcmp_confidence_pct: Option<f64>,
     pub orchestration_identity: Option<String>,
-    pub deploy_target: Option<String>,
-    pub deploy_app: Option<String>,
-    pub deploy_region: Option<String>,
-    pub deploy_machines: Option<usize>,
-    pub deploy_policy: Option<String>,
-    pub deploy_replication_factor: Option<u32>,
-    pub deploy_write_quorum: Option<u32>,
-    pub deploy_logical_shards: Option<u32>,
-    pub deploy_active_groups: Option<u32>,
-    pub deploy_force: bool,
-    pub deploy_generate_only: bool,
     pub analysis_holes_only: bool,
     pub strict_naming: bool,
     pub fix_allow_review_fixes: bool,
@@ -197,17 +186,6 @@ pub fn parse(raw_args: Vec<String>) -> CommandSpec {
     let mut perfcmp_min_effect_pct: Option<f64> = None;
     let mut perfcmp_confidence_pct: Option<f64> = None;
     let orchestration_identity: Option<String> = None;
-    let mut deploy_target: Option<String> = None;
-    let mut deploy_app: Option<String> = None;
-    let mut deploy_region: Option<String> = None;
-    let mut deploy_machines: Option<usize> = None;
-    let mut deploy_policy: Option<String> = None;
-    let mut deploy_replication_factor: Option<u32> = None;
-    let mut deploy_write_quorum: Option<u32> = None;
-    let mut deploy_logical_shards: Option<u32> = None;
-    let mut deploy_active_groups: Option<u32> = None;
-    let mut deploy_force = false;
-    let mut deploy_generate_only = false;
     let mut analysis_holes_only = false;
     let mut strict_naming = false;
     let mut fix_allow_review_fixes = false;
@@ -701,100 +679,6 @@ pub fn parse(raw_args: Vec<String>) -> CommandSpec {
             }
             continue;
         }
-        if let Some(value) = arg.strip_prefix("--target=") {
-            deploy_target = Some(value.to_string());
-            continue;
-        }
-        if let Some(value) = arg.strip_prefix("--app=") {
-            deploy_app = Some(value.to_string());
-            continue;
-        }
-        if let Some(value) = arg.strip_prefix("--region=") {
-            deploy_region = Some(value.to_string());
-            continue;
-        }
-        if let Some(value) = arg.strip_prefix("--machines=") {
-            match value.parse::<usize>() {
-                Ok(parsed) => deploy_machines = Some(parsed),
-                Err(_) => {
-                    return CommandSpec {
-                        trace_enabled,
-                        parsed: ParsedCommandSpec::Error(format!(
-                            "error: invalid --machines value `{value}`"
-                        )),
-                    };
-                }
-            }
-            continue;
-        }
-        if let Some(value) = arg.strip_prefix("--deploy-policy=") {
-            deploy_policy = Some(value.to_string());
-            continue;
-        }
-        if let Some(value) = arg.strip_prefix("--rf=") {
-            match value.parse::<u32>() {
-                Ok(parsed) => deploy_replication_factor = Some(parsed),
-                Err(_) => {
-                    return CommandSpec {
-                        trace_enabled,
-                        parsed: ParsedCommandSpec::Error(format!(
-                            "error: invalid --rf value `{value}`"
-                        )),
-                    };
-                }
-            }
-            continue;
-        }
-        if let Some(value) = arg.strip_prefix("--wq=") {
-            match value.parse::<u32>() {
-                Ok(parsed) => deploy_write_quorum = Some(parsed),
-                Err(_) => {
-                    return CommandSpec {
-                        trace_enabled,
-                        parsed: ParsedCommandSpec::Error(format!(
-                            "error: invalid --wq value `{value}`"
-                        )),
-                    };
-                }
-            }
-            continue;
-        }
-        if let Some(value) = arg.strip_prefix("--logical-shards=") {
-            match value.parse::<u32>() {
-                Ok(parsed) => deploy_logical_shards = Some(parsed),
-                Err(_) => {
-                    return CommandSpec {
-                        trace_enabled,
-                        parsed: ParsedCommandSpec::Error(format!(
-                            "error: invalid --logical-shards value `{value}`"
-                        )),
-                    };
-                }
-            }
-            continue;
-        }
-        if let Some(value) = arg.strip_prefix("--active-groups=") {
-            match value.parse::<u32>() {
-                Ok(parsed) => deploy_active_groups = Some(parsed),
-                Err(_) => {
-                    return CommandSpec {
-                        trace_enabled,
-                        parsed: ParsedCommandSpec::Error(format!(
-                            "error: invalid --active-groups value `{value}`"
-                        )),
-                    };
-                }
-            }
-            continue;
-        }
-        if arg == "--force" {
-            deploy_force = true;
-            continue;
-        }
-        if arg == "--generate-only" {
-            deploy_generate_only = true;
-            continue;
-        }
         if arg == "--prefix" {
             if let Some(path) = iter.next() {
                 prefix_path = Some(path);
@@ -896,17 +780,6 @@ pub fn parse(raw_args: Vec<String>) -> CommandSpec {
             perfcmp_min_effect_pct,
             perfcmp_confidence_pct,
             orchestration_identity,
-            deploy_target,
-            deploy_app,
-            deploy_region,
-            deploy_machines,
-            deploy_policy,
-            deploy_replication_factor,
-            deploy_write_quorum,
-            deploy_logical_shards,
-            deploy_active_groups,
-            deploy_force,
-            deploy_generate_only,
             analysis_holes_only,
             strict_naming,
             fix_allow_review_fixes,
@@ -937,7 +810,6 @@ fn is_command(arg: &str) -> bool {
             | "perf"
             | "perfcmp"
             | "matrix"
-            | "deploy"
     )
 }
 
@@ -1250,7 +1122,6 @@ mod tests {
             "build",
             "compile",
             "verify-cert",
-            "deploy",
             "run",
             "dev",
             "test",
@@ -1264,46 +1135,6 @@ mod tests {
                 ParsedCommandSpec::Ready(parsed) => assert_eq!(parsed.command, command),
                 other => panic!("command {command} failed parse: {other:?}"),
             }
-        }
-    }
-
-    #[test]
-    fn parse_deploy_flags() {
-        let spec = parse(vec![
-            "deploy".to_string(),
-            ".".to_string(),
-            "--target=fly".to_string(),
-            "--app=my-app".to_string(),
-            "--region=ord".to_string(),
-            "--machines=3".to_string(),
-            "--deploy-policy=infra/wrela.deploy.toml".to_string(),
-            "--rf=3".to_string(),
-            "--wq=2".to_string(),
-            "--logical-shards=64".to_string(),
-            "--active-groups=8".to_string(),
-            "--force".to_string(),
-            "--generate-only".to_string(),
-        ]);
-        match spec.parsed {
-            ParsedCommandSpec::Ready(parsed) => {
-                assert_eq!(parsed.command, "deploy");
-                assert_eq!(parsed.path_arg.as_deref(), Some("."));
-                assert_eq!(parsed.deploy_target.as_deref(), Some("fly"));
-                assert_eq!(parsed.deploy_app.as_deref(), Some("my-app"));
-                assert_eq!(parsed.deploy_region.as_deref(), Some("ord"));
-                assert_eq!(parsed.deploy_machines, Some(3));
-                assert_eq!(
-                    parsed.deploy_policy.as_deref(),
-                    Some("infra/wrela.deploy.toml")
-                );
-                assert_eq!(parsed.deploy_replication_factor, Some(3));
-                assert_eq!(parsed.deploy_write_quorum, Some(2));
-                assert_eq!(parsed.deploy_logical_shards, Some(64));
-                assert_eq!(parsed.deploy_active_groups, Some(8));
-                assert!(parsed.deploy_force);
-                assert!(parsed.deploy_generate_only);
-            }
-            other => panic!("unexpected parse result: {other:?}"),
         }
     }
 
