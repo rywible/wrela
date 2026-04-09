@@ -1,4 +1,4 @@
-//! Runtime metrics. Scheduler/web metrics retained for JSON dump compatibility (always 0).
+//! Runtime metrics for scheduler, actors, and world/field evaluation.
 #![allow(dead_code)]
 
 use std::collections::HashMap;
@@ -56,15 +56,6 @@ pub const METRIC_ACTOR_SPAWN_INSTANCE_NOT_PTR: u32 = 44;
 pub const METRIC_ACTOR_SPAWN_INSTANCE_PROMOTED: u32 = 45;
 pub const METRIC_ACTOR_METHOD_PANIC: u32 = 46;
 pub const METRIC_ACTOR_METHOD_MISSING: u32 = 47;
-pub const METRIC_WEB_OUTBOUND_QUEUE_ENQUEUED_BYTES: u32 = 48;
-pub const METRIC_WEB_OUTBOUND_QUEUE_PENDING_BYTES: u32 = 49;
-pub const METRIC_WEB_FLUSH_ATTEMPTS: u32 = 50;
-pub const METRIC_WEB_FLUSH_WOULD_BLOCK: u32 = 51;
-pub const METRIC_WEB_WRITEV_CALLS: u32 = 52;
-pub const METRIC_WEB_WRITEV_BYTES: u32 = 53;
-pub const METRIC_WEB_SENDFILE_CALLS: u32 = 54;
-pub const METRIC_WEB_SENDFILE_BYTES: u32 = 55;
-pub const METRIC_WEB_SENDFILE_FALLBACK: u32 = 56;
 pub const METRIC_REACTOR_BATCH_DRAIN_TOTAL: u32 = 57;
 pub const METRIC_REACTOR_BATCH_DRAIN_SAMPLES: u32 = 58;
 pub const METRIC_SCHED_READY_OVERFLOW_FALLBACK: u32 = 59;
@@ -108,8 +99,6 @@ static QUEUE_DEQUEUE_LATENCY_HIST: [AtomicU64; LATENCY_BUCKETS.len()] =
 static QUEUE_AGE_HIST: [AtomicU64; LATENCY_BUCKETS.len()] =
     [const { AtomicU64::new(0) }; LATENCY_BUCKETS.len()];
 static SCHED_DISPATCH_LOOP_NS_HIST: [AtomicU64; LATENCY_BUCKETS.len()] =
-    [const { AtomicU64::new(0) }; LATENCY_BUCKETS.len()];
-static WEB_OUTBOUND_QUEUE_AGE_HIST: [AtomicU64; LATENCY_BUCKETS.len()] =
     [const { AtomicU64::new(0) }; LATENCY_BUCKETS.len()];
 static BURST_DRAIN_TOTAL: AtomicU64 = AtomicU64::new(0);
 static BURST_DRAIN_SAMPLES: AtomicU64 = AtomicU64::new(0);
@@ -224,9 +213,6 @@ pub fn reset() {
         bucket.store(0, Ordering::Relaxed);
     }
     for bucket in SCHED_DISPATCH_LOOP_NS_HIST.iter() {
-        bucket.store(0, Ordering::Relaxed);
-    }
-    for bucket in WEB_OUTBOUND_QUEUE_AGE_HIST.iter() {
         bucket.store(0, Ordering::Relaxed);
     }
     BURST_DRAIN_TOTAL.store(0, Ordering::Relaxed);
@@ -610,39 +596,6 @@ pub fn observe_sched_dispatch_loop_ns(value_ns: u64) {
     if enabled() {
         observe_histogram(&SCHED_DISPATCH_LOOP_NS_HIST, value_ns);
     }
-}
-pub fn observe_web_outbound_queue_age_ns(value_ns: u64) {
-    if enabled() {
-        observe_histogram(&WEB_OUTBOUND_QUEUE_AGE_HIST, value_ns);
-    }
-}
-pub fn inc_web_outbound_queue_enqueued_bytes_n(value: u64) {
-    bump_by(METRIC_WEB_OUTBOUND_QUEUE_ENQUEUED_BYTES, value)
-}
-pub fn inc_web_outbound_queue_pending_bytes_n(delta: i64) {
-    bump_signed(METRIC_WEB_OUTBOUND_QUEUE_PENDING_BYTES, delta)
-}
-pub fn inc_web_flush_attempts() {
-    bump(METRIC_WEB_FLUSH_ATTEMPTS)
-}
-pub fn inc_web_flush_would_block() {
-    bump(METRIC_WEB_FLUSH_WOULD_BLOCK)
-}
-pub fn inc_web_writev_calls() {
-    bump(METRIC_WEB_WRITEV_CALLS)
-}
-pub fn inc_web_writev_bytes_n(value: u64) {
-    bump_by(METRIC_WEB_WRITEV_BYTES, value)
-}
-#[allow(dead_code)]
-pub fn inc_web_sendfile_calls() {
-    bump(METRIC_WEB_SENDFILE_CALLS)
-}
-pub fn inc_web_sendfile_bytes_n(value: u64) {
-    bump_by(METRIC_WEB_SENDFILE_BYTES, value)
-}
-pub fn inc_web_sendfile_fallback() {
-    bump(METRIC_WEB_SENDFILE_FALLBACK)
 }
 pub fn observe_reactor_batch_drain(batch_size: u64) {
     bump_by(METRIC_REACTOR_BATCH_DRAIN_TOTAL, batch_size);

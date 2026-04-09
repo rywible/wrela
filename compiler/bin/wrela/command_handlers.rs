@@ -6,4 +6,3 @@ include!("commands/test_eval_perf.rs");
 include!("commands/fix_fmt.rs");
 include!("commands/check_analyze.rs");
 include!("commands/run_dev.rs");
-include!("commands/deploy_verify.rs");

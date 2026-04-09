@@ -10,7 +10,6 @@ fmt <path>            canonical formatting pass (idempotent)
 build <path>          run certification, then compile executable on success only
 compile <path>        alias for build (also certification-gated)
 verify-cert <path>    verify an emitted cert.json report and hashes
-deploy [path]         generate deploy assets and deploy all-Wrela app (target: fly)
 run <path>            compile and run
 dev <path>            watch and rebuild (polling)
 test [path]           run tests from a project root directory
@@ -21,17 +20,6 @@ matrix [path]         run workspace test/spec/perf matrix and write evidence bun
 
 options:
 --prefix PATH         install/update prefix (default: $PREFIX or ~/.local/wrela)
---target=NAME         deploy target (`fly`)
---app=NAME            deploy app name (required for `wrela deploy --target=fly`)
---region=REGION       deploy primary region (default: $PRIMARY_REGION or ord)
---machines=N          desired machine count for deploy (default: 3)
---deploy-policy=PATH  optional deploy policy TOML (defaults to ./wrela.deploy.toml if present)
---rf=N                replication factor override (default: 3)
---wq=N                write quorum override (default: 2; majority required)
---logical-shards=N    initial logical shard count for raft-group sharding (default: 16)
---active-groups=N     initial active raft group count (default: 3)
---force               overwrite generated deploy assets (fly.toml/Dockerfile)
---generate-only       only generate deploy assets; skip provider deploy
 -o, --out PATH        output path for build/run
 --emit-mir            emit MIR before optimization
 --emit-mir-opt        emit MIR after optimization
@@ -83,4 +71,3 @@ env: WRELA_BUDGET_*   Budget Policy v1 overrides (autogen/sim/fuzz/mutation + ti
 --error-format=human|json|sarif  set diagnostic output format (default: human)
 -h, --help            show this help
 -V, --version         show version
-

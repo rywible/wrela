@@ -177,7 +177,6 @@ commands:\n\
   build <path>          run certification, then compile executable on success only\n\
   compile <path>        alias for build (also certification-gated)\n\
   verify-cert <path>    verify an emitted cert.json report and hashes\n\
-  deploy [path]         generate deploy assets and deploy all-Wrela app (target: fly)\n\
   run <path>            compile and run\n\
   dev <path>            watch and rebuild (polling)\n\
   test [path]           run tests from a project root directory\n\
@@ -188,17 +187,6 @@ commands:\n\
 \n\
 options:\n\
   --prefix PATH         install/update prefix (default: $PREFIX or ~/.local/wrela)\n\
-  --target=NAME         deploy target (`fly`)\n\
-  --app=NAME            deploy app name (required for `wrela deploy --target=fly`)\n\
-  --region=REGION       deploy primary region (default: $PRIMARY_REGION or ord)\n\
-  --machines=N          desired machine count for deploy (default: 3)\n\
-  --deploy-policy=PATH  optional deploy policy TOML (defaults to ./wrela.deploy.toml if present)\n\
-  --rf=N                replication factor override (default: 3)\n\
-  --wq=N                write quorum override (default: 2; majority required)\n\
-  --logical-shards=N    initial logical shard count for raft-group sharding (default: 16)\n\
-  --active-groups=N     initial active raft group count (default: 3)\n\
-  --force               overwrite generated deploy assets (fly.toml/Dockerfile)\n\
-  --generate-only       only generate deploy assets; skip provider deploy\n\
   -o, --out PATH        output path for build/run\n\
   --emit-mir            emit MIR before optimization\n\
   --emit-mir-opt        emit MIR after optimization\n\
@@ -708,8 +696,6 @@ mod tests {
     fn help_text_mentions_surviving_surface() {
         let help = help_text();
         assert!(help.contains("init [path]"));
-        assert!(help.contains("deploy [path]"));
-        assert!(help.contains("--target=NAME"));
         assert!(help.contains("--holes-only"));
         assert!(help.contains("--allow-review-fixes"));
         assert!(help.contains("--query-backend=NAME"));

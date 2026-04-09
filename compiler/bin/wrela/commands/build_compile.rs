@@ -225,7 +225,7 @@ struct TestMaintenanceSummary {
     mode_record: bool,
     mode_update_public_surface: bool,
     exit_code: i32,
-    deployable_artifacts_emitted: bool,
+    binary_artifacts_emitted: bool,
 }
 
 #[derive(Serialize)]
@@ -1480,7 +1480,7 @@ pub(super) fn write_test_maintenance_summary(
         mode_record,
         mode_update_public_surface,
         exit_code,
-        deployable_artifacts_emitted: false,
+        binary_artifacts_emitted: false,
     };
     let payload = serde_json::to_vec_pretty(&summary).map_err(|err| err.to_string())?;
     let artifact_dir = workspace_root
