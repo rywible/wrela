@@ -223,7 +223,6 @@ It must say at minimum:
 - capture kind
 - item schema
 - result schema
-- default kernel/executor
 - whether a domain contract is required
 - whether hit context is preserved
 - whether participant selection is required
@@ -231,6 +230,23 @@ It must say at minimum:
 - observability profile
 
 It must **not** hardcode scene-derived pruning choice or artifact contents. Those belong to plan lowering.
+
+It should also avoid carrying lowering-only details like helper symbol names or the current executor wiring. Those belong to a separate execution-binding layer.
+
+### Execution Binding
+
+An **execution binding** maps a semantic query contract onto the current lowering and runtime implementation.
+
+It may include things like:
+
+- planner recipe kind
+- default executor
+- optional internal kernel kind
+- optional helper/export symbol
+
+Execution bindings are compiler-internal adapters.
+
+They are not the semantic source of truth and should not force contract version changes when the implementation strategy is reorganized.
 
 ### Domain Contract
 
@@ -309,18 +325,27 @@ pub struct QueryContractDescriptor {
     pub capture_kind: CaptureKind,
     pub item_kind: QueryItemKind,
     pub result_kind: QueryResultKind,
-    pub helper_name: &'static str,
-    pub kernel: InternalKernelKind,
-    pub executor: PlanExecutor,
     pub domain_contract: Option<DomainContractKind>,
     pub preserves_local_hit_context: bool,
     pub participant_kind: Option<ParticipantContractKind>,
     pub supported_backends: BackendSupport,
     pub observability: QueryObservabilityProfile,
 }
+
+pub struct QueryExecutionBinding {
+    pub contract_id: QueryContractId,
+    pub planner_recipe: QueryPlannerRecipeKind,
+    pub default_executor: PlanExecutor,
+    pub default_kernel: Option<InternalKernelKind>,
+    pub helper_name: Option<&'static str>,
+}
 ```
 
-This descriptor is the static source of truth.
+The descriptor is the static source of truth for semantic identity and data requirements.
+
+Execution wiring lives in a separate binding layer.
+
+That binding layer is allowed to change when lowering/runtime internals improve. The semantic contract id and version should change only when the user-visible or backend-stable contract changes.
 
 Query planning still derives scene-sensitive strategy from:
 
@@ -377,10 +402,17 @@ Define the following types up front:
 - `BackendSupport`
 - `QueryObservabilityProfile`
 - `QueryContractDescriptor`
+- `QueryPlannerRecipeKind`
+- `QueryExecutionBinding`
 
 Add `QueryItemKind::Unit` now even if the first users arrive later. This prevents the registry from assuming every question needs a point, ray, or hit.
 
 Do **not** move scene-derived pruning into this module.
+
+Keep `QueryContractDescriptor` semantic.
+
+Do **not** put `helper_name`, `kernel`, or `executor` on the contract descriptor itself.
+Those should live on `QueryExecutionBinding` or another lowering adapter owned by the same subsystem.
 
 **Code sketch**
 
@@ -407,14 +439,19 @@ pub struct QueryContractDescriptor {
     pub capture_kind: CaptureKind,
     pub item_kind: QueryItemKind,
     pub result_kind: QueryResultKind,
-    pub helper_name: &'static str,
-    pub kernel: InternalKernelKind,
-    pub executor: PlanExecutor,
     pub domain_contract: Option<DomainContractKind>,
     pub preserves_local_hit_context: bool,
-    pub participant_kind: Option<CaptureQueryKind>,
+    pub participant_kind: Option<ParticipantContractKind>,
     pub supported_backends: BackendSupport,
     pub observability: QueryObservabilityProfile,
+}
+
+pub struct QueryExecutionBinding {
+    pub contract_id: QueryContractId,
+    pub planner_recipe: QueryPlannerRecipeKind,
+    pub default_executor: PlanExecutor,
+    pub default_kernel: Option<InternalKernelKind>,
+    pub helper_name: Option<&'static str>,
 }
 ```
 
@@ -424,6 +461,7 @@ pub struct QueryContractDescriptor {
 - The registry supports deterministic iteration order.
 - The model can describe item-less questions.
 - No scene-derived pruning fields exist on the descriptor.
+- Helper names and current executor/kernel routing are not part of semantic contract identity.
 
 #### Task 11A2 — Seed the registry with every currently shipped question
 
@@ -470,6 +508,30 @@ Do not try to rename `trace` to `nearest` in this phase. Keep the current semant
 - Registry ids are stable strings, not ad hoc generated names.
 - Query plan tests can assert descriptor ids.
 
+#### Task 11A3 — Add execution bindings for every shipped descriptor
+
+**Description**
+
+Create a binding table that maps each semantic descriptor onto the current planner, lowering, and runtime implementation.
+
+**Files**
+
+- `compiler/query_contract/mod.rs`
+- optionally new `compiler/query_contract/bindings.rs`
+- `compiler/query_plan/mod.rs`
+
+**Implementation notes**
+
+This is where current details such as helper names, default executors, and default kernel kinds should live.
+
+The binding layer may still be enum-backed at first, but it must be explicitly downstream of descriptor resolution rather than pretending to be the descriptor itself.
+
+**Acceptance criteria**
+
+- Every currently shipped descriptor has exactly one execution binding.
+- Existing helper names are reachable by binding lookup rather than being embedded in semantic contract ids.
+- Execution bindings can change without renaming semantic contracts.
+
 ### Workstream B: Planning Integration
 
 #### Task 11B1 — Carry contract identity through query plans and kernel plans
@@ -494,6 +556,8 @@ Add at minimum:
 - `surface`
 
 Keep the current enums for one phase as adapters only. The new fields should be authoritative for new work.
+
+Query plans may continue to carry derived execution data such as executor or helper name for one phase, but those values should come from execution-binding lookup after descriptor resolution rather than from open-coded enum matches.
 
 Validators should confirm that the descriptor’s static item/result kinds match the plan’s item/result contracts.
 
@@ -531,7 +595,7 @@ Questions that require a domain flag or participant family should read that from
 
 **Description**
 
-Add dedicated tests that lock the registry shape and ensure every legacy query enum maps into it.
+Add dedicated tests that lock the registry shape and ensure every legacy query enum maps into the semantic registry and an execution binding.
 
 **Files**
 
@@ -544,16 +608,18 @@ Test three things:
 1. deterministic descriptor order
 2. stable ids and versions
 3. exhaustive mapping from current enums to descriptor ids
+4. exhaustive mapping from descriptor ids to execution bindings
 
 **Acceptance criteria**
 
 - New test file exists.
-- The test suite can detect descriptor drift without running the full query stack.
+- The test suite can detect descriptor or binding drift without running the full query stack.
 
 ### Phase 11 Exit Criteria
 
 - There is one canonical query registry.
 - Every current query plan carries a contract id.
+- Every shipped contract resolves through one execution binding.
 - No new question can be added without touching the registry first.
 - No user-facing surface change yet.
 
@@ -670,6 +736,9 @@ Those belong in `RayQuery`, not in the domain.
 
 Keep `geometry_detail` under `spatial`.
 
+This is primarily an internal contract cleanup phase.
+The internal `SceneDomain` shape should change here even if the user-facing authored syntax remains temporarily stable.
+
 **Acceptance criteria**
 
 - `SceneDomain` uses nested family contracts.
@@ -705,29 +774,13 @@ If any internal adapter still needs the old wrapper records for one phase, keep 
 - `TraceQuery` and `SurfaceQuery` are no longer part of the public builtin query vocabulary.
 - No user-facing signature requires a mixed capture+item wrapper record.
 
-### Workstream B: Domain Syntax And Lowering
+### Workstream B: Domain Lowering And Compatibility
 
-#### Task 12B1 — Change `domain` authoring to explicit family contract values
+#### Task 12B1 — Keep current `domain` authoring stable while lowering to family-shaped contracts
 
 **Description**
 
-Make domain declarations author family contract records explicitly.
-
-**Target surface**
-
-```wr
-domain Presentation(world: RegionCapture) {
-    spatial = spatial_domain_contract(
-        geometry_detail = fine,
-        guarantee = conservative,
-    )
-    surface = surface_domain_contract(material = true)
-    participants = participant_domain_contract(
-        radiance = true,
-        media = true,
-    )
-}
-```
+Preserve the current authored `domain` surface for this phase, but lower it into the new nested family-shaped `SceneDomain` representation internally.
 
 **Files**
 
@@ -739,15 +792,18 @@ domain Presentation(world: RegionCapture) {
 
 **Implementation notes**
 
-This should be an authoritative cut.
+This phase should avoid forcing a user-facing source migration just to land an internal contract cleanup.
 
-Do not keep the old flat `geometry_detail = ...`, `material = ...`, `radiance = ...`, `media = ...` assignment model around indefinitely. One transition adapter phase is fine if needed during landing, but the authored language should end this phase on explicit family contracts.
+Treat the current authored domain fields as sugar over nested family contracts.
+
+If explicit constructors like `spatial_domain_contract(...)` are useful internally or for tests, they may exist as non-primary surface area during this phase.
+The authoritative public syntax cut belongs later, together with the family query namespace cut, so users migrate once instead of twice.
 
 **Acceptance criteria**
 
-- New domain syntax is documented in spec tests.
-- Typechecker validates each family contract field.
-- Old flat domain shape is removed or isolated behind a temporary migration adapter that is deleted before the phase exits.
+- Existing domain declarations still compile from the user’s point of view.
+- Lowering and typechecking target the nested family contract shape internally.
+- No mandatory authored-domain migration is required in Phase 12.
 
 #### Task 12B2 — Update MIR lowering to build nested `SceneDomain`
 
@@ -829,6 +885,8 @@ This is a major simplification.
 
 It unifies scalar trace with batch trace and removes duplicate query-budget fields from domains.
 
+If the family namespace surface has not landed yet, do this first on legacy builtin names and keep the authored migration small.
+
 **Acceptance criteria**
 
 - Scalar trace signatures no longer list loose origin/direction/budget arguments.
@@ -880,16 +938,20 @@ Refactor domain validation helpers to read:
 - Per-ray budgets live in `RayQuery`, not in `SceneDomain`.
 - `PointDirectionQuery` is real.
 - Scalar trace/radiance signatures are normalized around item records.
+- The internal domain contract cleanup is landed without requiring a separate user-facing domain syntax migration yet.
 
 ## Phase 13: Registry-Driven Lowering, Planning, And Backend Dispatch
 
 ### Goal
 
-Make the query registry truly authoritative by removing per-question hardcoded execution tables.
+Make the query registry truly authoritative by removing per-question hardcoded lowering and execution decisions from the authoritative path.
 
 ### Why this is third
 
 After Phase 12, the query inputs and domain contracts are finally shaped correctly. That is the right moment to replace the current hardcoded lowering and backend flavor tables.
+
+This phase should make generic descriptor-driven dispatch real internally.
+It does not need to delete every compatibility wrapper at the boundary on day one if that would slow down convergence.
 
 ### Workstream A: Unified Invocation Specs
 
@@ -948,12 +1010,15 @@ Refactor `compiler/kernel/lower.rs` so query lowering is driven by descriptor lo
 
 It is acceptable to keep a short compatibility table from legacy builtin names to descriptor ids during this phase.
 
-It is **not** acceptable to keep large per-question lowering branches once the descriptor has been resolved.
+Execution-binding lookup should happen immediately after descriptor resolution.
+
+It is **not** acceptable to keep large per-question lowering branches once the descriptor and its binding have been resolved.
 
 **Acceptance criteria**
 
 - Contract lookup happens before plan construction.
-- The bulk of query lowering is shared after descriptor resolution.
+- Binding lookup happens immediately after descriptor resolution.
+- The bulk of query lowering is shared after descriptor/binding resolution.
 
 ### Workstream B: Registry-Driven Query Plan Builders
 
@@ -975,11 +1040,11 @@ Keep scene-sensitive planning exactly where it belongs:
 - pruning strategy
 - artifact derivation
 
-The descriptor supplies static question semantics. The scene summary supplies strategy.
+The descriptor supplies static question semantics. The execution binding supplies planner recipe and default execution wiring. The scene summary supplies strategy.
 
 **Acceptance criteria**
 
-- New plan builders take a `QueryContractDescriptor` or `QueryContractId`.
+- New plan builders take a `QueryContractDescriptor` plus execution binding, or take `QueryContractId` and resolve both.
 - Legacy enum constructors, if still present, become thin adapters only.
 
 #### Task 13B2 — Derive item/result/domain requirements from descriptors everywhere
@@ -1001,6 +1066,7 @@ Remove duplicated item/result/domain branching from:
 **Acceptance criteria**
 
 - Static item/result expectations come from descriptors.
+- Planner recipe and default execution wiring come from execution bindings.
 - Validation errors mention contract ids and versions.
 
 ### Workstream C: Backend Dispatch And Codegen
@@ -1025,16 +1091,16 @@ This can still use internal helper categories where useful, but they must be der
 - `QueryFlavor` is deleted or reduced to an internal generated category with no manual public mapping table.
 - Shader emission chooses item/result ABI from descriptor data.
 
-#### Task 13C2 — Replace native bridge question tables with a generic contract-driven bridge
+#### Task 13C2 — Begin generic contract-driven bridge convergence as a non-blocking follow-on
 
 **Description**
 
-Refactor `compiler/query_exec/native_bridge.rs` so it does not export one handwritten function per question.
+Move `compiler/query_exec/native_bridge.rs` toward a generic contract-driven bridge path once descriptor-driven lowering, planning, and WGSL codegen are already stable.
 
 Preferred target:
 
-- one generic scalar bridge
-- one generic batch bridge
+- one generic internal scalar bridge
+- one generic internal batch bridge
 - descriptor ordinal or contract id carried in the dispatch header
 
 **Files**
@@ -1046,6 +1112,9 @@ Preferred target:
 
 This becomes feasible only after item normalization.
 
+This task is explicitly non-blocking for Phase 13 exit.
+If it threatens the core descriptor-driven convergence work, defer the full bridge collapse until immediately after Phase 13.
+
 The generic bridge should pack:
 
 - dispatch header
@@ -1055,10 +1124,15 @@ The generic bridge should pack:
 
 Do not invent a second ad hoc shader ABI here. Reuse the portable ABI and the descriptor registry.
 
+If existing exported entry points remain temporarily for ABI stability or landing simplicity, they should become thin wrappers over the generic internal path rather than remaining separate implementations.
+
+Deleting every exported wrapper is useful cleanup, but it is not the critical-path proof that the architecture has converged.
+
 **Acceptance criteria**
 
-- Per-question bridge export tables are removed.
-- One generic bridge path can dispatch any descriptor-supported question on the WGSL backend.
+- There is one descriptor-driven packing model for a future generic scalar and batch bridge path.
+- If a generic internal bridge lands in this phase, any remaining per-question exports are thin wrappers over it rather than separate implementations.
+- Deferring exported-wrapper collapse does not block Phase 13 completion.
 
 #### Task 13C3 — Dispatch CPU/vGPU/WGSL from the same descriptor path
 
@@ -1098,8 +1172,9 @@ Add or refactor parity tests so they assert over contract ids rather than only o
 
 - The registry is truly authoritative.
 - Query lowering is descriptor-driven.
-- WGSL codegen and bridge dispatch are descriptor-driven.
-- No new question needs a new hardcoded flavor enum or bridge-kind enum.
+- WGSL codegen is descriptor-driven.
+- No new question needs a new hardcoded flavor enum or bespoke lowering branch in order to work.
+- Native bridge convergence may still be pending as immediate follow-on cleanup and does not block Phase 13 exit.
 
 ## Phase 14: Spatial Family Completion And Canonical Naming
 
@@ -1356,7 +1431,32 @@ Expose the family model directly in the authored language and make it visible in
 
 The family surface should be the last cut, not the first. By the time it lands, the internal registry and backends should already be stable.
 
+This is also the right moment to make any final user-facing domain authoring cleanup.
+If users need to migrate examples or mental models, they should do it once here rather than once in Phase 12 and again in Phase 16.
+
 ### Workstream A: Family Namespace Surface
+
+#### Task 16A0 — Make the user-facing query and domain surface cut once
+
+**Description**
+
+Bundle the final query-family syntax cut and any authored-domain cleanup into one user-facing migration.
+
+If explicit family-shaped domain authoring is still desirable, land it in the same phase as `spatial.*`, `surface.*`, `participants.*`, and `support.*` calls.
+
+**Implementation notes**
+
+Do not require users to first migrate domain declarations and then later migrate query calls.
+
+Either:
+
+- keep the current domain authoring syntax as enduring sugar over family-shaped contracts, or
+- make the explicit family-shaped domain syntax authoritative in the same release where family query namespaces become authoritative
+
+**Acceptance criteria**
+
+- The user-facing migration happens once in this phase.
+- Docs, examples, and spec coverage can move together without a second separate domain-only rewrite.
 
 #### Task 16A1 — Add intrinsic family namespaces
 
@@ -1422,6 +1522,8 @@ Once family namespaces work, move the spec and examples to the family-oriented s
 
 Legacy names such as `distance_world`, `trace_world`, `surface_world`, and friends should be treated as compatibility aliases only if they are still temporarily retained.
 
+If explicit family-shaped domain authoring also lands, update domain examples in the same pass.
+
 **Files**
 
 - `language/spec/tests/spec/language_spec_test.wr`
@@ -1431,6 +1533,7 @@ Legacy names such as `distance_world`, `trace_world`, `surface_world`, and frien
 **Acceptance criteria**
 
 - New authored examples use family calls.
+- Domain examples, if changed, are updated in the same pass.
 - Direct builtin names are removed from the primary examples.
 
 #### Task 16B2 — Collapse builtin signature tables around the family registry
@@ -1476,13 +1579,14 @@ Document the required steps for adding a new family question.
 The checklist should include:
 
 1. add descriptor
-2. add item/result record shapes
-3. add domain contract fields if needed
-4. add plan builder path
-5. add CPU oracle
-6. add backend support or mark unsupported
-7. add observability
-8. add tests
+2. add execution binding
+3. add item/result record shapes
+4. add domain contract fields if needed
+5. add plan builder path
+6. add CPU oracle
+7. add backend support or mark unsupported
+8. add observability
+9. add tests
 
 **Acceptance criteria**
 
@@ -1524,6 +1628,7 @@ From Phase 11 onward, every new question should follow this checklist.
 - assign domain contract dependency
 - assign backend support policy
 - assign observability profile
+- add execution binding entry
 
 ### Schema Work
 

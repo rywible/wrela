@@ -6,6 +6,7 @@ use wrela::parser::ast;
 use wrela::parser::ast::AstNode;
 use wrela::parser::parse;
 use wrela::portable;
+use wrela::query_contract;
 use wrela::query_plan;
 use wrela::scene_ir;
 
@@ -882,6 +883,48 @@ fn phase9_query_plan_matrix_covers_every_batch_family() {
         requires_virtual_gpu_scaffolding,
     ) in cases
     {
+        let (expected_contract_id, expected_family, expected_surface) =
+            match (batch_kind, plan.capture_kind) {
+                (query_plan::BatchQueryKind::Distance, query_plan::CaptureKind::Field) => (
+                    query_contract::SPATIAL_DISTANCE_BATCH_FIELD,
+                    query_contract::QueryFamilyId::Spatial,
+                    query_contract::QuerySurfaceKind::CaptureBatch,
+                ),
+                (query_plan::BatchQueryKind::Distance, query_plan::CaptureKind::Shape) => (
+                    query_contract::SPATIAL_DISTANCE_BATCH_SHAPE,
+                    query_contract::QueryFamilyId::Spatial,
+                    query_contract::QuerySurfaceKind::CaptureBatch,
+                ),
+                (query_plan::BatchQueryKind::Normal, query_plan::CaptureKind::Field) => (
+                    query_contract::SPATIAL_NORMAL_BATCH_FIELD,
+                    query_contract::QueryFamilyId::Spatial,
+                    query_contract::QuerySurfaceKind::CaptureBatch,
+                ),
+                (query_plan::BatchQueryKind::Normal, query_plan::CaptureKind::Shape) => (
+                    query_contract::SPATIAL_NORMAL_BATCH_SHAPE,
+                    query_contract::QueryFamilyId::Spatial,
+                    query_contract::QuerySurfaceKind::CaptureBatch,
+                ),
+                (query_plan::BatchQueryKind::Trace, query_plan::CaptureKind::Shape) => (
+                    query_contract::SPATIAL_TRACE_BATCH_SHAPE,
+                    query_contract::QueryFamilyId::Spatial,
+                    query_contract::QuerySurfaceKind::CaptureBatch,
+                ),
+                (query_plan::BatchQueryKind::Surface, query_plan::CaptureKind::Shape) => (
+                    query_contract::SURFACE_SAMPLE_BATCH_SHAPE,
+                    query_contract::QueryFamilyId::Surface,
+                    query_contract::QuerySurfaceKind::CaptureBatch,
+                ),
+                (query_plan::BatchQueryKind::Occluded, query_plan::CaptureKind::Shape) => (
+                    query_contract::SPATIAL_OCCLUDED_BATCH_SHAPE,
+                    query_contract::QueryFamilyId::Spatial,
+                    query_contract::QuerySurfaceKind::CaptureBatch,
+                ),
+                other => panic!("unexpected batch contract case: {other:?}"),
+            };
+        assert_eq!(plan.contract_id, expected_contract_id);
+        assert_eq!(plan.family, expected_family);
+        assert_eq!(plan.surface, expected_surface);
         assert_eq!(plan.helper_name, helper_name);
         assert_eq!(plan.kind, batch_kind);
         assert_eq!(plan.item_kind, item_kind);
@@ -1184,6 +1227,56 @@ fn phase9_capture_query_plans_cover_field_shape_and_participant_paths() {
     )
     .expect("medium plan");
 
+    for (plan, contract_id, family) in [
+        (
+            &field_distance,
+            query_contract::SPATIAL_DISTANCE_CAPTURE_FIELD,
+            query_contract::QueryFamilyId::Spatial,
+        ),
+        (
+            &field_normal,
+            query_contract::SPATIAL_NORMAL_CAPTURE_FIELD,
+            query_contract::QueryFamilyId::Spatial,
+        ),
+        (
+            &shape_distance,
+            query_contract::SPATIAL_DISTANCE_CAPTURE_SHAPE,
+            query_contract::QueryFamilyId::Spatial,
+        ),
+        (
+            &shape_normal,
+            query_contract::SPATIAL_NORMAL_CAPTURE_SHAPE,
+            query_contract::QueryFamilyId::Spatial,
+        ),
+        (
+            &trace,
+            query_contract::SPATIAL_TRACE_CAPTURE_SHAPE,
+            query_contract::QueryFamilyId::Spatial,
+        ),
+        (
+            &surface,
+            query_contract::SURFACE_SAMPLE_CAPTURE_SHAPE,
+            query_contract::QueryFamilyId::Surface,
+        ),
+        (
+            &radiance,
+            query_contract::PARTICIPANTS_RADIANCE_CAPTURE_SHAPE,
+            query_contract::QueryFamilyId::Participants,
+        ),
+        (
+            &medium,
+            query_contract::PARTICIPANTS_MEDIUM_CAPTURE_SHAPE,
+            query_contract::QueryFamilyId::Participants,
+        ),
+    ] {
+        assert_eq!(plan.contract_id, contract_id);
+        assert_eq!(plan.family, family);
+        assert_eq!(
+            plan.surface,
+            query_contract::QuerySurfaceKind::CaptureScalar
+        );
+    }
+
     for plan in [&field_distance, &field_normal] {
         assert_eq!(plan.capture_kind, query_plan::CaptureKind::Field);
         assert_eq!(plan.scene, Some(field_summary.clone()));
@@ -1439,6 +1532,35 @@ fn phase9_world_query_plans_cover_domain_backed_queries() {
     ];
 
     for (plan, helper_name, result_kind, executor, preserves_local_hit_context) in cases {
+        let (expected_contract_id, expected_family) = match plan.kind {
+            query_plan::WorldQueryKind::Distance => (
+                query_contract::SPATIAL_DISTANCE_WORLD,
+                query_contract::QueryFamilyId::Spatial,
+            ),
+            query_plan::WorldQueryKind::Normal => (
+                query_contract::SPATIAL_NORMAL_WORLD,
+                query_contract::QueryFamilyId::Spatial,
+            ),
+            query_plan::WorldQueryKind::Trace => (
+                query_contract::SPATIAL_TRACE_WORLD,
+                query_contract::QueryFamilyId::Spatial,
+            ),
+            query_plan::WorldQueryKind::Surface => (
+                query_contract::SURFACE_SAMPLE_WORLD,
+                query_contract::QueryFamilyId::Surface,
+            ),
+            query_plan::WorldQueryKind::Radiance => (
+                query_contract::PARTICIPANTS_RADIANCE_WORLD,
+                query_contract::QueryFamilyId::Participants,
+            ),
+            query_plan::WorldQueryKind::Medium => (
+                query_contract::PARTICIPANTS_MEDIUM_WORLD,
+                query_contract::QueryFamilyId::Participants,
+            ),
+        };
+        assert_eq!(plan.contract_id, expected_contract_id);
+        assert_eq!(plan.family, expected_family);
+        assert_eq!(plan.surface, query_contract::QuerySurfaceKind::WorldScalar);
         assert_eq!(plan.helper_name, helper_name);
         assert_eq!(plan.backend, query_plan::DispatchBackend::Auto);
         assert_eq!(plan.result_kind, result_kind);
@@ -1493,6 +1615,12 @@ fn phase9_world_query_plans_cover_domain_backed_queries() {
 #[test]
 fn phase11_world_query_plans_preserve_specialization_and_artifact_contracts() {
     let distance = query_plan::WorldQueryPlan::for_query(query_plan::WorldQueryKind::Distance);
+    assert_eq!(distance.contract_id, query_contract::SPATIAL_DISTANCE_WORLD);
+    assert_eq!(distance.family, query_contract::QueryFamilyId::Spatial);
+    assert_eq!(
+        distance.surface,
+        query_contract::QuerySurfaceKind::WorldScalar
+    );
     assert_eq!(
         distance.candidate_strategy(),
         query_plan::CandidateStrategy::SupportAcceleratedShapeTraversal

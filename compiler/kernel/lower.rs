@@ -188,6 +188,9 @@ pub fn parse_dispatch_compute(
 pub fn lower_batch_query_plan(plan: &BatchQueryPlan) -> KernelBatchQueryPlan {
     KernelBatchQueryPlan {
         contract_version: plan.contract_version,
+        contract_id: plan.contract_id,
+        family: plan.family,
+        surface: plan.surface,
         helper_name: plan.helper_name.clone(),
         kind: plan.kind,
         capture_kind: plan.capture_kind,

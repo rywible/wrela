@@ -11,6 +11,7 @@ use wrela::kernel::{
 use wrela::parser::ast;
 use wrela::parser::ast::AstNode;
 use wrela::parser::parse;
+use wrela::query_contract;
 use wrela::query_plan::{
     ArtifactSchema, BatchQueryKind, BatchQueryPlan, CaptureKind, CaptureQueryKind,
     CaptureQueryPlan, DispatchBackend, WorldQueryKind, WorldQueryPlan,
@@ -81,6 +82,9 @@ fn batch_query_plan_lowers_into_kernel_contract_and_traces_iterations() {
         BatchQueryPlan::for_shape_query(BatchQueryKind::Trace, DispatchBackend::VirtualGpu, None);
     let kernel_plan = lower_batch_query_plan(&plan);
     assert!(validate_batch_query_plan(&kernel_plan).is_ok());
+    assert_eq!(kernel_plan.contract_id, plan.contract_id);
+    assert_eq!(kernel_plan.family, plan.family);
+    assert_eq!(kernel_plan.surface, plan.surface);
     assert!(kernel_plan.requires_virtual_gpu_dispatch());
     assert!(matches!(
         kernel_plan.item_contract,
@@ -144,6 +148,19 @@ fn batch_query_validation_rejects_missing_dispatch_artifact_contract() {
             .message
             .contains("dispatch artifact contract does not match")
     }));
+}
+
+#[test]
+fn batch_query_validation_rejects_descriptor_family_mismatch() {
+    let mut plan = lower_batch_query_plan(&BatchQueryPlan::for_shape_query(
+        BatchQueryKind::Trace,
+        DispatchBackend::VirtualGpu,
+        None,
+    ));
+    plan.family = query_contract::QueryFamilyId::Surface;
+
+    let errors = validate_batch_query_plan(&plan).expect_err("descriptor family mismatch");
+    assert!(errors.iter().any(|error| error.message.contains("family")));
 }
 
 #[test]
@@ -211,6 +228,9 @@ fn capture_query_plan_lowers_into_kernel_contract() {
         CaptureQueryPlan::for_query(CaptureQueryKind::Trace, CaptureKind::Shape, None).unwrap();
     let kernel_plan = lower_capture_query_plan(&plan);
     assert!(validate_capture_query_plan(&kernel_plan).is_ok());
+    assert_eq!(kernel_plan.contract_id, plan.contract_id);
+    assert_eq!(kernel_plan.family, plan.family);
+    assert_eq!(kernel_plan.surface, plan.surface);
     assert!(
         kernel_plan
             .stages
@@ -227,6 +247,35 @@ fn capture_query_plan_lowers_into_kernel_contract() {
 }
 
 #[test]
+fn capture_query_validation_rejects_descriptor_surface_mismatch() {
+    let mut plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Trace, CaptureKind::Shape, None).unwrap(),
+    );
+    plan.surface = query_contract::QuerySurfaceKind::WorldScalar;
+
+    let errors = validate_capture_query_plan(&plan).expect_err("descriptor surface mismatch");
+    assert!(errors.iter().any(|error| error.message.contains("surface")));
+}
+
+#[test]
+fn capture_query_validation_rejects_participant_family_mismatch() {
+    let mut plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Radiance, CaptureKind::Shape, None).unwrap(),
+    );
+    plan.participant_contract
+        .as_mut()
+        .expect("participant contract")
+        .kind = CaptureQueryKind::Medium;
+
+    let errors = validate_capture_query_plan(&plan).expect_err("participant family mismatch");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("participant selection"))
+    );
+}
+
+#[test]
 fn world_query_plan_lowers_into_kernel_contract() {
     let plan = WorldQueryPlan::for_query_with_backend(
         WorldQueryKind::Trace,
@@ -234,6 +283,9 @@ fn world_query_plan_lowers_into_kernel_contract() {
     );
     let kernel_plan = lower_world_query_plan(&plan);
     assert!(validate_world_query_plan(&kernel_plan).is_ok());
+    assert_eq!(kernel_plan.contract_id, plan.contract_id);
+    assert_eq!(kernel_plan.family, plan.family);
+    assert_eq!(kernel_plan.surface, plan.surface);
     assert_eq!(
         kernel_plan.backend,
         wrela::query_plan::DispatchBackend::Wgsl
@@ -324,6 +376,19 @@ fn world_query_plan_lowers_into_kernel_contract() {
                 }
             ))
     );
+}
+
+#[test]
+fn world_query_validation_rejects_unknown_contract_id() {
+    let mut plan = lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Trace));
+    plan.contract_id = query_contract::QueryContractId::new("missing.world.contract");
+
+    let errors = validate_world_query_plan(&plan).expect_err("missing contract id");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("was not found in the query registry")
+    }));
 }
 
 #[test]

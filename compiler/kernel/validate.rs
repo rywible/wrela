@@ -6,8 +6,12 @@ use crate::kernel::ir::{
 use crate::portable::{
     BUILTIN_FIELD_PRIMITIVE_FUNCTIONS, BUILTIN_HELPER_FUNCTIONS, builtin_record_by_function,
 };
+use crate::query_contract::{
+    ParticipantContractKind, QueryContractId, QueryFamilyId, QuerySurfaceKind, query_contract,
+};
 use crate::query_plan::{
-    ArtifactContract, ArtifactSchema, DerivedArtifact, DispatchRecordContract, ResultRecordContract,
+    ArtifactContract, ArtifactSchema, CaptureQueryKind, DerivedArtifact, DispatchRecordContract,
+    QueryItemKind, QueryResultKind, ResultRecordContract, SceneDomainFlag,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,6 +95,64 @@ pub fn validate_batch_query_plan(
         plan.contract_version,
         &mut errors,
     );
+    if plan.candidate_contract.item_kind != plan.item_kind {
+        errors.push(KernelValidationError {
+            message: format!(
+                "batch query '{}' candidate item kind {:?} does not match plan item kind {:?}",
+                plan.helper_name, plan.candidate_contract.item_kind, plan.item_kind
+            ),
+        });
+    }
+    if plan.dispatch_contract.item_kind != plan.item_kind {
+        errors.push(KernelValidationError {
+            message: format!(
+                "batch query '{}' dispatch item kind {:?} does not match plan item kind {:?}",
+                plan.helper_name, plan.dispatch_contract.item_kind, plan.item_kind
+            ),
+        });
+    }
+    if plan.dispatch_contract.result_kind != plan.result_kind {
+        errors.push(KernelValidationError {
+            message: format!(
+                "batch query '{}' dispatch result kind {:?} does not match plan result kind {:?}",
+                plan.helper_name, plan.dispatch_contract.result_kind, plan.result_kind
+            ),
+        });
+    }
+    if plan.result_contract.result_kind != plan.result_kind {
+        errors.push(KernelValidationError {
+            message: format!(
+                "batch query '{}' result contract kind {:?} does not match plan result kind {:?}",
+                plan.helper_name, plan.result_contract.result_kind, plan.result_kind
+            ),
+        });
+    }
+    validate_query_contract_descriptor(
+        "batch query",
+        plan.contract_id,
+        plan.family,
+        plan.surface,
+        plan.item_kind,
+        plan.result_kind,
+        plan.contract_version,
+        &plan.domain_flags,
+        plan.participant_contract
+            .as_ref()
+            .map(|contract| contract.kind),
+        plan.preserves_local_hit_context,
+        &mut errors,
+    );
+    if let Some(descriptor) = query_contract(plan.contract_id)
+        && !descriptor.supported_backends.supports(plan.backend)
+    {
+        errors.push(KernelValidationError {
+            message: format!(
+                "batch query contract '{}' does not support backend {:?}",
+                plan.contract_id.as_str(),
+                plan.backend
+            ),
+        });
+    }
     if errors.is_empty() {
         Ok(())
     } else {
@@ -109,6 +171,29 @@ pub fn validate_capture_query_plan(
         None,
         &plan.result_contract,
         &plan.derived_artifacts,
+        &mut errors,
+    );
+    if plan.result_contract.result_kind != plan.result_kind {
+        errors.push(KernelValidationError {
+            message: format!(
+                "capture query '{}' result contract kind {:?} does not match plan result kind {:?}",
+                plan.helper_name, plan.result_contract.result_kind, plan.result_kind
+            ),
+        });
+    }
+    validate_query_contract_descriptor(
+        "capture query",
+        plan.contract_id,
+        plan.family,
+        plan.surface,
+        plan.candidate_contract.item_kind,
+        plan.result_kind,
+        plan.contract_version,
+        &[],
+        plan.participant_contract
+            .as_ref()
+            .map(|contract| contract.kind),
+        plan.preserves_local_hit_context,
         &mut errors,
     );
     if errors.is_empty() {
@@ -131,6 +216,58 @@ pub fn validate_world_query_plan(
         &plan.derived_artifacts,
         &mut errors,
     );
+    if plan.candidate_contract.item_kind != plan.dispatch_contract.item_kind {
+        errors.push(KernelValidationError {
+            message: format!(
+                "world query '{}' candidate item kind {:?} does not match dispatch item kind {:?}",
+                plan.helper_name,
+                plan.candidate_contract.item_kind,
+                plan.dispatch_contract.item_kind
+            ),
+        });
+    }
+    if plan.dispatch_contract.result_kind != plan.result_kind {
+        errors.push(KernelValidationError {
+            message: format!(
+                "world query '{}' dispatch result kind {:?} does not match plan result kind {:?}",
+                plan.helper_name, plan.dispatch_contract.result_kind, plan.result_kind
+            ),
+        });
+    }
+    if plan.result_contract.result_kind != plan.result_kind {
+        errors.push(KernelValidationError {
+            message: format!(
+                "world query '{}' result contract kind {:?} does not match plan result kind {:?}",
+                plan.helper_name, plan.result_contract.result_kind, plan.result_kind
+            ),
+        });
+    }
+    validate_query_contract_descriptor(
+        "world query",
+        plan.contract_id,
+        plan.family,
+        plan.surface,
+        plan.dispatch_contract.item_kind,
+        plan.result_kind,
+        plan.contract_version,
+        &plan.domain_flags,
+        plan.participant_contract
+            .as_ref()
+            .map(|contract| contract.kind),
+        plan.preserves_local_hit_context,
+        &mut errors,
+    );
+    if let Some(descriptor) = query_contract(plan.contract_id)
+        && !descriptor.supported_backends.supports(plan.backend)
+    {
+        errors.push(KernelValidationError {
+            message: format!(
+                "world query contract '{}' does not support backend {:?}",
+                plan.contract_id.as_str(),
+                plan.backend
+            ),
+        });
+    }
     if errors.is_empty() {
         Ok(())
     } else {
@@ -143,6 +280,119 @@ fn validate_contract_version(version: u32, label: &str, errors: &mut Vec<KernelV
         errors.push(KernelValidationError {
             message: format!("{label} contract version must be greater than zero"),
         });
+    }
+}
+
+fn validate_query_contract_descriptor(
+    label: &str,
+    contract_id: QueryContractId,
+    family: QueryFamilyId,
+    surface: QuerySurfaceKind,
+    item_kind: QueryItemKind,
+    result_kind: QueryResultKind,
+    contract_version: u32,
+    domain_flags: &[SceneDomainFlag],
+    participant_kind: Option<CaptureQueryKind>,
+    preserves_local_hit_context: bool,
+    errors: &mut Vec<KernelValidationError>,
+) {
+    let Some(descriptor) = query_contract(contract_id) else {
+        errors.push(KernelValidationError {
+            message: format!(
+                "{label} contract '{}' was not found in the query registry",
+                contract_id.as_str()
+            ),
+        });
+        return;
+    };
+
+    if descriptor.version != contract_version {
+        errors.push(KernelValidationError {
+            message: format!(
+                "{label} contract '{}' version {} does not match descriptor version {}",
+                contract_id.as_str(),
+                contract_version,
+                descriptor.version
+            ),
+        });
+    }
+    if descriptor.family != family {
+        errors.push(KernelValidationError {
+            message: format!(
+                "{label} contract '{}' family {:?} does not match descriptor family {:?}",
+                contract_id.as_str(),
+                family,
+                descriptor.family
+            ),
+        });
+    }
+    if descriptor.surface != surface {
+        errors.push(KernelValidationError {
+            message: format!(
+                "{label} contract '{}' surface {:?} does not match descriptor surface {:?}",
+                contract_id.as_str(),
+                surface,
+                descriptor.surface
+            ),
+        });
+    }
+    if descriptor.item_kind != item_kind {
+        errors.push(KernelValidationError {
+            message: format!(
+                "{label} contract '{}' item kind {:?} does not match descriptor item kind {:?}",
+                contract_id.as_str(),
+                item_kind,
+                descriptor.item_kind
+            ),
+        });
+    }
+    if descriptor.result_kind != result_kind {
+        errors.push(KernelValidationError {
+            message: format!(
+                "{label} contract '{}' result kind {:?} does not match descriptor result kind {:?}",
+                contract_id.as_str(),
+                result_kind,
+                descriptor.result_kind
+            ),
+        });
+    }
+    if descriptor.required_domain_flags != domain_flags {
+        errors.push(KernelValidationError {
+            message: format!(
+                "{label} contract '{}' domain flags {:?} do not match descriptor flags {:?}",
+                contract_id.as_str(),
+                domain_flags,
+                descriptor.required_domain_flags
+            ),
+        });
+    }
+    let expected_participant_kind = descriptor.participant_kind.map(participant_query_kind);
+    if expected_participant_kind != participant_kind {
+        errors.push(KernelValidationError {
+            message: format!(
+                "{label} contract '{}' participant selection {:?} does not match descriptor {:?}",
+                contract_id.as_str(),
+                participant_kind,
+                expected_participant_kind
+            ),
+        });
+    }
+    if descriptor.preserves_local_hit_context != preserves_local_hit_context {
+        errors.push(KernelValidationError {
+            message: format!(
+                "{label} contract '{}' local hit preservation {} does not match descriptor {}",
+                contract_id.as_str(),
+                preserves_local_hit_context,
+                descriptor.preserves_local_hit_context
+            ),
+        });
+    }
+}
+
+fn participant_query_kind(kind: ParticipantContractKind) -> CaptureQueryKind {
+    match kind {
+        ParticipantContractKind::Radiance => CaptureQueryKind::Radiance,
+        ParticipantContractKind::Medium => CaptureQueryKind::Medium,
     }
 }
 

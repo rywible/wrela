@@ -4,8 +4,8 @@ use crate::query_plan::{
     CandidateStrategy, CaptureKind, CaptureQueryKind, CaptureQueryPlan, DerivedArtifact,
     DispatchBackend, DispatchRecordContract, HitContextContract, InternalKernelKind,
     ParticipantSelectionContract, PlanExecutor, PlanStage, PlanningObservability, PruningStrategy,
-    QueryItemKind, QueryResultKind, ResultRecordContract, SceneDomainFlag, SceneSummary,
-    WorldQueryKind, WorldQueryPlan,
+    QueryContractId, QueryFamilyId, QueryItemKind, QueryResultKind, QuerySurfaceKind,
+    ResultRecordContract, SceneDomainFlag, SceneSummary, WorldQueryKind, WorldQueryPlan,
 };
 use rowan::TextRange;
 use smol_str::SmolStr;
@@ -310,6 +310,9 @@ impl From<&PlanStage> for KernelPlanStage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KernelBatchQueryPlan {
     pub contract_version: u32,
+    pub contract_id: QueryContractId,
+    pub family: QueryFamilyId,
+    pub surface: QuerySurfaceKind,
     pub helper_name: SmolStr,
     pub kind: BatchQueryKind,
     pub capture_kind: CaptureKind,
@@ -346,6 +349,9 @@ impl KernelBatchQueryPlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KernelCaptureQueryPlan {
     pub contract_version: u32,
+    pub contract_id: QueryContractId,
+    pub family: QueryFamilyId,
+    pub surface: QuerySurfaceKind,
     pub helper_name: SmolStr,
     pub kind: CaptureQueryKind,
     pub capture_kind: CaptureKind,
@@ -368,6 +374,9 @@ pub struct KernelCaptureQueryPlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KernelWorldQueryPlan {
     pub contract_version: u32,
+    pub contract_id: QueryContractId,
+    pub family: QueryFamilyId,
+    pub surface: QuerySurfaceKind,
     pub helper_name: SmolStr,
     pub kind: WorldQueryKind,
     pub backend: DispatchBackend,
@@ -398,6 +407,9 @@ impl From<&CaptureQueryPlan> for KernelCaptureQueryPlan {
     fn from(plan: &CaptureQueryPlan) -> Self {
         Self {
             contract_version: plan.contract_version,
+            contract_id: plan.contract_id,
+            family: plan.family,
+            surface: plan.surface,
             helper_name: plan.helper_name.clone(),
             kind: plan.kind,
             capture_kind: plan.capture_kind,
@@ -423,6 +435,9 @@ impl From<&WorldQueryPlan> for KernelWorldQueryPlan {
     fn from(plan: &WorldQueryPlan) -> Self {
         Self {
             contract_version: plan.contract_version,
+            contract_id: plan.contract_id,
+            family: plan.family,
+            surface: plan.surface,
             helper_name: plan.helper_name.clone(),
             kind: plan.kind,
             backend: plan.backend,

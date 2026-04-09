@@ -1,4 +1,5 @@
-use crate::query_plan::WorldQueryKind;
+use crate::query_contract::{query_contract_bundle, scene_domain_flag_name};
+use crate::query_plan::{WorldQueryKind, world_query_contract_id};
 use smol_str::SmolStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -8,31 +9,20 @@ pub struct WorldQuerySemantics {
 }
 
 pub fn world_query_semantics(kind: WorldQueryKind) -> WorldQuerySemantics {
-    match kind {
-        WorldQueryKind::Distance => WorldQuerySemantics {
-            query_name: "distance_world",
-            domain_flag: None,
-        },
-        WorldQueryKind::Normal => WorldQuerySemantics {
-            query_name: "normal_world",
-            domain_flag: None,
-        },
-        WorldQueryKind::Trace => WorldQuerySemantics {
-            query_name: "trace_world",
-            domain_flag: None,
-        },
-        WorldQueryKind::Surface => WorldQuerySemantics {
-            query_name: "surface_world",
-            domain_flag: Some("material"),
-        },
-        WorldQueryKind::Radiance => WorldQuerySemantics {
-            query_name: "radiance_world",
-            domain_flag: Some("radiance"),
-        },
-        WorldQueryKind::Medium => WorldQuerySemantics {
-            query_name: "medium_world",
-            domain_flag: Some("media"),
-        },
+    let contract_id = world_query_contract_id(kind);
+    let Some((descriptor, binding)) = query_contract_bundle(contract_id) else {
+        panic!(
+            "missing world query contract bundle for '{}'",
+            contract_id.as_str()
+        );
+    };
+    WorldQuerySemantics {
+        query_name: binding.legacy_builtin_name,
+        domain_flag: descriptor
+            .required_domain_flags
+            .first()
+            .copied()
+            .map(scene_domain_flag_name),
     }
 }
 

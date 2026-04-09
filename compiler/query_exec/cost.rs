@@ -121,7 +121,7 @@ pub(crate) fn capture_cost_report(
         },
         backend,
         executor: plan.executor,
-        item_kind: candidate_item_kind_for_capture(plan.kind),
+        item_kind: plan.candidate_contract.item_kind,
         item_count: 1,
         candidate_strategy: plan.candidate_strategy,
         pruning_strategy: plan.pruning_strategy,
@@ -753,17 +753,6 @@ where
     stages.iter().any(predicate)
 }
 
-fn candidate_item_kind_for_capture(kind: CaptureQueryKind) -> QueryItemKind {
-    match kind {
-        CaptureQueryKind::Trace => QueryItemKind::RayQuery,
-        CaptureQueryKind::Surface => QueryItemKind::Hit3,
-        CaptureQueryKind::Distance
-        | CaptureQueryKind::Normal
-        | CaptureQueryKind::Radiance
-        | CaptureQueryKind::Medium => QueryItemKind::PointQuery,
-    }
-}
-
 fn artifact_label(artifact: &DerivedArtifact) -> &'static str {
     match artifact {
         DerivedArtifact::SupportSummary { .. } => "support-summary",
@@ -832,9 +821,20 @@ fn executor_label(executor: PlanExecutor) -> &'static str {
 
 fn item_kind_label(item_kind: QueryItemKind) -> &'static str {
     match item_kind {
+        QueryItemKind::Unit => "unit",
         QueryItemKind::PointQuery => "point",
         QueryItemKind::RayQuery => "ray",
         QueryItemKind::Hit3 => "hit3",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn item_kind_label_covers_unit_queries() {
+        assert_eq!(item_kind_label(QueryItemKind::Unit), "unit");
     }
 }
 

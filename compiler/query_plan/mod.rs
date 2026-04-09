@@ -1,15 +1,16 @@
-use self::DispatchBackend::{Auto, Cpu, VirtualGpu, Wgsl};
-use self::PlanExecutor::{
-    FieldDistanceCapture, FieldNormalCapture, SceneMediumCapture, SceneRadianceCapture,
-    SceneSurfaceCapture, SceneTraceCapture, ShapeDistanceCapture, ShapeNormalCapture,
-    WorldDistanceCapture, WorldMediumCapture, WorldNormalCapture, WorldRadianceCapture,
-    WorldSurfaceCapture, WorldTraceCapture,
+use self::DispatchBackend::{Auto, VirtualGpu, Wgsl};
+use crate::query_contract::{
+    self, ParticipantContractKind, QueryContractDescriptor, QueryExecutionBinding,
+    QueryObservabilityProfile, QueryPlannerRecipeKind,
 };
-use crate::scene_ir::{DistanceSemantics, SceneCaptureKind, SupportClass};
+use crate::scene_ir::{DistanceSemantics, SupportClass};
 use smol_str::SmolStr;
 
-pub type CaptureKind = SceneCaptureKind;
-pub const QUERY_PLAN_CONTRACT_VERSION: u32 = 1;
+pub use crate::query_contract::{
+    CaptureKind, DispatchBackend, InternalKernelKind, PlanExecutor,
+    QUERY_CONTRACT_VERSION as QUERY_PLAN_CONTRACT_VERSION, QueryContractId, QueryFamilyId,
+    QueryItemKind, QueryResultKind, QuerySurfaceKind, SceneDomainFlag,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum BatchQueryKind {
@@ -51,84 +52,6 @@ pub enum WorldQueryKind {
     Medium,
     Trace,
     Surface,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum DispatchBackend {
-    Cpu,
-    VirtualGpu,
-    Wgsl,
-    Auto,
-}
-
-impl DispatchBackend {
-    pub fn from_id(id: i32) -> Option<Self> {
-        match id {
-            0 => Some(Cpu),
-            1 => Some(VirtualGpu),
-            2 => Some(Wgsl),
-            3 => Some(Auto),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum InternalKernelKind {
-    CaptureUpdate,
-    FieldDistanceCapture,
-    ShapeDistanceCapture,
-    FieldNormalCapture,
-    ShapeNormalCapture,
-    ShapeTraceCapture,
-    ShapeSurfaceCapture,
-    ShapeOccludedCapture,
-    SceneRadianceCapture,
-    SceneMediumCapture,
-    WorldDistanceCapture,
-    WorldNormalCapture,
-    WorldTraceCapture,
-    WorldSurfaceCapture,
-    WorldRadianceCapture,
-    WorldMediumCapture,
-    Culling,
-    Bake,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum QueryItemKind {
-    PointQuery,
-    RayQuery,
-    Hit3,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum QueryResultKind {
-    DistanceResult,
-    NormalResult,
-    Hit3,
-    Surface,
-    OcclusionResult,
-    RadianceResult,
-    MediumResult,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum PlanExecutor {
-    FieldDistanceCapture,
-    ShapeDistanceCapture,
-    FieldNormalCapture,
-    ShapeNormalCapture,
-    SceneTraceCapture,
-    SceneSurfaceCapture,
-    SceneRadianceCapture,
-    SceneMediumCapture,
-    WorldDistanceCapture,
-    WorldNormalCapture,
-    WorldTraceCapture,
-    WorldSurfaceCapture,
-    WorldRadianceCapture,
-    WorldMediumCapture,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -181,13 +104,6 @@ pub enum PlanStage {
     AssembleHitContext,
     AppendResult { result_kind: QueryResultKind },
     EndVirtualGpuDispatch,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum SceneDomainFlag {
-    Material,
-    Radiance,
-    Media,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -334,6 +250,9 @@ pub struct SceneSummary {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BatchQueryPlan {
     pub contract_version: u32,
+    pub contract_id: QueryContractId,
+    pub family: QueryFamilyId,
+    pub surface: QuerySurfaceKind,
     pub helper_name: SmolStr,
     pub kind: BatchQueryKind,
     pub capture_kind: CaptureKind,
@@ -362,6 +281,9 @@ pub struct BatchQueryPlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CaptureQueryPlan {
     pub contract_version: u32,
+    pub contract_id: QueryContractId,
+    pub family: QueryFamilyId,
+    pub surface: QuerySurfaceKind,
     pub helper_name: SmolStr,
     pub kind: CaptureQueryKind,
     pub capture_kind: CaptureKind,
@@ -384,6 +306,9 @@ pub struct CaptureQueryPlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorldQueryPlan {
     pub contract_version: u32,
+    pub contract_id: QueryContractId,
+    pub family: QueryFamilyId,
+    pub surface: QuerySurfaceKind,
     pub helper_name: SmolStr,
     pub kind: WorldQueryKind,
     pub backend: DispatchBackend,
@@ -402,6 +327,158 @@ pub struct WorldQueryPlan {
     pub artifact_contracts: Vec<ArtifactContract>,
     pub observability: PlanningObservability,
     pub preserves_local_hit_context: bool,
+}
+
+pub(crate) fn batch_query_contract_id(
+    kind: BatchQueryKind,
+    capture_kind: CaptureKind,
+) -> Option<QueryContractId> {
+    match (kind, capture_kind) {
+        (BatchQueryKind::Distance, CaptureKind::Field) => {
+            Some(query_contract::SPATIAL_DISTANCE_BATCH_FIELD)
+        }
+        (BatchQueryKind::Distance, CaptureKind::Shape) => {
+            Some(query_contract::SPATIAL_DISTANCE_BATCH_SHAPE)
+        }
+        (BatchQueryKind::Normal, CaptureKind::Field) => {
+            Some(query_contract::SPATIAL_NORMAL_BATCH_FIELD)
+        }
+        (BatchQueryKind::Normal, CaptureKind::Shape) => {
+            Some(query_contract::SPATIAL_NORMAL_BATCH_SHAPE)
+        }
+        (BatchQueryKind::Trace, CaptureKind::Shape) => {
+            Some(query_contract::SPATIAL_TRACE_BATCH_SHAPE)
+        }
+        (BatchQueryKind::Surface, CaptureKind::Shape) => {
+            Some(query_contract::SURFACE_SAMPLE_BATCH_SHAPE)
+        }
+        (BatchQueryKind::Occluded, CaptureKind::Shape) => {
+            Some(query_contract::SPATIAL_OCCLUDED_BATCH_SHAPE)
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn capture_query_contract_id(
+    kind: CaptureQueryKind,
+    capture_kind: CaptureKind,
+) -> Option<QueryContractId> {
+    match (kind, capture_kind) {
+        (CaptureQueryKind::Distance, CaptureKind::Field) => {
+            Some(query_contract::SPATIAL_DISTANCE_CAPTURE_FIELD)
+        }
+        (CaptureQueryKind::Distance, CaptureKind::Shape) => {
+            Some(query_contract::SPATIAL_DISTANCE_CAPTURE_SHAPE)
+        }
+        (CaptureQueryKind::Normal, CaptureKind::Field) => {
+            Some(query_contract::SPATIAL_NORMAL_CAPTURE_FIELD)
+        }
+        (CaptureQueryKind::Normal, CaptureKind::Shape) => {
+            Some(query_contract::SPATIAL_NORMAL_CAPTURE_SHAPE)
+        }
+        (CaptureQueryKind::Radiance, CaptureKind::Shape) => {
+            Some(query_contract::PARTICIPANTS_RADIANCE_CAPTURE_SHAPE)
+        }
+        (CaptureQueryKind::Medium, CaptureKind::Shape) => {
+            Some(query_contract::PARTICIPANTS_MEDIUM_CAPTURE_SHAPE)
+        }
+        (CaptureQueryKind::Trace, CaptureKind::Shape) => {
+            Some(query_contract::SPATIAL_TRACE_CAPTURE_SHAPE)
+        }
+        (CaptureQueryKind::Surface, CaptureKind::Shape) => {
+            Some(query_contract::SURFACE_SAMPLE_CAPTURE_SHAPE)
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn world_query_contract_id(kind: WorldQueryKind) -> QueryContractId {
+    match kind {
+        WorldQueryKind::Distance => query_contract::SPATIAL_DISTANCE_WORLD,
+        WorldQueryKind::Normal => query_contract::SPATIAL_NORMAL_WORLD,
+        WorldQueryKind::Radiance => query_contract::PARTICIPANTS_RADIANCE_WORLD,
+        WorldQueryKind::Medium => query_contract::PARTICIPANTS_MEDIUM_WORLD,
+        WorldQueryKind::Trace => query_contract::SPATIAL_TRACE_WORLD,
+        WorldQueryKind::Surface => query_contract::SURFACE_SAMPLE_WORLD,
+    }
+}
+
+fn query_contract_bundle(
+    contract_id: QueryContractId,
+) -> (
+    &'static QueryContractDescriptor,
+    &'static QueryExecutionBinding,
+) {
+    query_contract::query_contract_bundle(contract_id).unwrap_or_else(|| {
+        panic!(
+            "missing query contract bundle for '{}'",
+            contract_id.as_str()
+        )
+    })
+}
+
+fn helper_name(binding: &QueryExecutionBinding) -> &'static str {
+    binding.helper_name.unwrap_or_else(|| {
+        panic!(
+            "query contract '{}' is missing a helper binding",
+            binding.contract_id.as_str()
+        )
+    })
+}
+
+fn bound_kernel(binding: &QueryExecutionBinding) -> InternalKernelKind {
+    binding.default_kernel.unwrap_or_else(|| {
+        panic!(
+            "query contract '{}' is missing a default kernel binding",
+            binding.contract_id.as_str()
+        )
+    })
+}
+
+fn participant_selection_kind(kind: ParticipantContractKind) -> CaptureQueryKind {
+    match kind {
+        ParticipantContractKind::Radiance => CaptureQueryKind::Radiance,
+        ParticipantContractKind::Medium => CaptureQueryKind::Medium,
+    }
+}
+
+fn batch_query_kind_for_recipe(recipe: QueryPlannerRecipeKind) -> BatchQueryKind {
+    match recipe {
+        QueryPlannerRecipeKind::SpatialDistanceBatchField
+        | QueryPlannerRecipeKind::SpatialDistanceBatchShape => BatchQueryKind::Distance,
+        QueryPlannerRecipeKind::SpatialNormalBatchField
+        | QueryPlannerRecipeKind::SpatialNormalBatchShape => BatchQueryKind::Normal,
+        QueryPlannerRecipeKind::SpatialTraceBatchShape => BatchQueryKind::Trace,
+        QueryPlannerRecipeKind::SpatialOccludedBatchShape => BatchQueryKind::Occluded,
+        QueryPlannerRecipeKind::SurfaceSampleBatchShape => BatchQueryKind::Surface,
+        other => panic!("unexpected batch planner recipe: {other:?}"),
+    }
+}
+
+fn capture_query_kind_for_recipe(recipe: QueryPlannerRecipeKind) -> CaptureQueryKind {
+    match recipe {
+        QueryPlannerRecipeKind::SpatialDistanceCaptureField
+        | QueryPlannerRecipeKind::SpatialDistanceCaptureShape => CaptureQueryKind::Distance,
+        QueryPlannerRecipeKind::SpatialNormalCaptureField
+        | QueryPlannerRecipeKind::SpatialNormalCaptureShape => CaptureQueryKind::Normal,
+        QueryPlannerRecipeKind::SpatialTraceCaptureShape => CaptureQueryKind::Trace,
+        QueryPlannerRecipeKind::SurfaceSampleCaptureShape => CaptureQueryKind::Surface,
+        QueryPlannerRecipeKind::ParticipantsRadianceCaptureShape => CaptureQueryKind::Radiance,
+        QueryPlannerRecipeKind::ParticipantsMediumCaptureShape => CaptureQueryKind::Medium,
+        other => panic!("unexpected capture planner recipe: {other:?}"),
+    }
+}
+
+fn world_query_kind_for_recipe(recipe: QueryPlannerRecipeKind) -> WorldQueryKind {
+    match recipe {
+        QueryPlannerRecipeKind::SpatialDistanceWorld => WorldQueryKind::Distance,
+        QueryPlannerRecipeKind::SpatialNormalWorld => WorldQueryKind::Normal,
+        QueryPlannerRecipeKind::SpatialTraceWorld => WorldQueryKind::Trace,
+        QueryPlannerRecipeKind::SurfaceSampleWorld => WorldQueryKind::Surface,
+        QueryPlannerRecipeKind::ParticipantsRadianceWorld => WorldQueryKind::Radiance,
+        QueryPlannerRecipeKind::ParticipantsMediumWorld => WorldQueryKind::Medium,
+        other => panic!("unexpected world planner recipe: {other:?}"),
+    }
 }
 
 impl BatchQueryPlan {
@@ -426,42 +503,30 @@ impl BatchQueryPlan {
         backend: DispatchBackend,
         scene: Option<SceneSummary>,
     ) -> Self {
-        let helper_name = match (kind, capture_kind) {
-            (BatchQueryKind::Distance, CaptureKind::Field) => "__wr_field_distance_batch_queries",
-            (BatchQueryKind::Distance, CaptureKind::Shape) => "__wr_shape_distance_batch_queries",
-            (BatchQueryKind::Normal, CaptureKind::Field) => "__wr_field_normal_batch_queries",
-            (BatchQueryKind::Normal, CaptureKind::Shape) => "__wr_shape_normal_batch_queries",
-            _ => panic!("unsupported field batch query: {kind:?} on {capture_kind:?}"),
-        };
-        let (kernel, result_kind, executor) = match (kind, capture_kind) {
-            (BatchQueryKind::Distance, CaptureKind::Field) => (
-                InternalKernelKind::FieldDistanceCapture,
-                QueryResultKind::DistanceResult,
-                FieldDistanceCapture,
-            ),
-            (BatchQueryKind::Distance, CaptureKind::Shape) => (
-                InternalKernelKind::ShapeDistanceCapture,
-                QueryResultKind::DistanceResult,
-                ShapeDistanceCapture,
-            ),
-            (BatchQueryKind::Normal, CaptureKind::Field) => (
-                InternalKernelKind::FieldNormalCapture,
-                QueryResultKind::NormalResult,
-                FieldNormalCapture,
-            ),
-            (BatchQueryKind::Normal, CaptureKind::Shape) => (
-                InternalKernelKind::ShapeNormalCapture,
-                QueryResultKind::NormalResult,
-                ShapeNormalCapture,
-            ),
-            _ => panic!("unsupported field batch query: {kind:?} on {capture_kind:?}"),
-        };
-        let candidate_strategy = candidate_strategy_for_field_query(capture_kind, scene.as_ref());
-        let pruning_strategy =
-            pruning_strategy_for_plan(kind, capture_kind, scene.as_ref(), candidate_strategy);
+        let contract_id = batch_query_contract_id(kind, capture_kind).unwrap_or_else(|| {
+            panic!("unsupported field batch query: {kind:?} on {capture_kind:?}")
+        });
+        let (descriptor, binding) = query_contract_bundle(contract_id);
+        let helper_name = helper_name(binding);
+        let kernel = bound_kernel(binding);
+        let result_kind = descriptor.result_kind;
+        let executor = binding.default_executor;
+        let planner_kind = batch_query_kind_for_recipe(binding.planner_recipe);
+        debug_assert_eq!(descriptor.family, QueryFamilyId::Spatial);
+        debug_assert_eq!(descriptor.surface, QuerySurfaceKind::CaptureBatch);
+        debug_assert_eq!(descriptor.capture_kind, capture_kind);
+        debug_assert_eq!(descriptor.item_kind, QueryItemKind::PointQuery);
+        let candidate_strategy =
+            candidate_strategy_for_field_query(descriptor.capture_kind, scene.as_ref());
+        let pruning_strategy = pruning_strategy_for_plan(
+            planner_kind,
+            descriptor.capture_kind,
+            scene.as_ref(),
+            candidate_strategy,
+        );
         let derived_artifacts = derive_artifacts(
             scene.as_ref(),
-            capture_kind,
+            descriptor.capture_kind,
             candidate_strategy,
             pruning_strategy,
         );
@@ -472,7 +537,7 @@ impl BatchQueryPlan {
         stages.push(PlanStage::LoadCapture);
         stages.extend(load_artifact_stages(&derived_artifacts));
         stages.push(PlanStage::IterateItems {
-            item_kind: QueryItemKind::PointQuery,
+            item_kind: descriptor.item_kind,
         });
         stages.push(PlanStage::GenerateCandidates {
             strategy: candidate_strategy,
@@ -487,7 +552,7 @@ impl BatchQueryPlan {
         }
         let candidate_contract = build_candidate_contract(
             CandidateSource::CaptureScene,
-            QueryItemKind::PointQuery,
+            descriptor.item_kind,
             candidate_strategy,
             pruning_strategy,
             WinnerSelectionMode::Nearest,
@@ -497,31 +562,33 @@ impl BatchQueryPlan {
         let artifact_contracts = derive_artifact_contracts(
             &derived_artifacts,
             scene.as_ref(),
-            QueryItemKind::PointQuery,
+            descriptor.item_kind,
             result_kind,
             false,
             helper_name,
         );
+        let item_query_kind = match binding.planner_recipe {
+            QueryPlannerRecipeKind::SpatialDistanceBatchField
+            | QueryPlannerRecipeKind::SpatialDistanceBatchShape => CaptureQueryKind::Distance,
+            QueryPlannerRecipeKind::SpatialNormalBatchField
+            | QueryPlannerRecipeKind::SpatialNormalBatchShape => CaptureQueryKind::Normal,
+            other => panic!("unexpected field batch planner recipe: {other:?}"),
+        };
         let item_contract = BatchItemContract::CaptureQuery {
-            plan: CaptureQueryPlan::for_query(
-                match kind {
-                    BatchQueryKind::Distance => CaptureQueryKind::Distance,
-                    BatchQueryKind::Normal => CaptureQueryKind::Normal,
-                    _ => unreachable!(),
-                },
-                capture_kind,
-                scene.clone(),
-            )
-            .expect("field batch item contract"),
+            plan: CaptureQueryPlan::for_query(item_query_kind, capture_kind, scene.clone())
+                .expect("field batch item contract"),
         };
         Self {
             contract_version: QUERY_PLAN_CONTRACT_VERSION,
+            contract_id,
+            family: descriptor.family,
+            surface: descriptor.surface,
             helper_name: SmolStr::new(helper_name),
             kind,
             capture_kind,
             backend,
             kernel,
-            item_kind: QueryItemKind::PointQuery,
+            item_kind: descriptor.item_kind,
             result_kind,
             executor,
             scene,
@@ -532,18 +599,18 @@ impl BatchQueryPlan {
             dispatch_contract: DispatchRecordContract {
                 backend,
                 kernel,
-                item_kind: QueryItemKind::PointQuery,
+                item_kind: descriptor.item_kind,
                 result_kind,
             },
             candidate_contract,
             result_contract,
             hit_context_contract: None,
             participant_contract: None,
-            domain_flags: Vec::new(),
+            domain_flags: descriptor.required_domain_flags.to_vec(),
             artifact_contracts,
             item_contract,
-            observability: default_planning_observability(pruning_strategy),
-            preserves_local_hit_context: false,
+            observability: planning_observability(descriptor.observability, pruning_strategy),
+            preserves_local_hit_context: descriptor.preserves_local_hit_context,
         }
     }
 
@@ -552,42 +619,28 @@ impl BatchQueryPlan {
         backend: DispatchBackend,
         scene: Option<SceneSummary>,
     ) -> Self {
-        let helper_name = match kind {
-            BatchQueryKind::Trace => "__wr_scene_trace_batch_queries",
-            BatchQueryKind::Surface => "__wr_scene_surface_batch_queries",
-            BatchQueryKind::Occluded => "__wr_scene_occluded_batch_queries",
-            _ => panic!("unsupported shape batch query: {kind:?}"),
-        };
-        let (kernel, item_kind, result_kind, executor, preserves_local_hit_context) = match kind {
-            BatchQueryKind::Trace => (
-                InternalKernelKind::ShapeTraceCapture,
-                QueryItemKind::RayQuery,
-                QueryResultKind::Hit3,
-                SceneTraceCapture,
-                true,
-            ),
-            BatchQueryKind::Surface => (
-                InternalKernelKind::ShapeSurfaceCapture,
-                QueryItemKind::Hit3,
-                QueryResultKind::Surface,
-                SceneSurfaceCapture,
-                false,
-            ),
-            BatchQueryKind::Occluded => (
-                InternalKernelKind::ShapeOccludedCapture,
-                QueryItemKind::RayQuery,
-                QueryResultKind::OcclusionResult,
-                SceneTraceCapture,
-                true,
-            ),
-            _ => panic!("unsupported shape batch query: {kind:?}"),
-        };
-        let candidate_strategy = candidate_strategy_for_shape_query(kind, scene.as_ref());
-        let pruning_strategy =
-            pruning_strategy_for_plan(kind, CaptureKind::Shape, scene.as_ref(), candidate_strategy);
+        let contract_id = batch_query_contract_id(kind, CaptureKind::Shape)
+            .unwrap_or_else(|| panic!("unsupported shape batch query: {kind:?}"));
+        let (descriptor, binding) = query_contract_bundle(contract_id);
+        let helper_name = helper_name(binding);
+        let kernel = bound_kernel(binding);
+        let item_kind = descriptor.item_kind;
+        let result_kind = descriptor.result_kind;
+        let executor = binding.default_executor;
+        let preserves_local_hit_context = descriptor.preserves_local_hit_context;
+        let planner_kind = batch_query_kind_for_recipe(binding.planner_recipe);
+        debug_assert_eq!(descriptor.surface, QuerySurfaceKind::CaptureBatch);
+        debug_assert_eq!(descriptor.capture_kind, CaptureKind::Shape);
+        let candidate_strategy = candidate_strategy_for_shape_query(planner_kind, scene.as_ref());
+        let pruning_strategy = pruning_strategy_for_plan(
+            planner_kind,
+            descriptor.capture_kind,
+            scene.as_ref(),
+            candidate_strategy,
+        );
         let derived_artifacts = derive_artifacts(
             scene.as_ref(),
-            CaptureKind::Shape,
+            descriptor.capture_kind,
             candidate_strategy,
             pruning_strategy,
         );
@@ -612,10 +665,11 @@ impl BatchQueryPlan {
         if matches!(backend, VirtualGpu | Wgsl | Auto) {
             stages.push(PlanStage::EndVirtualGpuDispatch);
         }
-        let winner_mode = match kind {
-            BatchQueryKind::Surface => WinnerSelectionMode::SurfaceReuse,
-            BatchQueryKind::Trace | BatchQueryKind::Occluded => WinnerSelectionMode::Nearest,
-            _ => WinnerSelectionMode::None,
+        let winner_mode = match binding.planner_recipe {
+            QueryPlannerRecipeKind::SurfaceSampleBatchShape => WinnerSelectionMode::SurfaceReuse,
+            QueryPlannerRecipeKind::SpatialTraceBatchShape
+            | QueryPlannerRecipeKind::SpatialOccludedBatchShape => WinnerSelectionMode::Nearest,
+            other => panic!("unexpected shape batch planner recipe: {other:?}"),
         };
         let candidate_contract = build_candidate_contract(
             CandidateSource::CaptureScene,
@@ -635,8 +689,8 @@ impl BatchQueryPlan {
             preserves_local_hit_context,
             helper_name,
         );
-        let item_contract = match kind {
-            BatchQueryKind::Trace => BatchItemContract::CaptureQuery {
+        let item_contract = match binding.planner_recipe {
+            QueryPlannerRecipeKind::SpatialTraceBatchShape => BatchItemContract::CaptureQuery {
                 plan: CaptureQueryPlan::for_query(
                     CaptureQueryKind::Trace,
                     CaptureKind::Shape,
@@ -644,7 +698,7 @@ impl BatchQueryPlan {
                 )
                 .expect("trace batch contract"),
             },
-            BatchQueryKind::Surface => BatchItemContract::CaptureQuery {
+            QueryPlannerRecipeKind::SurfaceSampleBatchShape => BatchItemContract::CaptureQuery {
                 plan: CaptureQueryPlan::for_query(
                     CaptureQueryKind::Surface,
                     CaptureKind::Shape,
@@ -652,18 +706,23 @@ impl BatchQueryPlan {
                 )
                 .expect("surface batch contract"),
             },
-            BatchQueryKind::Occluded => BatchItemContract::TraceThenOcclusion {
-                trace_plan: CaptureQueryPlan::for_query(
-                    CaptureQueryKind::Trace,
-                    CaptureKind::Shape,
-                    scene.clone(),
-                )
-                .expect("occlusion trace contract"),
-            },
-            _ => unreachable!(),
+            QueryPlannerRecipeKind::SpatialOccludedBatchShape => {
+                BatchItemContract::TraceThenOcclusion {
+                    trace_plan: CaptureQueryPlan::for_query(
+                        CaptureQueryKind::Trace,
+                        CaptureKind::Shape,
+                        scene.clone(),
+                    )
+                    .expect("occlusion trace contract"),
+                }
+            }
+            other => panic!("unexpected shape batch planner recipe: {other:?}"),
         };
         Self {
             contract_version: QUERY_PLAN_CONTRACT_VERSION,
+            contract_id,
+            family: descriptor.family,
+            surface: descriptor.surface,
             helper_name: SmolStr::new(helper_name),
             kind,
             capture_kind: CaptureKind::Shape,
@@ -687,10 +746,10 @@ impl BatchQueryPlan {
             result_contract,
             hit_context_contract,
             participant_contract: None,
-            domain_flags: Vec::new(),
+            domain_flags: descriptor.required_domain_flags.to_vec(),
             artifact_contracts,
             item_contract,
-            observability: default_planning_observability(pruning_strategy),
+            observability: planning_observability(descriptor.observability, pruning_strategy),
             preserves_local_hit_context,
         }
     }
@@ -766,88 +825,43 @@ impl CaptureQueryPlan {
         capture_kind: CaptureKind,
         scene: Option<SceneSummary>,
     ) -> Result<Self, &'static str> {
-        let (helper_name, result_kind, executor, preserves_local_hit_context) =
-            match (kind, capture_kind) {
-                (CaptureQueryKind::Distance, CaptureKind::Field) => (
-                    "__wr_field_distance_capture",
-                    QueryResultKind::DistanceResult,
-                    FieldDistanceCapture,
-                    false,
-                ),
-                (CaptureQueryKind::Distance, CaptureKind::Shape) => (
-                    "__wr_shape_distance_capture",
-                    QueryResultKind::DistanceResult,
-                    ShapeDistanceCapture,
-                    false,
-                ),
-                (CaptureQueryKind::Normal, CaptureKind::Field) => (
-                    "__wr_field_normal_capture",
-                    QueryResultKind::NormalResult,
-                    FieldNormalCapture,
-                    false,
-                ),
-                (CaptureQueryKind::Normal, CaptureKind::Shape) => (
-                    "__wr_shape_normal_capture",
-                    QueryResultKind::NormalResult,
-                    ShapeNormalCapture,
-                    false,
-                ),
-                (CaptureQueryKind::Radiance, CaptureKind::Shape) => (
-                    "__wr_scene_radiance_capture",
-                    QueryResultKind::RadianceResult,
-                    SceneRadianceCapture,
-                    false,
-                ),
-                (CaptureQueryKind::Medium, CaptureKind::Shape) => (
-                    "__wr_scene_medium_capture",
-                    QueryResultKind::MediumResult,
-                    SceneMediumCapture,
-                    false,
-                ),
-                (CaptureQueryKind::Trace, CaptureKind::Shape) => (
-                    "__wr_scene_trace_capture",
-                    QueryResultKind::Hit3,
-                    SceneTraceCapture,
-                    true,
-                ),
-                (CaptureQueryKind::Surface, CaptureKind::Shape) => (
-                    "__wr_scene_surface_capture",
-                    QueryResultKind::Surface,
-                    SceneSurfaceCapture,
-                    false,
-                ),
-                _ => {
-                    return Err(
-                        "capture query plan does not support the requested capture/kind pair",
-                    );
-                }
-            };
-        let candidate_strategy = match kind {
+        let Some(contract_id) = capture_query_contract_id(kind, capture_kind) else {
+            return Err("capture query plan does not support the requested capture/kind pair");
+        };
+        let (descriptor, binding) = query_contract_bundle(contract_id);
+        let helper_name = helper_name(binding);
+        let result_kind = descriptor.result_kind;
+        let executor = binding.default_executor;
+        let preserves_local_hit_context = descriptor.preserves_local_hit_context;
+        let planner_kind = capture_query_kind_for_recipe(binding.planner_recipe);
+        debug_assert_eq!(descriptor.surface, QuerySurfaceKind::CaptureScalar);
+        debug_assert_eq!(descriptor.capture_kind, capture_kind);
+        let candidate_strategy = match planner_kind {
             CaptureQueryKind::Surface => CandidateStrategy::SurfaceHitReuse,
             CaptureQueryKind::Distance | CaptureQueryKind::Normal
-                if matches!(capture_kind, CaptureKind::Field) =>
+                if matches!(descriptor.capture_kind, CaptureKind::Field) =>
             {
                 CandidateStrategy::DirectFieldCapture
             }
             _ => candidate_strategy_for_shape_query(BatchQueryKind::Trace, scene.as_ref()),
         };
-        let pruning_strategy = match kind {
+        let pruning_strategy = match planner_kind {
             CaptureQueryKind::Surface => PruningStrategy::None,
             CaptureQueryKind::Distance | CaptureQueryKind::Normal
-                if matches!(capture_kind, CaptureKind::Field) =>
+                if matches!(descriptor.capture_kind, CaptureKind::Field) =>
             {
                 PruningStrategy::None
             }
             _ => pruning_strategy_for_plan(
                 BatchQueryKind::Trace,
-                capture_kind,
+                descriptor.capture_kind,
                 scene.as_ref(),
                 candidate_strategy,
             ),
         };
         let derived_artifacts = derive_artifacts(
             scene.as_ref(),
-            capture_kind,
+            descriptor.capture_kind,
             candidate_strategy,
             pruning_strategy,
         );
@@ -859,8 +873,10 @@ impl CaptureQueryPlan {
         stages.push(PlanStage::PruneCandidates {
             strategy: pruning_strategy,
         });
-        if matches!(kind, CaptureQueryKind::Radiance | CaptureQueryKind::Medium) {
-            stages.push(PlanStage::SelectParticipants { kind });
+        if let Some(participant_kind) = descriptor.participant_kind {
+            stages.push(PlanStage::SelectParticipants {
+                kind: participant_selection_kind(participant_kind),
+            });
         }
         stages.push(PlanStage::Execute { executor });
         if preserves_local_hit_context {
@@ -868,33 +884,34 @@ impl CaptureQueryPlan {
         }
         stages.push(PlanStage::AppendResult { result_kind });
         let candidate_contract = build_candidate_contract(
-            if matches!(kind, CaptureQueryKind::Surface) {
+            if matches!(planner_kind, CaptureQueryKind::Surface) {
                 CandidateSource::SurfaceHit
             } else {
                 CandidateSource::CaptureScene
             },
-            match kind {
-                CaptureQueryKind::Surface => QueryItemKind::Hit3,
-                CaptureQueryKind::Trace => QueryItemKind::RayQuery,
-                _ => QueryItemKind::PointQuery,
-            },
+            descriptor.item_kind,
             candidate_strategy,
             pruning_strategy,
-            match kind {
-                CaptureQueryKind::Surface => WinnerSelectionMode::SurfaceReuse,
-                CaptureQueryKind::Trace => WinnerSelectionMode::Nearest,
-                _ => WinnerSelectionMode::None,
+            match binding.planner_recipe {
+                QueryPlannerRecipeKind::SurfaceSampleCaptureShape => {
+                    WinnerSelectionMode::SurfaceReuse
+                }
+                QueryPlannerRecipeKind::SpatialTraceCaptureShape => WinnerSelectionMode::Nearest,
+                QueryPlannerRecipeKind::SpatialDistanceCaptureField
+                | QueryPlannerRecipeKind::SpatialDistanceCaptureShape
+                | QueryPlannerRecipeKind::SpatialNormalCaptureField
+                | QueryPlannerRecipeKind::SpatialNormalCaptureShape
+                | QueryPlannerRecipeKind::ParticipantsRadianceCaptureShape
+                | QueryPlannerRecipeKind::ParticipantsMediumCaptureShape => {
+                    WinnerSelectionMode::None
+                }
+                other => panic!("unexpected capture planner recipe: {other:?}"),
             },
             true,
         );
         let result_contract = build_result_contract(result_kind, preserves_local_hit_context);
         let hit_context_contract = preserves_local_hit_context.then(hit_context_contract);
-        let participant_contract = match kind {
-            CaptureQueryKind::Radiance | CaptureQueryKind::Medium => {
-                Some(build_participant_contract(kind))
-            }
-            _ => None,
-        };
+        let participant_contract = descriptor.participant_kind.map(build_participant_contract);
         let artifact_contracts = derive_artifact_contracts(
             &derived_artifacts,
             scene.as_ref(),
@@ -905,6 +922,9 @@ impl CaptureQueryPlan {
         );
         Ok(Self {
             contract_version: QUERY_PLAN_CONTRACT_VERSION,
+            contract_id,
+            family: descriptor.family,
+            surface: descriptor.surface,
             helper_name: SmolStr::new(helper_name),
             kind,
             capture_kind,
@@ -920,7 +940,7 @@ impl CaptureQueryPlan {
             hit_context_contract,
             participant_contract,
             artifact_contracts,
-            observability: default_planning_observability(pruning_strategy),
+            observability: planning_observability(descriptor.observability, pruning_strategy),
             preserves_local_hit_context,
         })
     }
@@ -957,51 +977,18 @@ impl WorldQueryPlan {
     }
 
     pub fn for_query_with_backend(kind: WorldQueryKind, backend: DispatchBackend) -> Self {
-        let (helper_name, result_kind, executor, preserves_local_hit_context) = match kind {
-            WorldQueryKind::Distance => (
-                "__wr_world_distance_capture",
-                QueryResultKind::DistanceResult,
-                WorldDistanceCapture,
-                false,
-            ),
-            WorldQueryKind::Normal => (
-                "__wr_world_normal_capture",
-                QueryResultKind::NormalResult,
-                WorldNormalCapture,
-                false,
-            ),
-            WorldQueryKind::Radiance => (
-                "__wr_world_radiance_capture",
-                QueryResultKind::RadianceResult,
-                WorldRadianceCapture,
-                false,
-            ),
-            WorldQueryKind::Medium => (
-                "__wr_world_medium_capture",
-                QueryResultKind::MediumResult,
-                WorldMediumCapture,
-                false,
-            ),
-            WorldQueryKind::Trace => (
-                "__wr_world_trace_capture",
-                QueryResultKind::Hit3,
-                WorldTraceCapture,
-                true,
-            ),
-            WorldQueryKind::Surface => (
-                "__wr_world_surface_capture",
-                QueryResultKind::Surface,
-                WorldSurfaceCapture,
-                false,
-            ),
-        };
-        let item_kind = match kind {
-            WorldQueryKind::Surface => QueryItemKind::Hit3,
-            WorldQueryKind::Trace => QueryItemKind::RayQuery,
-            _ => QueryItemKind::PointQuery,
-        };
-        let candidate_strategy = world_candidate_strategy(kind);
-        let pruning_strategy = world_pruning_strategy(kind, candidate_strategy);
+        let contract_id = world_query_contract_id(kind);
+        let (descriptor, binding) = query_contract_bundle(contract_id);
+        let helper_name = helper_name(binding);
+        let result_kind = descriptor.result_kind;
+        let executor = binding.default_executor;
+        let preserves_local_hit_context = descriptor.preserves_local_hit_context;
+        let item_kind = descriptor.item_kind;
+        let planner_kind = world_query_kind_for_recipe(binding.planner_recipe);
+        debug_assert_eq!(descriptor.surface, QuerySurfaceKind::WorldScalar);
+        debug_assert_eq!(descriptor.capture_kind, CaptureKind::Region);
+        let candidate_strategy = world_candidate_strategy(planner_kind);
+        let pruning_strategy = world_pruning_strategy(planner_kind, candidate_strategy);
         let derived_artifacts = derive_world_artifacts(candidate_strategy, pruning_strategy);
         let mut stages = vec![PlanStage::SelectBackend, PlanStage::LoadCapture];
         stages.extend(load_artifact_stages(&derived_artifacts));
@@ -1012,12 +999,12 @@ impl WorldQueryPlan {
         stages.push(PlanStage::PruneCandidates {
             strategy: pruning_strategy,
         });
-        if matches!(kind, WorldQueryKind::Radiance) {
+        if let Some(ParticipantContractKind::Radiance) = descriptor.participant_kind {
             stages.push(PlanStage::SelectParticipants {
                 kind: CaptureQueryKind::Radiance,
             });
         }
-        if matches!(kind, WorldQueryKind::Medium) {
+        if let Some(ParticipantContractKind::Medium) = descriptor.participant_kind {
             stages.push(PlanStage::SelectParticipants {
                 kind: CaptureQueryKind::Medium,
             });
@@ -1027,24 +1014,11 @@ impl WorldQueryPlan {
             stages.push(PlanStage::AssembleHitContext);
         }
         stages.push(PlanStage::AppendResult { result_kind });
-        let participant_contract = match kind {
-            WorldQueryKind::Radiance => {
-                Some(build_participant_contract(CaptureQueryKind::Radiance))
-            }
-            WorldQueryKind::Medium => Some(build_participant_contract(CaptureQueryKind::Medium)),
-            _ => None,
-        };
-        let domain_flags = world_domain_flags(kind);
+        let participant_contract = descriptor.participant_kind.map(build_participant_contract);
+        let domain_flags = descriptor.required_domain_flags.to_vec();
         let dispatch_contract = DispatchRecordContract {
             backend,
-            kernel: match kind {
-                WorldQueryKind::Distance => InternalKernelKind::WorldDistanceCapture,
-                WorldQueryKind::Normal => InternalKernelKind::WorldNormalCapture,
-                WorldQueryKind::Trace => InternalKernelKind::WorldTraceCapture,
-                WorldQueryKind::Surface => InternalKernelKind::WorldSurfaceCapture,
-                WorldQueryKind::Radiance => InternalKernelKind::WorldRadianceCapture,
-                WorldQueryKind::Medium => InternalKernelKind::WorldMediumCapture,
-            },
+            kernel: bound_kernel(binding),
             item_kind,
             result_kind,
         };
@@ -1053,15 +1027,22 @@ impl WorldQueryPlan {
             item_kind,
             candidate_strategy,
             pruning_strategy,
-            match kind {
-                WorldQueryKind::Surface => WinnerSelectionMode::SurfaceReuse,
-                WorldQueryKind::Radiance | WorldQueryKind::Medium => WinnerSelectionMode::Ordered,
-                _ => WinnerSelectionMode::Nearest,
+            match binding.planner_recipe {
+                QueryPlannerRecipeKind::SurfaceSampleWorld => WinnerSelectionMode::SurfaceReuse,
+                QueryPlannerRecipeKind::ParticipantsRadianceWorld
+                | QueryPlannerRecipeKind::ParticipantsMediumWorld => WinnerSelectionMode::Ordered,
+                QueryPlannerRecipeKind::SpatialDistanceWorld
+                | QueryPlannerRecipeKind::SpatialNormalWorld
+                | QueryPlannerRecipeKind::SpatialTraceWorld => WinnerSelectionMode::Nearest,
+                other => panic!("unexpected world planner recipe: {other:?}"),
             },
             true,
         );
         Self {
             contract_version: QUERY_PLAN_CONTRACT_VERSION,
+            contract_id,
+            family: descriptor.family,
+            surface: descriptor.surface,
             helper_name: SmolStr::new(helper_name),
             kind,
             backend,
@@ -1085,7 +1066,7 @@ impl WorldQueryPlan {
                 preserves_local_hit_context,
                 helper_name,
             ),
-            observability: default_planning_observability(pruning_strategy),
+            observability: planning_observability(descriptor.observability, pruning_strategy),
             preserves_local_hit_context,
         }
     }
@@ -1221,7 +1202,8 @@ fn hit_context_contract() -> HitContextContract {
     }
 }
 
-fn build_participant_contract(kind: CaptureQueryKind) -> ParticipantSelectionContract {
+fn build_participant_contract(kind: ParticipantContractKind) -> ParticipantSelectionContract {
+    let kind = participant_selection_kind(kind);
     ParticipantSelectionContract {
         kind,
         provenance_aware: true,
@@ -1229,23 +1211,19 @@ fn build_participant_contract(kind: CaptureQueryKind) -> ParticipantSelectionCon
     }
 }
 
-fn world_domain_flags(kind: WorldQueryKind) -> Vec<SceneDomainFlag> {
-    match kind {
-        WorldQueryKind::Surface => vec![SceneDomainFlag::Material],
-        WorldQueryKind::Radiance => vec![SceneDomainFlag::Radiance],
-        WorldQueryKind::Medium => vec![SceneDomainFlag::Media],
-        _ => Vec::new(),
-    }
-}
-
-fn default_planning_observability(pruning_strategy: PruningStrategy) -> PlanningObservability {
+fn planning_observability(
+    profile: QueryObservabilityProfile,
+    pruning_strategy: PruningStrategy,
+) -> PlanningObservability {
     PlanningObservability {
-        candidate_count: true,
-        branch_visits: true,
-        support_prune_effectiveness: !matches!(pruning_strategy, PruningStrategy::None),
-        culling_hit_rate: matches!(pruning_strategy, PruningStrategy::CullingTable),
-        artifact_sizes: true,
-        dispatch_overhead: true,
+        candidate_count: profile.candidate_count,
+        branch_visits: profile.branch_visits,
+        support_prune_effectiveness: profile.support_prune_effectiveness
+            && !matches!(pruning_strategy, PruningStrategy::None),
+        culling_hit_rate: profile.culling_hit_rate
+            && matches!(pruning_strategy, PruningStrategy::CullingTable),
+        artifact_sizes: profile.artifact_sizes,
+        dispatch_overhead: profile.dispatch_overhead,
     }
 }
 
@@ -1515,6 +1493,12 @@ mod tests {
             Some(summary),
         );
         assert_eq!(left, right);
+        assert_eq!(
+            left.contract_id,
+            crate::query_contract::SPATIAL_TRACE_BATCH_SHAPE
+        );
+        assert_eq!(left.family, QueryFamilyId::Spatial);
+        assert_eq!(left.surface, QuerySurfaceKind::CaptureBatch);
     }
 
     #[test]
@@ -1537,6 +1521,12 @@ mod tests {
             }),
         );
         assert_eq!(plan.kernel, InternalKernelKind::ShapeTraceCapture);
+        assert_eq!(
+            plan.contract_id,
+            crate::query_contract::SPATIAL_TRACE_BATCH_SHAPE
+        );
+        assert_eq!(plan.family, QueryFamilyId::Spatial);
+        assert_eq!(plan.surface, QuerySurfaceKind::CaptureBatch);
         assert!(plan.requires_virtual_gpu_scaffolding());
         assert!(plan.preserves_local_hit_context);
         assert_eq!(plan.candidate_strategy(), CandidateStrategy::OpaqueFallback);
@@ -1559,6 +1549,12 @@ mod tests {
         assert_eq!(plan.kernel, InternalKernelKind::FieldNormalCapture);
         assert_eq!(plan.result_kind, QueryResultKind::NormalResult);
         assert_eq!(plan.item_kind, QueryItemKind::PointQuery);
+        assert_eq!(
+            plan.contract_id,
+            crate::query_contract::SPATIAL_NORMAL_BATCH_FIELD
+        );
+        assert_eq!(plan.family, QueryFamilyId::Spatial);
+        assert_eq!(plan.surface, QuerySurfaceKind::CaptureBatch);
         assert!(!plan.preserves_local_hit_context);
         assert_eq!(
             plan.candidate_strategy(),

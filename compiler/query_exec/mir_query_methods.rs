@@ -1111,6 +1111,7 @@ impl FunctionLowerer {
         span: TextRange,
     ) -> BatchQueryLoopInputs {
         match item_kind {
+            QueryItemKind::Unit => BatchQueryLoopInputs::default(),
             QueryItemKind::PointQuery => {
                 let point_query = self.lower_call_temp(
                     MirType::Named(SmolStr::new("PointQuery")),
