@@ -1,0 +1,778 @@
+fn update_checksum(current: Integer, value: Integer) -> Integer {
+    return ((current * 41) + value) % 2147483647
+}
+
+field exact distance hard_ground(p: Vec3) -> F32 {
+    plane(normal = vec3(0.0, 1.0, 0.0), offset = 1.0)
+}
+
+field conservative distance hard_repeat_column(p: Vec3) -> F32 {
+    sweep = vec3(0.0, 1.88, 0.0) {
+        circle2(radius = 0.09)
+    }
+}
+
+field conservative distance hard_repeat_cap(p: Vec3) -> F32 {
+    translate = vec3(0.0, 0.62, 0.0) {
+        extrude = f32(0.16) {
+            rect2(half = vec2(0.20, 0.05))
+        }
+    }
+}
+
+field conservative distance hard_repeat_module(p: Vec3) -> F32 {
+    union {
+        provenance_policy = nearest
+        use hard_repeat_column
+        use hard_repeat_cap
+    }
+}
+
+field conservative distance hard_trellis(p: Vec3) -> F32 {
+    instance_array = Transform3(
+        matrix=mat4_cols(
+            vec4(1.0, 0.0, 0.0, 0.0),
+            vec4(0.0, 1.0, 0.0, 0.0),
+            vec4(0.0, 0.0, 1.0, 0.0),
+            vec4(1.35, 0.0, 0.0, 1.0)
+        ),
+        inverse=mat4_cols(
+            vec4(1.0, 0.0, 0.0, 0.0),
+            vec4(0.0, 1.0, 0.0, 0.0),
+            vec4(0.0, 0.0, 1.0, 0.0),
+            vec4(-1.35, 0.0, 0.0, 1.0)
+        )
+    ) {
+        repeat_linear = vec3(1.22, 0.0, 0.0) {
+            translate = vec3(0.0, 0.08, 0.0) {
+                use hard_repeat_module
+            }
+        }
+    }
+}
+
+field conservative distance hard_thin_reference(p: Vec3) -> F32 {
+    sweep = vec3(0.0, 0.96, 0.0) {
+        rect2(half = vec2(0.05, 0.12))
+    }
+}
+
+field conservative distance hard_thin_nested(p: Vec3) -> F32 {
+    translate = vec3(0.18, -0.04, 0.0) {
+        translate = vec3(0.12, 0.06, 0.0) {
+            use hard_thin_reference
+        }
+    }
+}
+
+field conservative distance hard_torso(p: Vec3) -> F32 {
+    loft = f32(1.18) {
+        from rounded_rect2(half = vec2(0.24, 0.18), radius = 0.10)
+        to rounded_rect2(half = vec2(0.36, 0.26), radius = 0.12)
+    }
+}
+
+field conservative distance hard_hips(p: Vec3) -> F32 {
+    translate = vec3(0.0, -0.58, 0.0) {
+        extrude = f32(0.34) {
+            rounded_rect2(half = vec2(0.30, 0.16), radius = 0.08)
+        }
+    }
+}
+
+field conservative distance hard_head(p: Vec3) -> F32 {
+    translate = vec3(0.0, 0.94, 0.0) {
+        revolve {
+            circle2(radius = 0.27)
+        }
+    }
+}
+
+field conservative distance hard_arm(p: Vec3) -> F32 {
+    translate = vec3(0.0, 0.10, 0.0) {
+        sweep = vec3(0.72, 0.0, 0.0) {
+            circle2(radius = 0.07)
+        }
+    }
+}
+
+field conservative distance hard_leg(p: Vec3) -> F32 {
+    sweep = vec3(0.0, 0.92, 0.0) {
+        circle2(radius = 0.085)
+    }
+}
+
+field conservative distance hard_character_torso_blend(p: Vec3) -> F32 {
+    smooth_union {
+        smoothing = f32(0.16)
+        use hard_torso
+        use hard_hips
+    }
+}
+
+field conservative distance hard_character_arms(p: Vec3) -> F32 {
+    mirror_array = vec3(1.0, 0.0, 0.0) {
+        translate = vec3(0.42, 0.0, 0.0) {
+            use hard_arm
+        }
+    }
+}
+
+field conservative distance hard_character_legs(p: Vec3) -> F32 {
+    mirror_array = vec3(1.0, 0.0, 0.0) {
+        translate = vec3(0.18, -1.00, 0.0) {
+            use hard_leg
+        }
+    }
+}
+
+field conservative distance hard_character_core(p: Vec3) -> F32 {
+    union {
+        provenance_policy = nearest
+        use hard_character_torso_blend
+        use hard_head
+        use hard_character_arms
+        use hard_character_legs
+    }
+}
+
+field conservative distance hard_character(p: Vec3) -> F32 {
+    bend = vec3(0.0, 0.30, 0.0) {
+        twist = vec3(0.0, 0.28, 0.0) {
+            displace = vec3(0.05, 0.0, 0.0) {
+                use hard_character_core
+            }
+        }
+    }
+}
+
+field conservative distance hard_support_near_body(p: Vec3) -> F32 {
+    sphere(radius = 0.78)
+}
+
+field conservative distance hard_support_near_base(p: Vec3) -> F32 {
+    translate = vec3(0.0, -0.82, 0.0) {
+        extrude = f32(0.18) {
+            rounded_rect2(half = vec2(0.50, 0.14), radius = 0.05)
+        }
+    }
+}
+
+field conservative distance hard_support_near(p: Vec3) -> F32 {
+    union {
+        provenance_policy = nearest
+        use hard_support_near_body
+        use hard_support_near_base
+    }
+}
+
+field conservative distance hard_support_opaque(p: Vec3) -> F32 {
+    support = Support3(bounds=Bounds3(
+        min=vec3(7.5, -1.2, -1.2),
+        max=vec3(11.5, 1.2, 1.2)
+    ))
+    bounds = Bounds3(
+        min=vec3(7.5, -1.2, -1.2),
+        max=vec3(11.5, 1.2, 1.2)
+    )
+    return length(p - vec3(9.5, 0.0, 0.0)) - 0.65
+}
+
+material hard_repeat_surface(hit: Hit3) -> Surface {
+    rib = clamp(abs(hit.local_position.x) * 0.35 + abs(hit.local_normal.y) * 0.25, 0.0, 1.0)
+    return Surface(
+        albedo=vec3(164.0, 142.0, 102.0) + vec3(18.0, 12.0, 8.0) * rib,
+        roughness=0.20 + rib * 0.14,
+        metalness=0.08 + clamp(hit.local_normal.z, 0.0, 1.0) * 0.10,
+        clearcoat=0.14 + clamp(hit.local_normal.y, 0.0, 1.0) * 0.14,
+        clearcoat_roughness=0.08 + abs(hit.local_position.x) * 0.08,
+        sheen=0.06 + abs(hit.local_normal.x) * 0.12,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+material hard_thin_surface(hit: Hit3) -> Surface {
+    edge = clamp(abs(hit.local_position.x) * 0.48 + abs(hit.local_normal.z) * 0.28, 0.0, 1.0)
+    return Surface(
+        albedo=vec3(110.0, 150.0, 188.0) + vec3(12.0, 14.0, 18.0) * edge,
+        roughness=0.18 + abs(hit.local_position.y) * 0.10,
+        metalness=0.16 + edge * 0.18,
+        clearcoat=0.16 + edge * 0.16,
+        clearcoat_roughness=0.10 + (1.0 - edge) * 0.10,
+        sheen=0.10 + abs(hit.local_normal.y) * 0.12,
+        emissive=vec3(1.5, 2.0, 3.0) * clamp(hit.local_normal.y, 0.0, 1.0)
+    )
+}
+
+material hard_character_surface(hit: Hit3) -> Surface {
+    crest = clamp(0.5 + hit.local_position.y * 0.42 + abs(hit.local_normal.x) * 0.16, 0.0, 1.0)
+    return Surface(
+        albedo=vec3(92.0, 126.0, 182.0) + vec3(12.0, 16.0, 22.0) * crest,
+        roughness=0.12 + abs(hit.local_position.z) * 0.12,
+        metalness=0.16 + crest * 0.14,
+        clearcoat=0.18 + crest * 0.18,
+        clearcoat_roughness=0.10 + (1.0 - crest) * 0.12,
+        sheen=0.08 + abs(hit.local_normal.y) * 0.16,
+        emissive=vec3(2.0, 2.4, 4.2) * clamp(hit.local_normal.y, 0.0, 1.0)
+    )
+}
+
+material hard_support_surface(hit: Hit3) -> Surface {
+    body = clamp(abs(hit.local_position.x) * 0.30 + abs(hit.local_position.y) * 0.20, 0.0, 1.0)
+    return Surface(
+        albedo=vec3(196.0, 160.0, 112.0) + vec3(22.0, 16.0, 10.0) * body,
+        roughness=0.18 + body * 0.18,
+        metalness=0.10 + clamp(hit.local_normal.z, 0.0, 1.0) * 0.08,
+        clearcoat=0.10 + clamp(hit.local_normal.y, 0.0, 1.0) * 0.16,
+        clearcoat_roughness=0.08 + abs(hit.local_position.x) * 0.10,
+        sheen=0.04 + abs(hit.local_normal.x) * 0.12,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+radiance field hard_radiance(p: Vec3, direction: Vec3, feature_id: U32) -> Vec3 {
+    sky_t = clamp(0.5 + direction.y * 0.5, 0.0, 1.0)
+    halo = clamp(0.20 - abs(p.y - 0.8) * 0.14 - abs(p.x) * 0.05, 0.0, 0.20) / 0.20
+    return vec3(8.0, 10.0, 16.0) * (1.0 - sky_t)
+        + vec3(58.0, 84.0, 130.0) * sky_t
+        + vec3(6.0, 8.0, 10.0) * halo
+}
+
+volume field hard_volume(p: Vec3, surface_distance: F32) -> Medium {
+    band = clamp((0.7 - abs(p.y)) * 0.8, 0.0, 0.7) / 0.7
+    near_surface = clamp((0.14 - abs(surface_distance)) * 6.0, 0.0, 1.0)
+    density = clamp(0.010 + band * 0.018 + near_surface * 0.015, 0.0, 0.09)
+    return Medium(
+        density=density,
+        emission=vec3(2.2, 3.1, 4.8) * density + vec3(0.0, 0.01, 0.02) * near_surface,
+        anisotropy=0.10
+    )
+}
+
+shape hard_repeat_shape {
+    field = hard_trellis
+    material = hard_repeat_surface
+    radiance = hard_radiance
+    volume = hard_volume
+    payload = Payload(
+        entity_id=u32(11),
+        material_id=u32(11),
+        actor=ActorHandle(id=u32(11), generation=u32(0))
+    )
+}
+
+shape hard_thin_shape {
+    field = hard_thin_nested
+    material = hard_thin_surface
+    radiance = hard_radiance
+    volume = hard_volume
+    payload = Payload(
+        entity_id=u32(12),
+        material_id=u32(12),
+        actor=ActorHandle(id=u32(12), generation=u32(0))
+    )
+}
+
+shape hard_thin_reference_shape {
+    field = hard_thin_reference
+    material = hard_thin_surface
+    radiance = hard_radiance
+    volume = hard_volume
+    payload = Payload(
+        entity_id=u32(13),
+        material_id=u32(13),
+        actor=ActorHandle(id=u32(13), generation=u32(0))
+    )
+}
+
+shape hard_character_shape {
+    field = hard_character
+    material = hard_character_surface
+    radiance = hard_radiance
+    volume = hard_volume
+    payload = Payload(
+        entity_id=u32(21),
+        material_id=u32(21),
+        actor=ActorHandle(id=u32(21), generation=u32(0))
+    )
+}
+
+shape hard_support_near_shape {
+    field = hard_support_near
+    material = hard_support_surface
+    radiance = hard_radiance
+    volume = hard_volume
+    payload = Payload(
+        entity_id=u32(31),
+        material_id=u32(31),
+        actor=ActorHandle(id=u32(31), generation=u32(0))
+    )
+}
+
+shape hard_support_opaque_shape {
+    field = hard_support_opaque
+    material = hard_support_surface
+    radiance = hard_radiance
+    volume = hard_volume
+    payload = Payload(
+        entity_id=u32(32),
+        material_id=u32(32),
+        actor=ActorHandle(id=u32(32), generation=u32(0))
+    )
+}
+
+shape hard_ground_shape {
+    field = hard_ground
+    material = hard_support_surface
+    radiance = hard_radiance
+    volume = hard_volume
+    payload = Payload(
+        entity_id=u32(33),
+        material_id=u32(33),
+        actor=ActorHandle(id=u32(33), generation=u32(0))
+    )
+}
+
+shape hard_scene_shape {
+    union {
+        provenance_policy = nearest
+        use hard_repeat_shape
+        use hard_thin_shape
+        use hard_character_shape
+        use hard_support_near_shape
+        use hard_support_opaque_shape
+        use hard_ground_shape
+    }
+}
+
+region hard_scene_region() {
+    place coarse = hard_scene_shape
+    place fine = hard_scene_shape
+}
+
+domain hard_coarse_domain(world: RegionCapture) {
+    geometry_detail = 0
+    material = false
+    radiance = false
+    media = false
+    max_distance = 18.0
+    min_step = 0.05
+    hit_epsilon = 0.001
+    max_steps = 96
+}
+
+domain hard_fine_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = true
+    radiance = true
+    media = true
+    max_distance = 18.0
+    min_step = 0.05
+    hit_epsilon = 0.001
+    max_steps = 96
+}
+
+render render_hard_ppm(
+    world: RegionCapture,
+    camera: Camera
+) {
+    domain = hard_fine_domain(world = world)
+    light = Light(
+        position=vec3(-1.8, 3.0, 2.8),
+        direction=normalize(vec3(-0.9, -0.85, -0.8)),
+        intensity=vec3(1.0, 0.98, 0.96),
+        range=18.0
+    )
+    width = 6
+    height = 6
+    world_up = camera.up
+    view_scale = 0.74
+    fill_dir = normalize(vec3(-0.5, 0.42, 0.25))
+}
+
+fn test_field_repetition_identity_stability_ops_120000() -> Nothing {
+    repeat_scene = capture hard_repeat_shape
+    repeat_scene_again = capture hard_repeat_shape
+    repeat_origin = vec3(1.35 - 1.22 * 2.0, 0.16, 3.0)
+    require repeat_scene.scene_id == repeat_scene_again.scene_id else "repeat scene_id stable"
+    require repeat_scene.root_feature_id == repeat_scene_again.root_feature_id else "repeat root_feature_id stable"
+
+    baseline_hit = trace_shape(
+        capture=repeat_scene,
+        origin=repeat_origin,
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    baseline_hit_again = trace_shape(
+        capture=repeat_scene_again,
+        origin=repeat_origin,
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    require baseline_hit.hit == true else "repeat baseline hit"
+    require baseline_hit_again.hit == true else "repeat baseline hit again"
+    require baseline_hit.repeat_id == baseline_hit_again.repeat_id else "repeat repeat_id stable"
+    require baseline_hit.instance_id == baseline_hit_again.instance_id else "repeat instance_id stable"
+
+    mutable checksum = 0
+    mutable repeat_ids = 0
+    mutable instance_ids = 0
+    for i in 1...120000 {
+        tile_x = f32(i % 24) * 0.22 - 2.6
+        tile_y = f32((i / 24) % 4) * 0.10 - 0.12
+        sample_point = vec3(tile_x, tile_y, 0.18)
+        sampled_distance = distance_at(capture=repeat_scene, point=sample_point)
+        checksum = update_checksum(current=checksum, value=i32(abs(sampled_distance) * 1000.0) + (i % 19))
+        if i % 30000 == 0 {
+            probe_hit = trace_shape(
+                capture=repeat_scene,
+                origin=repeat_origin,
+                direction=vec3(0.0, 0.0, -1.0),
+                max_distance=6.0,
+                min_step=0.05,
+                hit_epsilon=0.001,
+                max_steps=96
+            )
+            require probe_hit.hit == true else "repeat probe hit"
+            repeat_ids += i32(probe_hit.repeat_id)
+            instance_ids += i32(probe_hit.instance_id)
+            checksum = update_checksum(current=checksum, value=probe_hit.steps)
+        }
+    }
+
+    require checksum != 0 else "repeat checksum nonzero"
+    require repeat_ids >= 0 else "repeat ids nonnegative"
+    require instance_ids >= 0 else "repeat instance ids nonnegative"
+}
+
+fn test_field_thin_nested_local_frame_ops_100000() -> Nothing {
+    nested_scene = capture hard_thin_shape
+    reference_scene = capture hard_thin_reference_shape
+    world_origin = vec3(0.32, 0.10, 3.0)
+    world_direction = vec3(0.0, 0.0, -1.0)
+    reference_origin = vec3(0.02, 0.08, 3.0)
+    reference_direction = world_direction
+
+    nested_hit = trace_shape(
+        capture=nested_scene,
+        origin=world_origin,
+        direction=world_direction,
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    reference_hit = trace_shape(
+        capture=reference_scene,
+        origin=reference_origin,
+        direction=reference_direction,
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+
+    assert value nested_hit.hit == true
+    assert value reference_hit.hit == true
+    assert approx nested_hit.distance ~= reference_hit.distance within 0.001
+    assert approx nested_hit.local_position.x ~= reference_hit.local_position.x within 0.01
+    assert approx nested_hit.local_position.y ~= reference_hit.local_position.y within 0.01
+    assert approx nested_hit.local_position.z ~= reference_hit.local_position.z within 0.01
+    assert approx nested_hit.local_normal.x ~= reference_hit.local_normal.x within 0.01
+    assert approx nested_hit.local_normal.y ~= reference_hit.local_normal.y within 0.01
+    assert approx nested_hit.local_normal.z ~= reference_hit.local_normal.z within 0.01
+
+    mutable checksum = 0
+    mutable hit_steps = 0
+    for i in 1...100000 {
+        probe_x = 0.24 + f32(i % 6) * 0.02
+        probe_y = -0.02 + f32((i / 6) % 6) * 0.01
+        probe_point = vec3(probe_x, probe_y, 0.12)
+        sampled_distance = distance_at(capture=nested_scene, point=probe_point)
+        checksum = update_checksum(current=checksum, value=i32(abs(sampled_distance) * 2000.0) + (i % 23))
+        if i % 25000 == 0 {
+            probe_hit = trace_shape(
+                capture=nested_scene,
+                origin=world_origin,
+                direction=world_direction,
+                max_distance=6.0,
+                min_step=0.05,
+                hit_epsilon=0.001,
+                max_steps=96
+            )
+            assert value probe_hit.hit == true
+            hit_steps += probe_hit.steps
+            checksum = update_checksum(current=checksum, value=probe_hit.steps)
+        }
+    }
+
+    assert value checksum != 0
+    assert value hit_steps > 0
+}
+
+fn test_field_smooth_deform_character_ops_90000() -> Nothing {
+    character_scene = capture hard_character_shape
+    mirrored_scene = capture hard_character_shape
+    assert value character_scene.scene_id == mirrored_scene.scene_id
+
+    hero_hit = trace_shape(
+        capture=character_scene,
+        origin=vec3(0.05, 0.45, 4.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=8.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    hero_surface = surface_at(capture=character_scene, hit=hero_hit)
+    hero_radiance = radiance_at(
+        capture=character_scene,
+        point=hero_hit.position,
+        direction=normalize(vec3(0.0, 1.0, 1.0))
+    )
+    hero_medium = medium_at(capture=character_scene, point=hero_hit.position)
+
+    assert value hero_hit.hit == true
+    assert value hero_hit.feature_id != u32(0)
+    assert value hero_hit.local_position.y > -2.0
+    assert value hero_surface.clearcoat > 0.10
+    assert value hero_surface.sheen > 0.05
+    assert value hero_radiance.z > hero_radiance.x
+    assert value hero_medium.density > 0.0
+
+    mutable checksum = 0
+    mutable feature_mix = 0
+    for i in 1...90000 {
+        probe_x = f32(i % 8) * 0.05 - 0.16
+        probe_y = f32((i / 8) % 14) * 0.08 - 0.52
+        probe_origin = vec3(probe_x, probe_y, 3.6)
+        probe_hit = trace_shape(
+            capture=character_scene,
+            origin=probe_origin,
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=8.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
+        assert value probe_hit.hit == true
+        if i % 2 == 0 {
+            probe_surface = surface_at(capture=character_scene, hit=probe_hit)
+            checksum = update_checksum(
+                current=checksum,
+                value=i32(probe_hit.steps) + i32(probe_surface.albedo.x)
+            )
+        } else {
+            checksum = update_checksum(current=checksum, value=i32(abs(probe_hit.local_position.y) * 1000.0))
+        }
+        feature_mix += i32(probe_hit.feature_id % u32(13))
+        if i % 30000 == 0 {
+            stable_hit = trace_shape(
+                capture=character_scene,
+                origin=vec3(0.05, 0.45, 4.0),
+                direction=vec3(0.0, 0.0, -1.0),
+                max_distance=8.0,
+                min_step=0.05,
+                hit_epsilon=0.001,
+                max_steps=96
+            )
+            assert value stable_hit.hit == true
+            checksum = update_checksum(current=checksum, value=stable_hit.steps)
+        }
+    }
+
+    assert value checksum != 0
+    assert value feature_mix > 0
+}
+
+@serial
+fn test_field_region_domain_media_radiance_ops_60000() -> Nothing {
+    world = capture hard_scene_region
+    world_again = capture hard_scene_region
+    assert value world.scene_id == world_again.scene_id
+
+    coarse_domain = hard_coarse_domain(world = world)
+    fine_domain = hard_fine_domain(world = world)
+    probe = vec3(0.0, 0.0, 0.86)
+
+    coarse_distance = distance_world(capture = world, domain = coarse_domain, point = probe)
+    fine_distance = distance_world(capture = world, domain = fine_domain, point = probe)
+    fine_normal = normal_world(capture = world, domain = fine_domain, point = probe)
+    coarse_hit = trace_world(
+        capture = world,
+        domain = coarse_domain,
+        origin = vec3(0.0, 0.0, 3.0),
+        direction = vec3(0.0, 0.0, -1.0),
+        max_distance = 8.0,
+        min_step = 0.05,
+        hit_epsilon = 0.001,
+        max_steps = 96
+    )
+    fine_hit = trace_world(
+        capture = world,
+        domain = fine_domain,
+        origin = vec3(0.0, 0.0, 3.0),
+        direction = vec3(0.0, 0.0, -1.0),
+        max_distance = 8.0,
+        min_step = 0.05,
+        hit_epsilon = 0.001,
+        max_steps = 96
+    )
+    coarse_surface = surface_world(capture = world, domain = coarse_domain, hit = fine_hit)
+    fine_surface = surface_world(capture = world, domain = fine_domain, hit = fine_hit)
+    coarse_radiance = radiance_world(
+        capture = world,
+        domain = coarse_domain,
+        point = fine_hit.position,
+        direction = normalize(vec3(0.0, 1.0, 1.0))
+    )
+    fine_radiance = radiance_world(
+        capture = world,
+        domain = fine_domain,
+        point = fine_hit.position,
+        direction = normalize(vec3(0.0, 1.0, 1.0))
+    )
+    coarse_medium = medium_world(capture = world, domain = coarse_domain, point = fine_hit.position)
+    fine_medium = medium_world(capture = world, domain = fine_domain, point = fine_hit.position)
+    camera = Camera(
+        position = vec3(0.0, 0.0, 3.0),
+        forward = vec3(0.0, 0.0, -1.0),
+        up = vec3(0.0, 1.0, 0.0),
+        vertical_fov_degrees = 48.0
+    )
+    ppm = render_hard_ppm(world = world, camera = camera)
+
+    assert value world.scene_id == coarse_domain.scene_id
+    assert value world.scene_id == fine_domain.scene_id
+    assert value coarse_domain.geometry_detail == 0
+    assert value fine_domain.geometry_detail == 1
+    assert value coarse_distance >= 0.0
+    assert value abs(fine_distance) < 0.12
+    assert value fine_normal.z > 0.5
+    assert value coarse_hit.steps >= 0
+    assert value fine_hit.hit == true
+    assert value coarse_surface.albedo.x == 0.0
+    assert value coarse_surface.albedo.y == 0.0
+    assert value coarse_surface.albedo.z == 0.0
+    assert value fine_surface.albedo.z > 0.0
+    assert value coarse_radiance.z == 0.0
+    assert value fine_radiance.z > fine_radiance.x
+    assert value coarse_medium.density == 0.0
+    assert value fine_medium.density > 0.0
+    assert value ppm != ""
+
+    mutable checksum = 0
+    for i in 1...60000 {
+        probe_x = f32(i % 10) * 0.10 - 0.45
+        probe_y = f32((i / 10) % 12) * 0.08 - 0.36
+        probe_point = vec3(probe_x, probe_y, 0.7)
+        if i % 2 == 0 {
+            distance_sample = distance_world(capture = world, domain = coarse_domain, point = probe_point)
+            checksum = update_checksum(current=checksum, value=i32(abs(distance_sample) * 1000.0) + (i % 31))
+        } else {
+            distance_sample = distance_world(capture = world, domain = fine_domain, point = probe_point)
+            radiance_sample = radiance_world(
+                capture = world,
+                domain = fine_domain,
+                point = probe_point,
+                direction = normalize(vec3(0.0, 1.0, 1.0))
+            )
+            checksum = update_checksum(current=checksum, value=i32(abs(distance_sample) * 1000.0) + i32(radiance_sample.z))
+        }
+    }
+
+    assert value checksum != 0
+}
+
+fn test_field_opaque_leaf_pessimization_ops_4000() -> Nothing {
+    support_before = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
+    candidate_before = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+    opaque_scene = capture hard_scene_shape
+    opaque_scene_again = capture hard_scene_shape
+    require opaque_scene.scene_id == opaque_scene_again.scene_id else "opaque scene_id stable"
+
+    baseline_hit = trace_shape(
+        capture=opaque_scene,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=8.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    baseline_surface = surface_at(capture=opaque_scene, hit=baseline_hit)
+    require baseline_hit.hit == true else "opaque baseline hit"
+    require baseline_surface.albedo.x > 0.0 else "opaque baseline surface"
+
+    far_scene = capture hard_support_opaque_shape
+    far_hit = trace_shape(
+        capture=far_scene,
+        origin=vec3(9.5, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=20.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    far_surface = surface_at(capture=far_scene, hit=far_hit)
+    support_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
+    candidate_after = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+
+    require far_hit.hit == true else "opaque far hit"
+    require far_surface.albedo.x >= 0.0 else "opaque far surface"
+    require support_after - support_before == 0 else "opaque support pruning stays quarantined"
+    require candidate_after - candidate_before > 0 else "opaque candidate metric increased"
+
+    support_scene = capture hard_scene_shape
+    support_hit = trace_shape(
+        capture=support_scene,
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=8.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    support_surface = surface_at(capture=support_scene, hit=support_hit)
+
+    require support_hit.hit == true else "opaque support hit"
+    require support_surface.albedo.x >= 0.0 else "opaque support surface"
+
+    mutable checksum = 0
+    mutable candidate_signal = 0
+    mutable support_signal = 0
+    for i in 1...4000 {
+        probe_x = f32(i % 6) * 0.12 - 0.30
+        probe_y = f32((i / 6) % 6) * 0.06 - 0.15
+        probe_origin = vec3(probe_x, probe_y, 3.0)
+        probe_hit = trace_shape(
+            capture=opaque_scene,
+            origin=probe_origin,
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=8.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
+        if probe_hit.hit {
+            probe_surface = surface_at(capture=opaque_scene, hit=probe_hit)
+            checksum = update_checksum(current=checksum, value=probe_hit.steps + i32(probe_surface.albedo.x))
+        } else {
+            checksum = update_checksum(current=checksum, value=probe_hit.steps + i32(abs(probe_hit.distance) * 1000.0))
+        }
+        if i % 800 == 0 {
+            candidate_signal += __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+            support_signal += __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
+        }
+    }
+
+    require checksum != 0 else "opaque checksum nonzero"
+    require candidate_signal > 0 else "opaque candidate signal nonzero"
+    require support_signal == 0 else "opaque support signal stays quarantined"
+}

@@ -1489,3 +1489,105 @@ fn phase9_world_query_plans_cover_domain_backed_queries() {
         )));
     }
 }
+
+#[test]
+fn phase11_world_query_plans_preserve_specialization_and_artifact_contracts() {
+    let distance = query_plan::WorldQueryPlan::for_query(query_plan::WorldQueryKind::Distance);
+    assert_eq!(
+        distance.candidate_strategy(),
+        query_plan::CandidateStrategy::SupportAcceleratedShapeTraversal
+    );
+    assert_eq!(
+        distance.pruning_strategy(),
+        query_plan::PruningStrategy::SupportLowerBound
+    );
+    assert!(distance.requests_culling_table());
+    assert!(distance.derived_artifacts.iter().any(|artifact| matches!(
+        artifact,
+        query_plan::DerivedArtifact::CaptureCache {
+            capture_kind: query_plan::CaptureKind::Region
+        }
+    )));
+    assert!(distance.artifact_contracts.iter().any(|artifact| matches!(
+        artifact.schema,
+        query_plan::ArtifactSchema::CullingTable {
+            candidate_strategy: query_plan::CandidateStrategy::SupportAcceleratedShapeTraversal,
+            pruning_strategy: query_plan::PruningStrategy::SupportLowerBound,
+            ..
+        }
+    )));
+
+    let trace = query_plan::WorldQueryPlan::for_query(query_plan::WorldQueryKind::Trace);
+    assert!(trace.preserves_local_hit_context);
+    assert_eq!(
+        trace.candidate_contract.winner_mode,
+        query_plan::WinnerSelectionMode::Nearest
+    );
+    assert!(
+        trace
+            .stages
+            .iter()
+            .any(|stage| matches!(stage, query_plan::PlanStage::AssembleHitContext))
+    );
+
+    let surface = query_plan::WorldQueryPlan::for_query(query_plan::WorldQueryKind::Surface);
+    assert_eq!(
+        surface.candidate_strategy(),
+        query_plan::CandidateStrategy::SurfaceHitReuse
+    );
+    assert_eq!(
+        surface.pruning_strategy(),
+        query_plan::PruningStrategy::None
+    );
+    assert_eq!(
+        surface.domain_flags,
+        vec![query_plan::SceneDomainFlag::Material]
+    );
+    assert!(!surface.requests_culling_table());
+    assert_eq!(
+        surface.candidate_contract.winner_mode,
+        query_plan::WinnerSelectionMode::SurfaceReuse
+    );
+
+    let radiance = query_plan::WorldQueryPlan::for_query(query_plan::WorldQueryKind::Radiance);
+    assert_eq!(
+        radiance.candidate_strategy(),
+        query_plan::CandidateStrategy::ShapeBranchTraversal
+    );
+    assert_eq!(
+        radiance.pruning_strategy(),
+        query_plan::PruningStrategy::ConservativeTraversal
+    );
+    assert_eq!(
+        radiance.domain_flags,
+        vec![query_plan::SceneDomainFlag::Radiance]
+    );
+    assert!(radiance.participant_contract.is_some());
+    assert!(radiance.stages.iter().any(|stage| matches!(
+        stage,
+        query_plan::PlanStage::SelectParticipants {
+            kind: query_plan::CaptureQueryKind::Radiance
+        }
+    )));
+
+    let medium = query_plan::WorldQueryPlan::for_query(query_plan::WorldQueryKind::Medium);
+    assert_eq!(
+        medium.candidate_strategy(),
+        query_plan::CandidateStrategy::ShapeBranchTraversal
+    );
+    assert_eq!(
+        medium.pruning_strategy(),
+        query_plan::PruningStrategy::ConservativeTraversal
+    );
+    assert_eq!(
+        medium.domain_flags,
+        vec![query_plan::SceneDomainFlag::Media]
+    );
+    assert!(medium.participant_contract.is_some());
+    assert!(medium.stages.iter().any(|stage| matches!(
+        stage,
+        query_plan::PlanStage::SelectParticipants {
+            kind: query_plan::CaptureQueryKind::Medium
+        }
+    )));
+}

@@ -128,7 +128,7 @@ pub fn validate_world_query_plan(
         &plan.artifact_contracts,
         Some(&plan.dispatch_contract),
         &plan.result_contract,
-        &[],
+        &plan.derived_artifacts,
         &mut errors,
     );
     if errors.is_empty() {

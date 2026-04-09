@@ -246,6 +246,10 @@ impl<'a> DirectQueryOps<'a> {
         self.update_observability(|observability| observability.candidate_count += count);
     }
 
+    pub(crate) fn note_support_pruned_candidates(&self, count: u32) {
+        self.update_observability(|observability| observability.support_pruned_candidates += count);
+    }
+
     pub(crate) fn note_branch_visit(&self) {
         self.update_observability(|observability| observability.branch_visits += 1);
     }
@@ -1568,10 +1572,354 @@ impl<'a> DirectQueryOps<'a> {
         self.eval_shape_medium_node(&scene.root, point)
     }
 
+    pub(crate) fn eval_field_support_lower_bound(
+        &self,
+        field: &SmolStr,
+        point: [f32; 3],
+    ) -> Result<Option<f32>, QueryExecError> {
+        let scene = self.field_scene(field)?;
+        self.eval_support_lower_bound_for_field_scene(scene, point)
+    }
+
+    pub(crate) fn eval_shape_support_lower_bound(
+        &self,
+        shape: &SmolStr,
+        point: [f32; 3],
+    ) -> Result<Option<f32>, QueryExecError> {
+        let scene = self.shape_scene(shape)?;
+        self.eval_support_lower_bound_for_shape_scene(scene, point)
+    }
+
+    fn eval_support_lower_bound_for_field_scene(
+        &self,
+        scene: &crate::scene_ir::FieldScene,
+        point: [f32; 3],
+    ) -> Result<Option<f32>, QueryExecError> {
+        if scene.opaque_boundary
+            || !scene.can_coarse_support_pruning
+            || matches!(
+                scene.semantics,
+                crate::scene_ir::DistanceSemantics::UnknownOpaque
+            )
+        {
+            return Ok(None);
+        }
+        self.eval_field_support_record(scene, scene.root_support_id, point)
+    }
+
+    fn eval_support_lower_bound_for_shape_scene(
+        &self,
+        scene: &crate::scene_ir::ShapeScene,
+        point: [f32; 3],
+    ) -> Result<Option<f32>, QueryExecError> {
+        if scene.opaque_boundary
+            || !scene.can_coarse_support_pruning
+            || matches!(
+                scene.semantics,
+                crate::scene_ir::DistanceSemantics::UnknownOpaque
+            )
+        {
+            return Ok(None);
+        }
+        self.eval_shape_support_record(scene, scene.root_support_id, point)
+    }
+
+    fn eval_field_support_record(
+        &self,
+        scene: &crate::scene_ir::FieldScene,
+        id: crate::scene_ir::SupportNodeId,
+        point: [f32; 3],
+    ) -> Result<Option<f32>, QueryExecError> {
+        let Some(record) = scene.support_node_record(id) else {
+            return Ok(None);
+        };
+        self.note_artifact_load();
+        match record.kind {
+            crate::scene_ir::SupportNodeKindSummary::Unknown
+            | crate::scene_ir::SupportNodeKindSummary::Unbounded => Ok(None),
+            crate::scene_ir::SupportNodeKindSummary::Use => {
+                let Some(target) = record.target.as_ref() else {
+                    return Ok(None);
+                };
+                self.eval_field_support_lower_bound(target, point)
+            }
+            crate::scene_ir::SupportNodeKindSummary::Aabb
+            | crate::scene_ir::SupportNodeKindSummary::Sphere
+            | crate::scene_ir::SupportNodeKindSummary::OpaqueBoundary => {
+                self.eval_support_leaf_payload(record, point)
+            }
+            crate::scene_ir::SupportNodeKindSummary::Union => {
+                self.eval_field_support_children(scene, &record.children, point, f32::min)
+            }
+            crate::scene_ir::SupportNodeKindSummary::Intersection => {
+                self.eval_field_support_children(scene, &record.children, point, f32::max)
+            }
+            crate::scene_ir::SupportNodeKindSummary::Difference => {
+                let Some(left) = record.children.first() else {
+                    return Ok(None);
+                };
+                self.eval_field_support_record(scene, *left, point)
+            }
+            crate::scene_ir::SupportNodeKindSummary::Transform(kind) => {
+                let Some(crate::scene_ir::SupportPayload::Transform { param }) =
+                    record.payload.as_ref()
+                else {
+                    return Ok(None);
+                };
+                let Some(param) = param.as_ref() else {
+                    return Ok(None);
+                };
+                let Some(child) = record.children.first() else {
+                    return Ok(None);
+                };
+                match kind {
+                    TransformKind::Translate | TransformKind::Rotate => {
+                        let local_point = self.eval_wrapped_point(kind, param, point)?;
+                        self.eval_field_support_record(scene, *child, local_point)
+                    }
+                    TransformKind::UniformScale => {
+                        let config = self.eval_scene_value_expr(param, &HashMap::new())?;
+                        let scale = expect_abs_scalar(&config)?;
+                        let local_point = self.eval_wrapped_point(kind, param, point)?;
+                        Ok(self
+                            .eval_field_support_record(scene, *child, local_point)?
+                            .map(|value| value * scale))
+                    }
+                    TransformKind::AffineTransform
+                    | TransformKind::Warp
+                    | TransformKind::Bend
+                    | TransformKind::Twist
+                    | TransformKind::Taper
+                    | TransformKind::Displace => Ok(None),
+                }
+            }
+            crate::scene_ir::SupportNodeKindSummary::Periodic(kind) => {
+                let Some(crate::scene_ir::SupportPayload::Periodic { period }) =
+                    record.payload.as_ref()
+                else {
+                    return Ok(None);
+                };
+                let Some(period) = period.as_ref() else {
+                    return Ok(None);
+                };
+                let Some(child) = record.children.first() else {
+                    return Ok(None);
+                };
+                let local_point = self.eval_repeat_point(kind, period, point)?;
+                self.eval_field_support_record(scene, *child, local_point)
+            }
+            crate::scene_ir::SupportNodeKindSummary::Repeat(kind) => {
+                let Some(crate::scene_ir::SupportPayload::Repeat { param }) =
+                    record.payload.as_ref()
+                else {
+                    return Ok(None);
+                };
+                let Some(param) = param.as_ref() else {
+                    return Ok(None);
+                };
+                let Some(child) = record.children.first() else {
+                    return Ok(None);
+                };
+                let local_point = self.eval_repeat_point(kind, param, point)?;
+                self.eval_field_support_record(scene, *child, local_point)
+            }
+        }
+    }
+
+    fn eval_shape_support_record(
+        &self,
+        scene: &crate::scene_ir::ShapeScene,
+        id: crate::scene_ir::SupportNodeId,
+        point: [f32; 3],
+    ) -> Result<Option<f32>, QueryExecError> {
+        let Some(record) = scene.support_node_record(id) else {
+            return Ok(None);
+        };
+        self.note_artifact_load();
+        match record.kind {
+            crate::scene_ir::SupportNodeKindSummary::Unknown
+            | crate::scene_ir::SupportNodeKindSummary::Unbounded => Ok(None),
+            crate::scene_ir::SupportNodeKindSummary::Use => {
+                let Some(target) = record.target.as_ref() else {
+                    return Ok(None);
+                };
+                if self.ctx.field_names.contains(target) {
+                    self.eval_field_support_lower_bound(target, point)
+                } else if self.ctx.shape_names.contains(target) {
+                    self.eval_shape_support_lower_bound(target, point)
+                } else {
+                    Ok(None)
+                }
+            }
+            crate::scene_ir::SupportNodeKindSummary::Aabb
+            | crate::scene_ir::SupportNodeKindSummary::Sphere
+            | crate::scene_ir::SupportNodeKindSummary::OpaqueBoundary => {
+                self.eval_support_leaf_payload(record, point)
+            }
+            crate::scene_ir::SupportNodeKindSummary::Union => {
+                self.eval_shape_support_children(scene, &record.children, point, f32::min)
+            }
+            crate::scene_ir::SupportNodeKindSummary::Intersection => {
+                self.eval_shape_support_children(scene, &record.children, point, f32::max)
+            }
+            crate::scene_ir::SupportNodeKindSummary::Difference => {
+                let Some(left) = record.children.first() else {
+                    return Ok(None);
+                };
+                self.eval_shape_support_record(scene, *left, point)
+            }
+            crate::scene_ir::SupportNodeKindSummary::Transform(kind) => {
+                let Some(crate::scene_ir::SupportPayload::Transform { param }) =
+                    record.payload.as_ref()
+                else {
+                    return Ok(None);
+                };
+                let Some(param) = param.as_ref() else {
+                    return Ok(None);
+                };
+                let Some(child) = record.children.first() else {
+                    return Ok(None);
+                };
+                match kind {
+                    TransformKind::Translate | TransformKind::Rotate => {
+                        let local_point = self.eval_wrapped_point(kind, param, point)?;
+                        self.eval_shape_support_record(scene, *child, local_point)
+                    }
+                    TransformKind::UniformScale => {
+                        let config = self.eval_scene_value_expr(param, &HashMap::new())?;
+                        let scale = expect_abs_scalar(&config)?;
+                        let local_point = self.eval_wrapped_point(kind, param, point)?;
+                        Ok(self
+                            .eval_shape_support_record(scene, *child, local_point)?
+                            .map(|value| value * scale))
+                    }
+                    TransformKind::AffineTransform
+                    | TransformKind::Warp
+                    | TransformKind::Bend
+                    | TransformKind::Twist
+                    | TransformKind::Taper
+                    | TransformKind::Displace => Ok(None),
+                }
+            }
+            crate::scene_ir::SupportNodeKindSummary::Periodic(kind) => {
+                let Some(crate::scene_ir::SupportPayload::Periodic { period }) =
+                    record.payload.as_ref()
+                else {
+                    return Ok(None);
+                };
+                let Some(period) = period.as_ref() else {
+                    return Ok(None);
+                };
+                let Some(child) = record.children.first() else {
+                    return Ok(None);
+                };
+                let local_point = self.eval_repeat_point(kind, period, point)?;
+                self.eval_shape_support_record(scene, *child, local_point)
+            }
+            crate::scene_ir::SupportNodeKindSummary::Repeat(kind) => {
+                let Some(crate::scene_ir::SupportPayload::Repeat { param }) =
+                    record.payload.as_ref()
+                else {
+                    return Ok(None);
+                };
+                let Some(param) = param.as_ref() else {
+                    return Ok(None);
+                };
+                let Some(child) = record.children.first() else {
+                    return Ok(None);
+                };
+                let local_point = self.eval_repeat_point(kind, param, point)?;
+                self.eval_shape_support_record(scene, *child, local_point)
+            }
+        }
+    }
+
+    fn eval_support_leaf_payload(
+        &self,
+        record: &crate::scene_ir::SupportNodeRecord,
+        point: [f32; 3],
+    ) -> Result<Option<f32>, QueryExecError> {
+        match record.payload.as_ref() {
+            Some(crate::scene_ir::SupportPayload::Aabb { min, max }) => {
+                let min = self.eval_scene_value_expr(min, &HashMap::new())?;
+                let max = self.eval_scene_value_expr(max, &HashMap::new())?;
+                support_box_lower_bound(
+                    expect_vec3(Some(&min), "support min")?,
+                    expect_vec3(Some(&max), "support max")?,
+                    point,
+                )
+                .map(Some)
+            }
+            Some(crate::scene_ir::SupportPayload::Sphere { center, radius }) => {
+                let center = self.eval_scene_value_expr(center, &HashMap::new())?;
+                let radius = self.eval_scene_value_expr(radius, &HashMap::new())?;
+                Ok(Some(support_sphere_lower_bound(
+                    expect_vec3(Some(&center), "support center")?,
+                    expect_f32(Some(&radius), "support radius")?.abs(),
+                    point,
+                )))
+            }
+            Some(crate::scene_ir::SupportPayload::OpaqueBoundary {
+                bounds: Some(bounds),
+            }) => {
+                let bounds_value = self.eval_scene_value_expr(bounds, &HashMap::new())?;
+                let bounds = expect_struct_ref(&bounds_value, "Bounds3")?;
+                support_box_lower_bound(
+                    expect_struct_vec3(bounds, "min")?,
+                    expect_struct_vec3(bounds, "max")?,
+                    point,
+                )
+                .map(Some)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn eval_field_support_children(
+        &self,
+        scene: &crate::scene_ir::FieldScene,
+        children: &[crate::scene_ir::SupportNodeId],
+        point: [f32; 3],
+        merge: fn(f32, f32) -> f32,
+    ) -> Result<Option<f32>, QueryExecError> {
+        let mut result = None;
+        for child in children {
+            let Some(value) = self.eval_field_support_record(scene, *child, point)? else {
+                return Ok(None);
+            };
+            result = Some(match result {
+                Some(current) => merge(current, value),
+                None => value,
+            });
+        }
+        Ok(result)
+    }
+
+    fn eval_shape_support_children(
+        &self,
+        scene: &crate::scene_ir::ShapeScene,
+        children: &[crate::scene_ir::SupportNodeId],
+        point: [f32; 3],
+        merge: fn(f32, f32) -> f32,
+    ) -> Result<Option<f32>, QueryExecError> {
+        let mut result = None;
+        for child in children {
+            let Some(value) = self.eval_shape_support_record(scene, *child, point)? else {
+                return Ok(None);
+            };
+            result = Some(match result {
+                Some(current) => merge(current, value),
+                None => value,
+            });
+        }
+        Ok(result)
+    }
+
     pub(crate) fn resolve_world_shapes(
         &self,
         capture: &SmolStr,
         detail: i32,
+        root_shape_id: Option<u32>,
     ) -> Result<Vec<SmolStr>, QueryExecError> {
         self.note_artifact_load();
         let scene_id = stable_region_scene_capture_id(capture);
@@ -1582,9 +1930,19 @@ impl<'a> DirectQueryOps<'a> {
         };
         region_case
             .shapes_for_detail(detail)
-            .map(|shapes| {
-                self.note_candidate_count(shapes.len() as u32);
-                shapes.to_vec()
+            .map(|shapes| match root_shape_id {
+                Some(root_shape_id) => {
+                    let selected = shapes
+                        .iter()
+                        .filter(|shape| stable_shape_capture_id(shape) == root_shape_id)
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    self.note_support_pruned_candidates(
+                        (shapes.len().saturating_sub(selected.len())) as u32,
+                    );
+                    selected
+                }
+                None => shapes.to_vec(),
             })
             .map_err(|message| QueryExecError::Unsupported {
                 message: message.to_string(),
@@ -2243,13 +2601,14 @@ fn cpu_backend_with_world_shapes<B, F>(
     evaluator: &DirectQueryOps<'_>,
     capture: &SmolStr,
     detail: i32,
+    root_shape_id: Option<u32>,
     backend: &mut B,
     mut emit_shapes: F,
 ) -> Result<(), QueryExecError>
 where
     F: FnMut(&mut B, &[SmolStr]) -> Result<(), QueryExecError>,
 {
-    let shapes = evaluator.resolve_world_shapes(capture, detail)?;
+    let shapes = evaluator.resolve_world_shapes(capture, detail, root_shape_id)?;
     emit_shapes(backend, &shapes)
 }
 
@@ -2289,7 +2648,14 @@ impl WorldQueryBackend for CpuWorldDistanceBackend<'_, '_> {
     where
         F: FnMut(&mut Self, &[SmolStr]) -> Result<(), Self::Error>,
     {
-        cpu_backend_with_world_shapes(self.evaluator, self.capture, self.detail, self, emit_shapes)
+        cpu_backend_with_world_shapes(
+            self.evaluator,
+            self.capture,
+            self.detail,
+            None,
+            self,
+            emit_shapes,
+        )
     }
 
     fn with_domain_flag<F>(&mut self, _kind: WorldQueryKind, enabled: F) -> Result<(), Self::Error>
@@ -2309,6 +2675,15 @@ impl WorldDistanceBackend for CpuWorldDistanceBackend<'_, '_> {
     }
 
     fn accumulate_world_distance_shape(&mut self, shape: &SmolStr) -> Result<(), Self::Error> {
+        if let Some(lower_bound) = self
+            .evaluator
+            .eval_shape_support_lower_bound(shape, self.point)?
+            && lower_bound > self.result
+        {
+            self.evaluator.note_support_pruned_candidates(1);
+            return Ok(());
+        }
+        self.evaluator.note_candidate_count(1);
         self.result = self
             .result
             .min(self.evaluator.eval_shape_distance(shape, self.point)?);
@@ -2397,7 +2772,14 @@ impl WorldQueryBackend for CpuWorldTraceBackend<'_, '_> {
     where
         F: FnMut(&mut Self, &[SmolStr]) -> Result<(), Self::Error>,
     {
-        cpu_backend_with_world_shapes(self.evaluator, self.capture, self.detail, self, emit_shapes)
+        cpu_backend_with_world_shapes(
+            self.evaluator,
+            self.capture,
+            self.detail,
+            None,
+            self,
+            emit_shapes,
+        )
     }
 
     fn with_domain_flag<F>(&mut self, _kind: WorldQueryKind, enabled: F) -> Result<(), Self::Error>
@@ -2418,6 +2800,15 @@ impl WorldTraceBackend for CpuWorldTraceBackend<'_, '_> {
     }
 
     fn consider_world_trace_shape(&mut self, shape: &SmolStr) -> Result<(), Self::Error> {
+        if let Some(lower_bound) = self
+            .evaluator
+            .eval_shape_support_lower_bound(shape, self.origin)?
+            && lower_bound > self.best_distance
+        {
+            self.evaluator.note_support_pruned_candidates(1);
+            return Ok(());
+        }
+        self.evaluator.note_candidate_count(1);
         let hit = self.evaluator.trace_shape(
             shape,
             self.origin,
@@ -2461,7 +2852,14 @@ impl WorldQueryBackend for CpuWorldSurfaceBackend<'_, '_> {
     where
         F: FnMut(&mut Self, &[SmolStr]) -> Result<(), Self::Error>,
     {
-        cpu_backend_with_world_shapes(self.evaluator, self.capture, self.detail, self, emit_shapes)
+        cpu_backend_with_world_shapes(
+            self.evaluator,
+            self.capture,
+            self.detail,
+            Some(self.root_shape_id),
+            self,
+            emit_shapes,
+        )
     }
 
     fn with_domain_flag<F>(&mut self, kind: WorldQueryKind, enabled: F) -> Result<(), Self::Error>
@@ -2481,6 +2879,7 @@ impl WorldSurfaceBackend for CpuWorldSurfaceBackend<'_, '_> {
     }
 
     fn consider_world_surface_shape(&mut self, shape: &SmolStr) -> Result<(), Self::Error> {
+        self.evaluator.note_candidate_count(1);
         if stable_shape_capture_id(shape) == self.root_shape_id {
             self.result = self.evaluator.surface_at(shape, &self.hit)?;
         }
@@ -2510,7 +2909,14 @@ impl WorldQueryBackend for CpuWorldRadianceBackend<'_, '_> {
     where
         F: FnMut(&mut Self, &[SmolStr]) -> Result<(), Self::Error>,
     {
-        cpu_backend_with_world_shapes(self.evaluator, self.capture, self.detail, self, emit_shapes)
+        cpu_backend_with_world_shapes(
+            self.evaluator,
+            self.capture,
+            self.detail,
+            None,
+            self,
+            emit_shapes,
+        )
     }
 
     fn with_domain_flag<F>(&mut self, kind: WorldQueryKind, enabled: F) -> Result<(), Self::Error>
@@ -2530,6 +2936,7 @@ impl WorldRadianceBackend for CpuWorldRadianceBackend<'_, '_> {
     }
 
     fn accumulate_world_radiance_shape(&mut self, shape: &SmolStr) -> Result<(), Self::Error> {
+        self.evaluator.note_candidate_count(1);
         let KernelValue::Vec3(next) =
             self.evaluator
                 .radiance_at(shape, self.point, self.direction)?
@@ -2568,7 +2975,14 @@ impl WorldQueryBackend for CpuWorldMediumBackend<'_, '_> {
     where
         F: FnMut(&mut Self, &[SmolStr]) -> Result<(), Self::Error>,
     {
-        cpu_backend_with_world_shapes(self.evaluator, self.capture, self.detail, self, emit_shapes)
+        cpu_backend_with_world_shapes(
+            self.evaluator,
+            self.capture,
+            self.detail,
+            None,
+            self,
+            emit_shapes,
+        )
     }
 
     fn with_domain_flag<F>(&mut self, kind: WorldQueryKind, enabled: F) -> Result<(), Self::Error>
@@ -2590,6 +3004,7 @@ impl WorldMediumBackend for CpuWorldMediumBackend<'_, '_> {
     }
 
     fn accumulate_world_medium_shape(&mut self, shape: &SmolStr) -> Result<(), Self::Error> {
+        self.evaluator.note_candidate_count(1);
         let KernelValue::Struct(next) = self.evaluator.medium_at(shape, self.point)? else {
             return Ok(());
         };
@@ -3589,6 +4004,39 @@ fn add3(lhs: [f32; 3], rhs: [f32; 3]) -> [f32; 3] {
 
 fn dot3(lhs: [f32; 3], rhs: [f32; 3]) -> f32 {
     lhs[0] * rhs[0] + lhs[1] * rhs[1] + lhs[2] * rhs[2]
+}
+
+fn support_box_lower_bound(
+    min: [f32; 3],
+    max: [f32; 3],
+    point: [f32; 3],
+) -> Result<f32, QueryExecError> {
+    let center = [
+        (min[0] + max[0]) * 0.5,
+        (min[1] + max[1]) * 0.5,
+        (min[2] + max[2]) * 0.5,
+    ];
+    let half = [
+        (max[0] - min[0]).abs() * 0.5,
+        (max[1] - min[1]).abs() * 0.5,
+        (max[2] - min[2]).abs() * 0.5,
+    ];
+    runtime_binary_f32_from_values(
+        KernelValue::Vec3([
+            point[0] - center[0],
+            point[1] - center[1],
+            point[2] - center[2],
+        ]),
+        KernelValue::Vec3(half),
+        wr_box,
+    )
+}
+
+fn support_sphere_lower_bound(center: [f32; 3], radius: f32, point: [f32; 3]) -> f32 {
+    let dx = point[0] - center[0];
+    let dy = point[1] - center[1];
+    let dz = point[2] - center[2];
+    (dx * dx + dy * dy + dz * dz).sqrt() - radius
 }
 
 fn cross3(lhs: [f32; 3], rhs: [f32; 3]) -> [f32; 3] {

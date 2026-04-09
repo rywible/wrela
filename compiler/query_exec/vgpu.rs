@@ -44,6 +44,7 @@ trait QueryContractRuntime {
         &self,
         capture: &SmolStr,
         detail: i32,
+        root_shape_id: Option<u32>,
     ) -> Result<Vec<SmolStr>, QueryExecError>;
     fn world_domain_flag_enabled(
         &self,
@@ -63,6 +64,11 @@ trait QueryContractRuntime {
         capture_kind: crate::query_plan::CaptureKind,
     ) -> Result<[f32; 3], QueryExecError>;
     fn eval_shape_distance(&self, shape: &SmolStr, point: [f32; 3]) -> Result<f32, QueryExecError>;
+    fn eval_shape_support_lower_bound(
+        &self,
+        shape: &SmolStr,
+        point: [f32; 3],
+    ) -> Result<Option<f32>, QueryExecError>;
     fn trace_shape(
         &self,
         shape: &SmolStr,
@@ -86,6 +92,8 @@ trait QueryContractRuntime {
     ) -> Result<KernelValue, QueryExecError>;
     fn medium_at(&self, shape: &SmolStr, point: [f32; 3]) -> Result<KernelValue, QueryExecError>;
     fn snapshot_observability(&self) -> QueryExecutionObservability;
+    fn note_candidate_count(&self, count: u32);
+    fn note_support_pruned_candidates(&self, count: u32);
     fn note_dispatch(&self);
     fn note_contract_validation_failure(&self);
 }
@@ -420,8 +428,10 @@ impl QueryContractRuntime for VirtualGpuRuntime<'_> {
         &self,
         capture: &SmolStr,
         detail: i32,
+        root_shape_id: Option<u32>,
     ) -> Result<Vec<SmolStr>, QueryExecError> {
-        self.ops.resolve_world_shapes(capture, detail)
+        self.ops
+            .resolve_world_shapes(capture, detail, root_shape_id)
     }
 
     fn world_domain_flag_enabled(
@@ -474,6 +484,14 @@ impl QueryContractRuntime for VirtualGpuRuntime<'_> {
     fn eval_shape_distance(&self, shape: &SmolStr, point: [f32; 3]) -> Result<f32, QueryExecError> {
         let scene = self.ops.shape_scene(shape)?;
         self.eval_shape_distance_node(&scene.root, point)
+    }
+
+    fn eval_shape_support_lower_bound(
+        &self,
+        shape: &SmolStr,
+        point: [f32; 3],
+    ) -> Result<Option<f32>, QueryExecError> {
+        self.ops.eval_shape_support_lower_bound(shape, point)
     }
 
     fn trace_shape(
@@ -599,6 +617,14 @@ impl QueryContractRuntime for VirtualGpuRuntime<'_> {
 
     fn snapshot_observability(&self) -> QueryExecutionObservability {
         self.ops.snapshot_observability()
+    }
+
+    fn note_candidate_count(&self, count: u32) {
+        self.ops.note_candidate_count(count);
+    }
+
+    fn note_support_pruned_candidates(&self, count: u32) {
+        self.ops.note_support_pruned_candidates(count);
     }
 
     fn note_dispatch(&self) {
@@ -876,13 +902,14 @@ fn vgpu_backend_with_world_shapes<B, F>(
     runtime: &dyn QueryContractRuntime,
     capture: &SmolStr,
     detail: i32,
+    root_shape_id: Option<u32>,
     backend: &mut B,
     mut emit_shapes: F,
 ) -> Result<(), QueryExecError>
 where
     F: FnMut(&mut B, &[SmolStr]) -> Result<(), QueryExecError>,
 {
-    let shapes = runtime.resolve_world_shapes(capture, detail)?;
+    let shapes = runtime.resolve_world_shapes(capture, detail, root_shape_id)?;
     emit_shapes(backend, &shapes)
 }
 
@@ -939,7 +966,14 @@ impl WorldQueryBackend for VirtualGpuWorldDistanceBackend<'_> {
     where
         F: FnMut(&mut Self, &[SmolStr]) -> Result<(), Self::Error>,
     {
-        vgpu_backend_with_world_shapes(self.runtime, self.capture, self.detail, self, emit_shapes)
+        vgpu_backend_with_world_shapes(
+            self.runtime,
+            self.capture,
+            self.detail,
+            None,
+            self,
+            emit_shapes,
+        )
     }
 
     fn with_domain_flag<F>(&mut self, _kind: WorldQueryKind, enabled: F) -> Result<(), Self::Error>
@@ -959,6 +993,15 @@ impl WorldDistanceBackend for VirtualGpuWorldDistanceBackend<'_> {
     }
 
     fn accumulate_world_distance_shape(&mut self, shape: &SmolStr) -> Result<(), Self::Error> {
+        if let Some(lower_bound) = self
+            .runtime
+            .eval_shape_support_lower_bound(shape, self.point)?
+            && lower_bound > self.result
+        {
+            self.runtime.note_support_pruned_candidates(1);
+            return Ok(());
+        }
+        self.runtime.note_candidate_count(1);
         self.result = self
             .result
             .min(self.runtime.eval_shape_distance(shape, self.point)?);
@@ -1051,7 +1094,14 @@ impl WorldQueryBackend for VirtualGpuWorldTraceBackend<'_> {
     where
         F: FnMut(&mut Self, &[SmolStr]) -> Result<(), Self::Error>,
     {
-        vgpu_backend_with_world_shapes(self.runtime, self.capture, self.detail, self, emit_shapes)
+        vgpu_backend_with_world_shapes(
+            self.runtime,
+            self.capture,
+            self.detail,
+            None,
+            self,
+            emit_shapes,
+        )
     }
 
     fn with_domain_flag<F>(&mut self, _kind: WorldQueryKind, enabled: F) -> Result<(), Self::Error>
@@ -1072,6 +1122,15 @@ impl WorldTraceBackend for VirtualGpuWorldTraceBackend<'_> {
     }
 
     fn consider_world_trace_shape(&mut self, shape: &SmolStr) -> Result<(), Self::Error> {
+        if let Some(lower_bound) = self
+            .runtime
+            .eval_shape_support_lower_bound(shape, self.origin)?
+            && lower_bound > self.best_distance
+        {
+            self.runtime.note_support_pruned_candidates(1);
+            return Ok(());
+        }
+        self.runtime.note_candidate_count(1);
         let hit = self.runtime.trace_shape(
             shape,
             self.origin,
@@ -1115,7 +1174,14 @@ impl WorldQueryBackend for VirtualGpuWorldSurfaceBackend<'_> {
     where
         F: FnMut(&mut Self, &[SmolStr]) -> Result<(), Self::Error>,
     {
-        vgpu_backend_with_world_shapes(self.runtime, self.capture, self.detail, self, emit_shapes)
+        vgpu_backend_with_world_shapes(
+            self.runtime,
+            self.capture,
+            self.detail,
+            Some(self.root_shape_id),
+            self,
+            emit_shapes,
+        )
     }
 
     fn with_domain_flag<F>(&mut self, kind: WorldQueryKind, enabled: F) -> Result<(), Self::Error>
@@ -1135,6 +1201,7 @@ impl WorldSurfaceBackend for VirtualGpuWorldSurfaceBackend<'_> {
     }
 
     fn consider_world_surface_shape(&mut self, shape: &SmolStr) -> Result<(), Self::Error> {
+        self.runtime.note_candidate_count(1);
         if crate::query_exec::stable_shape_capture_id(shape) == self.root_shape_id {
             self.result = self.runtime.surface_at(shape, &self.hit)?;
         }
@@ -1164,7 +1231,14 @@ impl WorldQueryBackend for VirtualGpuWorldRadianceBackend<'_> {
     where
         F: FnMut(&mut Self, &[SmolStr]) -> Result<(), Self::Error>,
     {
-        vgpu_backend_with_world_shapes(self.runtime, self.capture, self.detail, self, emit_shapes)
+        vgpu_backend_with_world_shapes(
+            self.runtime,
+            self.capture,
+            self.detail,
+            None,
+            self,
+            emit_shapes,
+        )
     }
 
     fn with_domain_flag<F>(&mut self, kind: WorldQueryKind, enabled: F) -> Result<(), Self::Error>
@@ -1184,6 +1258,7 @@ impl WorldRadianceBackend for VirtualGpuWorldRadianceBackend<'_> {
     }
 
     fn accumulate_world_radiance_shape(&mut self, shape: &SmolStr) -> Result<(), Self::Error> {
+        self.runtime.note_candidate_count(1);
         let KernelValue::Vec3(next) =
             self.runtime
                 .radiance_at(shape, self.point, self.direction)?
@@ -1222,7 +1297,14 @@ impl WorldQueryBackend for VirtualGpuWorldMediumBackend<'_> {
     where
         F: FnMut(&mut Self, &[SmolStr]) -> Result<(), Self::Error>,
     {
-        vgpu_backend_with_world_shapes(self.runtime, self.capture, self.detail, self, emit_shapes)
+        vgpu_backend_with_world_shapes(
+            self.runtime,
+            self.capture,
+            self.detail,
+            None,
+            self,
+            emit_shapes,
+        )
     }
 
     fn with_domain_flag<F>(&mut self, kind: WorldQueryKind, enabled: F) -> Result<(), Self::Error>
@@ -1244,6 +1326,7 @@ impl WorldMediumBackend for VirtualGpuWorldMediumBackend<'_> {
     }
 
     fn accumulate_world_medium_shape(&mut self, shape: &SmolStr) -> Result<(), Self::Error> {
+        self.runtime.note_candidate_count(1);
         let KernelValue::Struct(next) = self.runtime.medium_at(shape, self.point)? else {
             return Ok(());
         };

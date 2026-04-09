@@ -389,8 +389,12 @@ pub struct WorldQueryPlan {
     pub backend: DispatchBackend,
     pub result_kind: QueryResultKind,
     pub executor: PlanExecutor,
+    pub candidate_strategy: CandidateStrategy,
+    pub pruning_strategy: PruningStrategy,
     pub stages: Vec<PlanStage>,
+    pub derived_artifacts: Vec<DerivedArtifact>,
     pub dispatch_contract: DispatchRecordContract,
+    pub candidate_contract: CandidateRecordContract,
     pub result_contract: ResultRecordContract,
     pub hit_context_contract: Option<HitContextContract>,
     pub participant_contract: Option<ParticipantSelectionContract>,
@@ -991,7 +995,23 @@ impl WorldQueryPlan {
                 false,
             ),
         };
-        let mut stages = vec![PlanStage::LoadDomainFlags];
+        let item_kind = match kind {
+            WorldQueryKind::Surface => QueryItemKind::Hit3,
+            WorldQueryKind::Trace => QueryItemKind::RayQuery,
+            _ => QueryItemKind::PointQuery,
+        };
+        let candidate_strategy = world_candidate_strategy(kind);
+        let pruning_strategy = world_pruning_strategy(kind, candidate_strategy);
+        let derived_artifacts = derive_world_artifacts(candidate_strategy, pruning_strategy);
+        let mut stages = vec![PlanStage::SelectBackend, PlanStage::LoadCapture];
+        stages.extend(load_artifact_stages(&derived_artifacts));
+        stages.push(PlanStage::LoadDomainFlags);
+        stages.push(PlanStage::GenerateCandidates {
+            strategy: candidate_strategy,
+        });
+        stages.push(PlanStage::PruneCandidates {
+            strategy: pruning_strategy,
+        });
         if matches!(kind, WorldQueryKind::Radiance) {
             stages.push(PlanStage::SelectParticipants {
                 kind: CaptureQueryKind::Radiance,
@@ -1015,6 +1035,31 @@ impl WorldQueryPlan {
             _ => None,
         };
         let domain_flags = world_domain_flags(kind);
+        let dispatch_contract = DispatchRecordContract {
+            backend,
+            kernel: match kind {
+                WorldQueryKind::Distance => InternalKernelKind::WorldDistanceCapture,
+                WorldQueryKind::Normal => InternalKernelKind::WorldNormalCapture,
+                WorldQueryKind::Trace => InternalKernelKind::WorldTraceCapture,
+                WorldQueryKind::Surface => InternalKernelKind::WorldSurfaceCapture,
+                WorldQueryKind::Radiance => InternalKernelKind::WorldRadianceCapture,
+                WorldQueryKind::Medium => InternalKernelKind::WorldMediumCapture,
+            },
+            item_kind,
+            result_kind,
+        };
+        let candidate_contract = build_candidate_contract(
+            CandidateSource::WorldRegionShapes,
+            item_kind,
+            candidate_strategy,
+            pruning_strategy,
+            match kind {
+                WorldQueryKind::Surface => WinnerSelectionMode::SurfaceReuse,
+                WorldQueryKind::Radiance | WorldQueryKind::Medium => WinnerSelectionMode::Ordered,
+                _ => WinnerSelectionMode::Nearest,
+            },
+            true,
+        );
         Self {
             contract_version: QUERY_PLAN_CONTRACT_VERSION,
             helper_name: SmolStr::new(helper_name),
@@ -1022,59 +1067,41 @@ impl WorldQueryPlan {
             backend,
             result_kind,
             executor,
+            candidate_strategy,
+            pruning_strategy,
             stages,
-            dispatch_contract: DispatchRecordContract {
-                backend,
-                kernel: match kind {
-                    WorldQueryKind::Distance => InternalKernelKind::WorldDistanceCapture,
-                    WorldQueryKind::Normal => InternalKernelKind::WorldNormalCapture,
-                    WorldQueryKind::Trace => InternalKernelKind::WorldTraceCapture,
-                    WorldQueryKind::Surface => InternalKernelKind::WorldSurfaceCapture,
-                    WorldQueryKind::Radiance => InternalKernelKind::WorldRadianceCapture,
-                    WorldQueryKind::Medium => InternalKernelKind::WorldMediumCapture,
-                },
-                item_kind: match kind {
-                    WorldQueryKind::Surface => QueryItemKind::Hit3,
-                    WorldQueryKind::Trace => QueryItemKind::RayQuery,
-                    _ => QueryItemKind::PointQuery,
-                },
-                result_kind,
-            },
+            derived_artifacts: derived_artifacts.clone(),
+            dispatch_contract: dispatch_contract.clone(),
+            candidate_contract,
             result_contract: build_result_contract(result_kind, preserves_local_hit_context),
             hit_context_contract: preserves_local_hit_context.then(hit_context_contract),
             participant_contract,
             domain_flags: domain_flags.clone(),
-            artifact_contracts: vec![
-                ArtifactContract {
-                    id: SmolStr::new(format!("{}::dispatch", helper_name)),
-                    schema: ArtifactSchema::DispatchRecord {
-                        item_kind: match kind {
-                            WorldQueryKind::Surface => QueryItemKind::Hit3,
-                            WorldQueryKind::Trace => QueryItemKind::RayQuery,
-                            _ => QueryItemKind::PointQuery,
-                        },
-                        result_kind,
-                    },
-                    producer: SmolStr::new(helper_name),
-                    consumer: SmolStr::new(helper_name),
-                    deterministic: true,
-                    version: QUERY_PLAN_CONTRACT_VERSION,
-                },
-                ArtifactContract {
-                    id: SmolStr::new(format!("{}::result", helper_name)),
-                    schema: ArtifactSchema::HitResultBuffer {
-                        result_kind,
-                        preserves_local_hit_context,
-                    },
-                    producer: SmolStr::new(helper_name),
-                    consumer: SmolStr::new(helper_name),
-                    deterministic: true,
-                    version: QUERY_PLAN_CONTRACT_VERSION,
-                },
-            ],
-            observability: default_planning_observability(PruningStrategy::None),
+            artifact_contracts: derive_artifact_contracts(
+                &derived_artifacts,
+                None,
+                dispatch_contract.item_kind,
+                result_kind,
+                preserves_local_hit_context,
+                helper_name,
+            ),
+            observability: default_planning_observability(pruning_strategy),
             preserves_local_hit_context,
         }
+    }
+
+    pub fn candidate_strategy(&self) -> CandidateStrategy {
+        self.candidate_contract.candidate_strategy
+    }
+
+    pub fn pruning_strategy(&self) -> PruningStrategy {
+        self.candidate_contract.pruning_strategy
+    }
+
+    pub fn requests_culling_table(&self) -> bool {
+        self.artifact_contracts
+            .iter()
+            .any(|artifact| matches!(artifact.schema, ArtifactSchema::CullingTable { .. }))
     }
 }
 
@@ -1220,6 +1247,57 @@ fn default_planning_observability(pruning_strategy: PruningStrategy) -> Planning
         artifact_sizes: true,
         dispatch_overhead: true,
     }
+}
+
+fn world_candidate_strategy(kind: WorldQueryKind) -> CandidateStrategy {
+    match kind {
+        WorldQueryKind::Surface => CandidateStrategy::SurfaceHitReuse,
+        WorldQueryKind::Radiance | WorldQueryKind::Medium => {
+            CandidateStrategy::ShapeBranchTraversal
+        }
+        WorldQueryKind::Distance | WorldQueryKind::Normal | WorldQueryKind::Trace => {
+            CandidateStrategy::SupportAcceleratedShapeTraversal
+        }
+    }
+}
+
+fn world_pruning_strategy(
+    kind: WorldQueryKind,
+    candidate_strategy: CandidateStrategy,
+) -> PruningStrategy {
+    match kind {
+        WorldQueryKind::Surface => PruningStrategy::None,
+        WorldQueryKind::Radiance | WorldQueryKind::Medium => PruningStrategy::ConservativeTraversal,
+        WorldQueryKind::Distance | WorldQueryKind::Normal | WorldQueryKind::Trace => {
+            if matches!(
+                candidate_strategy,
+                CandidateStrategy::SupportAcceleratedShapeTraversal
+            ) {
+                PruningStrategy::SupportLowerBound
+            } else {
+                PruningStrategy::ConservativeTraversal
+            }
+        }
+    }
+}
+
+fn derive_world_artifacts(
+    candidate_strategy: CandidateStrategy,
+    pruning_strategy: PruningStrategy,
+) -> Vec<DerivedArtifact> {
+    let mut artifacts = vec![DerivedArtifact::CaptureCache {
+        capture_kind: CaptureKind::Region,
+    }];
+    if matches!(
+        candidate_strategy,
+        CandidateStrategy::SupportAcceleratedShapeTraversal
+    ) {
+        artifacts.push(DerivedArtifact::CullingTable {
+            candidate_strategy,
+            pruning_strategy,
+        });
+    }
+    artifacts
 }
 
 fn derive_artifact_contracts(

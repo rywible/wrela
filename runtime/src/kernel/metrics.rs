@@ -323,7 +323,7 @@ fn maybe_dump_metrics() {
         format!("{{{body}}}")
     };
     let data = format!(
-        "{{\"messages_sent\":{},\"messages_dropped\":{},\"pending_resolved\":{},\"pending_dropped\":{},\"mailbox_high_water\":{},\"rc_inc\":{},\"rc_dec\":{},\"alloc_list\":{},\"alloc_map\":{},\"alloc_string\":{},\"alloc_bytes\":{},\"alloc_result\":{},\"alloc_pending\":{},\"mailbox_enqueue_ok\":{},\"mailbox_enqueue_fail\":{},\"mailbox_dequeue\":{},\"sched_dispatched\":{},\"sched_skipped_no_credit\":{},\"sched_profile_switch\":{},\"sched_starvation_violation\":{},\"sched_cross_shard_migration\":{},\"abi_typed_lane\":{},\"abi_boxed_lane\":{},\"queue_cas_retry_total\":{},\"mailbox_wake_coalesced_count\":{},\"mailbox_rescue_wake_count\":{},\"sched_local_dispatch_count\":{},\"sched_global_dispatch_count\":{},\"sched_plan_recompute_count\":{},\"sched_steal_attempts\":{},\"sched_steal_success\":{},\"sched_migration_blocked_hysteresis\":{},\"sched_migration_blocked_cooldown\":{},\"sched_ready_overflow_fallback\":{},\"scene_trace\":{},\"field_sample\":{},\"scene_trace_blend_cost\":{},\"scene_trace_deformation_cost\":{},\"message_build_noargs_count\":{},\"message_build_args_count\":{},\"message_instance_rc_skipped_count\":{},\"message_instance_is_arena_count\":{},\"actor_spawn_instance_is_ptr_count\":{},\"actor_spawn_instance_not_ptr_count\":{},\"actor_spawn_instance_promoted_count\":{},\"actor_spawn_instance_type_id\":{},\"actor_method_panic_count\":{},\"actor_method_missing_count\":{},\"actor_arena_lock_count\":{},\"mailbox_batch_reserve_success\":{},\"mailbox_batch_reserve_failed\":{},\"queue_enqueue_p99_ns\":{},\"queue_dequeue_p99_ns\":{},\"queue_age_p99_ns\":{},\"sched_dispatch_loop_ns_p99\":{},\"queue_burst_drain_avg\":{:.2},\"function_coverage\":{}}}",
+        "{{\"messages_sent\":{},\"messages_dropped\":{},\"pending_resolved\":{},\"pending_dropped\":{},\"mailbox_high_water\":{},\"rc_inc\":{},\"rc_dec\":{},\"alloc_list\":{},\"alloc_map\":{},\"alloc_string\":{},\"alloc_bytes\":{},\"alloc_result\":{},\"alloc_pending\":{},\"mailbox_enqueue_ok\":{},\"mailbox_enqueue_fail\":{},\"mailbox_dequeue\":{},\"sched_dispatched\":{},\"sched_skipped_no_credit\":{},\"sched_profile_switch\":{},\"sched_starvation_violation\":{},\"sched_cross_shard_migration\":{},\"abi_typed_lane\":{},\"abi_boxed_lane\":{},\"queue_cas_retry_total\":{},\"mailbox_wake_coalesced_count\":{},\"mailbox_rescue_wake_count\":{},\"sched_local_dispatch_count\":{},\"sched_global_dispatch_count\":{},\"sched_plan_recompute_count\":{},\"sched_steal_attempts\":{},\"sched_steal_success\":{},\"sched_migration_blocked_hysteresis\":{},\"sched_migration_blocked_cooldown\":{},\"sched_ready_overflow_fallback\":{},\"scene_trace\":{},\"field_sample\":{},\"scene_trace_support_pruned_branch\":{},\"scene_trace_candidate_branch\":{},\"scene_trace_exact_path\":{},\"scene_trace_conservative_path\":{},\"scene_trace_hit_count\":{},\"scene_trace_hit_steps_total\":{},\"scene_trace_hit_field_samples_total\":{},\"scene_trace_steps_le_1\":{},\"scene_trace_steps_le_4\":{},\"scene_trace_steps_le_8\":{},\"scene_trace_steps_le_16\":{},\"scene_trace_steps_gt_16\":{},\"scene_trace_blend_cost\":{},\"scene_trace_deformation_cost\":{},\"message_build_noargs_count\":{},\"message_build_args_count\":{},\"message_instance_rc_skipped_count\":{},\"message_instance_is_arena_count\":{},\"actor_spawn_instance_is_ptr_count\":{},\"actor_spawn_instance_not_ptr_count\":{},\"actor_spawn_instance_promoted_count\":{},\"actor_spawn_instance_type_id\":{},\"actor_method_panic_count\":{},\"actor_method_missing_count\":{},\"actor_arena_lock_count\":{},\"mailbox_batch_reserve_success\":{},\"mailbox_batch_reserve_failed\":{},\"queue_enqueue_p99_ns\":{},\"queue_dequeue_p99_ns\":{},\"queue_age_p99_ns\":{},\"sched_dispatch_loop_ns_p99\":{},\"queue_burst_drain_avg\":{:.2},\"function_coverage\":{}}}",
         get(METRIC_MESSAGES_SENT),
         get(METRIC_MESSAGES_DROPPED),
         get(METRIC_PENDING_RESOLVED),
@@ -360,6 +360,18 @@ fn maybe_dump_metrics() {
         get(METRIC_SCHED_READY_OVERFLOW_FALLBACK),
         get(METRIC_SCENE_TRACE),
         get(METRIC_FIELD_SAMPLE),
+        get(METRIC_SCENE_TRACE_SUPPORT_PRUNED_BRANCH),
+        get(METRIC_SCENE_TRACE_CANDIDATE_BRANCH),
+        get(METRIC_SCENE_TRACE_EXACT_PATH),
+        get(METRIC_SCENE_TRACE_CONSERVATIVE_PATH),
+        get(METRIC_SCENE_TRACE_HIT_COUNT),
+        get(METRIC_SCENE_TRACE_HIT_STEPS_TOTAL),
+        get(METRIC_SCENE_TRACE_HIT_FIELD_SAMPLES_TOTAL),
+        get(METRIC_SCENE_TRACE_STEPS_LE_1),
+        get(METRIC_SCENE_TRACE_STEPS_LE_4),
+        get(METRIC_SCENE_TRACE_STEPS_LE_8),
+        get(METRIC_SCENE_TRACE_STEPS_LE_16),
+        get(METRIC_SCENE_TRACE_STEPS_GT_16),
         get(METRIC_SCENE_TRACE_BLEND_COST),
         get(METRIC_SCENE_TRACE_DEFORMATION_COST),
         get(METRIC_MESSAGE_BUILD_NOARGS),

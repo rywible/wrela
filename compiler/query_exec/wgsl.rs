@@ -230,7 +230,14 @@ fn build_world_request(
         domain,
         world_query_semantics(plan.kind).query_name,
     )?;
-    let world_shapes = ops.resolve_world_shapes(&capture, detail)?;
+    let surface_root_shape_id = if matches!(plan.kind, WorldQueryKind::Surface) {
+        let hit = expect_struct_arg(args.get(2), "Hit3")?;
+        Some(expect_struct_u32(hit, "root_shape_id")?)
+    } else {
+        None
+    };
+    let world_shapes = ops.resolve_world_shapes(&capture, detail, surface_root_shape_id)?;
+    ops.note_candidate_count(world_shapes.len() as u32);
     let world_shape_indices = world_shapes
         .iter()
         .map(|shape| shape_index(ops.context(), shape))
@@ -796,6 +803,22 @@ fn expect_struct_arg<'a>(
             found: format!("{other:?}"),
         }),
         None => Err(QueryExecError::MissingCaptureTarget { kind: name }),
+    }
+}
+
+fn expect_struct_u32(value: &KernelStructValue, field: &str) -> Result<u32, QueryExecError> {
+    let Some((_, value)) = value.fields.iter().find(|(name, _)| name.as_str() == field) else {
+        return Err(QueryExecError::MissingCaptureTarget {
+            kind: "struct field",
+        });
+    };
+    match value {
+        KernelValue::U32(value) => Ok(*value),
+        KernelValue::I32(value) if *value >= 0 => Ok(*value as u32),
+        other => Err(QueryExecError::TypeMismatch {
+            expected: format!("U32 for field {field}"),
+            found: format!("{other:?}"),
+        }),
     }
 }
 

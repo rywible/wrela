@@ -393,6 +393,38 @@ struct MetricsDump {
     #[serde(default)]
     queue_burst_drain_avg: f64,
     #[serde(default)]
+    scene_trace: u64,
+    #[serde(default)]
+    field_sample: u64,
+    #[serde(default)]
+    scene_trace_support_pruned_branch: u64,
+    #[serde(default)]
+    scene_trace_candidate_branch: u64,
+    #[serde(default)]
+    scene_trace_exact_path: u64,
+    #[serde(default)]
+    scene_trace_conservative_path: u64,
+    #[serde(default)]
+    scene_trace_hit_count: u64,
+    #[serde(default)]
+    scene_trace_hit_steps_total: u64,
+    #[serde(default)]
+    scene_trace_hit_field_samples_total: u64,
+    #[serde(default)]
+    scene_trace_steps_le_1: u64,
+    #[serde(default)]
+    scene_trace_steps_le_4: u64,
+    #[serde(default)]
+    scene_trace_steps_le_8: u64,
+    #[serde(default)]
+    scene_trace_steps_le_16: u64,
+    #[serde(default)]
+    scene_trace_steps_gt_16: u64,
+    #[serde(default)]
+    scene_trace_blend_cost: u64,
+    #[serde(default)]
+    scene_trace_deformation_cost: u64,
+    #[serde(default)]
     function_coverage: BTreeMap<String, u64>,
 }
 
@@ -457,6 +489,38 @@ pub(super) struct MetricsTotals {
     #[serde(default)]
     queue_burst_drain_avg: f64,
     #[serde(default)]
+    scene_trace: u64,
+    #[serde(default)]
+    field_sample: u64,
+    #[serde(default)]
+    scene_trace_support_pruned_branch: u64,
+    #[serde(default)]
+    scene_trace_candidate_branch: u64,
+    #[serde(default)]
+    scene_trace_exact_path: u64,
+    #[serde(default)]
+    scene_trace_conservative_path: u64,
+    #[serde(default)]
+    scene_trace_hit_count: u64,
+    #[serde(default)]
+    scene_trace_hit_steps_total: u64,
+    #[serde(default)]
+    scene_trace_hit_field_samples_total: u64,
+    #[serde(default)]
+    scene_trace_steps_le_1: u64,
+    #[serde(default)]
+    scene_trace_steps_le_4: u64,
+    #[serde(default)]
+    scene_trace_steps_le_8: u64,
+    #[serde(default)]
+    scene_trace_steps_le_16: u64,
+    #[serde(default)]
+    scene_trace_steps_gt_16: u64,
+    #[serde(default)]
+    scene_trace_blend_cost: u64,
+    #[serde(default)]
+    scene_trace_deformation_cost: u64,
+    #[serde(default)]
     function_coverage: BTreeMap<String, u64>,
 }
 
@@ -504,6 +568,22 @@ impl MetricsTotals {
         self.queue_burst_drain_avg = self
             .queue_burst_drain_avg
             .max(metrics.queue_burst_drain_avg);
+        self.scene_trace += metrics.scene_trace;
+        self.field_sample += metrics.field_sample;
+        self.scene_trace_support_pruned_branch += metrics.scene_trace_support_pruned_branch;
+        self.scene_trace_candidate_branch += metrics.scene_trace_candidate_branch;
+        self.scene_trace_exact_path += metrics.scene_trace_exact_path;
+        self.scene_trace_conservative_path += metrics.scene_trace_conservative_path;
+        self.scene_trace_hit_count += metrics.scene_trace_hit_count;
+        self.scene_trace_hit_steps_total += metrics.scene_trace_hit_steps_total;
+        self.scene_trace_hit_field_samples_total += metrics.scene_trace_hit_field_samples_total;
+        self.scene_trace_steps_le_1 += metrics.scene_trace_steps_le_1;
+        self.scene_trace_steps_le_4 += metrics.scene_trace_steps_le_4;
+        self.scene_trace_steps_le_8 += metrics.scene_trace_steps_le_8;
+        self.scene_trace_steps_le_16 += metrics.scene_trace_steps_le_16;
+        self.scene_trace_steps_gt_16 += metrics.scene_trace_steps_gt_16;
+        self.scene_trace_blend_cost += metrics.scene_trace_blend_cost;
+        self.scene_trace_deformation_cost += metrics.scene_trace_deformation_cost;
         for (function_id, hits) in &metrics.function_coverage {
             *self
                 .function_coverage
@@ -2102,6 +2182,25 @@ fn print_perf_summary(summary: &PerfSummary, perf_debug: bool) {
         "check-lane: typed_total={} boxed_total={} typed_ratio={:.4}",
         check_lane.typed_lane_total, check_lane.boxed_lane_total, check_lane.typed_lane_ratio
     );
+    let scene_trace = scene_trace_kpis_from_summary(summary);
+    if scene_trace.trace_total > 0
+        || scene_trace.candidate_total > 0
+        || scene_trace.pruned_total > 0
+        || scene_trace.hit_total > 0
+    {
+        println!(
+            "scene-trace: traces={} field_samples={} candidates={} pruned={} prune_ratio={:.4} exact={} conservative={} hits={} avg_hit_steps={:.2}",
+            scene_trace.trace_total,
+            scene_trace.field_sample_total,
+            scene_trace.candidate_total,
+            scene_trace.pruned_total,
+            scene_trace.prune_ratio,
+            scene_trace.exact_total,
+            scene_trace.conservative_total,
+            scene_trace.hit_total,
+            scene_trace.avg_hit_steps
+        );
+    }
     if perf_debug {
         println!(
             "perf-debug: rc_inc={} rc_dec={} mailbox_enqueue_ok={} mailbox_enqueue_fail={} mailbox_dequeue={} mailbox_high_water={} alloc_list={} alloc_map={} alloc_string={} alloc_bytes={} alloc_result={} alloc_pending={} messages_sent={} messages_dropped={} pending_resolved={} pending_dropped={} sched_dispatched={} sched_skipped_no_credit={} sched_profile_switch={} sched_starvation_violation={} sched_cross_shard_migration={} abi_typed_lane={} abi_boxed_lane={}",
@@ -2139,6 +2238,19 @@ struct CheckLaneKpis {
     typed_lane_ratio: f64,
 }
 
+#[derive(Debug, Clone, Copy, Serialize)]
+struct SceneTraceKpis {
+    trace_total: u64,
+    field_sample_total: u64,
+    candidate_total: u64,
+    pruned_total: u64,
+    prune_ratio: f64,
+    exact_total: u64,
+    conservative_total: u64,
+    hit_total: u64,
+    avg_hit_steps: f64,
+}
+
 fn check_lane_kpis_from_summary(summary: &PerfSummary) -> CheckLaneKpis {
     let typed = summary.metrics.abi_typed_lane;
     let boxed = summary.metrics.abi_boxed_lane;
@@ -2152,6 +2264,34 @@ fn check_lane_kpis_from_summary(summary: &PerfSummary) -> CheckLaneKpis {
         typed_lane_total: typed,
         boxed_lane_total: boxed,
         typed_lane_ratio,
+    }
+}
+
+fn scene_trace_kpis_from_summary(summary: &PerfSummary) -> SceneTraceKpis {
+    let candidate_total = summary.metrics.scene_trace_candidate_branch;
+    let pruned_total = summary.metrics.scene_trace_support_pruned_branch;
+    let total_considered = candidate_total.saturating_add(pruned_total);
+    let prune_ratio = if total_considered == 0 {
+        0.0
+    } else {
+        pruned_total as f64 / total_considered as f64
+    };
+    let avg_hit_steps = if summary.metrics.scene_trace_hit_count == 0 {
+        0.0
+    } else {
+        summary.metrics.scene_trace_hit_steps_total as f64
+            / summary.metrics.scene_trace_hit_count as f64
+    };
+    SceneTraceKpis {
+        trace_total: summary.metrics.scene_trace,
+        field_sample_total: summary.metrics.field_sample,
+        candidate_total,
+        pruned_total,
+        prune_ratio,
+        exact_total: summary.metrics.scene_trace_exact_path,
+        conservative_total: summary.metrics.scene_trace_conservative_path,
+        hit_total: summary.metrics.scene_trace_hit_count,
+        avg_hit_steps,
     }
 }
 
@@ -2213,6 +2353,23 @@ pub(super) fn aggregate_perf_samples(samples: &[PerfSummary]) -> PerfSummary {
         metrics.queue_burst_drain_avg = metrics
             .queue_burst_drain_avg
             .max(sample.metrics.queue_burst_drain_avg);
+        metrics.scene_trace += sample.metrics.scene_trace;
+        metrics.field_sample += sample.metrics.field_sample;
+        metrics.scene_trace_support_pruned_branch += sample.metrics.scene_trace_support_pruned_branch;
+        metrics.scene_trace_candidate_branch += sample.metrics.scene_trace_candidate_branch;
+        metrics.scene_trace_exact_path += sample.metrics.scene_trace_exact_path;
+        metrics.scene_trace_conservative_path += sample.metrics.scene_trace_conservative_path;
+        metrics.scene_trace_hit_count += sample.metrics.scene_trace_hit_count;
+        metrics.scene_trace_hit_steps_total += sample.metrics.scene_trace_hit_steps_total;
+        metrics.scene_trace_hit_field_samples_total +=
+            sample.metrics.scene_trace_hit_field_samples_total;
+        metrics.scene_trace_steps_le_1 += sample.metrics.scene_trace_steps_le_1;
+        metrics.scene_trace_steps_le_4 += sample.metrics.scene_trace_steps_le_4;
+        metrics.scene_trace_steps_le_8 += sample.metrics.scene_trace_steps_le_8;
+        metrics.scene_trace_steps_le_16 += sample.metrics.scene_trace_steps_le_16;
+        metrics.scene_trace_steps_gt_16 += sample.metrics.scene_trace_steps_gt_16;
+        metrics.scene_trace_blend_cost += sample.metrics.scene_trace_blend_cost;
+        metrics.scene_trace_deformation_cost += sample.metrics.scene_trace_deformation_cost;
     }
     let mut runtime_p50: Vec<u128> = samples.iter().map(|s| s.runtime_p50_ns).collect();
     let mut runtime_p95: Vec<u128> = samples.iter().map(|s| s.runtime_p95_ns).collect();

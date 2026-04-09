@@ -6095,6 +6095,223 @@ fn cli_perf_writes_baseline_json() {
     assert!(summary.get("runtime_p50_ns").is_some());
     assert!(summary.get("runtime_p95_ns").is_some());
     assert!(summary.get("runtime_p99_ns").is_some());
+    let metrics = summary.get("metrics").expect("summary.metrics");
+    assert!(metrics.get("scene_trace").is_some());
+    assert!(metrics.get("field_sample").is_some());
+    assert!(metrics.get("scene_trace_candidate_branch").is_some());
+    assert!(metrics.get("scene_trace_support_pruned_branch").is_some());
+    assert!(metrics.get("scene_trace_hit_count").is_some());
+}
+
+#[test]
+fn cli_perf_runs_field_engine_manifest_smoke_on_wgsl() {
+    let dir = workspace_tempdir();
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .to_path_buf();
+    let bench_root = repo_root.join("benchmarks/field_engine");
+    let manifest = dir.path().join("field_engine_smoke.toml");
+    let baseline = dir.path().join("field_engine_smoke.json");
+    write_fixture_file(
+        &manifest,
+        r#"
+version = 1
+suite = "field_engine_smoke"
+
+[profiles.smoke]
+warmup_pairs = 1
+measure_pairs = 1
+coverage = "all"
+
+[[scenarios]]
+id = "thin_nested_local_frame"
+test_name = "tests/field_engine::test_field_thin_nested_local_frame_ops_100000"
+ops = 100000
+class = "critical"
+min_runtime_ms = 1
+timeout_ms = 120000
+allow_unstable = false
+"#,
+    )
+    .expect("write field-engine smoke manifest");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .current_dir(&repo_root)
+        .arg("perf")
+        .arg("--runs=1")
+        .arg("--profile=smoke")
+        .arg("--query-backend=wgsl")
+        .arg(format!("--benchmark-manifest={}", manifest.display()))
+        .arg(format!("--baseline-out={}", baseline.display()))
+        .arg(&bench_root)
+        .output()
+        .expect("run field-engine perf smoke");
+    assert!(
+        output.status.success(),
+        "field-engine perf smoke failed: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(baseline.exists(), "expected field-engine perf baseline");
+    let json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&baseline).expect("read field-engine baseline"))
+            .expect("parse field-engine baseline");
+    let cases = json
+        .get("summary")
+        .and_then(|value| value.get("cases"))
+        .and_then(|value| value.as_array())
+        .expect("summary.cases array");
+    assert_eq!(cases.len(), 1);
+    assert_eq!(
+        cases[0].get("name").and_then(|value| value.as_str()),
+        Some("tests/field_engine::test_field_thin_nested_local_frame_ops_100000")
+    );
+    let metrics = json
+        .get("summary")
+        .and_then(|value| value.get("metrics"))
+        .expect("summary.metrics");
+    assert!(
+        metrics
+            .get("scene_trace")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0)
+            > 0
+    );
+    assert!(
+        metrics
+            .get("field_sample")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0)
+            > 0
+    );
+    assert!(
+        metrics
+            .get("scene_trace_hit_count")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0)
+            > 0
+    );
+}
+
+#[test]
+fn cli_perf_runs_field_engine_regression_smoke_on_cpu() {
+    let dir = workspace_tempdir();
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .to_path_buf();
+    let bench_root = repo_root.join("benchmarks/field_engine");
+    let manifest = dir.path().join("field_engine_cpu_smoke.toml");
+    let baseline = dir.path().join("field_engine_cpu_smoke.json");
+    write_fixture_file(
+        &manifest,
+        r#"
+version = 1
+suite = "field_engine_cpu_smoke"
+
+[profiles.smoke]
+warmup_pairs = 1
+measure_pairs = 1
+coverage = "all"
+
+[[scenarios]]
+id = "hard_repetition_identity_stability"
+test_name = "tests/field_engine::test_field_repetition_identity_stability_ops_120000"
+ops = 120000
+class = "critical"
+min_runtime_ms = 1
+timeout_ms = 120000
+allow_unstable = false
+
+[[scenarios]]
+id = "opaque_leaf_pessimization"
+test_name = "tests/field_engine::test_field_opaque_leaf_pessimization_ops_4000"
+ops = 4000
+class = "critical"
+min_runtime_ms = 1
+timeout_ms = 120000
+allow_unstable = false
+
+[[scenarios]]
+id = "region_domain_media_radiance"
+test_name = "tests/field_engine::test_field_region_domain_media_radiance_ops_60000"
+ops = 60000
+class = "critical"
+min_runtime_ms = 1
+timeout_ms = 120000
+allow_unstable = false
+"#,
+    )
+    .expect("write field-engine cpu smoke manifest");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .current_dir(&repo_root)
+        .arg("perf")
+        .arg("--runs=1")
+        .arg("--profile=smoke")
+        .arg("--query-backend=cpu")
+        .arg(format!("--benchmark-manifest={}", manifest.display()))
+        .arg(format!("--baseline-out={}", baseline.display()))
+        .arg(&bench_root)
+        .output()
+        .expect("run field-engine cpu perf smoke");
+    assert!(
+        output.status.success(),
+        "field-engine cpu perf smoke failed: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(baseline.exists(), "expected field-engine cpu perf baseline");
+    let json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&baseline).expect("read field-engine cpu baseline"))
+            .expect("parse field-engine cpu baseline");
+    let cases = json
+        .get("summary")
+        .and_then(|value| value.get("cases"))
+        .and_then(|value| value.as_array())
+        .expect("summary.cases array");
+    assert_eq!(cases.len(), 3);
+    let case_names: std::collections::BTreeSet<_> = cases
+        .iter()
+        .filter_map(|case| case.get("name").and_then(|value| value.as_str()))
+        .collect();
+    assert!(
+        case_names
+            .contains("tests/field_engine::test_field_repetition_identity_stability_ops_120000")
+    );
+    assert!(
+        case_names.contains("tests/field_engine::test_field_opaque_leaf_pessimization_ops_4000")
+    );
+    assert!(
+        case_names
+            .contains("tests/field_engine::test_field_region_domain_media_radiance_ops_60000")
+    );
+    let metrics = json
+        .get("summary")
+        .and_then(|value| value.get("metrics"))
+        .expect("summary.metrics");
+    assert!(
+        metrics
+            .get("scene_trace")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0)
+            > 0
+    );
+    assert!(
+        metrics
+            .get("scene_trace_candidate_branch")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0)
+            > 0
+    );
+    assert!(
+        metrics
+            .get("scene_trace_hit_count")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0)
+            > 0
+    );
 }
 
 #[test]
@@ -9453,6 +9670,7 @@ fn benchmark_manifest_scenarios_resolve_via_discovery() {
         "benchmarks/micro/bench.toml",
         "benchmarks/meso/bench.toml",
         "benchmarks/macro/bench.toml",
+        "benchmarks/field_engine/bench.toml",
         "benchmarks/linux/bench.toml",
     ];
 

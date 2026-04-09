@@ -229,7 +229,7 @@ fn capture_query_plan_lowers_into_kernel_contract() {
 #[test]
 fn world_query_plan_lowers_into_kernel_contract() {
     let plan = WorldQueryPlan::for_query_with_backend(
-        WorldQueryKind::Radiance,
+        WorldQueryKind::Trace,
         wrela::query_plan::DispatchBackend::Wgsl,
     );
     let kernel_plan = lower_world_query_plan(&plan);
@@ -244,19 +244,85 @@ fn world_query_plan_lowers_into_kernel_contract() {
     );
     assert!(matches!(
         kernel_plan.stages.first(),
-        Some(wrela::kernel::KernelPlanStage::LoadDomainFlags)
+        Some(wrela::kernel::KernelPlanStage::SelectBackend)
     ));
+    assert!(
+        kernel_plan
+            .stages
+            .iter()
+            .any(|stage| matches!(stage, wrela::kernel::KernelPlanStage::LoadCapture))
+    );
+    assert!(
+        kernel_plan
+            .stages
+            .iter()
+            .any(|stage| matches!(stage, wrela::kernel::KernelPlanStage::LoadDomainFlags))
+    );
     assert!(kernel_plan.stages.iter().any(|stage| matches!(
         stage,
-        wrela::kernel::KernelPlanStage::SelectParticipants {
-            kind: wrela::query_plan::CaptureQueryKind::Radiance
+        wrela::kernel::KernelPlanStage::GenerateCandidates {
+            strategy: wrela::query_plan::CandidateStrategy::SupportAcceleratedShapeTraversal
+        }
+    )));
+    assert!(kernel_plan.stages.iter().any(|stage| matches!(
+        stage,
+        wrela::kernel::KernelPlanStage::PruneCandidates {
+            strategy: wrela::query_plan::PruningStrategy::SupportLowerBound
         }
     )));
     assert!(
         kernel_plan
             .stages
             .iter()
+            .any(|stage| matches!(stage, wrela::kernel::KernelPlanStage::AssembleHitContext))
+    );
+    assert!(
+        kernel_plan
+            .stages
+            .iter()
             .any(|stage| matches!(stage, wrela::kernel::KernelPlanStage::AppendResult { .. }))
+    );
+    assert_eq!(
+        kernel_plan.candidate_strategy,
+        wrela::query_plan::CandidateStrategy::SupportAcceleratedShapeTraversal
+    );
+    assert_eq!(
+        kernel_plan.pruning_strategy,
+        wrela::query_plan::PruningStrategy::SupportLowerBound
+    );
+    assert!(
+        kernel_plan
+            .derived_artifacts
+            .iter()
+            .any(|artifact| matches!(
+                artifact,
+                wrela::query_plan::DerivedArtifact::CaptureCache {
+                    capture_kind: wrela::query_plan::CaptureKind::Region
+                }
+            ))
+    );
+    assert!(
+        kernel_plan
+            .derived_artifacts
+            .iter()
+            .any(|artifact| matches!(
+                artifact,
+                wrela::query_plan::DerivedArtifact::CullingTable { .. }
+            ))
+    );
+    assert!(
+        kernel_plan
+            .artifact_contracts
+            .iter()
+            .any(|artifact| matches!(
+                artifact.schema,
+                ArtifactSchema::CullingTable {
+                    candidate_strategy:
+                        wrela::query_plan::CandidateStrategy::SupportAcceleratedShapeTraversal,
+                    pruning_strategy: wrela::query_plan::PruningStrategy::SupportLowerBound,
+                    ..
+                }
+            ))
     );
 }
 

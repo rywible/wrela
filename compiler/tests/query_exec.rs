@@ -12,10 +12,11 @@ use wrela::parser::ast;
 use wrela::parser::ast::AstNode;
 use wrela::parser::parse;
 use wrela::query_exec::{
-    DirectQueryExecutor, QueryExecContext, executable_region_shape_lists,
-    execute_batch_query_with_trace, execute_batch_query_with_trace_on, execute_capture_query,
-    execute_capture_query_on, execute_capture_query_with_trace_on, execute_world_query,
-    execute_world_query_on, execute_world_query_with_trace_on, stable_field_scene_capture_id,
+    CostFidelity, DirectQueryExecutor, QueryExecContext, SemanticCostCauseKind, SemanticCostUnit,
+    SemanticStageKind, executable_region_shape_lists, execute_batch_query_with_trace,
+    execute_batch_query_with_trace_on, execute_capture_query, execute_capture_query_on,
+    execute_capture_query_with_trace_on, execute_world_query, execute_world_query_on,
+    execute_world_query_with_trace_on, render_semantic_cost_report, stable_field_scene_capture_id,
     stable_region_scene_capture_id, stable_shape_capture_id, stable_shape_scene_capture_id,
 };
 use wrela::query_plan::{
@@ -1340,6 +1341,18 @@ fn query_exec_traces_report_observability_counters() {
     assert!(cpu_trace.observability.field_samples > 0);
     assert!(cpu_trace.observability.branch_visits > 0);
     assert!(cpu_trace.observability.artifact_loads > 0);
+    assert_eq!(
+        cpu_trace.cost_report.unit,
+        SemanticCostUnit::CaptureCandidates
+    );
+    assert_eq!(cpu_trace.cost_report.fidelity, CostFidelity::Exact);
+    assert!(
+        cpu_trace
+            .cost_report
+            .causes
+            .iter()
+            .any(|cause| { cause.kind == SemanticCostCauseKind::MarchPressure })
+    );
 
     let region_scene_id = stable_region_scene_capture_id(&SmolStr::new("scene_region"));
     let world_trace_plan =
@@ -1364,6 +1377,18 @@ fn query_exec_traces_report_observability_counters() {
     assert!(vgpu_world_trace.observability.candidate_count > 0);
     assert!(vgpu_world_trace.observability.trace_steps > 0);
     assert!(vgpu_world_trace.observability.artifact_loads > 0);
+    assert_eq!(
+        vgpu_world_trace.cost_report.unit,
+        SemanticCostUnit::WorldShapes
+    );
+    assert_eq!(vgpu_world_trace.cost_report.fidelity, CostFidelity::Exact);
+    assert!(
+        vgpu_world_trace
+            .cost_report
+            .causes
+            .iter()
+            .any(|cause| { cause.kind == SemanticCostCauseKind::SupportTopology })
+    );
 
     let (_wgsl_world_hit, wgsl_world_trace) = execute_world_query_with_trace_on(
         &ctx,
@@ -1385,6 +1410,10 @@ fn query_exec_traces_report_observability_counters() {
     assert!(wgsl_world_trace.observability.candidate_count > 0);
     assert!(wgsl_world_trace.observability.trace_steps > 0);
     assert!(wgsl_world_trace.observability.artifact_loads > 0);
+    assert_eq!(
+        wgsl_world_trace.cost_report.fidelity,
+        CostFidelity::StructuralApproximation
+    );
 
     let batch_plan = lower_batch_query_plan(&BatchQueryPlan::for_shape_query(
         BatchQueryKind::Trace,
@@ -1406,6 +1435,14 @@ fn query_exec_traces_report_observability_counters() {
     assert_eq!(batch_trace.observability.dispatch_count, 1);
     assert_eq!(batch_trace.observability.candidate_count, 2);
     assert!(batch_trace.observability.artifact_loads > 0);
+    assert_eq!(batch_trace.cost_report.unit, SemanticCostUnit::BatchItems);
+    assert!(
+        batch_trace
+            .cost_report
+            .dominant_stages
+            .iter()
+            .any(|stage| { stage.stage == SemanticStageKind::ItemIteration })
+    );
 
     let wgsl_batch_plan = lower_batch_query_plan(&BatchQueryPlan::for_shape_query(
         BatchQueryKind::Trace,
@@ -1428,6 +1465,127 @@ fn query_exec_traces_report_observability_counters() {
     assert_eq!(wgsl_batch_trace.observability.candidate_count, 2);
     assert!(wgsl_batch_trace.observability.trace_steps > 0);
     assert!(wgsl_batch_trace.observability.artifact_loads > 0);
+    assert_eq!(
+        wgsl_batch_trace.cost_report.fidelity,
+        CostFidelity::StructuralApproximation
+    );
+}
+
+#[test]
+fn query_exec_semantic_cost_reports_explain_support_domain_and_identity_causes() {
+    let (_, _, support_ctx) = typed_query_module(world_support_cost_fixture_source());
+    let support_region_scene_id = stable_region_scene_capture_id(&SmolStr::new("scene_region"));
+    let support_domain = scene_domain(support_region_scene_id, 1, true, false, false);
+    let support_trace_plan = lower_world_query_plan(&WorldQueryPlan::for_query_with_backend(
+        WorldQueryKind::Trace,
+        DispatchBackend::VirtualGpu,
+    ));
+    let (support_hit, _support_trace) = execute_world_query_with_trace_on(
+        &support_ctx,
+        DispatchBackend::VirtualGpu,
+        &support_trace_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("scene_region")),
+            support_domain,
+            KernelValue::Vec3([0.0, 0.0, 3.0]),
+            KernelValue::Vec3([0.0, 0.0, -1.0]),
+            KernelValue::F32(6.0),
+            KernelValue::F32(0.05),
+            KernelValue::F32(0.001),
+            KernelValue::I32(96),
+        ],
+    )
+    .expect("support-pruned world trace");
+    let support_surface_plan = lower_world_query_plan(&WorldQueryPlan::for_query_with_backend(
+        WorldQueryKind::Surface,
+        DispatchBackend::VirtualGpu,
+    ));
+    let (_support_surface, support_surface_trace) = execute_world_query_with_trace_on(
+        &support_ctx,
+        DispatchBackend::VirtualGpu,
+        &support_surface_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("scene_region")),
+            scene_domain(support_region_scene_id, 1, true, false, false),
+            support_hit,
+        ],
+    )
+    .expect("support-pruned world surface");
+    assert_eq!(
+        support_surface_trace
+            .observability
+            .support_pruned_candidates,
+        1
+    );
+    let support_rendered = render_semantic_cost_report(&support_surface_trace.cost_report);
+    assert!(support_rendered.contains("scope=world:surface backend=virtual-gpu"));
+    assert!(support_rendered.contains("artifacts=capture-cache"));
+    assert!(support_rendered.contains("pruned=1"));
+    assert!(
+        support_surface_trace
+            .cost_report
+            .causes
+            .iter()
+            .any(|cause| { cause.kind == SemanticCostCauseKind::SupportTopology })
+    );
+
+    let (_, _, ctx) = typed_query_module(query_fixture_source());
+    let region_scene_id = stable_region_scene_capture_id(&SmolStr::new("scene_region"));
+    let fine_domain = scene_domain(region_scene_id, 1, true, true, true);
+    let medium_plan = lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Medium));
+    let (_medium, medium_trace) = execute_world_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Cpu,
+        &medium_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("scene_region")),
+            fine_domain,
+            KernelValue::Vec3([0.0, 0.1, 0.75]),
+        ],
+    )
+    .expect("world medium trace");
+    assert!(
+        medium_trace
+            .cost_report
+            .causes
+            .iter()
+            .any(|cause| { cause.kind == SemanticCostCauseKind::DomainGating })
+    );
+    assert!(
+        medium_trace
+            .cost_report
+            .causes
+            .iter()
+            .any(|cause| { cause.kind == SemanticCostCauseKind::ParticipantAccumulation })
+    );
+
+    let (_, _, identity_ctx) = typed_query_module(direct_semantics_source());
+    let trace_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Trace, CaptureKind::Shape, None)
+            .expect("trace plan"),
+    );
+    let (_identity_hit, identity_trace) = execute_capture_query_with_trace_on(
+        &identity_ctx,
+        DispatchBackend::Cpu,
+        &trace_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("identity_shape")),
+            KernelValue::Vec3([3.25, 0.0, 3.0]),
+            KernelValue::Vec3([0.0, 0.0, -1.0]),
+            KernelValue::F32(6.0),
+            KernelValue::F32(0.05),
+            KernelValue::F32(0.001),
+            KernelValue::I32(96),
+        ],
+    )
+    .expect("identity trace");
+    assert!(
+        identity_trace
+            .cost_report
+            .causes
+            .iter()
+            .any(|cause| { cause.kind == SemanticCostCauseKind::IdentityLocality })
+    );
 }
 
 #[test]
@@ -3012,6 +3170,66 @@ shape lighting_scene {
         use left_glow_shape
         use right_glow_shape
     }
+}
+"#
+}
+
+fn world_support_cost_fixture_source() -> &'static str {
+    r#"
+field exact distance near_field(p: Vec3) -> F32 {
+    sphere(radius = 0.6)
+}
+
+field conservative distance far_supported_field(p: Vec3) -> F32 {
+    support = Support3(bounds=Bounds3(
+        min=vec3(8.8, -0.8, -0.8),
+        max=vec3(10.2, 0.8, 0.8)
+    ))
+    bounds = Bounds3(
+        min=vec3(8.8, -0.8, -0.8),
+        max=vec3(10.2, 0.8, 0.8)
+    )
+    return length(p - vec3(9.5, 0.0, 0.0)) - 0.5
+}
+
+material shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.25, 0.35, 0.45),
+        roughness=0.5,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape near_shape {
+    field = near_field
+    material = shade
+    payload = Payload(entity_id=u32(1), material_id=u32(1), actor=ActorHandle(id=u32(1), generation=u32(0)))
+}
+
+shape far_shape {
+    field = far_supported_field
+    material = shade
+    payload = Payload(entity_id=u32(2), material_id=u32(2), actor=ActorHandle(id=u32(2), generation=u32(0)))
+}
+
+region scene_region() {
+    place near = near_shape
+    place far = far_shape
+}
+
+domain scene_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = false
+    radiance = false
+    media = false
+    max_distance = 6.0
+    min_step = 0.05
+    hit_epsilon = 0.001
+    max_steps = 96
 }
 "#
 }

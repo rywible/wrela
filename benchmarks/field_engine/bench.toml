@@ -1,0 +1,62 @@
+version = 1
+suite = "field_engine"
+
+[profiles.smoke]
+warmup_pairs = 2
+measure_pairs = 6
+coverage = "critical"
+
+[profiles.standard]
+warmup_pairs = 3
+measure_pairs = 10
+coverage = "all"
+
+[profiles.deep]
+warmup_pairs = 5
+measure_pairs = 18
+coverage = "all"
+
+[[scenarios]]
+id = "hard_repetition_identity_stability"
+test_name = "tests/field_engine::test_field_repetition_identity_stability_ops_120000"
+ops = 120000
+class = "critical"
+min_runtime_ms = 1200
+timeout_ms = 180000
+allow_unstable = false
+
+[[scenarios]]
+id = "thin_nested_local_frame"
+test_name = "tests/field_engine::test_field_thin_nested_local_frame_ops_100000"
+ops = 100000
+class = "critical"
+min_runtime_ms = 1000
+timeout_ms = 180000
+allow_unstable = false
+
+[[scenarios]]
+id = "smooth_deform_character"
+test_name = "tests/field_engine::test_field_smooth_deform_character_ops_90000"
+ops = 90000
+class = "critical"
+min_runtime_ms = 1200
+timeout_ms = 180000
+allow_unstable = false
+
+[[scenarios]]
+id = "region_domain_media_radiance"
+test_name = "tests/field_engine::test_field_region_domain_media_radiance_ops_60000"
+ops = 60000
+class = "critical"
+min_runtime_ms = 1000
+timeout_ms = 180000
+allow_unstable = false
+
+[[scenarios]]
+id = "opaque_leaf_pessimization"
+test_name = "tests/field_engine::test_field_opaque_leaf_pessimization_ops_4000"
+ops = 4000
+class = "critical"
+min_runtime_ms = 1200
+timeout_ms = 180000
+allow_unstable = false

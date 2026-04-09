@@ -1,4 +1,5 @@
 mod capture;
+mod cost;
 mod native_bridge;
 
 pub mod context;
@@ -17,6 +18,10 @@ use crate::kernel::{KernelBatchQueryTrace, interpret_batch_query};
 use crate::query_plan::DispatchBackend;
 
 pub use context::QueryExecContext;
+pub use cost::{
+    CostFidelity, SemanticCostCause, SemanticCostCauseKind, SemanticCostReport, SemanticCostStage,
+    SemanticCostUnit, SemanticQueryScope, SemanticStageKind, render_semantic_cost_report,
+};
 pub use cpu::QueryExecError;
 pub use ids::{
     stable_field_scene_capture_id, stable_region_scene_capture_id, stable_shape_capture_id,
@@ -33,6 +38,7 @@ pub struct BatchQueryExecutionTrace {
     pub backend: DispatchBackend,
     pub plan_trace: KernelBatchQueryTrace,
     pub observability: QueryExecutionObservability,
+    pub cost_report: SemanticCostReport,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +46,7 @@ pub struct DirectQueryExecutionTrace {
     pub backend: DispatchBackend,
     pub executor: DirectQueryExecutor,
     pub observability: QueryExecutionObservability,
+    pub cost_report: SemanticCostReport,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -109,6 +116,7 @@ pub fn execute_capture_query_with_trace_on(
         DirectQueryExecutionTrace {
             backend,
             executor,
+            cost_report: cost::capture_cost_report(backend, plan, &observability),
             observability,
         },
     ))
@@ -160,6 +168,7 @@ pub fn execute_world_query_with_trace_on(
         DirectQueryExecutionTrace {
             backend,
             executor,
+            cost_report: cost::world_cost_report(backend, plan, &observability),
             observability,
         },
     ))
@@ -210,11 +219,13 @@ pub fn execute_batch_query_with_trace_on(
             cpu::execute_batch_query_with_observability(ctx, plan, args)?
         }
     };
+    let cost_report = cost::batch_cost_report(backend, plan, &plan_trace, &observability);
     Ok((
         value,
         BatchQueryExecutionTrace {
             backend,
             plan_trace,
+            cost_report,
             observability,
         },
     ))
